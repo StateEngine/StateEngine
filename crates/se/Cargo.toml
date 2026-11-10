@@ -8,6 +8,7 @@ publish.workspace = true
 
 [features]
 remote = ["se-host/remote"]
+import = ["se-host/import", "se-core/import"]
 
 [dependencies]
 se-host = { path = "../se-host" }

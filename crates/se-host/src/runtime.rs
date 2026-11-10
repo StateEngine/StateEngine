@@ -55,7 +55,7 @@ pub use inventory::decode_owner_inventory;
 
 #[cfg(feature = "listener")]
 pub(crate) mod executor;
-#[cfg(feature = "listener")]
+#[cfg(all(feature = "listener", feature = "import"))]
 mod history_import;
 #[cfg(feature = "listener")]
 pub(crate) mod mail;

@@ -3,22 +3,22 @@
 use super::*;
 use serde::{Serialize, Serializer};
 macro_rules! output_types {
-    ($( $variant:ident => $input:ty, $output:ty; )+) => {
+    ($( $( #[$cfg:meta] )* $variant:ident => $input:ty, $output:ty; )+) => {
         #[derive(Clone, Debug, JsonSchema)]
         #[serde(untagged)]
-        pub enum AnyOutput { $( $variant(Box<Envelope<$output>>), )+ }
+        pub enum AnyOutput { $( $( #[$cfg] )* $variant(Box<Envelope<$output>>), )+ }
         impl AnyOutput {
-            pub fn family(&self) -> Family { match self { $( Self::$variant(_)=><$input>::META.family, )+ } }
-            pub fn maintenance_pending(&self) -> bool { match self { $( Self::$variant(value)=>value.maintenance_pending, )+ } }
+            pub fn family(&self) -> Family { match self { $( $( #[$cfg] )* Self::$variant(_)=><$input>::META.family, )+ } }
+            pub fn maintenance_pending(&self) -> bool { match self { $( $( #[$cfg] )* Self::$variant(value)=>value.maintenance_pending, )+ } }
             pub fn with_maintenance_pending(mut self, pending: bool) -> Self {
-                match &mut self { $( Self::$variant(value)=>value.maintenance_pending=pending, )+ }
+                match &mut self { $( $( #[$cfg] )* Self::$variant(value)=>value.maintenance_pending=pending, )+ }
                 self
             }
-            pub fn human_kind(&self) -> HumanKind { match self { $( Self::$variant(_)=><$input>::META.human, )+ } }
+            pub fn human_kind(&self) -> HumanKind { match self { $( $( #[$cfg] )* Self::$variant(_)=><$input>::META.human, )+ } }
             /// Called by the host with this request's store measurements. Direct
             /// output constructors leave diagnostics absent.
             pub fn with_write_timings(mut self, timings: ReceiptWriteTimings) -> Self {
-                match &mut self { $( Self::$variant(value)=>value.diagnostics=Some(OutputDiagnostics { write_timings: timings, host_phases: None, capture_commits: Vec::new() }), )+ }
+                match &mut self { $( $( #[$cfg] )* Self::$variant(value)=>value.diagnostics=Some(OutputDiagnostics { write_timings: timings, host_phases: None, capture_commits: Vec::new() }), )+ }
                 self
             }
         }
@@ -26,7 +26,7 @@ macro_rules! output_types {
             /// Attach only to an already measured hosted completion; ordinary
             /// reads/direct results never acquire synthetic write diagnostics.
             pub fn with_host_phases(mut self, phases: HostPhaseTimings) -> Self {
-                match &mut self { $( Self::$variant(value)=> {
+                match &mut self { $( $( #[$cfg] )* Self::$variant(value)=> {
                     if let Some(diagnostics) = &mut value.diagnostics {
                         diagnostics.host_phases = Some(phases);
                     }
@@ -50,13 +50,13 @@ macro_rules! output_types {
             }
         }
         impl Serialize for AnyOutput {
-            fn serialize<S:Serializer>(&self,serializer:S)->std::result::Result<S::Ok,S::Error> { match self { $( Self::$variant(value)=>value.serialize(serializer), )+ } }
+            fn serialize<S:Serializer>(&self,serializer:S)->std::result::Result<S::Ok,S::Error> { match self { $( $( #[$cfg] )* Self::$variant(value)=>value.serialize(serializer), )+ } }
         }
         impl<'de> serde::Deserialize<'de> for AnyOutput {
             fn deserialize<D:serde::Deserializer<'de>>(decoder:D)->std::result::Result<Self,D::Error> {
                 let value=<serde_json::Value as serde::Deserialize>::deserialize(decoder)?;
                 let family=value.get("schema").and_then(serde_json::Value::as_str).ok_or_else(||serde::de::Error::custom("missing output family schema"))?.to_owned();
-                $(if family==<$input>::META.family.schema() {
+                $( $( #[$cfg] )* if family==<$input>::META.family.schema() {
                     let envelope=serde_json::from_value::<Envelope<$output>>(value).map_err(serde::de::Error::custom)?;
                     if let Some(diagnostics)=&envelope.diagnostics {
                         diagnostics.write_timings.validate().map_err(serde::de::Error::custom)?;
@@ -75,7 +75,7 @@ macro_rules! output_types {
                 Err(serde::de::Error::custom("unknown output family schema"))
             }
         }
-        $(impl From<$output> for AnyOutput {
+        $( $( #[$cfg] )* impl From<$output> for AnyOutput {
             fn from(value:$output)->Self { Self::$variant(Box::new(Envelope::new(<$input>::META.family,value))) }
         })+
     }
@@ -99,6 +99,7 @@ MetaSchema => MetaSchema, SchemaCatalogue;
 IdentityWhoami => IdentityWhoami, PrincipalOutput;
 ProjectInit => ProjectInit, InitOutput;
 ProjectMove => ProjectMove, MoveOutput;
+#[cfg(feature = "import")]
 ImportNode => ImportNode, ImportReceipt;
 ProjectStatus => ProjectStatus, StatusOutput;
 DoctorInspect => DoctorInspect, Diagnosis;

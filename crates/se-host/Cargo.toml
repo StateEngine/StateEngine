@@ -8,6 +8,7 @@ publish.workspace = true
 
 [features]
 default = ["runtime", "listener"]
+import = ["se-core/import"]
 runtime = ["dep:tokio"]
 listener = ["runtime", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util"]
 secode = ["runtime", "listener", "dep:secode-stateengine-api", "dep:toml"]

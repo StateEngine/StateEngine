@@ -189,6 +189,7 @@ pub fn execute(
                     capture_keys: Vec::new(),
                 })
             }
+            #[cfg(feature = "import")]
             OpStep::Custody(CustodyPlan::ImportNode(input)) => Ok(ExecutedCall {
                 host_phases,
                 output: super::history_import::execute(
@@ -351,6 +352,7 @@ pub(crate) fn close_read<T>(result: Result<T>, closed: se_store::StoreResult<()>
         (Err(original), Err(error)) => Err(original.with_cause(error)),
     }
 }
+#[cfg(all(feature = "listener", feature = "import"))]
 pub(crate) fn check_generation(
     reader: &se_store::SqliteReader,
     expected: se_types::Generation,
@@ -358,6 +360,11 @@ pub(crate) fn check_generation(
     let phase = checked_phase(reader, expected)?;
     close_read(Ok(()), phase.close())
 }
+#[cfg(any(
+    test,
+    feature = "secode",
+    all(feature = "listener", feature = "import")
+))]
 pub(super) fn checked_phase(
     reader: &se_store::SqliteReader,
     expected: se_types::Generation,

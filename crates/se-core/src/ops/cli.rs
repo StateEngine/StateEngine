@@ -302,6 +302,7 @@ fn input_command(name: &str, c: Command) -> Command {
                 .help("The folder the repository now lives in; verified against the git identity recorded at se init"),
         ),
         "doctor.repair" => c.arg(value("fix").help("Apply only this currently diagnosed CHECK-ID after printing its plan")),
+        #[cfg(feature = "import")]
         "store.import_node" => c
             .arg(value("from_node").long("from-node").required(true).help("Copy of an earlier StateEngine data directory to import"))
             .arg(value("source_owner").long("source-owner").help("Source human ID explicitly adopted as the importing owner"))

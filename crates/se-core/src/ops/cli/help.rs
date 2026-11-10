@@ -28,6 +28,7 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "remote.send" => "Send keyed direct mail to an exact remote agent session",
         "meta.help" => "Explain a command and its options",
         "meta.schema" => "Show registered operation input and output schemas",
+        #[cfg(feature = "import")]
         "store.import_node" => "Import retained history without changing its source files",
         "project.init" => "Register this folder and save your first agent",
         "doctor.inspect" => "Check this installation and name exact supported repairs",
