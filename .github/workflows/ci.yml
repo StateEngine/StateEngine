@@ -45,9 +45,9 @@ defaults:
 jobs:
   changes:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.job != 'macos' }}
-    runs-on: ${{ fromJSON(vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
+    runs-on: [self-hosted, Linux, X64, stateengine-box]
     container:
-      image: ${{ vars.LINUX_CI_RUNNER != '' && 'stateengine-ci-approved' || '' }}
+      image: stateengine-ci-approved
       env:
         CI_SOURCE_TOKEN: ${{ github.token }}
     timeout-minutes: 3
@@ -73,9 +73,9 @@ jobs:
   linux-route:
     needs: changes
     if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' }}
-    runs-on: ${{ fromJSON(vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
+    runs-on: [self-hosted, Linux, X64, stateengine-box]
     container:
-      image: ${{ vars.LINUX_CI_RUNNER != '' && 'stateengine-ci-approved' || '' }}
+      image: stateengine-ci-approved
       env:
         CI_SOURCE_TOKEN: ${{ github.token }}
     timeout-minutes: 3
@@ -94,7 +94,7 @@ jobs:
   linux-box:
     needs: [changes, linux-route]
     if: ${{ !cancelled() && needs.linux-route.result == 'success' && needs.linux-route.outputs.route == 'box' }}
-    runs-on: ${{ fromJSON(vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
+    runs-on: [self-hosted, Linux, X64, stateengine-box]
     container:
       image: stateengine-ci-approved
       env:
@@ -109,7 +109,7 @@ jobs:
 
   fmt:
     needs: [changes, linux-route, linux-box]
-    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' && vars.LINUX_CI_RUNNER == '' && (needs.linux-route.outputs.route != 'box' || needs.linux-box.outputs.status == 'unavailable' || (needs.linux-box.result == 'failure' && needs.linux-box.outputs.status == '')) }}
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
@@ -348,9 +348,9 @@ jobs:
     name: check
     if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.job == 'macos') }}
     needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test]
-    runs-on: ${{ fromJSON(vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
+    runs-on: [self-hosted, Linux, X64, stateengine-box]
     container:
-      image: ${{ vars.LINUX_CI_RUNNER != '' && 'stateengine-ci-approved' || '' }}
+      image: stateengine-ci-approved
       env:
         CI_SOURCE_TOKEN: ${{ github.token }}
     timeout-minutes: 2
