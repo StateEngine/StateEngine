@@ -231,6 +231,61 @@ class Controls(unittest.TestCase):
         self.assertEqual(len(run['invocations'][0]['box_load']['before']['load_average']),3)
 
 
+class SelectedControls(unittest.TestCase):
+    setUp = Controls.setUp
+
+    def selected(self):
+        run, receipt, _ = fixture(self.root, 0, [
+            {'label': 'synthetic measurement', 'passed': True, 'elapsed_ms': 1}])
+        run['invocations'][0]['selection'] = '4'
+        receipt['scope'] = {'mode': 'selected', 'selected': [4]}
+        receipt['results'] = [{'journey': 4, 'result': 'PASS', 'cleanup': []}]
+        write(self.root / 'run.json', run)
+        write(self.root / 'probe/results.json', receipt)
+        return receipt
+
+    def test_selected_two_agents_qualifies_only_the_selected_journey(self):
+        self.selected()
+        value = report.publish(self.root)
+        self.assertEqual(linux_cells(value),
+                         {1: 'NOT RUN', 2: 'NOT RUN', 3: 'NOT RUN', 4: 'PASS', 5: 'NOT RUN'})
+        self.assertTrue(value['status']['complete'])
+        self.assertEqual(report.exit_status(value), 0)
+
+    def test_selected_two_agents_requires_matching_complete_receipt(self):
+        changes = [
+            lambda r: r['scope'].update(mode='first-hour'),
+            lambda r: r['scope'].update(selected=[3]),
+            lambda r: r['results'][0].update(journey=3),
+            lambda r: r.update(platform='win32'),
+            lambda r: r.update(surface='codex'),
+            None,
+        ]
+        for number, change in enumerate(changes):
+            with self.subTest(case=number):
+                receipt = self.selected()
+                path = self.root / 'probe/results.json'
+                if change:
+                    change(receipt)
+                    write(path, receipt)
+                else:
+                    path.unlink()
+                value = report.publish(self.root)
+                self.assertEqual(linux_cells(value)[4], 'UNKNOWN')
+                self.assertEqual(report.exit_status(value), 1)
+
+    def test_selected_two_agents_retains_behavior_and_cleanup_failures(self):
+        for change in [lambda r: r['results'][0].update(result='FAIL'),
+                       lambda r: r['results'][0].update(cleanup=['synthetic retained owner'])]:
+            with self.subTest(change=change):
+                receipt = self.selected()
+                change(receipt)
+                write(self.root / 'probe/results.json', receipt)
+                value = report.publish(self.root)
+                self.assertEqual(linux_cells(value)[4], 'FAIL')
+                self.assertEqual(report.exit_status(value), 1)
+
+
 if __name__ == '__main__':
     import unittest.mock
     unittest.main(argv=[sys.argv[0], *remaining])
