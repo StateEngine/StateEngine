@@ -5,7 +5,7 @@ use super::channel::unavailable;
 mod authorization;
 mod bootstrap;
 mod staging;
-pub use authorization::{Authorization, AuthorizationResult};
+pub use authorization::{Authorization, AuthorizationResult, Request as SshRequest, StartResult};
 pub use bootstrap::connect;
 use se_types::{Result, SeError};
 use serde::{Deserialize, Serialize};
@@ -258,6 +258,41 @@ impl Forwards {
             return Err(unavailable("source connection is closing"));
         }
         forward.authorize(authorization).await
+    }
+    /// Reviving an idle far host stays inside this owned forward's disconnect
+    /// lock and rechecks local credential custody before invoking saved SSH.
+    pub async fn restart(
+        &self,
+        config: ForwardConfig,
+        signer: Arc<dyn super::CredentialSource>,
+        blocking: &crate::BlockingPool,
+    ) -> Result<()> {
+        let entry = self
+            .entries
+            .lock()
+            .await
+            .get(&config.host.0.hex())
+            .cloned()
+            .ok_or_else(|| unavailable("owned SSH restart link is absent"))?;
+        let forward = entry.lock().await;
+        if self.closed.load(std::sync::atomic::Ordering::Acquire)
+            || !forward.enabled
+            || forward.config != config
+        {
+            return Err(unavailable(
+                "saved SSH connection changed or was disconnected",
+            ));
+        }
+        let deadline =
+            crate::client::lease::Deadline::from_options(&crate::client::ClientOptions {
+                expected_generation: None,
+                timeout: Duration::from_secs(25),
+                cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            })?;
+        blocking
+            .run_owned(&deadline, move || signer.credential())
+            .await?;
+        authorization::restart(&config).await
     }
     pub async fn activate(&self, config: ForwardConfig) -> Result<SocketAddr> {
         config.validate()?;

@@ -129,7 +129,7 @@ fn run(name: &str, m: &ArgMatches) -> io::Result<u8> {
         Ok((Some(help), _)) => crate::render::output(&help, json, false, &mut stdout),
         Ok((_, Some(output))) => {
             if name == "__authorize" {
-                return authorize(m, &mut stdout);
+                return authorize(m, &output.value, &mut stdout);
             }
             if json {
                 serde_json::to_writer(
@@ -179,7 +179,11 @@ fn invalid(expected: &str) -> SeError {
 
 /// This SSH command exits after authorizing one native application channel.
 /// The shared forward and native host retain all persistent connection state.
-fn authorize(m: &ArgMatches, stdout: &mut impl Write) -> io::Result<u8> {
+fn authorize(
+    m: &ArgMatches,
+    identity: &serde_json::Value,
+    stdout: &mut impl Write,
+) -> io::Result<u8> {
     let cx = crate::bootstrap::Bootstrap::resolve_remote_owner(
         text(m, "home").map(Into::into),
         m.get_flag("no_color"),
@@ -195,8 +199,25 @@ fn authorize(m: &ArgMatches, stdout: &mut impl Write) -> io::Result<u8> {
             "SSH authorization requires one bounded input frame",
         ));
     }
-    let request: se_host::remote::ssh::Authorization = serde_json::from_slice(&bytes)
+    let request: se_host::remote::ssh::SshRequest = serde_json::from_slice(&bytes)
         .map_err(|_| io::Error::other("SSH authorization input is malformed"))?;
+    let request = match request {
+        se_host::remote::ssh::SshRequest::Authorize(request) => request,
+        se_host::remote::ssh::SshRequest::Start(request) => {
+            let actual: se_host::remote::ssh::StartResult =
+                serde_json::from_value(identity.clone())
+                    .map_err(|_| io::Error::other("native SSH restart identity is malformed"))?;
+            if request.start != actual.host {
+                return Err(io::Error::other(
+                    "native SSH restart refused a different saved machine",
+                ));
+            }
+            serde_json::to_writer(&mut *stdout, &actual).map_err(io::Error::other)?;
+            writeln!(stdout)?;
+            stdout.flush()?;
+            return Ok(0);
+        }
+    };
     let channel = request.channel;
     let result =
         crate::route::remote_owner::execute(&cx, Input::Ready(OwnerInput::Authorize(request)))

@@ -1,5 +1,5 @@
 //! Application authorization stays on SSH; a forwarded socket carries no secret.
-use crate::remote::{LinkSecret, RemoteHello, RemoteReady};
+use crate::remote::{LinkSecret, RemoteHello, RemoteHostId, RemoteReady};
 use se_types::ErrorBody;
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
@@ -16,23 +16,75 @@ pub struct AuthorizationResult {
     pub result: std::result::Result<RemoteReady, ErrorBody>,
 }
 
+/// Both requests use the saved native command over the authenticated SSH pipe.
+/// A start restores the existing listener policy; it never creates a grant.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Request {
+    Authorize(Authorization),
+    Start(StartRequest),
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartRequest {
+    pub start: RemoteHostId,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartResult {
+    pub host: RemoteHostId,
+}
+
+pub(super) async fn restart(config: &super::ForwardConfig) -> se_types::Result<()> {
+    let request = Request::Start(StartRequest { start: config.host });
+    let bytes = encoded(&request)?;
+    let response = exchange(config, bytes, std::time::Duration::from_secs(25)).await?;
+    let result: StartResult = serde_json::from_slice(&response)
+        .map_err(|_| super::unavailable("SSH host restart response is malformed"))?;
+    if result.host != config.host {
+        return Err(super::unavailable(
+            "SSH host restart changed the saved machine identity",
+        ));
+    }
+    Ok(())
+}
+fn encoded(request: &Request) -> se_types::Result<zeroize::Zeroizing<Vec<u8>>> {
+    let mut bytes = zeroize::Zeroizing::new(
+        serde_json::to_vec(request)
+            .map_err(|_| super::unavailable("SSH request could not be encoded"))?,
+    );
+    bytes.push(b'\n');
+    if bytes.len() > 32768 {
+        return Err(super::unavailable("SSH request exceeded its input bound"));
+    }
+    Ok(bytes)
+}
+
 /// Credentials travel only through this owned SSH child's private stdin. It
 /// exits after one native authorization; no SE control helper remains resident.
 pub(super) async fn run(
     config: &super::ForwardConfig,
     authorization: Authorization,
 ) -> se_types::Result<RemoteReady> {
+    let channel = authorization.channel;
+    let bytes = encoded(&Request::Authorize(authorization))?;
+    let response = exchange(config, bytes, std::time::Duration::from_secs(10)).await?;
+    let response: AuthorizationResult = serde_json::from_slice(&response)
+        .map_err(|_| super::unavailable("SSH authorization response is malformed"))?;
+    if response.channel != channel {
+        return Err(super::unavailable(
+            "SSH authorization changed the requested channel",
+        ));
+    }
+    response.result.map_err(Into::into)
+}
+async fn exchange(
+    config: &super::ForwardConfig,
+    bytes: zeroize::Zeroizing<Vec<u8>>,
+    deadline: std::time::Duration,
+) -> se_types::Result<Vec<u8>> {
     use super::{Command, Stdio, unavailable};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let channel = authorization.channel;
-    let mut bytes = zeroize::Zeroizing::new(
-        serde_json::to_vec(&authorization)
-            .map_err(|_| unavailable("SSH authorization could not be encoded"))?,
-    );
-    bytes.push(b'\n');
-    if bytes.len() > 32768 {
-        return Err(unavailable("SSH authorization exceeded its input bound"));
-    }
     let mut child = Command::new("ssh")
         .args(["-T", "-o", "BatchMode=yes"])
         .arg(&config.destination)
@@ -43,7 +95,7 @@ pub(super) async fn run(
         .kill_on_drop(true)
         .spawn()
         .map_err(|_| unavailable("cannot start protected SSH authorization"))?;
-    let exchange = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let exchange = tokio::time::timeout(deadline, async {
         let mut input = child.stdin.take()
             .ok_or_else(|| unavailable("SSH authorization input pipe is absent"))?;
         input.write_all(&bytes).await
@@ -67,15 +119,10 @@ pub(super) async fn run(
         if !status.success() {
             return Err(unavailable("SSH authorization refused; check the saved SSH destination and native owner access"));
         }
-        let response: AuthorizationResult = serde_json::from_slice(&response)
-            .map_err(|_| unavailable("SSH authorization response is malformed"))?;
-        if response.channel != channel {
-            return Err(unavailable("SSH authorization changed the requested channel"));
-        }
-        response.result.map_err(Into::into)
+        Ok(response)
     }).await;
     match exchange {
-        Ok(Ok(ready)) => Ok(ready),
+        Ok(Ok(response)) => Ok(response),
         result => {
             if child
                 .try_wait()
@@ -92,7 +139,9 @@ pub(super) async fn run(
                 .map_err(|_| unavailable("cannot join SSH authorization"))?;
             match result {
                 Ok(Err(error)) => Err(error),
-                _ => Err(unavailable("SSH authorization exceeded ten seconds")),
+                _ => Err(unavailable(
+                    "SSH native command exceeded its startup or authorization deadline",
+                )),
             }
         }
     }

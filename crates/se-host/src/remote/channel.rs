@@ -23,9 +23,7 @@ pub(super) fn unavailable(reason: &str) -> SeError {
 }
 /// Resource pressure refuses one operation without changing its authority.
 pub(super) fn busy(reason: &str) -> SeError {
-    SeError::new(Detail::StoreBusy(details::StoreBusy {
-        waited_ms: 0,
-        replay: None,
+    SeError::new(Detail::RemoteBusy(details::RemoteBusy {
         reason: reason.into(),
         next_step: "Let outstanding work finish or cancel a read/watch, then retry the request; retain the SSH binding and original send idempotency key.".into(),
     }))
@@ -42,8 +40,25 @@ pub(super) async fn open(
     if route.host != device.host {
         return Err(auth::refused("route and saved machine identities disagree"));
     }
-    let controls = Arc::new(Controls::default());
-    let mut socket = transport(route, CLIENT_DATA_PATH, controls.clone()).await?;
+    let mut controls = Arc::new(Controls::default());
+    let mut socket = match transport(route, CLIENT_DATA_PATH, controls.clone()).await {
+        Ok(socket) => socket,
+        Err(error)
+            if error.code() == se_types::Code::ListenerUnavailable && route.forward.is_some() =>
+        {
+            let config = route
+                .forward
+                .clone()
+                .ok_or_else(|| unavailable("saved SSH binding absent"))?;
+            forwards
+                .restart(config, signer.clone(), blocking)
+                .await
+                .map_err(|restart| restart.with_cause(error))?;
+            controls = Arc::new(Controls::default());
+            transport(route, CLIENT_DATA_PATH, controls.clone()).await?
+        }
+        Err(error) => return Err(error),
+    };
     timeout(Duration::from_secs(10), async {
         let channel = match receive(&mut socket, Phase::PreAuth).await? {
             ServerFrame::Open { channel } => channel,
@@ -164,7 +179,8 @@ pub(super) async fn transport(
             .map_err(|error| match error {
                 tokio_tungstenite::tungstenite::Error::Io(_)
                 | tokio_tungstenite::tungstenite::Error::ConnectionClosed
-                | tokio_tungstenite::tungstenite::Error::AlreadyClosed => unavailable("native client WebSocket Upgrade interrupted"),
+                | tokio_tungstenite::tungstenite::Error::AlreadyClosed
+                | tokio_tungstenite::tungstenite::Error::Protocol(tokio_tungstenite::tungstenite::error::ProtocolError::HandshakeIncomplete) => unavailable("native client WebSocket Upgrade interrupted"),
                 _ => auth::refused("native client WebSocket Upgrade or protocol refused; correct the explicit route before retrying"),
             })?;
         controls.framing();

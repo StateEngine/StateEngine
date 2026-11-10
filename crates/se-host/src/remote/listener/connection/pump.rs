@@ -102,6 +102,7 @@ async fn reader(
     slot: limits::DeviceSlot,
 ) -> Result<()> {
     let mut tasks = JoinSet::new();
+    let refusals = Arc::new(Semaphore::new(REMOTE_CLIENT_QUEUE_FRAMES));
     let mut pending = BTreeMap::<wire::RequestId, Pending>::new();
     let mut ping_at = Instant::now() + Duration::from_secs(15);
     let mut pong_until = None;
@@ -155,9 +156,18 @@ async fn reader(
                             let admission = match slot.limits.request(mutation) {
                                 Ok(admission) => admission,
                                 Err(error) => {
-                                    requests::enqueue(endpoint, output, device, ServerFrame::Error {
-                                        id: Some(id), error: error.into_body(),
-                                    }).await?;
+                                    let permit = refusals.clone().try_acquire_owned().map_err(|_| {
+                                        unavailable("bounded busy-response queue full; reconnect from consumed cursors")
+                                    })?;
+                                    let endpoint = endpoint.clone();
+                                    let output = output.clone();
+                                    let device = device.clone();
+                                    tasks.spawn(async move {
+                                        let _permit = permit;
+                                        requests::enqueue(&endpoint, &output, &device, ServerFrame::Error {
+                                            id: Some(id), error: error.into_body(),
+                                        }).await.map(|()| id)
+                                    });
                                     continue;
                                 }
                             };
