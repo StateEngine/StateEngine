@@ -265,11 +265,15 @@ fn dispatch_with_cold_recovery(
         let observed = se_types::UnixMicros::new(u64::try_from(now_us()?).map_err(|_| {
             SeError::invalid("read observation clock", "nonnegative Unix microseconds")
         })?)?;
+        let read_kernel = Kernel::read_only_at(observed)
+            .with_command_home(&cx.home)
+            .with_configuration(cx.config.value.clone())?
+            .with_config_origin(cx.config.origin.label());
         let result = direct::plan_snapshot(
             &mut snapshot,
             &caller.admission,
             &caller.terminal,
-            &Kernel::read_only_at(observed).with_command_home(&cx.home),
+            &read_kernel,
             op,
             &selections,
         )
@@ -391,7 +395,9 @@ fn dispatch_with_cold_recovery(
         "initialized direct store",
         "Restore access to the initialized store in this same data home before retrying with the original --key; do not recreate or replace the store.",
     )?;
-    let kernel = Kernel::new(facts()?)?.with_configuration(cx.config.value.clone())?;
+    let kernel = Kernel::new(facts()?)?
+        .with_configuration(cx.config.value.clone())?
+        .with_config_origin(cx.config.origin.label());
     let operation_name = op.meta().name;
     let result = direct::execute(
         &mut store,

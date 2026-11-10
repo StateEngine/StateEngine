@@ -245,7 +245,10 @@ fn serve(
         }
         let restored=host.restore_transcripts(&bound).await?;
         if !restored.unavailable.is_empty() {eprintln!("capture recovery: {} binding(s) unavailable; their original cursors remain protected",restored.unavailable.len());}
-        host.configure_file(config.value, configuration)?;
+        match config.origin {
+            crate::config::Origin::File(path) => host.configure_file(config.value, path)?,
+            crate::config::Origin::BuiltIn => host.configure(config.value)?,
+        }
         #[cfg(target_os = "linux")]
         host.install_native_atlas(helper_executable.to_local()?,se_host::NativeAtlasQualification::default())?;
         host.configure_auto_start(auto_start)?;

@@ -106,6 +106,9 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::ConfigValue, AnyOutput::ConfigGet(value)) => {
                 administration::config_value(&value.value, out)?
             }
+            (HumanKind::ConfigPage, AnyOutput::ConfigList(value)) => {
+                administration::config_page(&value.value, out)?
+            }
             (HumanKind::AgentPage, AnyOutput::AgentList(value)) => {
                 administration::agents(&value.value, out)?
             }

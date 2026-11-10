@@ -348,7 +348,7 @@ Human examples are abridged. `Family` is the `--json` schema family (§4).
 | doctor.bundle | `se doctor --bundle [PATH]` (default `./se-support-<utc>.zip`) | `Wrote se-support-20261030T1201Z.zip (412 KB, 31 files, no turn or message text, no secrets). Nothing was uploaded.` | `se.support-bundle/v1` |
 | config.get | `se config get KEY [--origin]` (`-p P` only for `agent.<A>.*`) | `launch.provider = codex  (config.toml)` | `se.config-value/v1` |
 | config.set | `se config set KEY VALUE` (`-p P` only for `agent.<A>.*`) | `launch.provider: claude → codex (config.toml; read back)` | `se.config-receipt/v1` |
-| config.list | `se config list [--origin]` | aligned `key = value  (origin)` | `se.config-page/v1` |
+| config.list | `se config list [--origin] [--limit N] [--cursor C]` | aligned `key = value  (origin)` | `se.config-page/v1` |
 
 **Runtime, agents, continuity**
 

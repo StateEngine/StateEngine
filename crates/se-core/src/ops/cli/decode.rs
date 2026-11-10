@@ -115,6 +115,13 @@ pub fn from_matches_with_key(
                 value: required(m, "setting_value")?,
                 idempotency_key: key()?,
             }),
+            "config.list" => AnyOp::ConfigList(ConfigList {
+                origin: flag(m, "origin"),
+                limit: required(m, "limit")?
+                    .parse()
+                    .map_err(|_| SeError::invalid("limit", "1..500"))?,
+                cursor: text(m, "cursor").map(Cursor::new).transpose()?,
+            }),
             "doctor.inspect" => AnyOp::DoctorInspect(DoctorInspect {}),
             "doctor.repair" => AnyOp::DoctorRepair(DoctorRepair {
                 check_id: required(m, "fix")?,

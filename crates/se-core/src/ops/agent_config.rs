@@ -1,4 +1,5 @@
 //! Saved agent metadata is a FULL store write, never a project config layer.
+//! The effective configuration list/pager lives in `config_listing`.
 use super::{ConfigGet, ConfigSet, inputs::Validate};
 use crate::{
     commit::Cx,

@@ -123,6 +123,7 @@ AgentShow => AgentShow, AgentStatusOutput;
 AgentList => AgentList, AgentPage;
 ConfigGet => ConfigGet, ConfigValueOutput;
 ConfigSet => ConfigSet, AgentConfigReceipt;
+ConfigList => ConfigList, ConfigPageOutput;
 DecisionShow => DecisionShow, DecisionOutput;
 DecisionList => DecisionList, DecisionPage;
 Decision => DecisionPropose, DecisionReceipt;

@@ -3,7 +3,7 @@
 use super::inputs::{Validate, bounded, name};
 use crate::config_policy::Provider;
 use schemars::JsonSchema;
-use se_types::{AgentId, DecisionId, IdempotencyKey, Result, SeError};
+use se_types::{AgentId, Cursor, DecisionId, IdempotencyKey, Result, SeError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -49,6 +49,19 @@ pub struct ConfigSet {
     pub value: String,
     pub idempotency_key: IdempotencyKey,
 }
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigList {
+    #[serde(default)]
+    pub origin: bool,
+    #[serde(default = "default_config_list_limit")]
+    pub limit: u16,
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
+}
+fn default_config_list_limit() -> u16 {
+    100
+}
 impl Validate for ConfigGet {
     fn validate(&self) -> Result<()> {
         bounded("configuration key", &self.key, 1024, false)
@@ -58,6 +71,17 @@ impl Validate for ConfigSet {
     fn validate(&self) -> Result<()> {
         bounded("configuration key", &self.key, 1024, false)?;
         bounded("configuration value", &self.value, 4096, true)
+    }
+}
+impl Validate for ConfigList {
+    fn validate(&self) -> Result<()> {
+        if !(1..=500).contains(&self.limit) {
+            return Err(SeError::invalid(
+                "limit",
+                "1..500 configuration rows per page",
+            ));
+        }
+        Ok(())
     }
 }
 

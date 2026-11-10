@@ -27,6 +27,7 @@ pub struct CallFacts {
 pub struct Kernel {
     facts: Option<CallFacts>,
     configuration: Option<crate::config_policy::ConfigFile>,
+    config_origin: Option<String>,
     read_at: Option<se_types::UnixMicros>,
     command_home: Option<std::path::PathBuf>,
 }
@@ -41,6 +42,7 @@ impl Kernel {
         Ok(Self {
             facts: Some(facts),
             configuration: None,
+            config_origin: None,
             read_at: None,
             command_home: None,
         })
@@ -49,6 +51,7 @@ impl Kernel {
         Self {
             facts: None,
             configuration: None,
+            config_origin: None,
             read_at: None,
             command_home: None,
         }
@@ -57,6 +60,7 @@ impl Kernel {
         Self {
             facts: None,
             configuration: None,
+            config_origin: None,
             read_at: Some(at),
             command_home: None,
         }
@@ -89,6 +93,12 @@ impl Kernel {
         configuration.validate()?;
         self.configuration = Some(configuration);
         Ok(self)
+    }
+    /// Adapter-resolved origin of the bound configuration. Adapters that do
+    /// not carry one leave it absent; origins are never invented.
+    pub fn with_config_origin(mut self, origin: String) -> Self {
+        self.config_origin = Some(origin);
+        self
     }
     pub(crate) fn facts(&self) -> Result<&CallFacts> {
         self.facts.as_ref().ok_or_else(|| {
@@ -440,6 +450,22 @@ impl Kernel {
                     batch,
                     then: Then::AgentConfig(then),
                 }
+            }
+            AnyOp::ConfigList(input) => {
+                let configuration = self.configuration.as_ref().ok_or_else(|| {
+                    scope::unreadable(
+                        "configuration",
+                        "adapter-resolved ConfigFile must be bound using Kernel::with_configuration",
+                    )
+                })?;
+                OpStep::Complete(
+                    crate::ops::config_listing::list(
+                        configuration,
+                        self.config_origin.as_deref(),
+                        input,
+                    )?
+                    .into(),
+                )
             }
             AnyOp::AgentCreate(input) => {
                 let configuration = self.configuration.as_ref().ok_or_else(|| {
