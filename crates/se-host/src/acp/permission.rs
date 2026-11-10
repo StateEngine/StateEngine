@@ -1,0 +1,128 @@
+//! Permission choices stay attached to their original request. An uncertain
+//! response is never retried as another approval.
+use super::failure;
+use se_types::Result;
+use serde::Serialize;
+use serde_json::{Value, json};
+use std::collections::BTreeSet;
+
+/// Answers permission RPCs; this does not establish a filesystem or network
+/// sandbox. Composition must separately qualify the provider execution policy.
+#[derive(Clone, Copy)]
+pub enum PermissionPolicy {
+    Ask,
+    Deny,
+    /// Only composition from an explicitly named full-bypass profile selects this.
+    NamedFullBypass,
+}
+#[derive(Clone, Serialize)]
+pub struct PermissionOption {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+}
+#[derive(Clone, Serialize)]
+pub struct PermissionView {
+    pub request: u64,
+    pub tool: Value,
+    pub options: Vec<PermissionOption>,
+    pub response_uncertain: bool,
+}
+pub(super) struct Permission {
+    pub id: Value,
+    pub view: PermissionView,
+}
+impl Permission {
+    pub fn parse(number: u64, id: Value, params: &Value) -> Result<Self> {
+        let tool = params
+            .get("toolCall")
+            .filter(|v| v.is_object())
+            .ok_or_else(|| failure("ACP permission", "original tool call is absent"))?
+            .clone();
+        let encoded =
+            serde_json::to_vec(params).map_err(|_| failure("ACP permission", "invalid request"))?;
+        if encoded.len() > 64 * 1024 {
+            return Err(failure(
+                "ACP permission",
+                "request exceeds 64 KiB; no truncated choice accepted",
+            ));
+        }
+        let values = params
+            .get("options")
+            .and_then(Value::as_array)
+            .filter(|v| !v.is_empty() && v.len() <= 32)
+            .ok_or_else(|| failure("ACP permission", "one to 32 original options required"))?;
+        let mut ids = BTreeSet::new();
+        let mut options = Vec::new();
+        for value in values {
+            let id = bounded(value, "optionId", 512)?;
+            let name = bounded(value, "name", 4096)?;
+            let kind = bounded(value, "kind", 64)?;
+            if !ids.insert(id.clone())
+                || !matches!(
+                    kind.as_str(),
+                    "allow_once" | "allow_always" | "reject_once" | "reject_always"
+                )
+            {
+                return Err(failure("ACP permission", "duplicate or unknown option"));
+            }
+            options.push(PermissionOption { id, name, kind });
+        }
+        Ok(Self {
+            id,
+            view: PermissionView {
+                request: number,
+                tool,
+                options,
+                response_uncertain: false,
+            },
+        })
+    }
+    pub fn automatic(&self, policy: PermissionPolicy) -> Option<Value> {
+        let kind = match policy {
+            PermissionPolicy::Ask => return None,
+            PermissionPolicy::Deny => "reject_once",
+            PermissionPolicy::NamedFullBypass => "allow_once",
+        };
+        self.view
+            .options
+            .iter()
+            .find(|v| v.kind == kind)
+            .map(|v| selected(&v.id))
+            .or_else(|| matches!(policy, PermissionPolicy::Deny).then(cancelled))
+    }
+    pub fn select(&mut self, option: Option<&str>) -> Result<Value> {
+        if self.view.response_uncertain {
+            return Err(failure(
+                "ACP permission",
+                "original response remains uncertain; do not replay",
+            ));
+        }
+        let response = match option {
+            Some(option) if self.view.options.iter().any(|v| v.id == option) => selected(option),
+            Some(_) => {
+                return Err(failure(
+                    "ACP permission",
+                    "choice is not an original offered option",
+                ));
+            }
+            None => cancelled(),
+        };
+        self.view.response_uncertain = true;
+        Ok(response)
+    }
+}
+fn bounded(value: &Value, field: &str, cap: usize) -> Result<String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty() && v.len() <= cap)
+        .map(str::to_owned)
+        .ok_or_else(|| failure("ACP permission", "bounded option fields required"))
+}
+fn selected(id: &str) -> Value {
+    json!({"outcome":{"outcome":"selected","optionId":id}})
+}
+fn cancelled() -> Value {
+    json!({"outcome":{"outcome":"cancelled"}})
+}
