@@ -83,9 +83,27 @@ if ($NoEligibleBroker) { $removedPrivilege = [StrictJobFixture]::RemoveNonFilePr
 # either public CLI mode attempts broker selection.
 $homeProbe = [IO.File]::Open((Join-Path $HomePath 'state.db'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
 $homeProbe.Dispose()
+function Invoke-OwnedCli([string]$Verb) {
+  $info = New-Object System.Diagnostics.ProcessStartInfo
+  $info.FileName = $Se
+  $info.Arguments = '--home "' + $HomePath.TrimEnd('\') + '" --json ' + $Verb
+  $info.UseShellExecute = $false
+  $info.RedirectStandardOutput = $true
+  $info.RedirectStandardError = $true
+  $process = [Diagnostics.Process]::Start($info)
+  try {
+    $output = $process.StandardOutput.ReadToEndAsync()
+    $errors = $process.StandardError.ReadToEndAsync()
+    if (!$process.WaitForExit(15000)) {
+      $process.Kill(); $process.WaitForExit()
+      throw "owned $Verb client exceeded its bound"
+    }
+    return @{exit=$process.ExitCode; stdout=$output.Result; stderr=$errors.Result}
+  } finally { $process.Dispose() }
+}
 $job = [StrictJobFixture]::Enter()
 try {
-  $witness = @{caller_in_job_before=[StrictJobFixture]::CallerInJob($job); privilege_removed=($null -ne $removedPrivilege); removed_privilege=$removedPrivilege; home_readable_after_restriction=$true; restricting_sids=[StrictJobFixture]::CallerRestricted()}
+  $witness = @{caller_in_job_before=[StrictJobFixture]::CallerInJob($job); privilege_removed=($null -ne $removedPrivilege); removed_privilege=$removedPrivilege; home_readable_after_restriction=$true; restricting_sids=[StrictJobFixture]::CallerRestricted(); foreground_cases=@()}
   foreach ($mode in @('json','plain')) {
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $Se
@@ -96,6 +114,35 @@ try {
     $child = [System.Diagnostics.Process]::Start($info)
     $stdout = $child.StandardOutput.ReadToEndAsync()
     $stderr = $child.StandardError.ReadToEndAsync()
+    if ($NoEligibleBroker) {
+      # A working foreground fallback stays alive until this independent client
+      # witnesses the same root and requests public shutdown.
+      $until = [DateTime]::UtcNow.AddSeconds(30)
+      $ready = $false
+      while (!$child.HasExited -and [DateTime]::UtcNow -lt $until) {
+        if (Test-Path (Join-Path $HomePath 'endpoint.json')) {
+          $status = Invoke-OwnedCli 'status'
+          if ($status.exit -eq 0) {
+            $view = $status.stdout | ConvertFrom-Json
+            if ($view.runtime.state -eq 'running') {
+              if ([int]$view.runtime.process.pid -ne $child.Id) { throw 'foreground fallback detached a different owner' }
+              $member = [StrictJobFixture]::InJob($child.Handle,[IntPtr]::Zero)
+              if (!$member) { throw 'no-broker arm did not exercise an in-job foreground host' }
+              $stopped = Invoke-OwnedCli 'down'
+              if ($stopped.exit -ne 0) { throw "public foreground down failed: $($stopped.stderr)" }
+              $witness.foreground_cases += @{mode=$mode; pid=$child.Id; creation_filetime=$child.StartTime.ToFileTimeUtc().ToString(); in_job=$member; down_exit=$stopped.exit}
+              $ready = $true
+              break
+            }
+          }
+        }
+        Start-Sleep -Milliseconds 30
+      }
+      if (!$ready -and !$child.HasExited) {
+        # Preserve the refusal below, but request normal owned-home cleanup first.
+        if (Test-Path (Join-Path $HomePath 'endpoint.json')) { $null = Invoke-OwnedCli 'down' }
+      }
+    }
     if (!$child.WaitForExit(30000)) {
       # This exact Process object pins the CLI child created here; no name/pattern signaling.
       $child.Kill(); $child.WaitForExit()

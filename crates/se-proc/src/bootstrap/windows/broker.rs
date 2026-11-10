@@ -14,9 +14,12 @@ fn in_job(process: HANDLE) -> ProcResult<bool> {
 }
 pub(super) fn outside_job(process: HANDLE) -> ProcResult<()> {
     if in_job(process)? {
-        return Err(input(
-            "runtime detachment",
-            "native process is still inside a Windows job",
+        return Err(error(
+            ProcErrorCode::BreakawayDenied,
+            ProcErrorDetail::Input {
+                field: "runtime detachment".into(),
+                reason: "native process is still inside a Windows job".into(),
+            },
         ));
     }
     Ok(())
