@@ -135,12 +135,39 @@ fn running(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
 fn stopped_previous(takeover: &TakeoverReport, out: &mut impl Write) -> io::Result<()> {
     writeln!(
         out,
-        "Previous session stopped: {} ({})",
+        "Previous session retired: {} ({})",
         takeover.previous_session, takeover.scope
     )?;
-    writeln!(out, "Jobs stopped: {}", takeover.jobs_stopped.len())?;
+    if takeover.previous_sessions.len() > 1 {
+        for session in &takeover.previous_sessions {
+            writeln!(out, "Retired previous session: {session}")?;
+        }
+    }
+    for service in &takeover.external_services {
+        writeln!(
+            out,
+            "Jobs in {service} were not stopped; only the engine binding was retired."
+        )?;
+    }
+    if let Some(failure) = &takeover.inventory_failure {
+        writeln!(out, "Job inventory unavailable: {failure}")?;
+        writeln!(
+            out,
+            "Individually witnessed job exits: {} (a partial count)",
+            takeover.jobs_stopped.len()
+        )?;
+    } else {
+        writeln!(out, "Jobs stopped: {}", takeover.jobs_stopped.len())?;
+    }
     for job in &takeover.jobs_stopped {
         writeln!(out, "  PID {}: {}", job.pid, job.command)?;
+    }
+    for job in &takeover.jobs_unproved {
+        writeln!(
+            out,
+            "  Individual exit unproved, PID {}: {}",
+            job.pid, job.command
+        )?;
     }
     for job in &takeover.jobs_remaining {
         writeln!(

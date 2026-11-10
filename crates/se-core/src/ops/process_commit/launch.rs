@@ -89,7 +89,6 @@ pub fn reserve<R: Snapshot>(
             "stop or reconcile the target's owned lifecycle before launching again",
         ));
     }
-    super::super::process_plan::require_managed_control(&current)?;
     for old in current.sessions {
         let session = match &old.current.body {
             EventBody::SessionPrepared { session, .. } => session,

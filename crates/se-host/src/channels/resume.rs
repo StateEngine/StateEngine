@@ -101,6 +101,7 @@ impl Channels {
                     task: None,
                     detach: true,
                     override_live: false,
+                    force_selection: None,
                     idempotency_key: key,
                     owner_agent: None,
                     owner_provider: None,

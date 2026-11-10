@@ -15,6 +15,7 @@ mod resume;
 mod retirement;
 mod status;
 mod stop;
+mod takeover;
 use super::*;
 use crate::client::lease::Deadline;
 use custody::Journal;
@@ -108,12 +109,15 @@ impl Service {
             return Ok(());
         };
         let path = self.path.clone();
+        let custody_deadline = deadline.clone();
         self.digest = Some(
             coordinator
                 .store
                 .pool
                 .run_owned(deadline, move || {
-                    pending.journal.save(&path, pending.expected)
+                    pending
+                        .journal
+                        .save(&path, pending.expected, &custody_deadline)
                 })
                 .await?,
         );
@@ -157,8 +161,8 @@ impl Service {
 impl LaunchCoordinator {
     /// Direct down/uninstall must recover auxiliary custody even if no client
     /// process remains in the ordinary session inventory.
-    pub fn secode_recovery_required(home: &std::path::Path) -> Result<bool> {
-        Ok(recovery::inventory(home)?
+    pub fn secode_recovery_required(home: &std::path::Path, deadline: &Deadline) -> Result<bool> {
+        Ok(recovery::inventory(home, deadline)?
             .iter()
             .any(|(_, journal, _)| !journal.retired))
     }
@@ -184,7 +188,7 @@ impl LaunchCoordinator {
     }
     pub(in crate::process) async fn preflight_secode(
         &self,
-        plan: &se_core::ops::agent_launch::LaunchPlan,
+        plan: &mut se_core::ops::agent_launch::LaunchPlan,
         deadline: &Deadline,
     ) -> Result<()> {
         use crate::Harness;
@@ -265,6 +269,10 @@ impl LaunchCoordinator {
                 .server
                 .clone();
             crate::harness::secode_process::sandbox::require_capability(&server, deadline).await?;
+        }
+        if plan.input.override_live && !plan.replayed {
+            plan.start_new_conversation("Forced relaunch starts a new conversation and replaces this agent's private service; the previous captured history is retained.".into());
+            return Ok(());
         }
         if !plan.replayed
             && matches!(plan.conversation, se_types::Read::Present { .. })

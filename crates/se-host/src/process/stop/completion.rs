@@ -47,7 +47,11 @@ impl LaunchCoordinator {
         if work.meta.provider == se_store::Provider::SeCode {
             self.settle_secode(work, &witness, deadline).await?;
         }
-        if work.native_already_reconciled && !work.session_retired && !work.secode_service_lost {
+        if work.native_already_reconciled
+            && !work.session_retired
+            && !work.secode_service_lost
+            && !work.force_relaunch
+        {
             self.flush_capture(work, deadline).await.map_err(|failure| {
                 let repair = se_core::ops::AgentCommand::stop_in_home(
                     &work.meta.agent.id,

@@ -88,7 +88,7 @@ fn retry_command(
         }
     }
     if retry.override_live {
-        argv.push("--override-live".into());
+        argv.push("--force".into());
     }
     AgentCommand::from_argv(argv)
 }
