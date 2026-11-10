@@ -226,9 +226,10 @@ fn catalogue_cost(count: usize, bytes: usize) -> Check {
     println!("tools/list context cost: {count} tools, {bytes} JSON-RPC bytes");
     // A review tripwire, not a transport limit or an exact snapshot. Growth past
     // this headroom requires an explicit decision about every session's context.
-    assert!(
+    require(
         bytes <= 65_536,
-        "tools/list context cost grew to {bytes} bytes for {count} tools; review catalogue descriptions and schemas before raising the 64 KiB tripwire"
-    );
-    Ok(())
+        format!(
+            "tools/list context cost grew to {bytes} bytes for {count} tools; review catalogue descriptions and schemas before raising the 64 KiB tripwire"
+        ),
+    )
 }
