@@ -42,22 +42,23 @@ pub(super) fn flushed(
             ..
         } = record
         {
-            let upper = observation
+            let estimate = observation
                 .as_ref()
-                .and_then(|v| v.age_upper_bound_us)
+                .and_then(|v| v.age_estimate_us)
                 .zip(after_release)
                 .map(|(age, elapsed)| {
-                    age.checked_add(elapsed).ok_or_else(|| {
-                        io::Error::other("terminal observation upper bound overflow")
-                    })
+                    age.checked_add(elapsed)
+                        .ok_or_else(|| io::Error::other("terminal observation estimate overflow"))
                 })
                 .transpose()?;
             line(
                 &serde_json::json!({
                     "schema":"stateengine.client-flush/v1","boundary":"provisional_flushed",
                     "target":target,"item_id":item.item_id,
-                    "producer_to_flush_upper_bound_us":upper,
-                    "clock_bound_available":upper.is_some(),
+                    "producer_to_flush_estimate_us":estimate,
+                    "clock_estimate_available":estimate.is_some(),
+                    "clock_model":"unsynchronized_monotonic_estimate",
+                    "qualification":"unqualified",
                 }),
                 out,
             )?;

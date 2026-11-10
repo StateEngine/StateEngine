@@ -221,7 +221,7 @@ impl State {
                             .then(|| {
                                 Ok::<_, SeError>(RemoteObservationTime {
                                     at_us: service.live.clock_us(observation.observed_at)?,
-                                    age_upper_bound_us: None,
+                                    age_estimate_us: None,
                                 })
                             })
                             .transpose()?,

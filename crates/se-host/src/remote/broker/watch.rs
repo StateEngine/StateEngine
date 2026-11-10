@@ -57,10 +57,11 @@ impl Watches {
         device: &MachineSession,
         source: Option<&VerifiedSourceSession>,
         client: Arc<dyn RemoteClient>,
-        request: RemoteWatch,
+        selection: (RemoteWatch, Option<[u8; 16]>),
         wait_ms: u32,
         deadline: &crate::client::lease::Deadline,
     ) -> Result<RemoteWatchBatch> {
+        let (request, reader_id) = selection;
         let key = serde_json::to_string(&(
             device.host,
             &device.grant,
@@ -68,6 +69,7 @@ impl Watches {
             &request.targets,
             &request.visible,
             request.measure,
+            reader_id,
         ))
         .map_err(|_| poisoned())?;
         self.read_with(
@@ -86,13 +88,14 @@ impl Watches {
         &self,
         admission: &se_store::Admission,
         service: service::Service,
-        request: RemoteWatch,
+        selection: (RemoteWatch, Option<[u8; 16]>),
         wait_ms: u32,
         deadline: &crate::client::lease::Deadline,
     ) -> Result<RemoteWatchBatch> {
+        let (request, reader_id) = selection;
         let key = serde_json::to_string(&serde_json::json!({
             "native_owner":admission.actor,"generation":admission.generation,
-            "targets":request.targets,"visible":request.visible,"measure":request.measure,
+            "targets":request.targets,"visible":request.visible,"measure":request.measure,"reader":reader_id,
         }))
         .map_err(|_| poisoned())?;
         let admission = admission.clone();

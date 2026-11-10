@@ -68,8 +68,7 @@ impl Control {
     pub(crate) async fn local_watch(
         router: &crate::HostedRouter,
         admission: se_store::Admission,
-        input: RemoteWatch,
-        wait_ms: u32,
+        input: se_core::ops::ClientWatchCall,
         deadline: &crate::client::lease::Deadline,
     ) -> Result<RemoteWatchBatch> {
         let owner = auth::VerifiedLocalOwner::from_machine(&admission)?;
@@ -85,7 +84,13 @@ impl Control {
         );
         let result = control
             .local_watches
-            .read_local(&admission, service, input, wait_ms, deadline)
+            .read_local(
+                &admission,
+                service,
+                (input.request, input.reader_id),
+                input.wait_ms,
+                deadline,
+            )
             .await?;
         router.check_open()?;
         Ok(result)

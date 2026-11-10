@@ -25,14 +25,9 @@ pub(super) async fn watch(
     se_core::admission::authorize(AnyOp::ClientWatch(input.clone()).meta(), &call.admission)?;
     #[cfg(feature = "remote")]
     {
-        let output = crate::remote::control::Control::local_watch(
-            router,
-            call.admission,
-            input.request,
-            input.wait_ms,
-            deadline,
-        )
-        .await?;
+        let output =
+            crate::remote::control::Control::local_watch(router, call.admission, input, deadline)
+                .await?;
         Ok(ExecutedCall {
             host_phases: Default::default(),
             output: output.body.into(),

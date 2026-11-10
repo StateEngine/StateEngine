@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct ClientWatchCall {
     pub request: RemoteWatch,
+    /// Non-authoritative source-side reader partition; absent keeps legacy reuse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reader_id: Option<[u8; 16]>,
     #[serde(default)]
     pub wait_ms: u32,
     #[serde(skip)]

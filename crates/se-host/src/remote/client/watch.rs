@@ -28,6 +28,13 @@ impl Watch {
             terminal: None,
         }
     }
+    pub async fn start(&mut self) -> Result<()> {
+        match self.attach().await {
+            Ok(()) => Ok(()),
+            Err(error) if retryable(&error) => self.defer_retry(error.body.retry()),
+            Err(error) => Err(error),
+        }
+    }
     pub async fn attach(&mut self) -> Result<()> {
         self.call.check_current()?;
         let invocation = self
@@ -69,7 +76,7 @@ impl Watch {
             reason:"connection interrupted; reconnecting from consumed scoped cursors; provisional continuity requires host confirmation".into(),reset_required:false}).collect(),
             cursors:self.request.cursors.clone(),complete:false,omitted_records:Omission::Unknown {reason:OmissionReason::SourceIncomplete},reset_required:false}}
     }
-    fn defer_retry(&mut self) -> Result<()> {
+    fn defer_retry(&mut self, hint: &se_types::Retry) -> Result<()> {
         let base = match self.retry_step {
             0 => 250,
             1 => 1000,
@@ -79,7 +86,15 @@ impl Watch {
         self.retry_step = self.retry_step.saturating_add(1);
         let jitter = u64::from(u16::from_le_bytes(session::entropy::<2>()?)) % 41 + 80;
         let delay = Duration::from_millis((base * jitter / 100).min(5000));
-        self.retry_at = tokio::time::Instant::now() + delay;
+        let delay = match hint {
+            se_types::Retry::After(minimum) => delay.max(*minimum),
+            _ => delay,
+        };
+        self.retry_at = tokio::time::Instant::now()
+            .checked_add(delay)
+            .ok_or_else(|| {
+                SeError::invalid("watch retry delay", "a representable retry interval")
+            })?;
         Ok(())
     }
     async fn reattach(&mut self, until: tokio::time::Instant) -> Result<bool> {
@@ -93,13 +108,13 @@ impl Watch {
             self.call.check_current()?;
             match tokio::time::timeout_at(until, self.attach()).await {
                 Ok(Ok(())) => return Ok(true),
-                Ok(Err(error)) if error.code() != se_types::Code::ListenerUnavailable => {
+                Ok(Err(error)) if !retryable(&error) => {
                     self.terminal = Some(error.body.clone());
                     return Err(error);
                 }
-                Ok(Err(_)) => self.defer_retry()?,
+                Ok(Err(error)) => self.defer_retry(error.body.retry())?,
                 Err(_) => {
-                    self.defer_retry()?;
+                    self.defer_retry(&se_types::Retry::Never)?;
                     return Ok(false);
                 }
             }
@@ -182,7 +197,8 @@ impl Watch {
             }
             Some(Err(error)) => {
                 self.attached = None;
-                if error.code() == se_types::Code::ListenerUnavailable {
+                if retryable(&error) {
+                    self.defer_retry(error.body.retry())?;
                     Ok(self.gap())
                 } else {
                     self.terminal = Some(error.body.clone());
@@ -200,4 +216,20 @@ impl RemoteWatchStream for Watch {
     fn next(&mut self, wait: Duration) -> RemoteFuture<'_, RemoteWatchBatch> {
         Box::pin(self.poll(wait))
     }
+}
+
+fn retryable(error: &SeError) -> bool {
+    matches!(
+        error.body.retry(),
+        se_types::Retry::After(_) | se_types::Retry::WhenRuntimeReady
+    ) || matches!(
+        error.code(),
+        se_types::Code::ListenerUnavailable
+            | se_types::Code::IpcUnavailable
+            | se_types::Code::DeadlineExceeded
+            | se_types::Code::StoreBusy
+            | se_types::Code::RuntimeHandoverInProgress
+            | se_types::Code::RuntimeNotRunning
+            | se_types::Code::RuntimeStartFailed
+    )
 }

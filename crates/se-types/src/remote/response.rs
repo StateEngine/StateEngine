@@ -117,8 +117,9 @@ pub struct RemoteObservationClock {
 pub struct RemoteObservationTime {
     pub at_us: i64,
     /// Filled at the source broker's release, including stream queue delay.
-    /// The native terminal adds broker-release-to-flush time to this upper bound.
-    pub age_upper_bound_us: Option<u64>,
+    /// The native terminal adds broker-release-to-flush time to this estimate.
+    /// Clock drift and independent suspend are unbounded; None means unavailable.
+    pub age_estimate_us: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]

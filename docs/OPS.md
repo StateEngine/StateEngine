@@ -37,8 +37,9 @@ grant. Native agents retain their ordinary admitted local read tools.
 Add `--measure --json` to either watch to retain optional observation clocks and
 per-page stdout-flush records on stderr. A monotonic request/host bracket includes
 decode and buffered-stream delay without assuming synchronized machine clocks.
-The terminal reports a conservative producer-to-flush upper bound; it does not
-measure UI paint. Pending send records are also flushed before host submission;
+The terminal reports a producer-to-flush estimate, not a guaranteed upper bound:
+clock-rate drift and independent machine suspend are unbounded. An inconsistent
+clock interval is unavailable rather than zero. These records do not measure UI paint. Pending send records are also flushed before host submission;
 they imply neither durable acceptance nor recipient delivery. Performance remains
 unqualified until the matched cohorts required by design 47 and 80 are complete.
 

@@ -113,6 +113,7 @@ pub(super) fn decode(
         "remote.watch" | "client.watch" => {
             let input = RemoteWatchCall {
                 host,
+                reader_id: None,
                 request: RemoteWatch {
                     measure: flag(m, "measure"),
                     targets: many(m, "target")
@@ -141,6 +142,7 @@ pub(super) fn decode(
             if name == "client.watch" {
                 AnyOp::ClientWatch(ClientWatchCall {
                     request: input.request,
+                    reader_id: input.reader_id,
                     wait_ms: input.wait_ms,
                     follow: input.follow,
                 })

@@ -232,6 +232,7 @@ pub(crate) fn run(
             (
                 se_core::ops::ClientWatchCall {
                     request: input.request,
+                    reader_id: input.reader_id,
                     wait_ms: input.wait_ms,
                     follow: input.follow,
                 },
@@ -263,6 +264,9 @@ fn watch(
     dispatch: &mut Dispatch<'_>,
 ) -> io::Result<u8> {
     let (mut input, host) = selection;
+    // Each terminal keeps its own bounded subscription, including when another
+    // terminal has the same targets and cursors and is waiting on a long poll.
+    input.reader_id = Some(*uuid::Uuid::new_v4().as_bytes());
     let mut diagnostic = |_: &str| {
         Err(io::Error::other(
             "client watch requires typed status/errors",
@@ -275,6 +279,7 @@ fn watch(
             Some(host) => AnyOp::RemoteWatch(RemoteWatchCall {
                 host: host.clone(),
                 request: input.request.clone(),
+                reader_id: input.reader_id,
                 wait_ms: input.wait_ms,
                 follow: input.follow,
             }),

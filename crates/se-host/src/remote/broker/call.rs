@@ -105,7 +105,7 @@ impl RemoteBroker {
                         &b.config.device,
                         source.as_ref(),
                         client,
-                        request,
+                        (request, input.reader_id),
                         input.wait_ms,
                         deadline,
                     )

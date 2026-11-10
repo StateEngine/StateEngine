@@ -1,4 +1,4 @@
-//! A monotonic clock bracket includes buffered pages without synchronized clocks.
+//! An unsynchronized monotonic estimate includes buffered pages, not clock drift or suspend.
 use super::*;
 
 pub(super) struct Bracket {
@@ -51,15 +51,12 @@ pub(super) fn release(
             let observation = observation.as_mut().ok_or_else(|| {
                 refused("the peer omitted this item's observation time; timing is unqualified")
             })?;
-            // Request start is no later than the host clock sample. Translating
-            // a producer stamp using that lower offset estimates an origin no
-            // later than reality, even if the page waited in a stream queue.
+            // This assumes comparable clock rates over this subscription. It
+            // is an estimate only: drift and independent suspend are unbounded.
             let since_sample = i128::from(observation.at_us) - i128::from(bracket.host_us);
-            // Two microseconds cover the two rounded host stamps. This is an
-            // upper bound, so quantization must never make it optimistic.
+            // Round away the two host stamps; this is not a drift allowance.
             let age = elapsed - since_sample + 2;
-            observation.age_upper_bound_us = Some(u64::try_from(age).map_err(|_| refused(
-                "the peer's monotonic observation interval is inconsistent; timing is unqualified"))?);
+            observation.age_estimate_us = u64::try_from(age).ok();
         }
     }
     Ok(())

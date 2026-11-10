@@ -117,16 +117,16 @@ pub(crate) fn execute(cx: &Bootstrap, input: Input) -> Result<se_host::Operation
             cancelled: Arc::clone(&bound.native_bound().cancelled),
         },
     )?;
-    if bootstrap {
-        se_proc::native_ipc::publish_remote_image_cache(
+    if bootstrap
+        && let Err(error) = se_proc::native_ipc::publish_remote_image_cache(
             &cx.home,
             endpoint.image_sha256,
             &bound.native_bound(),
         )
-        .map_err(|error| {
-            scope::unreadable("remote executable cache publication", &error.to_string())
-                .with_cause(error)
-        })?;
+    {
+        eprintln!(
+            "Remote setup completed; the optional executable proof cache could not be saved: {error}"
+        );
     }
     Ok(output)
 }
