@@ -13,9 +13,13 @@ pub struct PairingTicket {
     pub revision: u64,
     pub expires_at_us: i64,
     pub(crate) link: Secret,
+    message: zeroize::Zeroizing<String>,
     pub receipt: Option<se_store::CommitReceipt>,
 }
 impl PairingTicket {
+    pub fn expose_message(&self) -> &str {
+        &self.message
+    }
     pub fn expose_link(&self) -> &[u8] {
         self.link.expose()
     }
@@ -285,6 +289,7 @@ impl Channels {
             revision,
             expires_at_us,
             link,
+            message: zeroize::Zeroizing::new(format!("/start {challenge}")),
             receipt: None,
         })
     }

@@ -27,10 +27,13 @@ impl crate::HostedRuntime {
         );
         let service = Arc::new(Channels::new(
             self.execution.clone(),
-            vec![match &self.channel_transport {
-                Some(transport) => transport.clone(),
-                None => Arc::new(Telegram::new().map_err(channel_error)?),
-            }],
+            match &self.channel_transport {
+                Some(transport) => vec![transport.clone()],
+                None => vec![
+                    Arc::new(Telegram::new().map_err(channel_error)?),
+                    Arc::new(Discord::new().map_err(channel_error)?),
+                ],
+            },
             self.configuration.clone(),
             self.owner.clone(),
             credentials,
@@ -59,12 +62,7 @@ impl Channels {
             self.flush_output(id.clone(), &bound).await,
         ] {
             if let Err(error) = result {
-                self.set_health(
-                    id.clone(),
-                    ConnectionHealth::Unavailable {
-                        code: error.code().as_str().into(),
-                    },
-                )?;
+                self.unavailable(id.clone(), error.code().as_str())?;
             }
         }
         Ok(())
@@ -231,15 +229,10 @@ impl Channels {
                                 .max(backoff),
                             _ => backoff,
                         };
-                        if !matches!(retry_at, Some(ConnectionHealth::Retrying { .. })) {
-                            let error = result
-                                .err()
-                                .map(|e| e.code().as_str())
-                                .unwrap_or("receiver_unavailable");
-                            service.set_health(
-                                id.clone(),
-                                ConnectionHealth::Unavailable { code: error.into() },
-                            )?;
+                        if !matches!(retry_at, Some(ConnectionHealth::Retrying { .. }))
+                            && let Err(error) = result
+                        {
+                            service.unavailable(id.clone(), error.code().as_str())?;
                         }
                         let jitter = se_proc::random_secret()
                             .map_err(|_| channel_error(ChannelError::ReceiverNotRunning))?;

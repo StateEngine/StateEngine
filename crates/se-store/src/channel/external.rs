@@ -68,6 +68,7 @@ impl<const MAX: usize> rusqlite::types::FromSql for Opaque<MAX> {
 pub enum Connector {
     #[default]
     Telegram,
+    Discord,
 }
 impl Connector {
     pub fn is_telegram(&self) -> bool {
@@ -76,6 +77,7 @@ impl Connector {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Telegram => "telegram",
+            Self::Discord => "discord",
         }
     }
 }

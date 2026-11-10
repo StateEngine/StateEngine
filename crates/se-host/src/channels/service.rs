@@ -122,6 +122,9 @@ impl Channels {
         gates.insert(id.clone(), Arc::downgrade(&gate));
         Ok(gate)
     }
+    pub(super) fn unavailable(&self, id: ChannelId, code: &str) -> Result<()> {
+        self.set_health(id, ConnectionHealth::Unavailable { code: code.into() })
+    }
     pub(super) fn set_health(&self, id: ChannelId, health: ConnectionHealth) -> Result<()> {
         let at = now()?;
         let mut observations = self
