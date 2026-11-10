@@ -59,7 +59,11 @@ def run(job):
             return code
         cache = Path("/home/ci/xwin")
         cache.mkdir()
-        (cache / "xwin").symlink_to("/opt/windows-sdk", target_is_directory=True)
+        sdk = cache / "xwin"
+        sdk.mkdir()
+        shutil.copyfile("/opt/windows-sdk/DONE", sdk / "DONE")
+        for part in ("crt", "sdk"):
+            (sdk / part).symlink_to("/opt/windows-sdk/" + part, target_is_directory=True)
         os.environ["XWIN_CACHE_DIR"] = str(cache)
         return call(["cargo", "xwin", "clippy", "--target", "x86_64-pc-windows-msvc",
                      "--workspace", "--all-targets", "--all-features", "--locked", "--", "-D", "warnings"], 720)
