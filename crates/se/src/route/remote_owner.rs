@@ -75,6 +75,7 @@ pub(crate) fn execute(cx: &Bootstrap, input: Input) -> Result<se_host::Operation
             "an independently observed native human Owner",
         )
     })?;
+    let bootstrap = input.is_bootstrap();
     let input = input.resolve();
     input.validate()?;
     drop(reader);
@@ -97,6 +98,14 @@ pub(crate) fn execute(cx: &Bootstrap, input: Input) -> Result<se_host::Operation
     .map_err(|error| {
         scope::unreadable("protected executable cache", &error.to_string()).with_cause(error)
     })?;
+    se_proc::native_ipc::restore_remote_image_cache(
+        &cx.home,
+        endpoint.image_sha256,
+        &bound.native_bound(),
+    )
+    .map_err(|error| {
+        scope::unreadable("protected remote executable cache", &error.to_string()).with_cause(error)
+    })?;
     let output = crate::ipc::forward_owner(
         &endpoint,
         execute::credential(cx, &files)?,
@@ -108,5 +117,16 @@ pub(crate) fn execute(cx: &Bootstrap, input: Input) -> Result<se_host::Operation
             cancelled: Arc::clone(&bound.native_bound().cancelled),
         },
     )?;
+    if bootstrap {
+        se_proc::native_ipc::publish_remote_image_cache(
+            &cx.home,
+            endpoint.image_sha256,
+            &bound.native_bound(),
+        )
+        .map_err(|error| {
+            scope::unreadable("remote executable cache publication", &error.to_string())
+                .with_cause(error)
+        })?;
+    }
     Ok(output)
 }

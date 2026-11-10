@@ -1,5 +1,5 @@
-//! One protected host-published digest hint extends the existing file-identity
-//! cache across fresh CLI processes. It grants no process or caller authority.
+//! Protected digest hints extend native file-identity proofs across fresh CLIs.
+//! A remote bootstrap copy has its own bounded hint, never replacing the host hint.
 use super::image::{ImageKey, key, remember};
 use super::*;
 use crate::{NativeStateFiles, OwnedFile};
@@ -9,6 +9,7 @@ use std::{
     io::{Read, Write},
 };
 const NAME: &str = "ipc-image-cache.json";
+const REMOTE_NAME: &str = "ipc-remote-image-cache.json";
 const MAX_BYTES: usize = 4096;
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,9 +24,9 @@ pub enum ImageCacheRead {
     Current,
     Stale,
 }
-fn read(files: &NativeStateFiles) -> IpcNativeResult<Option<Vec<u8>>> {
+fn read(files: &NativeStateFiles, name: &str) -> IpcNativeResult<Option<Vec<u8>>> {
     let Some(file) = files
-        .readback(&files.root().join(NAME))
+        .readback(&files.root().join(name))
         .map_err(|e| error("read protected executable cache", std::io::Error::other(e)))?
     else {
         return Ok(None);
@@ -49,6 +50,25 @@ pub fn publish_image_cache(
     expected: Sha256,
     bound: &IpcIoBound,
 ) -> IpcNativeResult<()> {
+    publish(root, NAME, expected, bound)
+}
+/// After successful native Owner bootstrap, retain the actual uploaded CLI's
+/// independently hashed file identity. This does not replace the host hint or
+/// cache PID, birth, generation, owner admission, credentials or channel authority.
+pub fn publish_remote_image_cache(
+    root: &Path,
+    expected: Sha256,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<ImageCacheRead> {
+    // A compatible incumbent can run a different image. Its endpoint hint
+    // cannot qualify this CLI, so retain the normal cold proof in that case.
+    if observe_ipc_self_bounded(bound)?.image_sha256() != expected {
+        return Ok(ImageCacheRead::Stale);
+    }
+    publish(root, REMOTE_NAME, expected, bound)?;
+    Ok(ImageCacheRead::Current)
+}
+fn publish(root: &Path, name: &str, expected: Sha256, bound: &IpcIoBound) -> IpcNativeResult<()> {
     bound
         .remaining()
         .map_err(|e| error("publish executable cache deadline", e))?;
@@ -87,11 +107,11 @@ pub fn publish_image_cache(
         digest,
     })
     .map_err(|e| error("encode executable cache", std::io::Error::other(e)))?;
-    let prior = read(&files)?;
+    let prior = read(&files, name)?;
     bound
         .remaining()
         .map_err(|e| error("publish executable cache deadline", e))?;
-    let target = root.join(NAME);
+    let target = root.join(name);
     match prior {
         Some(prior) => {
             let file = OwnedFile::open(&target)
@@ -145,12 +165,29 @@ pub fn restore_image_cache(
     expected: Sha256,
     bound: &IpcIoBound,
 ) -> IpcNativeResult<ImageCacheRead> {
+    restore(root, NAME, expected, bound)
+}
+/// Restore only the separate uploaded-image hint. A changed native file key
+/// misses exactly as for the host hint; callers must still authenticate IPC.
+pub fn restore_remote_image_cache(
+    root: &Path,
+    expected: Sha256,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<ImageCacheRead> {
+    restore(root, REMOTE_NAME, expected, bound)
+}
+fn restore(
+    root: &Path,
+    name: &str,
+    expected: Sha256,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<ImageCacheRead> {
     bound
         .remaining()
         .map_err(|e| error("restore executable cache deadline", e))?;
     let files = NativeStateFiles::open(root)
         .map_err(|e| error("pin executable cache home", std::io::Error::other(e)))?;
-    let Some(bytes) = read(&files)? else {
+    let Some(bytes) = read(&files, name)? else {
         return Ok(ImageCacheRead::Absent);
     };
     let entry: Entry = serde_json::from_slice(&bytes).map_err(|e| {
