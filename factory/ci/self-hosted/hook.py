@@ -86,7 +86,7 @@ def write(path, value):
 
 def prepare(request, config, report, context):
     capacity(2*1024**3)
-    job = request["args"].get("jobContainer")
+    job = request["args"].get("container")
     if not job or job.get("image") != "stateengine-ci-approved":
         raise RuntimeError("the approved job container is required")
     if request["args"].get("services") or job.get("userMountVolumes") or job.get("createOptions"):
@@ -115,7 +115,7 @@ def prepare(request, config, report, context):
 
 
 def directory_at(request, config):
-    identity = request.get("state", {}).get("job", "")
+    identity = (request.get("state") or {}).get("job", "")
     if not re.fullmatch(r"[a-f0-9]{32}", identity):
         raise RuntimeError("hook job identity is absent")
     directory = Path(config["state"]) / identity
@@ -214,14 +214,13 @@ def main():
     config, report = config_at()
     if request["command"] == "prepare_job":
         return {"response": prepare(request, config, report, request["context"]), "exit_code": 0}
-    directory = directory_at(request, config)
-    if request["command"] == "run_script_step":
-        return script_step(request, config, report, directory)
     if request["command"] == "cleanup_job":
         # Native custody is reconciled under the existing CI mutex.
         with venue(config):
             Journal().reconcile()
         return {"exit_code": 0}
+    if request["command"] == "run_script_step":
+        return script_step(request, config, report, directory_at(request, config))
     raise RuntimeError("container actions are unsupported; use the fixed operations")
 
 
