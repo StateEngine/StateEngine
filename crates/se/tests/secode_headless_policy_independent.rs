@@ -19,7 +19,7 @@ fn require_link_free(path: &std::path::Path) -> Check {
 }
 
 /// Protects: saved workspace authority is not widened, unsupported providers
-/// refuse before input, and an original pre-exec reservation can close on down.
+/// refuse before input, and missing workspaces refuse before auxiliary startup.
 #[test]
 fn saved_policy_and_refused_preparation_preserve_native_custody() -> Check {
     let root = directory::private_directory()?;

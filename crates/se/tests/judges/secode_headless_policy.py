@@ -7,10 +7,12 @@ that refusal proves preparation only, never a successful launch or containment.
 """
 import argparse
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import subprocess
 import sys
+import time
 import uuid
 
 from secode_external import capabilities, document
@@ -67,9 +69,41 @@ def probe_calls(directory):
     return path.read_text().splitlines() if path.exists() else []
 
 
-def launch(f):
-    return f.call('--key', str(uuid.uuid4()), '--project', f.project,
-                  'launch', f.agent, '--task', 'Never execute this fixture input.', '--detach')
+def launch(f, directory):
+    # A trivial native initializer can otherwise exit before the host observes
+    # its executable. Synchronize on that real checkpoint, not a timing sleep.
+    (directory / 'bootstrap-gate').touch()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(f.call, '--key', str(uuid.uuid4()), '--project', f.project,
+                              'launch', f.agent, '--task', 'Never execute this fixture input.',
+                              '--detach')
+        deadline = time.monotonic() + 15
+        try:
+            while not pending.done():
+                pid_path = directory / 'bootstrap-pid'
+                if pid_path.exists():
+                    pid = int(pid_path.read_text())
+                    for path in (f.home / 'secode').glob('*.json'):
+                        bootstrap = document(path).get('bootstrap')
+                        checkpoint = bootstrap['checkpoint'] if bootstrap else None
+                        if checkpoint and checkpoint['kind'] == 'process':
+                            root = checkpoint['value']['root']
+                            assert root['pid'] == pid, root
+                            process = Path('/proc') / str(pid)
+                            fields = (process / 'stat').read_text().rsplit(') ', 1)[1].split()
+                            assert root['start']['Linux']['start_ticks'] == fields[19], root
+                            image = directory / 'secode-server'
+                            assert (process / 'exe').resolve(strict=True) == image.resolve(), root
+                            assert bytes(root['image']['units']) == bytes(image.resolve()), root
+                            (directory / 'bootstrap-release').touch()
+                            return pending.result()
+                assert time.monotonic() < deadline, 'initializer executable observation timed out'
+                time.sleep(.01)
+            return pending.result()
+        finally:
+            # A failed observation must still let the owned finite probe exit;
+            # the assertion remains failed and public down still grades cleanup.
+            (directory / 'bootstrap-release').touch()
 
 
 def no_input(f, directory):
@@ -120,7 +154,6 @@ def case(se, root, external, name):
     sandbox = 'read-only' if name == 'read-only' else 'workspace-write'
     f = Fixture(se, root / name, provider, sandbox, 'never',
                 setup_repo=lambda repo, env: repository(repo, env, name == 'linked-worktree'))
-    original_reservation = None
     try:
         if name in ('missing-capability', 'wrong-capability-schema'):
             # This is preflight: neither public history nor any lifecycle may change.
@@ -147,28 +180,28 @@ def case(se, root, external, name):
             report['realization'] = 'started'
         elif name == 'wrong-readback-schema':
             report['schema'] = 'unsupported-fixture'
-        elif name == 'refused-auxiliary-preparation':
-            # A real directory disappearing between preflight and native
-            # preparation leaves the original reservation without a child.
+        elif name == 'missing-workspace':
+            # A real directory disappearing after preflight must refuse at
+            # client scope preparation, before auxiliary startup or input.
             (directory / 'hide-cwd').write_text(str(f.repo))
         raw = '{unreadable' if name == 'unreadable-readback' else json.dumps(report)
         (directory / 'sandbox-readback.json').write_text(raw)
         if name == 'failed-readback':
             (directory / 'sandbox-exit').write_text('82')
         f.snapshot()
-        result = launch(f)
-        if name == 'refused-auxiliary-preparation':
+        result = launch(f, directory)
+        if name == 'missing-workspace':
             held = f.repo.with_suffix('.held')
             assert held.is_dir() and not f.repo.exists(), (result.stdout, result.stderr)
             held.rename(f.repo)
             assert result.returncode != 0, (result.stdout, result.stderr)
             no_input(f, directory)
-            journals = list((f.home / 'secode').glob('*.json'))
-            assert len(journals) == 1, journals
-            journal = document(journals[0])
-            checkpoint = journal['bootstrap']['checkpoint']
-            assert checkpoint['kind'] == 'reservation', checkpoint
-            original_reservation = journal['bootstrap']
+            reason = result.stdout + result.stderr
+            assert b'source-unreadable' in reason, reason
+            assert b'native scope preparation' in reason, reason
+            assert b'recorded project root is missing' in reason, reason
+            assert not list((f.home / 'secode').glob('*.json')), \
+                'missing workspace reached auxiliary startup'
             assert not any(row.startswith(('init-profile ', 'serve-service ', 'run '))
                            for row in probe_calls(directory)), probe_calls(directory)
             return  # finally still requires public witnessed down.
@@ -205,19 +238,6 @@ def case(se, root, external, name):
         if held.is_dir() and not f.repo.exists():
             held.rename(f.repo)
         f.close()
-        if original_reservation is not None:
-            journal = document(journals[0])
-            terminal = journal['bootstrap']
-            assert journal['retired'] is True, journal
-            assert terminal['lifecycle'] == original_reservation['lifecycle'], terminal
-            assert terminal['checkpoint']['kind'] == 'exit', terminal
-            exit_value = terminal['checkpoint']['value']
-            assert exit_value['source'] == original_reservation['checkpoint'], exit_value
-            witness = exit_value['witness']
-            assert witness['root'] == 'NoChildCreated', witness
-            remaining = witness['scope_exit']['remaining']
-            assert remaining['population'] == 'Empty' and remaining['extent'] == 'Complete', witness
-            assert remaining['known_live'] == [] and witness['scope_exit']['exit_basis'], witness
 
 
 def main():
@@ -253,7 +273,7 @@ CASES = ['workspace-write', 'missing-capability', 'wrong-capability-schema',
          'mismatched-readback', 'absent-readback', 'null-readback',
          'unreadable-readback', 'failed-readback', 'read-only', 'linked-worktree',
          'widened-readback', 'duplicate-readback', 'network-readback',
-         'started-readback', 'wrong-readback-schema', 'refused-auxiliary-preparation']
+         'started-readback', 'wrong-readback-schema', 'missing-workspace']
 
 if __name__ == '__main__':
     main()

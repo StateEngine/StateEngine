@@ -73,6 +73,18 @@ fn main() {
                     builder.mode(0o700);
                 }
                 builder.create(profile).unwrap();
+                if directory.join("bootstrap-gate").exists() {
+                    // The fixture releases this finite initializer only after
+                    // the host has persisted its exact executable observation.
+                    let pending=directory.join("bootstrap-pid.pending");
+                    fs::write(&pending,std::process::id().to_string()).unwrap();
+                    fs::rename(pending,directory.join("bootstrap-pid")).unwrap();
+                    let deadline=std::time::Instant::now()+std::time::Duration::from_secs(20);
+                    while !directory.join("bootstrap-release").exists() {
+                        assert!(std::time::Instant::now()<deadline,"bootstrap observation timed out");
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
             },
         [verb, ..] if verb=="serve-service"
             && directory.join("sandbox-readback.json").exists() => {
