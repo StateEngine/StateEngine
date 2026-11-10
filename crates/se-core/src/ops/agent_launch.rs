@@ -115,12 +115,20 @@ pub struct LaunchPlan {
     pub profile: se_store::Profile,
     pub resolved: ResolvedProfile,
     pub conversation: Read<ProviderSessionId>,
+    pub saved_conversation_age: Read<SavedConversationAge>,
     pub capture: bool,
     pub control: se_store::ControlTarget,
     pub seed: EventId,
     pub replayed: bool,
     pub session: SessionId,
     pub lifecycle: LifecycleId,
+}
+/// Age of the saved session selected for this conversation, not an inferred
+/// provider conversation creation time. Measured when the launch is planned.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SavedConversationAge {
+    pub session_started_at: String,
+    pub age_seconds: Read<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct LaunchResult {
@@ -137,6 +145,8 @@ pub struct LaunchResult {
     pub model: Option<String>,
     pub permission_profile: ResolvedProfile,
     pub conversation_id: ProviderSessionId,
+    pub resumed: bool,
+    pub saved_conversation_age: Read<SavedConversationAge>,
     pub state: String,
     pub surface: String,
     pub process: ProcessView,

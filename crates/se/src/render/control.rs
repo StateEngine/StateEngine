@@ -76,7 +76,35 @@ fn running(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
         )?;
     }
     write::profile(&value.permission_profile, out)?;
-    writeln!(out, "Conversation: {}", value.conversation_id)?;
+    write!(
+        out,
+        "Conversation: {} ({}",
+        value.conversation_id,
+        if value.resumed { "resumed" } else { "new" }
+    )?;
+    if value.resumed {
+        match &value.saved_conversation_age {
+            se_types::Read::Present { value } => match &value.age_seconds {
+                se_types::Read::Present { value } => {
+                    write!(out, "; saved session {} old at launch", age(*value))?
+                }
+                other => write!(
+                    out,
+                    "; saved session age unavailable: {}",
+                    read_reason(other)
+                )?,
+            },
+            other => write!(
+                out,
+                "; saved session age unavailable: {}",
+                read_reason(other)
+            )?,
+        }
+    }
+    writeln!(out, ")")?;
+    if let se_types::Read::Present { value } = &value.saved_conversation_age {
+        writeln!(out, "Saved session started: {}", value.session_started_at)?;
+    }
     if let Some(binding) = &value.secode_binding {
         super::read::secode::launch(binding, out)?;
     }
@@ -206,4 +234,25 @@ pub fn remove(value: &RemoveResult, out: &mut impl Write) -> io::Result<()> {
     removal_witness(&value.machine_credential.witness, out)?;
     writeln!(out, "{}: {}", value.next.text, value.next.command)?;
     writeln!(out, "Request key: {}", value.idempotency_key)
+}
+
+fn age(seconds: u64) -> String {
+    let (count, unit) = if seconds >= 86_400 {
+        (seconds / 86_400, "day")
+    } else if seconds >= 3_600 {
+        (seconds / 3_600, "hour")
+    } else if seconds >= 60 {
+        (seconds / 60, "minute")
+    } else {
+        (seconds, "second")
+    };
+    format!("{count} {unit}{}", if count == 1 { "" } else { "s" })
+}
+fn read_reason<T>(read: &se_types::Read<T>) -> &str {
+    match read {
+        se_types::Read::Absent { checked } => checked,
+        se_types::Read::Unknown { what } => what,
+        se_types::Read::Unreadable { reason, .. } => reason,
+        se_types::Read::Present { .. } => "not reported",
+    }
 }
