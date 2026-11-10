@@ -72,6 +72,7 @@ pub fn list(
         ("claude", &configuration.providers.claude),
         ("codex", &configuration.providers.codex),
         ("secode", &configuration.providers.secode),
+        ("acp", &configuration.providers.acp),
     ] {
         row(
             &mut rows,
@@ -94,6 +95,13 @@ pub fn list(
         "providers.secode.seed_profile",
         option(&configuration.providers.secode.seed_profile),
     );
+    for (key, value) in [
+        ("acp.arguments", json!(configuration.acp.arguments)),
+        ("acp.environment", json!(configuration.acp.environment)),
+        ("acp.mode", json!(configuration.acp.mode)),
+    ] {
+        row(&mut rows, key, present(value));
+    }
     for (name, profile) in &configuration.profiles {
         row(
             &mut rows,
@@ -258,6 +266,7 @@ fn provider_wire(provider: Provider) -> &'static str {
         Provider::Claude => "claude",
         Provider::Codex => "codex",
         Provider::SeCode => "secode",
+        Provider::Acp => "acp",
     }
 }
 fn sandbox_wire(sandbox: Sandbox) -> &'static str {
