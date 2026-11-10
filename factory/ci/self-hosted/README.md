@@ -24,13 +24,13 @@ or dependency changes require an approved image/report refresh; they do not
 execute new host commands. Native outcomes, logs and exact source binding are
 retained under the configured private controller state directory.
 
-Every container admission preserves the existing free-memory reserve and resource
-caps. The shared shadow and both guest locks cover the entire operation. Persistent
-custody records fence VM startup after a controller crash, until native tasks and
-containers have joined cleanup. **Deploy and exercise the existing fence in both
-guest admission readers before starting this service.** A guest window being
-closed is insufficient. Disable the dedicated App dispatcher during this cutover;
-its journal and native custody remain authoritative.
+Every container admission preserves 34 GiB available after its bounded memory
+allocation and keeps the existing resource caps. The existing CI lock serializes
+against other CI work. This adapter adds no guest-admission fence or guest lock;
+guests use their own memory admission. Persistent container records still retain
+exact process custody after a controller crash, and reconciliation must join known
+native tasks before another container runs. Keep the dedicated App dispatcher
+stopped during this cutover.
 
 Root installation:
 
@@ -43,7 +43,7 @@ Root installation:
    /usr/local/libexec/stateengine-ci-hook` in a checked sudoers drop-in. The existing
    controller-to-worker fixed engine delegation remains unchanged.
 3. Fill `self-hosted.json` from the example, root:root 0644, using the existing
-   guest/shadow paths and approved image/cache. Make its new `state` directory
+   CI lock and approved image/cache. Make its new `state` directory
    controller-owned 0700. The controller needs no access to runner registration
    credentials or runner workspace; the small worker shim handles file commands.
 4. Register one repository runner with label `stateengine-box`, disable update,
@@ -51,7 +51,7 @@ Root installation:
    registration token through `ACTIONS_RUNNER_INPUT_TOKEN` in the registration
    process environment, never argv, logs or a checked-in file. Return the binary
    directory to root ownership after registration.
-5. Install the supplied service unit without enabling it until the fence,
+5. Install the supplied service unit without enabling it until the
    approved policy and real container canaries pass. The hook itself executes
    as the separate locked controller through its exact sudo door.
 
@@ -64,6 +64,6 @@ success. Required Windows Clippy and the sole `check` status are unchanged.
 
 Before activation, independently exercise a real required check, a genuine test
 failure, workflow/container rejection, cancellation with a surviving container,
-both fenced guest readers and exact cleanup. Syntax checks and isolated hook
+free-memory refusal and exact cleanup. Syntax checks and isolated hook
 requests do not qualify these deployed effects. Windows and macOS do not execute
 this Linux-only adapter and remain native qualification lanes.

@@ -1,6 +1,8 @@
 #!/usr/bin/python3 -I
 """Fixed container-hook operations; repository code never executes on the host."""
 import base64
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import os
@@ -17,7 +19,7 @@ import uuid
 BOX = Path("/usr/local/lib/stateengine-box-ci/factory/ci/box")
 sys.path.insert(0, str(BOX))
 from custody import Journal
-from dispatch import trusted, venue
+from dispatch import trusted
 from engine import Container, capacity
 from transport import execute
 from workload import Cohort
@@ -64,6 +66,15 @@ def config_at():
         if hashlib.file_digest(source, "sha256").hexdigest() != config["cache_sha256"]:
             raise RuntimeError("dependency snapshot differs")
     return config, report
+
+
+@contextmanager
+def venue(config, recover=False):
+    # Serialize against the existing CI controller. Guest admission is separate;
+    # each actual container checks its bounded memory allocation before start.
+    with open(config["ci_lock"], "r") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
 
 
 def write(path, value):
@@ -204,7 +215,7 @@ def main():
     if request["command"] == "run_script_step":
         return script_step(request, config, report, directory)
     if request["command"] == "cleanup_job":
-        # Native custody is always reconciled under the same VM/shadow mutexes.
+        # Native custody is reconciled under the existing CI mutex.
         with venue(config, recover=True):
             Journal().reconcile()
         return {"exit_code": 0}
