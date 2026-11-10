@@ -42,14 +42,24 @@ fn main() {
             print!("{}",fs::read_to_string(directory.join("capabilities.json")).unwrap()),
         [verb, flag] if verb=="sandbox-policy" && flag=="--capabilities"
             && directory.join("sandbox-capabilities.json").exists() =>
-            print!("{}",fs::read_to_string(directory.join("sandbox-capabilities.json")).unwrap()),
+            {
+                if let Ok(path)=fs::read_to_string(directory.join("hide-cwd")) {
+                    let original=std::path::PathBuf::from(path);
+                    fs::rename(&original,original.with_extension("held")).unwrap();
+                }
+                print!("{}",fs::read_to_string(directory.join("sandbox-capabilities.json")).unwrap());
+            },
         [verb, service, profile, workspace, directory_arg] if verb=="sandbox-policy"
             && service=="--service" && workspace=="--directory"
             && directory.join("sandbox-readback.json").exists() => {
                 fs::write(directory.join("readback-profile"),profile).unwrap();
                 fs::write(directory.join("readback-workspace"),directory_arg).unwrap();
                 snapshot(&directory,"readback");
-                print!("{}",fs::read_to_string(directory.join("sandbox-readback.json")).unwrap());
+                let report=fs::read_to_string(directory.join("sandbox-readback.json")).unwrap();
+                // Match the native reader's per-service temporary root, not
+                // the system temp directory of the fixture's parent process.
+                let scratch=format!("{:?}",env::var("TMPDIR").unwrap());
+                print!("{}",report.replace("\"$PRIVATE_SCRATCH\"",&scratch));
                 std::io::stdout().flush().unwrap();
                 let code=fs::read_to_string(directory.join("sandbox-exit")).unwrap();
                 std::process::exit(code.parse().unwrap());

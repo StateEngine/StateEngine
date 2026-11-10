@@ -11,7 +11,6 @@ import json
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 import uuid
 
 from secode_external import capabilities, document
@@ -58,7 +57,7 @@ def policy_report(f):
     return {'schema': SCHEMA, 'capabilities': [CAPABILITY],
             'policy': {'git_metadata_read_only': True,
                        'readable_roots': [str(f.repo.anchor)],
-                       'writable_roots': [str(f.repo), tempfile.gettempdir()],
+                       'writable_roots': [str(f.repo), '$PRIVATE_SCRATCH'],
                        'protected_paths': metadata_paths(f), 'network': False},
             'realization': 'not_started'}
 
@@ -121,10 +120,11 @@ def case(se, root, external, name):
     sandbox = 'read-only' if name == 'read-only' else 'workspace-write'
     f = Fixture(se, root / name, provider, sandbox, 'never',
                 setup_repo=lambda repo, env: repository(repo, env, name == 'linked-worktree'))
+    original_reservation = None
     try:
         if name in ('missing-capability', 'wrong-capability-schema'):
             # This is preflight: neither public history nor any lifecycle may change.
-            f.refuse(CAPABILITY if name == 'missing-capability' else SCHEMA)
+            f.refuse(CAPABILITY)
             calls = probe_calls(directory)
             assert 'sandbox-policy --capabilities' in calls, calls
             assert not any(line.startswith(('init-profile ', 'serve-service ', 'run '))
@@ -137,12 +137,41 @@ def case(se, root, external, name):
             del report['policy']['git_metadata_read_only']
         elif name == 'null-readback':
             report['policy'] = None
+        elif name == 'widened-readback':
+            report['policy']['writable_roots'].append(str(f.root))
+        elif name == 'duplicate-readback':
+            report['policy']['writable_roots'].append(str(f.repo))
+        elif name == 'network-readback':
+            report['policy']['network'] = True
+        elif name == 'started-readback':
+            report['realization'] = 'started'
+        elif name == 'wrong-readback-schema':
+            report['schema'] = 'unsupported-fixture'
+        elif name == 'refused-auxiliary-preparation':
+            # A real directory disappearing between preflight and native
+            # preparation leaves the original reservation without a child.
+            (directory / 'hide-cwd').write_text(str(f.repo))
         raw = '{unreadable' if name == 'unreadable-readback' else json.dumps(report)
         (directory / 'sandbox-readback.json').write_text(raw)
         if name == 'failed-readback':
             (directory / 'sandbox-exit').write_text('82')
         f.snapshot()
         result = launch(f)
+        if name == 'refused-auxiliary-preparation':
+            held = f.repo.with_suffix('.held')
+            assert held.is_dir() and not f.repo.exists(), (result.stdout, result.stderr)
+            held.rename(f.repo)
+            assert result.returncode != 0, (result.stdout, result.stderr)
+            no_input(f, directory)
+            journals = list((f.home / 'secode').glob('*.json'))
+            assert len(journals) == 1, journals
+            journal = document(journals[0])
+            checkpoint = journal['bootstrap']['checkpoint']
+            assert checkpoint['kind'] == 'reservation', checkpoint
+            original_reservation = journal['bootstrap']
+            assert not any(row.startswith(('init-profile ', 'serve-service ', 'run '))
+                           for row in probe_calls(directory)), probe_calls(directory)
+            return  # finally still requires public witnessed down.
         # The stub always refuses service execution. Never call this launch success.
         assert result.returncode != 0, (result.stdout, result.stderr)
         calls = probe_calls(directory)
@@ -170,9 +199,25 @@ def case(se, root, external, name):
             assert not reached_service, 'bad policy readback reached service execution'
             assert not any(row.startswith('serve-service ') for row in calls), calls
             reason = (result.stdout + result.stderr).lower()
-            assert b'policy' in reason and (b'sandbox' in reason or b'metadata' in reason), reason
+            assert any(code in reason for code in (b'provider-incompatible', b'source-unreadable')), reason
     finally:
+        held = f.repo.with_suffix('.held')
+        if held.is_dir() and not f.repo.exists():
+            held.rename(f.repo)
         f.close()
+        if original_reservation is not None:
+            journal = document(journals[0])
+            terminal = journal['bootstrap']
+            assert journal['retired'] is True, journal
+            assert terminal['lifecycle'] == original_reservation['lifecycle'], terminal
+            assert terminal['checkpoint']['kind'] == 'exit', terminal
+            exit_value = terminal['checkpoint']['value']
+            assert exit_value['source'] == original_reservation['checkpoint'], exit_value
+            witness = exit_value['witness']
+            assert witness['root'] == 'NoChildCreated', witness
+            remaining = witness['scope_exit']['remaining']
+            assert remaining['population'] == 'Empty' and remaining['extent'] == 'Complete', witness
+            assert remaining['known_live'] == [] and witness['scope_exit']['exit_basis'], witness
 
 
 def main():
@@ -206,7 +251,9 @@ def main():
 
 CASES = ['workspace-write', 'missing-capability', 'wrong-capability-schema',
          'mismatched-readback', 'absent-readback', 'null-readback',
-         'unreadable-readback', 'failed-readback', 'read-only', 'linked-worktree']
+         'unreadable-readback', 'failed-readback', 'read-only', 'linked-worktree',
+         'widened-readback', 'duplicate-readback', 'network-readback',
+         'started-readback', 'wrong-readback-schema', 'refused-auxiliary-preparation']
 
 if __name__ == '__main__':
     main()
