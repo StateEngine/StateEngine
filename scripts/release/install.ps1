@@ -442,8 +442,9 @@ try {
     $recordText = ($owned | ConvertTo-Json -Depth 12) + "`n"
     if ($Recover -and [IO.File]::Exists($record)) {
         Assert-PlainPath $record
-        if ([IO.File]::ReadAllText($record) -cne $recordText -or
-            (Get-Acl -LiteralPath $record).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw 'completed record differs from the partial journal' }
+        & (Join-Path $bundle 'se.exe') __install-files-check $record
+        if ($LASTEXITCODE -ne 0) { throw 'completed record native file custody refused' }
+        if ([IO.File]::ReadAllText($record) -cne $recordText) { throw 'completed record differs from the partial journal' }
         Flush-Copy $record
     } else {
         $temporary = Join-Path $data '.standalone-install.publish'
@@ -452,10 +453,12 @@ try {
         if ($Recover -and [IO.File]::Exists($temporary)) {
             & (Join-Path $bundle 'se.exe') __install-files-check $temporary
             if ($LASTEXITCODE -ne 0) { throw 'record staging native file custody refused' }
-            if ((Get-Acl -LiteralPath $temporary).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw 'record staging has a different owner' }
             $mode = [IO.FileMode]::Open
         }
-        $stream = [IO.File]::Open($temporary, $mode, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        # Explicit user ownership matches payload creation and remains usable
+        # from an ordinary terminal after an elevated installation.
+        Initialize-NativeTypes
+        $stream = [StateEngineInstall.Native]::OpenPayload($temporary, $owner, $mode -eq [IO.FileMode]::Open)
         try { $stream.SetLength(0); $bytes = $utf8.GetBytes($recordText); $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
         finally { $stream.Dispose() }
         Initialize-NativeTypes

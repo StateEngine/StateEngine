@@ -1,4 +1,4 @@
-//! Current-user protected DACL creation and handle-based readback. All native
+//! Current-user protected DACL creation and native creation-owner readback. All native
 //! SID/ACE pointers come from retained aligned GetTokenInformation or
 //! LocalFree-owned GetSecurityInfo buffers, never caller-supplied bytes.
 use super::super::{Result, io_error, unsafe_path};
@@ -75,6 +75,14 @@ impl User {
         crate::windows_native::sid_text(self.sid())
             .map_err(|e| io_error(e.operation, path, e.source))
     }
+    fn owns(&self, owner: PSID, path: &Path) -> Result<bool> {
+        if equal(owner, self.sid()) {
+            return Ok(true);
+        }
+        let owner = crate::windows_native::sid_text(owner)
+            .map_err(|e| io_error(e.operation, path, e.source))?;
+        Ok(owner == default_owner(path)?)
+    }
 }
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(in crate::state_files) enum Layout {
@@ -113,8 +121,11 @@ pub(in crate::state_files) fn descriptor_for(
     }
     Ok(Allocation(raw))
 }
-pub(in crate::state_files) fn current_owner_sid(path: &Path) -> Result<String> {
-    User::current(path)?.text(path)
+fn default_owner(path: &Path) -> Result<String> {
+    crate::creation_owner::default_file_owner().map_err(|e| io_error(e.operation, path, e.source))
+}
+pub(in crate::state_files) fn is_current_owner_sid(owner: &str, path: &Path) -> Result<bool> {
+    Ok(owner == User::current(path)?.text(path)? || owner == default_owner(path)?)
 }
 
 pub(in crate::state_files) fn tighten_owner_only(
@@ -205,8 +216,11 @@ pub(in crate::state_files) fn verify_owner(file: &File, path: &Path) -> Result<(
     let user = User::current(path)?;
     let descriptor = security(file, path, false)?;
     let owner = descriptor.owner;
-    if !equal(owner, user.sid()) {
-        return Err(unsafe_path("file owner differs from current OS user", path));
+    if !user.owns(owner, path)? {
+        return Err(unsafe_path(
+            "file owner differs from process user and default creation owner",
+            path,
+        ));
     }
     Ok(())
 }
@@ -228,7 +242,7 @@ pub(in crate::state_files) fn verify_for(
     let control = descriptor
         .control()
         .map_err(|e| io_error("read DACL control", path, e))?;
-    if !equal(descriptor.owner, user.sid()) {
+    if !user.owns(descriptor.owner, path)? {
         return Err(unsafe_path("owner-only valid DACL required", path));
     }
     let dacl = descriptor
@@ -310,15 +324,15 @@ pub(in crate::state_files) fn verify_for(
 pub(in crate::state_files) fn verify_no_foreign_writer(file: &File, path: &Path) -> Result<()> {
     let user = User::current(path)?;
     let descriptor = security(file, path, true)?;
-    if !equal(descriptor.owner, user.sid()) {
+    if !user.owns(descriptor.owner, path)? {
         return Err(unsafe_path(
-            "current-user owned valid installation DACL required",
+            "process-owned valid installation DACL required",
             path,
         ));
     }
     let dacl = descriptor
         .dacl()
-        .ok_or_else(|| unsafe_path("current-user owned valid installation DACL required", path))?;
+        .ok_or_else(|| unsafe_path("process-owned valid installation DACL required", path))?;
     let system = sid("S-1-5-18", path)?;
     for index in 0..dacl.len() {
         let entry = dacl
