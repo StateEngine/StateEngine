@@ -36,7 +36,7 @@ def engine_args(*args):
 
 def command(*args, input=None, timeout=90):
     result = subprocess.run(engine_args(*args), input=input, capture_output=True, timeout=timeout,
-                            close_fds=True)
+                            cwd="/", close_fds=True)
     if result.returncode:
         raise RuntimeError(f"engine {args[0]} refused (exit {result.returncode}): " +
                            result.stderr.decode(errors="replace")[-4000:])
@@ -108,7 +108,7 @@ class Container:
                 # Creation may have succeeded before its response failed. The
                 # unpredictable controller-owned name recovers only that object.
                 exists = subprocess.run(engine_args("container", "exists", self.name),
-                                        capture_output=True, timeout=30, close_fds=True)
+                                        capture_output=True, timeout=30, cwd="/", close_fds=True)
                 if exists.returncode == 0:
                     value, = json.loads(command("inspect", self.name))
                     if value["Name"].lstrip("/") != self.name or not re.fullmatch(r"[a-f0-9]{64}", value["Id"]):
@@ -170,7 +170,7 @@ class Container:
             self.journal.observe(self.name, outside)
         command("rm", "--force", "--time=5", identity)
         observed = subprocess.run(engine_args("container", "exists", identity), capture_output=True,
-                                  timeout=30, close_fds=True)
+                                  timeout=30, cwd="/", close_fds=True)
         if observed.returncode != 1:
             raise RuntimeError("owned container removal is unproved")
         if self.journal:
