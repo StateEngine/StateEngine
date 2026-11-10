@@ -12,6 +12,7 @@ import time
 
 from report import exit_status, publish
 from lifecycle import begin, checkpoint, save, service_exit
+from native import import_receipt
 
 GIB = 1024**3
 
@@ -128,7 +129,7 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
         checkpoint(Path(config["state"]), directory, run)
 
 
-def run_nightly(config, prepared_build=None):
+def run_nightly(config, prepared_build=None, native_only=False):
     state = Path(config["state"])
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (state / "nightly.lock").open("a") as lock:
@@ -139,7 +140,8 @@ def run_nightly(config, prepared_build=None):
         # service-manager cleanup. All stages consume this same deadline.
         deadline = time.monotonic() + 5 * 3600
         try:
-            record["available_bytes_before_start"] = capacity()
+            if not native_only:
+                record["available_bytes_before_start"] = capacity()
             env = clean_environment(config)
             temporary = directory / "tmp"
             temporary.mkdir(mode=0o700)
@@ -154,6 +156,15 @@ def run_nightly(config, prepared_build=None):
             record["judge"]["files_sha256"] = {str(path.relative_to(judge)): digest(path)
                 for path in sorted((judge / "journeys").rglob("*")) if path.is_file()}
             save(directory / "run.json", record)
+            native_invocations = [row for row in record["invocations"] if row.get("native_receipt")]
+            for invocation, probe in zip(native_invocations, config.get("native_receipts", []), strict=True):
+                import_receipt(invocation, probe["path"], directory, record, state)
+                checkpoint(state, directory, record)
+            if native_only:
+                record["state"] = "finished"
+                report = checkpoint(state, directory, record)
+                print(directory / "report.md", flush=True)
+                return exit_status(report)
             build = prepared_build or directory / "build"
             if prepared_build is None:
                 command([sys.executable, source / "scripts/release/build.py", "--target",
@@ -177,6 +188,8 @@ def run_nightly(config, prepared_build=None):
                 "exposure": {"se": "{home}/.local/bin/se"}})
             save(directory / "run.json", record)
             for invocation in record["invocations"]:
+                if invocation.get("native_receipt"):
+                    continue
                 invoke(config, record, directory, judge, descriptor, archive, env, invocation, deadline)
             record["state"] = "finished"
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
@@ -197,6 +210,7 @@ def main():
     parser.add_argument("--prepared-build", type=Path, help="reuse a native release with the exact selected source pin")
     parser.add_argument("--report", type=Path, help="regenerate a retained run's reports without executing product code")
     parser.add_argument("--service-exit", action="store_true")
+    parser.add_argument("--native-receipts-only", action="store_true", help="import native observations without a local build or judge")
     args = parser.parse_args()
     if args.report:
         publish(args.report)
@@ -213,7 +227,9 @@ def main():
     forbidden = [name for name in os.environ if name.startswith(prefixes) or name in names]
     if forbidden:
         parser.error("start from an OS scheduler outside managed agent trees with no fleet/session environment")
-    return run_nightly(config, args.prepared_build)
+    if args.native_receipts_only:
+        config = {**config, "probes": []}
+    return run_nightly(config, args.prepared_build, args.native_receipts_only)
 
 
 if __name__ == "__main__":

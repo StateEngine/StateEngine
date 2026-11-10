@@ -5,7 +5,7 @@ its `rust-v1` command map. It adds no product assertions and does not replace th
 judge's verdicts or thresholds. Product and judge Git revisions, map and file
 hashes, native release identity, raw output and every first failure are retained.
 
-Install `nightly.py`, `lifecycle.py` and `report.py` together, and use the supplied user service and
+Install `nightly.py`, `lifecycle.py`, `native.py` and `report.py` together, and use the supplied user service and
 timer. The service runs outside managed agent trees; fixture environment isolation
 does not change ancestry or bypass owner guards. The adapter refuses a fleet or
 session environment. It checks for 34 GiB available before building or starting a
@@ -76,6 +76,21 @@ plan. Completed observed rows remain visible even if later work is interrupted.
 The overall attempt separately records completion, judge failures and interruption.
 Service finalization retains the manager's exit facts and recognizes the producer's
 expected completed-verdict exit; an unexpected exit still marks interruption.
+
+An optional `native_receipts` array plans externally observed native cells, for example
+`[{"platform":"win32","surface":"claude","selection":"wave-2","path":"/srv/proof/native-observation"}]`.
+The native observer supplies `native-receipt.json`, `credential-closure.json`,
+`results.json` and `budgets.json` in that directory. Import copies them into this
+attempt without executing remote code. The observer must bind the product commit,
+judge commit and complete judge file inventory to this attempt, name the native
+archive hash and both result hashes, and witness transport and fixture credential
+closure. A missing, unreadable, interrupted or mismatched observation stays UNKNOWN;
+the observation must be from this UTC night and can be consumed by only one attempt,
+so an earlier result cannot fill a new cell. Regenerating a report checks those bindings
+again. Native budget probes retain their platform beside their measurements.
+`--native-receipts-only` imports these observations without a local build or judge;
+local probes are outside that attempt's plan. The native VM's ownership and lifetime
+remain with its existing controller.
 
 An observed zero remains zero. Budget measurements retain numbers, limits and
 probe verdicts, using PASS, MISS or NOT MEASURED. A witnessed miss remains a miss
