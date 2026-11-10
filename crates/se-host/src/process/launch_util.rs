@@ -81,11 +81,7 @@ pub(super) fn policy(
     home: &std::path::Path,
     configuration: &se_core::config_policy::ConfigFile,
 ) -> Result<se_proc::LaunchPolicy> {
-    let scratch = home.join("launch").join(
-        se_proc::session_launch_id(&plan.session)
-            .map_err(|e| error("launch scratch", e))?
-            .as_str(),
-    );
+    let scratch = super::files::temporary_directory(home, &plan.session)?;
     Ok(se_proc::LaunchPolicy {
         containment: se_proc::ContainmentRequirement::BestAvailable,
         writes: match plan.resolved.sandbox {
