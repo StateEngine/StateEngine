@@ -248,6 +248,8 @@ se remote watch --host build --target PROJECT_ID/AGENT_ID
 
 The first command stages the matching native executable and starts or reuses
 your remote host. A compatible running host and its agents keep running.
+If the saved host has shut down while idle, the next remote operation starts
+it again over SSH and waits for that cold startup.
 Use the project, agent and current session IDs from `remote list` when sending:
 
 ```sh

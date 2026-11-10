@@ -30,6 +30,11 @@ an agent creates no device grant, private key or SSH connection. Saved machine
 sessions are reused; reconnect restores SSH before application authentication
 and catch-up. The application session is authenticated inside SSH; there is no
 second pinned TLS or challenge-signature protocol.
+When the saved tunnel finds no listener, the source invokes the saved native
+SSH command once to restore the far host's existing listener policy. Native
+Owner admission and the pinned host identity are checked before retrying the
+socket; the saved grant is reused. Cold startup time is reported separately,
+and no keep-alive process retains an otherwise idle far host.
 
 The machine session identifies a machine. Protected native IPC independently
 verifies every agent caller's actual host, project, agent, session and generation.
