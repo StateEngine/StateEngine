@@ -96,7 +96,7 @@ fn retire_marker(marker: &Path, project: &str) -> Result<bool, String> {
             "The file is not this project's Git identity marker; it was left untouched.".into(),
         );
     }
-    checked_path(&marker, false)?;
+    checked_path(marker, false)?;
     file.remove(Sha256::digest(&bytes).into())
         .map_err(|error| format!("Marker removal could not be witnessed: {error}"))?;
     Ok(true)
