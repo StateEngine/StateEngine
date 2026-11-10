@@ -71,6 +71,17 @@ pub(super) fn directory(home: &std::path::Path, session: &se_types::SessionId) -
             .as_str(),
     ))
 }
+/// Provider-owned temporary data is retained separately from cleanup authority.
+pub(super) fn temporary_directory(
+    home: &std::path::Path,
+    session: &se_types::SessionId,
+) -> Result<PathBuf> {
+    Ok(home.join("provider-tmp").join(
+        se_proc::session_launch_id(session)
+            .map_err(|e| error("provider temporary identity", e))?
+            .as_str(),
+    ))
+}
 pub(super) struct RestoredFiles {
     pub pin: [u8; 32],
     pub files: Vec<(PathBuf, [u8; 32])>,
@@ -143,6 +154,10 @@ pub(super) fn publish(
     let launch = se_proc::session_launch_id(session).map_err(|e| error("launch identity", e))?;
     let directory = home.join("launch").join(launch.as_str());
     let files = NativeStateFiles::open(&directory).map_err(|e| error("launch directory", e))?;
+    // Pin publication has committed this session's launch directory. Prepare
+    // its separate private temp root before the provider receives its path.
+    NativeStateFiles::create(&temporary_directory(home, session)?)
+        .map_err(|e| error("provider temporary directory", e))?;
     let mut published = Vec::new();
     // Publish cleanup custody before any configuration or provider creation.
     // A crash later can remove only these exact, independently read-back bytes.
