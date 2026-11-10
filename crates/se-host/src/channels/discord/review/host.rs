@@ -1,5 +1,6 @@
 //! One native host consumer joins the real connector to durable mail and output.
 use super::*;
+use crate::runtime::test_support::fixture as data;
 use crate::{
     HostKind, HostLimits, HostStart, HostedRuntime,
     client::{ClientOptions, lease::Deadline},
@@ -17,8 +18,6 @@ use std::{
     num::{NonZeroU16, NonZeroU32},
     sync::atomic::AtomicBool,
 };
-#[path = "../../../../../se-store/tests/support/store_fixture.rs"]
-mod data;
 
 fn positive(n: u32) -> Check<NonZeroU32> {
     NonZeroU32::new(n).ok_or("zero limit".into())
@@ -143,7 +142,7 @@ fn discord_wire_review_native_host_saves_only_after_exact_approval() -> Check {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 };
                 require(receipt.read.is_none() && matches!(receipt.notice, NoticeFact::Pending { .. }), "Saved claimed recipient read or wake")?;
-                let mut reader = data::present(SqliteFactory::open_reader(&f.options)?)?;
+                let reader = data::present(SqliteFactory::open_reader(&f.options)?)?;
                 let mut snapshot = reader.snapshot(f.scoped(Visibility::Owner))?;
                 let mail = data::present(snapshot.message(receipt.message.clone())?)?;
                 require(mail.sender==Actor::Human(f.owner.clone()) && mail.recipient==Actor::Agent(f.a.clone()), "private input became another actor's mail")?;
