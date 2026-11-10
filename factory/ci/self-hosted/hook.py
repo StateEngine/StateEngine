@@ -69,7 +69,7 @@ def config_at():
 
 
 @contextmanager
-def venue(config, recover=False):
+def venue(config):
     # Serialize against the existing CI controller. Guest admission is separate;
     # each actual container checks its bounded memory allocation before start.
     with open(config["ci_lock"], "r") as lock:
@@ -85,6 +85,7 @@ def write(path, value):
 
 
 def prepare(request, config, report, context):
+    capacity(2*1024**3)
     job = request["args"].get("jobContainer")
     if not job or job.get("image") != "stateengine-ci-approved":
         raise RuntimeError("the approved job container is required")
@@ -128,6 +129,8 @@ def check_step(config, report, directory, results):
     folder.mkdir()
     box = Container(report["image"], memory=2*1024**3, cpus=2, deadline=180, journal=Journal())
     try:
+        if box.proof["seccomp_profile_sha256"] != report["seccomp_sha256"]:
+            raise RuntimeError("approved seccomp identity differs")
         with (directory / "source.tar.gz").open("rb") as source:
             outcome = execute(box, ["python3", "/opt/box/runner.py", "source"], folder / "source.log", stdin=source)
         if not outcome["success"]:
@@ -216,7 +219,7 @@ def main():
         return script_step(request, config, report, directory)
     if request["command"] == "cleanup_job":
         # Native custody is reconciled under the existing CI mutex.
-        with venue(config, recover=True):
+        with venue(config):
             Journal().reconcile()
         return {"exit_code": 0}
     raise RuntimeError("container actions are unsupported; use the fixed operations")
