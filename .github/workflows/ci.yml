@@ -109,7 +109,7 @@ jobs:
 
   fmt:
     needs: [changes, linux-route, linux-box]
-    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' && vars.LINUX_CI_RUNNER == '' && (needs.linux-route.outputs.route != 'box' || needs.linux-box.outputs.status == 'unavailable' || (needs.linux-box.result == 'failure' && needs.linux-box.outputs.status == '')) }}
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' && (vars.LINUX_CI_RUNNER == '' || needs.linux-route.outputs.route == 'hosted') && (needs.linux-route.outputs.route != 'box' || needs.linux-box.outputs.status == 'unavailable' || (needs.linux-box.result == 'failure' && needs.linux-box.outputs.status == '')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
@@ -230,14 +230,14 @@ jobs:
           os: ubuntu-24.04
           shard: ${{ matrix.shard }}
 
-  # Warm the complete native test build on main; PRs restore it without saving.
-  # Promotion also waits for all Windows smoke cases to pass.
+  # Nightly and manual only: every pull request already runs Windows-target Clippy.
+  # The nightly run on main also warms the native Windows build cache.
   windows-archive:
     name: Windows archive (informational)
     needs: [changes, windows-clippy]
-    if: ${{ always() && !cancelled() && !github.event.pull_request.draft && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.windows-clippy.result == 'success' }}
+    if: ${{ always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.windows-clippy.result == 'success' }}
     runs-on: windows-2025
-    timeout-minutes: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 45 || 15 }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -256,7 +256,7 @@ jobs:
         # Match Clippy's native Windows layout; macOS alone needs host/target flag isolation.
         run: cargo nextest archive --workspace --locked --archive-file tests.tar.zst
       - uses: actions/cache/save@v4
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.build-cache.outputs.cache-hit != 'true' }}
+        if: ${{ github.event_name == 'schedule' && steps.build-cache.outputs.cache-hit != 'true' }}
         with:
           path: |
             target
@@ -284,7 +284,7 @@ jobs:
   windows-test:
     name: Windows ${{ matrix.mode == 'full' && 'runtime' || 'smoke' }} (informational, shard ${{ matrix.shard }})
     needs: [changes, windows-clippy, windows-archive]
-    if: ${{ always() && !cancelled() && !github.event.pull_request.draft && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.windows-clippy.result == 'success' }}
+    if: ${{ always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.windows-clippy.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -348,9 +348,9 @@ jobs:
     name: check
     if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.job == 'macos') }}
     needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test]
-    runs-on: ${{ fromJSON(vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
+    runs-on: ${{ fromJSON(needs.linux-route.outputs.route == 'hosted' && '"ubuntu-24.04"' || vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
     container:
-      image: ${{ vars.LINUX_CI_RUNNER != '' && 'stateengine-ci-approved' || '' }}
+      image: ${{ needs.linux-route.outputs.route != 'hosted' && vars.LINUX_CI_RUNNER != '' && 'stateengine-ci-approved' || '' }}
       env:
         CI_SOURCE_TOKEN: ${{ github.token }}
     timeout-minutes: 2
@@ -358,12 +358,14 @@ jobs:
       - uses: actions/checkout@v4
         if: ${{ runner.environment != 'self-hosted' }}
         with:
+          # The candidate cannot replace the final consumer of job outcomes.
+          ref: ${{ github.event.pull_request.base.sha || 'main' }}
           persist-credentials: false
       - name: Require all applicable jobs
         if: ${{ runner.environment != 'self-hosted' }}
         env:
           RESULTS: ${{ toJSON(needs) }}
-        run: python scripts/ci/check.py
+        run: python -I scripts/ci/check.py
       - name: Require all applicable jobs on the box
         if: ${{ runner.environment == 'self-hosted' }}
         env:
