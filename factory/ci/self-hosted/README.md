@@ -16,12 +16,17 @@ candidate container. A temporary repository read token stages an opaque source
 archive through the GitHub API, verifies approved policy, and is not persisted or
 passed into a container. Downloads use a credential-free approved archive redirect.
 
-`changes` requests full checks conservatively, and `route` selects the box. The
+`changes` requests full checks conservatively, and `route` selects the box when
+the pinned policy matches. A changed or missing policy file selects the complete
+hosted path automatically. These two operations use fixed metadata only: a policy
+mismatch downloads no candidate archive, creates no workload container and refuses
+`linux` or `check` execution on the box. API failures and unreadable policy do not
+become an assertion of policy drift. The
 `linux` operation runs existing fmt, Clippy, archive/doc and both nextest/custom
 harness partitions; `check` runs the existing required-status consumer inside an
 isolated container. A real compile/test/resource failure remains red. CI policy
-or dependency changes require an approved image/report refresh; they do not
-execute new host commands. Native outcomes, logs and exact source binding are
+or dependency changes run on hosted until an approved image/report refresh; they
+do not execute new host commands. Native outcomes, logs and exact source binding are
 retained under the configured private controller state directory.
 
 Every container admission preserves 34 GiB available after its bounded memory
@@ -65,6 +70,8 @@ Clearing that one variable restores the complete hosted path. Disable the old
 App route variable as part of cutover. In box mode infrastructure loss stays red
 or queued until the operator selects hosted; known test red never becomes fallback
 success. Required Windows Clippy and the sole `check` status are unchanged.
+The workflow must allow hosted fmt/Clippy/archive/tests when `linux-route` emits
+`hosted` even with the box selector set, and place `check` on hosted for that route.
 
 Before activation, independently exercise a real required check, a genuine test
 failure, workflow/container rejection, cancellation with a surviving container,
