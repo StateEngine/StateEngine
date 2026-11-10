@@ -4,7 +4,6 @@ pub(crate) mod channel;
 pub(crate) use channel::capacity as channel_capacity;
 pub(crate) mod credential;
 pub(crate) mod cursor;
-pub(crate) mod decision;
 pub(crate) mod effect;
 mod mail;
 mod message;
@@ -512,11 +511,16 @@ pub(crate) fn apply(
                     ON CONFLICT(singleton) DO UPDATE SET owner_generation=excluded.owner_generation,owner_epoch=excluded.owner_epoch,revision=excluded.revision,last_seq=excluded.last_seq",crate::sql_value::sql_params![generation.get(),codec::encode(&epoch)?,revision,seq]).map_err(sql)?;
             codec::aux(c, seq, facts)?;
         }
-        b @ (DecisionProposed { .. }
+        DecisionProposed { .. }
         | DecisionRatified { .. }
         | DecisionRejected { .. }
         | DecisionRetracted { .. }
-        | DecisionSuperseded { .. }) => decision::apply(c, header, b, seq, revision)?,
+        | DecisionSuperseded { .. } => {
+            return Err(fail(
+                StoreErrorCode::VersionUnsupported,
+                "decision ledger writes are retired; existing events remain readable through history",
+            ));
+        }
         b @ (SessionPrepared { .. }
         | SessionActivated { .. }
         | SessionEnded { .. }

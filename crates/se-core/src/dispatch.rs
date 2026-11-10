@@ -488,41 +488,6 @@ impl Kernel {
                     then: Then::AgentRename(then),
                 }
             }
-            AnyOp::DecisionPropose(input) => {
-                let (batch, then) = crate::ops::decision::propose(self, input, cx)?;
-                OpStep::Commit {
-                    batch,
-                    then: Then::Decision(then),
-                }
-            }
-            AnyOp::DecisionRatify(input) => {
-                let (batch, then) = crate::ops::decision::ratify(self, input, cx)?;
-                OpStep::Commit {
-                    batch,
-                    then: Then::Decision(then),
-                }
-            }
-            AnyOp::DecisionReject(input) => {
-                let (batch, then) = crate::ops::decision::reject(self, input, cx)?;
-                OpStep::Commit {
-                    batch,
-                    then: Then::Decision(then),
-                }
-            }
-            AnyOp::DecisionRetract(input) => {
-                let (batch, then) = crate::ops::decision::retract(self, input, cx)?;
-                OpStep::Commit {
-                    batch,
-                    then: Then::Decision(then),
-                }
-            }
-            AnyOp::DecisionSupersede(input) => {
-                let (batch, then) = crate::ops::decision::supersede(self, input, cx)?;
-                OpStep::Commit {
-                    batch,
-                    then: Then::Decision(then),
-                }
-            }
             AnyOp::MessageRead(input) => {
                 map_mark(crate::ops::message_mark::read(self, cx, input)?)?
             }
@@ -573,12 +538,6 @@ impl Kernel {
             ),
             AnyOp::IdentityWhoami(input) => {
                 OpStep::Complete(crate::ops::identity::whoami(input, cx)?.into())
-            }
-            AnyOp::DecisionList(input) => {
-                OpStep::Complete(crate::ops::decision_list::read(input, cx)?.into())
-            }
-            AnyOp::DecisionShow(input) => {
-                OpStep::Complete(crate::ops::decision_show::read(input, cx)?.into())
             }
             AnyOp::HistoryList(input) => {
                 OpStep::Complete(crate::ops::history::list(input, cx)?.into())
@@ -639,7 +598,6 @@ impl Kernel {
             Then::AgentRename(then) => {
                 Ok(crate::ops::agent::rename_committed(then, receipt, cx)?.into())
             }
-            Then::Decision(then) => Ok(crate::ops::decision::committed(then, receipt, cx)?.into()),
             Then::Capture(then) => Ok(crate::ops::hook::committed(then, receipt, cx)?.into()),
             Then::MessageMark(then) => crate::ops::message_mark::committed(cx, then, receipt),
             Then::MessageSend(then) => {

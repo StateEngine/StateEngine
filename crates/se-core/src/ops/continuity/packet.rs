@@ -84,7 +84,6 @@ fn initial(
         working_state: data.working.clone(),
         unread: data.unread.clone(),
         required_reads,
-        decisions: data.decisions.clone(),
         recent_turns: data.turns.clone(),
         transcript: data.transcript.clone(),
         code_changes: None,
@@ -194,21 +193,6 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
         if input.since.is_none() && trim_turn(result, data, input, needed)? {
             continue;
         }
-        if result.decisions.governing.pop().is_some() {
-            let command = read::resume_command(
-                identity,
-                input.governing_cursor.as_ref(),
-                input.since.as_ref(),
-            )?;
-            add_omission(
-                result,
-                "governing_decisions",
-                Some(1),
-                command,
-                "stateengine_resume",
-            );
-            continue;
-        }
         if result.unread.items().len() > 1 {
             let count = (result.unread.items().len() / 2).max(1) as u16;
             let smaller = read::unread(identity, count, input.byte_budget, cx)?;
@@ -245,11 +229,7 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
                     .any(|item| item.section == "working_state"))
             && super::compact::expanded(
                 result,
-                read::resume_command(
-                    identity,
-                    input.governing_cursor.as_ref(),
-                    input.since.as_ref(),
-                )?,
+                read::resume_command(identity, input.since.as_ref())?,
             )?
         {
             continue;
@@ -413,7 +393,7 @@ fn trim_turn(
     Ok(false)
 }
 fn model_input(value: &ResumeOutput) -> Result<String> {
-    let mut state = serde_json::json!({"principal":value.principal,"working_state":value.working_state,"unread":value.unread,"required_reads":value.required_reads,"decisions":value.decisions,"recent_turns":value.recent_turns,"omissions":value.omissions,"attention":value.attention,"complete":value.complete,"resume_status":value.resume_status,"cursor":value.cursor});
+    let mut state = serde_json::json!({"principal":value.principal,"working_state":value.working_state,"unread":value.unread,"required_reads":value.required_reads,"recent_turns":value.recent_turns,"omissions":value.omissions,"attention":value.attention,"complete":value.complete,"resume_status":value.resume_status,"cursor":value.cursor});
     if let Some(items) = &value.code_changes {
         state["code_changes"] = serde_json::to_value(items)
             .map_err(|e| scope::unreadable("code changes encoding", &e.to_string()))?;

@@ -72,7 +72,6 @@ pub fn missing(home: String, generated_at: String, checked: String) -> StatusOut
             owner_unread: None,
             self_unread: None,
         },
-        decisions: DecisionCounts { pending: None },
         capture: CaptureView {
             state: "unknown".into(),
             last_turn_at: None,

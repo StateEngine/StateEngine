@@ -50,9 +50,6 @@ pub fn apply(
             match change {
                 RecordFeedChange::Remove { key, .. } => remove(sql, key)?,
                 RecordFeedChange::Upsert(record) => upsert(sql, record)?,
-                RecordFeedChange::Ratify {
-                    key, source_event, ..
-                } => ratify(sql, key, source_event)?,
             }
         }
         sql.prepare("UPDATE record_feed SET last_event=?1 WHERE singleton=1")?
@@ -71,21 +68,6 @@ pub fn apply(
         })
     })
 }
-fn ratify(sql: &SqlView<'_>, key: &RecordKey, event: &se_types::EventId) -> AtlasResult<()> {
-    let id: Option<i64> = sql
-        .prepare(
-            "SELECT id FROM records WHERE record_id=?1 AND kind='decision' AND source_event=?2",
-        )?
-        .query_row(params![key.as_str(), event.as_str()], |row| row.get(0))
-        .optional()
-        .map_err(cache_error)?;
-    let id=id.ok_or_else(||cache_error("ratification is missing its matching committed decision upsert; replay the same source chunk"))?;
-    sql.prepare("UPDATE touches SET touch_kind='ratified_decision' WHERE source_record=?1")?
-        .execute([id])
-        .map_err(cache_error)?;
-    Ok(())
-}
-
 fn remove(sql: &SqlView<'_>, key: &RecordKey) -> AtlasResult<()> {
     let old = affected(sql, key)?;
     // FTS and source-record touches are deleted by the schema's owned triggers.

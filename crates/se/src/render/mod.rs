@@ -2,7 +2,6 @@ mod acp;
 mod administration;
 mod continuity;
 mod control;
-mod decision;
 mod doctor;
 pub mod error;
 mod event;
@@ -125,15 +124,6 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             }
             (HumanKind::AgentReceipt, AnyOutput::AgentCreate(value)) => {
                 administration::agent(&value.value, out)?
-            }
-            (HumanKind::DecisionPage, AnyOutput::DecisionList(value)) => {
-                decision::page(&value.value, out)?
-            }
-            (HumanKind::Decision, AnyOutput::DecisionShow(value)) => {
-                decision::output(&value.value, out)?
-            }
-            (HumanKind::DecisionReceipt, AnyOutput::Decision(value)) => {
-                administration::decision(&value.value, out)?
             }
             (HumanKind::HistoryPage, AnyOutput::HistoryList(value)) => {
                 event::page(&value.value, out)?

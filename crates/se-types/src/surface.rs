@@ -5,9 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const ACP_NO_SANDBOX_NOTICE: &str =
     "This harness provides no execution sandbox in protocol mode.";
 mod agent;
-mod decision;
 pub use agent::*;
-pub use decision::*;
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Named<I> {

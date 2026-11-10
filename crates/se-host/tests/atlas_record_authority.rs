@@ -155,56 +155,6 @@ fn committed_feed_preserves_source_order_and_does_not_replay_old_working_text() 
 }
 
 #[test]
-fn committed_ratification_carries_a_separate_mention_weight_fact() -> Check {
-    let f = Fixture::new()?;
-    let (mut direct, lease) = f.direct()?;
-    let id = se_types::DecisionId::from_parts(1, [8; 10])?;
-    let proposal = direct.append(
-        f.batch(
-            f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone())),
-            Some(request("atlas-proposal")?),
-            vec![EventBody::DecisionProposed {
-                decision: id.clone(),
-                key: "atlas-budget".into(),
-                statement: InputText::Inline("Use alpha.rs for the packet budget".into()),
-                rationale: None,
-                prior: None,
-                kind: DecisionKind::Decision,
-            }],
-        )?,
-        &*lease,
-    )?;
-    let ratified = direct.append(
-        f.batch(
-            f.owner_project(),
-            Some(request("atlas-ratification")?),
-            vec![EventBody::DecisionRatified {
-                decision: id.clone(),
-                expected: revision(1)?,
-                approval: proposal.primary_event.clone(),
-            }],
-        )?,
-        &*lease,
-    )?;
-    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
-    let scope = f.scoped(Visibility::Owner);
-    let mut snapshot = reader.snapshot(scope.clone())?;
-    let feed = se_core::atlas_records::feed::next(
-        &mut snapshot,
-        &scope.admission,
-        Some(proposal.primary_event),
-    )?
-    .ok_or("ratification omitted")?;
-    assert_eq!(feed.through, ratified.primary_event);
-    assert_eq!(feed.changes.len(), 2);
-    assert!(
-        matches!(feed.changes.last(),Some(RecordFeedChange::Ratify{key,source_event,..}) if key.as_str()==id.as_str()&&source_event==&ratified.primary_event)
-    );
-    snapshot.close()?;
-    Ok(())
-}
-
-#[test]
 fn shared_work_mail_enters_the_feed_without_expanding_its_audience() -> Check {
     let f = Fixture::new()?;
     let (mut direct, lease) = f.direct()?;

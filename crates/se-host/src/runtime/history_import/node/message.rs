@@ -40,6 +40,22 @@ pub(super) fn decode<R: ImportSnapshot>(
     }
     if kind == "message" {
         text_at(row, "body")?;
+        if row
+            .get("refs")
+            .and_then(Value::as_array)
+            .is_some_and(|refs| {
+                refs.iter()
+                    .filter_map(Value::as_str)
+                    .any(|id| DecisionId::from_legacy(id).is_ok())
+            })
+        {
+            return retained(
+                row,
+                id.clone(),
+                format!("message:{id}"),
+                "message and original references retained as history; decision ledger references are retired",
+            );
+        }
         let sender = str_at(row, "from_seat")?;
         let retained_sender = if sender == "floor" {
             true
@@ -108,16 +124,6 @@ pub(super) fn decode<R: ImportSnapshot>(
                         .ok_or_else(|| invalid("Node message ref must be an ID"))?;
                     if let Ok(id) = MessageId::from_legacy(text) {
                         return reference::lookup(cx, read, &id).map(|value| value.event());
-                    }
-                    if let Ok(id) = DecisionId::from_legacy(text) {
-                        let record = require(read.decision(id)?)?;
-                        return Ok(record
-                            .original
-                            .as_deref()
-                            .unwrap_or(&record.current)
-                            .header
-                            .event
-                            .clone());
                     }
                     Err(fail(
                         StoreErrorCode::ReferenceMissing,

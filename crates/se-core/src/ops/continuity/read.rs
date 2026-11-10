@@ -17,7 +17,6 @@ pub(super) struct Gathered {
     pub working: Read<ContinuityWorkingState>,
     pub unread: se_types::Page<crate::ops::MessageRow>,
     pub unread_total: u64,
-    pub decisions: Decisions,
     pub turns: Vec<RecentTurn>,
     pub transcript: super::super::transcript::View,
     pub window: Window,
@@ -147,7 +146,6 @@ pub(super) fn gather<R: Snapshot>(
     if unread_total > 0 {
         attention.push(format!("{unread_total} unread message(s) require reading; listing and context construction do not mark them read."));
     }
-    let pending = cx.read.decision_count(true).map_err(|e| store_error(&e))?;
     let mut omissions = Vec::new();
     let mut failures = Vec::new();
     match &working {
@@ -156,65 +154,6 @@ pub(super) fn gather<R: Snapshot>(
             failures.push(scope::unreadable(source, reason).body)
         }
         Read::Present { .. } | Read::Absent { .. } => (),
-    }
-    let mut governing_budget = budget(u32::from(limit))?;
-    governing_budget.page.after = input.governing_cursor.clone();
-    let mut governing_next = None;
-    let governing_command = resume_command(
-        identity,
-        input.governing_cursor.as_ref(),
-        input.since.as_ref(),
-    )?;
-    let governing = match cx.read.governing_decisions(governing_budget) {
-        Ok(page) => {
-            governing_next = page.next().cloned();
-            window_omission(
-                "governing_decisions",
-                page.window(),
-                &resume_command(identity, governing_next.as_ref(), input.since.as_ref())?,
-                "stateengine_resume",
-                &mut omissions,
-            );
-            page.into_items()
-        }
-        Err(error) => {
-            let failure = store_error(&error);
-            failures.push(failure.body);
-            omissions.push(omission(
-                "governing_decisions",
-                None,
-                "governing source refused; exact omitted count is unavailable",
-                governing_command.clone(),
-                "stateengine_resume",
-            ));
-            Vec::new()
-        }
-    };
-    let mut decisions = Vec::new();
-    for head in governing {
-        match super::rulings::decode(head, &cx.admission.scope) {
-            Ok(decision) => decisions.push(decision),
-            Err(error) => {
-                let message = error.body.message();
-                if !failures.iter().any(|known| known.message() == message) {
-                    failures.push(error.body);
-                }
-                if let Some(old) = omissions.iter_mut().find(|item| {
-                    item.section == "governing_decisions"
-                        && item.reason == "a governing statement could not be reconstructed"
-                }) {
-                    old.count = old.count.and_then(|count| count.checked_add(1));
-                } else {
-                    omissions.push(omission(
-                        "governing_decisions",
-                        Some(1),
-                        "a governing statement could not be reconstructed",
-                        governing_command.clone(),
-                        "stateengine_resume",
-                    ));
-                }
-            }
-        }
     }
     let transcript = super::super::transcript::read(agent, None, cx);
     if let Read::Present { value } = &transcript.last_compaction {
@@ -322,11 +261,6 @@ pub(super) fn gather<R: Snapshot>(
         working,
         unread: mail.page,
         unread_total,
-        decisions: Decisions {
-            next_cursor: governing_next,
-            governing: decisions,
-            pending,
-        },
         turns: recent,
         transcript,
         window,
@@ -394,7 +328,6 @@ pub(super) fn mail_command(identity: &Identity) -> Result<AgentCommand> {
 
 pub(super) fn resume_command(
     identity: &Identity,
-    governing: Option<&se_types::Cursor>,
     since: Option<&se_types::Cursor>,
 ) -> Result<AgentCommand> {
     let mut words = vec!["resume".into(), "--budget".into(), "1048576".into()];
@@ -403,9 +336,6 @@ pub(super) fn resume_command(
     }
     if let Some(cursor) = since {
         words.extend(["--since".into(), cursor.to_string()]);
-    }
-    if let Some(cursor) = governing {
-        words.extend(["--governing-cursor".into(), cursor.to_string()]);
     }
     identity.command(words)
 }
@@ -421,10 +351,7 @@ fn budget_command(identity: &Identity, input: &Resume, needed: usize) -> Result<
     if identity.principal.preview {
         argv.extend(["--preview".into(), identity.principal.agent.id.to_string()]);
     }
-    for (flag, cursor) in [
-        ("--since", input.since.as_ref()),
-        ("--governing-cursor", input.governing_cursor.as_ref()),
-    ] {
+    for (flag, cursor) in [("--since", input.since.as_ref())] {
         if let Some(cursor) = cursor {
             argv.extend([flag.into(), cursor.to_string()]);
         }
@@ -489,7 +416,6 @@ mod recovery_tests {
             byte_budget: 1024,
             preview_agent: Some(identity.principal.agent.id.clone()),
             since: Some(se_types::Cursor::new("since-cursor")?),
-            governing_cursor: Some(se_types::Cursor::new("governing-cursor")?),
         };
         let error = budget_refusal(&identity, &input, 8192)?;
         let se_types::Cmd::Se { argv } = error
@@ -512,7 +438,6 @@ mod recovery_tests {
         assert_eq!(decoded.limit, input.limit);
         assert_eq!(decoded.byte_budget, 8192);
         assert_eq!(decoded.since, input.since);
-        assert_eq!(decoded.governing_cursor, input.governing_cursor);
         let error = budget_refusal(&identity, &input, MAX_BYTES as usize + 1)?;
         assert!(matches!(
             error.body.recovery_command(),

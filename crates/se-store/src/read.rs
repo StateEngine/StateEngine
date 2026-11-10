@@ -15,8 +15,6 @@ mod continuity;
 mod control;
 mod conversation;
 mod cursor;
-mod decision;
-mod decision_heads;
 mod grant;
 mod history;
 mod import;
@@ -40,7 +38,7 @@ use se_types::{
     AgentId, Cursor, EventId, Omission, OmissionReason, Page, ProjectId, Read, Sequence, Source,
     StopReason, Window, WindowFields,
 };
-use se_types::{DecisionId, LifecycleId, SessionId};
+use se_types::{LifecycleId, SessionId};
 use std::{marker::PhantomData, rc::Rc, time::Instant};
 // SQLite closes and rolls back on implicit drop. Only an explicit successful
 // close may return a connection to its host pool.
@@ -641,49 +639,6 @@ impl Snapshot for SqliteSnapshot {
             )
         }
     }
-    fn decision(&mut self, _id: DecisionId) -> StoreResult<Read<ProjectionRecord>> {
-        let p = self.project_bytes()?;
-        let s = scope_key(&self.db, &self.scope.admission.scope, false)?;
-        let d = key(&self.db, "decision", _id.as_str(), &s, false)?;
-        self.head_with(
-            "decisions",
-            "project_id=? AND decision_id=?",
-            &[&p, &d],
-            Some("proposed_seq"),
-            &|seq| self.decision_event(seq, &_id),
-        )
-    }
-    fn decision_predecessor(&mut self, id: DecisionId) -> StoreResult<Read<DecisionId>> {
-        self.read_decision_predecessor(id)
-    }
-    fn decision_transitions(
-        &mut self,
-        id: DecisionId,
-        budget: ReadBudget,
-    ) -> StoreResult<Read<Page<StoredEvent>>> {
-        self.read_decision_transitions(id, budget, false)
-    }
-    fn decision_detail_transitions(
-        &mut self,
-        id: DecisionId,
-        budget: ReadBudget,
-    ) -> StoreResult<Read<Page<StoredEvent>>> {
-        self.read_decision_transitions(id, budget, true)
-    }
-    fn decisions(
-        &mut self,
-        query: DecisionQuery,
-        budget: ReadBudget,
-    ) -> StoreResult<Page<ProjectionRecord>> {
-        self.read_decision_heads(query, false, budget)
-    }
-    fn decision_rows(
-        &mut self,
-        query: DecisionQuery,
-        budget: ReadBudget,
-    ) -> StoreResult<Page<Read<ProjectionRecord>>> {
-        self.read_decision_rows(query, false, budget)
-    }
     fn turn(&mut self, id: RecordId) -> StoreResult<Read<StoredEvent>> {
         self.read_turn(id)
     }
@@ -722,12 +677,6 @@ impl Snapshot for SqliteSnapshot {
         budget: ReadBudget,
     ) -> StoreResult<TranscriptRecords> {
         self.read_transcript_events(agent, session, budget)
-    }
-    fn governing_decisions(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
-        self.read_governing_decisions(budget)
-    }
-    fn decision_count(&mut self, pending_only: bool) -> StoreResult<u64> {
-        self.read_decision_count(pending_only)
     }
     fn turns(&mut self, _agent: AgentId, _budget: ReadBudget) -> StoreResult<Page<StoredEvent>> {
         self.read_turns(_agent, _budget)

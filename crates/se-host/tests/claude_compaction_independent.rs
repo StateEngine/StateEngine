@@ -294,7 +294,6 @@ fn exercise(broken: Option<Vec<u8>>) -> Check {
                     let resumed = serde_json::to_value(resume(
                         Resume {
                             limit: 20,
-                            governing_cursor: None,
                             since: None,
                             byte_budget: 65536,
                             preview_agent: None,

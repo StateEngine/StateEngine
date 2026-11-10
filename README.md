@@ -169,6 +169,9 @@ running, finish them first or inspect the stop instructions printed by launch.
 The explicit `--override-live` option stops the old session and its identified
 jobs before reopening; it is not needed for this ordinary stop-and-reopen path.
 
+Decision-ledger commands are retired. Previously stored events remain readable
+through `se history`; retirement does not delete their recorded payloads.
+
 To inspect saved context without restarting or marking messages read:
 
 ```sh
@@ -177,8 +180,7 @@ se resume --preview main
 
 This is an **owner preview**: you, the current OS user, read the agent's saved
 information. A snapshot is what was available at that read. Working state is a
-saved note about ongoing work; pending decisions are project proposals awaiting
-an owner's decision. A cursor is a bookmark for later reads: copy the full
+saved note about ongoing work. A cursor is a bookmark for later reads: copy the full
 `Continue` command printed by your run rather than inventing one.
 **Saved context available (JSON `ready`) and context complete describe this read
 only; provider sign-in and task completion are not checked.** Missing information, unreadable sources and clipped

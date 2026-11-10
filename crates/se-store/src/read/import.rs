@@ -186,47 +186,4 @@ impl crate::import::ImportSnapshot for SqliteSnapshot {
             })
             .transpose()
     }
-    fn import_prior(
-        &mut self,
-        label: &str,
-    ) -> StoreResult<Option<(se_types::DecisionId, Revision)>> {
-        self.import_owner()?;
-        let project = self.project_bytes()?;
-        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
-        let mut stmt=self.db.prepare("SELECT d.decision_id,d.revision,e.door FROM decisions d JOIN decision_data p ON p.event_seq=d.proposed_seq JOIN events e ON e.seq=d.last_seq WHERE d.project_id=? AND p.decision_key=? AND d.state='ratified' ORDER BY d.last_seq DESC LIMIT 2").map_err(sql)?;
-        let rows = stmt
-            .query_map(rusqlite::params![project, label], |r| {
-                Ok((
-                    r.get::<_, Vec<u8>>(0)?,
-                    crate::sql_value::value::<u64>(r, 1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(sql)?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(sql)?;
-        if rows.len() > 1 {
-            return Err(fail(
-                StoreErrorCode::ProjectionInconsistent,
-                "multiple governing heads for one imported decision key",
-            ));
-        }
-        rows.into_iter()
-            .next()
-            .map(|(id, revision, door)| {
-                if door != "import" {
-                    return Err(fail(
-                        StoreErrorCode::NaturalKeyConflict,
-                        "current governing user law cannot be superseded by imported history",
-                    ));
-                }
-                Ok((
-                    wire(&self.db, "decision", &id, &scope)?
-                        .try_into()
-                        .map_err(invalid)?,
-                    crate::codec::revision(revision)?,
-                ))
-            })
-            .transpose()
-    }
 }

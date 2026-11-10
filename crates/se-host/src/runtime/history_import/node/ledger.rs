@@ -39,13 +39,10 @@ pub(super) fn decode<R: ImportSnapshot>(
         dropped_by_policy: false,
         dispositions: None,
     };
-    let mut revisions: BTreeMap<String, Revision> = BTreeMap::new();
     let mut retained = Vec::new();
     let mut excluded = 0u64;
     let mut user_events = 0u64;
-    let mut proposed_keys = BTreeMap::<String, String>::new();
     let mut principal_revisions = BTreeMap::<String, Revision>::new();
-    let mut governing = BTreeMap::<String, Option<(DecisionId, Revision)>>::new();
     let Actor::Human(owner) = &cx.admission.actor else {
         return Err(invalid("owner import admission required"));
     };
@@ -106,7 +103,6 @@ pub(super) fn decode<R: ImportSnapshot>(
         {
             require(read.principal(by.clone())?)?;
         }
-        let mut afterward = Vec::new();
         let body = match kind {
             "agent.created" => {
                 result.family = ImportFamily::Agents;
@@ -208,153 +204,30 @@ pub(super) fn decode<R: ImportSnapshot>(
                 retained.push(json!({"type":kind,"agent_id":row.get("agent_id").and_then(Value::as_str),"agent_name":row.get("agent_name").and_then(Value::as_str),"agent_role":row.get("agent_role").and_then(Value::as_str),"description":row.get("description").and_then(Value::as_str),"can_create":row.get("can_create").and_then(Value::as_bool)}));
                 continue;
             }
-            "decision.proposed" => {
-                let id = DecisionId::from_legacy(str_at(row, "decision_id")?).map_err(invalid)?;
-                let revision = Revision {
-                    value: std::num::NonZeroU64::new(1).ok_or_else(|| invalid("revision"))?,
-                };
-                revisions.insert(id.to_string(), revision);
-                proposed_keys.insert(id.to_string(), str_at(row, "key")?.into());
-                if row.get("supersedes_key").is_some() {
-                    retained
-                        .push(json!({"decision_id":id,"supersedes_key":row.get("supersedes_key")}));
-                }
-                EventBody::DecisionProposed {
-                    decision: id,
-                    key: str_at(row, "key")?.into(),
-                    statement: InputText::Inline(str_at(row, "statement")?.into()),
-                    rationale: optional(row, "rationale").map(InputText::Inline),
-                    prior: None,
-                    kind: DecisionKind::Decision,
-                }
-            }
-            "decision.ratified" | "decision.rejected" | "decision.retracted" => {
-                if !matches!(by, Actor::Human(_)) {
-                    return Err(invalid(
-                        "Node decision transition does not record a human actor",
-                    ));
-                }
-                let decision =
-                    DecisionId::from_legacy(str_at(row, "decision_id")?).map_err(invalid)?;
-                let revision = match revisions.get(decision.as_str()) {
-                    Some(r) => *r,
-                    None => require(read.decision(decision.clone())?)?.revision,
-                };
-                let want = Expected::Revision(revision);
-                let next = revision
-                    .value
-                    .get()
-                    .checked_add(1)
-                    .and_then(std::num::NonZeroU64::new)
-                    .ok_or_else(|| invalid("decision revision overflow"))?;
-                revisions.insert(decision.to_string(), Revision { value: next });
-                if kind == "decision.ratified" {
-                    // Retain the actual historical human transition as approval
-                    // evidence before the typed transition, not a new human act.
-                    let approval_key = format!("{key}:source-approval");
-                    let bytes = serde_json::to_vec(
-                        &json!({"type":kind,"decision_id":decision,"actor_type":row.get("actor_type").and_then(Value::as_str),"actor_id":row.get("actor_id").and_then(Value::as_str),"rationale":row.get("rationale").and_then(Value::as_str),"transaction":txn,"source_evidence":cx.source}),
-                    )
-                    .map_err(invalid)?;
-                    let hash = Sha256::digest(&bytes).into();
-                    result.events.push(event(
-                        cx,
-                        by.clone(),
-                        &approval_key,
-                        ts,
-                        None,
-                        EventBody::LegacyRetained {
-                            import: cx.import,
-                            family: ImportFamily::Decisions,
-                            format_version: 1,
-                            legacy_id: approval_key.clone(),
-                            mapped_id: LegacyTarget::Decision(decision.clone()),
-                            source: cx.source.clone(),
-                            bytes: Some(LegacyBytes {
-                                bytes,
-                                sha256: hash,
-                            }),
-                            retained_from: None,
-                        },
-                    )?);
-                    let label = if let Some(key) = proposed_keys.get(decision.as_str()) {
-                        key.clone()
-                    } else {
-                        let head = require(read.decision(decision.clone())?)?;
-                        let original = head.original.as_deref().unwrap_or(&head.current);
-                        let EventBody::DecisionProposed { key, .. } = &original.body else {
-                            return Err(invalid("imported decision proposal metadata absent"));
-                        };
-                        key.clone()
-                    };
-                    let prior = match governing.get(&label) {
-                        Some(prior) => prior.clone(),
-                        None => read.import_prior(&label)?,
-                    };
-                    let replacement_revision = Revision { value: next };
-                    let approval = event_id(&cx.admission.scope, &approval_key)?;
-                    if let Some((prior, prior_revision)) = prior
-                        && prior != decision
-                    {
-                        revisions.insert(
-                            prior.to_string(),
-                            source_revision(
-                                prior_revision
-                                    .value
-                                    .get()
-                                    .checked_add(1)
-                                    .ok_or_else(|| invalid("source decision revision overflow"))?,
-                            )?,
-                        );
-                        afterward.push(event(
-                            cx,
-                            by.clone(),
-                            &format!("{key}:superseded"),
-                            ts,
-                            None,
-                            EventBody::DecisionSuperseded {
-                                prior,
-                                replacement: decision.clone(),
-                                prior_expected: prior_revision,
-                                replacement_expected: replacement_revision,
-                                approval: approval.clone(),
-                            },
-                        )?);
-                    }
-
-                    governing.insert(label, Some((decision.clone(), replacement_revision)));
-                    EventBody::DecisionRatified {
-                        decision,
-                        expected: want,
-                        approval,
-                    }
-                } else if kind == "decision.rejected" {
-                    EventBody::DecisionRejected {
-                        decision,
-                        expected: want,
-                        reason: InputText::Inline(str_at(row, "rationale")?.into()),
-                    }
-                } else {
-                    let label = if let Some(label) = proposed_keys.get(decision.as_str()) {
-                        label.clone()
-                    } else {
-                        let head = require(read.decision(decision.clone())?)?;
-                        match &head.original.as_deref().unwrap_or(&head.current).body {
-                            EventBody::DecisionProposed { key, .. } => key.clone(),
-                            _ => return Err(invalid("source decision proposal absent")),
+            "decision.proposed"
+            | "decision.ratified"
+            | "decision.rejected"
+            | "decision.retracted"
+            | "decision.superseded"
+            | "decision.tier" => {
+                // Retired ledger records retain their complete source payload and
+                // provenance without creating current decision projections.
+                EventBody::LegacyRetained {
+                    import: cx.import,
+                    family: ImportFamily::Decisions,
+                    format_version: 1,
+                    legacy_id: key.clone(),
+                    mapped_id: LegacyTarget::Record(record_id("retired-decision", &key)?),
+                    source: cx.source.clone(),
+                    bytes: Some({
+                        let bytes = serde_json::to_vec(row).map_err(invalid)?;
+                        LegacyBytes {
+                            sha256: Sha256::digest(&bytes).into(),
+                            bytes,
                         }
-                    };
-                    governing.insert(label, None);
-                    EventBody::DecisionRetracted {
-                        decision,
-                        expected: want,
-                        reason: InputText::Inline(str_at(row, "rationale")?.into()),
-                    }
+                    }),
+                    retained_from: None,
                 }
-            }
-            "decision.tier" => {
-                retained.push(json!({"type":kind,"decision_id":row.get("decision_id"),"tier":row.get("tier")}));
-                continue;
             }
             _ => {
                 return Err(invalid(format!(

@@ -76,13 +76,10 @@ fn add(text: &mut String, line: String) {
     }
 }
 fn linked(text: &mut String, sample: &se_atlas::query::hooks::LinkedSample) {
-    if sample.decisions != 0 || sample.messages != 0 {
+    if sample.messages != 0 {
         add(
             text,
-            format!(
-                "linked (sample): {} decisions, {} messages",
-                sample.decisions, sample.messages
-            ),
+            format!("linked (sample): {} messages", sample.messages),
         );
     }
 }

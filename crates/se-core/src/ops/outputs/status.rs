@@ -69,10 +69,6 @@ pub struct InboxCounts {
     pub self_unread: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct DecisionCounts {
-    pub pending: Option<u64>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct CaptureView {
     pub state: String,
     pub last_turn_at: Option<String>,
@@ -118,7 +114,6 @@ pub struct StatusOutput {
     pub principal: Option<PrincipalView>,
     pub agents: Option<Page<AgentRow>>,
     pub inbox: InboxCounts,
-    pub decisions: DecisionCounts,
     pub capture: CaptureView,
     pub atlas: AtlasView,
     pub pending: Vec<PendingFact>,

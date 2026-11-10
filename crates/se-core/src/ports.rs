@@ -8,7 +8,6 @@ pub enum Then {
     AgentCreate(crate::ops::agent::AgentCreateThen),
     AgentRename(crate::ops::agent::AgentRenameThen),
     ProjectMove(crate::ops::project::ProjectMoveThen),
-    Decision(crate::ops::decision::DecisionThen),
     Capture(crate::ops::hook::CaptureThen),
     MessageSend(MessageSendThen),
     MessageMark(crate::ops::message_mark::MarkThen),

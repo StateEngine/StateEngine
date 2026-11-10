@@ -99,18 +99,6 @@ pub(super) fn resume_at(
     if value.unread.items().is_empty() && value.unread.window().complete() {
         writeln!(out, "No unread messages in this snapshot.")?;
     }
-    for decision in &value.decisions.governing {
-        writeln!(
-            out,
-            "Governing decision {}: {}",
-            decision.key, decision.statement
-        )?;
-    }
-    writeln!(
-        out,
-        "Pending decisions in this authorized view: {}",
-        value.decisions.pending
-    )?;
     writeln!(out, "\nWhat changed?")?;
     if value.since.is_none() {
         writeln!(

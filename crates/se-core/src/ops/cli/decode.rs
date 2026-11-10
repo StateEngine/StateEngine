@@ -80,7 +80,6 @@ pub fn from_matches_with_key(
             limit: required(m, "limit")?
                 .parse()
                 .map_err(|_| SeError::invalid("limit", "1..100"))?,
-            governing_cursor: text(m, "governing_cursor").map(Cursor::new).transpose()?,
             since: text(m, "since")
                 .map(crate::ops::continuity::resume_since)
                 .transpose()?,
@@ -90,7 +89,6 @@ pub fn from_matches_with_key(
             preview_agent: None,
         }),
         "session.context" => AnyOp::SessionContext(SessionContextRequest {
-            governing_cursor: text(m, "governing_cursor").map(Cursor::new).transpose()?,
             limit: required(m, "limit")?
                 .parse()
                 .map_err(|_| SeError::invalid("limit", "1..100"))?,
@@ -318,80 +316,6 @@ pub fn from_matches_with_key(
         "agent.rename" => AnyOp::AgentRename(AgentRename {
             agent: required(m, "agent")?,
             name: required(m, "name")?,
-            idempotency_key: key()?,
-        }),
-        "decision.list" => AnyOp::DecisionList(DecisionList {
-            id: text(m, "id"),
-            pending: flag(m, "pending"),
-            history: flag(m, "history"),
-            limit: text(m, "limit")
-                .map(|value| {
-                    value
-                        .parse()
-                        .map_err(|_| SeError::invalid("limit", "1..100"))
-                })
-                .transpose()?
-                .unwrap_or(20),
-            cursor: text(m, "cursor").map(se_types::Cursor::new).transpose()?,
-        }),
-        "decision.show" => AnyOp::DecisionShow(DecisionShow {
-            decision_id: required(m, "decision_id")?,
-        }),
-        "decision.propose" => AnyOp::DecisionPropose(DecisionPropose {
-            key: required(m, "decision_key")?,
-            statement: required(m, "statement")?,
-            rationale: text(m, "rationale"),
-            supersedes: text(m, "supersedes")
-                .map(se_types::DecisionId::from_legacy)
-                .transpose()?,
-            idempotency_key: key()?,
-        }),
-        "decision.ratify" => AnyOp::DecisionRatify(DecisionRatify {
-            decision_id: se_types::DecisionId::from_legacy(required(m, "decision_id")?)?,
-            expect: text(m, "expect")
-                .map(|value| {
-                    value
-                        .parse()
-                        .map_err(|_| SeError::invalid("expect", "positive entity revision"))
-                })
-                .transpose()?,
-            idempotency_key: key()?,
-        }),
-        "decision.reject" => AnyOp::DecisionReject(DecisionReject {
-            decision_id: se_types::DecisionId::from_legacy(required(m, "decision_id")?)?,
-            reason: required(m, "reason")?,
-            expect: text(m, "expect")
-                .map(|value| {
-                    value
-                        .parse()
-                        .map_err(|_| SeError::invalid("expect", "positive entity revision"))
-                })
-                .transpose()?,
-            idempotency_key: key()?,
-        }),
-        "decision.retract" => AnyOp::DecisionRetract(DecisionRetract {
-            decision_id: se_types::DecisionId::from_legacy(required(m, "decision_id")?)?,
-            reason: required(m, "reason")?,
-            expect: text(m, "expect")
-                .map(|value| {
-                    value
-                        .parse()
-                        .map_err(|_| SeError::invalid("expect", "positive entity revision"))
-                })
-                .transpose()?,
-            idempotency_key: key()?,
-        }),
-        "decision.supersede" => AnyOp::DecisionSupersede(DecisionSupersede {
-            decision_id: se_types::DecisionId::from_legacy(required(m, "decision_id")?)?,
-            replacement_id: se_types::DecisionId::from_legacy(required(m, "replacement_id")?)?,
-            expect: text(m, "expect")
-                .map(|value| {
-                    value
-                        .parse()
-                        .map_err(|_| SeError::invalid("expect", "positive entity revision"))
-                })
-                .transpose()?,
-            replacement_expect: None,
             idempotency_key: key()?,
         }),
         "working_state.set" => {

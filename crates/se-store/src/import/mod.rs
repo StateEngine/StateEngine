@@ -229,5 +229,4 @@ pub trait ImportSnapshot: Snapshot {
         &mut self,
         canonical_key: &[u8],
     ) -> StoreResult<Option<se_types::ProjectId>>;
-    fn import_prior(&mut self, key: &str) -> StoreResult<Option<(se_types::DecisionId, Revision)>>;
 }

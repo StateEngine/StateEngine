@@ -152,6 +152,9 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
             None
         };
         let body = match (source.body, pointer.kind) {
+            (_, RecordKind::Decision) => return Ok(Read::Absent {
+                checked: "decision ledger records are retired; original events remain readable through history".into(),
+            }),
             (
                 EventBody::MessageSent { message, body, .. }
                 | EventBody::WorkMessageSent { message, body, .. },
@@ -171,44 +174,6 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
                     return Ok(stale());
                 }
                 text(body)?
-            }
-            (
-                EventBody::DecisionProposed { decision, .. }
-                | EventBody::DecisionRatified { decision, .. }
-                | EventBody::DecisionRejected { decision, .. }
-                | EventBody::DecisionRetracted { decision, .. },
-                RecordKind::Decision,
-            ) if decision.as_str() == pointer.key.as_str() => {
-                let current = match visible(self.read.decision(decision.clone()))? {
-                    Read::Present { value } => value,
-                    other => return Ok(other.map(|_| unreachable!())),
-                };
-                if current.current.header.event != pointer.source_event {
-                    return Ok(stale());
-                }
-                decision_body(
-                    current
-                        .original
-                        .map(|event| *event)
-                        .unwrap_or(current.current),
-                )?
-            }
-            (EventBody::DecisionSuperseded { prior, .. }, RecordKind::Decision)
-                if prior.as_str() == pointer.key.as_str() =>
-            {
-                let current = match visible(self.read.decision(prior.clone()))? {
-                    Read::Present { value } => value,
-                    other => return Ok(other.map(|_| unreachable!())),
-                };
-                if current.current.header.event != pointer.source_event {
-                    return Ok(stale());
-                }
-                decision_body(
-                    current
-                        .original
-                        .map(|event| *event)
-                        .unwrap_or(current.current),
-                )?
             }
             (EventBody::SessionTurn { .. }, RecordKind::Edit) => {
                 let Some(tool) = captured else {
@@ -288,25 +253,6 @@ fn text(value: StoredText) -> Result<String> {
             "authoritative text was erased; no cached body is available",
         )),
     }
-}
-fn decision_body(event: StoredEvent) -> Result<String> {
-    let EventBody::DecisionProposed {
-        statement,
-        rationale,
-        ..
-    } = event.body
-    else {
-        return Err(scope::unreadable(
-            "Atlas decision",
-            "original proposed text is unavailable",
-        ));
-    };
-    let mut output = text(statement)?;
-    if let Some(rationale) = rationale {
-        output.push('\n');
-        output.push_str(&text(rationale)?);
-    }
-    Ok(output)
 }
 fn visible<T>(value: se_store::StoreResult<Read<T>>) -> Result<Read<T>> {
     match value {

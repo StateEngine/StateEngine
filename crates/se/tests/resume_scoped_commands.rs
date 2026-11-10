@@ -122,7 +122,6 @@ fn preview_succeeds_when_only_turns_are_omitted_for_packet_budget() -> Check {
     let bound = se_core::ops::continuity::resume(
         se_core::ops::continuity::Resume {
             limit: 20,
-            governing_cursor: None,
             since: None,
             byte_budget: 4096,
             preview_agent: None,
@@ -455,14 +454,12 @@ fn bound_resume_and_session_context_share_scoped_commands_and_exact_budgets() ->
     for op in [
         AnyOp::Resume(Resume {
             limit: 20,
-            governing_cursor: None,
             since: None,
             byte_budget: 32768,
             preview_agent: None,
         }),
         AnyOp::SessionContext(SessionContextRequest {
             limit: 20,
-            governing_cursor: None,
             since: None,
             byte_budget: 32768,
         }),

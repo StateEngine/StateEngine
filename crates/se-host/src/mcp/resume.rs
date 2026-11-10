@@ -192,7 +192,6 @@ mod tests {
     fn input() -> Resume {
         Resume {
             limit: 20,
-            governing_cursor: None,
             since: None,
             byte_budget: 4096,
             preview_agent: None,

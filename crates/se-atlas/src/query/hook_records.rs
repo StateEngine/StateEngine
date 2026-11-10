@@ -2,7 +2,6 @@
 use super::*;
 #[derive(Default)]
 pub struct LinkedSample {
-    pub decisions: u8,
     pub messages: u8,
 }
 pub(super) fn sample(
@@ -17,7 +16,7 @@ pub(super) fn sample(
     }
     // Cap each covering-index walk before the join/deduplication. A popular
     // file cannot require sorting all its historical links on a hook path.
-    let mut statement = sql.prepare("WITH ids AS (SELECT source_id FROM (SELECT source_id FROM mentions WHERE target_kind='file' AND target_key=?1 AND source_kind='record' LIMIT 16) UNION SELECT source_id FROM (SELECT source_id FROM mentions WHERE target_kind='symbol' AND target_key=?2 AND source_kind='record' LIMIT 16)) SELECT r.id,r.kind,r.visibility,r.audience FROM ids JOIN records r ON r.id=ids.source_id WHERE r.kind IN ('decision','message') LIMIT 16")?;
+    let mut statement = sql.prepare("WITH ids AS (SELECT source_id FROM (SELECT source_id FROM mentions WHERE target_kind='file' AND target_key=?1 AND source_kind='record' LIMIT 16) UNION SELECT source_id FROM (SELECT source_id FROM mentions WHERE target_kind='symbol' AND target_key=?2 AND source_kind='record' LIMIT 16)) SELECT r.id,r.kind,r.visibility,r.audience FROM ids JOIN records r ON r.id=ids.source_id WHERE r.kind='message' LIMIT 16")?;
     let mut rows = statement
         .query(params![file.0.as_slice(), symbol.map(|s| s.0.as_slice())])
         .map_err(cache_error)?;
@@ -44,7 +43,6 @@ pub(super) fn sample(
         };
         if allowed {
             match get::<String>(row, 1)?.as_str() {
-                "decision" => sample.decisions += 1,
                 "message" => sample.messages += 1,
                 _ => return Err(cache_error("unexpected linked record kind")),
             }

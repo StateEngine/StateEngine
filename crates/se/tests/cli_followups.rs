@@ -479,26 +479,6 @@ fn renamed_commands_keep_supported_replacements_without_opening_state() -> Check
             vec!["status", "--help"],
         ),
         (
-            vec!["ratify", "id"],
-            "se decision ratify ID",
-            vec!["decision", "ratify", "--help"],
-        ),
-        (
-            vec!["reject", "id"],
-            "se decision reject ID",
-            vec!["decision", "reject", "--help"],
-        ),
-        (
-            vec!["retract", "id"],
-            "se decision retract ID",
-            vec!["decision", "retract", "--help"],
-        ),
-        (
-            vec!["reverse", "id"],
-            "se decision supersede ID WITH_ID",
-            vec!["decision", "supersede", "--help"],
-        ),
-        (
             vec!["floor-event", "id"],
             "se history --event ID",
             vec!["history", "--help"],
@@ -555,21 +535,7 @@ fn renamed_commands_keep_supported_replacements_without_opening_state() -> Check
         );
         assert!(!home.exists(), "rename or help created state: {old:?}");
     }
-    for old in ["ratifyall", "ratify"] {
-        let mut args = vec![old];
-        if old == "ratify" {
-            args.push("all");
-        }
-        let error = json(&command(&home).args(args).output_executable()?)?;
-        assert_eq!(error["code"], "renamed");
-        assert!(
-            error["remedy"]["text"]
-                .as_str()
-                .ok_or("bulk remedy")?
-                .contains("once per decision; no bulk approval")
-        );
-        assert!(!home.exists());
-    }
+
     Ok(())
 }
 

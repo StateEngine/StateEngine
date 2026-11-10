@@ -233,27 +233,6 @@ pub fn cli_command() -> Command {
             root = insert(root, path, meta.name, hidden);
         }
     }
-    root = root
-        .mut_subcommand("decision", |command| {
-            let command = input_command("decision.list", command)
-                .visible_alias("decisions")
-                .args_conflicts_with_subcommands(true);
-            match help::group("decision") {
-                Some(summary) => command.about(summary),
-                None => command,
-            }
-        })
-        .subcommand(
-            input_command(
-                "decision.list",
-                Command::new("pending")
-                    .disable_help_flag(true)
-                    .disable_version_flag(true)
-                    .disable_help_subcommand(true),
-            )
-            .mut_arg("pending", |arg| arg.default_value("true"))
-            .about("List decisions awaiting an outcome"),
-        );
     // MCP is a streaming transport for the registered operations, not another
     // store operation with a fabricated product output family.
     root.subcommand(
@@ -344,13 +323,11 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(positional("agent", 1, false).conflicts_with("preview").help("Show the launch command that reopens this agent's saved conversation"))
             .arg(value("since").value_parser(clap::builder::StringValueParser::new()).help("An opaque cursor from resume for this same agent"))
             .arg(value("budget").default_value("4096").help("Maximum UTF-8 bytes in the JSON reply (1024..1048576)"))
-            .arg(value("limit").default_value("20").help("Maximum recent turns and governing decisions per section (1..100)"))
-            .arg(value("governing_cursor").long("governing-cursor").help("Continue project rulings from decisions.next_cursor"))
+            .arg(value("limit").default_value("20").help("Maximum recent turns per section (1..100)"))
             .arg(value("preview").help("Owner: inspect this saved agent without binding or acknowledging it")),
         "session.context" => c
             .arg(value("since").help("An opaque cursor from context for this same agent"))
             .arg(value("budget").default_value("32768").help("Maximum UTF-8 bytes in the context reply"))
-            .arg(value("governing_cursor").long("governing-cursor").help("Continue project rulings from the previous context page"))
             .arg(value("limit").default_value("20").help("Maximum recent entries per context section")),
         "project.remove" => c
             .arg(toggle("all").conflicts_with("project").help("Remove every registered project in this home"))
@@ -432,29 +409,7 @@ fn input_command(name: &str, c: Command) -> Command {
         "agent.rename" => c
             .arg(positional("agent", 1, true).help("Saved agent name or ID to rename"))
             .arg(positional("name", 2, true).help("New display name for the saved agent")),
-        "decision.list" => c
-            .arg(value("id").help("One decision ID"))
-            .arg(toggle("pending").help("Only proposals awaiting an owner outcome"))
-            .arg(toggle("history").help("Include retired decisions"))
-            .arg(value("limit").default_value("20").help("Maximum decisions in this page"))
-            .arg(value("cursor").help("Cursor from a previous page of this same read")),
-        "decision.show" => c.arg(positional("decision_id", 1, true).help("Decision ID from se decision list")),
-        "decision.propose" => c
-            .arg(positional("decision_key", 1, true).help("Stable key naming this decision topic"))
-            .arg(positional("statement", 2, true).help("The statement to propose"))
-            .arg(value("rationale").help("Supporting reason for the proposal"))
-            .arg(value("supersedes").help("Decision ID this proposal replaces")),
-        "decision.ratify" => c
-            .arg(positional("decision_id", 1, true).help("Decision ID from se decision list"))
-            .arg(value("expect").help("Expected revision from se decision show")),
-        "decision.reject" | "decision.retract" => c
-            .arg(positional("decision_id", 1, true).help("Decision ID from se decision list"))
-            .arg(value("reason").required(true).help("Why, recorded with the decision"))
-            .arg(value("expect").help("Expected revision from se decision show")),
-        "decision.supersede" => c
-            .arg(positional("decision_id", 1, true).help("Decision ID to supersede"))
-            .arg(positional("replacement_id", 2, true).help("New decision ID replacing it"))
-            .arg(value("expect").help("Expected revision from se decision show")),
+
         "working_state.set" => c
             .arg(positional("text", 1, true).help("The new working-state text; - reads it from stdin"))
             .arg(value("expect").required(true).help("The revision you last read, or absent for the first write"))
@@ -487,9 +442,6 @@ pub fn selected_meta(matches: &ArgMatches) -> Result<&'static crate::registry::O
     }
     if path.len() == 1 && path[0] == "atlas" {
         return Ok(&MetaHelp::META);
-    }
-    if path.len() == 1 && matches!(path[0].as_str(), "decision" | "pending") {
-        return Ok(&DecisionList::META);
     }
     let same_path = |meta: &crate::registry::OpMeta| {
         matches!(meta.cli,

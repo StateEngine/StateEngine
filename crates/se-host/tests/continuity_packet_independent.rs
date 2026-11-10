@@ -159,7 +159,6 @@ impl Harness {
 }
 fn request(bytes: u32) -> SessionContextRequest {
     SessionContextRequest {
-        governing_cursor: None,
         limit: 20,
         since: None,
         byte_budget: bytes,
@@ -168,7 +167,6 @@ fn request(bytes: u32) -> SessionContextRequest {
 fn resume_request(bytes: u32, preview_agent: Option<AgentId>) -> Resume {
     Resume {
         limit: 20,
-        governing_cursor: None,
         since: None,
         byte_budget: bytes,
         preview_agent,
@@ -392,79 +390,6 @@ fn preview_and_since_do_not_cross_their_authority_or_target() -> Check {
     assert!(!b.assembled_model_input.contains("private A state"));
     assert!(!b.assembled_model_input.contains("unread A packet marker"));
     assert!(!b.assembled_model_input.contains("packet-turn-"));
-    h.finish()
-}
-
-/// Protects: loss of the governing source is a named incomplete packet, never
-/// a complete model input that silently drops current project law.
-#[test]
-fn governing_source_is_complete_or_explicitly_failed() -> Check {
-    let mut h = Harness::new()?;
-    let decision = se_types::DecisionId::from_parts(1_700_000_000_000 + serial(), [57; 10])?;
-    let proposed = h.direct.append(
-        h.f.batch(
-            h.f.admission(
-                Scope::Project(h.f.project.clone()),
-                Actor::Agent(h.f.a.clone()),
-            ),
-            Some(fixture::request(&format!(
-                "fixture-continuity_packet_independent-394-{}",
-                serial()
-            ))?),
-            vec![EventBody::DecisionProposed {
-                decision: decision.clone(),
-                key: "governing.packet".into(),
-                statement: InputText::Inline("current project law marker".into()),
-                rationale: None,
-                prior: None,
-                kind: DecisionKind::Decision,
-            }],
-        )?,
-        &*h.lease,
-    )?;
-    h.direct.append(
-        h.f.batch(
-            h.f.owner_project(),
-            Some(fixture::request(&format!(
-                "fixture-continuity_packet_independent-412-{}",
-                serial()
-            ))?),
-            vec![EventBody::DecisionRatified {
-                decision,
-                expected: revision(1)?,
-                approval: proposed.primary_event,
-            }],
-        )?,
-        &*h.lease,
-    )?;
-    let context = h.context(&h.f.a, Some(h.a.clone()), request(32768))??;
-    let parsed = model(&context)?;
-    if context.failures.is_empty() {
-        assert!(
-            context
-                .assembled_model_input
-                .contains("current project law marker"),
-            "complete governing source silently dropped law"
-        );
-    } else {
-        assert!(context.truncated);
-        assert_eq!(parsed["resume_status"], "integrity_blocked");
-        assert!(
-            parsed["omissions"]
-                .as_array()
-                .ok_or("omissions")?
-                .iter()
-                .any(|item| item["section"] == "governing_decisions" && item["count"].is_null()),
-            "refused governing source invented a zero omission count"
-        );
-        assert!(
-            context
-                .failures
-                .iter()
-                .any(|failure| failure.message().contains("visibility")),
-            "governing source failure lost its reason"
-        );
-    }
     h.finish()
 }
 
