@@ -1,6 +1,9 @@
 //! Atomic durable identity/profile creation; starting a process is a separate
 //! custody operation. Configuration here is an already resolved adapter fact.
-use super::{administration::AgentCreate, inputs::Validate};
+use super::{
+    administration::{AgentCreate, AgentRename},
+    inputs::Validate,
+};
 use crate::{
     commit::Cx,
     config_policy::{ConfigFile, EffectiveSandbox, Provider},
@@ -12,7 +15,7 @@ use se_store::{
     Actor, AtomicBatch, EventBody, Expected, GrantKey, PermissionProfile, PrincipalKind, Profile,
     Snapshot,
 };
-use se_types::{Detail, IdempotencyKey, Read, Result, SeError, details};
+use se_types::{AgentId, Detail, IdempotencyKey, Read, Result, SeError, details};
 
 pub struct AgentCreateThen {
     pub(crate) request: IdempotencyKey,
@@ -213,6 +216,193 @@ pub fn committed<R: Snapshot>(
             profile: profile.named_profile,
         },
         previous_name: None,
+        process_started: super::NoProcessStarted,
+    })
+}
+
+pub struct AgentRenameThen {
+    pub(crate) request: IdempotencyKey,
+    pub(crate) agent: AgentId,
+    pub(crate) previous_name: String,
+}
+fn replay_target<R: Snapshot>(key: &IdempotencyKey, cx: &mut Cx<'_, R>) -> Result<Option<AgentId>> {
+    let receipt = cx
+        .read
+        .operation_receipt(cx.admission.actor.clone(), key.clone())
+        .map_err(|error| store_error(&error))?;
+    match receipt {
+        Read::Present { value } => {
+            let event = super::receipt::committed_event(cx.read, &value)?;
+            match event.body {
+                EventBody::PrincipalRenamed {
+                    principal: Actor::Agent(agent),
+                    ..
+                } => Ok(Some(agent)),
+                _ => Err(SeError::new(se_types::Detail::IdempotencyKeyReused(
+                    se_types::details::IdempotencyKeyReused {
+                        key: key.to_string(),
+                        original_event: value.primary_event,
+                    },
+                ))),
+            }
+        }
+        Read::Absent { .. } => Ok(None),
+        other => {
+            scope::require_present(
+                other,
+                "agent rename request identity",
+                "Read the original agent rename request in this project and retry with the same --key; do not allocate a new key.",
+            )?;
+            Ok(None)
+        }
+    }
+}
+pub fn rename<R: Snapshot>(
+    kernel: &Kernel,
+    input: AgentRename,
+    cx: &mut Cx<'_, R>,
+) -> Result<(AtomicBatch, AgentRenameThen)> {
+    input.validate()?;
+    admitted(cx)?;
+    if !matches!(cx.admission.actor, Actor::Human(_)) {
+        return Err(SeError::new(Detail::OwnerRequired(
+            details::OwnerRequired {
+                op: "agent.rename".into(),
+            },
+        )));
+    }
+    let agent = match replay_target(&input.idempotency_key, cx)? {
+        Some(agent) => agent,
+        None => match scope::selected_actor(cx, &input.agent)? {
+            Actor::Agent(agent) => agent,
+            Actor::Human(_) | Actor::Remote(_) => {
+                return Err(SeError::invalid(
+                    "agent selector",
+                    "a saved agent, not the owner",
+                ));
+            }
+        },
+    };
+    let principal = scope::require_present(
+        cx.read
+            .principal(Actor::Agent(agent.clone()))
+            .map_err(|error| store_error(&error))?,
+        "agent rename target",
+        "Select an existing saved agent in this project, using its exact agent ID or registered name.",
+    )?;
+    let previous_name = match &principal.current.body {
+        EventBody::PrincipalRegistered { name, .. } | EventBody::PrincipalRenamed { name, .. } => {
+            name.clone()
+        }
+        _ => {
+            return Err(scope::unreadable(
+                "agent rename target",
+                "current event is not principal registration or rename",
+            ));
+        }
+    };
+    let intent = serde_json::to_value(&input)
+        .map_err(|error| scope::unreadable("agent rename intent", &error.to_string()))?;
+    let body = EventBody::PrincipalRenamed {
+        principal: Actor::Agent(agent.clone()),
+        name: input.name,
+        expected: Expected::Revision(principal.revision),
+    };
+    let event = kernel.event(body, cx)?;
+    let batch = kernel.batch(
+        "agent.rename",
+        input.idempotency_key.clone(),
+        intent,
+        event,
+        cx,
+    )?;
+    Ok((
+        batch,
+        AgentRenameThen {
+            request: input.idempotency_key,
+            agent,
+            previous_name,
+        },
+    ))
+}
+pub fn rename_committed<R: Snapshot>(
+    then: AgentRenameThen,
+    receipt: se_store::CommitReceipt,
+    cx: &mut Cx<'_, R>,
+) -> Result<super::AgentReceipt> {
+    super::receipt::receipt_key(&receipt, &then.request, "agent rename receipt")?;
+    let event = super::receipt::committed_event(cx.read, &receipt)?;
+    if event.header.scope != cx.admission.scope || event.header.actor != cx.admission.actor {
+        return Err(scope::unreadable(
+            "agent rename receipt",
+            "committed scope/actor differs",
+        ));
+    }
+    let commit = super::receipt::write_fields(&receipt, &event)?;
+    let EventBody::PrincipalRenamed {
+        principal: Actor::Agent(agent),
+        name,
+        ..
+    } = event.body
+    else {
+        return Err(scope::unreadable(
+            "agent rename receipt",
+            "primary event is not an agent rename",
+        ));
+    };
+    if agent != then.agent {
+        return Err(scope::unreadable(
+            "agent rename receipt",
+            "committed principal differs from the planned target",
+        ));
+    }
+    let saved = scope::require_present(
+        cx.read
+            .profile(agent.clone())
+            .map_err(|error| store_error(&error))?,
+        "agent rename profile",
+        scope::COMMITTED_READ_RECOVERY,
+    )?;
+    let EventBody::ProfileSaved {
+        profile,
+        agent: target,
+        ..
+    } = saved.current.body
+    else {
+        return Err(scope::unreadable(
+            "agent rename profile",
+            "current event is not a saved profile",
+        ));
+    };
+    if target != agent {
+        return Err(scope::unreadable(
+            "agent rename profile",
+            "saved profile differs from the renamed agent",
+        ));
+    }
+    let provider = match profile.provider {
+        se_store::Provider::Claude => Provider::Claude,
+        se_store::Provider::Codex => Provider::Codex,
+        se_store::Provider::SeCode => Provider::SeCode,
+    };
+    let outcome = match receipt.state {
+        se_store::CommitState::Committed if name != then.previous_name => {
+            super::AgentOutcome::Renamed
+        }
+        _ => super::AgentOutcome::Unchanged,
+    };
+    Ok(super::AgentReceipt {
+        commit,
+        action: super::AgentAction::Rename,
+        outcome,
+        agent: super::AgentReceiptValue {
+            id: agent,
+            name,
+            provider,
+            model: profile.model,
+            profile: profile.named_profile,
+        },
+        previous_name: Some(then.previous_name),
         process_started: super::NoProcessStarted,
     })
 }

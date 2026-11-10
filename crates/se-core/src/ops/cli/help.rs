@@ -51,6 +51,7 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "runtime.down" => "Stop this data home's runtime",
         "installation.uninstall" => "Remove this installation while preserving retained data",
         "agent.create" => "Create a saved agent identity without launching a process",
+        "agent.rename" => "Rename a saved agent's display name",
         "continuity.resume" => {
             "Read the current session's saved context; owners use --preview AGENT"
         }
