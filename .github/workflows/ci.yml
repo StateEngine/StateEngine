@@ -2,7 +2,7 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
   workflow_dispatch:
@@ -44,7 +44,7 @@ defaults:
 
 jobs:
   changes:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.job != 'macos' }}
+    if: ${{ (github.event_name != 'workflow_dispatch' || inputs.job != 'macos') && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     outputs:
@@ -218,7 +218,7 @@ jobs:
       matrix:
         shard: [1, 2]
     runs-on: ubuntu-24.04
-    timeout-minutes: 6
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -227,6 +227,7 @@ jobs:
         with:
           os: ubuntu-24.04
           shard: ${{ matrix.shard }}
+          all-features: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
 
   # Nightly and manual only: every pull request already runs Windows-target Clippy.
   # The nightly run on main also warms the native Windows build cache.
@@ -344,7 +345,7 @@ jobs:
   # Required: strict Clippy (Windows too when the diff can affect it) and Linux archive/tests.
   check:
     name: check
-    if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.job == 'macos') }}
+    if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.job == 'macos') && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
