@@ -51,6 +51,7 @@ impl Channels {
         let store = crate::runtime::store::Store {
             record_feed: context.atlas.records.clone(),
             reader: context.reader.clone(),
+            reads: context.reads.clone(),
             writer: context.writer.clone(),
             pool: context.blocking.clone(),
             generation: context.generation,

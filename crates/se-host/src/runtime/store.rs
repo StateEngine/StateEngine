@@ -10,6 +10,7 @@ use std::sync::Arc;
 pub(crate) struct Store {
     pub record_feed: Arc<crate::atlas_runtime::record_fence::RecordFeedFence>,
     pub reader: Arc<se_store::SqliteReader>,
+    pub reads: se_store::ReadPhasePool,
     pub writer: se_store::SqliteClient,
     pub pool: BlockingPool,
     pub generation: Generation,
@@ -24,11 +25,11 @@ impl Store {
         deadline: &Deadline,
         work: impl FnOnce(&mut Cx<'_, SqliteSnapshot>) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let reader = self.reader.clone();
+        let reads = self.reads.clone();
         let generation = self.generation;
         self.pool
             .run(BlockingClass::Foreground, deadline, move || {
-                let phase = reader.read_phase().map_err(|e| store_error(&e))?;
+                let phase = reads.read_phase().map_err(|e| store_error(&e))?;
                 let owner = phase.runtime_owner().map_err(|e| store_error(&e));
                 let owner = match owner {
                     Ok(Read::Present { value }) if value.generation == generation => Ok(()),
