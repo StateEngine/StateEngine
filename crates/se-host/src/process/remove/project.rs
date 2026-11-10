@@ -314,6 +314,15 @@ impl LaunchCoordinator {
         if !row.remaining.is_empty() {
             return Ok(());
         }
+        let root = inventory.root.to_local()?;
+        let marker_project = project.id.to_string();
+        let marker = self
+            .store
+            .pool
+            .run_owned(deadline, move || Ok(marker::remove(&root, &marker_project)))
+            .await?;
+        row.removed.extend(marker.removed);
+        row.kept.extend(marker.kept);
         // Stop/revocation must be proved before retiring notification work.
         // Releasing ownership alone is not a native-exit witness.
         if row.processes_may_remain.is_empty() {
