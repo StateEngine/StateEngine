@@ -41,8 +41,9 @@ or incompatible resume reference is reported rather than silently replaced.
 A live agent is not a completed task. Check se status and se history for observed
 process, provider and capture facts. A default launch refuses a conflicting live
 instance and reports its scoped work. Read se help launch before replacing it.
---override-live (MCP: override_live) explicitly consents to stopping that lifecycle
-and its scoped jobs before resuming. --new (MCP: new) instead selects new history.
+--force (MCP: force) explicitly consents to stopping existing sessions and their
+scoped jobs before relaunching. A terminal asks for confirmation. --new (MCP: new)
+instead selects a fresh conversation.
 se agent stop AGENT stops one managed agent; se down stops this data home's
 owned runtime and agent scope. Stopping work does not erase its saved history.
 
@@ -108,8 +109,8 @@ Use --home DIR consistently when operating another StateEngine data directory.
 A bound session always uses its authenticated project and agent. Matching caller
 assertions are optional checks; they never grant another identity or authority.
 
-se config get agent.AGENT.model reads a saved model; se config set
-agent.AGENT.model MODEL changes it. Saved agent profile and can-create fields
+Read a saved model with se config get agent.AGENT.model.
+Change it with se config set agent.AGENT.model MODEL. Saved profile and can-create fields
 are also supported. Use se help config get and se help config set for exact keys.
 General file-setting writes are not supported by these commands. Permission
 profiles live in your data home's config.toml; a saved named profile is required
