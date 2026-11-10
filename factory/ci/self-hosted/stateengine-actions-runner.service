@@ -1,0 +1,24 @@
+[Unit]
+Description=StateEngine serial self-hosted Linux checks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=stateengine-ci
+Group=stateengine-ci
+WorkingDirectory=/opt/stateengine-actions-runner
+Environment=HOME=/var/lib/stateengine-ci
+Environment=ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER=true
+Environment=ACTIONS_RUNNER_CONTAINER_HOOKS=/usr/local/lib/stateengine-box-ci/factory/ci/self-hosted/hook.js
+ExecStart=/opt/stateengine-actions-runner/bin/runsvc.sh
+KillMode=control-group
+KillSignal=SIGINT
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=10
+UMask=0077
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

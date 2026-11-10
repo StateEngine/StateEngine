@@ -1,0 +1,11 @@
+{
+  "repository": "OWNER/REPOSITORY",
+  "image_report": "/etc/stateengine-ci/image-approved.json",
+  "cache": "/etc/stateengine-ci/dependencies.tar.gz",
+  "cache_sha256": "REPLACE_WITH_APPROVED_SHA256",
+  "state": "/var/lib/stateengine-ci-controller/actions",
+  "runner_work": "/var/lib/stateengine-ci/actions-work",
+  "vm_locks": ["REPLACE_WITH_GUEST_LOCK_1", "REPLACE_WITH_GUEST_LOCK_2"],
+  "ci_lock": "REPLACE_WITH_EXISTING_SHADOW_LOCK",
+  "guest_state": "REPLACE_WITH_SHARED_GUEST_STATE"
+}
