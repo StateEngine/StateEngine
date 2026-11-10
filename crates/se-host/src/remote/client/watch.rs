@@ -13,6 +13,7 @@ pub(super) struct Watch {
     retry_step: u8,
     retry_at: tokio::time::Instant,
     terminal: Option<se_types::ErrorBody>,
+    retry_error: Option<se_types::ErrorBody>,
 }
 impl Watch {
     pub fn new(client: Client, call: Arc<RemoteCallContext>, request: RemoteWatch) -> Self {
@@ -26,12 +27,17 @@ impl Watch {
             retry_step: 0,
             retry_at: tokio::time::Instant::now(),
             terminal: None,
+            retry_error: None,
         }
     }
     pub async fn start(&mut self) -> Result<()> {
         match self.attach().await {
             Ok(()) => Ok(()),
-            Err(error) if retryable(&error) => self.defer_retry(error.body.retry()),
+            Err(error) if retryable(&error) => {
+                self.defer_retry(error.body.retry())?;
+                self.retry_error = Some(error.body);
+                Ok(())
+            }
             Err(error) => Err(error),
         }
     }
@@ -107,12 +113,18 @@ impl Watch {
             tokio::time::sleep_until(self.retry_at).await;
             self.call.check_current()?;
             match tokio::time::timeout_at(until, self.attach()).await {
-                Ok(Ok(())) => return Ok(true),
+                Ok(Ok(())) => {
+                    self.retry_error = None;
+                    return Ok(true);
+                }
                 Ok(Err(error)) if !retryable(&error) => {
                     self.terminal = Some(error.body.clone());
                     return Err(error);
                 }
-                Ok(Err(error)) => self.defer_retry(error.body.retry())?,
+                Ok(Err(error)) => {
+                    self.defer_retry(error.body.retry())?;
+                    self.retry_error = Some(error.body);
+                }
                 Err(_) => {
                     self.defer_retry(&se_types::Retry::Never)?;
                     return Ok(false);
@@ -144,9 +156,9 @@ impl Watch {
         let until = tokio::time::Instant::now() + wait;
         if self.attached.is_none() {
             if wait.is_zero() {
-                return Err(unavailable(
+                return Err(self.retry_error.clone().map(SeError::from).unwrap_or_else(|| unavailable(
                     "watch reconnect requires a positive bounded wait; retry the same scoped cursors",
-                ));
+                )));
             }
             if !self.reattach(until).await? {
                 return Ok(self.empty());
@@ -199,6 +211,7 @@ impl Watch {
                 self.attached = None;
                 if retryable(&error) {
                     self.defer_retry(error.body.retry())?;
+                    self.retry_error = Some(error.body);
                     Ok(self.gap())
                 } else {
                     self.terminal = Some(error.body.clone());
@@ -231,5 +244,7 @@ fn retryable(error: &SeError) -> bool {
             | se_types::Code::RuntimeHandoverInProgress
             | se_types::Code::RuntimeNotRunning
             | se_types::Code::RuntimeStartFailed
+            | se_types::Code::RuntimeStartPending
+            | se_types::Code::RemoteBusy
     )
 }
