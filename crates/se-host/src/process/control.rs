@@ -397,12 +397,12 @@ pub(super) fn fill_stopped(
         row.result = "capture-incomplete".into();
         row.resume.state = "capture-incomplete".into();
         let remedy = if work.meta.provider == se_store::Provider::SeCode {
-            "Restore the original authenticated service and retry stop to capture its pending records."
+            "Restore the original authenticated service and retry stop to capture its pending records. Conversation retention does not establish resume readiness."
         } else {
-            "Restore the original transcript and retry stop to capture its pending records."
+            "Restore the original transcript and retry stop, then resume the saved conversation; --new remains available."
         };
         row.resume.reason = Some(format!(
-            "Native exit is witnessed; capture failed: {}. {remedy} Conversation retention does not establish resume readiness.",
+            "Native exit is witnessed; capture failed: {}. {remedy}",
             failure.message()
         ));
         row.resume.conversation_id = None;
