@@ -143,7 +143,12 @@ async fn exchange(
             if let Some(error) = [&response, &diagnostics].into_iter().find_map(|bytes| {
                 serde_json::from_slice::<se_types::ErrorEnvelope>(bytes).ok()
             }) {
-                return Err(error.body().clone().into());
+                let body = error.body().clone();
+                let mut remedy = body.remedy(&se_types::RenderCx::default())?;
+                remedy.text = format!("On the destination machine: {}", remedy.text);
+                // A far-side native command must never run against the source's home.
+                remedy.command = None;
+                return Err(body.with_remedy(remedy).into());
             }
             return Err(unavailable("SSH authorization refused; check the saved SSH destination and native owner access"));
         }

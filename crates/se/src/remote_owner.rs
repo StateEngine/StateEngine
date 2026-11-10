@@ -86,7 +86,9 @@ fn selected_control(matches: &ArgMatches) -> Option<(&str, &ArgMatches)> {
 }
 fn run(name: &str, m: &ArgMatches) -> io::Result<u8> {
     let (mut stdout, mut stderr) = (io::stdout().lock(), io::stderr().lock());
-    let json = m.get_flag("json");
+    // Saved bindings from earlier releases omit the flag, but this private
+    // pipe always owes the source a structured native refusal.
+    let json = m.get_flag("json") || name == "__authorize";
     let result = (|| {
         if m.get_flag("help") {
             let mut command = grammar::command();
