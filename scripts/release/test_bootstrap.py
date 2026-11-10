@@ -1,7 +1,8 @@
 """Exercise the one-shot install bootstrappers against a local release server.
 
-The server holds one signed stub package: a secode shim that records its
-argv, plus the StateEngine payload manifest — the legacy
+The server holds one signed stub package: a secode shim that validates the
+payload manifest with a real JSON parser and then records its argv, plus
+the StateEngine payload manifest — the legacy
 ``stateengine-payload.json`` by default, or any mix of the legacy and
 ``native-payload.json`` manifests chosen with ``set_payloads`` before the
 run. The harness generates an RSA key pair, signs the archive, and serves
@@ -46,6 +47,58 @@ NATIVE_PAYLOAD = {
 }
 
 
+SECODE_STUB = r"""#!/bin/sh
+# Stub secode: emulates the package's native installer at handoff. It
+# validates the StateEngine payload manifest with a real JSON parser
+# before recording the handoff: the native manifest is the package's when
+# present, never a fallback to the legacy file; a malformed or
+# wrong-schema manifest is a refusal with a reason, and a refused package
+# is never handed off.
+if [ "${1:-}" != "update" ]; then
+    printf 'stub secode: expected update, got %s\n' "${1:-}" >&2
+    exit 64
+fi
+invocation=$*
+pkg=
+while [ $# -gt 1 ]; do
+    case "$1" in
+        --from) pkg=$2; shift 2 ;;
+        *) shift ;;
+    esac
+done
+payload=
+expected=
+if [ -n "$pkg" ] && [ -f "$pkg/stateengine/native-payload.json" ]; then
+    payload=$pkg/stateengine/native-payload.json
+    expected='stateengine.native-payload/v1'
+elif [ -n "$pkg" ] && [ -f "$pkg/stateengine/stateengine-payload.json" ]; then
+    payload=$pkg/stateengine/stateengine-payload.json
+    expected='stateengine.se-payload.v1'
+fi
+if [ -n "$payload" ]; then
+    python3 - "$payload" "$expected" <<'PY' || exit 2
+import json, sys
+
+path, expected = sys.argv[1], sys.argv[2]
+try:
+    with open(path, "rb") as handle:
+        doc = json.load(handle)
+except ValueError as exc:
+    sys.stderr.write("secode: the StateEngine payload manifest is not valid JSON: %s\n" % exc)
+    sys.exit(2)
+if not isinstance(doc, dict):
+    sys.stderr.write("secode: the StateEngine payload manifest has no object root; do not install it\n")
+    sys.exit(2)
+if doc.get("schema") != expected:
+    sys.stderr.write("secode: the StateEngine payload manifest does not carry schema %s; do not install it\n" % expected)
+    sys.exit(2)
+PY
+fi
+printf "%s\n" "$invocation" >> "${SE_TEST_HANDOFF_LOG:?}"
+exit "${SE_TEST_EXIT:-0}"
+"""
+
+
 def openssl(*args):
     subprocess.run(["openssl", *args], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -76,7 +129,7 @@ class ReleaseServer:
         self.package = workdir / PACKAGE_DIR_NAME
         (self.package / "stateengine").mkdir(parents=True)
         handoff = self.package / "secode"
-        handoff.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "${SE_TEST_HANDOFF_LOG:?}"\nexit "${SE_TEST_EXIT:-0}"\n')
+        handoff.write_text(SECODE_STUB)
         handoff.chmod(0o755)
         self.set_payloads(legacy=LEGACY_PAYLOAD)
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), lambda *a, **kw: QuietHandler(*a, directory=str(workdir), **kw))
@@ -89,8 +142,8 @@ class ReleaseServer:
         ``legacy`` and ``native`` are the documents written at
         ``stateengine/stateengine-payload.json`` and
         ``stateengine/native-payload.json`` respectively; ``None`` omits a
-        file. A mapping is serialized with two-space indent; a ``str`` or
-        ``bytes`` value is written verbatim, so a mix may carry a compact,
+        file. A mapping is serialized with two-space indent; a ``str`` is
+        written as UTF-8 and ``bytes`` verbatim, so a mix may carry a compact,
         malformed or otherwise shaped manifest. The archive, its signature
         and the index are rebuilt from the new bytes so the release stays
         verified.
@@ -100,8 +153,10 @@ class ReleaseServer:
             if document is None:
                 if payload_path.exists():
                     payload_path.unlink()
-            elif isinstance(document, (str, bytes)):
+            elif isinstance(document, bytes):
                 payload_path.write_bytes(document)
+            elif isinstance(document, str):
+                payload_path.write_bytes(document.encode("utf-8"))
             else:
                 payload_path.write_text(json.dumps(document, indent=2) + "\n")
         self.archive = self.releases / ARCHIVE_NAME
