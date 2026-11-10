@@ -39,6 +39,8 @@ impl From<RecordKey> for String {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum RecordKind {
+    /// Retained only to decode pointers from caches created before ledger retirement.
+    #[schemars(skip)]
     Decision,
     Message,
     Working,
@@ -149,12 +151,6 @@ impl FeedRecord {
 #[derive(Debug)]
 pub enum RecordFeedChange {
     Upsert(FeedRecord),
-    /// A committed ratification changes the weight of that decision's mentions.
-    Ratify {
-        project: ProjectId,
-        key: RecordKey,
-        source_event: EventId,
-    },
     /// Deletion is a committed core fact, never inferred from a failed read.
     Remove {
         project: ProjectId,
@@ -202,10 +198,7 @@ impl RecordFeed {
                         + record.pointer.key.as_str().len()
                         + record.pointer.source_event.as_str().len();
                 }
-                RecordFeedChange::Remove { project, .. }
-                | RecordFeedChange::Ratify { project, .. }
-                    if project != &self.project =>
-                {
+                RecordFeedChange::Remove { project, .. } if project != &self.project => {
                     return Err(SeError::invalid(
                         "Atlas record feed",
                         "one verified project",

@@ -1,5 +1,5 @@
 //! Bounded reads for a session's continuity packet: the newest turns, the
-//! governing decisions and exact decision counts. No full-history scan.
+//! captured turns. No full-history scan.
 use super::*;
 impl SqliteSnapshot {
     /// The newest turns after `since`, oldest first, with the older turns
@@ -128,16 +128,5 @@ impl SqliteSnapshot {
         })
         .map_err(invalid)?;
         Page::new(items.into_iter().map(|(_, e)| e).collect(), window, None).map_err(invalid)
-    }
-    /// Current ratified decision heads, the project's governing rulings.
-    pub(super) fn read_governing_decisions(
-        &self,
-        budget: ReadBudget,
-    ) -> StoreResult<Page<ProjectionRecord>> {
-        self.read_decision_heads(DecisionQuery::default(), true, budget)
-    }
-    /// Exact visible heads, all states or only pending proposals.
-    pub(super) fn read_decision_count(&self, pending_only: bool) -> StoreResult<u64> {
-        self.count_decision_heads(pending_only)
     }
 }

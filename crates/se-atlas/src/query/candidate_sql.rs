@@ -93,11 +93,7 @@ pub(super) fn plans(query: &FindQuery, mode: SearchMode) -> AtlasResult<Vec<Plan
     }
     if matches!(
         query.kind,
-        SearchKind::All
-            | SearchKind::Decision
-            | SearchKind::Message
-            | SearchKind::Working
-            | SearchKind::Edit
+        SearchKind::All | SearchKind::Message | SearchKind::Working | SearchKind::Edit
     ) {
         if exact {
             add(Kind::Record, 1, "r.record_id=?1", text)?;
@@ -187,7 +183,6 @@ fn plan(kind: Kind, tier: u8, condition: &str, text: &str, query: &FindQuery) ->
     );
     if kind == Kind::Record {
         let k = match query.kind {
-            SearchKind::Decision => Some("decision"),
             SearchKind::Message => Some("message"),
             SearchKind::Working => Some("working"),
             SearchKind::Edit => Some("edit"),

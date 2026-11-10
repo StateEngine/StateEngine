@@ -15,7 +15,6 @@ pub(super) fn group(name: &str) -> Option<&'static str> {
         "config" => "Read or change user configuration and saved agent settings",
         "hook" => "Receive provider lifecycle events",
         "session" => "Read the current agent session",
-        "decision" => "Inspect proposals and record owner decisions",
         _ => return None,
     })
 }
@@ -63,13 +62,6 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "config.get" => "Read one saved agent setting",
         "config.list" => "List the effective user configuration settings",
         "config.set" => "Change one saved agent setting",
-        "decision.list" => "List current and pending project decisions",
-        "decision.show" => "Show one decision with its exact current revision",
-        "decision.propose" => "Propose a project decision",
-        "decision.ratify" => "Ratify a proposal so it governs the project",
-        "decision.reject" => "Reject a proposal with a recorded reason",
-        "decision.retract" => "Retract a decision with a recorded reason",
-        "decision.supersede" => "Replace one decision with a newer one",
         _ => return None,
     })
 }

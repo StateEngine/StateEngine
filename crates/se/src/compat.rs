@@ -9,9 +9,6 @@ pub fn refusal(args: &[OsString]) -> Option<SeError> {
     let first = rest.first()?.to_str()?;
     let second = rest.get(1).and_then(|arg| arg.to_str());
     let pair = match (first, second) {
-        ("ratify", Some("all")) => {
-            Some("se decision ratify ID (once per decision; no bulk approval)")
-        }
         ("init", Some("--status")) => Some("se status"),
         _ => None,
     };
@@ -20,11 +17,6 @@ pub fn refusal(args: &[OsString]) -> Option<SeError> {
     }
     let replacement = match first {
         "projects" => "se status --all",
-        "ratify" => "se decision ratify ID",
-        "ratifyall" => "se decision ratify ID (once per decision; no bulk approval)",
-        "reject" => "se decision reject ID",
-        "retract" => "se decision retract ID",
-        "reverse" => "se decision supersede ID WITH_ID",
         "floor-event" => "se history --event ID",
         "capture-status" | "context" => "se status",
         "working-state-show" => "se working-state",

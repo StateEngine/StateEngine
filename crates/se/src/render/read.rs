@@ -135,16 +135,6 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
                     matches!(agent.session.state.as_str(), "stopped" | "never-launched")
                 })
         });
-    if value.decisions.pending.is_some() || !healthy_stopped {
-        writeln!(
-            out,
-            "Proposed decisions: {}",
-            value
-                .decisions
-                .pending
-                .map_or("not counted".into(), |value| value.to_string())
-        )?;
-    }
     if !healthy_stopped || value.capture.state != "unknown" || value.atlas.state != "not-built" {
         writeln!(
             out,

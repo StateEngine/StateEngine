@@ -34,7 +34,6 @@ codes! {
     BypassNotOptedIn => ("bypass-not-opted-in", Refused) { profile: String } => "full bypass is only allowed through a saved, named profile", "add `bypass = true` under `[profiles.NAME]`, then → `se config set agent.A.profile NAME`";
     CaptureConsentMissing => ("capture-consent-missing", Refused) { session: SessionId } => "capture is off for this session", "relaunch without `--incognito`";
     ConfigurationInvalid => ("configuration-invalid", Refused) { subject: String, reason: String, next_step: String } => "Configuration {subject}: {reason}", "{next_step}";
-    DecisionStateInvalid => ("decision-state-invalid", Refused) { subject: String, reason: String, next_step: String } => "Decision transition {subject}: {reason}", "{next_step}";
     FeatureUnavailable => ("feature-unavailable", Refused) { subject: String, reason: String, next_step: String } => "Feature {subject}: {reason}", "{next_step}";
     ForgetNotCapturedRecord => ("forget-not-captured-record", Refused) { event: EventId, kind: String } => "only captured turns and messages can be erased; {event} is a {kind}", "pick a captured record";
     HomeUnsupportedLocation => ("home-unsupported-location", Refused) { home: String, kind: String } => "{home} is on a {kind} location; the store needs a local disk", "set `SE_HOME` to a local folder";
@@ -79,7 +78,7 @@ codes! {
     IdempotencyKeyReused => ("idempotency-key-reused", Conflict) { key: String, original_event: EventId } => "key `{key}` was used for a different request", "use a new key";
     IntegrationConflict => ("integration-conflict", Conflict) { path: String, entry: String } => "you changed {entry} in {path}; StateEngine won't overwrite it", "keep it, or delete the entry and → `se doctor --fix CHECK-ID`";
     LaunchInFlight => ("launch-in-flight", Conflict) { agent: AgentId, launch_id: LaunchId } => "{agent} is already being launched", "retry";
-    RevisionConflict => ("revision-conflict", Conflict) { entity: String, expected: String, current: String } => "{entity} changed (you had revision {expected}, now {current})", "reread: → `se working-state` / `se decision show ID`";
+    RevisionConflict => ("revision-conflict", Conflict) { entity: String, expected: String, current: String } => "{entity} changed (you had revision {expected}, now {current})", "reread: → `se working-state`";
     StateConflict => ("state-conflict", Conflict) { subject: String, reason: String, next_step: String } => "State conflict {subject}: {reason}", "{next_step}";
     AtlasIndexing => ("atlas-indexing", Incomplete) { indexed: u64, total: u64 } => "index is {indexed}/{total} files; results may be partial", "retry later";
     AtlasParseFailed => ("atlas-parse-failed", Incomplete) { path: String, language: String, reason: String } => "Atlas couldn't parse {path} ({language}): {reason}", "Results for this file use bounded text search. Run `se doctor` and include this diagnostic when reporting the problem.";

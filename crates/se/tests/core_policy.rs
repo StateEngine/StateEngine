@@ -9,11 +9,11 @@ use se_core::{
     admission::HumanTerminal,
     commit::{Cx, OpStep},
     dispatch::{CallFacts, Kernel},
-    ops::{AgentCreate, AgentRename, AnyOp, ConfigSet, DecisionPropose},
+    ops::{AgentCreate, AgentRename, AnyOp, ConfigSet},
     ports::Then,
 };
 use se_store::*;
-use se_types::{DecisionId, IdempotencyKey};
+use se_types::IdempotencyKey;
 use std::{
     path::Path,
     process::{Command, Output},
@@ -124,13 +124,6 @@ fn receipt_case(family: &str) -> Check {
     let (f, mut store, lease) = setup()?;
     let key = IdempotencyKey::new(format!("receipt-{family}"))?;
     let op = match family {
-        "decision" => AnyOp::DecisionPropose(DecisionPropose {
-            key: "judge.policy".into(),
-            statement: "Keep the original request and event".into(),
-            rationale: None,
-            supersedes: None,
-            idempotency_key: key.clone(),
-        }),
         "agent" => AnyOp::AgentCreate(AgentCreate {
             name: "receipt-agent".into(),
             provider: None,
@@ -183,11 +176,6 @@ fn receipt_case(family: &str) -> Check {
     Ok(())
 }
 
-/// Protects: decision continuation mixups refuse, while a real immutable commit keeps its original key and event.
-#[test]
-fn decision_receipt_uses_the_original_request() -> Check {
-    receipt_case("decision")
-}
 /// Protects: two-event agent registration keeps its original key and refuses mismatched or incomplete continuations.
 #[test]
 fn agent_receipt_uses_the_original_request() -> Check {
@@ -239,35 +227,13 @@ fn json(output: &Output) -> Outcome<serde_json::Value> {
     })?)
 }
 
-/// Protects: actual direct CLI pipes cannot approve decisions or change security settings after redundant presence checks disappear; a real owner PTY can perform both operations.
+/// Protects: actual direct CLI pipes cannot change security settings; a real owner PTY can perform the operation.
 #[test]
-fn direct_cli_keeps_fixed_and_key_selected_human_presence() -> Check {
-    let (f, mut store, lease) = setup()?;
-    let id = DecisionId::from_parts(1_700_000_000_000 + serial(), [90; 10])?;
-    store.append(
-        f.batch(
-            f.owner_project(),
-            Some(fixture::request(&format!(
-                "fixture-core_policy-214-{}",
-                serial()
-            ))?),
-            vec![EventBody::DecisionProposed {
-                decision: id.clone(),
-                key: "presence.policy".into(),
-                statement: InputText::Inline("Only the real owner approves".into()),
-                rationale: None,
-                prior: None,
-                kind: DecisionKind::Decision,
-            }],
-        )?,
-        &*lease,
-    )?;
+fn direct_cli_keeps_key_selected_human_presence() -> Check {
+    let (f, store, _lease) = setup()?;
     let head = store.info()?.head;
     let setting = format!("agent.{}.can-create", f.a);
-    let calls = [
-        vec!["config".into(), "set".into(), setting, "true".into()],
-        vec!["decision".into(), "ratify".into(), id.to_string()],
-    ];
+    let calls = [vec!["config".into(), "set".into(), setting, "true".into()]];
     for (index, args) in calls.iter().enumerate() {
         let key = format!("refused-direct-{index}");
         let output =
@@ -336,10 +302,6 @@ fn direct_cli_keeps_fixed_and_key_selected_human_presence() -> Check {
             .body,
             EventBody::GrantRecorded { active: true, .. }
         ));
-        assert!(matches!(
-            present(snapshot.decision(id)?)?.current.body,
-            EventBody::DecisionRatified { .. }
-        ));
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -350,10 +312,6 @@ fn direct_cli_keeps_fixed_and_key_selected_human_presence() -> Check {
             )?,
             se_types::Read::Absent { .. }
         ));
-        assert!(matches!(
-            present(snapshot.decision(id)?)?.current.body,
-            EventBody::DecisionProposed { .. }
-        ));
     }
     snapshot.close()?;
     store.close()?;
@@ -363,26 +321,7 @@ fn direct_cli_keeps_fixed_and_key_selected_human_presence() -> Check {
 /// Protects: a busy writer without an endpoint cannot hide the early human-only refusal.
 #[test]
 fn pipe_human_presence_refuses_before_busy_writer_rendezvous() -> Check {
-    let (f, mut store, lease) = setup()?;
-    let id = DecisionId::from_parts(1_700_000_000_000 + serial(), [91; 10])?;
-    store.append(
-        f.batch(
-            f.owner_project(),
-            Some(fixture::request(&format!(
-                "fixture-core_policy-332-{}",
-                serial()
-            ))?),
-            vec![EventBody::DecisionProposed {
-                decision: id.clone(),
-                key: "presence.busy".into(),
-                statement: InputText::Inline("A busy writer cannot bypass presence".into()),
-                rationale: None,
-                prior: None,
-                kind: DecisionKind::Decision,
-            }],
-        )?,
-        &*lease,
-    )?;
+    let (f, store, _lease) = setup()?;
     let head = store.info()?.head;
     drop(lease);
     let holder = Lease::acquire(
@@ -398,15 +337,12 @@ fn pipe_human_presence_refuses_before_busy_writer_rendezvous() -> Check {
         probe.try_lock_shared(),
         Err(std::fs::TryLockError::WouldBlock)
     ));
-    let calls = [
-        vec![
-            "config".into(),
-            "set".into(),
-            format!("agent.{}.can-create", f.a),
-            "true".into(),
-        ],
-        vec!["decision".into(), "ratify".into(), id.to_string()],
-    ];
+    let calls = [vec![
+        "config".into(),
+        "set".into(),
+        format!("agent.{}.can-create", f.a),
+        "true".into(),
+    ]];
     for (index, args) in calls.iter().enumerate() {
         let key = format!("refused-busy-{index}");
         let output =

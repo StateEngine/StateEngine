@@ -283,7 +283,6 @@ fn allowed(sql: &SqlView<'_>, kind: Kind, id: i64, query: &FindQuery) -> AtlasRe
                 (query.kind, pointer.kind),
                 (SearchKind::All, _)
                     | (SearchKind::Message, RecordKind::Message)
-                    | (SearchKind::Decision, RecordKind::Decision)
                     | (SearchKind::Working, RecordKind::Working)
                     | (SearchKind::Edit, RecordKind::Edit)
             )

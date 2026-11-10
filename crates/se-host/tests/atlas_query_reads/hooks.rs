@@ -20,7 +20,7 @@ pub(super) fn check(
         .ok_or("hook context absent")?;
     assert!(context.contains("definition alpha alpha.rs:1"));
     assert!(context.contains("caller alpha.rs:"));
-    assert!(context.contains("linked (sample): 0 decisions, 1 messages"));
+    assert!(context.contains("linked (sample): 1 messages"));
     for (viewer, current, expected) in [
         (AtlasPrincipal::Agent(other.clone()), true, Some(0)),
         (viewer.clone(), false, None),
@@ -68,7 +68,7 @@ pub(super) fn check(
         .as_str()
         .ok_or("large outline hint absent")?;
     assert!(large_context.contains("Atlas outline (sample): hook_large.rs"));
-    assert!(large_context.contains("linked (sample): 0 decisions, 1 messages"));
+    assert!(large_context.contains("linked (sample): 1 messages"));
     assert!(large_hint.stdout.len() <= 600);
     hook.target = se_core::ops::AtlasHookTarget::File(se_types::NativePath::from_local(
         source

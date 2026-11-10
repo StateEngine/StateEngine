@@ -190,7 +190,10 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         | EventBody::DecisionRatified { .. }
         | EventBody::DecisionRejected { .. }
         | EventBody::DecisionRetracted { .. }
-        | EventBody::DecisionSuperseded { .. } => decision::revision(c, e),
+        | EventBody::DecisionSuperseded { .. } => Err(fail(
+            StoreErrorCode::VersionUnsupported,
+            "decision ledger writes are retired; existing events remain readable through history",
+        )),
         RuntimeOwnerEstablished { expected: want, .. } => {
             expected(c, "runtime_owner", "singleton=1", &[], *want)
         }

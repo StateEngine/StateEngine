@@ -1,5 +1,6 @@
 mod body;
 mod metadata;
+mod retired_decision;
 pub(crate) use body::body;
 pub(crate) use metadata::metadata;
 pub(crate) mod capture;

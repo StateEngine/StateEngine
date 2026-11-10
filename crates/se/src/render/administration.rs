@@ -35,50 +35,6 @@ pub fn agent(value: &AgentReceipt, out: &mut impl Write) -> io::Result<()> {
     )
 }
 
-pub fn decision(value: &DecisionReceipt, out: &mut impl Write) -> io::Result<()> {
-    let action = match value.action {
-        DecisionAction::Propose => "proposed",
-        DecisionAction::Ratify => "approved",
-        DecisionAction::Reject => "rejected",
-        DecisionAction::Retract => "withdrawn",
-        DecisionAction::Supersede => "replaced",
-    };
-    writeln!(out, "Decision {}: {action}", value.decision.key)?;
-    if matches!(value.commit.state, se_types::CommitState::Replayed) {
-        writeln!(
-            out,
-            "Original receipt replayed; the recorded state may have changed since this event."
-        )?;
-    }
-    writeln!(out, "{}", value.decision.statement.text)?;
-    if !value.decision.statement.complete {
-        if let Some(command) = &value.decision.statement.command {
-            writeln!(out, "Read the full statement: {command}")?;
-        } else {
-            writeln!(
-                out,
-                "Statement preview; full text is not included in this receipt."
-            )?;
-        }
-    }
-    if let Some(reason) = &value.decision.reason {
-        writeln!(out, "Reason: {reason}")?;
-    }
-    if let Some(previous) = &value.replaced {
-        writeln!(out, "Replaced decision: {} ({})", previous.key, previous.id)?;
-    }
-    writeln!(
-        out,
-        "Decision: {}; recorded revision {}",
-        value.decision.id, value.decision.revision
-    )?;
-    writeln!(
-        out,
-        "Event: {}; request key: {}",
-        value.commit.event_id, value.commit.idempotency_key
-    )
-}
-
 pub fn config(value: &AgentConfigReceipt, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "{} for {}", value.key, value.agent.name)?;
     writeln!(out, "Value: {}", value.value)?;

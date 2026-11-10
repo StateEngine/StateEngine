@@ -36,11 +36,6 @@ pub mod agent_status;
 mod cli;
 pub mod config_listing;
 pub(crate) use cli::command_name;
-pub mod decision;
-pub mod decision_list;
-pub mod decision_show;
-pub use decision_list::{DecisionList, DecisionPage, DecisionPageRow};
-pub use decision_show::{DecisionDetail, DecisionOutput, DecisionShow, DecisionTransition};
 pub mod doctor;
 pub use doctor::{Diagnosis, DoctorInspect, DoctorRepair, RepairOutput};
 pub mod event;
@@ -201,7 +196,7 @@ ops! {
     AtlasRefs => AtlasRefs, AtlasRefsOutput, ("atlas.refs",leaf(&["atlas","refs"]),tool("stateengine_atlas_refs","Atlas refs","Who references X? Read resolved and labelled spelling candidates; for example target Symbol Name authenticate, or File src/auth.rs."),Either,false,Never,Read,Project,Host,"se.code-refs",CodeRefs,&["J3"]);
     AtlasImpact => AtlasImpact, AtlasImpactOutput, ("atlas.impact",leaf(&["atlas","impact"]),tool("stateengine_atlas_impact","Atlas impact","What could this change affect? Follow bounded code and file dependencies with linked records; for example depth=1 callers or depth=2 tests."),Either,false,Never,Read,Project,Host,"se.impact",Impact,&["J3"]);
     AtlasChanges => AtlasChanges, AtlasChangesOutput, ("atlas.changes",leaf(&["atlas","changes"]),tool("stateengine_atlas_changes","Atlas changes","What changed since this observed baseline? Read code changes and honest attribution; use an Atlas cursor, observed commit, or observation time."),Either,false,Never,Read,Project,Host,"se.code-changes",CodeChanges,&["J3"]);
-    AtlasOutline => AtlasOutline, AtlasOutlineOutput, ("atlas.outline",leaf(&["atlas","outline"]),tool("stateengine_atlas_outline","Atlas outline","What is in this file, and what records mention it? Read declarations with source positions and linked decisions or messages."),Either,false,Never,Read,Project,Host,"se.outline",Outline,&["J3"]);
+    AtlasOutline => AtlasOutline, AtlasOutlineOutput, ("atlas.outline",leaf(&["atlas","outline"]),tool("stateengine_atlas_outline","Atlas outline","What is in this file, and what records mention it? Read declarations with source positions and linked messages and saved work."),Either,false,Never,Read,Project,Host,"se.outline",Outline,&["J3"]);
     ClientWatch => ClientWatchCall, RemoteWatchOutput, ("client.watch",leaf(&["watch"]),no_mcp("Native human inspection; agents keep their admitted local or remote read tools."),Owner,false,Never,Read,Home,Host,"stateengine.remote-watch",RemoteWatch,&[]);
     RemotePrepareSend => RemotePrepareSendCall, RemoteSendPreparation, ("remote.prepare_send",CliExposure::None{reason:"Internal protected source IPC prepares CLI pending output; no remote capability or public tool."},no_mcp("MCP has only a final send result, never early pending output."),Either,false,Never,Read,Home,Host,"stateengine.remote-send-preparation",RemoteSend,&[]);
     RemoteList => RemoteListCall, RemoteListOutput, ("remote.list",leaf(&["remote","list"]),tool("stateengine_remote_list","List remote agents","List agents on a configured remote machine. Empty targets discover its allowed agents; explicit targets narrow the selection."),Either,false,Never,Read,Home,Host,"stateengine.remote-list",RemoteList,&[]);
@@ -233,7 +228,7 @@ ops! {
     Uninstall => Uninstall, UninstallOutput, ("installation.uninstall",leaf(&["uninstall"]),no_mcp("Installation removal requires the owner at a human terminal."),Owner,false,Always,Custody,Home,None,"se.uninstall",Uninstall,&["J5"]);
     AgentCreate => AgentCreate, AgentReceipt, ("agent.create",leaf(&["agent","add"]),tool("stateengine_agent_create","Create an agent","Create a durable agent identity and safe saved profile without launching a process; sessions require their current create grant."),Either,false,Never,Write,Project,HostForWrites,"se.agent-receipt",AgentReceipt,&["E3","J2","J4"]);
     AgentRename => AgentRename, AgentReceipt, ("agent.rename",leaf(&["agent","rename"]),no_mcp("owner controls identity labels"),Owner,false,Never,Write,Project,HostForWrites,"se.agent-receipt",AgentReceipt,&["J2","J3","J4"]);
-    Resume => Resume, ResumeOutput, ("continuity.resume",leaf(&["resume"]),tool("stateengine_resume","Restore your context","Restore your own working state, unread mail, governing decisions and recent captured turns; omissions name explicit full reads. This read acknowledges nothing."),Either,false,Never,Read,Project,None,"se.resume",Resume,&["J3","J4"]);
+    Resume => Resume, ResumeOutput, ("continuity.resume",leaf(&["resume"]),tool("stateengine_resume","Restore your context","Restore your own working state, unread mail and recent captured turns; omissions name explicit full reads. This read acknowledges nothing."),Either,false,Never,Read,Project,None,"se.resume",Resume,&["J3","J4"]);
     SessionContext => SessionContextRequest, SessionContextOutput, ("session.context",CliExposure::Leaf{path:&["session","context"],hidden:true,select:Selector::Always},no_mcp("Harness/SE Code context uses the verified bound session; model tools use stateengine_resume."),Session,false,Never,Read,Session,None,"secode.session-context",SessionContext,&["J2","J3"]);
     AgentList => AgentList, AgentPage, ("agent.list",leaf(&["agent","list"]),no_mcp("Owner overview; bound agents use status for their own saved identity."),Owner,false,Never,Read,Project,None,"se.agent-page",AgentPage,&["J2","J3"]);
     AgentLaunch => AgentLaunch, LaunchReply, ("agent.launch",leaf(&["launch"]),tool("stateengine_agent_launch","Launch an agent","Launch your own saved agent or a directly created agent you currently control; an attended launch can return retained starting/setup-needed state with same-key retry arguments before activation proves running."),Either,false,Never,Custody,Project,HostAutoStart,"se.launch",Launch,&["J2","J3"]);
@@ -243,13 +238,6 @@ ops! {
     ConfigGet => ConfigGet, ConfigValueOutput, ("config.get",leaf(&["config","get"]),no_mcp("Saved agent settings are inspected by the owner CLI."),Owner,false,Never,Read,Project,None,"se.config-value",ConfigValue,&["E3"]);
     ConfigSet => ConfigSet, AgentConfigReceipt, ("config.set",leaf(&["config","set"]),no_mcp("Saved agent metadata changes are owner CLI operations."),Owner,false,ConfigKey,Write,Project,HostForWrites,"se.config-receipt",ConfigReceipt,&["E3"]);
     ConfigList => ConfigList, ConfigPageOutput, ("config.list",leaf(&["config","list"]),no_mcp("Configuration is owner administration."),Owner,false,Never,Read,Home,None,"se.config-page",ConfigPage,&["J2","J3","J4","J5"]);
-    DecisionList => DecisionList, DecisionPage, ("decision.list",leaf(&["decision","list"]),tool("stateengine_decision_list","List project decisions","List current governing and pending decisions. Pass id for one decision, pending for proposals awaiting approval, or history to include retired decisions."),Either,false,Never,Read,Project,None,"se.decision-page",DecisionPage,&["J3","J4"]);
-    DecisionShow => DecisionShow, DecisionOutput, ("decision.show",leaf(&["decision","show"]),no_mcp("Decision detail is inspected through the project CLI."),Either,false,Never,Read,Project,None,"se.decision",Decision,&["E3","J4"]);
-    DecisionPropose => DecisionPropose, DecisionReceipt, ("decision.propose",leaf(&["decide"]),tool("stateengine_decision_propose","Propose a decision","Save a proposal for the owner; a proposal does not ratify itself or become governing."),Either,false,Never,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J3","J4"]);
-    DecisionRatify => DecisionRatify, DecisionReceipt, ("decision.ratify",leaf(&["decision","ratify"]),no_mcp("Only an independently verified owner terminal can ratify a proposal."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
-    DecisionReject => DecisionReject, DecisionReceipt, ("decision.reject",leaf(&["decision","reject"]),no_mcp("Only an independently verified owner terminal can reject a proposal."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
-    DecisionRetract => DecisionRetract, DecisionReceipt, ("decision.retract",leaf(&["decision","retract"]),no_mcp("Only an independently verified owner terminal can retract a decision."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
-    DecisionSupersede => DecisionSupersede, DecisionReceipt, ("decision.supersede",leaf(&["decision","supersede"]),no_mcp("Only an independently verified owner terminal can supersede a decision."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
 }
 impl AnyOp {
     pub fn is_remote(&self) -> bool {
@@ -299,11 +287,6 @@ impl AnyOp {
             Self::AgentStop(v) => Some(&v.idempotency_key),
             Self::ProjectRemove(v) => Some(&v.idempotency_key),
             Self::ConfigSet(v) => Some(&v.idempotency_key),
-            Self::DecisionPropose(v) => Some(&v.idempotency_key),
-            Self::DecisionRatify(v) => Some(&v.idempotency_key),
-            Self::DecisionReject(v) => Some(&v.idempotency_key),
-            Self::DecisionRetract(v) => Some(&v.idempotency_key),
-            Self::DecisionSupersede(v) => Some(&v.idempotency_key),
             _ => None,
         }
     }
@@ -325,14 +308,6 @@ impl AnyOp {
             Self::WorkingStateSet(v) => {
                 v.text = read(v.text.clone(), "text", se_types::WORKING_STATE_MAX_BYTES)?
             }
-            Self::DecisionPropose(v) => {
-                v.statement = read(v.statement.clone(), "statement", 8192)?;
-                if let Some(value) = &mut v.rationale {
-                    *value = read(value.clone(), "rationale", 2048)?;
-                }
-            }
-            Self::DecisionReject(v) => v.reason = read(v.reason.clone(), "reason", 2048)?,
-            Self::DecisionRetract(v) => v.reason = read(v.reason.clone(), "reason", 2048)?,
             _ => (),
         }
         self.validate()
@@ -379,13 +354,11 @@ impl AnyOutput {
             Self::WorkingStateGet(v) => v.value.value.exit_code(),
             Self::ConfigGet(v) => v.value.value.exit_code(),
             Self::ConfigList(v) => v.value.page.window().exit_code(false),
-            Self::DecisionShow(v) => v.value.decision.exit_code(),
             Self::AgentShow(v) => v.value.agent.exit_code(),
             Self::Resume(v) => v.value.exit_code(),
             Self::SessionContext(v) if v.value.truncated || !v.value.failures.is_empty() => 2,
             Self::AgentList(v) => v.value.page.window().exit_code(false),
             Self::HistoryList(v) => v.value.page.window().exit_code(false),
-            Self::DecisionList(v) => v.value.page.window().exit_code(false),
             Self::ProjectStatus(v) => {
                 let project = v.value.project.exit_code();
                 if project != 0 {

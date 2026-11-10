@@ -1,6 +1,6 @@
 use crate::*;
 
-/// Protects: fixed decision-ratify and key-selected configuration presence policies use real native observations at the independent hosted receiver.
+/// Protects: key-selected configuration presence policies use real native observations at the independent hosted receiver.
 pub fn client(args: &[std::ffi::OsString]) -> Check {
     let [_, _, home, project, agent, mode] = args else {
         return Err("owner client fixture arguments".into());
@@ -55,24 +55,6 @@ pub fn client(args: &[std::ffi::OsString]) -> Check {
         project: Some(project.to_str().ok_or("project encoding")?.parse()?),
         ..Default::default()
     };
-    let proposal = ipc::forward(
-        &endpoint,
-        se_host::client::lease::ClientCredential::Machine(copy_secret(&credential)?),
-        se_core::ops::AnyOp::DecisionPropose(se_core::ops::DecisionPropose {
-            key: format!("presence.ratify.{mode}"),
-            statement: "Only an actual owner terminal may ratify this decision".into(),
-            rationale: None,
-            supersedes: None,
-            idempotency_key: key(&format!("presence-propose-{mode}"))?,
-        }),
-        &selections,
-        Some(observed),
-        &options(),
-    )?;
-    let decision = match proposal {
-        se_core::ops::AnyOutput::Decision(receipt) => receipt.value.decision.id,
-        _ => return Err("presence proposal returned another output family".into()),
-    };
     let head = reader.info()?.head;
     let operation = se_core::ops::AnyOp::ConfigSet(se_core::ops::ConfigSet {
         key: format!(
@@ -82,14 +64,7 @@ pub fn client(args: &[std::ffi::OsString]) -> Check {
         value: "true".into(),
         idempotency_key: key(&format!("presence-{mode}"))?,
     });
-    for operation in [
-        operation,
-        se_core::ops::AnyOp::DecisionRatify(se_core::ops::DecisionRatify {
-            decision_id: decision,
-            expect: Some(1),
-            idempotency_key: key(&format!("presence-ratify-{mode}"))?,
-        }),
-    ] {
+    for operation in [operation] {
         let name = operation.meta().name;
         let output = ipc::forward(
             &endpoint,
@@ -263,43 +238,6 @@ Write-Output 'PASS owner_presence_client {mode}: real native Windows console and
         grant.current.body,
         EventBody::GrantRecorded { active: true, .. }
     ));
-    for mode in [
-        "pipe",
-        #[cfg(any(target_os = "linux", windows))]
-        "provider",
-        #[cfg(any(target_os = "linux", windows))]
-        "session",
-        #[cfg(any(target_os = "linux", windows))]
-        "terminal",
-    ] {
-        let actor = Actor::Human(f.owner.clone());
-        let proposal = present(
-            read.operation_receipt(actor.clone(), key(&format!("presence-propose-{mode}"))?)?,
-        )?;
-        let proposal = present(read.event(proposal.primary_event)?)?;
-        let EventBody::DecisionProposed { decision, .. } = proposal.body else {
-            return Err("presence proposal receipt names another event".into());
-        };
-        let current = present(read.decision(decision.clone())?)?;
-        let ratified = read.operation_receipt(actor, key(&format!("presence-ratify-{mode}"))?)?;
-        if mode == "terminal" {
-            let receipt = present(ratified)?;
-            assert_eq!(current.revision.value.get(), 2);
-            assert_eq!(current.current.header.event, receipt.primary_event);
-            assert!(matches!(
-                current.current.body,
-                EventBody::DecisionRatified { decision: id, .. } if id == decision
-            ));
-        } else {
-            assert!(matches!(ratified, Read::Absent { .. }));
-            assert_eq!(current.revision.value.get(), 1);
-            assert_eq!(current.current.header.event, proposal.header.event);
-            assert!(matches!(
-                current.current.body,
-                EventBody::DecisionProposed { .. }
-            ));
-        }
-    }
     read.close()?;
     Ok(())
 }

@@ -45,7 +45,7 @@ pub(super) fn command(name: &str, c: Command) -> Command {
             .about("Find code, text and project records; try authenticate or 'packet budget'")
             .arg(positional("query", 1, true))
             .arg(value("kind").default_value("all").value_parser([
-                "all", "code", "symbol", "text", "path", "decision", "message", "working", "edit",
+                "all", "code", "symbol", "text", "path", "message", "working", "edit",
                 "commit",
             ]))
             .arg(value("mode").value_parser(["exact", "literal", "phrase", "broad", "related"]))

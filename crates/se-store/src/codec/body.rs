@@ -143,7 +143,7 @@ pub(crate) fn body(
         | "decision.ratified"
         | "decision.rejected"
         | "decision.retracted"
-        | "decision.superseded" => crate::apply::decision::decode(c, seq, kind, scope)?,
+        | "decision.superseded" => super::retired_decision::decode(c, seq, kind, scope)?,
         "session.prepared" | "session.activated" | "session.ended" | "session.revoked" => {
             session::decode(c, seq, kind, scope)?
         }

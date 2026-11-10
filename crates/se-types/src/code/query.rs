@@ -96,7 +96,6 @@ pub enum SearchKind {
     Symbol,
     Text,
     Path,
-    Decision,
     Message,
     Working,
     Edit,

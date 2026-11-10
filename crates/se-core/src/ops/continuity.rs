@@ -7,7 +7,6 @@ pub(crate) use cursor::{resume_since, validate_resume_since};
 mod identity;
 pub(crate) mod packet;
 mod read;
-mod rulings;
 pub mod types;
 use crate::commit::Cx;
 use se_store::Snapshot;
@@ -50,7 +49,6 @@ pub(crate) fn context_at_home<R: Snapshot>(
     identity.command_home = home.map(std::path::Path::to_owned);
     let resume = Resume {
         limit: input.limit,
-        governing_cursor: input.governing_cursor,
         since: input.since,
         byte_budget: input.byte_budget,
         preview_agent: None,

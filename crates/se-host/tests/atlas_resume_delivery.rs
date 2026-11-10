@@ -105,7 +105,6 @@ fn resume_packet(
     let result = resume(
         Resume {
             limit: 20,
-            governing_cursor: None,
             since: None,
             byte_budget: 32768,
             preview_agent: None,
@@ -167,7 +166,6 @@ fn typed_code_context_uses_only_available_space_on_both_consumers() -> Check {
     let mut linked = context(
         SessionContextRequest {
             limit: 20,
-            governing_cursor: None,
             since: None,
             byte_budget: 32768,
         },

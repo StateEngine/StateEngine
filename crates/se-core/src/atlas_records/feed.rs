@@ -172,9 +172,19 @@ fn next_scoped<R: Snapshot>(
         | EventBody::DecisionRatified { decision, .. }
         | EventBody::DecisionRejected { decision, .. }
         | EventBody::DecisionRetracted { decision, .. } => {
-            Some((RecordKind::Decision, decision.as_str()))
+            changes.push(RecordFeedChange::Remove {
+                project: project.clone(),
+                key: RecordKey::new(decision.as_str())?,
+            });
+            None
         }
-        EventBody::DecisionSuperseded { prior, .. } => Some((RecordKind::Decision, prior.as_str())),
+        EventBody::DecisionSuperseded { prior, .. } => {
+            changes.push(RecordFeedChange::Remove {
+                project: project.clone(),
+                key: RecordKey::new(prior.as_str())?,
+            });
+            None
+        }
         EventBody::MessageErased { target, .. } => {
             let source = scope::require_present(
                 read.event(target.clone()).map_err(|e| store_error(&e))?,
@@ -241,16 +251,7 @@ fn next_scoped<R: Snapshot>(
                     mentions: explicit_mentions(read, &event, &project)?,
                 };
                 record.validate()?;
-                let ratified = matches!(event.body, EventBody::DecisionRatified { .. });
-                let key = record.pointer.key.clone();
                 changes.push(RecordFeedChange::Upsert(record));
-                if ratified {
-                    changes.push(RecordFeedChange::Ratify {
-                        project: project.clone(),
-                        key,
-                        source_event: through.clone(),
-                    });
-                }
             }
             // Historical revisions already replaced by a later committed record
             // are skipped. They never remove a newer cache entry on replay.
@@ -307,11 +308,6 @@ fn explicit_mentions<R: Snapshot>(
                 Some(message.to_string())
             }
             EventBody::WorkingStateSet { agent, .. } => Some(agent.to_string()),
-            EventBody::DecisionProposed { decision, .. }
-            | EventBody::DecisionRatified { decision, .. }
-            | EventBody::DecisionRejected { decision, .. }
-            | EventBody::DecisionRetracted { decision, .. } => Some(decision.to_string()),
-            EventBody::DecisionSuperseded { prior, .. } => Some(prior.to_string()),
             _ => None,
         };
         if let Some(key) = key {

@@ -21,8 +21,6 @@ pub struct Resume {
     #[serde(default = "default_limit")]
     pub limit: u16,
     #[serde(default)]
-    pub governing_cursor: Option<Cursor>,
-    #[serde(default)]
     pub since: Option<Cursor>,
     #[serde(default = "default_bytes")]
     pub byte_budget: u32,
@@ -33,8 +31,6 @@ pub struct Resume {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionContextRequest {
-    #[serde(default)]
-    pub governing_cursor: Option<Cursor>,
     #[serde(default = "default_limit")]
     pub limit: u16,
     #[serde(default)]
@@ -93,19 +89,6 @@ pub struct RequiredRead {
     pub why: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct GoverningDecision {
-    pub id: se_types::DecisionId,
-    pub key: String,
-    pub statement: String,
-    pub ratified_at: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Decisions {
-    pub next_cursor: Option<Cursor>,
-    pub governing: Vec<GoverningDecision>,
-    pub pending: u64,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RecentTurn {
     pub event_id: se_types::EventId,
     pub at: String,
@@ -148,7 +131,6 @@ pub struct ResumeOutput {
     pub working_state: Read<ContinuityWorkingState>,
     pub unread: Page<MessageRow>,
     pub required_reads: Vec<RequiredRead>,
-    pub decisions: Decisions,
     pub recent_turns: Vec<RecentTurn>,
     #[serde(flatten, default)]
     pub transcript: crate::ops::transcript::View,
