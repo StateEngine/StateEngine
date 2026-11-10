@@ -1,5 +1,5 @@
 //! Deterministic Unicode camel/snake/digit boundaries, versioned with extraction.
-/// Borrow complete tokens; byte offsets always lie on UTF-8 boundaries.
+/// Split names into borrowed tokens at UTF-8 boundaries.
 pub fn identifier_tokens(name: &str) -> Vec<&str> {
     let chars: Vec<_> = name.char_indices().collect();
     let mut tokens = Vec::new();
