@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 use std::{collections::VecDeque, sync::Mutex, time::Duration};
 mod gateway;
 mod message;
+#[cfg(all(test, target_os = "linux"))]
+mod review;
 use gateway::Receiver;
 
 type Error = ChannelError;
