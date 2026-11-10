@@ -1,6 +1,8 @@
 //! Shared optional remote-client seams. Declaring these values starts no task,
 //! listener, timer or allocation. Design 45 §§3–6 and 47 §§5/9 govern consumers.
 #[cfg(feature = "remote")]
+pub(crate) mod activity;
+#[cfg(feature = "remote")]
 mod channel;
 #[cfg(feature = "remote")]
 pub mod client;

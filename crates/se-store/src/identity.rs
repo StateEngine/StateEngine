@@ -187,7 +187,7 @@ pub(crate) fn actor(db: &Connection, bytes: &[u8], scope: &[u8]) -> StoreResult<
                 .map_err(invalid)?,
         ));
     }
-    if crate::connection::info(db)?.schema_version >= 5 {
+    if crate::connection::info(db)?.schema_version >= 7 {
         let remote: bool = db
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM remote_grants WHERE principal_id=?)",

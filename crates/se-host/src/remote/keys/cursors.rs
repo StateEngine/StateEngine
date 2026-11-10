@@ -1,4 +1,6 @@
-//! Purpose-separated persistent AEAD key. Native protection is checked on every use.
+//! Scoped cursors contain private global storage ordering. AEAD hides that
+//! ordering as well as authenticating it; signing plaintext would leak it.
+//! Load native-protected key custody once per owning host, zeroize on drop.
 use super::{initialize, read};
 use chacha20poly1305::{
     KeyInit, XChaCha20Poly1305, XNonce,
@@ -6,17 +8,16 @@ use chacha20poly1305::{
 };
 use se_core::scope;
 use se_store::StateFiles;
-use se_types::Result;
+use se_types::{Result, Secret};
 use sha2::{Digest, Sha256};
 use std::{path::PathBuf, sync::Arc};
 const PAYLOAD: usize = 2048;
 const HEADER: usize = 1 + 16 + 24;
 const DOMAIN: &[u8] = b"stateengine.remote.cursor/v1\0";
-/// Holds native custody and a public key identifier, never cached private key bytes.
+/// Protected key custody for this host lifetime; rotation takes effect on restart.
 /// Call load/initialize/seal/open on the existing bounded blocking pool.
 pub struct CursorCipher {
-    files: Arc<dyn StateFiles>,
-    path: PathBuf,
+    secret: Secret,
     key_id: [u8; 16],
 }
 impl CursorCipher {
@@ -38,18 +39,10 @@ impl CursorCipher {
         let digest = Sha256::digest(secret.expose());
         let mut key_id = [0; 16];
         key_id.copy_from_slice(&digest[..16]);
-        Ok(Self {
-            files,
-            path,
-            key_id,
-        })
+        Ok(Self { secret, key_id })
     }
     fn cipher(&self) -> Result<XChaCha20Poly1305> {
-        let secret = read(&*self.files, &self.path)?;
-        if Sha256::digest(secret.expose())[..16] != self.key_id {
-            return Err(reset());
-        }
-        XChaCha20Poly1305::new_from_slice(secret.expose()).map_err(|_| reset())
+        XChaCha20Poly1305::new_from_slice(self.secret.expose()).map_err(|_| reset())
     }
     /// Binary envelope; the shared codec supplies its one canonical cursor spelling.
     /// Associated data must bind the reader's host/store/grant/revision/filter/schema.

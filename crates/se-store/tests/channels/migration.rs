@@ -2,7 +2,7 @@ use super::*;
 
 fn remove_remote_schema(db: &rusqlite::Connection) -> Check {
     db.execute_batch(
-        "DROP TABLE remote_message_attribution; DROP TABLE remote_grant_targets;
+        "DROP TABLE remote_message_attribution;
          DROP TABLE remote_grants; DROP INDEX session_data_agent_seq;
          DROP INDEX mark_data_message_seq; DROP INDEX work_mark_recipient_seq",
     )?;

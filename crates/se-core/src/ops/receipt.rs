@@ -122,9 +122,9 @@ pub fn mail_sender_ref<R: Snapshot>(
                 ),
             },
             None => ActorRef {
-                kind: "remote_owner".into(),
+                kind: "remote_sender".into(),
                 id: principal.to_string(),
-                name: format!("Remote machine owner {principal}"),
+                name: format!("Remote sender {principal}"),
             },
         });
     }

@@ -98,8 +98,13 @@ impl HostedRuntime {
             match self.auto_start.then(|| self.activity.take()).flatten() {
                 Some(mut activity) => {
                     let channels = channels.clone();
+                    #[cfg(feature = "remote")]
+                    let waits = self.execution.mail_waits.clone();
                     Box::pin(async move {
-                        crate::channels::runtime::idle(&mut activity, channels).await
+                        #[cfg(feature = "remote")]
+                        crate::remote::activity::idle(waits, &mut activity, channels).await;
+                        #[cfg(not(feature = "remote"))]
+                        crate::channels::runtime::idle(&mut activity, channels).await;
                     })
                 }
                 None => Box::pin(std::future::pending()),
@@ -142,36 +147,7 @@ impl HostedRuntime {
             .await
             {
                 Event::LocalStop => break ended(self, listener, None),
-                Event::IdleExpired => {
-                    #[cfg(feature = "remote")]
-                    {
-                        if self.execution.mail_waits.remote().is_some() {
-                            // Explicit source-client use retains the existing host,
-                            // rather than killing a human watch at native-agent idle.
-                            timers.idle = Box::pin(std::future::pending());
-                            continue;
-                        }
-                        if let Some(control) = self
-                            .execution
-                            .mail_waits
-                            .remote_control()
-                            .filter(|control| control.active())
-                        {
-                            let control = control.clone();
-                            let activity = activity.clone();
-                            timers.idle = Box::pin(async move {
-                                control.wait_disabled().await;
-                                if let Some(mut activity) = activity {
-                                    idle_expiry(&mut activity).await;
-                                } else {
-                                    std::future::pending::<()>().await
-                                }
-                            });
-                            continue;
-                        }
-                    }
-                    break ended(self, listener, None);
-                }
+                Event::IdleExpired => break ended(self, listener, None),
                 Event::OwnershipFault => {
                     break ended(
                         self,

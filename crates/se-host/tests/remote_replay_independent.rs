@@ -388,7 +388,7 @@ fn shared_work_message_addressed_to_granted_agent_is_not_silently_skipped() -> C
     )?;
     assert_eq!(
         target.pending, 1,
-        "another addressed recipient's read must not clear Alpha's pending mail"
+        "another addressed recipient's read must not clear Sender's pending mail"
     );
     let later = phase.remote_changes(
         &g.grant,
@@ -401,7 +401,7 @@ fn shared_work_message_addressed_to_granted_agent_is_not_silently_skipped() -> C
         },
         now()?,
     )?;
-    assert!(!later.changes.iter().any(|c|matches!(&c.kind,ChangeKind::Durable(RemoteDurableEvent::Message {message,delivery:RemoteDeliveryState::Read}) if message==&id)),"another recipient's private read must not mark Alpha's shared copy read");
+    assert!(!later.changes.iter().any(|c|matches!(&c.kind,ChangeKind::Durable(RemoteDurableEvent::Message {message,delivery:RemoteDeliveryState::Read}) if message==&id)),"another recipient's private read must not mark Sender's shared copy read");
     phase.close()?;
     d.close()?;
     assert!(

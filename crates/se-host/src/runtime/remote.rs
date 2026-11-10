@@ -24,6 +24,8 @@ pub(super) async fn execute(
         ));
     };
     #[cfg(feature = "remote")]
+    let _work = context.mail_waits.remote_work()?;
+    #[cfg(feature = "remote")]
     setup::ensure(context, deadline).await?;
     let broker = context.mail_waits.remote().ok_or_else(|| {
         SeError::invalid(

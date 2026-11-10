@@ -49,6 +49,7 @@ impl Service {
 impl listener::RemoteService for Service {
     fn execute(&self, request: auth::AuthorizedRemoteRequest) -> RemoteFuture<'_, wire::Reply> {
         Box::pin(async move {
+            let _work = self.router.execution.mail_waits.remote_work()?;
             match request.request() {
                 RemoteRequest::List(input) => {
                     let input = input.clone();

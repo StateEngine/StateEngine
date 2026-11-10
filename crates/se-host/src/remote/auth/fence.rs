@@ -60,11 +60,12 @@ impl GrantFence {
                 "grant admission and output are fenced",
             ));
         }
-        guard.outputs.retain(|v| v.strong_count() > 0);
+        guard
+            .outputs
+            .retain(|v| v.upgrade().is_some_and(|output| !output.closed()));
         if guard.outputs.len() >= MAX_CONNECTIONS_PER_GRANT {
-            return Err(scope::unreadable(
-                "remote grant fence",
-                "bounded grant connection capacity reached",
+            return Err(super::super::channel::busy(
+                "bounded grant connection capacity reached; close an existing connection",
             ));
         }
         guard.outputs.push(Arc::downgrade(output));
@@ -91,7 +92,9 @@ impl GrantFence {
             )
         })?;
         guard.open = false;
-        guard.outputs.retain(|v| v.strong_count() > 0);
+        guard
+            .outputs
+            .retain(|v| v.upgrade().is_some_and(|output| !output.closed()));
         for output in guard.outputs.iter().filter_map(|v| v.upgrade()) {
             output.invalidate()
         }

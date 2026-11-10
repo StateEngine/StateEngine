@@ -34,8 +34,6 @@ pub(crate) struct Control {
     running: Mutex<Option<Running>>,
     closing: AtomicBool,
     configure: Mutex<()>,
-    active: AtomicBool,
-    disabled: tokio::sync::Notify,
 }
 impl Control {
     pub(crate) fn live(&self) -> Result<Option<Arc<publish::LivePublisher>>> {
@@ -156,23 +154,7 @@ impl Control {
             running: Mutex::new(None),
             closing: AtomicBool::new(false),
             configure: Mutex::new(()),
-            active: AtomicBool::new(false),
-            disabled: tokio::sync::Notify::new(),
         })
-    }
-    pub(crate) fn active(&self) -> bool {
-        self.active.load(Ordering::Acquire)
-    }
-    pub(crate) async fn wait_disabled(&self) {
-        loop {
-            let changed = self.disabled.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            if !self.active() {
-                return;
-            }
-            changed.await;
-        }
     }
     pub(crate) async fn close(&self) -> Result<()> {
         self.request_close();
@@ -210,8 +192,6 @@ impl Control {
                 ));
             }
             *running = None;
-            self.active.store(false, Ordering::Release);
-            self.disabled.notify_waiters();
         }
         failure.map_or(Ok(()), Err)
     }

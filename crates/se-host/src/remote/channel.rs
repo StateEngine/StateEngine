@@ -21,6 +21,15 @@ pub(super) fn unavailable(reason: &str) -> SeError {
         next_step: "Check the saved SSH destination and machine name. Keep the original request key when retrying a send.".into(),
     }))
 }
+/// Resource pressure refuses one operation without changing its authority.
+pub(super) fn busy(reason: &str) -> SeError {
+    SeError::new(Detail::StoreBusy(details::StoreBusy {
+        waited_ms: 0,
+        replay: None,
+        reason: reason.into(),
+        next_step: "Let outstanding work finish or cancel a read/watch, then retry the request; retain the SSH binding and original send idempotency key.".into(),
+    }))
+}
 pub(super) async fn open(
     route: &RemoteRoute,
     device: &MachineSession,

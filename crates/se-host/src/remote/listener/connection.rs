@@ -85,24 +85,18 @@ pub(super) async fn serve(
             security.ready(&checked)
         })
         .await?;
+        let slot = limits.device(&device.grant().device)?;
         send(&mut socket, &ServerFrame::Ready(ready), Phase::PreAuth).await?;
-        Ok::<_, SeError>(device)
+        Ok::<_, SeError>((device, slot))
     })
     .await
     .map_err(|_| unavailable("SSH channel authorization deadline exceeded (10 seconds)"))?;
     endpoint.security.cancel_channel(channel)?;
-    let device = match admitted {
+    let (device, slot) = match admitted {
         Ok(value) => value,
         Err(error) => {
-            // No private state is released. Preserve a typed authority refusal
-            // rather than making a revoked/expired grant look like a lost link.
-            let error = if error.code() == se_types::Code::ListenerUnavailable {
-                error
-            } else {
-                auth::refused(
-                    "machine session or current authority refused; reconnect through its saved SSH binding",
-                )
-            };
+            // The pre-auth error contains no private state. Busy, unreadable,
+            // deadline and authority refusals must retain their distinct codes.
             let _ = send(
                 &mut socket,
                 &ServerFrame::Error {
@@ -117,7 +111,6 @@ pub(super) async fn serve(
     };
     controls.authenticated();
     drop(permit);
-    let slot = limits.device(&device.grant().device)?;
     pump::run(socket, endpoint, output, device, slot).await
 }
 #[expect(

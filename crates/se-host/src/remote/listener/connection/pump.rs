@@ -9,6 +9,11 @@ use tokio::{
 pub(super) type Device = Arc<auth::AuthenticatedDevice>;
 type Sink = SplitSink<Socket, Message>;
 type Stream = SplitStream<Socket>;
+struct Pending {
+    task: AbortHandle,
+    mutation: bool,
+    _admission: limits::RequestSlot,
+}
 
 pub(super) async fn run(
     socket: Socket,
@@ -62,7 +67,7 @@ async fn writer(
                 .await?;
                 write(&mut sink, Message::text(frame.text), output).await?;
                 output.sent(len)?;
-                if frame.use_watch {
+                if frame.record_use {
                     used.notify_one();
                 }
                 continue;
@@ -90,14 +95,14 @@ fn urgent(tx: &mpsc::Sender<Message>, message: Message) -> Result<()> {
 }
 async fn reader(
     mut stream: Stream,
-    endpoint: &ClientEndpoint,
+    endpoint: &Arc<ClientEndpoint>,
     output: &Arc<Output>,
     device: &Device,
     control: mpsc::Sender<Message>,
     slot: limits::DeviceSlot,
 ) -> Result<()> {
     let mut tasks = JoinSet::new();
-    let mut pending = BTreeMap::<wire::RequestId, (AbortHandle, bool)>::new();
+    let mut pending = BTreeMap::<wire::RequestId, Pending>::new();
     let mut ping_at = Instant::now() + Duration::from_secs(15);
     let mut pong_until = None;
     let mut serial = 0u64;
@@ -115,36 +120,75 @@ async fn reader(
         tokio::select! {biased;
             _=output.stop.notified()=>return Err(unavailable("client reader invalidated")),
             joined=tasks.join_next(),if !tasks.is_empty()=>{
-                match joined {Some(Ok(Ok(id)))=>{pending.remove(&id);},Some(Ok(Err(error)))=>return Err(error),Some(Err(error)) if error.is_cancelled()=>(),Some(Err(_))=>return Err(unavailable("client operation task failed")),None=>()}
+                match joined {
+                    Some(Ok(Ok(id))) => { pending.remove(&id); }
+                    Some(Ok(Err(error))) => return Err(error),
+                    Some(Err(error)) if error.is_cancelled() => (),
+                    Some(Err(_)) => return Err(unavailable("client operation task failed")),
+                    None => (),
+                }
             }
             _=sleep_until(until)=>{
-                let now=Instant::now();
-                if pong_until.is_some_and(|at|now>=at) {return Err(unavailable("client pong deadline exceeded (10 seconds)"));}
-                if now>=ping_at {
-                    serial=serial.checked_add(1).ok_or_else(||unavailable("client ping sequence exhausted"))?;
-                    let bytes=serial.to_be_bytes();expected_pong=Some(bytes);urgent(&control,Message::Ping(bytes.to_vec().into()))?;
-                    pong_until=Some(now+Duration::from_secs(10));ping_at=now+Duration::from_secs(15);
+                let now = Instant::now();
+                if pong_until.is_some_and(|at| now >= at) {
+                    return Err(unavailable("client pong deadline exceeded (10 seconds)"));
+                }
+                if now >= ping_at {
+                    serial = serial.checked_add(1)
+                        .ok_or_else(|| unavailable("client ping sequence exhausted"))?;
+                    let bytes = serial.to_be_bytes();
+                    expected_pong = Some(bytes);
+                    urgent(&control, Message::Ping(bytes.to_vec().into()))?;
+                    pong_until = Some(now + Duration::from_secs(10));
+                    ping_at = now + Duration::from_secs(15);
                 }
             }
             frame=stream.next()=>{
                 match frame {
-                    Some(Ok(Message::Text(text)))=>match wire::decode(text.as_bytes(),Phase::Authenticated)? {
-                        ClientFrame::Request {id,invocation}=>{
-                            if last_request.is_some_and(|last|id<=last) {return Err(unavailable("request IDs must increase on this connection; reconnect before reuse"));}
-                            last_request=Some(id);
-                            let mutation=matches!(invocation.request,RemoteRequest::Send(_));
-                            let admission=slot.limits.request(mutation)?;
-                            let endpoint=Arc::new(ClientEndpoint {security:endpoint.security.clone(),key:endpoint.key.clone(),cipher:endpoint.cipher.clone(),service:endpoint.service.clone(),blocking:endpoint.blocking.clone()});
-                            let output=output.clone();let device=device.clone();
-                            let handle=tasks.spawn(async move {let _admission=admission;requests::run(endpoint,output,device,id,*invocation).await.map(|()|id)});
-                            pending.insert(id,(handle,mutation));
+                    Some(Ok(Message::Text(text))) => match wire::decode(text.as_bytes(), Phase::Authenticated)? {
+                        ClientFrame::Request { id, invocation } => {
+                            if last_request.is_some_and(|last| id <= last) {
+                                return Err(unavailable("request IDs must increase on this connection; reconnect before reuse"));
+                            }
+                            last_request = Some(id);
+                            let mutation = matches!(invocation.request, RemoteRequest::Send(_));
+                            let admission = match slot.limits.request(mutation) {
+                                Ok(admission) => admission,
+                                Err(error) => {
+                                    requests::enqueue(endpoint, output, device, ServerFrame::Error {
+                                        id: Some(id), error: error.into_body(),
+                                    }).await?;
+                                    continue;
+                                }
+                            };
+                            let endpoint = endpoint.clone();
+                            let output = output.clone();
+                            let device = device.clone();
+                            let task = tasks.spawn(async move {
+                                requests::run(endpoint, output, device, id, *invocation)
+                                    .await.map(|()| id)
+                            });
+                            pending.insert(id, Pending { task, mutation, _admission: admission });
                         }
-                        ClientFrame::Cancel {id}=>{if pending.get(&id).is_some_and(|(_,mutation)|!*mutation) && let Some((task,_))=pending.remove(&id) {task.abort();}}
+                        ClientFrame::Cancel { id } => {
+                            if pending.get(&id).is_some_and(|call| !call.mutation)
+                                && let Some(call) = pending.remove(&id)
+                            {
+                                // Drop read/watch permits now, not after the aborted
+                                // worker next reaches the executor. Writes stay owned.
+                                call.task.abort();
+                            }
+                        }
                     },
-                    Some(Ok(Message::Ping(bytes)))=>urgent(&control,Message::Pong(bytes))?,
-                    Some(Ok(Message::Pong(bytes)))=>{if expected_pong.as_ref().is_some_and(|expected|bytes.as_ref()==expected) {expected_pong=None;pong_until=None;}},
-                    Some(Ok(Message::Close(_)))|None=>return Ok(()),
-                    _=>return Err(unavailable("client sent a non-JSON message or closed abnormally")),
+                    Some(Ok(Message::Ping(bytes))) => urgent(&control, Message::Pong(bytes))?,
+                    Some(Ok(Message::Pong(bytes))) => {
+                        if expected_pong.as_ref().is_some_and(|expected| bytes.as_ref() == expected) {
+                            expected_pong = None;
+                            pong_until = None;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => return Ok(()),
+                    _ => return Err(unavailable("client sent a non-JSON message or closed abnormally")),
                 }
             }
         }

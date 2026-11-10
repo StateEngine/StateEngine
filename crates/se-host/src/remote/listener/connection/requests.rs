@@ -32,7 +32,9 @@ pub(super) async fn run(
         Err(error) => Err(error),
     };
     match result {
-        Ok(()) => endpoint.security.record_use(&device).await,
+        // Lease renewal is signalled by the socket writer after delivery.
+        // A completed request never holds capacity behind maintenance writes.
+        Ok(()) => Ok(()),
         Err(error) => {
             enqueue(
                 &endpoint,
@@ -94,7 +96,7 @@ async fn watch(
         }
     }
 }
-async fn enqueue(
+pub(super) async fn enqueue(
     endpoint: &ClientEndpoint,
     output: &Arc<Output>,
     device: &Device,
@@ -102,21 +104,15 @@ async fn enqueue(
 ) -> Result<()> {
     // Encode before entering the finite grant lock. Only bounded queue insertion
     // happens under it; no SQL pin, serialization, network await or filesystem I/O.
-    let use_watch = matches!(&frame,ServerFrame::WatchEvent {batch,..} if !batch.records.is_empty())
-        || matches!(
-            &frame,
-            ServerFrame::Response {
-                result: wire::Reply::Watch(_),
-                ..
-            }
-        );
+    let record_use = matches!(&frame, ServerFrame::Response { .. })
+        || matches!(&frame, ServerFrame::WatchEvent { batch, .. } if !batch.records.is_empty());
     let text = wire::encode(&frame, Phase::Authenticated)?;
     let security = endpoint.security.clone();
     let queued = output.clone();
     let device = device.clone();
     let result = bounded(endpoint, move || {
         let _fence = security.output_fence(&device, &device.grant().scope)?;
-        queued.enqueue(text, use_watch)
+        queued.enqueue(text, record_use)
     })
     .await;
     if result.is_err() {

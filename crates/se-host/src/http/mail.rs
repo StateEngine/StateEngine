@@ -14,6 +14,8 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 pub(crate) mod bell;
 
 pub(crate) struct Waits {
+    #[cfg(feature = "remote")]
+    pub(crate) remote_activity: crate::remote::activity::Activity,
     pub(crate) bells: Arc<bell::Bells>,
     #[cfg(feature = "remote")]
     remote_control: std::sync::OnceLock<Arc<crate::remote::control::Control>>,
@@ -107,6 +109,8 @@ impl Waits {
 
     pub(crate) fn new(maximum: usize) -> Arc<Self> {
         Arc::new(Self {
+            #[cfg(feature = "remote")]
+            remote_activity: crate::remote::activity::Activity::new(),
             bells: bell::Bells::new(maximum),
             #[cfg(feature = "remote")]
             remote_control: std::sync::OnceLock::new(),

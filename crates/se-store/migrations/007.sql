@@ -19,13 +19,6 @@ CREATE TABLE remote_grants(
   last_seq INTEGER NOT NULL REFERENCES events(seq)
 ) STRICT;
 CREATE INDEX remote_grants_active ON remote_grants(expires_at_us) WHERE state='active';
-CREATE TABLE remote_grant_targets(
-  grant_id BLOB NOT NULL REFERENCES remote_grants(grant_id),
-  project_id BLOB NOT NULL,
-  agent_id BLOB NOT NULL,
-  PRIMARY KEY(grant_id,project_id,agent_id),
-  FOREIGN KEY(project_id,agent_id) REFERENCES principals(project_id,principal_id)
-) STRICT;
 CREATE TABLE remote_message_attribution(
   event_seq INTEGER PRIMARY KEY REFERENCES events(seq),
   project_id BLOB NOT NULL,

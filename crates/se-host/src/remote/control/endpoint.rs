@@ -91,7 +91,6 @@ impl Control {
             task: Some(task),
             closed: false,
         });
-        self.active.store(true, Ordering::Release);
         Ok(self.enabled(address))
     }
     fn enabled(&self, address: std::net::SocketAddr) -> serde_json::Value {

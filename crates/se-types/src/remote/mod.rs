@@ -22,3 +22,7 @@ pub const REMOTE_MAX_TARGETS: usize = 64;
 pub const REMOTE_CLIENT_QUEUE_BYTES: usize = 256 * 1024;
 pub const REMOTE_CLIENT_QUEUE_FRAMES: usize = 256;
 pub const REMOTE_LIVE_RING_BYTES: usize = 2 * 1024 * 1024;
+
+/// Outstanding requests per device; mutations consume both budgets.
+pub const REMOTE_MAX_REQUESTS: usize = 32;
+pub const REMOTE_MAX_MUTATIONS: usize = 4;

@@ -9,8 +9,8 @@ pub(super) fn open(socket: super::super::super::channel::Socket) -> Arc<Connecti
     let shared = Arc::new(Shared {
         pending: StdMutex::new(BTreeMap::new()),
         outgoing,
-        requests: Arc::new(Semaphore::new(32)),
-        mutations: Arc::new(Semaphore::new(4)),
+        requests: Arc::new(Semaphore::new(REMOTE_MAX_REQUESTS)),
+        mutations: Arc::new(Semaphore::new(REMOTE_MAX_MUTATIONS)),
         outbound_bytes: Arc::new(Semaphore::new(REMOTE_CLIENT_QUEUE_BYTES)),
         inbound_bytes: Arc::new(Semaphore::new(REMOTE_CLIENT_QUEUE_BYTES)),
         stop: Arc::new(tokio::sync::Notify::new()),

@@ -171,18 +171,13 @@ impl Shared {
             .map_err(|_| unavailable("client outbound frame queue is full or closed; retry without changing the request key"))
     }
     fn allocate(&self, mutation: bool) -> Result<(RequestId, Admission)> {
-        let request = self
-            .requests
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| unavailable("32 in-flight requests already admitted"))?;
+        let request = self.requests.clone().try_acquire_owned().map_err(|_| {
+            super::super::channel::busy("outstanding request capacity reached for this device")
+        })?;
         let mutation = if mutation {
-            Some(
-                self.mutations
-                    .clone()
-                    .try_acquire_owned()
-                    .map_err(|_| unavailable("four in-flight mutations already admitted"))?,
-            )
+            Some(self.mutations.clone().try_acquire_owned().map_err(|_| {
+                super::super::channel::busy("outstanding mutation capacity reached for this device")
+            })?)
         } else {
             None
         };

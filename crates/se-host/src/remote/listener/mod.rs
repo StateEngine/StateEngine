@@ -1,11 +1,7 @@
 //! Optional client listener in the owning host; never a service/helper process.
 use super::*;
 use se_types::{Result, SeError};
-use std::{
-    net::{IpAddr, SocketAddr},
-    sync::Arc,
-    time::Duration,
-};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{OwnedSemaphorePermit, Semaphore, watch},
@@ -95,6 +91,8 @@ impl ClientListener {
         let mut tasks: JoinSet<Result<()>> = JoinSet::new();
         let mut failures = Some(0u64);
         let mut last_error = None;
+        let mut backoff = Duration::from_millis(1);
+        let mut retry_at = tokio::time::Instant::now();
         loop {
             if *shutdown.borrow() {
                 break;
@@ -109,15 +107,26 @@ impl ClientListener {
                         None=>(),
                     }
                 }
-                accepted=self.listener.accept()=>{
+                accepted=async {
+                    tokio::time::sleep_until(retry_at).await;
+                    self.listener.accept().await
+                }=>{
                     match accepted {
-                        Ok((socket,peer))=>{
-                            if let Ok(permit)=self.limits.handshake(peer.ip()) {
+                        Ok((socket,_peer))=>{
+                            backoff = Duration::from_millis(1);
+                            if let Ok(permit)=self.limits.handshake() {
                                 let endpoint=endpoint.clone();let limits=self.limits.clone();
                                 tasks.spawn(async move {connection::serve(socket,endpoint,limits,permit).await});
                             }
                         }
-                        Err(_)=>{failures=failures.and_then(|n|n.checked_add(1));last_error=Some(super::channel::unavailable("client listener accept failed").into_body());break;}
+                        Err(error) => {
+                            failures = failures.and_then(|n| n.checked_add(1));
+                            last_error = Some(super::channel::unavailable(
+                                &format!("client listener accept failed: {error}; retrying")
+                            ).into_body());
+                            retry_at = tokio::time::Instant::now() + backoff;
+                            backoff = (backoff * 2).min(Duration::from_secs(1));
+                        }
                     }
                 }
             }

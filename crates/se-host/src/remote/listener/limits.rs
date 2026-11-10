@@ -1,3 +1,4 @@
+use super::super::channel::busy;
 use super::*;
 use std::{
     collections::BTreeMap,
@@ -8,23 +9,15 @@ use std::{
 };
 #[derive(Default)]
 pub(super) struct Limits {
-    handshakes: Mutex<BTreeMap<IpAddr, usize>>,
+    handshakes: AtomicUsize,
     devices: Mutex<BTreeMap<RemoteDeviceId, Weak<DeviceLimits>>>,
 }
 pub(super) struct Handshake {
     limits: Arc<Limits>,
-    ip: IpAddr,
 }
 impl Drop for Handshake {
     fn drop(&mut self) {
-        if let Ok(mut map) = self.limits.handshakes.lock()
-            && let Some(count) = map.get_mut(&self.ip)
-        {
-            *count -= 1;
-            if *count == 0 {
-                map.remove(&self.ip);
-            }
-        }
+        self.limits.handshakes.fetch_sub(1, Ordering::AcqRel);
     }
 }
 pub(super) struct DeviceLimits {
@@ -46,20 +39,16 @@ pub(super) struct RequestSlot {
     _mutation: Option<OwnedSemaphorePermit>,
 }
 impl Limits {
-    pub fn handshake(self: &Arc<Self>, ip: IpAddr) -> Result<Handshake> {
-        let mut map = self
-            .handshakes
-            .lock()
-            .map_err(|_| super::super::channel::unavailable("handshake admission unreadable"))?;
-        if map.values().sum::<usize>() >= 8 || map.get(&ip).copied().unwrap_or(0) >= 2 {
-            return Err(super::super::channel::unavailable(
-                "bounded handshake capacity reached",
-            ));
-        }
-        *map.entry(ip).or_default() += 1;
+    pub fn handshake(self: &Arc<Self>) -> Result<Handshake> {
+        // SSH forwards all arrive on loopback. An IP quota would merge every
+        // legitimate device into one two-handshake budget.
+        self.handshakes
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < 8).then_some(n + 1)
+            })
+            .map_err(|_| busy("bounded handshake capacity reached"))?;
         Ok(Handshake {
             limits: self.clone(),
-            ip,
         })
     }
     pub fn device(&self, id: &RemoteDeviceId) -> Result<DeviceSlot> {
@@ -73,8 +62,8 @@ impl Limits {
         } else {
             let entry = Arc::new(DeviceLimits {
                 connections: AtomicUsize::new(0),
-                requests: Arc::new(Semaphore::new(32)),
-                mutations: Arc::new(Semaphore::new(4)),
+                requests: Arc::new(Semaphore::new(REMOTE_MAX_REQUESTS)),
+                mutations: Arc::new(Semaphore::new(REMOTE_MAX_MUTATIONS)),
             });
             map.insert(id.clone(), Arc::downgrade(&entry));
             entry
@@ -85,7 +74,7 @@ impl Limits {
                 (n < 4).then_some(n + 1)
             })
             .map_err(|_| {
-                super::super::channel::unavailable(
+                busy(
                     "four connections already use this device; share its multiplexed source broker",
                 )
             })?;
@@ -94,13 +83,18 @@ impl Limits {
 }
 impl DeviceLimits {
     pub fn request(self: &Arc<Self>, mutation: bool) -> Result<RequestSlot> {
-        let request = self.requests.clone().try_acquire_owned().map_err(|_| {
-            super::super::channel::unavailable("32 requests already use this device")
-        })?;
+        let request = self
+            .requests
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| busy("outstanding request capacity reached for this device"))?;
         let mutation = if mutation {
-            Some(self.mutations.clone().try_acquire_owned().map_err(|_| {
-                super::super::channel::unavailable("four mutations already use this device")
-            })?)
+            Some(
+                self.mutations
+                    .clone()
+                    .try_acquire_owned()
+                    .map_err(|_| busy("outstanding mutation capacity reached for this device"))?,
+            )
         } else {
             None
         };

@@ -20,6 +20,7 @@ struct State {
     durable_revision: Option<u64>,
 }
 pub(super) struct Watch {
+    _work: super::super::activity::Work,
     service: Service,
     state: Option<State>,
 }
@@ -29,7 +30,9 @@ impl Watch {
             return Err(SeError::invalid("watch", "an authorized watch request"));
         };
         let input = input.clone();
+        let work = service.router.execution.mail_waits.remote_work()?;
         Ok(Self {
+            _work: work,
             service,
             state: Some(State {
                 request: Arc::new(request),
