@@ -137,6 +137,12 @@ namespace StateEngineInstall {
         private static extern SafeFileHandle CreatePayload(string name, uint access, uint sharing,
             ref SecurityAttributes security, uint disposition, uint flags, IntPtr template);
         public static FileStream OpenPayload(string path, string owner, bool resume) {
+            return OpenOwnedFile(path, owner, resume, FileAccess.Write);
+        }
+        public static FileStream OpenJournal(string path, string owner, bool resume) {
+            return OpenOwnedFile(path, owner, resume, FileAccess.ReadWrite);
+        }
+        private static FileStream OpenOwnedFile(string path, string owner, bool resume, FileAccess access) {
             var security = new System.Security.AccessControl.FileSecurity();
             security.SetSecurityDescriptorSddlForm(
                 "O:" + owner + "D:P(A;;FA;;;SY)(A;;FA;;;" + owner + ")");
@@ -147,7 +153,8 @@ namespace StateEngineInstall {
                     Descriptor = descriptor.AddrOfPinnedObject(), InheritHandle = 0
                 };
                 // CREATE_NEW or OPEN_EXISTING, never overwrite a final path or follow a link.
-                SafeFileHandle handle = CreatePayload(path, 0x40000080, 0, ref attributes,
+                uint rights = 0x40000080u | (access == FileAccess.ReadWrite ? 0x80000000u : 0u);
+                SafeFileHandle handle = CreatePayload(path, rights, 0, ref attributes,
                     resume ? 3u : 1u, 0x00200080, IntPtr.Zero);
                 if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
                 try {
@@ -155,7 +162,7 @@ namespace StateEngineInstall {
                     if (!GetFileInformationByHandleEx(handle, 9, out info, 8))
                         throw new Win32Exception(Marshal.GetLastWin32Error());
                     if ((info.Attributes & 0x410u) != 0) throw new IOException("staging is a directory or reparse point");
-                    return new FileStream(handle, FileAccess.Write, 131072, false);
+                    return new FileStream(handle, access, 131072, false);
                 } catch { handle.Dispose(); throw; }
             } finally { descriptor.Free(); }
         }
@@ -310,11 +317,12 @@ try {
         files = $files; created_directories = $created.ToArray(); path_edits = @($edits)}
     # The pending journal is the exclusive per-home claim. It advertises only
     # intended paths; no completed installation record exists during copying.
+    Initialize-NativeTypes
     if ($Recover) {
         if ((Get-Acl -LiteralPath $pending).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw 'partial journal has a different native owner' }
         & (Join-Path $bundle 'se.exe') __install-files-check $pending
         if ($LASTEXITCODE -ne 0) { throw 'partial journal native file custody refused' }
-        $pendingStream = [IO.File]::Open($pending, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $pendingStream = [StateEngineInstall.Native]::OpenJournal($pending, $owner, $true)
         $claimed = $true
         $rawPending = Read-Pending $pendingStream
         $partial = $null
@@ -375,7 +383,7 @@ try {
             $resumePending = $true
         }
     } else {
-        $pendingStream = [IO.File]::Open($pending, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $pendingStream = [StateEngineInstall.Native]::OpenJournal($pending, $owner, $false)
     }
     $claimed = $true
     $pendingPlan = [ordered]@{schema = 'stateengine-install-pending/v1'; owner = $owner;
@@ -450,15 +458,16 @@ try {
         Assert-PlainPath $temporary
         $mode = [IO.FileMode]::CreateNew
         if ($Recover -and [IO.File]::Exists($temporary)) {
+            if ((Get-Acl -LiteralPath $temporary).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw "record staging has a different native owner; remove only '$temporary' and rerun this archive's install.ps1 -Recover" }
             & (Join-Path $bundle 'se.exe') __install-files-check $temporary
             if ($LASTEXITCODE -ne 0) { throw 'record staging native file custody refused' }
-            if ((Get-Acl -LiteralPath $temporary).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw 'record staging has a different owner' }
             $mode = [IO.FileMode]::Open
         }
-        $stream = [IO.File]::Open($temporary, $mode, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        # Explicit user ownership survives use from an ordinary terminal after
+        # an elevated installation; OPEN_EXISTING never repairs another owner.
+        $stream = [StateEngineInstall.Native]::OpenPayload($temporary, $owner, $mode -eq [IO.FileMode]::Open)
         try { $stream.SetLength(0); $bytes = $utf8.GetBytes($recordText); $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
         finally { $stream.Dispose() }
-        Initialize-NativeTypes
         [StateEngineInstall.Native]::PublishFile($temporary, $record)
     }
     if ([IO.File]::ReadAllText($record) -cne $recordText) { throw 'ownership record readback failed' }
