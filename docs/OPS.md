@@ -248,7 +248,7 @@ The CLI retains replacement hints only for commands with a supported replacement
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 53 operations (47 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). Planned: 11 operations, 4 MCP tools.
+Registered: 54 operations (48 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). Planned: 11 operations, 4 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
