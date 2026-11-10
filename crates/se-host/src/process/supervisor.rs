@@ -97,13 +97,6 @@ impl LaunchCoordinator {
                 "the host is joining its owned processes; reconnect after shutdown completes",
             ));
         }
-        // Readiness leaves six seconds for retained cleanup and two for its
-        // response, rather than spending the caller's whole clock first.
-        let retained_deadline = deadline.retained().stage(
-            deadline
-                .remaining()?
-                .saturating_sub(std::time::Duration::from_secs(8)),
-        )?;
         let attended = !plan.input.detach && plan.profile.provider == se_store::Provider::Claude;
         let waiter = if attended {
             // The CLI's call budget also covers cold host startup. Return a
@@ -115,6 +108,10 @@ impl LaunchCoordinator {
                     .saturating_sub(std::time::Duration::from_secs(2))
                     .min(std::time::Duration::from_secs(15)),
             )?
+        } else if takeover.is_some() {
+            // The retained control waits for readiness or its cleanup outcome.
+            // Its external caller still has the original bounded IPC clock.
+            Deadline::idle()?.stage(crate::client::lease::CALL_TIMEOUT.saturating_mul(2))?
         } else {
             deadline.clone()
         };
@@ -127,7 +124,7 @@ impl LaunchCoordinator {
                 .map_err(|e| error("launch intent", e))?,
         )
         .into();
-        let (job, new) = {
+        let (job, startup_deadline) = {
             let mut jobs = self
                 .jobs
                 .0
@@ -146,7 +143,7 @@ impl LaunchCoordinator {
                         "the original arguments and target",
                     ));
                 }
-                (job.clone(), false)
+                (job.clone(), None)
             } else {
                 if jobs.values().any(|job| {
                     job.target == (plan.project.id.clone(), plan.agent.id.clone())
@@ -176,6 +173,18 @@ impl LaunchCoordinator {
                         "resolve retained active/cleanup jobs before launching more agents",
                     ));
                 }
+                // Replacement already owns its readiness phase, separate from
+                // teardown and cleanup. Ordinary launches keep their call reserve.
+                let startup = if takeover.is_some() {
+                    deadline.retained()
+                } else {
+                    deadline.retained().stage(
+                        deadline
+                            .remaining()?
+                            .saturating_sub(std::time::Duration::from_secs(8)),
+                    )?
+                };
+                startup.remaining()?;
                 let target = (plan.project.id.clone(), plan.agent.id.clone());
                 let lifecycle = plan.lifecycle.clone();
                 let plan = Arc::new(plan);
@@ -201,10 +210,10 @@ impl LaunchCoordinator {
                 jobs.insert(key, job.clone());
                 self.activity
                     .send_modify(|count| *count = count.saturating_add(1));
-                (job, true)
+                (job, Some(startup))
             }
         };
-        if new {
+        if let Some(retained_deadline) = startup_deadline {
             let coordinator = self.clone();
             let owned = job.clone();
             let task = self.store.pool.handle().spawn(async move {
@@ -232,10 +241,21 @@ impl LaunchCoordinator {
                                 state.cleanup_failure = Some(failure.body);
                             }
                         }
-                        let cleanup = Deadline::idle().and_then(|value| value.stage(std::time::Duration::from_secs(6)));
+                        let cleanup_budget = if state.takeover.is_some() {
+                            crate::client::lease::CALL_TIMEOUT
+                        } else {
+                            std::time::Duration::from_secs(6)
+                        };
+                        let cleanup = Deadline::idle().and_then(|value| value.stage(cleanup_budget));
                         let result = match cleanup { Ok(cleanup) => coordinator.cleanup_failed(&mut state, &cleanup).await, Err(error) => Err(error) };
                         let failure = match result {
-                            Ok(()) => { owned.settled.store(true,Ordering::Release); coordinator.activity.send_modify(|count| *count=count.saturating_sub(1)); original.body }
+                            Ok(()) => {
+                                owned.settled.store(true,Ordering::Release);
+                                coordinator.activity.send_modify(|count| *count=count.saturating_sub(1));
+                                if state.secode_service_lost {
+                                    error("successor readiness", format!("{original}; failed successor native scopes are closed, but original input acceptance and final capture remain unproved. Preserve its history and start an explicit --new conversation; no input was replayed.")).body
+                                } else { original.body }
+                            }
                             Err(cleanup) => {
                                 state.cleanup_failure = Some(cleanup.body.clone());
                                 se_core::scope::unreadable("launch failed with retained cleanup", &format!("launch={original}; cleanup={cleanup}; retry the original request identity to inspect its retained custody")).body
