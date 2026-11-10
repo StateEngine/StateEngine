@@ -257,6 +257,7 @@ Registered: 53 operations (47 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). P
 | `atlas.impact` | atlas impact | `stateengine_atlas_impact` | either | read |
 | `atlas.changes` | atlas changes | `stateengine_atlas_changes` | either | read |
 | `atlas.outline` | atlas outline | `stateengine_atlas_outline` | either | read |
+| `client.watch` | watch | none | owner | read |
 | `remote.prepare_send` | none — Internal protected source IPC prepares CLI pending output; no remote capability or public tool. | none | either | read |
 | `remote.list` | remote list | `stateengine_remote_list` | either | read |
 | `remote.watch` | remote watch | `stateengine_remote_watch` | either | read |
