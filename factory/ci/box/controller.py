@@ -75,6 +75,7 @@ def run(args):
                 result["jobs"] = outcomes
                 result["success"] = status == "passed"
             finally:
+                result["jobs"] = cohort.outcomes
                 journal.reconcile()
     except Exception as error:
         result["error"] = type(error).__name__ + ": " + str(error)

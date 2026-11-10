@@ -91,6 +91,8 @@ class Cohort:
                 with self.lock:
                     self.containers.append(box)
                     self.box = box
+                if self.canceled.is_set():
+                    raise Canceled("run canceled during container admission")
                 if box.proof["seccomp_profile_sha256"] != self.report["seccomp_sha256"]:
                     raise RuntimeError("approved seccomp identity differs")
                 with self.source.open("rb") as source:
