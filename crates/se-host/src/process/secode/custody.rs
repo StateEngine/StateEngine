@@ -13,6 +13,8 @@ pub(super) struct Journal {
     #[serde(default)]
     pub retired: bool,
     #[serde(default)]
+    pub lost: bool,
+    #[serde(default)]
     pub stop_failure: Option<String>,
     pub project: se_types::ProjectId,
     pub agent: se_types::AgentId,

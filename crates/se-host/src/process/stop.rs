@@ -398,8 +398,10 @@ impl LaunchCoordinator {
                 .await
             {
                 Ok(interrupt) if interrupt.requested => {
-                    if binding.secode.is_some() {
-                        self.interrupt_secode_client(work, &graceful).await?;
+                    if binding.secode.is_some()
+                        && let Err(error) = self.interrupt_secode_client(work, &graceful).await
+                    {
+                        work.stop_failure = Some(error.body);
                     }
                     // Codex's WebSocket close ends this client's transport,
                     // not its persistent app-server listener. Ask the exact
@@ -620,6 +622,13 @@ impl LaunchCoordinator {
         // recipient session; uncertain admissions remain retained and unread.
         self.reconcile_stopped_secode_mail(work, deadline).await?;
         let reason = match &work.capture_failure {
+            Some(_) if work.secode_service_lost => format!(
+                "{reason}; original SE Code service lost; final capture and uncertain input remain unproved; preserve the original history and use an explicit --new conversation"
+            ),
+            Some(error) if work.meta.provider == se_store::Provider::SeCode => format!(
+                "{reason}; capture incomplete ({}); restore the original authenticated service and retry stop to reconcile its retained cursor",
+                error.code().as_str()
+            ),
             Some(error) => format!(
                 "{reason}; capture incomplete ({}); restore the original transcript and retry stop to reconcile its retained cursor before resuming",
                 error.code().as_str()

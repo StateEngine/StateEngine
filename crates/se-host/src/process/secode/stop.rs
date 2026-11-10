@@ -40,6 +40,9 @@ impl LaunchCoordinator {
         witness: &se_proc::StopWitness,
         deadline: &Deadline,
     ) -> Result<()> {
+        if self.observe_secode_service_loss(work, deadline).await? {
+            return Ok(());
+        }
         let Some(managed) = work.secode.clone() else {
             if matches!(witness.root, se_proc::RootWitness::NoChildCreated)
                 || (work.session_retired && work.capture_flushed)
@@ -156,6 +159,9 @@ impl LaunchCoordinator {
                 let mut service = lock_service(slot, deadline).await?;
                 if self.find_job(&service.journal.project, &service.journal.agent)?.is_some_and(|job| !job.settled.load(std::sync::atomic::Ordering::Acquire)) {
                     return Err(error("SE Code service shutdown", "original client or capture cleanup remains pending; service retained"));
+                }
+                if service.journal.lost {
+                    return self.retire_lost_secode_service(&mut service, deadline).await;
                 }
                 if service.journal.initial_offered
                     && !service.journal.client_closed.as_ref().is_some_and(|closed| closed.capture_complete)

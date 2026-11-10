@@ -19,6 +19,9 @@ impl LaunchCoordinator {
         if !work.meta.capture || !work.activated {
             return Ok(());
         }
+        if self.observe_secode_service_loss(work, deadline).await? {
+            return Err(self.secode_loss_error(work));
+        }
         let managed = work.secode.clone().ok_or_else(|| {
             error(
                 "SE Code capture",

@@ -68,6 +68,7 @@ impl LaunchCoordinator {
             let journal = Journal {
                 version: 1,
                 retired: false,
+                lost: false,
                 stop_failure: None,
                 project: key.0.clone(),
                 agent: key.1.clone(),

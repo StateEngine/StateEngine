@@ -5,6 +5,27 @@ use crate::ConfigPlan;
 use se_proc::NativeStateFiles;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
+
+/// Preserve native replacement/staging bytes without treating them as custody.
+pub(super) fn retain_recovery_artifact(path: &std::path::Path) -> Result<bool> {
+    if !path
+        .file_name()
+        .is_some_and(NativeStateFiles::is_recovery_artifact)
+    {
+        return Ok(false);
+    }
+    se_proc::OwnedFile::open(path)
+        .map_err(|e| error("retained native recovery artifact", e))?
+        .ok_or_else(|| {
+            error(
+                "retained native recovery artifact",
+                "listed file disappeared",
+            )
+        })?
+        .read(1024 * 1024)
+        .map_err(|e| error("retained native recovery artifact", e))?;
+    Ok(true)
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {

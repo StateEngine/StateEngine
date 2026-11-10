@@ -129,6 +129,22 @@ impl LaunchCoordinator {
                 "retained service binding differs",
             ));
         }
+        if service.journal.lost {
+            let next = se_core::ops::AgentCommand::launch_in_home(
+                &row.id,
+                &self.options.home,
+                &service.journal.project,
+                true,
+            )
+            .map(|command| command.command)
+            .unwrap_or_else(|| "se launch <agent> --new --detach".into());
+            return Err(error(
+                "SE Code service lost",
+                format!(
+                    "Original native service scope exited; final capture and uncertain input remain unproved. Preserve the original history and start a different conversation with {next}."
+                ),
+            ));
+        }
         if let Some(failure) = &service.failure {
             return Err(error("SE Code runtime observation", failure));
         }

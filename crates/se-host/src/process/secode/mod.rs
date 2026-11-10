@@ -2,6 +2,7 @@
 mod capture;
 mod custody;
 mod diagnostic;
+mod lost;
 mod mail;
 mod native;
 mod permission;

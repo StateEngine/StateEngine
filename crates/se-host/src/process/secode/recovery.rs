@@ -274,6 +274,9 @@ impl LaunchCoordinator {
         work: &mut owned::Work,
         deadline: &Deadline,
     ) -> Result<()> {
+        if self.observe_secode_service_loss(work, deadline).await? {
+            return Ok(());
+        }
         let slot = self
             .secode_services
             .get(&work.meta.project.id, &work.meta.agent.id, deadline)
@@ -379,7 +382,7 @@ impl LaunchCoordinator {
         Ok(())
     }
 }
-fn recovery_source(source: &CheckpointSource) -> se_proc::RecoverySource {
+pub(super) fn recovery_source(source: &CheckpointSource) -> se_proc::RecoverySource {
     match source {
         CheckpointSource::Reservation(v) => {
             se_proc::RecoverySource::Reservation(Box::new(v.clone()))
@@ -412,24 +415,8 @@ pub(super) fn inventory(home: &std::path::Path) -> Result<Vec<(PathBuf, Journal,
         }
         let entry = entry.map_err(|e| error("SE Code custody inventory", e))?;
         let path = entry.path();
-        if path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.starts_with(".se-stage-"))
-        {
-            let mut staged = se_proc::OwnedFile::open(&path)
-                .map_err(|e| error("SE Code unpublished custody staging", e))?
-                .ok_or_else(|| {
-                    error(
-                        "SE Code unpublished custody staging",
-                        "listed staging disappeared",
-                    )
-                })?;
-            staged
-                .read(1024 * 1024)
-                .map_err(|e| error("SE Code unpublished custody staging", e))?;
-            // Unpublished staging never authorizes effects. The original
-            // published journal, if any, remains the native recovery source.
+        if super::super::files::retain_recovery_artifact(&path)? {
+            // Only the published journal can authorize native recovery.
             continue;
         }
         if path.extension().is_none_or(|extension| extension != "json") {

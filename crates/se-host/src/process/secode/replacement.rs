@@ -1,4 +1,4 @@
-//! An explicitly fresh conversation may follow a proved, captured stop. It
+//! An explicitly fresh conversation may follow a captured stop or proved loss. It
 //! never releases the old conversation's human hold or replays its input.
 use super::*;
 use se_store::{EventBody, Snapshot};
@@ -73,7 +73,9 @@ impl LaunchCoordinator {
             .resume_release
             .as_ref()
             .is_some_and(|release| {
-                !release.completed && (!resuming || release.session != request.identity.session)
+                !release.completed
+                    && !(service.journal.lost && !resuming)
+                    && (!resuming || release.session != request.identity.session)
             })
         {
             return Err(error(
@@ -81,11 +83,14 @@ impl LaunchCoordinator {
                 "the original hold release is still uncertain; retain its exact coordinates before replacing the session",
             ));
         }
+        let lost = service.journal.lost && !resuming;
         let closed = service
             .journal
             .client_closed
             .as_ref()
-            .filter(|closed| closed.capture_complete)
+            .filter(|closed| {
+                closed.witness.scope_exit.exit_basis.is_some() && (closed.capture_complete || lost)
+            })
             .ok_or_else(|| {
                 error(
                     "SE Code session replacement",
@@ -110,7 +115,7 @@ impl LaunchCoordinator {
             let original = session.original.as_deref().unwrap_or(&session.current);
             match &original.body {
                 EventBody::SessionPrepared { provider:se_store::Provider::SeCode, consent:se_store::Consent::Capture, .. }
-                    if matches!(session.current.body, EventBody::SessionEnded { .. }) => {
+                    if !lost && matches!(session.current.body, EventBody::SessionEnded { .. }) => {
                     let source = se_core::ops::process_commit::session_credential_id(&old, "capture-source")?;
                     match cx.read.capture_outcome(source, None).map_err(|e| se_core::store_error::store_error(&e))? {
                         Read::Present { value } if matches!(&value.body, EventBody::CaptureVerified {session,..} if session==&old) => (),
@@ -131,6 +136,9 @@ impl LaunchCoordinator {
                 "SE Code resume",
                 "the original service and input must remain available and any original notice must be resolved before replacing its capability binding",
             ));
+        }
+        if lost && !service.journal.retired {
+            self.retire_lost_secode_service(service, deadline).await?;
         }
         if !no_service_or_input && !service.journal.retired {
             let control = service.control.as_ref().ok_or_else(|| {
@@ -198,6 +206,9 @@ impl LaunchCoordinator {
             service.control = None;
             service.failure = None;
             service.journal.retired = false;
+            service.journal.lost = false;
+            service.journal.resume_release = None;
+            service.journal.input_free_resume = false;
             service.journal.stop_failure = None;
         }
         service.journal.session = request.identity.session.clone();
