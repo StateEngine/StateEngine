@@ -6,6 +6,9 @@
 extern crate self as se_host;
 #[cfg(feature = "listener")]
 pub mod acp;
+#[cfg(all(test, feature = "listener"))]
+#[path = "../tests/support/acp_transport_independent.rs"]
+mod acp_transport_independent;
 #[cfg(feature = "runtime")]
 mod agent_observation;
 pub mod channels;
