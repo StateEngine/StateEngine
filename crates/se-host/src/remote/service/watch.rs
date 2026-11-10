@@ -128,15 +128,18 @@ impl State {
         }
         let mut targets = self.request.targets().to_vec();
         targets.sort();
-        if !targets.is_empty() {
-            let len = targets.len();
-            targets.rotate_left(self.offset % len);
-        }
         if let Some(visible) = &self.input.visible
             && let Some(at) = targets.iter().position(|target| target == visible)
         {
             let target = targets.remove(at);
             targets.insert(0, target);
+        }
+        // The visible target seeds the order. Rotate once per page so a
+        // backlog that fills this page cannot starve the other selections.
+        if !targets.is_empty() {
+            let len = targets.len();
+            targets.rotate_left(self.offset % len);
+            self.offset = (self.offset + 1) % len;
         }
         let revision = service.live.commit_revision();
         let durable = self.durable_revision != Some(revision) || revision == u64::MAX;
@@ -191,7 +194,7 @@ impl State {
                 // No provisional sequence or fake empty-history count is invented.
                 next.live = None;
             }
-            for observation in live.items.iter().take(1) {
+            for observation in &live.items {
                 let cursor = service.cursors.json(
                     &self.request,
                     Some(target),
@@ -229,7 +232,7 @@ impl State {
                 next.live = Some(observation.position.clone());
                 next.wire = Some(set);
             }
-            more |= live.more || live.items.len() > 1;
+            more |= live.more;
             if live.items.is_empty() {
                 next.live = live.position;
             }
@@ -320,7 +323,6 @@ impl State {
             }
             self.positions.insert(target.clone(), next);
             visited += 1;
-            self.offset = (self.offset + 1) % targets.len().max(1);
         }
         // A bounded page may stop before a target or its next durable row.
         // Do not acknowledge the wake until every selected target was drained.
