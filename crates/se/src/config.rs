@@ -41,6 +41,15 @@ pub enum Origin {
     BuiltIn,
     File(PathBuf),
 }
+impl Origin {
+    /// Human/JSON label for where the bound configuration came from.
+    pub fn label(&self) -> String {
+        match self {
+            Origin::BuiltIn => "built-in defaults".to_owned(),
+            Origin::File(path) => format!("config.toml {}", path.display()),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Loaded<T> {

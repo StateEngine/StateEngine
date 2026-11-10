@@ -1,5 +1,5 @@
 use schemars::JsonSchema;
-use se_types::Read;
+use se_types::{Page, Read};
 use serde::{Deserialize, Serialize};
 
 /// Public configuration readback. A present JSON value retains its setting type;
@@ -10,6 +10,12 @@ pub struct ConfigValueOutput {
     pub value: Read<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+}
+/// Complete static page over the closed user configuration key set.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigPageOutput {
+    #[serde(flatten)]
+    pub page: Page<ConfigValueOutput>,
 }
 impl ConfigValueOutput {
     pub fn into_envelope(self) -> super::super::Envelope<Self> {

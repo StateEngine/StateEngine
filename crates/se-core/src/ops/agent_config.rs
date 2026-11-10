@@ -1,8 +1,9 @@
 //! Saved agent metadata is a FULL store write, never a project config layer.
-use super::{ConfigGet, ConfigSet, inputs::Validate};
+//! The effective user configuration read is a static file-policy window.
+use super::{ConfigGet, ConfigList, ConfigSet, inputs::Validate};
 use crate::{
     commit::Cx,
-    config_policy::{ConfigFile, EffectiveSandbox},
+    config_policy::{Approval, ConfigFile, EffectiveSandbox, Provider, Sandbox},
     dispatch::{Kernel, admitted},
     scope,
     store_error::store_error,
@@ -11,8 +12,12 @@ use se_store::{
     Actor, AtomicBatch, EventBody, Expected, GrantKey, PermissionProfile, ProjectionRecord,
     Snapshot,
 };
-use se_types::{AgentId, IdempotencyKey, Read, Result, SeError};
-use serde_json::Value;
+use se_types::{
+    AgentId, IdempotencyKey, Omission, Page, Read, Result, SeError, Sequence, Source, StopReason,
+    WindowFields,
+};
+use serde_json::{Value, json};
+use std::num::NonZeroU32;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Field {
@@ -135,6 +140,190 @@ pub fn get<R: Snapshot>(input: ConfigGet, cx: &mut Cx<'_, R>) -> Result<super::C
         value,
         origin: input.origin.then_some(origin),
     })
+}
+/// Complete static window over the closed config.toml key set. Every row is
+/// the effective typed setting; only Option fields can be absent. `--origin`
+/// reports the adapter-resolved file-level origin on every row and refuses
+/// when the bound adapter carries none instead of inventing one.
+pub fn list(
+    configuration: &ConfigFile,
+    origin: Option<&str>,
+    input: ConfigList,
+) -> Result<super::ConfigPageOutput> {
+    input.validate()?;
+    let origin = match (input.origin, origin) {
+        (true, Some(origin)) => Some(origin.to_owned()),
+        (true, None) => {
+            return Err(scope::unreadable(
+                "configuration origin",
+                "the bound adapter carries no configuration origin",
+            ));
+        }
+        (false, _) => None,
+    };
+    let mut rows: Vec<super::ConfigValueOutput> = Vec::new();
+    let row = |rows: &mut Vec<super::ConfigValueOutput>, key: &str, value: Read<Value>| {
+        rows.push(super::ConfigValueOutput {
+            key: key.to_owned(),
+            value,
+            origin: origin.clone(),
+        });
+    };
+    row(
+        &mut rows,
+        "default_project",
+        present(json!(configuration.default_project)),
+    );
+    row(
+        &mut rows,
+        "launch.provider",
+        present(json!(provider_wire(configuration.launch.provider))),
+    );
+    row(
+        &mut rows,
+        "launch.terminal",
+        present(json!(configuration.launch.terminal)),
+    );
+    row(
+        &mut rows,
+        "runtime.listen_port",
+        option(&configuration.runtime.listen_port),
+    );
+    row(
+        &mut rows,
+        "runtime.blocking_jobs",
+        option(&configuration.runtime.blocking_jobs),
+    );
+    for (name, provider) in [
+        ("claude", &configuration.providers.claude),
+        ("codex", &configuration.providers.codex),
+        ("secode", &configuration.providers.secode),
+    ] {
+        row(
+            &mut rows,
+            &format!("providers.{name}.command"),
+            option(&provider.command),
+        );
+        row(
+            &mut rows,
+            &format!("providers.{name}.model"),
+            present(json!(provider.model)),
+        );
+        row(
+            &mut rows,
+            &format!("providers.{name}.profile"),
+            present(json!(provider.profile)),
+        );
+    }
+    row(
+        &mut rows,
+        "providers.secode.seed_profile",
+        option(&configuration.providers.secode.seed_profile),
+    );
+    for (name, profile) in &configuration.profiles {
+        row(
+            &mut rows,
+            &format!("profiles.{name}.sandbox"),
+            present(json!(sandbox_wire(profile.sandbox))),
+        );
+        row(
+            &mut rows,
+            &format!("profiles.{name}.network"),
+            present(json!(profile.network)),
+        );
+        let approval = match &profile.approval {
+            Some(approval) => present(json!(approval_wire(*approval))),
+            None => Read::Absent {
+                checked: "not set in the effective configuration".into(),
+            },
+        };
+        row(&mut rows, &format!("profiles.{name}.approval"), approval);
+        row(
+            &mut rows,
+            &format!("profiles.{name}.bypass"),
+            present(json!(profile.bypass)),
+        );
+        row(
+            &mut rows,
+            &format!("profiles.{name}.git_write"),
+            present(json!(profile.git_write)),
+        );
+    }
+    row(
+        &mut rows,
+        "atlas.enabled",
+        present(json!(configuration.atlas.enabled)),
+    );
+    row(
+        &mut rows,
+        "atlas.hooks",
+        present(json!(configuration.atlas.hooks)),
+    );
+    row(
+        &mut rows,
+        "capture.enabled",
+        present(json!(configuration.capture.enabled)),
+    );
+    let bytes = serde_json::to_vec(&rows)
+        .map_err(|cause| scope::unreadable("configuration page encoding", &cause.to_string()))?
+        .len() as u64;
+    let fields = WindowFields {
+        source: Source::Configuration {
+            location: origin
+                .clone()
+                .unwrap_or_else(|| "unbound configuration policy".into()),
+        },
+        from: Sequence::ZERO,
+        to: Sequence::new(rows.len() as u64)?,
+        start_cursor: None,
+        end_cursor: None,
+        returned: rows.len() as u64,
+        limit: NonZeroU32::new(rows.len() as u32)
+            .ok_or_else(|| SeError::invalid("configuration page", "at least one setting row"))?,
+        bytes,
+        max_bytes: NonZeroU32::new(192 * 1024)
+            .ok_or_else(|| SeError::invalid("configuration page", "a nonzero byte budget"))?,
+        omitted_before: Omission::None,
+        omitted_after: Omission::None,
+        unreadable: 0,
+        stop_reason: StopReason::Exhausted,
+    };
+    Ok(super::ConfigPageOutput {
+        page: Page::new(rows, se_types::Window::new(fields)?, None)?,
+    })
+}
+fn present(value: Value) -> Read<Value> {
+    Read::Present { value }
+}
+fn option<T: serde::Serialize>(value: &Option<T>) -> Read<Value> {
+    match value {
+        Some(value) => Read::Present {
+            value: json!(value),
+        },
+        None => Read::Absent {
+            checked: "not set in the effective configuration".into(),
+        },
+    }
+}
+fn provider_wire(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Claude => "claude",
+        Provider::Codex => "codex",
+        Provider::SeCode => "secode",
+    }
+}
+fn sandbox_wire(sandbox: Sandbox) -> &'static str {
+    match sandbox {
+        Sandbox::ReadOnly => "read-only",
+        Sandbox::WorkspaceWrite => "workspace-write",
+    }
+}
+fn approval_wire(approval: Approval) -> &'static str {
+    match approval {
+        Approval::OnRequest => "on-request",
+        Approval::Untrusted => "untrusted",
+        Approval::Never => "never",
+    }
 }
 fn replay_target<R: Snapshot>(key: &IdempotencyKey, cx: &mut Cx<'_, R>) -> Result<Option<AgentId>> {
     let receipt = cx
@@ -284,4 +473,155 @@ pub fn set<R: Snapshot>(
             human_only,
         },
     ))
+}
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "a failing test names the missing configuration row"
+)]
+mod list_tests {
+    use super::*;
+
+    fn value<'a>(page: &'a super::super::ConfigPageOutput, key: &'a str) -> &'a Read<Value> {
+        &page
+            .page
+            .items()
+            .iter()
+            .find(|row| row.key == key)
+            .expect("listed row present")
+            .value
+    }
+
+    #[test]
+    fn list_reports_the_closed_key_set_in_stable_order() -> Result<()> {
+        let page = list(&ConfigFile::default(), None, ConfigList { origin: false })?;
+        let keys: Vec<&str> = page
+            .page
+            .items()
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "default_project",
+                "launch.provider",
+                "launch.terminal",
+                "runtime.listen_port",
+                "runtime.blocking_jobs",
+                "providers.claude.command",
+                "providers.claude.model",
+                "providers.claude.profile",
+                "providers.codex.command",
+                "providers.codex.model",
+                "providers.codex.profile",
+                "providers.secode.command",
+                "providers.secode.model",
+                "providers.secode.profile",
+                "providers.secode.seed_profile",
+                "profiles.default.sandbox",
+                "profiles.default.network",
+                "profiles.default.approval",
+                "profiles.default.bypass",
+                "profiles.default.git_write",
+                "atlas.enabled",
+                "atlas.hooks",
+                "capture.enabled",
+            ]
+        );
+        assert!(page.page.window().complete());
+        assert!(page.page.next().is_none());
+        assert!(page.page.items().iter().all(|row| row.origin.is_none()));
+        Ok(())
+    }
+
+    #[test]
+    fn list_shows_set_values_with_wire_strings_and_unset_options_as_absent() -> Result<()> {
+        let mut configuration = ConfigFile::default();
+        configuration.launch.provider = Provider::SeCode;
+        configuration.launch.terminal = "conhost".into();
+        configuration.runtime.blocking_jobs = Some(4);
+        configuration.providers.codex.command = Some("/usr/local/bin/codex".into());
+        configuration.providers.secode.seed_profile = Some("seed".into());
+        let default_profile = configuration
+            .profiles
+            .get_mut("default")
+            .expect("default profile present");
+        default_profile.approval = Some(Approval::Untrusted);
+        default_profile.sandbox = Sandbox::ReadOnly;
+        default_profile.network = true;
+        let page = list(&configuration, None, ConfigList { origin: false })?;
+        assert_eq!(
+            value(&page, "launch.provider"),
+            &Read::Present {
+                value: json!("secode")
+            }
+        );
+        assert_eq!(
+            value(&page, "launch.terminal"),
+            &Read::Present {
+                value: json!("conhost")
+            }
+        );
+        assert_eq!(
+            value(&page, "runtime.listen_port"),
+            &Read::Absent {
+                checked: "not set in the effective configuration".into()
+            }
+        );
+        assert_eq!(
+            value(&page, "runtime.blocking_jobs"),
+            &Read::Present { value: json!(4) }
+        );
+        assert_eq!(
+            value(&page, "providers.codex.command"),
+            &Read::Present {
+                value: json!("/usr/local/bin/codex")
+            }
+        );
+        assert_eq!(
+            value(&page, "providers.claude.command"),
+            &Read::Absent {
+                checked: "not set in the effective configuration".into()
+            }
+        );
+        assert_eq!(
+            value(&page, "providers.secode.seed_profile"),
+            &Read::Present {
+                value: json!("seed")
+            }
+        );
+        assert_eq!(
+            value(&page, "profiles.default.approval"),
+            &Read::Present {
+                value: json!("untrusted")
+            }
+        );
+        assert_eq!(
+            value(&page, "profiles.default.sandbox"),
+            &Read::Present {
+                value: json!("read-only")
+            }
+        );
+        assert_eq!(
+            value(&page, "profiles.default.network"),
+            &Read::Present { value: json!(true) }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn list_binds_the_file_level_origin_to_every_row_on_request() -> Result<()> {
+        let configuration = ConfigFile::default();
+        let page = list(
+            &configuration,
+            Some("config.toml /home/owner/.stateengine/config.toml"),
+            ConfigList { origin: true },
+        )?;
+        assert!(page.page.items().iter().all(|row| {
+            row.origin.as_deref() == Some("config.toml /home/owner/.stateengine/config.toml")
+        }));
+        assert!(list(&configuration, None, ConfigList { origin: true }).is_err());
+        Ok(())
+    }
 }

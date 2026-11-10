@@ -46,6 +46,10 @@ pub(crate) struct AdmissionContext {
     pub generation: se_types::Generation,
     pub state_directory: std::path::PathBuf,
     pub configuration: Option<se_core::config_policy::ConfigFile>,
+    /// Exact selected configuration file; absent when the embedded caller
+    /// configured values without a file. The origin label is derived here so
+    /// the host never invents an origin for in-memory configuration.
+    pub configuration_file: Option<std::path::PathBuf>,
     pub prepared_requests: Arc<std::sync::OnceLock<crate::PreparedRequestProofs>>,
 }
 /// A successful owner MAC is channel-bound. Its digest lets each subsequent
@@ -310,7 +314,13 @@ impl AdmissionContext {
         let kernel =
             se_core::dispatch::Kernel::new(facts)?.with_command_home(&self.state_directory);
         match &self.configuration {
-            Some(configuration) => kernel.with_configuration(configuration.clone()),
+            Some(configuration) => {
+                let mut kernel = kernel.with_configuration(configuration.clone())?;
+                if let Some(file) = &self.configuration_file {
+                    kernel = kernel.with_config_origin(format!("config.toml {}", file.display()));
+                }
+                Ok(kernel)
+            }
             None => Ok(kernel),
         }
     }
@@ -541,6 +551,7 @@ impl HostedRuntime {
     pub(crate) fn admission_context(&self) -> AdmissionContext {
         AdmissionContext {
             configuration: self.configuration.clone(),
+            configuration_file: self.configuration_file.clone(),
             prepared_requests: self.prepared_requests.clone(),
             reads: self.admission_reads.clone(),
             lease: Arc::downgrade(&self.lease),

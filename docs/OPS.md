@@ -1,6 +1,6 @@
 # Product operation allowlist
 
-This is the shipped Rust product's operation inventory. CLI, MCP, IPC and linked calls derive from one synchronous core registry, with async custody execution in the host. The reconciled rows contain **58 operations and 24 MCP tools (19 core, 5 optional Atlas)**; the registry currently registers 47 operations and 21 tools, and the generated command inventory at the end of this document lists the unbuilt rows as planned; a test fails when that inventory drifts from the registry or the design tables. A crate cannot introduce an unlisted public operation. This document is a design contract, not a running implementation or journey verdict. The Node repository keeps its private factory engine; no fleet cutover/import or CLI-only factory adaptation is part of this build.
+This is the shipped Rust product's operation inventory. CLI, MCP, IPC and linked calls derive from one synchronous core registry, with async custody execution in the host. The reconciled rows contain **58 operations and 24 MCP tools (19 core, 5 optional Atlas)**; the registry currently registers 48 operations and 21 tools, and the generated command inventory at the end of this document lists the unbuilt rows as planned; a test fails when that inventory drifts from the registry or the design tables. A crate cannot introduce an unlisted public operation. This document is a design contract, not a running implementation or journey verdict. The Node repository keeps its private factory engine; no fleet cutover/import or CLI-only factory adaptation is part of this build.
 
 ## Remote machine connections
 
@@ -228,7 +228,7 @@ The CLI retains replacement hints only for commands with a supported replacement
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 51 operations (45 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). Planned: 13 operations, 4 MCP tools.
+Registered: 52 operations (46 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). Planned: 12 operations, 4 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -276,6 +276,7 @@ Registered: 51 operations (45 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). P
 | `agent.show` | agent show | none | owner | read |
 | `config.get` | config get | none | owner | read |
 | `config.set` | config set | none | owner | write |
+| `config.list` | config list | none | owner | read |
 | `decision.list` | decision list | `stateengine_decision_list` | either | read |
 | `decision.show` | decision show | none | either | read |
 | `decision.propose` | decide | `stateengine_decision_propose` | either | write |
@@ -284,7 +285,7 @@ Registered: 51 operations (45 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). P
 | `decision.retract` | decision retract | none | owner | write |
 | `decision.supersede` | decision supersede | none | owner | write |
 
-Planned operations (design tables, not yet registered): `agent.rename`, `agent.wake`, `config.list`, `credential.rotate`, `doctor.bundle`, `history.search`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
+Planned operations (design tables, not yet registered): `agent.rename`, `agent.wake`, `credential.rotate`, `doctor.bundle`, `history.search`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
 
 Planned MCP tools: `stateengine_agent_status`, `stateengine_agent_wake`, `stateengine_search`, `stateengine_session_turn`
 

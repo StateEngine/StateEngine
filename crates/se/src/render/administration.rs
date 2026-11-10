@@ -119,6 +119,34 @@ pub fn config_value(value: &ConfigValueOutput, out: &mut impl Write) -> io::Resu
     }
     Ok(())
 }
+pub fn config_page(value: &ConfigPageOutput, out: &mut impl Write) -> io::Result<()> {
+    writeln!(out, "Effective configuration:")?;
+    let mut source = None;
+    for row in value.page.items() {
+        source = source.or_else(|| row.origin.clone());
+        match &row.value {
+            se_types::Read::Present { value: setting } => writeln!(out, "{}: {setting}", row.key)?,
+            se_types::Read::Absent { checked } => writeln!(out, "{}: absent ({checked})", row.key)?,
+            se_types::Read::Unreadable { source, reason, .. } => {
+                writeln!(out, "{}: unreadable at {source}: {reason}", row.key)?
+            }
+            se_types::Read::Unknown { what } => writeln!(out, "{}: unknown ({what})", row.key)?,
+        }
+    }
+    if let Some(source) = source {
+        writeln!(out, "Source: {source}")?;
+    }
+    if let Some(next) = value.page.next() {
+        writeln!(out, "Continue the same command with --cursor {next}")?;
+    }
+    if !value.page.window().complete() {
+        writeln!(
+            out,
+            "This page is incomplete; its JSON window describes the remaining omissions."
+        )?;
+    }
+    Ok(())
+}
 pub fn agent_status(value: &AgentStatusOutput, out: &mut impl Write) -> io::Result<()> {
     match &value.agent {
         se_types::Read::Present { value } => {

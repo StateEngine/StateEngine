@@ -49,6 +49,12 @@ pub struct ConfigSet {
     pub value: String,
     pub idempotency_key: IdempotencyKey,
 }
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigList {
+    #[serde(default)]
+    pub origin: bool,
+}
 impl Validate for ConfigGet {
     fn validate(&self) -> Result<()> {
         bounded("configuration key", &self.key, 1024, false)
@@ -58,6 +64,11 @@ impl Validate for ConfigSet {
     fn validate(&self) -> Result<()> {
         bounded("configuration key", &self.key, 1024, false)?;
         bounded("configuration value", &self.value, 4096, true)
+    }
+}
+impl Validate for ConfigList {
+    fn validate(&self) -> Result<()> {
+        Ok(())
     }
 }
 
