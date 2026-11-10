@@ -40,25 +40,6 @@ impl LaunchCoordinator {
         witness: &se_proc::StopWitness,
         deadline: &Deadline,
     ) -> Result<()> {
-        if !work.force_relaunch {
-            return self.settle_secode_inner(work, witness, deadline).await;
-        }
-        let graceful = deadline.stage(std::time::Duration::from_secs(3))?;
-        match self.settle_secode_inner(work, witness, &graceful).await {
-            Ok(()) => return Ok(()),
-            Err(failure) => work.stop_failure = Some(failure.body),
-        }
-        // A service's stale execution flags do not outrank its exact native
-        // custody. Retire that one private service, never a shared provider.
-        self.force_retire_secode_service(work, deadline).await
-    }
-
-    async fn settle_secode_inner(
-        &self,
-        work: &mut owned::Work,
-        witness: &se_proc::StopWitness,
-        deadline: &Deadline,
-    ) -> Result<()> {
         if self.observe_secode_service_loss(work, deadline).await? {
             return Ok(());
         }

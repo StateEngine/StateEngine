@@ -36,7 +36,6 @@ impl LifecycleMetadata {
 }
 pub(super) struct Work {
     pub takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
-    pub force_relaunch: bool,
     pub plan: Option<Arc<LaunchPlan>>,
     pub recover_provider: bool,
     pub meta: LifecycleMetadata,
@@ -96,7 +95,6 @@ impl Work {
         cleanup_admission.session = None;
         Self {
             takeover: None,
-            force_relaunch: false,
             cleanup_admission,
             meta,
             plan: None,

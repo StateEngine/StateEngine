@@ -166,9 +166,13 @@ The second command reopens the saved provider conversation. Stop prints the exac
 resume command for the selected home and project; use it if yours differ from
 these defaults. A session is one running instance of a saved agent. If launch
 refuses because the old session or its jobs (processes it started) are still
-running, finish them first or inspect the stop instructions printed by launch.
-The explicit `--override-live` option stops the old session and its identified
-jobs before reopening; it is not needed for this ordinary stop-and-reopen path.
+running, launch shows the sessions and managed jobs it would stop. An interactive
+owner terminal asks for confirmation; scripts and agents must supply `--force`.
+Force closes the selected old scopes before starting one replacement and preserves
+captured history. Repeating the same request key rejoins that replacement.
+`--override-live` remains an alias; neither option is needed for ordinary stop and
+reopen. An embedded SE Code binding retires only that engine binding and reports
+that jobs in its externally owned service were not stopped.
 
 To inspect saved context without restarting or marking messages read:
 

@@ -619,23 +619,6 @@ Deadlines use Instant plus a suspend/resume boundary check: on OS resume recheck
 actual identity and the original requested wall/awake bounds; Instant can exclude
 suspend, so a resumed stop is not silently granted a fresh full interval.
 
-A launch over live work first inventories every admitted managed lifecycle and
-active binding. An interactive owner terminal displays that inventory and asks
-for confirmation; scripts and agents must provide `--force`. Confirmation is
-bound to the displayed selection. Force interrupts pending startup, closes each
-original owned scope, retires the old sessions, and starts the successor. A
-changed selection never authorizes stopping a newer lifecycle. Repeating the
-same request key joins its retained outcome instead of stopping the successor.
-
-Force preserves captured history. If saved conversation recovery or complete
-protocol replay is unavailable, it explicitly starts a new conversation. A
-stale execution flag in a privately owned service cannot overrule proved native
-closure: force can retire that exact service. Diagnostic inventory failures
-remain visible and never mean zero jobs. Native closure itself must be proved.
-For an embedded binding in an externally owned SE Code service, force and plain
-stop retire only the engine binding, name the external service, and state that
-its jobs were not stopped. They never signal an externally owned shared service.
-
 ### 5.1 Exact per-OS close/crash behavior
 
 | Event | Windows | Linux | macOS |
@@ -1316,7 +1299,7 @@ preparation expires before connection, revoke it and retain the owned window;
 status reports `setup-expired` and explains how to launch the agent again.
 Ordinary launch may replace only this revoked, never-activated window preparation,
 with exact-scope stop and outside exit proof. Running jobs require explicit
-`--force` consent. On Linux, the native owner retains its terminal
+`--override-live` consent. On Linux, the native owner retains its terminal
 viewer's PID, birth and image before the provider may execute; that exact
 viewer is harness infrastructure, not a user job. A recovered lifecycle without
 that observation gets no name-based exemption. The replacement starts a new conversation using the

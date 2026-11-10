@@ -15,7 +15,6 @@ mod resume;
 mod retirement;
 mod status;
 mod stop;
-mod takeover;
 use super::*;
 use crate::client::lease::Deadline;
 use custody::Journal;
@@ -188,7 +187,7 @@ impl LaunchCoordinator {
     }
     pub(in crate::process) async fn preflight_secode(
         &self,
-        plan: &mut se_core::ops::agent_launch::LaunchPlan,
+        plan: &se_core::ops::agent_launch::LaunchPlan,
         deadline: &Deadline,
     ) -> Result<()> {
         use crate::Harness;
@@ -269,10 +268,6 @@ impl LaunchCoordinator {
                 .server
                 .clone();
             crate::harness::secode_process::sandbox::require_capability(&server, deadline).await?;
-        }
-        if plan.input.override_live && !plan.replayed {
-            plan.start_new_conversation("Forced relaunch starts a new conversation and replaces this agent's private service; the previous captured history is retained.".into());
-            return Ok(());
         }
         if !plan.replayed
             && matches!(plan.conversation, se_types::Read::Present { .. })

@@ -12,13 +12,8 @@ use sha2::Digest;
 use std::sync::atomic::Ordering;
 mod replacement;
 mod selection;
-#[derive(Default)]
-struct Replacement {
-    stopped: std::collections::BTreeMap<se_types::LifecycleId, TakeoverReport>,
-    successor_deadline: Option<Deadline>,
-    successor: Option<LaunchPlan>,
-}
-type Stopped = Arc<tokio::sync::Mutex<Replacement>>;
+type Stopped =
+    Arc<tokio::sync::Mutex<std::collections::BTreeMap<se_types::LifecycleId, TakeoverReport>>>;
 use selection::{combine_reports, process_identity};
 
 impl LaunchCoordinator {
@@ -59,7 +54,7 @@ impl LaunchCoordinator {
         let coordinator = Arc::downgrade(self);
         // Each original lifecycle has its own retained stop result. A retry
         // cannot stop a successor or repeat already achieved cleanup.
-        let stopped = Arc::new(tokio::sync::Mutex::new(Replacement::default()));
+        let stopped = Arc::new(tokio::sync::Mutex::new(std::collections::BTreeMap::new()));
         let output = self
             .supervise_control(key, intent, deadline, move |deadline| {
                 let coordinator = coordinator.clone();
@@ -96,12 +91,7 @@ impl LaunchCoordinator {
         let job = match self.find_lifecycle_job(&plan.project.id, &plan.agent.id, &expected)? {
             Some(job) => job,
             None if stop => self
-                .cold_stop_job(
-                    &plan.control,
-                    &plan.project.id,
-                    plan.input.override_live,
-                    deadline,
-                )
+                .cold_stop_job(&plan.control, &plan.project.id, deadline)
                 .await?
                 .ok_or_else(|| {
                     error(
@@ -145,7 +135,6 @@ impl LaunchCoordinator {
                 "the selected lifecycle changed or its native ownership was released",
             ));
         }
-        work.force_relaunch = stop && plan.input.override_live;
         if stop
             && work.native_already_reconciled
             && !work.released

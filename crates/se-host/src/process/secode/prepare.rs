@@ -121,14 +121,6 @@ impl LaunchCoordinator {
             .ok_or_else(|| error("SE Code service custody", "retained service disappeared"))?;
         drop(services);
         let mut service = lock_service(&slot, deadline).await?;
-        let forced = work
-            .plan
-            .as_ref()
-            .is_some_and(|plan| plan.input.override_live);
-        if forced && service.journal.session != request.identity.session && !service.journal.retired
-        {
-            self.force_retire_service(&mut service, deadline).await?;
-        }
         if let Some(failure) = &service.failure
             && !service.journal.retired
         {
