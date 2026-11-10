@@ -1,5 +1,6 @@
 //! Stop and clean each selected project independently, then commit its
 //! tombstone. The outside CLI owns standalone host exit and machine-key removal.
+mod marker;
 mod project;
 use super::*;
 use crate::client::lease::Deadline;

@@ -17,7 +17,8 @@ impl LaunchCoordinator {
                 remove_commit::inventory(selected, cx)
             })
             .await?;
-        row.project.root = inventory.root.to_local()?.display().to_string();
+        let root = inventory.root.to_local()?;
+        row.project.root = root.display().to_string();
         row.kept = vec![
             KeptItem {
                 what: "history".into(),
@@ -310,6 +311,60 @@ impl LaunchCoordinator {
                     detail: observed.failure,
                 },
             });
+        }
+        // The marker is product-owned state inside the user's repository:
+        // exact-path delete only, and the state folder only if empty. An
+        // unwitnessed delete keeps the registration so the owner retries
+        // with the original removal key.
+        match super::marker::remove(&root, &project.id.to_string()) {
+            Ok(super::marker::MarkerRemoval::Removed { marker, folder }) => {
+                row.removed.push(RemovedItem {
+                    what: "git identity marker".into(),
+                    path: Some(marker.display().to_string()),
+                });
+                row.removed.push(RemovedItem {
+                    what: "git state folder".into(),
+                    path: Some(folder.display().to_string()),
+                });
+            }
+            Ok(super::marker::MarkerRemoval::RemovedMarkerKeptFolder { marker, folder }) => {
+                row.removed.push(RemovedItem {
+                    what: "git identity marker".into(),
+                    path: Some(marker.display().to_string()),
+                });
+                row.kept.push(KeptItem {
+                    what: "git state folder".into(),
+                    path: Some(folder.display().to_string()),
+                    note: "The folder still holds other content; its bytes are unchanged.".into(),
+                });
+            }
+            Ok(super::marker::MarkerRemoval::Absent { marker, folder }) => {
+                row.kept.push(KeptItem {
+                    what: "git identity marker".into(),
+                    path: Some(marker.display().to_string()),
+                    note: "No marker existed for this project; nothing was deleted.".into(),
+                });
+                if let Some(folder) = folder {
+                    row.kept.push(KeptItem {
+                        what: "git state folder".into(),
+                        path: Some(folder.display().to_string()),
+                        note: "The folder still holds other content; its bytes are unchanged."
+                            .into(),
+                    });
+                }
+            }
+            Err(error) => {
+                let cx = se_types::RenderCx {
+                    project: Some(&project.id),
+                    ..Default::default()
+                };
+                row.remaining.push(obligation(
+                    "git identity marker",
+                    &super::super::control::refusal_detail(&error, &cx),
+                    None,
+                ));
+                return Ok(());
+            }
         }
         if !row.remaining.is_empty() {
             return Ok(());
