@@ -19,7 +19,9 @@ impl LaunchCoordinator {
     pub(super) async fn monitor(self: &Arc<Self>, job: Arc<Job>) {
         let mut retry_at = None;
         let mut backoff = Duration::from_millis(100);
+        let mut observation_failed = false;
         loop {
+            let mut observation_retry_at = None;
             let wake = {
                 let mut state = job.state.lock().await;
                 if state.released {
@@ -138,6 +140,12 @@ impl LaunchCoordinator {
                     return;
                 }
                 let result = self.exit_observation(&state, &deadline).await;
+                if result.is_ok() && observation_failed {
+                    if let Ok(mut fault) = job.fault.lock() {
+                        *fault = None;
+                    }
+                    observation_failed = false;
+                }
                 match result {
                     Ok(StopObservation::Complete(witness)) => {
                         state.admission = state.cleanup_admission.clone();
@@ -184,12 +192,22 @@ impl LaunchCoordinator {
                         state.wake.clone()
                     }
                     Err(error) => {
+                        if let Ok(mut fault) = job.fault.lock() {
+                            *fault = Some(format!(
+                                "Native scope observation failed: {error}. Supervision and custody remain retained; retrying within one second. No scope exit has been proved."
+                            ));
+                        }
+                        observation_failed = true;
                         state.cleanup_failure = Some(error.body);
-                        return;
+                        observation_retry_at =
+                            Some(tokio::time::Instant::now() + Duration::from_secs(1));
+                        state.wake.clone()
                     }
                 }
             };
-            monitor_wake(&wake.event, retry_at).await;
+            // Mail cannot be delivered until native observation succeeds. Its
+            // expired retry clock must not spin while that observation is failing.
+            monitor_wake(&wake.event, observation_retry_at.or(retry_at)).await;
         }
     }
     pub(super) async fn cleanup_failed(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
