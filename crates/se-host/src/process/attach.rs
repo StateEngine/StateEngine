@@ -461,6 +461,8 @@ impl LaunchCoordinator {
             model: work.meta.model.clone(),
             permission_profile: plan.resolved.clone(),
             conversation_id: outcome.witness.conversation,
+            resumed: matches!(&plan.conversation, Read::Present { .. }),
+            saved_conversation_age: plan.saved_conversation_age.clone(),
             state: "running".into(),
             surface: if plan.input.detach {
                 "headless"

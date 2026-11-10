@@ -144,6 +144,10 @@ fn human_launch_stop_hint_preserves_the_receipt_home_project_and_agent() -> Chec
             false,
         )?,
         conversation_id: ProviderSessionId::new("render-conversation")?,
+        resumed: false,
+        saved_conversation_age: se_types::Read::Absent {
+            checked: "new conversation".into(),
+        },
         state: "running".into(),
         surface: "headless".into(),
         process: ProcessView {

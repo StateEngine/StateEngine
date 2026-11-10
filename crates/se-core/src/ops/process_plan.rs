@@ -280,6 +280,44 @@ pub fn launch<R: Snapshot>(
             }
         }
     };
+    let saved_conversation_age = match &conversation {
+        Read::Present { .. } => match &control.resume_session {
+            Read::Present { value } => {
+                let original = value.original.as_deref().unwrap_or(&value.current);
+                let started = super::receipt::event_time(original);
+                let now = kernel.facts()?.occurred_at_us;
+                let age_seconds = now
+                    .checked_sub(started)
+                    .and_then(|elapsed| u64::try_from(elapsed).ok())
+                    .map(|elapsed| Read::Present {
+                        value: elapsed / 1_000_000,
+                    })
+                    .unwrap_or_else(|| Read::Unknown {
+                        what: "The saved session timestamp is later than the launch clock".into(),
+                    });
+                match super::receipt::timestamp(started) {
+                    Ok(session_started_at) => Read::Present {
+                        value: super::agent_launch::SavedConversationAge {
+                            session_started_at,
+                            age_seconds,
+                        },
+                    },
+                    Err(error) => Read::Unreadable {
+                        source: "saved session timestamp".into(),
+                        reason: error.to_string(),
+                        error: Some(Box::new(error.body)),
+                    },
+                }
+            }
+            other => other.clone().map(|_| unreachable!()),
+        },
+        Read::Absent { .. } => Read::Absent {
+            checked: "This launch starts a new conversation".into(),
+        },
+        _ => Read::Unknown {
+            what: "A launch retry retains its original conversation selection and age".into(),
+        },
+    };
     let bytes = seed
         .canonical_bytes()?
         .ok_or_else(|| SeError::invalid("launch allocation", "canonical UUIDv7 event identity"))?;
@@ -296,6 +334,7 @@ pub fn launch<R: Snapshot>(
         profile,
         resolved,
         conversation,
+        saved_conversation_age,
         capture: configuration.capture.enabled,
         control,
         seed,
