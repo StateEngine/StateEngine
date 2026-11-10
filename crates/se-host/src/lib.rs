@@ -7,6 +7,9 @@ extern crate self as se_host;
 #[cfg(feature = "listener")]
 pub mod acp;
 #[cfg(all(test, feature = "listener"))]
+#[path = "../tests/support/acp_session_independent.rs"]
+mod acp_session_independent;
+#[cfg(all(test, feature = "listener"))]
 #[path = "../tests/support/acp_transport_independent.rs"]
 mod acp_transport_independent;
 #[cfg(feature = "runtime")]
