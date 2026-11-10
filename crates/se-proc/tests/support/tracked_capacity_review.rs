@@ -134,10 +134,22 @@ fn child(home: &Path, index: usize) -> Check<ProcessId> {
         home.join(format!("spawn-{index}")),
         b"spawn one owned child",
     )?;
-    wait_for(&home.join(format!("ready-{index}")))?;
-    Ok(ProcessId(
-        fs::read_to_string(home.join(format!("ready-{index}")))?.parse()?,
-    ))
+    let marker = home.join(format!("ready-{index}"));
+    let until = Instant::now() + Duration::from_secs(12);
+    loop {
+        match fs::read_to_string(&marker)
+            .ok()
+            .and_then(|text| text.parse::<u32>().ok())
+        {
+            Some(pid) => return Ok(ProcessId(pid)),
+            None if Instant::now() < until => std::thread::park_timeout(Duration::from_millis(5)),
+            None => {
+                return Err(
+                    format!("incomplete or invalid pid marker: {}", marker.display()).into(),
+                );
+            }
+        }
+    }
 }
 
 fn finish_child(home: &Path, index: usize) -> Check {
