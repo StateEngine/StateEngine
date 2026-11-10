@@ -283,7 +283,9 @@ impl Session {
                 if state.cancel_written {
                     state.cancelling = false;
                 }
-                state.permissions.clear();
+                // A terminal prompt does not prove our permission reply finished.
+                // Keep uncertain responses until their owned writer confirms them;
+                // they continue to block a new prompt or reuse of the same ID.
                 state.completed.push(completed);
             }
             _ => {}
