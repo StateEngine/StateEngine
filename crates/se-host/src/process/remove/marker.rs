@@ -5,7 +5,6 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Component, Path, PathBuf},
-    process::Command,
 };
 
 const MARKER_BOUND: usize = 64 * 1024;
@@ -128,58 +127,59 @@ fn recognized(bytes: &[u8], project: &str) -> bool {
 }
 
 fn marker_folder(root: &Path) -> Result<Option<PathBuf>, String> {
-    // Check the registered path even when Git resolves outside it, as happens
-    // for a registered subfolder or a linked worktree's common Git directory.
     let root = checked_path(root, true)?;
-    let mut found = false;
     for ancestor in root.ancestors() {
         let state = ancestor.join(".git");
-        match fs::symlink_metadata(&state) {
-            Ok(metadata) => {
-                checked_path(&state, metadata.is_dir())?;
-                found = true;
-                break;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        let metadata = match fs::symlink_metadata(&state) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => return Err(format!("Git state could not be checked: {error}")),
-        }
+        };
+        // Read Git's original pointers before resolving them: Git itself may
+        // canonicalize through a replaced ancestor and hide the link from us.
+        let git_dir = if metadata.is_dir() {
+            checked_path(&state, true)?
+        } else {
+            let text = pointer(&state)?;
+            let target = text
+                .strip_prefix("gitdir: ")
+                .filter(|target| !target.is_empty())
+                .ok_or_else(|| "The Git directory pointer is not recognized.".to_owned())?;
+            checked_path(&ancestor.join(target), true)?
+        };
+        let common = git_dir.join("commondir");
+        let common = match fs::symlink_metadata(&common) {
+            Ok(_) => checked_path(&git_dir.join(pointer(&common)?), true)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => git_dir,
+            Err(error) => {
+                return Err(format!(
+                    "Git common-directory pointer is unreadable: {error}"
+                ));
+            }
+        };
+        return Ok(Some(common.join("stateengine")));
     }
-    if !found {
-        return Ok(None);
+    Ok(None)
+}
+
+fn pointer(path: &Path) -> Result<String, String> {
+    checked_path(path, false)?;
+    let mut file = OwnedFile::open(path)
+        .map_err(|error| format!("Git directory pointer kept: {error}"))?
+        .ok_or_else(|| {
+            "The Git directory pointer disappeared; no marker was removed.".to_owned()
+        })?;
+    let bytes = file
+        .read(4096)
+        .map_err(|error| format!("Git directory pointer is unreadable: {error}"))?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| "Git directory pointer is not readable text.".to_owned())?;
+    let text = text.strip_suffix('\n').unwrap_or(text);
+    let text = text.strip_suffix('\r').unwrap_or(text);
+    if text.is_empty() || text.contains(['\n', '\r']) {
+        return Err("Git directory pointer does not contain one path.".into());
     }
-    let mut git = Command::new("git");
-    git.args([
-        "-c",
-        "core.fsmonitor=false",
-        "rev-parse",
-        "--git-common-dir",
-    ])
-    .current_dir(&root);
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("GIT_") {
-            git.env_remove(key);
-        }
-    }
-    let output = git
-        .output()
-        .map_err(|error| format!("Git marker location is unavailable: {error}"))?;
-    if !output.status.success() || output.stdout.len() > 4096 || output.stderr.len() > 4096 {
-        return Err(
-            "Git could not resolve a bounded marker location; repository state was left untouched."
-                .into(),
-        );
-    }
-    let common = std::str::from_utf8(&output.stdout)
-        .map_err(|_| "Git marker location is not readable text.".to_owned())?;
-    let common = common.strip_suffix('\n').unwrap_or(common);
-    let common = common.strip_suffix('\r').unwrap_or(common);
-    if common.is_empty() || common.contains(['\n', '\r']) {
-        return Err("Git returned no marker location.".into());
-    }
-    let common = root.join(common);
-    // Validate before normalizing '..': an intermediate link must not disappear
-    // from the custody check merely because a later component goes up a level.
-    Ok(Some(checked_path(&common, true)?.join("stateengine")))
+    Ok(text.into())
 }
 
 fn checked_path(path: &Path, directory: bool) -> Result<PathBuf, String> {
