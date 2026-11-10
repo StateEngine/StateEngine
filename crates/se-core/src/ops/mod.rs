@@ -124,11 +124,11 @@ macro_rules! ops {
         impl AnyOp {
             pub fn meta(&self) -> &'static OpMeta { match self { $( Self::$variant(_)=><$input>::META_REF(), )+ } }
             pub fn validate(&self) -> Result<()> { match self { $( Self::$variant(value)=>value.validate(), )+ } }
-            pub fn input_schema(&self) -> serde_json::Value { match self { $( Self::$variant(_)=>schemars::schema_for!($input).to_value(), )+ } }
+            pub fn input_schema(&self) -> serde_json::Value { match self { $( Self::$variant(_)=>advertised_input_schema(schemars::schema_for!($input).to_value()), )+ } }
         }
         $(impl $input { #[allow(non_snake_case)] fn META_REF() -> &'static OpMeta { &Self::META } })+
         pub(crate) fn input_schema(name:&str) -> Option<serde_json::Value> {
-            match name { $( $name=>Some(schemars::schema_for!($input).to_value()), )+ _=>None }
+            match name { $( $name=>Some(advertised_input_schema(schemars::schema_for!($input).to_value())), )+ _=>None }
         }
         pub fn schemas(name:&str) -> Option<(serde_json::Value,serde_json::Value)> {
             match name { $( $name=>{
@@ -172,6 +172,18 @@ const fn tool(name: &'static str, title: &'static str, description: &'static str
         title,
         description,
     }
+}
+/// Unit-struct inputs have no fields, so schemars emits a root `type: "null"`
+/// that no MCP client can register as tool arguments. Advertise the object
+/// schema instead; `mcp_identity::describe` supplies the ordinary optional
+/// caller properties on the MCP surface.
+fn advertised_input_schema(mut schema: serde_json::Value) -> serde_json::Value {
+    if let serde_json::Value::Object(root) = &mut schema
+        && root.get("type") == Some(&serde_json::Value::String("null".into()))
+    {
+        root.insert("type".into(), serde_json::Value::String("object".into()));
+    }
+    schema
 }
 ops! {
     AtlasAugment => AtlasAugment, AtlasHookOutput, ("atlas.augment",CliExposure::None {reason:"Private native provider augmentation only."},no_mcp("The provider hook uses authenticated native IPC, never a model tool."),Session,false,Never,Read,Project,Host,"se.atlas-hook",Hook,&["J3"]);
@@ -501,3 +513,55 @@ const _: () = {
         i += 1;
     }
 };
+
+#[cfg(test)]
+mod input_schema_tests {
+    use super::{CATALOGUE, advertised_input_schema, input_schema, meta::mcp_tools};
+    use serde_json::Value;
+
+    #[test]
+    fn every_op_input_schema_advertises_an_object() {
+        for meta in CATALOGUE {
+            let schema = input_schema(meta.name)
+                .unwrap_or_else(|| panic!("{} has no input schema", meta.name));
+            assert_eq!(
+                schema.get("type"),
+                Some(&Value::String("object".into())),
+                "{} advertises a non-object input root",
+                meta.name
+            );
+        }
+    }
+
+    #[test]
+    fn whoami_discovery_advertises_object_arguments() {
+        let tools = mcp_tools().unwrap_or_else(|error| panic!("mcp tool list: {error}"));
+        let whoami = tools
+            .iter()
+            .find(|tool| tool.name == "stateengine_whoami")
+            .unwrap_or_else(|| panic!("whoami tool registered"));
+        assert_eq!(
+            whoami.input_schema.get("type"),
+            Some(&Value::String("object".into()))
+        );
+        let properties = whoami
+            .input_schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("whoami advertises properties"));
+        assert!(properties.contains_key("agent_id"));
+        assert!(properties.contains_key("project_id"));
+    }
+
+    #[test]
+    fn unit_struct_schema_root_null_is_rewritten_to_object() {
+        let schema = advertised_input_schema(serde_json::json!({
+            "type": "null",
+            "title": "IdentityWhoami"
+        }));
+        assert_eq!(
+            schema,
+            serde_json::json!({"type": "object", "title": "IdentityWhoami"})
+        );
+    }
+}

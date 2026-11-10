@@ -59,6 +59,27 @@ fn whoami_reports_the_admitted_principal_without_credentials() -> Check {
         let stop = host.local_stop();
         let consumer = async {
             let result: Check = async {
+                // Discovery advertises an object input schema carrying the
+                // optional caller assertions; a validating client can register it.
+                let list = rpc(port, "whoami-principal", "tools/list", json!({})).await?;
+                let tools = list["result"]["tools"]
+                    .as_array()
+                    .ok_or("tools/list returned no tools")?;
+                let whoami_tool = tools
+                    .iter()
+                    .find(|tool| tool["name"] == "stateengine_whoami")
+                    .ok_or("stateengine_whoami absent from tools/list")?;
+                require(
+                    whoami_tool["inputSchema"]["type"] == json!("object"),
+                    format!("whoami input schema is not an object: {whoami_tool}"),
+                )?;
+                let properties = &whoami_tool["inputSchema"]["properties"];
+                require(
+                    properties.get("agent_id").is_some()
+                        && properties.get("project_id").is_some(),
+                    format!("whoami caller properties missing: {whoami_tool}"),
+                )?;
+
                 let plain = rpc(
                     port,
                     "whoami-principal",
