@@ -14,6 +14,7 @@ pub(super) struct Watch {
     retry_at: tokio::time::Instant,
     terminal: Option<se_types::ErrorBody>,
     retry_error: Option<se_types::ErrorBody>,
+    initial_retry_deadline: Option<tokio::time::Instant>,
 }
 impl Watch {
     pub fn new(client: Client, call: Arc<RemoteCallContext>, request: RemoteWatch) -> Self {
@@ -28,6 +29,7 @@ impl Watch {
             retry_at: tokio::time::Instant::now(),
             terminal: None,
             retry_error: None,
+            initial_retry_deadline: None,
         }
     }
     pub async fn start(&mut self) -> Result<()> {
@@ -36,6 +38,10 @@ impl Watch {
             Err(error) if retryable(&error) => {
                 self.defer_retry(error.body.retry())?;
                 self.retry_error = Some(error.body);
+                // A first connection must eventually state why it could not
+                // start. Established streams instead report reconnect gaps.
+                self.initial_retry_deadline =
+                    Some(tokio::time::Instant::now() + Duration::from_secs(10));
                 Ok(())
             }
             Err(error) => Err(error),
@@ -57,6 +63,20 @@ impl Watch {
         self.call.check_current()?;
         self.prefetched = Some(first);
         self.attached = Some((connection, guard, rx));
+        self.initial_retry_deadline = None;
+        Ok(())
+    }
+    fn check_initial_retry_budget(&mut self) -> Result<()> {
+        if self
+            .initial_retry_deadline
+            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+        {
+            let error = self.retry_error.clone().unwrap_or_else(|| {
+                unavailable("initial watch connection did not recover within ten seconds").body
+            });
+            self.terminal = Some(error.clone());
+            return Err(error.into());
+        }
         Ok(())
     }
     fn empty(&self) -> RemoteWatchBatch {
@@ -138,6 +158,7 @@ impl Watch {
         if let Some(error) = &self.terminal {
             return Err(error.clone().into());
         }
+        self.check_initial_retry_budget()?;
         if wait > Duration::from_secs(30) {
             return Err(SeError::invalid("remote watch wait", "at most30000ms"));
         }
@@ -154,6 +175,9 @@ impl Watch {
         // Reconnection consumes this same wait window, rather than adding its
         // handshake clock to the caller's requested bounded read.
         let until = tokio::time::Instant::now() + wait;
+        let until = self
+            .initial_retry_deadline
+            .map_or(until, |deadline| until.min(deadline));
         if self.attached.is_none() {
             if wait.is_zero() {
                 return Err(self.retry_error.clone().map(SeError::from).unwrap_or_else(|| unavailable(
@@ -161,6 +185,7 @@ impl Watch {
                 )));
             }
             if !self.reattach(until).await? {
+                self.check_initial_retry_budget()?;
                 return Ok(self.empty());
             }
         }

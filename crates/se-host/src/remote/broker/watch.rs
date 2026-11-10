@@ -208,8 +208,10 @@ impl Watches {
         let same_cursors = incoming
             == serde_json::to_vec(&state.returned_cursors).map_err(|_| poisoned())?
             || incoming == serde_json::to_vec(&state.cursors).map_err(|_| poisoned())?;
-        if request.cursors.is_empty() || !same_cursors {
+        if (request.cursors.is_empty() && !state.cursors.is_empty()) || !same_cursors {
             // An explicitly different continuation requests a new starting view.
+            // Before the first view, retain the stream: reopening an empty
+            // cursor page would renew its initial connection retry budget.
             state.cursors = request.cursors.clone();
             state.stream = None;
         }
