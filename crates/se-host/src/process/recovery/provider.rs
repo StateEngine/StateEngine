@@ -92,6 +92,9 @@ impl LaunchCoordinator {
             ));
         }
         self.verify_retained_session(work, deadline).await?;
+        if work.meta.provider == se_store::Provider::SeCode {
+            self.restore_secode_work(work, deadline).await?;
+        }
         if work.meta.capture {
             self.capture_progress(work, deadline).await?;
         }
@@ -106,6 +109,11 @@ impl LaunchCoordinator {
             "Restore the original saved session before reconnecting.",
         )?;
         let binding = match work.meta.provider {
+            se_store::Provider::SeCode => self.secode.recover(
+                work.secode
+                    .clone()
+                    .ok_or_else(|| error("SE Code provider recovery", "original binding absent"))?,
+            ),
             se_store::Provider::Codex => {
                 self.codex
                     .recover(
@@ -143,6 +151,9 @@ impl LaunchCoordinator {
             }
             if let Some(codex) = &binding.codex {
                 codex.completion.arm(&work.wake.event)?;
+            }
+            if let Some(secode) = &binding.secode {
+                secode.completion.arm(&work.wake.event)?;
             }
             Ok(())
         }

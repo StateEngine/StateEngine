@@ -152,6 +152,9 @@ pub fn agent_status(value: &AgentStatusOutput, out: &mut impl Write) -> io::Resu
             if let Some(unread) = value.unread {
                 writeln!(out, "Unread messages: {unread}")?;
             }
+            if let Some(runtime) = &value.secode_runtime {
+                super::read::secode::runtime(runtime, "", out)?;
+            }
             super::read::resume_advice(&value.resume, "", out)?;
         }
         se_types::Read::Absent { checked } => writeln!(out, "Agent absent: {checked}")?,
@@ -178,6 +181,9 @@ pub(super) fn agents(
             agent.profile
         )?;
         writeln!(out, "  Session: {}", agent.session.state)?;
+        if let Some(runtime) = &agent.secode_runtime {
+            super::read::secode::runtime(runtime, "  ", out)?;
+        }
         if let Some(session) = &agent.session.session_id {
             writeln!(out, "  Session ID: {session}")?;
         }

@@ -148,6 +148,7 @@ pub fn control<R: Snapshot>(
         }
         _ => return Err(scope::unreadable("stop target", "wrong principal metadata")),
     };
+    process_plan::require_managed_control(&control)?;
     let profile = scope::require_present(
         control.profile.clone(),
         "stop profile",
@@ -157,12 +158,7 @@ pub fn control<R: Snapshot>(
         EventBody::ProfileSaved { profile, .. } => match profile.provider {
             se_store::Provider::Claude => se_types::Provider::Claude,
             se_store::Provider::Codex => se_types::Provider::Codex,
-            se_store::Provider::SeCode => {
-                return Err(SeError::invalid(
-                    "managed stop target",
-                    "a standalone agent",
-                ));
-            }
+            se_store::Provider::SeCode => se_types::Provider::SeCode,
         },
         _ => return Err(scope::unreadable("stop profile", "wrong profile metadata")),
     };

@@ -55,6 +55,10 @@ pub struct AgentRow {
     pub resume: ResumeCommand,
     pub unread: Option<u64>,
     pub last_activity_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secode_binding: Option<Read<super::SecodeBindingView>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secode_runtime: Option<Read<super::SecodeRuntimeView>>,
 }
 /// Single-agent readback reuses the status/list row without flattening Read.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

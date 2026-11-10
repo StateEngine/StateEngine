@@ -22,6 +22,13 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
         }
         Ok(())
     }
+    fn observe_output<'a>(
+        &'a self,
+        output: AnyOutput,
+        deadline: &'a Deadline,
+    ) -> HostFuture<'a, AnyOutput> {
+        Box::pin(async move { self.observe_secode_output(output, deadline).await })
+    }
     fn catch_up<'a>(&'a self, deadline: &'a Deadline) -> HostFuture<'a, ()> {
         Box::pin(async move { self.catch_up_live(deadline).await })
     }
@@ -48,8 +55,9 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
     fn import_profiles(&self) -> se_types::Result<Vec<se_store::Profile>> {
         use se_core::config_policy::{EffectiveSandbox, Provider};
         let providers = match self.options.configuration.launch.provider {
-            Provider::Claude => [Provider::Claude, Provider::Codex],
-            Provider::Codex => [Provider::Codex, Provider::Claude],
+            Provider::Claude => [Provider::Claude, Provider::Codex, Provider::SeCode],
+            Provider::Codex => [Provider::Codex, Provider::Claude, Provider::SeCode],
+            Provider::SeCode => [Provider::SeCode, Provider::Claude, Provider::Codex],
         };
         providers
             .map(|provider| {
@@ -58,6 +66,7 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
                     match provider {
                         Provider::Claude => se_store::Provider::Claude,
                         Provider::Codex => se_store::Provider::Codex,
+                        Provider::SeCode => se_store::Provider::SeCode,
                     },
                 )
             })
@@ -107,7 +116,10 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
     ) -> HostFuture<'a, AnyOutput> {
         Box::pin(async move {
             match plan {
-                CustodyPlan::ObserveStatus(input) => self.status(input, admission, deadline).await,
+                CustodyPlan::ObserveStatus(input) => {
+                    let output = self.status(input, admission, deadline).await?;
+                    self.observe_secode_output(output, deadline).await
+                }
                 CustodyPlan::Launch(plan) => self
                     .launch(*plan, admission, deadline)
                     .await

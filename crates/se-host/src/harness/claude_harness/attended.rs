@@ -108,6 +108,7 @@ impl ClaudeHarness {
             binding: HarnessBinding {
                 claude: Some(binding),
                 codex: None,
+                secode: None,
                 _private: (),
             },
         })

@@ -211,14 +211,17 @@ pub fn down<R: se_store::ReadStore>(
             }
             se_host::EndpointRoute::Start { recovery } => {
                 let bound = Deadline::from_options(&options)?;
+                let auxiliary = se_host::LaunchCoordinator::secode_recovery_required(&cx.home);
                 let observed = already_down::observe(files, reader, &options).and_then(|closed| {
-                    if let Some(output) = closed {
+                    if let Some(output) = closed
+                        && matches!(&auxiliary, Ok(false))
+                    {
                         return Ok(output);
                     }
                     if !recover_cold {
                         return Err(scope::unreadable(
                             "already-down native custody",
-                            "Unresolved owned process or session cleanup remains in this home. Run se down with this same --home to reconcile the retained custody, then retry se uninstall; this uninstall has not started a recovery host or changed durable history.",
+                            &format!("Unresolved owned process or session cleanup, including private services, remains in this home{}. Run se down with this same --home to reconcile the retained custody, then retry se uninstall; this uninstall has not started a recovery host or changed durable history.", auxiliary.as_ref().err().map(|error| format!(": {error}")).unwrap_or_default()),
                         ));
                     }
                     // A failed launch can leave exact cleanup debt after its

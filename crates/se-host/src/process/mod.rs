@@ -25,6 +25,7 @@ mod remove;
 mod remove_receipt;
 mod requests;
 mod resume_source;
+mod secode;
 mod shutdown;
 mod startup_stop;
 mod status;
@@ -71,6 +72,8 @@ pub struct LaunchCoordinator {
     io: Arc<dyn ProviderIoPlatform>,
     harness: Arc<ClaudeHarness>,
     codex: Arc<CodexHarness>,
+    secode: Arc<crate::harness::secode_process::SecodeHarness>,
+    secode_services: secode::Services,
     options: ProcessConfiguration,
     configuration_file: Option<PathBuf>,
     store: store::Store,
@@ -106,7 +109,9 @@ impl LaunchCoordinator {
             coordinator.subscribe_activity(),
         )?;
         let inventory = host_runtime.take_retained_custody();
-        let report = coordinator.reconcile(inventory, deadline).await?;
+        let service_failures = coordinator.recover_secode_services(deadline).await?;
+        let mut report = coordinator.reconcile(inventory, deadline).await?;
+        report.unproved.extend(service_failures);
         Ok((coordinator, report))
     }
     /// Called once, after loopback listener publication selected its actual
@@ -217,12 +222,19 @@ impl LaunchCoordinator {
             )
             .with_atlas_helper(options.helper_executable.to_local()?),
         );
+        let secode = Arc::new(crate::harness::secode_process::SecodeHarness::new(
+            io.clone(),
+            options.home.clone(),
+            maximum,
+        ));
         Ok(Arc::new(Self {
             kind: host_runtime.kind,
             native,
             io,
             harness,
             codex,
+            secode,
+            secode_services: secode::Services::default(),
             store: store::Store {
                 record_feed: context.atlas.records.clone(),
                 reader: context.reader.clone(),
@@ -254,10 +266,7 @@ impl LaunchCoordinator {
         match provider {
             se_store::Provider::Claude => Ok(self.harness.as_ref()),
             se_store::Provider::Codex => Ok(self.codex.as_ref()),
-            _ => Err(se_types::SeError::invalid(
-                "managed provider",
-                "Claude Code or Codex; linked SE Code owns its native binding",
-            )),
+            se_store::Provider::SeCode => Ok(self.secode.as_ref()),
         }
     }
 }

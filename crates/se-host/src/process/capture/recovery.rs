@@ -13,6 +13,7 @@ impl LaunchCoordinator {
         let session = work.meta.session.clone();
         let source_id =
             se_core::ops::process_commit::session_credential_id(&session, "capture-source")?;
+        let requires_verification = work.meta.provider == se_store::Provider::SeCode;
         let failure = self
             .store
             .read(work.cleanup_admission.clone(), deadline, move |cx| {
@@ -45,6 +46,10 @@ impl LaunchCoordinator {
                         session: found,
                         ..
                     }) if *source == source_id && found == &session => Ok(None),
+                    None if requires_verification => Err(error(
+                        "retained final capture",
+                        "no EOF verification exists for the original authenticated source",
+                    )),
                     None => Ok(None),
                     _ => Err(error(
                         "retained final capture",

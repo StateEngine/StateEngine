@@ -54,6 +54,15 @@ pub trait CustodyExecutor: Send + Sync {
     fn notify_capture(&self, _session: &crate::SessionIdentity) -> se_types::Result<()> {
         Ok(())
     }
+    /// Enrich retained provider coordinates with authenticated current reads,
+    /// after the store read pin and native observation worker are released.
+    fn observe_output<'a>(
+        &'a self,
+        output: se_core::ops::AnyOutput,
+        _deadline: &'a Deadline,
+    ) -> crate::HostFuture<'a, se_core::ops::AnyOutput> {
+        Box::pin(async move { Ok(output) })
+    }
     /// One finite live-work sweep, under the host's original timer budget.
     fn catch_up<'a>(&'a self, _deadline: &'a Deadline) -> crate::HostFuture<'a, ()> {
         Box::pin(async {

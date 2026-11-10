@@ -288,6 +288,10 @@ fn main() -> std::process::ExitCode {
     if let Err(error) = bootstrap::initialize_file_owner() {
         return finish(Err(error), &args);
     }
+    #[cfg(windows)]
+    if let Some(result) = private_entry::dispatch_console_interrupt(&args) {
+        return finish(result, &args);
+    }
     if args
         .get(1)
         .is_some_and(|arg| arg == se_proc::atlas_worker::ENTRY)

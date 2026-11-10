@@ -200,7 +200,7 @@ impl LaunchCoordinator {
                     return Err(error);
                 }
                 self.retire_capture(&mut work, deadline).await?;
-                fill_stopped(&mut row,&work,true)?;
+                fill_stopped(&mut row,&work,true,&self.options.home)?;
                 return Ok(());
             }
             work.stop_key=Some(key.clone());
@@ -210,7 +210,7 @@ impl LaunchCoordinator {
             work.admission=work.cleanup_admission.clone();
             self.finish(&mut work,witness,deadline).await?;
             if !job.settled.swap(true,Ordering::AcqRel){self.activity.send_modify(|count|*count=count.saturating_sub(1));}
-            fill_stopped(&mut row,&work,false)?;Ok(())
+            fill_stopped(&mut row,&work,false,&self.options.home)?;Ok(())
         }.await;
         if let Err(error) = result {
             let cx = se_types::RenderCx {
@@ -277,11 +277,14 @@ fn empty_row(target: ControlAgent, home: &std::path::Path) -> AgentStopResult {
         &target.target.project.id,
         false,
     )
+    .filter(|_| target.target.provider != se_types::Provider::SeCode)
     .map(|command| command.with_detach(!window));
     AgentStopResult {
         resume: StopResume {
             state: "unavailable".into(),
-            reason: Some(if resume.is_none() {
+            reason: Some(if target.target.provider == se_types::Provider::SeCode {
+                se_core::ops::AgentCommand::SECODE_RESUME_UNAVAILABLE.into()
+            } else if resume.is_none() {
                 se_core::ops::AgentCommand::HOME_UNAVAILABLE.into()
             } else {
                 "No original conversation has been proven by this stop.".into()
@@ -320,6 +323,7 @@ pub(super) fn fill_stopped(
     row: &mut AgentStopResult,
     work: &super::launch::Work,
     already: bool,
+    home: &std::path::Path,
 ) -> Result<()> {
     let witness = work.last_witness.as_ref().ok_or_else(|| {
         se_core::scope::unreadable("stop receipt", "no retained outside exit witness")
@@ -392,16 +396,46 @@ pub(super) fn fill_stopped(
     if let Some(failure) = &work.capture_failure {
         row.result = "capture-incomplete".into();
         row.resume.state = "capture-incomplete".into();
+        let remedy = if work.meta.provider == se_store::Provider::SeCode {
+            "Restore the original authenticated service and retry stop to capture its pending records."
+        } else {
+            "Restore the original transcript and retry stop to capture its pending records."
+        };
         row.resume.reason = Some(format!(
-            "Native exit is witnessed; capture failed: {}. Restore the original transcript and retry stop to capture its pending records, then resume the saved conversation; --new remains available for a fresh conversation.",
+            "Native exit is witnessed; capture failed: {}. {remedy} Conversation retention does not establish resume readiness.",
             failure.message()
         ));
         row.resume.conversation_id = None;
         row.resume.argv.clear();
         row.resume.command.clear();
+        if work.secode_service_lost {
+            row.resume.state = "service-lost".into();
+            let next = se_core::ops::AgentCommand::launch_in_home(
+                &work.meta.agent.id,
+                home,
+                &work.meta.project.id,
+                true,
+            );
+            row.resume.reason = Some("The original service and client scopes exited. Final capture and uncertain input remain unproved; preserve the original profile and captured history. Use --new to start a different conversation without replaying the old input; ordinary down can close the lost service.".into());
+            if let Some(next) = next {
+                row.resume.command = next.command;
+                row.resume.argv = next.argv;
+            }
+        }
         return Ok(());
     }
     row.resume.model = work.meta.model.clone();
+    if work.meta.provider == se_store::Provider::SeCode {
+        row.resume.state = "compatible-service-required".into();
+        row.resume.reason = Some(se_core::ops::AgentCommand::SECODE_RESUME_UNAVAILABLE.into());
+        row.resume.conversation_id = match &work.meta.conversation {
+            se_types::Read::Present { value } => Some(value.to_string()),
+            _ => None,
+        };
+        row.resume.argv.clear();
+        row.resume.command.clear();
+        return Ok(());
+    }
     match (&work.meta.conversation, work.activated) {
         (se_types::Read::Present { value }, true) if !row.resume.argv.is_empty() => {
             row.resume.state = "ready".into();

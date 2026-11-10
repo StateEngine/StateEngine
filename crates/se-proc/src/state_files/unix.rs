@@ -222,6 +222,9 @@ pub(super) fn create_directories(path: &Path) -> Result<()> {
         .map_err(|e| io_error("sync private directory", path, e))
 }
 impl Directory {
+    pub fn identity(&self, file: &File, path: &Path) -> Result<(u64, u64)> {
+        identity(file, path)
+    }
     pub fn available_bytes(&self, path: &Path) -> Result<u64> {
         let mut value = std::mem::MaybeUninit::<libc::statvfs>::uninit();
         // SAFETY: the retained directory owns this descriptor; value provides

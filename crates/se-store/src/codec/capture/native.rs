@@ -1,4 +1,4 @@
-//! Native Claude/Codex conversations survive engine-session replacement. Search
+//! Native provider conversations survive engine-session replacement. Search
 //! source bindings, then exact indexed per-session item keys, never chat text.
 use super::*;
 use se_types::SessionId;
@@ -26,9 +26,6 @@ pub(crate) fn find(
     };
     if let Some(seq) = exact(&id, None, vendor, false)? {
         return Ok(Some(seq));
-    }
-    if !matches!(backend, Provider::Claude | Provider::Codex) {
-        return Ok(None);
     }
     // Import canonicalizes before applying its same-batch SessionPrepared.
     // Only an absent session has no retained match; an existing broken head
@@ -101,7 +98,8 @@ pub(crate) fn find(
 /// event keeps its original session, source evidence and occurrence time.
 pub(crate) fn resumed(event: &NewEvent, old: &StoredEvent) -> bool {
     matches!((&event.body, &old.body), (
-        EventBody::SessionTurn { session: new_session, agent, provider, vendor_ref, role, text: InputText::Inline(text), .. },
-        EventBody::SessionTurn { session: old_session, agent: old_agent, provider: old_provider, vendor_ref: old_vendor, role: old_role, text: StoredText::Present(old_text), .. }
-    ) if new_session != old_session && agent == old_agent && matches!(provider,Provider::Claude|Provider::Codex) && provider==old_provider && vendor_ref == old_vendor && role == old_role && (*provider == Provider::Codex || matches!(role,Role::User|Role::Assistant)) && text == old_text)
+        EventBody::SessionTurn { session: new_session, agent, provider, vendor_ref, role, text: InputText::Inline(text), evidence, .. },
+        EventBody::SessionTurn { session: old_session, agent: old_agent, provider: old_provider, vendor_ref: old_vendor, role: old_role, text: StoredText::Present(old_text), evidence: old_evidence, .. }
+    ) if new_session != old_session && agent == old_agent && provider==old_provider && vendor_ref == old_vendor && role == old_role && (*provider != Provider::Claude || matches!(role,Role::User|Role::Assistant)) && text == old_text
+        && (*provider != Provider::SeCode || (evidence.sha256.is_some() && evidence.sha256==old_evidence.sha256 && evidence.offset==old_evidence.offset && evidence.length==old_evidence.length)))
 }

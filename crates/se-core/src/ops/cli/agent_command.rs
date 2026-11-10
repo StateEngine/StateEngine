@@ -35,6 +35,7 @@ impl AgentCommand {
         }
     }
     pub const HOME_UNAVAILABLE: &str = "The data home is not UTF-8 or contains a line break; no portable CLI command can name it exactly.";
+    pub const SECODE_RESUME_UNAVAILABLE: &str = "Managed resume requires the original live service, a fenced input-free release of its exact human-stop hold, and proved client closure and capture. Reconcile the retained service before resuming, or explicitly launch with --new for a different conversation.";
     pub fn home_argument(home: &std::path::Path) -> Option<&str> {
         home.to_str().filter(|value| !value.contains(['\r', '\n']))
     }

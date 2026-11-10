@@ -35,7 +35,10 @@ impl LaunchCoordinator {
             match std::fs::read_dir(&directory) {
                 Ok(entries) => for (count,entry) in entries.enumerate() {
                     let entry=entry.map_err(|e|error("launch cleanup inventory",e))?;
-                    if count>=16 || entry.file_name()!="pin" {
+                    if count>=16 {
+                        return Err(error("launch cleanup inventory", "finite recovery bound exceeded; preserve the original inventory"));
+                    }
+                    if entry.file_name()!="pin" && !files::retain_recovery_artifact(&entry.path())? {
                         return Err(error("launch cleanup inventory", "unmanifested files remain; preserve them for owner reconciliation"));
                     }
                 },
@@ -181,6 +184,11 @@ impl LaunchCoordinator {
                 work.capture_failure = Some(error.body);
             }
             if let Err(error) = self.restore_cleanup(&mut work, deadline).await {
+                work.cleanup_failure = Some(error.body);
+            }
+            if work.meta.provider == se_store::Provider::SeCode
+                && let Err(error) = self.restore_secode_work(&mut work, deadline).await
+            {
                 work.cleanup_failure = Some(error.body);
             }
             match outcome {

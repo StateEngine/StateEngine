@@ -84,7 +84,7 @@ impl ProviderStdioApi for NativeProcessRuntime {
                 if slot
                     .spec
                     .as_ref()
-                    .is_none_or(|spec| spec.mode != LaunchMode::Headless)
+                    .is_none_or(|spec| !spec.mode.is_headless())
                 {
                     return Err(input("stdio mode", "headless prepared launch required"));
                 }

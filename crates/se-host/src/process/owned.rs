@@ -46,6 +46,7 @@ pub(super) struct Work {
     pub exec_observed: bool,
     pub process_view: Option<se_core::ops::ProcessView>,
     pub binding: Option<crate::HarnessBinding>,
+    pub secode: Option<super::secode::Prepared>,
     pub mail: super::mail::State,
     pub wake: Arc<events::Wake>,
     pub committed: bool,
@@ -75,6 +76,7 @@ pub(super) struct Work {
     pub cleanup_failure: Option<se_types::ErrorBody>,
     pub pin_hash: Option<[u8; 32]>,
     pub cleanup_files_known: bool,
+    pub secode_service_lost: bool,
     pub files: Vec<(PathBuf, [u8; 32])>,
 }
 impl Work {
@@ -101,6 +103,7 @@ impl Work {
             exec_observed: false,
             process_view: None,
             binding: None,
+            secode: None,
             mail: super::mail::State::default(),
             wake: Arc::new(events::Wake::default()),
             committed: true,
@@ -130,6 +133,7 @@ impl Work {
             cleanup_failure: None,
             pin_hash: None,
             cleanup_files_known: false,
+            secode_service_lost: false,
             files: Vec::new(),
         }
     }

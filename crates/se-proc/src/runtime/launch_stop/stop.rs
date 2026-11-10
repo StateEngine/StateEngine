@@ -1,6 +1,13 @@
 //! Native stop tokens, custody witnesses and release.
 use super::*;
 
+enum StopMode {
+    Force,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    Terminate,
+    Interrupt,
+}
+
 impl NativeProcessRuntime {
     pub(super) fn native_prepare_stop(
         &self,
@@ -45,18 +52,21 @@ impl NativeProcessRuntime {
         })
     }
     pub(super) fn native_request_stop(&self, prepared: PreparedStop) -> ProcResult<StopAttempt> {
-        self.request_stop_mode(prepared, false)
+        self.request_stop_mode(prepared, StopMode::Force)
     }
     /// Unix graceful signalling consumes the same identity/generation-bound
     /// single-use stop token as force, after the host's durable StopRequested.
     /// Scope exit still requires an independent witness; this is not release.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn request_termination(&self, prepared: PreparedStop) -> ProcResult<StopAttempt> {
-        self.request_stop_mode(prepared, true)
+        self.request_stop_mode(prepared, StopMode::Terminate)
     }
-    fn request_stop_mode(&self, prepared: PreparedStop, graceful: bool) -> ProcResult<StopAttempt> {
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let _ = graceful;
+    /// Send SIGINT or native Windows Ctrl+C through the same single-use stop
+    /// token. This requests cancellation; only witness_stop proves closure.
+    pub fn request_interrupt(&self, prepared: PreparedStop) -> ProcResult<StopAttempt> {
+        self.request_stop_mode(prepared, StopMode::Interrupt)
+    }
+    fn request_stop_mode(&self, prepared: PreparedStop, mode: StopMode) -> ProcResult<StopAttempt> {
         let key = prepared.key;
         let (attempt, dispatch) = self.inner.apply(&key, true, |s| {
             s.set_phase(LifecycleState::StopRequested)?;
@@ -71,9 +81,20 @@ impl NativeProcessRuntime {
             } else {
                 s.stop_consumed = prepared.nonce;
                 match &mut s.native {
-                    #[cfg(any(target_os = "linux", target_os = "macos"))]
-                    Some(native) if graceful => native.terminate(prepared.deadline),
-                    Some(native) => native.stop(prepared.deadline),
+                    Some(native) => match mode {
+                        StopMode::Force => native.stop(prepared.deadline),
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
+                        StopMode::Terminate => native.terminate(prepared.deadline),
+                        #[cfg(target_os = "linux")]
+                        StopMode::Interrupt => native.interrupt(prepared.deadline),
+                        #[cfg(windows)]
+                        StopMode::Interrupt => native
+                            .interrupt(&self.inner.config.helper_executable, prepared.deadline),
+                        #[cfg(target_os = "macos")]
+                        StopMode::Interrupt => Err(unsupported(
+                            "native interrupt dispatch is not implemented on macOS",
+                        )),
+                    },
                     None if !s.launched => Ok(StopDispatch::NotNeeded),
                     None => Err(input("stop", "native child custody is unresolved")),
                 }

@@ -64,6 +64,85 @@ pub(super) fn deadline() -> Result<std::time::Instant> {
         .checked_add(super::execute::options().timeout)
         .ok_or_else(|| SeError::invalid("agent observation deadline", "a finite native deadline"))
 }
+pub(super) fn has_secode(output: &AnyOutput) -> bool {
+    rows(output)
+        .iter()
+        .any(|row| matches!(&row.secode_binding, Some(Read::Present { .. })))
+}
+fn rows(output: &AnyOutput) -> Vec<&AgentRow> {
+    match output {
+        AnyOutput::AgentShow(value) => match &value.value.agent {
+            Read::Present { value } => vec![value],
+            _ => vec![],
+        },
+        AnyOutput::AgentList(value) => value.value.page.items().iter().collect(),
+        AnyOutput::ProjectStatus(value) => value
+            .value
+            .agents
+            .as_ref()
+            .map(|page| page.items().iter().collect())
+            .unwrap_or_default(),
+        _ => vec![],
+    }
+}
+/// Preserve the CLI's independent native observation and join only the same
+/// session's authenticated service facts after its store snapshot has closed.
+pub(super) fn merge_secode(mut output: AnyOutput, live: Result<AnyOutput>) -> Result<AnyOutput> {
+    let observed = live.as_ref().map(rows);
+    let mut apply = |row: &mut AgentRow| -> Result<()> {
+        if !matches!(&row.secode_binding, Some(Read::Present { .. })) {
+            return Ok(());
+        }
+        row.secode_runtime = Some(match &observed {
+            Ok(rows) => rows
+                .iter()
+                .find(|other| {
+                    other.id == row.id && other.session.session_id == row.session.session_id
+                })
+                .and_then(|other| other.secode_runtime.clone())
+                .unwrap_or_else(|| Read::Unknown {
+                    what:
+                        "The owning host did not return service facts for this exact saved session."
+                            .into(),
+                }),
+            Err(error) => Read::Unreadable {
+                source: "SE Code runtime observation".into(),
+                reason: error.to_string(),
+                error: Some(Box::new(error.body.clone())),
+            },
+        });
+        if matches!(row.secode_runtime, Some(Read::Present { .. }))
+            && row.session.state == "stopped"
+            && matches!(
+                row.session.recorded_state.as_deref(),
+                Some("ended" | "revoked")
+            )
+            && matches!(&row.session.process_state, Read::Present { value } if value == "exited")
+            && let Ok(rows) = &observed
+            && let Some(other) = rows.iter().find(|other| {
+                other.id == row.id && other.session.session_id == row.session.session_id
+            })
+        {
+            row.resume = other.resume.clone();
+        }
+        Ok(())
+    };
+    match &mut output {
+        AnyOutput::AgentShow(value) => {
+            if let Read::Present { value } = &mut value.value.agent {
+                apply(value)?;
+            }
+        }
+        AnyOutput::AgentList(value) => enrich_page(&mut value.value.page, &mut apply)?,
+        AnyOutput::ProjectStatus(value) => {
+            if let Some(page) = &mut value.value.agents {
+                enrich_page(page, &mut apply)?;
+            }
+        }
+        _ => (),
+    }
+    Ok(output)
+}
 pub(super) fn finish(prepared: Prepared, home: &std::path::Path) -> Result<AnyOutput> {
     let Prepared {
         mut output,

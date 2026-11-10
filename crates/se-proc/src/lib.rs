@@ -60,9 +60,9 @@ pub use source_root::{
     NativeSourceRoot, observe_file_revision,
 };
 pub use state_files::{
-    NativeStateFiles, PermissionKind, PermissionProtection, PermissionRepairPin,
-    PermissionRepairWitness, PermissionSnapshot, ProtectedStateStaging, StateFileError,
-    StateFileErrorCode,
+    NativeProfileFiles, NativeStateFiles, PermissionKind, PermissionProtection,
+    PermissionRepairPin, PermissionRepairWitness, PermissionSnapshot, ProtectedStateStaging,
+    StateFileError, StateFileErrorCode,
 };
 #[cfg(windows)]
 mod stdio;
@@ -91,6 +91,8 @@ pub use bootstrap::{
 mod linux_native;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod platform;
+#[cfg(windows)]
+pub use platform::{CONSOLE_INTERRUPT_ENTRY, console_interrupt_entry};
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod runtime;
 mod support;

@@ -116,7 +116,7 @@ impl CodexHarness {
         self.configuration.resolve_profile(
             &request.profile.named_profile,
             Provider::Codex,
-            request.mode == se_proc::LaunchMode::Headless,
+            request.mode.is_headless(),
         )
     }
     fn plan<'a>(

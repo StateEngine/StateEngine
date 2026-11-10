@@ -7,7 +7,7 @@ use se_store::{Actor, EventBody, RecordId, RecordIdentity, Snapshot, mail::MailS
 use se_types::{Body, IdempotencyKey, Read, Result};
 use sha2::{Digest, Sha256};
 use std::{num::NonZeroU32, time::Duration};
-mod commit;
+pub(in crate::process) mod commit;
 pub(super) mod diagnostic;
 mod notice;
 mod reconcile;
@@ -53,6 +53,27 @@ fn admission(target: &core::MailTarget) -> se_store::Admission {
     }
 }
 impl LaunchCoordinator {
+    pub(super) async fn reconcile_stopped_secode_mail(
+        &self,
+        work: &mut owned::Work,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        if work.secode.is_none() || work.mail.flight.is_none() || !work.capture_flushed {
+            return Ok(());
+        }
+        let target = core::MailTarget {
+            project: work.meta.project.id.clone(),
+            agent: work.meta.agent.id.clone(),
+            session: work.meta.session.clone(),
+            epoch: self.options.epoch.clone(),
+            generation: self.store.generation.get(),
+            fingerprint: work
+                .pin_hash
+                .ok_or_else(|| error("mail target", "verified launch pin is unavailable"))?,
+        };
+        self.reconcile_captured_mail(work, &target, deadline).await
+    }
+
     pub(super) async fn deliver_mail(
         &self,
         work: &mut owned::Work,
@@ -62,13 +83,14 @@ impl LaunchCoordinator {
             || !work.activated
             || work.session_retired
             || work.stop_key.is_some()
-            || work
-                .binding
-                .as_ref()
-                .is_none_or(|binding| binding.claude.is_none() && binding.codex.is_none())
+            || work.binding.as_ref().is_none_or(|binding| {
+                binding.claude.is_none() && binding.codex.is_none() && binding.secode.is_none()
+            })
         {
             return Ok(());
         }
+        self.reconcile_recovered_secode_notice(work, deadline)
+            .await?;
         let target = core::MailTarget {
             project: work.meta.project.id.clone(),
             agent: work.meta.agent.id.clone(),
@@ -84,6 +106,7 @@ impl LaunchCoordinator {
             .binding
             .as_ref()
             .is_some_and(|binding| binding.codex.is_some());
+        let secode = work.secode.is_some();
         if !codex
             && work
                 .binding
@@ -95,7 +118,7 @@ impl LaunchCoordinator {
             // fabricate a console write or record its notification as a read.
             return Ok(());
         }
-        if (!codex && !work.mail.idle) || work.mail.flight.is_some() {
+        if (!codex && !secode && !work.mail.idle) || work.mail.flight.is_some() {
             return Ok(());
         }
         let notice = id()?;
@@ -127,7 +150,17 @@ impl LaunchCoordinator {
                 return Err(scope::unreadable(&source, &reason));
             }
         };
-        let text = self.mail_notice_text(&target, &reserved, deadline).await?;
+        let text = if secode {
+            Body::new(crate::harness::secode_process::notice_text(
+                &reserved
+                    .ids
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
+            )?)?
+        } else {
+            self.mail_notice_text(&target, &reserved, deadline).await?
+        };
         let expected_conversation = scope::require_present(
             work.meta.conversation.clone(),
             "mail provider conversation",
@@ -169,7 +202,22 @@ impl LaunchCoordinator {
         });
         // Retain the attempted notice before crossing the transport boundary.
         // A partial/uncertain write is never blindly sent again on this binding.
-        let offered = if codex {
+        let offered = if secode {
+            let reserved = work
+                .mail
+                .flight
+                .as_ref()
+                .ok_or_else(|| error("SE Code mail offer", "original reservation absent"))?
+                .reservation
+                .clone();
+            self.offer_secode_notice(work, &reserved, deadline)
+                .await
+                .map(|event_id| se_store::mail::OfferReport::VendorReported {
+                    provider: se_store::Provider::SeCode,
+                    event_id,
+                })
+                .map_err(|error| (error, None))
+        } else if codex {
             self.codex
                 .offer_mail(
                     binding,

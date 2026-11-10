@@ -8,6 +8,8 @@ use std::{
 };
 pub(crate) mod effects;
 mod permissions;
+mod profile;
+pub use profile::NativeProfileFiles;
 pub(crate) mod source;
 pub use permissions::{
     PermissionKind, PermissionProtection, PermissionRepairPin, PermissionRepairWitness,
@@ -114,6 +116,23 @@ pub struct NativeStateFiles {
     directory: os::Directory,
 }
 impl NativeStateFiles {
+    /// Recognizes native unpublished/recovery siblings for inventory only.
+    /// Their names grant no read, deletion, restoration or process authority.
+    pub fn is_recovery_artifact(name: &std::ffi::OsStr) -> bool {
+        let Some(name) = name.to_str() else {
+            return false;
+        };
+        [".se-stage-", ".se-edit-backup-", ".se-edit-"]
+            .into_iter()
+            .any(|prefix| {
+                name.strip_prefix(prefix).is_some_and(|suffix| {
+                    suffix.len() == 32
+                        && suffix
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                })
+            })
+    }
     /// Opens an existing private state root without following its final name
     /// or any owned descendant. Trusted system-ancestor links may resolve. Missing,
     /// unreadable, unsafe and replaced roots are failures, never a new directory.
@@ -265,7 +284,7 @@ impl NativeStateFiles {
         source
             .sync_all()
             .map_err(|e| io_error("sync staged data", staged, e))?;
-        let before = os::identity(&source, staged)?;
+        let before = self.directory.identity(&source, staged)?;
         self.directory
             .publish(staged, destination, &self.root, &source)?;
         let published = self
@@ -278,7 +297,7 @@ impl NativeStateFiles {
                     destination,
                 )
             })?;
-        if os::identity(&published, destination)? != before {
+        if self.directory.identity(&published, destination)? != before {
             return Err(failure(
                 StateFileErrorCode::SourceChanged,
                 "publication identity changed",

@@ -80,6 +80,49 @@ impl Store {
             key: Some(request.key.clone()),
             natural_events: Vec::new(),
         };
+        self.submit(batch, identity, deadline).await
+    }
+    /// Capture uses the store's immutable session/provider/native-turn identity,
+    /// with the original event IDs retained across an uncertain submission.
+    pub async fn commit_capture(
+        &self,
+        batch: AtomicBatch,
+        deadline: &Deadline,
+    ) -> Result<CommitReceipt> {
+        let (session, provider, vendor_ref) = match batch.events.first().map(|event| &event.body) {
+            Some(se_store::EventBody::SessionTurn {
+                session,
+                provider,
+                vendor_ref,
+                ..
+            }) if batch.request.is_none() => (session, provider, vendor_ref),
+            _ => {
+                return Err(error(
+                    "capture commit",
+                    "a natural session turn batch is required",
+                ));
+            }
+        };
+        let identity = crate::runtime::WriteIdentity {
+            operation: "hook.claude",
+            natural_key: Some(format!(
+                "session={session}, provider={provider:?}, turn={vendor_ref}"
+            )),
+            key: None,
+            natural_events: batch
+                .events
+                .iter()
+                .map(|event| event.header.event.clone())
+                .collect(),
+        };
+        self.submit(batch, identity, deadline).await
+    }
+    async fn submit(
+        &self,
+        batch: AtomicBatch,
+        identity: crate::runtime::WriteIdentity,
+        deadline: &Deadline,
+    ) -> Result<CommitReceipt> {
         let submitted = identity.clone();
         let recipients = crate::runtime::mail::recipients(&batch);
         let revocations = crate::runtime::mail::revocations(&batch);
@@ -145,7 +188,7 @@ impl Store {
                     crate::runtime::CommittedWrite {
                         operation: identity.operation.into(),
                         key: identity.key.clone(),
-                        natural_events: Vec::new(),
+                        natural_events: identity.natural_events.clone(),
                         committed_events: receipt.events.clone(),
                     }
                     .response_error(cause)

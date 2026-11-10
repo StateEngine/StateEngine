@@ -31,7 +31,7 @@ fn descriptor(value: i32, api: &str) -> ProcResult<File> {
 }
 impl Terminal {
     pub fn prepare(spec: &LaunchSpec) -> ProcResult<Option<Self>> {
-        if spec.mode == LaunchMode::Headless {
+        if spec.mode.is_headless() {
             return Ok(None);
         }
         let Some(

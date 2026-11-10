@@ -146,7 +146,7 @@ impl NativeProcessRuntime {
                     .spec
                     .as_mut()
                     .ok_or_else(|| input("stdio", "prepared launch spec is unavailable"))?;
-                if spec.mode != LaunchMode::Headless
+                if !spec.mode.is_headless()
                     && !matches!(
                         spec.window,
                         Some(WindowSpec::UnixTerminalWithBackend { .. })

@@ -54,7 +54,7 @@ fn walk(
             let child = NativeStateFiles::open(&path).map_err(fail)?;
             walk(&child, depth + 1, wanted, root, entries)?
         } else {
-            let allowed = name.starts_with(".se-stage-")
+            let allowed = NativeStateFiles::is_recovery_artifact(&entry.file_name())
                 || match depth {
                     0 => name == "writer.lock",
                     2 => matches!(name.as_str(), "current.json" | "reservation.json"),

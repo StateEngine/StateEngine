@@ -76,10 +76,27 @@ impl User {
             .map_err(|e| io_error(e.operation, path, e.source))
     }
 }
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(in crate::state_files) enum Layout {
+    State,
+    UserPrivate,
+}
 pub(super) fn descriptor(path: &Path, directory: bool) -> Result<Allocation> {
+    descriptor_for(path, directory, Layout::State)
+}
+pub(in crate::state_files) fn descriptor_for(
+    path: &Path,
+    directory: bool,
+    layout: Layout,
+) -> Result<Allocation> {
     let sid = User::current(path)?.text(path)?;
     let flags = if directory { "OICI" } else { "" };
-    let sddl = format!("O:{sid}D:P(A;{flags};FA;;;SY)(A;{flags};FA;;;{sid})");
+    let system = if layout == Layout::State {
+        format!("(A;{flags};FA;;;SY)")
+    } else {
+        String::new()
+    };
+    let sddl = format!("O:{sid}D:P{system}(A;{flags};FA;;;{sid})");
     let data: Vec<_> = OsStr::new(&sddl).encode_wide().chain(Some(0)).collect();
     let mut raw = ptr::null_mut();
     // SAFETY: owned terminated SDDL input and writable LocalFree-owned output.
@@ -107,6 +124,23 @@ pub(in crate::state_files) fn tighten_owner_only(
 ) -> Result<()> {
     permission_repair::require_existing_access(file, path, directory)?;
     let descriptor = descriptor(path, directory)?;
+    set_protected_dacl(file, path, descriptor, "tighten pinned DACL")
+}
+
+/// Finish the fixed descriptor on a verified newly published private file.
+/// The caller retains its identity/content/owner-checked WRITE_DAC handle;
+/// this does not acquire or repair an incumbent or a profile directory.
+pub(in crate::state_files) fn finish_private_replacement(file: &File, path: &Path) -> Result<()> {
+    let descriptor = descriptor_for(path, false, Layout::UserPrivate)?;
+    set_protected_dacl(file, path, descriptor, "finish private replacement DACL")
+}
+
+fn set_protected_dacl(
+    file: &File,
+    path: &Path,
+    descriptor: Allocation,
+    operation: &'static str,
+) -> Result<()> {
     // SAFETY: retained WRITE_DAC handle and native self-relative descriptor.
     // NtSetSecurityObject changes this one pinned object; unlike SetSecurityInfo
     // it does not run Win32's recursive propagation of inheritable directory ACEs.
@@ -121,7 +155,7 @@ pub(in crate::state_files) fn tighten_owner_only(
         // SAFETY: pure conversion of the native status returned above.
         let code = unsafe { windows_sys::Win32::Foundation::RtlNtStatusToDosError(status) };
         return Err(io_error(
-            "tighten pinned DACL",
+            operation,
             path,
             std::io::Error::from_raw_os_error(code as i32),
         ));
@@ -181,6 +215,14 @@ pub(crate) fn verify(
     path: &Path,
     inherited_from_protected_parent: bool,
 ) -> Result<()> {
+    verify_for(file, path, inherited_from_protected_parent, Layout::State)
+}
+pub(in crate::state_files) fn verify_for(
+    file: &File,
+    path: &Path,
+    inherited_from_protected_parent: bool,
+    layout: Layout,
+) -> Result<()> {
     let user = User::current(path)?;
     let descriptor = security(file, path, true)?;
     let control = descriptor
@@ -219,16 +261,20 @@ pub(crate) fn verify(
         let principal = (&ace.SidStart as *const u32).cast_mut().cast();
         // SAFETY: SID is embedded in this validated native allowed ACE.
         if unsafe { IsValidSid(principal) } == 0
-            || ace.Mask != windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS
+            || ((layout == Layout::State || !inherited_from_protected_parent)
+                && ace.Mask != windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS)
         {
             return Err(unsafe_path(
-                "full-control user or SYSTEM ACE required",
+                match layout {
+                    Layout::State => "full-control user or SYSTEM ACE required",
+                    Layout::UserPrivate => "full-control current-user directory ACE required",
+                },
                 path,
             ));
         }
         let is_user = equal(principal, user.sid());
         let is_system = equal(principal, system.0);
-        if !is_user && !is_system {
+        if !is_user && (layout == Layout::UserPrivate || !is_system) {
             return Err(unsafe_path("DACL grants another principal access", path));
         }
         if !inherited_from_protected_parent
@@ -236,20 +282,27 @@ pub(crate) fn verify(
                 != OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
         {
             return Err(unsafe_path(
-                "directory ACE must protect inherited SQLite side files",
+                match layout {
+                    Layout::State => "directory ACE must protect inherited SQLite side files",
+                    Layout::UserPrivate => "directory ACE must protect inherited private files",
+                },
                 path,
             ));
         }
         has_user |= is_user;
         has_system |= is_system;
     }
-    if !has_user || !has_system {
-        return Err(unsafe_path(
+    match layout {
+        Layout::State if !has_user || !has_system => Err(unsafe_path(
             "user and SYSTEM full-control ACEs required",
             path,
-        ));
+        )),
+        Layout::UserPrivate if !has_user || count != 1 => Err(unsafe_path(
+            "exactly one current-user private ACE required",
+            path,
+        )),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// Installation records and the permanent claim must not grant another native

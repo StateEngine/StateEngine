@@ -44,7 +44,10 @@ impl LaunchCoordinator {
         if !work.session_retired {
             self.revoke_credentials(work, deadline).await?;
         }
-        if work.native_already_reconciled && !work.session_retired {
+        if work.meta.provider == se_store::Provider::SeCode {
+            self.settle_secode(work, &witness, deadline).await?;
+        }
+        if work.native_already_reconciled && !work.session_retired && !work.secode_service_lost {
             self.flush_capture(work, deadline).await.map_err(|failure| {
                 let repair = se_core::ops::AgentCommand::stop_in_home(
                     &work.meta.agent.id,
@@ -154,6 +157,9 @@ impl LaunchCoordinator {
             return Err(error);
         }
         self.retire_files(work, deadline).await?;
+        if work.meta.provider == se_store::Provider::SeCode {
+            self.secode_client_closed(work, &witness, deadline).await?;
+        }
         if !work.native_already_reconciled {
             let native = self.native.clone();
             let process = work.process.clone().ok_or_else(|| {
@@ -171,6 +177,9 @@ impl LaunchCoordinator {
         work.released = true;
         work.active = false;
         work.binding = None;
+        if work.meta.provider == se_store::Provider::SeCode {
+            self.secode.retire(&work.meta.session)?;
+        }
         work.process = None;
         Ok(())
     }

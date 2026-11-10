@@ -224,6 +224,7 @@ pub(in crate::state_files) struct Pin {
     name: CString,
     file: File,
     identity: (u64, u64),
+    private: bool,
 }
 impl Pin {
     pub(in crate::state_files) fn open(path: &Path) -> Result<Option<Self>> {
@@ -246,7 +247,16 @@ impl Pin {
             name,
             file,
             identity,
+            private: false,
         };
+        pin.check()?;
+        Ok(Some(pin))
+    }
+    pub(in crate::state_files) fn open_profile(path: &Path) -> Result<Option<Self>> {
+        let Some(mut pin) = Self::open(path)? else {
+            return Ok(None);
+        };
+        pin.private = true;
         pin.check()?;
         Ok(Some(pin))
     }
@@ -261,6 +271,14 @@ impl Pin {
         if id(&observed, &self.path, true, false)? != id(&self.parent, &self.path, true, false)? {
             return Err(changed("installation parent changed", &self.path));
         }
+        if self.private {
+            let path = self
+                .path
+                .parent()
+                .ok_or_else(|| unsafe_path("profile parent missing", &self.path))?;
+            super::metadata(&observed, path, true)?;
+            super::metadata(&self.parent, path, true)?;
+        }
         Ok(())
     }
     pub(in crate::state_files) fn check(&self) -> Result<()> {
@@ -270,6 +288,10 @@ impl Pin {
             || id(&self.file, &self.path, false, true)? != self.identity
         {
             return Err(changed("installation file identity changed", &self.path));
+        }
+        if self.private {
+            super::metadata(&current, &self.path, false)?;
+            super::metadata(&self.file, &self.path, false)?;
         }
         Ok(())
     }

@@ -1,6 +1,10 @@
 # Draft SE Code headless host path
 
-Add a managed SE Code subprocess harness. The standalone runtime stays the sole StateEngine owner: SE Code must not activate an embedded owner. Runtime behavior remains subject to the qualifications below.
+The managed SE Code subprocess harness keeps the standalone runtime as the sole StateEngine owner: SE Code must not activate an embedded owner.
+
+Linux headless services are enabled. Windows headless SE Code launch and resume refuse with `feature-unavailable` before takeover, bootstrap or service creation because private profile-directory protection is not yet qualified. Run headless SE Code on Linux, or use a Claude or Codex agent on Windows. Retained process reconciliation and cleanup remain available; refusing new launches must not discard existing custody.
+
+**No real-model request has run on any platform yet.** The Linux attempt stopped at the supported account importer before submitting a request. Real-model qualification belongs to the Windows follow-up once the importer accepts the account; the shared nightly journey will judge Windows enablement. Synthetic service replies prove protocol behavior, not model execution. macOS runtime remains unqualified.
 
 ## Binary lookup and launch
 
@@ -10,7 +14,7 @@ Coordinator-owned preparation reserves durable service/session/input identities 
 
 ## Detached lifetime and streams
 
-Return after runtime custody acceptance. Reuse detached bootstrap: Linux user-manager startup or the reported session-only bound; Windows native job breakaway, refusing if unavailable. The client stays in its managed scope; the private service serves only this runtime's seats.
+Return after runtime custody acceptance. Reuse detached bootstrap: Linux user-manager startup or the reported session-only bound. The Windows follow-up must qualify native job breakaway before enabling launch. The client stays in its managed scope; the private service serves only this runtime's seats.
 
 The runtime owns host pipe ends after launcher exit. Send one bounded UTF-8 prompt with its original input key, close stdin, and require durable queue-acceptance readback before readiness. If keyed admission/readback is unavailable or uncertain, report pending/no-replay; a completed pipe write proves neither acceptance nor permission to retry. Drain JSONL/stderr into protected bounded diagnostics. Lost stdout retires only that stream: keep a healthy resident/service running and use canonical reads; other output errors remain errors. Observe client exit independently. After runtime failure, reconcile identity/state; stop/relaunch only when reconciliation requires it, with the existing client/input-owner fence and dependent-session settlement, preserving uncertain input without replay.
 
@@ -18,7 +22,7 @@ The runtime owns host pipe ends after launcher exit. Send one bounded UTF-8 prom
 
 Reuse explicit takeover. Persist service generation, session, execution and client birth; fence the old exact client and its mail/input owner before interruption. Require exact-client absence, settled service execution and saved interruption/capture before replacement. Changed/unreadable identity or an unproved fence keeps takeover pending.
 
-Stop holds input and requests native client cancellation: SIGINT/TERM on Linux; Ctrl+C/Break through an independent Windows console/group. Windows `CREATE_NO_WINDOW` needs a qualified cancellation path. Drain output; witness client exit and authenticated service execution outcome. Report forced termination separately. `se down` settles seats, stops the private service and witnesses exit before runtime retirement. `se uninstall` performs the same retirement before removing binaries, preserving state. Incomplete closure blocks successful down/removal and retains cleanup custody.
+Stop holds input and requests native client cancellation: SIGINT/TERM on Linux. Windows enablement must qualify Ctrl+C/Break through an independent console/group; `CREATE_NO_WINDOW` needs a qualified cancellation path. Drain output; witness client exit and authenticated service execution outcome. Report forced termination separately. `se down` settles seats, stops the private service and witnesses exit before runtime retirement. `se uninstall` performs the same retirement before removing binaries, preserving state. Incomplete closure blocks successful down/removal and retains cleanup custody.
 
 ## Durable reads and shared plans
 
@@ -32,6 +36,6 @@ Committed mail wakes the host; it offers a session-bound notice through authenti
 
 Migration supplies imported agent/session mappings and binary overrides. Fresh installs get bundle discovery and automatic service/session setup. Desktop and CLI share managed launch/stop operations, independent of runtime lifetime.
 
-**Qualification pending:** SE Code's proposed resident CLI contract, not yet merged in its repository, defines client lifetime/shutdown. External-host startup, keyed input acceptance, native-notice control and Windows cancellation need qualification. Command-line and Rust host acceptance are independent. Fresh Linux/Windows acceptance must exercise launcher exit and runtime/reader death independently, later mail, durable results, zero initial-input replay, fenced takeover, native shutdown, resume and down/uninstall with no owned process remaining. macOS remains separate.
+**Qualification bounds:** Linux managed-service consumers have exercised synthetic loopback replies. Windows profile initialization failed with `PermissionDenied`; this does not establish the underlying directory-protection cause, and Windows remains disabled. Before enabling it, the shared nightly journey must exercise launcher exit and runtime/reader death independently, later mail, durable results, zero initial-input replay, fenced takeover, native shutdown, resume and down/uninstall with no owned process remaining. Real-model execution remains unproved on every platform.
 
 Source seams: [launch planning](../../crates/se-core/src/ops/process_plan.rs), [stop planning](../../crates/se-core/src/ops/stop_plan.rs), [launch coordination](../../crates/se-host/src/process/launch.rs), [harness contract](../../crates/se-host/src/harness.rs), [runtime startup](../../crates/se/src/runtime/host.rs).

@@ -6,7 +6,7 @@ use se_core::{
 };
 use se_store::{CommitReceipt, SqliteSnapshot};
 
-pub(super) async fn step<O: Send + 'static, T: Send + 'static>(
+pub(in crate::process) async fn step<O: Send + 'static, T: Send + 'static>(
     store: &store::Store,
     admission: se_store::Admission,
     deadline: &Deadline,
@@ -23,9 +23,13 @@ pub(super) async fn step<O: Send + 'static, T: Send + 'static>(
     match draft {
         OpStep::Complete(value) => Ok(value),
         OpStep::Commit { batch, then } => {
-            let receipt = store
-                .commit(admission.clone(), deadline, None, move |_, _| Ok(batch))
-                .await?;
+            let receipt = if batch.request.is_none() {
+                store.commit_capture(batch, deadline).await?
+            } else {
+                store
+                    .commit(admission.clone(), deadline, None, move |_, _| Ok(batch))
+                    .await?
+            };
             store
                 .read(admission, deadline, move |cx| {
                     finish(

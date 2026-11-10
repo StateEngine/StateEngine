@@ -1,5 +1,7 @@
 #[path = "notification.rs"]
 pub(super) mod notification;
+#[path = "secode.rs"]
+pub(super) mod secode;
 use se_core::ops::outputs::*;
 use se_types::{OmissionReason, Page, Read};
 use std::io::{self, Write};
@@ -83,6 +85,9 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
                     "    Containment reason: {}",
                     se_core::ops::containment_cause_description(reason)
                 )?;
+            }
+            if let Some(runtime) = &agent.secode_runtime {
+                secode::runtime(runtime, "    ", out)?;
             }
             resume_advice(&agent.resume, "    ", out)?;
         }

@@ -18,6 +18,7 @@ pub enum Provider {
     #[default]
     Claude,
     Codex,
+    SeCode,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "mode", rename_all = "lowercase")]

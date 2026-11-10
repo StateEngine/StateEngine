@@ -4,6 +4,24 @@ use crate::{CallContext, CancellationState, client::lease::Deadline};
 use se_core::ops::agent_launch::LaunchPlan;
 use se_types::{Result, Secret};
 
+pub(super) fn resolve_provider(
+    configuration: &se_core::config_policy::ConfigFile,
+    provider: se_types::Provider,
+    selected_file: Option<&std::path::Path>,
+) -> Result<PathBuf> {
+    if provider == se_types::Provider::SeCode
+        && configuration.provider(provider).command.is_none()
+        && let Some(bundled) = crate::harness::secode_process::bundle::discover()?
+    {
+        return Ok(bundled);
+    }
+    resolve_provider_command(
+        configuration.provider_command(provider),
+        provider,
+        selected_file,
+    )
+}
+
 pub(super) fn call(generation: se_types::Generation, deadline: &Deadline) -> Result<CallContext> {
     Ok(CallContext {
         generation,
@@ -159,6 +177,9 @@ pub(super) fn resolve_provider_command(
             "Claude Code",
             "https://code.claude.com/docs/en/setup",
         ),
+        se_types::Provider::SeCode => {
+            ("secode", "SE Code", "the SE Code installation instructions")
+        }
     };
     let destination = match configuration_file {
         Some(path) => format!("configuration file {}", path.display()),

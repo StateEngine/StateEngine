@@ -43,6 +43,7 @@ fn init_policy_matches_its_first_launch_for_both_providers_and_explicit_approval
             let provider_name = match provider {
                 Provider::Claude => "claude",
                 Provider::Codex => "codex",
+                Provider::SeCode => "secode",
             };
             let args = [
                 "--home",

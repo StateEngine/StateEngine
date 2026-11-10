@@ -32,7 +32,15 @@ pub struct ResourceLimits {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LaunchMode {
     Headless,
+    /// Redirected streams with an independent hidden Windows console for
+    /// native Ctrl+C cancellation. Equivalent to Headless on Unix.
+    HeadlessConsole,
     Window,
+}
+impl LaunchMode {
+    pub fn is_headless(self) -> bool {
+        self != Self::Window
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContainmentRequirement {

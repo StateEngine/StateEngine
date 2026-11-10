@@ -3,7 +3,7 @@
 //! host on every call and executed through the shared router.
 use crate::{HostedRouter, McpBackend, client::lease::Deadline};
 use se_types::{Result, Secret};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 pub(crate) struct HttpBackend<'a> {
     pub router: &'a HostedRouter,
@@ -12,6 +12,37 @@ pub(crate) struct HttpBackend<'a> {
     pub malformed: bool,
     pub session_proof: Option<Arc<Secret>>,
     pub malformed_proof: bool,
+}
+impl HttpBackend<'_> {
+    async fn active_principal(
+        &mut self,
+        capability: Arc<Secret>,
+    ) -> Result<crate::mcp::McpPrincipal> {
+        if self.session_proof.is_none() && !self.malformed_proof {
+            return self.router.mcp_principal(capability, self.deadline).await;
+        }
+        // The verified first-use handshake lets launch finish preparing. A
+        // provider's first tool request can arrive before activation commits;
+        // hold that request within its original budget, without executing it.
+        loop {
+            self.check_session(Arc::clone(&capability)).await?;
+            match self
+                .router
+                .mcp_principal(Arc::clone(&capability), self.deadline)
+                .await
+            {
+                Err(error)
+                    if matches!(error.body.detail(), se_types::Detail::SessionNotActive(_)) =>
+                {
+                    // Each read is closed before yielding, and the next pass
+                    // revalidates both purposes, scope and activation state.
+                    tokio::time::sleep(self.deadline.remaining()?.min(Duration::from_millis(25)))
+                        .await;
+                }
+                result => return result,
+            }
+        }
+    }
 }
 impl McpBackend for HttpBackend<'_> {
     /// HTTP's capability is only its bearer; a malformed header never falls
@@ -49,6 +80,9 @@ impl McpBackend for HttpBackend<'_> {
         capability: Arc<Secret>,
         operation: se_core::ops::AnyOp,
     ) -> Result<serde_json::Value> {
+        if self.session_proof.is_some() || self.malformed_proof {
+            self.active_principal(Arc::clone(&capability)).await?;
+        }
         self.router
             .mcp_call(capability, operation, self.deadline)
             .await
@@ -62,7 +96,7 @@ impl McpBackend for HttpBackend<'_> {
         &mut self,
         capability: Arc<Secret>,
     ) -> Result<crate::mcp::McpPrincipal> {
-        self.router.mcp_principal(capability, self.deadline).await
+        self.active_principal(capability).await
     }
     fn response_limit(&self) -> usize {
         self.router.response_limit().get() as usize

@@ -125,7 +125,7 @@ impl LaunchCoordinator {
                 match self.exit_observation(work, deadline).await {
                     Ok(StopObservation::Complete(witness)) => {
                         self.finish(work, *witness, deadline).await?;
-                        return super::control::fill_stopped(row, work, false);
+                        return super::control::fill_stopped(row, work, false, &self.options.home);
                     }
                     Ok(StopObservation::Bounded(witness)) => witness.scope_exit.remaining,
                     Ok(StopObservation::Pending { scope, .. }) => scope.remaining,

@@ -94,6 +94,7 @@ impl CodexHarness {
             binding: HarnessBinding {
                 claude: None,
                 codex: Some(binding),
+                secode: None,
                 _private: (),
             },
         })

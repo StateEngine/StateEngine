@@ -109,6 +109,13 @@ impl LaunchCoordinator {
         if let Some(binding) = work
             .binding
             .as_ref()
+            .and_then(|binding| binding.secode.as_ref())
+        {
+            binding.completion.arm(&work.wake.event)?;
+        }
+        if let Some(binding) = work
+            .binding
+            .as_ref()
             .and_then(|binding| binding.claude.as_ref())
         {
             binding.completion.arm(&work.wake.event)?;
@@ -123,7 +130,7 @@ impl LaunchCoordinator {
         work.meta.conversation = Read::Present {
             value: outcome.witness.conversation.clone(),
         };
-        let native_pin = if plan.capture {
+        let native_pin = if plan.capture && plan.profile.provider != se_store::Provider::SeCode {
             let binding = work
                 .binding
                 .as_ref()
@@ -352,6 +359,40 @@ impl LaunchCoordinator {
         } else {
             capture
         };
+        let secode_binding = work
+            .secode
+            .as_ref()
+            .map(|prepared| {
+                Ok::<_, se_types::SeError>(se_core::ops::SecodeBindingView {
+                    schema: "se.secode-binding/v1".into(),
+                    service_profile: prepared.profile.clone(),
+                    service_process: prepared.process.clone(),
+                    client_process: native_record::instance(
+                        &record.root,
+                        record.argv_sha256,
+                        &self.options.epoch.owner.fields().boot,
+                    )?,
+                    session_id: prepared.session.clone(),
+                    initial_input_id: prepared.initial_input.clone(),
+                    incarnation: prepared.service.incarnation.clone(),
+                    service_instance: prepared.service.service_instance.clone(),
+                    generation: prepared.service.generation,
+                    registration_version: prepared.service.registration_version.clone(),
+                })
+            })
+            .transpose()?;
+        let capture = if let Some(binding) = &secode_binding {
+            let source = process_commit::credential_id(&plan, "capture-source")?;
+            work.capture_source = Some(source);
+            Some(process_commit::CaptureActivation {
+                source,
+                native_ref: binding.session_id.clone(),
+                incarnation: serde_json::to_vec(binding)
+                    .map_err(|e| error("SE Code source binding", e))?,
+            })
+        } else {
+            capture
+        };
         let receipt = self
             .store
             .commit(work.admission.clone(), deadline, None, move |kernel, cx| {
@@ -399,8 +440,10 @@ impl LaunchCoordinator {
             &plan.project.id,
             false,
         )
+        .filter(|_| plan.profile.provider != se_store::Provider::SeCode)
         .map(|command| command.with_detach(plan.input.detach));
         Ok(LaunchResult {
+            secode_binding: secode_binding.map(|value| Read::Present { value }),
             takeover: work.takeover.clone(),
             idempotency_key: plan.input.idempotency_key.clone(),
             event_id: receipt.primary_event,
@@ -412,9 +455,10 @@ impl LaunchCoordinator {
             session_id: plan.session.clone(),
             provider: match plan.profile.provider {
                 se_store::Provider::Codex => se_types::Provider::Codex,
-                _ => se_types::Provider::Claude,
+                se_store::Provider::Claude => se_types::Provider::Claude,
+                se_store::Provider::SeCode => se_types::Provider::SeCode,
             },
-            model: plan.profile.model.clone(),
+            model: work.meta.model.clone(),
             permission_profile: plan.resolved.clone(),
             conversation_id: outcome.witness.conversation,
             state: "running".into(),
@@ -444,9 +488,14 @@ impl LaunchCoordinator {
             resume: ResumeCommand {
                 ready: resume.is_some(),
                 mode: "resume".into(),
-                reason: resume
-                    .is_none()
-                    .then(|| se_core::ops::AgentCommand::HOME_UNAVAILABLE.into()),
+                reason: resume.is_none().then(|| {
+                    if plan.profile.provider == se_store::Provider::SeCode {
+                        se_core::ops::AgentCommand::SECODE_RESUME_UNAVAILABLE
+                    } else {
+                        se_core::ops::AgentCommand::HOME_UNAVAILABLE
+                    }
+                    .into()
+                }),
                 command: resume.as_ref().map(|value| value.command.clone()),
                 argv: resume.map(|value| value.argv),
             },

@@ -218,7 +218,7 @@ impl Harness for ClaudeHarness {
             .map_err(|e| {
                 se_core::scope::unreadable("Claude authentication status", &e.to_string())
             })??;
-            let fallback = request.mode == se_proc::LaunchMode::Headless
+            let fallback = request.mode.is_headless()
                 && request.profile.named_profile == "default"
                 && !settings::has_saved_mode(
                     &command,
@@ -293,6 +293,7 @@ impl Harness for ClaudeHarness {
             *retained = Some(HarnessBinding {
                 claude: Some(Arc::clone(&binding)),
                 codex: None,
+                secode: None,
                 _private: (),
             });
             let mut pending =
@@ -320,6 +321,7 @@ impl Harness for ClaudeHarness {
                 binding: HarnessBinding {
                     claude: Some(binding),
                     codex: None,
+                    secode: None,
                     _private: (),
                 },
             })

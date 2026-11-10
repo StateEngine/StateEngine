@@ -22,6 +22,8 @@ pub use codex_rpc::CodexHarness;
 pub mod codex_capture;
 #[cfg(feature = "secode")]
 pub(crate) mod secode;
+#[cfg(feature = "listener")]
+pub mod secode_process;
 pub(crate) mod tool_capture;
 
 /// One stock Codex feature/version floor for every launch/probe mode.
@@ -168,6 +170,8 @@ pub struct HarnessBinding {
     pub(crate) claude: Option<std::sync::Arc<claude_harness::Binding>>,
     #[cfg(feature = "listener")]
     pub(crate) codex: Option<std::sync::Arc<codex_rpc::Binding>>,
+    #[cfg(feature = "listener")]
+    pub(crate) secode: Option<std::sync::Arc<secode_process::Binding>>,
     pub(crate) _private: (),
 }
 #[derive(Clone, Debug)]

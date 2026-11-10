@@ -1,6 +1,6 @@
 //! Ordered launch barriers and real provider readiness. The supervisor retains
 //! every intermediate native reference and file digest through failures.
-use super::launch_util::{call, policy, resolve_provider_command, token, wait};
+use super::launch_util::{call, policy, resolve_provider, token, wait};
 use super::*;
 use crate::{HarnessRequest, ProbeRequest, SessionIdentity, client::lease::Deadline};
 use se_core::ops::{LaunchResult, process_commit};
@@ -29,6 +29,8 @@ impl LaunchCoordinator {
             .await?;
         let mode = if window.is_some() {
             se_proc::LaunchMode::Window
+        } else if plan.profile.provider == se_store::Provider::SeCode {
+            se_proc::LaunchMode::HeadlessConsole
         } else {
             se_proc::LaunchMode::Headless
         };
@@ -57,20 +59,17 @@ impl LaunchCoordinator {
             .await?;
         let provider = match plan.profile.provider {
             se_store::Provider::Codex => se_types::Provider::Codex,
-            _ => se_types::Provider::Claude,
+            se_store::Provider::Claude => se_types::Provider::Claude,
+            se_store::Provider::SeCode => se_types::Provider::SeCode,
         };
-        let command = self
-            .options
-            .configuration
-            .provider_command(provider)
-            .to_owned();
+        let configuration = self.options.configuration.clone();
         let configuration_file = self.configuration_file.clone();
         let (executable, qualification) = self
             .store
             .pool
             .run_owned(deadline, move || {
                 let command =
-                    resolve_provider_command(&command, provider, configuration_file.as_deref())?;
+                    resolve_provider(&configuration, provider, configuration_file.as_deref())?;
                 // Reuse this existing filesystem job instead of adding queue
                 // round trips to the warm qualification path.
                 let qualification = if provider == se_types::Provider::Codex {
@@ -193,8 +192,8 @@ impl LaunchCoordinator {
                 .entries
                 .push(("TERM".into(), "xterm-256color".into()));
         }
-        let provider_pipes = mode == se_proc::LaunchMode::Headless
-            || plan.profile.provider == se_store::Provider::Codex;
+        let provider_pipes =
+            mode.is_headless() || plan.profile.provider == se_store::Provider::Codex;
         let mut nonce = [0; 16];
         se_proc::fill_entropy(&mut nonce).map_err(|e| error("launch scope entropy", e))?;
         let reservation = se_proc::LaunchReservation {
@@ -283,6 +282,15 @@ impl LaunchCoordinator {
         if plan.profile.provider == se_store::Provider::Codex {
             self.codex
                 .prepare_socket(&request, &call(self.store.generation, deadline)?)
+                .await?;
+        }
+        if plan.profile.provider == se_store::Provider::SeCode {
+            let images = self.secode.images(&request.executable.to_local()?)?;
+            let prepared = self
+                .prepare_secode(work, &request, images, deadline)
+                .await?;
+            self.secode.register(&plan.session, prepared)?;
+            self.secode_input_intent(&request.identity, deadline)
                 .await?;
         }
         let spec = se_proc::LaunchSpec {
