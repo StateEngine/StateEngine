@@ -106,7 +106,7 @@ struct Home(PathBuf);
 impl Home {
     fn new() -> Check<Self> {
         let suffix = se_types::hex_lower(&random_secret()?.expose()[..16]);
-        let path = std::env::temp_dir().join(format!("5e-stdio-binding-{suffix}"));
+        let path = std::env::temp_dir().join(format!("se-stdio-binding-{suffix}"));
         fs::create_dir(&path)?;
         Ok(Self(fs::canonicalize(path)?))
     }

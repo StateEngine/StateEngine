@@ -28,7 +28,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Check<Self> {
         let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
-        let root = std::env::temp_dir().join(format!("5e-wrapper-{}", se_types::hex_lower(&nonce)));
+        let root = std::env::temp_dir().join(format!("se-wrapper-{}", se_types::hex_lower(&nonce)));
         fs::create_dir(&root)?;
         let root = fs::canonicalize(root)?;
         let machine = MachineId::new("independent-wrapper-cancellation")?;

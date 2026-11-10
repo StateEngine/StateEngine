@@ -285,7 +285,7 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let dir =
-            std::env::temp_dir().join(format!("5e-git-id-{}-{stamp}-{tag}", std::process::id()));
+            std::env::temp_dir().join(format!("se-git-id-{}-{stamp}-{tag}", std::process::id()));
         std::fs::create_dir_all(&dir)
             .map_err(|e| SeError::invalid("test repository", &e.to_string()))?;
         git(&dir, &["init", "-b", "main"])?;
@@ -345,7 +345,7 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let bare =
-            std::env::temp_dir().join(format!("5e-git-id-{}-{stamp}-bare", std::process::id()));
+            std::env::temp_dir().join(format!("se-git-id-{}-{stamp}-bare", std::process::id()));
         git(
             &plain,
             &[
