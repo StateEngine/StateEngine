@@ -10,11 +10,12 @@ import time
 image, home = sys.argv[1:3]
 budget = min(30, float(sys.argv[3]) / 1000 if len(sys.argv) > 3 else 30)
 if budget <= 0:
-    raise TimeoutError('public uninstall exceeded deadline before launch')
+    raise TimeoutError('public owner command exceeded deadline before launch')
 deadline = time.monotonic() + budget
 env = {key: value for key, value in os.environ.items()
        if not key.startswith(('SE_', 'STATEENGINE_', 'CODEX_')) and key != 'CLAUDECODE'}
-args = [image, '--json', '--home', home, 'uninstall']
+# Optional arguments let other owner-only CLI judges reuse this native terminal.
+args = [image, '--json', '--home', home, *(sys.argv[4:] or ['uninstall'])]
 master, slave = pty.openpty()
 child = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave,
                          env=env, start_new_session=True)
@@ -30,7 +31,7 @@ data = bytearray()
 try:
     while True:
         if time.monotonic() >= deadline:
-            raise TimeoutError('public uninstall exceeded deadline')
+            raise TimeoutError('public owner command exceeded deadline')
         if select.select([master], [], [], .05)[0]:
             try:
                 part = os.read(master, 4096)
@@ -42,7 +43,7 @@ try:
                 break
             data.extend(part)
             if len(data) > 262144:
-                raise RuntimeError('public uninstall exceeded output budget')
+                raise RuntimeError('public owner command exceeded output budget')
         if child.poll() is not None:
             # Drain the final PTY bytes before interpreting the child's exit.
             if not select.select([master], [], [], 0)[0]:
