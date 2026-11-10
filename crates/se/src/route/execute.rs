@@ -213,7 +213,8 @@ fn dispatch_with_cold_recovery(
         {
             // The direct native/store witness stays authoritative for status.
             // After closing its read pin, ask the existing authenticated host
-            // for its published Atlas metadata; never bootstrap a host here.
+            // for its Atlas metadata and retained session faults; never bootstrap
+            // a host here.
             let observed = super::hosted::forward(
                 cx,
                 &files,
@@ -224,7 +225,10 @@ fn dispatch_with_cold_recovery(
                 diagnostic,
             );
             status.value.atlas = match &observed {
-                Ok(AnyOutput::ProjectStatus(live)) => live.value.atlas.clone(),
+                Ok(AnyOutput::ProjectStatus(live)) => {
+                    status.value.pending.extend(live.value.pending.clone());
+                    live.value.atlas.clone()
+                }
                 Ok(_) => se_core::ops::status::atlas_view(Err(scope::unreadable(
                     "Atlas status",
                     "the host returned a different operation family",
