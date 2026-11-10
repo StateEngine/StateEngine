@@ -8,7 +8,7 @@ impl LaunchCoordinator {
         deadline: &Deadline,
         stopped: Stopped,
     ) -> Result<AnyOutput> {
-        let mut reports = stopped.lock().await;
+        let mut replacement = stopped.lock().await;
         let mut failures = Vec::new();
         let embedded = self
             .retire_embedded_bindings(
@@ -30,7 +30,7 @@ impl LaunchCoordinator {
         }
         for record in records {
             let lifecycle = process_identity(&record)?.record.clone();
-            if reports.contains_key(&lifecycle) {
+            if replacement.stopped.contains_key(&lifecycle) {
                 continue;
             }
             let mut selected = plan.clone();
@@ -41,7 +41,7 @@ impl LaunchCoordinator {
                 .await
             {
                 Ok(report) => {
-                    reports.insert(lifecycle, report);
+                    replacement.stopped.insert(lifecycle, report);
                 }
                 Err(failure) => failures.push(format!("{lifecycle}: {failure}")),
             }
@@ -51,41 +51,59 @@ impl LaunchCoordinator {
                 "takeover incomplete",
                 format!(
                     "{} original lifecycles closed; unresolved: {}. No successor launched; retry this same --force request and key.",
-                    reports.len(),
+                    replacement.stopped.len(),
                     failures.join("; ")
                 ),
             ));
         }
         let report = combine_reports(
-            reports
+            replacement
+                .stopped
                 .values()
                 .cloned()
                 .chain(embedded.iter().map(|binding| binding.report()))
                 .collect(),
         )?;
-        let input = plan.input.clone();
-        let seed = plan.seed.clone();
-        let configuration = self.options.configuration.clone();
-        let mut next = self
-            .store
-            .read(admission.clone(), deadline, move |cx| {
-                let mut facts = crate::runtime::start::allocate_facts()?;
-                facts.event = seed;
-                se_core::ops::process_plan::launch(
-                    &se_core::dispatch::Kernel::new(facts)?,
-                    input,
-                    &configuration,
-                    cx,
-                )
-            })
-            .await
-            .map_err(|failure| successor_failure(&report, failure))?;
-        if report.new_conversation {
-            next.start_new_conversation("Forced relaunch preserved the previous history and starts a new conversation because the previous service was forcibly retired or final capture remained unavailable.".into());
-        }
-        self.preflight_relaunch(&mut next, &admission, deadline)
-            .await
-            .map_err(|failure| successor_failure(&report, failure))?;
+        // This phase begins once, after every selected predecessor has a
+        // native closure report. Rejoining the request never renews its clock.
+        let readiness = match &replacement.successor_deadline {
+            Some(deadline) => deadline.clone(),
+            None => {
+                let deadline = Deadline::idle()?.stage(crate::client::lease::CALL_TIMEOUT)?;
+                replacement.successor_deadline = Some(deadline.clone());
+                deadline
+            }
+        };
+        let next = match &replacement.successor {
+            Some(plan) => plan.clone(),
+            None => {
+                let input = plan.input.clone();
+                let seed = plan.seed.clone();
+                let configuration = self.options.configuration.clone();
+                let mut next = self
+                    .store
+                    .read(admission.clone(), &readiness, move |cx| {
+                        let mut facts = crate::runtime::start::allocate_facts()?;
+                        facts.event = seed;
+                        se_core::ops::process_plan::launch(
+                            &se_core::dispatch::Kernel::new(facts)?,
+                            input,
+                            &configuration,
+                            cx,
+                        )
+                    })
+                    .await
+                    .map_err(|failure| successor_failure(&report, failure))?;
+                if report.new_conversation {
+                    next.start_new_conversation("Forced relaunch preserved the previous history and starts a new conversation because the previous service was forcibly retired or final capture remained unavailable.".into());
+                }
+                self.preflight_relaunch(&mut next, &admission, &readiness)
+                    .await
+                    .map_err(|failure| successor_failure(&report, failure))?;
+                replacement.successor = Some(next.clone());
+                next
+            }
+        };
         // This is continuation of the already admitted self launch,
         // scoped to its newly allocated session, never owner authority.
         // Old credentials remain revoked; no later request can reuse them.
@@ -94,7 +112,7 @@ impl LaunchCoordinator {
         {
             successor_admission.session = Some(next.session.clone());
         }
-        self.launch_prepared(next, successor_admission, deadline, Some(report.clone()))
+        self.launch_prepared(next, successor_admission, &readiness, Some(report.clone()))
             .await
             .map_err(|failure| successor_failure(&report, failure))
             .map(AnyOutput::from)

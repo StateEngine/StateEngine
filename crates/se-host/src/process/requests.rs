@@ -170,7 +170,23 @@ impl LaunchCoordinator {
             if let Some(result) = ready.borrow().clone() {
                 return result.map_err(|body| SeError { body, cause: None });
             }
-            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline.at()),ready.changed()).await.map_err(|_|se_core::scope::unreadable("process request wait","the retained request continues under its original deadline; retry its original key"))?.map_err(|e|error("process request supervisor",e))?;
+            match tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline.at()),
+                ready.changed(),
+            )
+            .await
+            {
+                Ok(changed) => changed.map_err(|e| error("process request supervisor", e))?,
+                Err(_) => {
+                    // A bounded caller can rejoin the retained phase by its
+                    // original key; its timeout must remain a typed timeout.
+                    deadline.remaining()?;
+                    return Err(error(
+                        "process request wait",
+                        "the original keyed request remains retained",
+                    ));
+                }
+            }
         }
     }
 }

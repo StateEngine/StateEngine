@@ -12,6 +12,7 @@ impl LaunchCoordinator {
         self: &Arc<Self>,
         control: &ControlTarget,
         project: &se_types::ProjectId,
+        force: bool,
         deadline: &Deadline,
     ) -> Result<Option<Arc<Job>>> {
         let head = match &control.latest_process {
@@ -62,6 +63,7 @@ impl LaunchCoordinator {
             .recovery_metadata(&row, admission.clone(), deadline)
             .await?;
         let mut work = Work::recovered(meta, admission);
+        work.force_relaunch = force;
         work.active = active;
         work.activated = activated;
         work.session_retired = retired;
