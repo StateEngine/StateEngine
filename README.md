@@ -452,6 +452,14 @@ python3 scripts/release/assemble.py --build /absolute/path/new-build \
   --out /absolute/path/new-archive
 ```
 
+The release builder removes symbol tables and debug sections with the pinned
+compiler's `rust-objcopy`, then checks the resulting executable and hashes those
+final bytes. Linux keeps a separate `.debug` file; an emitted Windows PDB is
+retained when available. Assembly writes retained diagnostics beside the archive
+in its `.symbols` directory, bound to the source commit and executable hash.
+These files stay out of the installer payload. macOS archives are stripped too;
+a separate native symbol bundle is not produced by this build.
+
 Build each companion on its matching native platform from the same commit and
 release inputs. Remote-enabled archives include every supported destination's
 executable and notices; assembly refuses missing or mismatched companion builds.
