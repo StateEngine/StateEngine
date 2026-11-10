@@ -275,7 +275,9 @@ def main():
     server.daemon_threads = True
     server.socket = context.wrap_socket(server.socket, server_side=True)
     server.timeout = 0.1
-    (args.root / "ready.json").write_text(json.dumps({"port": server.server_port}))
+    ready = args.root / "ready.new"
+    ready.write_text(json.dumps({"port": server.server_port}))
+    ready.replace(args.root / "ready.json")
     try:
         while not (args.root / "stop").exists():
             server.handle_request()
