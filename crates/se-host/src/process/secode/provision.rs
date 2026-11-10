@@ -37,7 +37,16 @@ impl LaunchCoordinator {
             permission["webfetch"] = json!("deny");
             permission["websearch"] = json!("deny");
         }
-        let value = json!({
+        let protect_git = matches!(
+            request.policy.writes,
+            se_proc::WritePolicy::Workspace { .. }
+        ) && !self
+            .options
+            .configuration
+            .profiles
+            .get(&request.profile.named_profile)
+            .is_some_and(|profile| profile.git_write);
+        let mut value = json!({
             "sandbox": {"enabled":!matches!(request.policy.writes, se_proc::WritePolicy::NamedUnrestricted { .. }), "network":request.policy.network == se_proc::NetworkPolicy::Allow, "writable_roots":roots},
             "permission":permission,
             "mcp":{"stateengine":{
@@ -48,6 +57,9 @@ impl LaunchCoordinator {
                 "environment":{"STATEENGINE_PROJECT_ID":request.identity.project,"STATEENGINE_AGENT_ID":request.identity.agent,"SECODE_SESSION_ID":service.journal.vendor_session},
             }},
         });
+        if protect_git {
+            value["sandbox"]["git_metadata_read_only"] = json!(true);
+        }
         let bytes = zeroize::Zeroizing::new(
             serde_json::to_vec(&value).map_err(|e| error("SE Code policy encoding", e))?,
         );
@@ -117,7 +129,48 @@ impl LaunchCoordinator {
             })
             .await?;
         service.journal.previous_policy_sha256 = None;
-        service.persist(self, deadline).await
+        service.persist(self, deadline).await?;
+        if protect_git {
+            let server = self
+                .secode
+                .images(&request.executable.to_local()?)?
+                .lock()
+                .map_err(|_| error("SE Code sandbox policy", "poisoned selected images"))?
+                .server
+                .clone();
+            let profile = service.journal.profile.to_local()?;
+            let directory = request.cwd.to_local()?;
+            let observed = crate::harness::secode_process::sandbox::inspect(
+                &server, &profile, &directory, deadline,
+            )
+            .await?;
+            let mut expected = vec![directory, profile.with_extension("scratch")];
+            if let se_proc::WritePolicy::Workspace { roots, .. } = &request.policy.writes {
+                expected.extend(roots.iter().cloned());
+            }
+            let expected = self
+                .store
+                .pool
+                .run_owned(deadline, move || {
+                    let mut roots = expected
+                        .into_iter()
+                        .map(|path| {
+                            se_proc::canonicalize_path(&path)
+                                .map_err(|cause| error("SE Code saved writable root", cause))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    roots.sort();
+                    roots.dedup();
+                    Ok(roots)
+                })
+                .await?;
+            crate::harness::secode_process::sandbox::verify(
+                &observed,
+                &expected,
+                request.policy.network == se_proc::NetworkPolicy::Allow,
+            )?;
+        }
+        Ok(())
     }
     pub(super) async fn provision_secode(
         &self,

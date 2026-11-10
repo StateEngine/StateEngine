@@ -138,10 +138,20 @@ pub async fn command(
     arguments: &[OsString],
     deadline: &Deadline,
 ) -> Result<Vec<u8>> {
+    command_with_environment(executable, arguments, &[], deadline).await
+}
+
+pub(crate) async fn command_with_environment(
+    executable: &Path,
+    arguments: &[OsString],
+    environment: &[(OsString, OsString)],
+    deadline: &Deadline,
+) -> Result<Vec<u8>> {
     let mut child = tokio::process::Command::new(executable)
         .args(arguments)
         .env_clear()
         .envs(super::provider_environment())
+        .envs(environment.iter().cloned())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

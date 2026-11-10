@@ -189,15 +189,6 @@ impl LaunchCoordinator {
             .profiles
             .get(&plan.profile.named_profile)
             .is_some_and(|profile| profile.git_write);
-        if matches!(
-            plan.resolved.sandbox,
-            se_core::config_policy::EffectiveSandbox::WorkspaceWrite
-        ) && !git_write
-        {
-            return Err(crate::harness::secode_process::incompatible(
-                "the selected service cannot preserve the saved read-only repository-metadata policy with ordinary workspace shell writes; use a read-only profile or wait for a compatible service policy",
-            ));
-        }
         if !matches!(
             plan.resolved.approval,
             se_core::config_policy::Approval::Never
@@ -237,6 +228,20 @@ impl LaunchCoordinator {
                 super::launch_util::call(self.store.generation, deadline)?,
             )
             .await?;
+        if matches!(
+            plan.resolved.sandbox,
+            se_core::config_policy::EffectiveSandbox::WorkspaceWrite
+        ) && !git_write
+        {
+            let server = self
+                .secode
+                .images(&executable)?
+                .lock()
+                .map_err(|_| error("SE Code sandbox capability", "poisoned selected images"))?
+                .server
+                .clone();
+            crate::harness::secode_process::sandbox::require_capability(&server, deadline).await?;
+        }
         if !plan.replayed
             && matches!(plan.conversation, se_types::Read::Present { .. })
             && !self
