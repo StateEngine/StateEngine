@@ -223,10 +223,18 @@ pub(super) fn finish(
     let command = AgentCommand::launch_in_home(&agent.id, &cx.home, &id, false)
         .ok_or_else(|| scope::unreadable("first launch command", AgentCommand::HOME_UNAVAILABLE))?;
     let node_source = repository.path.join(".stateengine/projects.jsonl");
-    let import_hint=match se_proc::NativeSourcePin::open(&node_source) {
-        Ok(Some(_))=>Some("Node history detected. Preserve an immutable source copy, then run se import --from-node PATH.".into()),
-        Ok(None)=>None,
-        Err(error)=>Some(format!("Node history could not be inspected: {error}; preserve its source before importing.")),
+    let import_hint = if cfg!(feature = "import") {
+        match se_proc::NativeSourcePin::open(&node_source) {
+            Ok(Some(_)) => {
+                Some("Node history detected. Preserve an immutable source copy, then run se import --from-node PATH.".into())
+            }
+            Ok(None) => None,
+            Err(error) => {
+                Some(format!("Node history could not be inspected: {error}; preserve its source before importing."))
+            }
+        }
+    } else {
+        None
     };
     Ok(InitOutput {
         import_hint,

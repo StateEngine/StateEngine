@@ -338,7 +338,7 @@ Attach, pending echo, live output and reconnect timings are not yet measured.
 
 ## Optional migration from the older Node implementation
 
-New users can skip this section. `se import --help` lists the migration options.
+New users can skip this section. `se import` is only present in builds compiled with the opt-in `import` cargo feature (off by default); `se import --help` lists the migration options.
 For source-owner selection, read `owner_human_id` in the retained source copy's
 `.stateengine/projects.jsonl` and match it to `human_id` in
 `.stateengine/humans.jsonl`; a display name is not an identity. Target human IDs
