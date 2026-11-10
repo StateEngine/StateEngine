@@ -265,6 +265,8 @@ host and agents continue. Run `remote add` again to reconnect. `remote forget
 remote work. Ordinary return-mail routing and independent agent revocation
 are planned separately.
 
+Attach, pending echo, live output and reconnect timings are not yet measured.
+
 ## Optional migration from the older Node implementation
 
 New users can skip this section. `se import --help` lists the migration options.
