@@ -45,70 +45,71 @@ defaults:
 jobs:
   changes:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.job != 'macos' }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
+    container:
+      image: ${{ vars.LINUX_CI_RUNNER != '' && 'stateengine-ci-approved' || '' }}
+      env:
+        CI_SOURCE_TOKEN: ${{ github.token }}
     timeout-minutes: 3
     outputs:
-      rust: ${{ steps.detect.outputs.rust }}
-      windows: ${{ steps.detect.outputs.windows }}
+      rust: ${{ steps.detect.outputs.rust || steps.detect-hosted.outputs.rust }}
+      windows: ${{ steps.detect.outputs.windows || steps.detect-hosted.outputs.windows }}
     steps:
       - uses: actions/checkout@v4
+        if: ${{ runner.environment != 'self-hosted' }}
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Detect changes (unresolved diffs run everything)
-        id: detect
+        if: ${{ runner.environment != 'self-hosted' }}
+        id: detect-hosted
         run: python scripts/ci/changes.py
+
+      - name: Check every platform conservatively on the box
+        if: ${{ runner.environment == 'self-hosted' }}
+        id: detect
+        run: stateengine-ci changes
 
   linux-route:
     needs: changes
     if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
+    container:
+      image: ${{ vars.LINUX_CI_RUNNER != '' && 'stateengine-ci-approved' || '' }}
+      env:
+        CI_SOURCE_TOKEN: ${{ github.token }}
     timeout-minutes: 3
-    permissions:
-      contents: read
-      actions: read
-      checks: read
     outputs:
-      route: ${{ steps.route.outputs.route }}
+      route: ${{ steps.route.outputs.route || steps.route-hosted.outputs.route }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Select box or bounded hosted fallback
+      - name: Select the complete hosted Linux path
+        if: ${{ runner.environment != 'self-hosted' }}
+        id: route-hosted
+        run: echo 'route=hosted' >> "$GITHUB_OUTPUT"
+      - name: Select the registered box runner
+        if: ${{ runner.environment == 'self-hosted' }}
         id: route
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BOX_CI_ENABLED: ${{ vars.BOX_CI_ENABLED }}
-          BOX_CI_APP_ID: ${{ vars.BOX_CI_APP_ID }}
-          BOX_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: python scripts/ci/box.py route
+        run: stateengine-ci route
 
   linux-box:
     needs: [changes, linux-route]
     if: ${{ !cancelled() && needs.linux-route.result == 'success' && needs.linux-route.outputs.route == 'box' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 27
-    permissions:
-      contents: read
-      actions: read
-      checks: read
+    runs-on: ${{ fromJSON(vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
+    container:
+      image: stateengine-ci-approved
+      env:
+        CI_SOURCE_TOKEN: ${{ github.token }}
+    timeout-minutes: 60
     outputs:
       status: ${{ steps.box.outputs.status }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Read the exact App-owned result (25-minute infrastructure bound)
+      - name: Run the full Linux chain in isolated containers
         id: box
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BOX_CI_APP_ID: ${{ vars.BOX_CI_APP_ID }}
-          BOX_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: python scripts/ci/box.py wait
+        run: stateengine-ci linux
 
   fmt:
     needs: [changes, linux-route, linux-box]
-    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' && (needs.linux-route.outputs.route != 'box' || needs.linux-box.outputs.status == 'unavailable' || (needs.linux-box.result == 'failure' && needs.linux-box.outputs.status == '')) }}
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' && vars.LINUX_CI_RUNNER == '' && (needs.linux-route.outputs.route != 'box' || needs.linux-box.outputs.status == 'unavailable' || (needs.linux-box.result == 'failure' && needs.linux-box.outputs.status == '')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
@@ -347,13 +348,24 @@ jobs:
     name: check
     if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.job == 'macos') }}
     needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
+    container:
+      image: ${{ vars.LINUX_CI_RUNNER != '' && 'stateengine-ci-approved' || '' }}
+      env:
+        CI_SOURCE_TOKEN: ${{ github.token }}
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@v4
+        if: ${{ runner.environment != 'self-hosted' }}
         with:
           persist-credentials: false
       - name: Require all applicable jobs
+        if: ${{ runner.environment != 'self-hosted' }}
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: python scripts/ci/check.py
+      - name: Require all applicable jobs on the box
+        if: ${{ runner.environment == 'self-hosted' }}
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: stateengine-ci check
