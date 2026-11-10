@@ -1,15 +1,15 @@
-"""Summarize independent journey receipts without changing their verdicts."""
+"""Summarize independent receipts; incomplete evidence never becomes a pass."""
 import json
 import math
 from pathlib import Path
 
 PLATFORMS = ("linux", "win32", "darwin")
 NAMES = ("Install", "Adopt", "Come back", "Two agents", "Remove")
-# Labels belong to the independent judge. Retain its limits and raw receipts;
-# the scheduler never substitutes its own acceptance thresholds.
+FIRST_HOUR = ("Install", "Adopt", "Work", "Restart and recall", "Remove")
+SELECTIONS = {"first-hour": ("first-hour", {1, 2, 3, 4, 5}),
+              "wave-2": ("rust-wave-2", {1, 2, 3, 5})}
 LABELS = {
-    "B1": ("embedded A/B",),
-    "B2": ("embedded A/B",),
+    "B1": ("embedded A/B",), "B2": ("embedded A/B",),
     "B3": ("standalone persistent processes", "persistent processes after 1 seat(s)",
            "persistent processes after 2 seat(s)", "embedded A/B"),
     "B4": ("standalone RSS one session", "W5 post-task RSS journey 2",
@@ -19,8 +19,7 @@ LABELS = {
     "B7": ("CLI --version", "CLI contextual read verbs"),
     "B8": ("host restart re-adoption",),
     "B9": ("CLI writes through running host", "in-session kept-open writes",
-           "Claude stop hook through running host"),
-    "FULL": (),
+           "Claude stop hook through running host"), "FULL": (),
 }
 
 
@@ -39,7 +38,6 @@ def read(path):
 
 
 def numbers(value, prefix=""):
-    """Keep numeric paths, including raw samples, but exclude process identities."""
     if type(value) in (int, float):
         return {prefix: value} if math.isfinite(value) else {}
     if isinstance(value, list):
@@ -53,7 +51,6 @@ def numbers(value, prefix=""):
 
 
 def budget_numbers(budget, row):
-    raw = numbers(row)
     selectors = {
         "B1": ("rss_bytes",), "B2": ("startup_ms", "first_request", "bound_ms"),
         "B3": ("count", "added_processes"), "B4": ("rss_bytes",),
@@ -61,125 +58,180 @@ def budget_numbers(budget, row):
         "B7": ("reads",), "B8": ("readoption", "readopt", "cutover", "elapsed_ms"),
         "B9": ("writes", "samples", "p95", "ceiling_ms"), "FULL": (),
     }
-    return {path: value for path, value in raw.items()
+    return {path: value for path, value in numbers(row).items()
             if any(part in path for part in selectors[budget])
             and (budget not in {"B2", "B7", "B9"} or path.endswith(("_ms", ".ms")))}
 
 
+def invocation(inv, directory):
+    mode, expected = SELECTIONS.get(inv.get("selection"), ("unsupported", set(range(1, 6))))
+    entry = {**inv, "mode": mode, "expected": sorted(expected), "results": [],
+             "receipt_complete": False, "outcome": "UNKNOWN", "problems": [],
+             "judge_outcome": "FAIL" if type(inv.get("exit")) is int and inv["exit"] != 0
+                              else "PASS" if type(inv.get("exit")) is int and inv["exit"] == 0 else "UNKNOWN"}
+    receipt, error = read(directory / inv["output"] / "results.json")
+    if error:
+        entry["problems"].append("results.json: " + error)
+        return entry
+    scope = receipt.get("scope")
+    rows = receipt.get("results")
+    if (receipt.get("platform") != inv.get("platform") or receipt.get("implementation") != "rust"
+            or not isinstance(scope, dict) or scope.get("mode") != mode or mode == "unsupported"):
+        entry["problems"].append("identity, selection or scope mismatch")
+        return entry
+    if (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
+            or any(type(row.get("journey")) is not int or row.get("result") not in ("PASS", "FAIL") for row in rows)
+            or {row["journey"] for row in rows} != expected or len(rows) != len(expected)):
+        entry["problems"].append("incomplete or invalid journey rows")
+        return entry
+    cleanup = receipt.get("cleanup") if mode == "first-hour" else [row.get("cleanup") for row in rows]
+    cleanup_known = isinstance(cleanup, list) and (mode == "first-hour" or all(isinstance(x, list) for x in cleanup))
+    cleanup_failed = bool(cleanup) if mode == "first-hour" else any(cleanup) if cleanup_known else False
+    qualification = receipt.get("qualification")
+    budget = receipt.get("budgets")
+    qualified = (isinstance(qualification, str) and isinstance(budget, dict)
+                 and (qualification.startswith("Five behavior checks only;") if mode == "first-hour"
+                      else qualification == "see journey scope and required budgets"))
+    budget_artifact, budget_error = read(directory / inv["output"] / "budgets.json") if mode != "first-hour" else ({}, None)
+    if mode != "first-hour" and (budget_error or budget_artifact.get("profile") != "rust"
+                                or not isinstance(budget_artifact.get("measurements"), list)
+                                or any(not isinstance(row, dict) or not isinstance(row.get("label"), str)
+                                       or type(row.get("passed")) is not bool for row in budget_artifact["measurements"])):
+        entry["problems"].append("budget artifact unavailable or invalid: " + str(budget_error))
+        budget_error = budget_error or "invalid budget artifact"
+    if mode != "first-hour" and not budget_error:
+        required = budget.get("required") if isinstance(budget, dict) else None
+        labels = {row["label"] for row in budget_artifact["measurements"]}
+        if (not isinstance(required, list) or not required or any(not isinstance(label, str) for label in required)
+                or not set(required).issubset(labels)
+                or budget.get("passed") is True and any(row["passed"] is not True for row in budget_artifact["measurements"])):
+            budget_error = "required measurement coverage or verdict differs from the receipt"
+            entry["problems"].append(budget_error)
+    entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification,
+                 receipt_complete=budget_error is None and cleanup_known and qualified)
+    code = inv.get("exit")
+    if type(code) is not int or inv.get("error") or inv.get("state") in {"planned", "running", "timed-out"}:
+        entry["problems"].append(inv.get("error", "judge exit not witnessed"))
+    elif code != 0 or cleanup_failed or any(row["result"] == "FAIL" for row in rows):
+        entry["outcome"] = "FAIL"
+        entry["problems"].append(f"judge exit={code}; cleanup_failed={cleanup_failed}; failed_rows=" +
+                                 str([row["journey"] for row in rows if row["result"] == "FAIL"]))
+    elif not cleanup_known or not qualified or budget_error:
+        entry["problems"].append("cleanup or qualification unavailable")
+    elif mode != "first-hour" and budget.get("passed") is not True:
+        entry["outcome"] = "FAIL"
+        entry["problems"].append("required budgets did not pass")
+    else:
+        entry["outcome"] = "PASS"
+    return entry
+
+
 def summarize(run, directory):
-    """Each entry names a fresh invocation and its observed exit, never a latest file."""
-    grid = {platform: [] for platform in PLATFORMS}
-    budgets = {key: [] for key in LABELS}
-    problems = list(run.get("errors", []))
-    for invocation in run.get("invocations", []):
-        root = directory / invocation["output"]
-        receipt, error = read(root / "results.json")
-        platform = invocation["platform"]
-        if platform not in grid:
-            problems.append(f"unsupported platform {platform}")
+    entries = [invocation(inv, directory) for inv in run.get("invocations", [])]
+    errors = list(run.get("errors", []))
+    errors += [f"{entry['output']}: {problem}" for entry in entries for problem in entry["problems"]]
+    terminal = all(entry["receipt_complete"] and entry["outcome"] != "UNKNOWN" for entry in entries)
+    complete = bool(entries) and terminal and run.get("state") == "finished" and not run.get("errors")
+    outcome = "FAIL" if run.get("errors") or any(entry["judge_outcome"] == "FAIL" or entry["outcome"] == "FAIL" for entry in entries) else "UNKNOWN"
+    if complete and all(entry["outcome"] == "PASS" for entry in entries):
+        outcome = "PASS"
+    status = {"state": "complete" if complete else "partial", "complete": complete, "outcome": outcome,
+              "producer_state": run.get("state", "unavailable"), "errors": errors, "notes": run.get("annotations", [])}
+    tables = []
+    for mode in sorted({entry["mode"] for entry in entries} or {"unavailable"}):
+        rows = []
+        for number, name in enumerate(FIRST_HOUR if mode == "first-hour" else NAMES, 1):
+            cells = {}
+            for platform in PLATFORMS:
+                expected = [entry for entry in entries if entry.get("platform") == platform
+                            and entry["mode"] == mode and number in entry["expected"]]
+                # A missing/crashed surface remains in its planned mode. It can
+                # never disappear behind another surface's passing rows.
+                evidence = [{"surface": entry["surface"], "output": entry["output"],
+                    "invocation_outcome": entry["outcome"], "exit": entry.get("exit"),
+                    "problems": entry["problems"], "row": next((row for row in entry["results"]
+                        if row["journey"] == number), None)} for entry in expected]
+                values = [entry["outcome"] for entry in expected]
+                state = "NOT RUN" if not expected else "FAIL" if "FAIL" in values else "UNKNOWN"
+                if expected and all(value == "PASS" for value in values) and complete:
+                    state = "PASS"
+                cells[platform] = {"state": state, "evidence": evidence}
+            rows.append({"journey": number, "name": name, "platforms": cells})
+        tables.append({"mode": mode, "rows": rows})
+    slots = {key: [] for key in LABELS}
+    for entry in entries:
+        if not entry["receipt_complete"]:
             continue
-        entry = {"output": invocation["output"], "exit": invocation.get("exit"),
-                 "surface": invocation["surface"], "selection": invocation["selection"],
-                 "state": error or "readable", "results": []}
-        if error:
-            problems.append(f"{invocation['output']}/results.json: {error}")
-        elif receipt.get("platform") != platform or receipt.get("implementation") != "rust":
-            entry["state"] = "identity mismatch"
-            problems.append(f"{invocation['output']}: receipt platform/implementation mismatch")
-        else:
-            entry.update(scope=receipt.get("scope"), results=receipt.get("results", []),
-                         cleanup=receipt.get("cleanup"), qualification=receipt.get("qualification"))
-        if entry["state"] == "readable":
-            rows = entry["results"]
-            expected = {"first-hour": {1, 2, 3, 4, 5}, "wave-2": {1, 2, 3, 5}}.get(invocation["selection"])
-            if (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
-                    or expected is not None and ({row.get("journey") for row in rows} != expected
-                                               or len(rows) != len(expected))):
-                entry["state"] = "incomplete or invalid journey rows"
-                entry["results"] = []
-                problems.append(f"{invocation['output']}: incomplete or invalid journey rows")
-        grid[platform].append(entry)
-        if entry["state"] != "readable":
+        measured, error = read(directory / entry["output"] / "budgets.json")
+        if error == "absent":
             continue
-        measured, error = read(root / "budgets.json")
-        if measured is None:
-            if error != "absent":
-                problems.append(f"{invocation['output']}/budgets.json: {error}")
-            continue
-        if measured.get("profile") != "rust":
-            problems.append(f"{invocation['output']}/budgets.json: profile mismatch")
+        if error or measured.get("profile") != "rust" or not isinstance(measured.get("measurements"), list):
+            errors.append(entry["output"] + "/budgets.json: " + (error or "invalid profile/measurements"))
+            status.update(state="partial", complete=False, outcome="UNKNOWN" if outcome == "PASS" else outcome)
             continue
         for budget, labels in LABELS.items():
-            for row in measured.get("measurements", []):
-                if row.get("label") not in labels:
+            for row in measured["measurements"]:
+                if not isinstance(row, dict) or row.get("label") not in labels:
                     continue
                 numeric = budget_numbers(budget, row)
-                budgets[budget].append({"output": invocation["output"], "platform": platform,
-                    "surface": invocation["surface"], "label": row["label"],
-                    "state": "measured" if numeric else row.get("state", "unavailable"),
-                    "numbers": numeric, "probe_passed": row.get("passed"),
-                    "reason": row.get("reason"), "limits": measured.get("limits")})
-    # Keep the two different meanings of row 4 separate. A sequential first-hour
-    # restart check cannot qualify the full two-agent messaging journey.
-    modes = sorted({entry.get("scope", {}).get("mode", "unavailable")
-                    for entries in grid.values() for entry in entries})
-    tables = []
-    for mode in modes or ["full"]:
-        rows = []
-        for number, name in enumerate(NAMES, 1):
-            cells = {}
-            for platform, entries in grid.items():
-                evidence = [{"surface": entry["surface"], "output": entry["output"],
-                             "result": row.get("result"), "reason": row.get("reason")}
-                            for entry in entries if entry.get("scope", {}).get("mode") == mode
-                            for row in entry["results"] if row.get("journey") == number]
-                cells[platform] = {"state": "FAIL" if any(e["result"] != "PASS" for e in evidence)
-                    else "PASS" if evidence else "NOT RUN", "evidence": evidence}
-            rows.append({"journey": number, "name": name if mode != "first-hour" else f"First-hour step {number}",
-                         "platforms": cells})
-        tables.append({"mode": mode, "rows": rows})
+                slots[budget].append({"output": entry["output"], "surface": entry["surface"],
+                    "label": row["label"], "numbers": numeric,
+                    "sample_state": "observed" if numeric else row.get("state", "unavailable"),
+                    "probe_result": "PASS" if row.get("passed") is True else "FAIL" if row.get("passed") is False else "UNKNOWN",
+                    "invocation_outcome": entry["outcome"], "reason": row.get("reason"), "limits": measured.get("limits")})
     gaps = [f"{key}: {label}" for key, labels in LABELS.items() for label in labels
-            if not any(row["label"] == label and row["numbers"] for row in budgets[key])]
-    gaps += ["FULL: independent FULL-write probe unavailable",
-             "Codex budgets: first-hour behavior selection measures no performance budgets"]
-    return {"schema": "se.nightly-proof/v1", "product": run.get("product"), "judge": run.get("judge"),
-            "started_at": run["started_at"], "tables": tables,
-            "budgets": [{"id": key, "state": "measured" if any(r["numbers"] for r in rows)
-                         else "NOT MEASURED", "probes": rows} for key, rows in budgets.items()],
-            "errors": problems, "gaps": gaps, "invocations": grid}
+            if not any(row["label"] == label and row["numbers"] for row in slots[key])]
+    gaps += ["FULL: independent FULL-write probe unavailable", "Codex budgets: first-hour selection measures no budgets"]
+    budgets = []
+    for key, probes in slots.items():
+        missing = any(gap.startswith(key + ":") for gap in gaps)
+        state = "NOT MEASURED" if not any(p["numbers"] for p in probes) else "UNQUALIFIED"
+        if any(p["probe_result"] == "FAIL" for p in probes):
+            state = "FAIL"
+        elif not missing and probes and all(p["probe_result"] == "PASS" and p["invocation_outcome"] == "PASS" for p in probes):
+            state = "PASS"
+        budgets.append({"id": key, "state": state, "probes": probes})
+    return {"schema": "se.nightly-proof/v2", "started_at": run["started_at"], "status": status,
+            "product": run.get("product"), "judge": run.get("judge"), "tables": tables,
+            "budgets": budgets, "gaps": gaps, "invocations": entries}
 
 
-def markdown(report):
+def grid(report):
+    status = report["status"]
     lines = [f"Rust nightly proof — {report['started_at']}", "",
-             f"Product: `{(report.get('product') or {}).get('commit', 'unavailable')}`", ""]
+             f"Run: {status['state'].upper()}; outcome: {status['outcome']}; producer: {status['producer_state']}",
+             f"Product: `{(report.get('product') or {}).get('commit', 'unavailable')}`",
+             f"Judge: `{(report.get('judge') or {}).get('commit', 'unavailable')}`", "",
+             "PASS requires the whole judge invocation to exit zero with complete receipts, clean cleanup and supported qualification.",
+             "UNKNOWN means the configured observation is unavailable; NOT RUN means this platform/journey was not configured.", ""]
     for table in report["tables"]:
-        lines += [f"Scope: {table['mode']}", "", "| Journey | Linux | Windows | macOS |",
-                  "| --- | --- | --- | --- |"]
+        lines += [f"Scope: {table['mode']}", "", "| Journey | Linux | Windows | macOS |", "| --- | --- | --- | --- |"]
         for row in table["rows"]:
-            lines.append("| " + row["name"] + " | " + " | ".join(
-                row["platforms"][platform]["state"] for platform in PLATFORMS) + " |")
+            lines.append("| " + row["name"] + " | " + " | ".join(row["platforms"][p]["state"] for p in PLATFORMS) + " |")
         lines.append("")
-    lines += ["Numbers and all raw samples: budgets.json and each invocation's budgets.json.", "",
-              "| Budget | Measurement |", "| --- | --- |"]
-    for budget in report["budgets"]:
-        numeric = [f"{probe['surface']} {path}={value}" for probe in budget["probes"]
-                   for path, value in probe["numbers"].items() if "samples[" not in path]
-        lines.append(f"| {budget['id']} | " + ("; ".join(numeric) if numeric else "NOT MEASURED") + " |")
-    lines += ["", "Named gaps:", *[f"- {gap}" for gap in report["gaps"]]]
-    if report["errors"]:
-        lines += ["", "Invocation errors:", *[f"- {error}" for error in report["errors"]]]
+    if status.get("notes"):
+        lines += ["Record corrections:", *[f"- {note}" for note in status["notes"]], ""]
+    if status["errors"]:
+        lines += ["Run issues:", *[f"- {error}" for error in status["errors"]], ""]
     return "\n".join(lines) + "\n"
 
 
 def publish(directory):
     run, error = read(directory / "run.json")
     if error:
-        raise RuntimeError(f"run.json: {error}")
+        raise RuntimeError("run.json: " + error)
     report = summarize(run, directory)
-    (directory / "report.json").write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
-    (directory / "report.md").write_text(markdown(report))
-    (directory / "grid.md").write_text(markdown(report).split("Numbers and all raw samples:")[0])
-    (directory / "budgets.json").write_text(json.dumps({"schema": "se.nightly-budgets/v1",
-        "started_at": report["started_at"], "product": report["product"], "judge": report["judge"],
-        "budgets": report["budgets"], "gaps": report["gaps"]}, indent=2, allow_nan=False) + "\n")
+    status = report["status"]
+    for name, value in [("report.json", report), ("budgets.json", {"schema": "se.nightly-budgets/v2",
+        "started_at": report["started_at"], "status": status, "product": report["product"],
+        "judge": report["judge"], "budgets": report["budgets"], "gaps": report["gaps"]})]:
+        temporary = directory / (name + ".tmp")
+        temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+        temporary.replace(directory / name)
+    text = grid(report)
+    temporary = directory / "grid.md.tmp"
+    temporary.write_text(text)
+    temporary.replace(directory / "grid.md")
+    (directory / "report.md").write_text(text + "\nNumbers and raw samples: budgets.json and original judge receipts.\n\nNamed gaps:\n" +
+        "\n".join("- " + gap for gap in report["gaps"]) + "\n")
     return report
