@@ -66,6 +66,12 @@ impl Deadline {
             cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
+    /// Include the producer notification before any supervisor scheduling delay.
+    #[cfg(feature = "listener")]
+    pub(crate) fn observed_since(mut self, observed_at: Instant) -> Self {
+        self.started = self.started.min(observed_at);
+        self
+    }
     pub fn at(&self) -> Instant {
         self.at
     }
