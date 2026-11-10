@@ -429,6 +429,9 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(positional("name", 1, true).help("Name for the new saved agent"))
             .arg(value("provider").value_parser(["claude", "codex", "secode", "acp"]).help("Provider for the new agent: claude, codex, secode or acp"))
             .arg(value("model").help("Model for the new agent")),
+        "agent.rename" => c
+            .arg(positional("agent", 1, true).help("Saved agent name or ID to rename"))
+            .arg(positional("name", 2, true).help("New display name for the saved agent")),
         "decision.list" => c
             .arg(value("id").help("One decision ID"))
             .arg(toggle("pending").help("Only proposals awaiting an owner outcome"))

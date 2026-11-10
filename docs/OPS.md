@@ -228,7 +228,7 @@ The CLI retains replacement hints only for commands with a supported replacement
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 52 operations (46 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). Planned: 12 operations, 4 MCP tools.
+Registered: 53 operations (47 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). Planned: 11 operations, 4 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -267,6 +267,7 @@ Registered: 52 operations (46 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). P
 | `runtime.down` | down | none | owner | custody |
 | `installation.uninstall` | uninstall | none | owner | custody |
 | `agent.create` | agent add | `stateengine_agent_create` | either | write |
+| `agent.rename` | agent rename | none | owner | write |
 | `continuity.resume` | resume | `stateengine_resume` | either | read |
 | `session.context` | session context (hidden) | none | session | read |
 | `agent.list` | agent list | none | owner | read |
@@ -285,7 +286,7 @@ Registered: 52 operations (46 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). P
 | `decision.retract` | decision retract | none | owner | write |
 | `decision.supersede` | decision supersede | none | owner | write |
 
-Planned operations (design tables, not yet registered): `agent.rename`, `agent.wake`, `credential.rotate`, `doctor.bundle`, `history.search`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
+Planned operations (design tables, not yet registered): `agent.wake`, `credential.rotate`, `doctor.bundle`, `history.search`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
 
 Planned MCP tools: `stateengine_agent_status`, `stateengine_agent_wake`, `stateengine_search`, `stateengine_session_turn`
 

@@ -9,7 +9,7 @@ use se_core::{
     admission::HumanTerminal,
     commit::{Cx, OpStep},
     dispatch::{CallFacts, Kernel},
-    ops::{AgentCreate, AnyOp, ConfigSet, DecisionPropose},
+    ops::{AgentCreate, AgentRename, AnyOp, ConfigSet, DecisionPropose},
     ports::Then,
 };
 use se_store::*;
@@ -39,6 +39,27 @@ fn setup() -> Outcome<(Fixture, SqliteDirect, Arc<Lease>)> {
                 created_by: None,
                 name: "Owner".into(),
                 role: "owner".into(),
+                expected: Expected::Absent,
+            }],
+        )?,
+        &*lease,
+    )?;
+    store.append(
+        f.batch(
+            f.owner_project(),
+            Some(fixture::request(&format!(
+                "fixture-core_policy-profile-{}",
+                serial()
+            ))?),
+            vec![EventBody::ProfileSaved {
+                agent: f.a.clone(),
+                profile: Profile {
+                    provider: Provider::Codex,
+                    model: None,
+                    permission: PermissionProfile::WorkspaceWrite,
+                    named_profile: "workspace-write".into(),
+                    effort: None,
+                },
                 expected: Expected::Absent,
             }],
         )?,
@@ -121,6 +142,11 @@ fn receipt_case(family: &str) -> Check {
             value: "true".into(),
             idempotency_key: key.clone(),
         }),
+        "rename" => AnyOp::AgentRename(AgentRename {
+            agent: f.a.to_string(),
+            name: "receipt-agent-two".into(),
+            idempotency_key: key.clone(),
+        }),
         _ => return Err("unknown receipt family".into()),
     };
     let kernel = kernel()?;
@@ -171,6 +197,11 @@ fn agent_receipt_uses_the_original_request() -> Check {
 #[test]
 fn config_receipt_uses_the_original_request() -> Check {
     receipt_case("config")
+}
+/// Protects: rename receipts keep the original request, resolve the target through the saved identity and refuse mismatched or incomplete continuations.
+#[test]
+fn rename_receipt_uses_the_original_request() -> Check {
+    receipt_case("rename")
 }
 
 fn clean(command: &mut Command) {

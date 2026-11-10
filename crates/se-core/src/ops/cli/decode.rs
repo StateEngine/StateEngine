@@ -312,6 +312,11 @@ pub fn from_matches_with_key(
             model: text(m, "model"),
             idempotency_key: key()?,
         }),
+        "agent.rename" => AnyOp::AgentRename(AgentRename {
+            agent: required(m, "agent")?,
+            name: required(m, "name")?,
+            idempotency_key: key()?,
+        }),
         "decision.list" => AnyOp::DecisionList(DecisionList {
             id: text(m, "id"),
             pending: flag(m, "pending"),

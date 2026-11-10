@@ -480,6 +480,13 @@ impl Kernel {
                     then: Then::AgentCreate(then),
                 }
             }
+            AnyOp::AgentRename(input) => {
+                let (batch, then) = crate::ops::agent::rename(self, input, cx)?;
+                OpStep::Commit {
+                    batch,
+                    then: Then::AgentRename(then),
+                }
+            }
             AnyOp::DecisionPropose(input) => {
                 let (batch, then) = crate::ops::decision::propose(self, input, cx)?;
                 OpStep::Commit {
@@ -628,6 +635,9 @@ impl Kernel {
                 Ok(crate::ops::project::move_committed(then, receipt, cx)?.into())
             }
             Then::AgentCreate(then) => Ok(crate::ops::agent::committed(then, receipt, cx)?.into()),
+            Then::AgentRename(then) => {
+                Ok(crate::ops::agent::rename_committed(then, receipt, cx)?.into())
+            }
             Then::Decision(then) => Ok(crate::ops::decision::committed(then, receipt, cx)?.into()),
             Then::Capture(then) => Ok(crate::ops::hook::committed(then, receipt, cx)?.into()),
             Then::MessageMark(then) => crate::ops::message_mark::committed(cx, then, receipt),

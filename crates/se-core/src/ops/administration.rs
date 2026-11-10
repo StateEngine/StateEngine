@@ -24,6 +24,21 @@ impl Validate for AgentCreate {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRename {
+    pub agent: String,
+    pub name: String,
+    pub idempotency_key: IdempotencyKey,
+}
+impl Validate for AgentRename {
+    fn validate(&self) -> Result<()> {
+        bounded("agent selector", &self.agent, 128, false)?;
+        name("agent name", &self.name)?;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentShow {
