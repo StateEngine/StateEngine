@@ -1,7 +1,6 @@
 //! Native process contracts, protected files, owner observations and uninstall custody.
 //!
-//! See docs/design/30-process-ownership.md for normative semantics. The public
-//! process runtime and Windows provider streams share one native custody arena.
+//! The public process runtime and Windows provider streams share one native custody arena.
 //! NativeStateFiles supplies protected staging/readback/publication. Owner observations and the
 //! Windows system uninstall carrier have concrete native implementations. Native
 //! resource layouts are intentionally opaque; no handle is Clone or Default.

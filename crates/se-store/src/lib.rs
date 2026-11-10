@@ -1,5 +1,4 @@
 //! SQLite authority and bounded direct/host writer paths.
-//! Normative behavior and formats: docs/design/20-data-model.md.
 #[cfg(all(test, any(target_os = "linux", windows)))]
 extern crate self as se_store;
 mod api;

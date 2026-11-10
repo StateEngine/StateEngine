@@ -78,10 +78,15 @@ fn drain(
     for _ in 0..1000 {
         match controller.next_work() {
             NextWork::Ready => {
-                let _report =
+                let report =
                     se_host::atlas_renewal::drive_quantum(controller, Duration::from_millis(200))?
                         .ok_or("ready work absent")?;
                 steps += 1;
+                // Source work can outlast the publication delay on a busy host.
+                // Leave publication to its explicit consumer even when due now.
+                if !controller.work_pending(&report.root) {
+                    return Ok(steps);
+                }
             }
             NextWork::AfterEventDebounce(wait) if wait <= Duration::from_millis(20) => {
                 std::thread::sleep(wait + Duration::from_millis(1))
@@ -98,11 +103,14 @@ fn drain(
     Err("bounded consumer did not finish".into())
 }
 fn publish(controller: &mut Controller<NativeRuntime<NativeRenewal>>) -> Check {
-    let NextWork::AfterEventDebounce(wait) = controller.next_work() else {
-        return Err("completed source work did not arm publication".into());
-    };
-    assert!(wait <= Duration::from_secs(11));
-    std::thread::sleep(wait + Duration::from_millis(10));
+    match controller.next_work() {
+        NextWork::AfterEventDebounce(wait) => {
+            assert!(wait <= Duration::from_secs(11));
+            std::thread::sleep(wait + Duration::from_millis(10));
+        }
+        NextWork::Ready => {}
+        NextWork::Park => return Err("completed source work did not arm publication".into()),
+    }
     assert_eq!(controller.next_work(), NextWork::Ready);
     let report = se_host::atlas_renewal::drive_quantum(controller, Duration::from_millis(200))?
         .ok_or("source-armed publication absent")?;
