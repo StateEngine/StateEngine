@@ -8,6 +8,7 @@ pub(super) struct Connections {
     entries: BTreeMap<ConnectionKey, CachedConnection>,
 }
 impl Connections {
+    #[cfg(feature = "remote")]
     pub(super) fn remove_host(&mut self, host: RemoteHostId) -> Vec<Arc<dyn RemoteClient>> {
         let keys: Vec<_> = self
             .entries

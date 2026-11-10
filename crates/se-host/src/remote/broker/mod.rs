@@ -102,6 +102,7 @@ impl RemoteBroker {
             Ok(())
         }
     }
+    #[cfg(feature = "remote")]
     pub(crate) async fn disconnect(&self, host: RemoteHostId) -> Result<()> {
         let clients = self
             .connections
