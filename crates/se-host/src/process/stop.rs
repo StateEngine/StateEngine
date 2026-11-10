@@ -40,9 +40,12 @@ impl LaunchCoordinator {
                     state.cleanup_failure = Some(error.body);
                     return;
                 }
-                if state.meta.provider == se_store::Provider::SeCode
-                    && !state.active
-                    && !state.activated
+                let failed_start =
+                    !state.setup_expired && matches!(&*job.ready.borrow(), Some(Err(_)));
+                if failed_start
+                    || (state.meta.provider == se_store::Provider::SeCode
+                        && !state.active
+                        && !state.activated)
                 {
                     let result = match deadline.stage(Duration::from_secs(20)) {
                         Ok(bound) => self.cleanup_failed(&mut state, &bound).await,
@@ -54,10 +57,22 @@ impl LaunchCoordinator {
                                 self.activity
                                     .send_modify(|count| *count = count.saturating_sub(1));
                             }
+                            return;
                         }
-                        Err(error) => state.cleanup_failure = Some(error.body),
+                        Err(error) => {
+                            state.cleanup_failure = Some(error.body);
+                            let wake = state.wake.clone();
+                            drop(state);
+                            // Retain the original lifecycle and release its lock
+                            // between bounded cleanup attempts. Never replay input.
+                            monitor_wake(
+                                &wake.event,
+                                Some(tokio::time::Instant::now() + Duration::from_secs(1)),
+                            )
+                            .await;
+                            continue;
+                        }
                     }
-                    return;
                 }
                 if state.recover_provider
                     && !self.recover_control(&mut state, &job, &deadline).await
