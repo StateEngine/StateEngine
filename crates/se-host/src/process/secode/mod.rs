@@ -33,10 +33,16 @@ impl Auxiliary {
     const ALL: [Self; 3] = [Self::Bootstrap, Self::Service, Self::Retirement];
 }
 
+#[derive(Clone)]
+struct PendingSave {
+    journal: Journal,
+    expected: Option<[u8; 32]>,
+}
 pub(super) struct Service {
     journal: Journal,
     path: PathBuf,
     digest: Option<[u8; 32]>,
+    pending_save: Option<PendingSave>,
     wake: Arc<events::Wake>,
     bootstrap: Option<Arc<se_proc::OwnedProcess>>,
     process: Option<Arc<se_proc::OwnedProcess>>,
@@ -84,16 +90,34 @@ impl Service {
         coordinator: &LaunchCoordinator,
         deadline: &Deadline,
     ) -> Result<()> {
-        let journal = self.journal.clone();
+        // Reconcile the exact previous bytes before later cleanup changes the
+        // journal. Publication may have succeeded while its readback failed.
+        self.persist_pending(coordinator, deadline).await?;
+        self.pending_save = Some(PendingSave {
+            journal: self.journal.clone(),
+            expected: self.digest,
+        });
+        self.persist_pending(coordinator, deadline).await
+    }
+    async fn persist_pending(
+        &mut self,
+        coordinator: &LaunchCoordinator,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let Some(pending) = self.pending_save.clone() else {
+            return Ok(());
+        };
         let path = self.path.clone();
-        let expected = self.digest;
         self.digest = Some(
             coordinator
                 .store
                 .pool
-                .run_owned(deadline, move || journal.save(&path, expected))
+                .run_owned(deadline, move || {
+                    pending.journal.save(&path, pending.expected)
+                })
                 .await?,
         );
+        self.pending_save = None;
         Ok(())
     }
     fn checkpoint(&mut self, auxiliary: Auxiliary, kind: se_proc::CheckpointKind) {

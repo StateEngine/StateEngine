@@ -243,6 +243,53 @@ impl LaunchCoordinator {
         }
 
         work.committed = true;
+        // Retain native custody before fallible file/service preparation. The
+        // original owner must be able to prove no exec and finish its cleanup.
+        let spec = se_proc::LaunchSpec {
+            lifecycle: plan.lifecycle.clone(),
+            generation: self.options.epoch.generation,
+            executable: invocation.executable.to_local()?,
+            arguments: invocation.arguments,
+            cwd: plan.cwd.to_local()?,
+            environment: invocation.environment,
+            stdio: se_proc::StandardIo {
+                stdin: None,
+                stdout: None,
+                stderr: None,
+            },
+            mode,
+            window,
+            policy,
+            deadline: deadline.at(),
+            notifications: work.wake.clone(),
+        };
+        let native = self.native.clone();
+        let prepared = self
+            .store
+            .pool
+            .run_owned(deadline, move || {
+                native
+                    .prepare_launch(reservation, spec)
+                    .map_err(super::prepare_error)
+            })
+            .await?;
+        let owner = Arc::new(prepared.process);
+        work.process = Some(owner.clone());
+        let stored = native_record::identity(
+            &plan,
+            CheckpointKind::Scope(prepared.checkpoint.clone()),
+            None,
+            Some(prepared.checkpoint.guarantee),
+            &self.options.epoch.owner.fields().boot,
+        )?;
+        self.change(
+            work,
+            "scope-prepared",
+            stored,
+            (ProcessState::Reserved, ProcessState::Starting),
+            deadline,
+        )
+        .await?;
         self.proofs.register(
             plan.session.clone(),
             self.store.generation.get(),
@@ -293,51 +340,6 @@ impl LaunchCoordinator {
             self.secode_input_intent(&request.identity, deadline)
                 .await?;
         }
-        let spec = se_proc::LaunchSpec {
-            lifecycle: plan.lifecycle.clone(),
-            generation: self.options.epoch.generation,
-            executable: invocation.executable.to_local()?,
-            arguments: invocation.arguments,
-            cwd: plan.cwd.to_local()?,
-            environment: invocation.environment,
-            stdio: se_proc::StandardIo {
-                stdin: None,
-                stdout: None,
-                stderr: None,
-            },
-            mode,
-            window,
-            policy,
-            deadline: deadline.at(),
-            notifications: work.wake.clone(),
-        };
-        let native = self.native.clone();
-        let prepared = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
-                native
-                    .prepare_launch(reservation, spec)
-                    .map_err(super::prepare_error)
-            })
-            .await?;
-        let owner = Arc::new(prepared.process);
-        work.process = Some(owner.clone());
-        let stored = native_record::identity(
-            &plan,
-            CheckpointKind::Scope(prepared.checkpoint.clone()),
-            None,
-            Some(prepared.checkpoint.guarantee),
-            &self.options.epoch.owner.fields().boot,
-        )?;
-        self.change(
-            work,
-            "scope-prepared",
-            stored,
-            (ProcessState::Reserved, ProcessState::Starting),
-            deadline,
-        )
-        .await?;
         let io = self.io.clone();
         let identity = request.identity.clone();
         let runtime = self.store.pool.handle();

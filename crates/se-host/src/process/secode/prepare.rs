@@ -101,6 +101,7 @@ impl LaunchCoordinator {
                     journal,
                     path,
                     digest: None,
+                    pending_save: None,
                     wake: Arc::new(events::Wake::default()),
                     bootstrap: None,
                     process: None,

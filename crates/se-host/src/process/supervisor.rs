@@ -242,6 +242,10 @@ impl LaunchCoordinator {
                             }
                         };
                         owned.ready.send_replace(Some(Err(failure)));
+                        if !owned.settled.load(Ordering::Acquire) {
+                            drop(state);
+                            coordinator.monitor_protected(owned.clone()).await;
+                        }
                     }
                 }
                 }, false).await;
