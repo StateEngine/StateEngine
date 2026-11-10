@@ -84,19 +84,25 @@ impl LaunchCoordinator {
         #[cfg(unix)]
         let alias_parent = {
             let selected = executable.clone();
-            let image = self
+            let (image, script) = self
                 .store
                 .pool
                 .run_owned(deadline, move || {
-                    se_proc::canonicalize_path(&selected)
-                        .map_err(|e| error("provider alias image", e))
+                    let image = se_proc::canonicalize_path(&selected)
+                        .map_err(|e| error("provider alias image", e))?;
+                    let script = super::launch_util::script_launcher(&selected)?;
+                    Ok((image, script))
                 })
                 .await?;
-            if image == executable {
+            if script {
+                // A successful version probe does not make a script's image
+                // stable: its shebang interpreter can exec another runtime.
+                true
+            } else if image == executable {
                 false
             } else {
                 // A plain native-provider symlink qualifies through its image
-                // too. Only argv[0]-dependent multicall dispatch needs a parent.
+                // too. Multicall dispatch still needs its invoked path.
                 match harness
                     .probe(
                         ProbeRequest {
