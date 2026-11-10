@@ -50,8 +50,7 @@ impl EmbeddedFactory {
         }
     }
 }
-/// The commercial composition's constructor, with exactly the
-/// `EmbeddedFactoryBuilder` type in docs/design/commercial-factory.rs.
+/// Construct the linked host factory on the supplied runtime.
 pub fn embedded_factory(runtime: Handle) -> Arc<dyn api::HostFactory> {
     Arc::new(EmbeddedFactory::new(runtime))
 }

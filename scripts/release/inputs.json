@@ -13,8 +13,5 @@
     "x86_64-apple-darwin"
   ],
   "trust": "unsigned",
-  "api_schema_sources": [
-    "docs/design/10-types-and-host-api.md",
-    "docs/design/50-surface-and-errors.md"
-  ]
+  "api_schema_sources": []
 }

@@ -72,6 +72,9 @@ text and commit messages.
 
 ## Tests
 
+- Only user-facing docs live in this repository.
+- Never open a pull request that only changes documentation; a doc change rides with a code change.
+
 - Authors don't write the tests that judge their own change. The reviewer owns those, and a
   good one fails on the base and passes on the fix.
 - A test that breaks on an unrelated change gets fixed or removed, not re-pinned.

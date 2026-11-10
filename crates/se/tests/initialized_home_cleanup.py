@@ -2,8 +2,8 @@
 """Protects: direct-init uninstall stops owned work, retains history/identity and refuses unsafe artifacts.
 
 Linux public CLI consumer. Human-only uninstall runs in a PTY under the user's
-OS scheduler, outside the agent ancestry, as docs/design/90-test-strategy.md
-§2.1 requires. No installer manifest, paid account or manual deletion is used.
+OS scheduler, outside the agent ancestry. No installer manifest, paid account or
+manual deletion is used.
 """
 import argparse
 import fcntl

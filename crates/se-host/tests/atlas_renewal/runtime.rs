@@ -552,11 +552,31 @@ fn real_runtime_renews_watches_reconciles_and_preserves_failed_baselines() -> Ch
     println!(
         "PASS failed mapping lookup preserves a sticky scheduler reconciliation and rebuilds native coverage"
     );
-    controller.runtime().with_writer(&registration.root, deadline(), |db, _| db.write(65536, deadline(), |sql| {
-        sql.prepare("INSERT INTO pending_paths(path_key,serial) SELECT 'src/use.js',observed_serial FROM meta")?.execute([])
-            .map_err(|e| se_types::SeError::invalid("test SQL", &e.to_string()))?;
-        Ok(())
-    }))?;
+    let generation_before_close = controller.runtime().with_writer(
+        &registration.root,
+        deadline(),
+        |db, _| {
+            db.write(65536, deadline(), |sql| {
+                let (serial, generation): (i64, i64) = sql
+                    .prepare("SELECT observed_serial,index_generation FROM meta")?
+                    .query_row([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .map_err(|e| se_types::SeError::invalid("test SQL", &e.to_string()))?;
+                // Pending paths alone do not create a source batch. Arrange the batch
+                // that close must interrupt instead of relying on a prior native event.
+                se_atlas::update::batch::begin(
+                    sql,
+                    u64::try_from(serial)
+                        .map_err(|e| se_types::SeError::invalid("test serial", &e.to_string()))?,
+                    BulkReason::FilesystemBurst,
+                    true,
+                )?;
+                sql.prepare("INSERT INTO pending_paths(path_key,serial) SELECT 'src/use.js',observed_serial FROM meta")?
+                    .execute([])
+                    .map_err(|e| se_types::SeError::invalid("test SQL", &e.to_string()))?;
+                Ok(generation)
+            })
+        },
+    )?;
     controller.close(
         registration.root.clone(),
         CloseReason::HostDrain,
@@ -594,11 +614,20 @@ fn real_runtime_renews_watches_reconciles_and_preserves_failed_baselines() -> Ch
     )?;
     assert_eq!(closed_coverage.watched_directories, 0);
     assert!(!closed_coverage.watch_discovery_complete);
+    assert_eq!(
+        retained(
+            &home,
+            &registration,
+            "SELECT CAST(published_generation AS TEXT) FROM meta"
+        )?,
+        [(generation_before_close + 1).to_string()]
+    );
     let last = retained(
         &home,
         &registration,
-        "SELECT bulk_json FROM changes WHERE kind='Bulk' ORDER BY generation DESC LIMIT 1",
+        "SELECT bulk_json FROM changes WHERE kind='Bulk' AND generation=(SELECT published_generation FROM meta)",
     )?;
+    assert_eq!(last.len(), 1);
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&last[0])?["complete"],
         false

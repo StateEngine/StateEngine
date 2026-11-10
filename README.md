@@ -9,8 +9,7 @@ lets assistants exchange project messages. The `se` command manages those assist
 The first-agent workflow below is for **Linux x86_64** and **Windows x86_64**.
 **macOS cannot run the background service or launch managed agents in this alpha**;
 those commands refuse. macOS packages support installation and saved-state inspection,
-but are not a working first-agent path. Native macOS qualification is still pending;
-see the [macOS qualification notes](docs/MACOS_QUALIFICATION.md).
+but are not a working first-agent path. Native macOS qualification is still pending.
 
 **Release download URL: not published yet; the publishing location is undecided.**
 Until that is settled, obtain the unsigned archive and its checksum from the
@@ -391,8 +390,7 @@ Unverified or unavailable extents say `size unavailable`; stale revisions stay l
 ## For developers
 
 The Rust workspace provides one `se` binary and libraries linked by the SE Code
-application. [Design overview](docs/design/00-overview-and-invariants.md) and
-[operation reference](docs/OPS.md) describe its architecture.
+application. The [operation reference](docs/OPS.md) describes the command surface.
 
 To build an unsigned archive from a clean, committed source checkout, install Git,
 Python 3.11+, and rustup with the toolchain pinned in `rust-toolchain.toml`
