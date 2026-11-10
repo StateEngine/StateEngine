@@ -115,6 +115,13 @@ def native_requirements(path, windows, target=None):
             "inspector_sha256": digest(Path(inspector))}
 
 
+def feature_arguments(inputs):
+    arguments = ["--no-default-features"]
+    if inputs["features"]:
+        arguments += ["--features", ",".join(inputs["features"])]
+    return arguments
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True)
@@ -152,18 +159,17 @@ def main():
     overrides = ["--config", 'build.rustc-wrapper=""', "--config", 'build.rustc-workspace-wrapper=""',
                  "--config", 'profile.release.panic="unwind"',
                  "--config", 'profile.distribution.panic="unwind"']
+    features_selected = feature_arguments(inputs)
     metadata = json.loads(run("cargo", "+" + toolchain, *overrides, "metadata", *offline, "--locked",
-                              "--format-version=1"))
+                              *features_selected, "--filter-platform", args.target, "--format-version=1"))
     source = run("git", "rev-parse", "HEAD")
     epoch = int(run("git", "show", "-s", "--format=%ct", "HEAD"))
     sysroot = Path(run("rustc", "+" + toolchain, "--print", "sysroot"))
     config = tomllib.loads((ROOT / ".cargo/config.toml").read_text())
     flags = config.get("target", {}).get(args.target, {}).get("rustflags", [])
     argv = ["cargo", "+" + toolchain, *overrides, "build", *offline, "--locked", "--profile", "distribution",
-            "--package", inputs["package"], "--no-default-features", "--target", args.target,
+            "--package", inputs["package"], *features_selected, "--target", args.target,
             "--jobs", "1", "--message-format=json-render-diagnostics"]
-    if inputs["features"]:
-        argv += ["--features", ",".join(inputs["features"])]
     name = "se.exe" if "windows" in args.target else "se"
     # Never copy a cached Cargo artifact as an independent rebuild. Both source
     # and scratch prefixes are normalized before compilation, not after hashing.
