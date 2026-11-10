@@ -189,6 +189,7 @@ impl se_host::McpBackend for Backend {
         Backend::call(self, &capability, operation)
     }
     fn response_limit(&self) -> usize {
-        32_768
+        // The stdio frame keeps one byte for its terminating newline.
+        se_host::client::wire::MAX_FRAME_BYTES - 1
     }
 }

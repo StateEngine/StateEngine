@@ -232,7 +232,7 @@ fn serve(
                     resident_queue_bytes: positive(1024 * 1024)?,
                     session_notice_ids: positive(128)?,
                     aggregate_notice_ids: positive(4096)?,
-                    response_bytes: positive(1024 * 1024)?,
+                    response_bytes: positive(se_host::client::wire::MAX_FRAME_BYTES as u32)?,
                     blocking_jobs,
                 },
             },
