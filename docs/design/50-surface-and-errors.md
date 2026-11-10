@@ -680,13 +680,14 @@ The table below mirrors `crates/se-types/src/error/catalog.rs`; typed detail fie
 | stop-unwitnessed | I | scope: String, reason: String, remaining: Vec<String> | Stop of {scope} is unconfirmed: {reason}; named remaining {remaining} | Read `se status` and retry the same keyed stop; for an uncontained group after a stop that could not be proved (StopUnproved only), owner-human `se stop AGENT --release` relinquishes ownership without signalling or proving exit |
 | transcript-truncated | I | path: String, offset: u64, size: u64 | {path} shrank below the read offset | captured turns stay; → `se status` |
 
-#### Unavailable (9)
+#### Unavailable (10)
 
 | Code | Cl | Typed detail | Message | Remedy |
 | --- | --- | --- | --- | --- |
 | atlas-resource-budget | V | resource: String, requested: u64, available: u64 | Atlas can't index right now: {resource} needs {requested}, {available} available | wait for memory pressure to ease, or use bounded text search → `se atlas find QUERY --kind text` |
 | deadline-exceeded | V | op: String, deadline_ms: u64 | `{op}` didn't finish in {deadline_ms} ms | retry |
 | ipc-unavailable | V | endpoint: String, reason: String | can't reach the runtime: {reason} | Use `se status` |
+| remote-busy | V | reason: String, next_step: String | Remote connection busy: {reason} | {next_step}; preserve the saved SSH binding and original send key |
 | runtime-handover-in-progress | V | generation: String | the runtime is changing hosts | retry (`WhenRuntimeReady`) |
 | runtime-not-running | V | op: String, reason: String | `{op}` needs a ready runtime writer: {reason} | Reopen the current runtime generation and retry with the original request identity; use `se up` if no runtime is running |
 | runtime-start-failed | V | reason: String, log: String | the runtime didn't start: {reason} | see {log}; → `se doctor` |

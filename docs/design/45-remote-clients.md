@@ -33,8 +33,10 @@ second pinned TLS or challenge-signature protocol.
 When the saved tunnel finds no listener, the source invokes the saved native
 SSH command once to restore the far host's existing listener policy. Native
 Owner admission and the pinned host identity are checked before retrying the
-socket; the saved grant is reused. Cold startup time is reported separately,
-and no keep-alive process retains an otherwise idle far host.
+socket; the saved grant is reused. The reply confirms the saved listener policy;
+disabled access stops retries and requires an explicit owner decision to restore
+it. Native startup refusals retain their reason and remedy. No keep-alive process
+retains an otherwise idle far host.
 
 The machine session identifies a machine. Protected native IPC independently
 verifies every agent caller's actual host, project, agent, session and generation.
