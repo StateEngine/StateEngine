@@ -35,6 +35,23 @@ impl CleanupFile {
 }
 
 impl LaunchCoordinator {
+    pub(super) async fn finish_failed_start(
+        &self,
+        work: &mut Work,
+        witness: se_proc::StopWitness,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        if work.meta.provider == se_store::Provider::SeCode
+            && work.takeover.is_some()
+            && work
+                .plan
+                .as_ref()
+                .is_some_and(|plan| plan.input.override_live)
+        {
+            self.abort_secode_start(work, &witness, deadline).await?;
+        }
+        self.finish(work, witness, deadline).await
+    }
     pub(in crate::process) async fn finish(
         &self,
         work: &mut Work,

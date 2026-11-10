@@ -12,8 +12,13 @@ use sha2::Digest;
 use std::sync::atomic::Ordering;
 mod replacement;
 mod selection;
-type Stopped =
-    Arc<tokio::sync::Mutex<std::collections::BTreeMap<se_types::LifecycleId, TakeoverReport>>>;
+#[derive(Default)]
+struct Replacement {
+    stopped: std::collections::BTreeMap<se_types::LifecycleId, TakeoverReport>,
+    successor_deadline: Option<Deadline>,
+    successor: Option<LaunchPlan>,
+}
+type Stopped = Arc<tokio::sync::Mutex<Replacement>>;
 use selection::{combine_reports, process_identity};
 
 impl LaunchCoordinator {
@@ -54,7 +59,7 @@ impl LaunchCoordinator {
         let coordinator = Arc::downgrade(self);
         // Each original lifecycle has its own retained stop result. A retry
         // cannot stop a successor or repeat already achieved cleanup.
-        let stopped = Arc::new(tokio::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let stopped = Arc::new(tokio::sync::Mutex::new(Replacement::default()));
         let output = self
             .supervise_control(key, intent, deadline, move |deadline| {
                 let coordinator = coordinator.clone();

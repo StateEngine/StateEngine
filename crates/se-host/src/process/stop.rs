@@ -280,7 +280,7 @@ impl LaunchCoordinator {
         }
         if work.native_already_reconciled {
             let witness = self.stop_native(work, deadline).await?;
-            return self.finish(work, witness, deadline).await;
+            return self.finish_failed_start(work, witness, deadline).await;
         }
         let agent = work.meta.agent.id.clone();
         let session = work.meta.session.clone();
@@ -344,7 +344,7 @@ impl LaunchCoordinator {
                 se_proc::RecoveryOutcome::Exited(witness) => {
                     work.native_already_reconciled = true;
                     work.last_witness = Some((*witness).clone());
-                    return self.finish(work, *witness, deadline).await;
+                    return self.finish_failed_start(work, *witness, deadline).await;
                 }
                 _ => {
                     return Err(se_core::scope::unreadable(
@@ -383,7 +383,7 @@ impl LaunchCoordinator {
             }
         }
         let witness = self.stop_native(work, deadline).await?;
-        self.finish(work, witness, deadline).await
+        self.finish_failed_start(work, witness, deadline).await
     }
     pub(super) async fn exit_observation(
         &self,
