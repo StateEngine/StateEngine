@@ -9,15 +9,16 @@ use support::*;
 fn remove_remote_schema(db: &rusqlite::Connection) -> Check {
     db.execute_batch(
         "DROP TABLE remote_message_attribution;
-         DROP TABLE remote_grants; DROP INDEX session_data_agent_seq;
+         DROP TABLE remote_grants; DROP TABLE channel_receive; DROP INDEX session_data_agent_seq;
          DROP INDEX mark_data_message_seq; DROP INDEX work_mark_recipient_seq",
     )?;
     Ok(())
 }
 
-fn schema_one(f: &Fixture, obstruct: bool) -> Check {
+fn schema_one(f: &Fixture, obstruct: bool) -> Result<u32, Box<dyn std::error::Error>> {
     seed(f)?;
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
+    let current_schema = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     remove_remote_schema(&db)?;
     for name in [
         "cursor_data_cursor",
@@ -35,9 +36,9 @@ fn schema_one(f: &Fixture, obstruct: bool) -> Check {
          DROP TABLE atlas_resume_roots; DROP TABLE work_mark_data;
          DROP TABLE message_deliveries; ALTER TABLE message_data DROP COLUMN quiet; PRAGMA user_version=1",
     )?;
-    Ok(())
+    Ok(current_schema)
 }
-fn schema_four(f: &Fixture) -> Check {
+fn schema_four(f: &Fixture) -> Result<u32, Box<dyn std::error::Error>> {
     seed(f)?;
     let (mut writer, lease) = direct(f)?;
     let mut batch = f.send(
@@ -52,6 +53,7 @@ fn schema_four(f: &Fixture) -> Check {
     };
     *quiet = true;
     writer.append(batch, &*lease)?;
+    let current_schema = writer.info()?.schema_version;
     writer.close()?;
     drop(lease);
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
@@ -60,7 +62,7 @@ fn schema_four(f: &Fixture) -> Check {
         "DROP TABLE channel_actions; DROP TABLE channel_outbox; DROP TABLE channel_updates; DROP TABLE channel_connections; DROP TABLE atlas_resume_deliveries; DROP TABLE atlas_resume_cursors;
         DROP TABLE atlas_resume_roots; PRAGMA user_version=4",
     )?;
-    Ok(())
+    Ok(current_schema)
 }
 fn backup_is_original(f: &Fixture, expected_schema: u32, expected_head: u64) -> Check {
     // Backup inventory is a named, unsupported API on this base. Read the
@@ -114,11 +116,11 @@ fn backup_is_original(f: &Fixture, expected_schema: u32, expected_head: u64) -> 
 fn check(from: u32, obstruct: bool) -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
-    if from == 1 {
-        schema_one(&f, obstruct)?;
+    let current_schema = if from == 1 {
+        schema_one(&f, obstruct)?
     } else {
-        schema_four(&f)?;
-    }
+        schema_four(&f)?
+    };
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let before = reader.info()?;
     let before_sequence: i64 = rusqlite::Connection::open_with_flags(
@@ -178,7 +180,10 @@ fn check(from: u32, obstruct: bool) -> Check {
     });
     outcome?;
     let after = reader.info()?;
-    assert_eq!(after.schema_version, if obstruct { from } else { 8 });
+    assert_eq!(
+        after.schema_version,
+        if obstruct { from } else { current_schema }
+    );
     assert_eq!(after.id, before.id);
     // Startup may append runtime ownership; the backup must bind the old head.
     backup_is_original(&f, from, u64::try_from(before_sequence)?)?;
@@ -248,6 +253,7 @@ fn channel_schema_upgrade_preserves_schema_five_mail_and_original_backup() -> Ch
         )?,
         &*lease,
     )?;
+    let current_schema = writer.info()?.schema_version;
     writer.close()?;
     drop(lease);
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
@@ -280,7 +286,7 @@ fn channel_schema_upgrade_preserves_schema_five_mail_and_original_backup() -> Ch
         assert!(report.transport_closed && report.endpoint_retired);
         Ok::<(), Box<dyn std::error::Error>>(())
     })?;
-    assert_eq!(reader.info()?.schema_version, 8);
+    assert_eq!(reader.info()?.schema_version, current_schema);
     backup_is_original(&f, 5, u64::try_from(head)?)?;
     let db = rusqlite::Connection::open_with_flags(
         f.options.state_directory.join("state.db"),
