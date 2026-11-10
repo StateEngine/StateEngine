@@ -46,8 +46,12 @@ def main():
     parser.add_argument("--build", type=Path, required=True, help="native build-output directory")
     parser.add_argument("--remote-build", type=Path, action="append", default=[],
                         help="same-source native build for another supported destination (repeat for every other target)")
+    parser.add_argument("--native-only", action="store_true",
+                        help="assemble only this platform for local use, omitting remote bootstrap images")
     parser.add_argument("--out", type=Path, required=True, help="archive output directory")
     args = parser.parse_args()
+    if args.native_only and args.remote_build:
+        parser.error("--native-only cannot include --remote-build inputs")
     build = args.build.resolve()
     metadata = json.loads((build / "build.json").read_text())
     inputs = json.loads((SCRIPTS / "inputs.json").read_text())
@@ -112,10 +116,12 @@ def main():
                 raise ValueError("remote build checksum mismatch")
         native_binary(directory / executable, executable == "se.exe", target)
         companions[target] = (directory, companion, executable)
-    if "remote" in inputs["features"] and set(companions) != set(inputs["targets"]) - {metadata["target"]}:
+    if ("remote" in inputs["features"] and not args.native_only
+            and set(companions) != set(inputs["targets"]) - {metadata["target"]}):
         raise ValueError("remote-enabled archives require same-source native builds for every other supported target")
     args.out.mkdir(parents=True, exist_ok=True)
-    stem = f'stateengine-{metadata["version"]}-{metadata["target"]}-unsigned'
+    flavor = "-native-only" if args.native_only else ""
+    stem = f'stateengine-{metadata["version"]}-{metadata["target"]}{flavor}-unsigned'
     archive = args.out / (stem + (".zip" if windows else ".tar.gz"))
     if archive.exists() or archive.with_suffix(archive.suffix + ".sha256").exists():
         raise ValueError(f"archive already exists: {archive}; choose a new output directory")
@@ -172,7 +178,9 @@ def main():
             'The notices.tar member collects the release notices for this archive.\n'
             'To remove the installation, run se uninstall from an owner terminal.\n'
             'The uninstall script delegates to the same operation.\n'
-            'Installation does not launch a service or require Node, npm or Rust.\n')
+            'Installation does not launch a service or require Node, npm or Rust.\n'
+            + ('This native-only archive omits remote bootstrap images; use a full archive for remote connections.\n'
+               if args.native_only else ''))
         files = {p.relative_to(root).as_posix(): {"sha256": digest(p), "bytes": p.stat().st_size}
                  for p in sorted(root.rglob("*")) if p.is_file()}
         if (windows or metadata["target"].endswith("apple-darwin")) and len({name.casefold() for name in files}) != len(files):
