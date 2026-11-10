@@ -1,10 +1,13 @@
 //! Public host + actual MCP mail + durable store, with only Telegram substituted.
 //! This is not evidence of a real Telegram phone or stock model's behavior.
 #![cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+#[path = "support/channel_reply_fault.rs"]
+mod fault;
 #[path = "support/wave2_host_fixture.rs"]
 mod support;
 #[path = "support/channel_transport.rs"]
 mod transport;
+use fault::{FaultTransport, Mode};
 use se_host::{channels::*, *};
 use se_store::*;
 use se_types::IdempotencyKey;
@@ -103,7 +106,7 @@ fn seed_mail(f: &Fixture) -> Check {
     drop(lease);
     Ok(())
 }
-fn roundtrip(lose_response: bool, long_reply: bool) -> Check {
+fn roundtrip(lose_response: bool, long_reply: bool, mode: Mode) -> Check {
     let f = Fixture::new()?;
     seed_mail(&f)?;
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -113,7 +116,7 @@ fn roundtrip(lose_response: bool, long_reply: bool) -> Check {
         let initialized=initialize_host_process()?;
         let mut host=HostedRuntime::prepare(initialized,start(&f)?,rt.handle().clone(),&bound()?).await?;
         configure_private_listener(&mut host)?;
-        let provider=Arc::new(transport::Transport::default());
+        let provider=Arc::new(FaultTransport::default());
         host.install_channel_transport(provider.clone())?;
         assert!(host.install_channel_transport(Arc::new(transport::Transport::default())).is_err());
         let listener=host.listen(rt.handle().clone(),&bound()?).await?;
@@ -179,8 +182,10 @@ fn roundtrip(lose_response: bool, long_reply: bool) -> Check {
                 assert_eq!(readback.receipts.len(), 1);
                 provider.lose_reply.store(lose_response, Ordering::Release);
                 let reply_body = if long_reply {
-                    format!("not-sent-fixture:{}", "x".repeat(5000))
+                    format!("Unicode fixture:{}", "🧪abé".repeat(1700))
                 } else { "Fixture work completed and independently read back.".into() };
+                let full_reply = format!("Reply to {original}:\n{reply_body}");
+                if long_reply { provider.arm(full_reply.clone(), mode)?; }
                 let reply = rpc(port, "channel-http-fixture", "tools/call", json!({
                     "name": "stateengine_msg_send", "arguments": {
                         "to": f.owner, "body": reply_body, "reply_to": original,
@@ -191,28 +196,43 @@ fn roundtrip(lose_response: bool, long_reply: bool) -> Check {
                 let done = wait_for(&channels, &id, |p| p.receipts.first()
                     .and_then(|r| r.replies.first()).is_some_and(|r| {
                         if long_reply {
-                            matches!(&r.delivery, ProviderOutput::Failed { code } if code == "message_too_large")
+                            match mode {
+                                Mode::FailedSecond => matches!(&r.delivery, ProviderOutput::Failed { code } if code == "message_too_large"),
+                                Mode::UnknownSecond => matches!(&r.delivery, ProviderOutput::Unknown { .. }),
+                                _ => matches!(&r.delivery, ProviderOutput::Sent { .. }),
+                            }
                         } else if lose_response { matches!(r.delivery, ProviderOutput::Unknown { .. }) }
                         else { matches!(r.delivery, ProviderOutput::Sent { .. }) }
                     })).await?;
                 let receipt = done.receipts.first().ok_or("completed receipt absent")?;
                 assert!(receipt.read.is_some());
                 assert_eq!(receipt.replies.len(), 1);
-                assert_eq!(provider.replies()?.len(), if long_reply { 0 } else { 1 });
+                assert_eq!(provider.replies()?.len(), 1);
                 let private = provider.sent.lock().map_err(|_| "fixture send record poisoned")?
                     .iter().all(|sent| sent.chat == 42 && sent.keyboard.is_none());
                 assert!(private, "Save only sent outside the approved chat or offered a lifecycle action");
                 if long_reply {
-                    let deadline = bound()?;
-                    loop {
-                        deadline.remaining()?;
-                        let observed = provider.sent.lock().map_err(|_| "fixture send record poisoned")?
-                            .iter().any(|sent| sent.text.contains("could not be sent"));
-                        if observed { break; }
-                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    let (attempts, accepted) = provider.observations()?;
+                    assert!(attempts.iter().all(|part| !part.is_empty() && part.encode_utf16().count() <= 4096));
+                    let known = receipt.replies[0].provider_messages.len();
+                    match mode {
+                        Mode::Complete | Mode::RateLimitedSecond => {
+                            assert_eq!(accepted.len(), 3);
+                            assert_eq!(accepted.concat(), full_reply, "Unicode body changed or was truncated");
+                            assert_eq!(known, accepted.len());
+                            assert_eq!(attempts.len(), if mode == Mode::Complete { 3 } else { 4 });
+                            assert_eq!(attempts.iter().filter(|part| part.starts_with("Reply to ")).count(), 1,
+                                "a known accepted first part was resent");
+                        }
+                        Mode::FailedSecond | Mode::UnknownSecond => {
+                            assert_eq!(attempts.len(), 2);
+                            assert_eq!(known, 1, "unknown or refused part was claimed as delivered");
+                            assert_eq!(accepted.len(), if mode == Mode::FailedSecond { 1 } else { 2 });
+                            assert!(full_reply.starts_with(&accepted.concat()));
+                            tokio::time::sleep(Duration::from_secs(3)).await;
+                            assert_eq!(provider.observations()?.0, attempts, "partial/unknown output was retried");
+                        }
                     }
-                    assert!(provider.sent.lock().map_err(|_| "fixture send record poisoned")?
-                        .iter().all(|sent| !sent.text.contains("not-sent-fixture:")));
                 }
                 if lose_response {
                     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -242,16 +262,29 @@ fn roundtrip(lose_response: bool, long_reply: bool) -> Check {
 /// Protects: 49 — keep Saved, actual MCP Read, linked reply and token removal independently witnessed.
 #[test]
 fn fixture_phone_saves_actual_mcp_reads_replies_and_disconnect_forgets() -> Check {
-    roundtrip(false, false)
+    roundtrip(false, false, Mode::Complete)
 }
 /// Protects: 49 — retain uncertain provider delivery without sending a duplicate private reply.
 #[test]
 fn provider_acceptance_with_lost_response_stays_unknown_and_is_not_resent() -> Check {
-    roundtrip(true, false)
+    roundtrip(true, false, Mode::Complete)
 }
 
-/// Protects: 49 — preserve a long local reply and report its transport refusal without truncation.
+/// Protects: 49 — forward the complete Unicode reply in bounded, scalar-safe parts.
 #[test]
-fn oversized_linked_reply_is_kept_local_and_phone_gets_explicit_send_failure() -> Check {
-    roundtrip(false, true)
+fn unicode_linked_reply_is_chunked_without_truncation_or_duplicate_prefix() -> Check {
+    roundtrip(false, true, Mode::Complete)
+}
+
+#[test]
+fn partial_known_failure_reports_only_the_accepted_part() -> Check {
+    roundtrip(false, true, Mode::FailedSecond)
+}
+#[test]
+fn partial_lost_response_keeps_known_parts_and_never_resends_uncertainty() -> Check {
+    roundtrip(false, true, Mode::UnknownSecond)
+}
+#[test]
+fn rate_limited_second_part_resumes_without_resending_the_first() -> Check {
+    roundtrip(false, true, Mode::RateLimitedSecond)
 }
