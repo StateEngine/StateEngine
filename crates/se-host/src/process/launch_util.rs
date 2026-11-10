@@ -64,6 +64,18 @@ pub(super) fn token(prefix: &str) -> Result<Secret> {
     Secret::new(std::mem::take(&mut *value))
 }
 #[cfg(unix)]
+pub(super) fn script_launcher(path: &std::path::Path) -> Result<bool> {
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).map_err(|e| error("provider launcher", e))?;
+    let mut header = [0; 2];
+    match file.read_exact(&mut header) {
+        Ok(()) => Ok(header == *b"#!"),
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(cause) => Err(error("provider launcher", cause)),
+    }
+}
+#[cfg(unix)]
 pub(super) fn stabilize_alias(
     mut invocation: crate::ProviderInvocation,
     required: bool,
