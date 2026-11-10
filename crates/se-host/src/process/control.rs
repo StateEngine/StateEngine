@@ -180,7 +180,7 @@ impl LaunchCoordinator {
                 return Ok(());
             }
             if current.processes.len()>1 {return Err(error("stop lifecycle inventory","more than one unreleased lifecycle belongs to this agent; retain the full inventory for owner reconciliation"));}
-            let job=match retained? {Some(job)=>Some(job),None=>self.cold_stop_job(&current,&row.target.project.id,false,deadline).await?};
+            let job=match retained? {Some(job)=>Some(job),None=>self.cold_stop_job(&current,&row.target.project.id,deadline).await?};
             let Some(job)=job else {
                 if current.processes.is_empty() && current.sessions.is_empty() && matches!(current.latest_process,se_types::Read::Absent {..}) {
                     row.result="already-stopped".into();row.population="empty".into();row.enumeration="not-applicable".into();

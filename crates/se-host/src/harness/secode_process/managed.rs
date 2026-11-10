@@ -44,16 +44,12 @@ impl SecodeHarness {
         }
     }
     pub fn images(&self, path: &std::path::Path) -> Result<Arc<Mutex<Images>>> {
-        self.probed_images(path)?
-            .ok_or_else(|| incompatible("selected CLI has no completed capability probe"))
-    }
-    pub fn probed_images(&self, path: &std::path::Path) -> Result<Option<Arc<Mutex<Images>>>> {
-        Ok(self
-            .images
+        self.images
             .lock()
             .map_err(|_| unreadable("SE Code executable custody", "poisoned image registry"))?
             .get(path)
-            .cloned())
+            .cloned()
+            .ok_or_else(|| incompatible("selected CLI has no completed capability probe"))
     }
     pub fn register(&self, session: &se_types::SessionId, prepared: Managed) -> Result<()> {
         let mut values = self
@@ -132,14 +128,6 @@ pub(crate) fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
         )
     })
 }
-fn provider_version(command: PathBuf, version: String) -> Result<crate::ProviderVersion> {
-    Ok(crate::ProviderVersion {
-        kind: crate::HarnessKind::Secode,
-        executable: NativePath::from_local(command)?,
-        version,
-        protocol: "resident-jsonl+authenticated-control-v1".into(),
-    })
-}
 impl Harness for SecodeHarness {
     fn kind(&self) -> crate::HarnessKind {
         crate::HarnessKind::Secode
@@ -151,27 +139,6 @@ impl Harness for SecodeHarness {
     ) -> crate::HostFuture<'a, crate::ProviderVersion> {
         Box::pin(async move {
             let deadline = crate::client::lease::Deadline::idle()?.stage(cx.timeout)?;
-            // Capability and version results belong to these exact image bytes.
-            // A fresh digest and pathname check can reuse them across the
-            // preflight and native launch barriers without re-probing binaries.
-            if let Some(images) = self.probed_images(&request.command)? {
-                let checked = tokio::task::spawn_blocking(move || {
-                    let mut images = images
-                        .lock()
-                        .map_err(|_| unreadable("SE Code image probe", "poisoned image custody"))?;
-                    images.validate()?;
-                    super::bundle::verify(&images)?;
-                    Ok::<_, se_types::SeError>(images.version.clone())
-                })
-                .await
-                .map_err(|e| unreadable("SE Code image readback", e))?;
-                deadline.remaining()?;
-                if let Ok(version) = checked {
-                    return provider_version(request.command, version);
-                }
-                // An updated package gets a complete new probe, never the
-                // previous package's cached capabilities or version.
-            }
             let command = request.command.clone();
             let mut images = tokio::task::spawn_blocking(move || Images::open(&command))
                 .await
@@ -200,7 +167,12 @@ impl Harness for SecodeHarness {
             }
             let version = images.version.clone();
             registry.insert(command.clone(), Arc::new(Mutex::new(images)));
-            provider_version(command, version)
+            Ok(crate::ProviderVersion {
+                kind: self.kind(),
+                executable: NativePath::from_local(command)?,
+                version,
+                protocol: "resident-jsonl+authenticated-control-v1".into(),
+            })
         })
     }
     fn configuration<'a>(

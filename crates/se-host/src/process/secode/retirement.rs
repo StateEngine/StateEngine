@@ -166,34 +166,23 @@ impl LaunchCoordinator {
             )
         })?;
         let image = server.clone();
-        let cli = image.with_file_name(if cfg!(windows) {
-            "secode.exe"
-        } else {
-            "secode"
-        });
-        let retained = self.secode.probed_images(&cli)?;
         let images = self
             .store
             .pool
             .run_owned(deadline, move || {
-                let images = match retained {
-                    Some(images) => images,
-                    None => Arc::new(std::sync::Mutex::new(
-                        crate::harness::secode_process::Images::open(&cli)?,
-                    )),
-                };
-                {
-                    let mut pinned = images
-                        .lock()
-                        .map_err(|_| error("SE Code retirement image", "poisoned image custody"))?;
-                    if pinned.server_sha256() != expected_image || pinned.server != image {
-                        return Err(error(
-                            "SE Code retirement image",
-                            "selected server differs from the original service image",
-                        ));
-                    }
-                    pinned.validate()?;
+                let cli = image.with_file_name(if cfg!(windows) {
+                    "secode.exe"
+                } else {
+                    "secode"
+                });
+                let mut images = crate::harness::secode_process::Images::open(&cli)?;
+                if images.server_sha256() != expected_image || images.server != image {
+                    return Err(error(
+                        "SE Code retirement image",
+                        "selected server differs from the original service image",
+                    ));
                 }
+                images.validate()?;
                 Ok(images)
             })
             .await?;
@@ -395,10 +384,8 @@ impl LaunchCoordinator {
         self.store
             .pool
             .run_owned(deadline, move || {
-                images
-                    .lock()
-                    .map_err(|_| error("SE Code retirement image", "poisoned image custody"))?
-                    .validate()
+                let mut images = images;
+                images.validate()
             })
             .await?;
         Ok(())
