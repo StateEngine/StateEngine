@@ -7,7 +7,7 @@ mod turn;
 mod wire;
 
 pub use connection::{Connection, Diagnostics, Incoming, Message};
-pub use permission::{PermissionOption, PermissionPolicy, PermissionView};
+pub use permission::{PermissionOption, PermissionPolicy, PermissionRefusal, PermissionView};
 pub use session::{Observation, Session};
 pub use turn::{CapturedMessage, CompletedTurn, ProvisionalText, TurnItem};
 

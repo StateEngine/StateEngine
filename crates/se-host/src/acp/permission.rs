@@ -7,13 +7,35 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 /// Answers permission RPCs; this does not establish a filesystem or network
-/// sandbox. Composition must separately qualify the provider execution policy.
+/// sandbox. Construct this from the saved profile, never a protocol suggestion.
 #[derive(Clone, Copy)]
 pub enum PermissionPolicy {
-    Ask,
-    Deny,
-    /// Only composition from an explicitly named full-bypass profile selects this.
-    NamedFullBypass,
+    NeverAsk,
+    Refuse,
+}
+impl PermissionPolicy {
+    pub fn from_saved_approval(approval: se_core::config_policy::Approval) -> Self {
+        match approval {
+            se_core::config_policy::Approval::Never => Self::NeverAsk,
+            _ => Self::Refuse,
+        }
+    }
+    /// Surface at launch and in status; protocol permissions are not containment.
+    pub fn notice(self) -> &'static str {
+        match self {
+            Self::NeverAsk => {
+                "This harness provides no execution sandbox in protocol mode. The saved never-ask profile allows protocol permission requests."
+            }
+            Self::Refuse => {
+                "This harness provides no execution sandbox in protocol mode. Tool permission requests are refused because this profile requires approval and no approval path is available."
+            }
+        }
+    }
+}
+#[derive(Clone, Serialize)]
+pub struct PermissionRefusal {
+    pub request: u64,
+    pub reason: &'static str,
 }
 #[derive(Clone, Serialize)]
 pub struct PermissionOption {
@@ -78,18 +100,27 @@ impl Permission {
             },
         })
     }
-    pub fn automatic(&self, policy: PermissionPolicy) -> Option<Value> {
-        let kind = match policy {
-            PermissionPolicy::Ask => return None,
-            PermissionPolicy::Deny => "reject_once",
-            PermissionPolicy::NamedFullBypass => "allow_once",
+    pub fn automatic(&self, policy: PermissionPolicy) -> (Value, Option<&'static str>) {
+        let (kinds, reason) = match policy {
+            PermissionPolicy::NeverAsk => (["allow_once", "allow_always"], None),
+            PermissionPolicy::Refuse => (
+                ["reject_once", "reject_always"],
+                Some(
+                    "The saved profile requires approval; no approval path is available. This tool call was refused.",
+                ),
+            ),
         };
-        self.view
-            .options
-            .iter()
-            .find(|v| v.kind == kind)
-            .map(|v| selected(&v.id))
-            .or_else(|| matches!(policy, PermissionPolicy::Deny).then(cancelled))
+        for kind in kinds {
+            if let Some(option) = self.view.options.iter().find(|v| v.kind == kind) {
+                return (selected(&option.id), reason);
+            }
+        }
+        (
+            cancelled(),
+            reason.or(Some(
+                "The harness offered no allow option; this tool call was refused.",
+            )),
+        )
     }
     pub fn select(&mut self, option: Option<&str>) -> Result<Value> {
         if self.view.response_uncertain {

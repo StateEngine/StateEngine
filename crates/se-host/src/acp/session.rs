@@ -3,7 +3,7 @@
 mod events;
 use super::{
     Connection, Incoming, Message, failure,
-    permission::{Permission, PermissionPolicy, PermissionView},
+    permission::{Permission, PermissionPolicy, PermissionRefusal, PermissionView},
     turn::{CapturedMessage, CompletedTurn, Turn, text},
 };
 use crate::CallContext;
@@ -31,6 +31,8 @@ pub struct Session {
 }
 #[derive(Clone)]
 pub struct Observation {
+    pub policy_notice: &'static str,
+    pub permission_refusal: Option<PermissionRefusal>,
     pub conversation: Option<String>,
     pub active_input: Option<String>,
     pub cancelling: bool,
@@ -43,6 +45,7 @@ pub struct Observation {
 }
 #[derive(Default)]
 struct State {
+    permission_refusal: Option<PermissionRefusal>,
     initializing: bool,
     initialized: bool,
     required_mode: Option<String>,
@@ -95,6 +98,8 @@ impl Session {
             .map_err(|_| failure("ACP session", "poisoned state"))?;
         let transport = self.connection.diagnostics()?;
         Ok(Observation {
+            policy_notice: self.policy.notice(),
+            permission_refusal: state.permission_refusal.clone(),
             conversation: state.conversation.clone(),
             active_input: state.active.as_ref().map(|v| v.input_key.clone()),
             cancelling: state.cancelling,
@@ -240,6 +245,7 @@ impl Session {
             let turn = Turn::new(key.clone(), text.clone())?;
             state.used_keys.insert(key);
             state.active = Some(turn);
+            state.permission_refusal = None;
             state.cancelling = false;
             id
         };
@@ -266,30 +272,6 @@ impl Session {
                 Err(error)
             }
         }
-    }
-    pub async fn answer(&self, request: u64, option: Option<&str>, cx: CallContext) -> Result<()> {
-        let (id, response) = {
-            let mut state = self.lock()?;
-            if option.is_some() {
-                ready(&state)?;
-                if state.cancelling {
-                    return Err(failure(
-                        "ACP permission",
-                        "cancellation owns this prompt; no further choice admitted",
-                    ));
-                }
-            }
-            let permission = state
-                .permissions
-                .get_mut(&request)
-                .ok_or_else(|| failure("ACP permission", "original request is absent"))?;
-            (permission.id.clone(), permission.select(option)?)
-        };
-        self.signal();
-        self.connection.respond(id, response, cx).await?;
-        self.lock()?.permissions.remove(&request);
-        self.signal();
-        Ok(())
     }
     pub async fn cancel(&self, cx: CallContext) -> Result<()> {
         let until = super::connection::until(&cx)?;

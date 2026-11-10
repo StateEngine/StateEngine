@@ -57,38 +57,40 @@ impl Session {
                         .ok_or_else(|| failure("ACP permission", "identity space exhausted"))?;
                     let request = state.next_permission;
                     let mut permission = Permission::parse(request, id, &params)?;
-                    let automatic = if state.cancelling {
-                        Some(json!({"outcome":{"outcome":"cancelled"}}))
+                    let (response, reason) = if state.cancelling {
+                        (
+                            json!({"outcome":{"outcome":"cancelled"}}),
+                            Some("Cancellation owns this prompt; this tool call was refused."),
+                        )
                     } else {
                         permission.automatic(self.policy)
                     };
-                    let automatic = automatic
-                        .map(|response| {
-                            let option = response
-                                .pointer("/outcome/optionId")
-                                .and_then(Value::as_str);
-                            let response = permission.select(option)?;
-                            Ok::<_, SeError>((permission.id.clone(), response))
-                        })
-                        .transpose()?;
+                    let option = response
+                        .pointer("/outcome/optionId")
+                        .and_then(Value::as_str);
+                    let mut response = permission.select(option)?;
+                    if let Some(reason) = reason {
+                        state.permission_refusal = Some(PermissionRefusal { request, reason });
+                        response["_meta"] = json!({"stateengine.dev/refusal_reason":reason});
+                    }
+                    let automatic = (permission.id.clone(), response);
                     state.permissions.insert(request, permission);
                     (request, automatic)
                 };
                 self.signal();
-                if let Some((id, response)) = automatic {
-                    self.connection
-                        .respond(
-                            id,
-                            response,
-                            CallContext::new(
-                                self.connection.generation(),
-                                std::time::Duration::from_secs(10),
-                            ),
-                        )
-                        .await?;
-                    self.lock()?.permissions.remove(&request);
-                    self.signal();
-                }
+                let (id, response) = automatic;
+                self.connection
+                    .respond(
+                        id,
+                        response,
+                        CallContext::new(
+                            self.connection.generation(),
+                            std::time::Duration::from_secs(10),
+                        ),
+                    )
+                    .await?;
+                self.lock()?.permissions.remove(&request);
+                self.signal();
                 Ok(())
             }
         }
