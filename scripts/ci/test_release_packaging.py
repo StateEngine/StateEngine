@@ -164,9 +164,11 @@ class ArchiveAssembly(unittest.TestCase):
 
 class MetadataSelection(unittest.TestCase):
     def test_metadata_selects_compile_features_and_platform(self):
-        # Stop before compilation, after running the real locked offline Cargo
+        # Stop before compilation, after running the real locked Cargo
         # metadata consumer. The synthetic compiler host admits both target
         # command shapes; it is not evidence of native Windows execution.
+        # Like the release builder's default, fetch missing pinned inputs: CI
+        # discovers these tests before restoring any Cargo cache.
         spec = importlib.util.spec_from_file_location("release_build_judge", RELEASE / "build.py")
         module = importlib.util.module_from_spec(spec)
         with patch.object(sys, "dont_write_bytecode", True):
@@ -207,14 +209,14 @@ class MetadataSelection(unittest.TestCase):
                         patch.object(module, "run", run), \
                         patch.object(module, "checked_cargo_home", lambda: Path.home() / ".cargo"), \
                         patch.object(subprocess, "run", intercept), \
-                        patch.object(sys, "argv", ["build.py", "--target", target, "--offline",
+                        patch.object(sys, "argv", ["build.py", "--target", target,
                                                    "--out", str(Path(scratch) / "build")]):
                     with self.assertRaises(CompilationReached):
                         module.main()
                 # Independently ask Cargo for the compilation dependency graph:
                 # every emitted package must have metadata for notice collection.
                 graph = original_run(
-                    ["cargo", "tree", "--offline", "--locked", "--package", INPUTS["package"],
+                    ["cargo", "tree", "--locked", "--package", INPUTS["package"],
                      "--no-default-features", "--features", ",".join(INPUTS["features"]),
                      "--target", target, "--edges", "normal,build", "--prefix", "none",
                      "--format", "{p}"], cwd=ROOT, check=True, text=True,
