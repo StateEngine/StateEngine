@@ -266,7 +266,7 @@ fn watch(
     let (mut input, host) = selection;
     // Each terminal keeps its own bounded subscription, including when another
     // terminal has the same targets and cursors and is waiting on a long poll.
-    input.reader_id = Some(*uuid::Uuid::new_v4().as_bytes());
+    input.reader_id = input.follow.then(|| *uuid::Uuid::new_v4().as_bytes());
     let mut diagnostic = |_: &str| {
         Err(io::Error::other(
             "client watch requires typed status/errors",

@@ -128,7 +128,10 @@ impl Watches {
                 while entries.values().map(|e| e.target_count).sum::<usize>()
                     + request.targets.len()
                     > 64
+                    || entries.len() >= REMOTE_MAX_REQUESTS / 2
                 {
+                    // Leave request slots for active list/send calls as well as
+                    // readers: inactive subscriptions also occupy far-side slots.
                     // A stopped terminal must not reserve capacity for the full
                     // idle TTL. Evict only entries no read currently owns; their
                     // sealed cursors reconstruct the view if a reader returns.
@@ -143,9 +146,17 @@ impl Watches {
                         }
                     }
                     let Some((key, _)) = oldest else {
-                        return Err(refused(
-                            "64 source watch targets are in flight; retry after a reader finishes",
-                        ));
+                        if entries.values().map(|e| e.target_count).sum::<usize>()
+                            + request.targets.len()
+                            > 64
+                        {
+                            return Err(refused(
+                                "64 source watch targets are in flight; retry after a reader finishes",
+                            ));
+                        }
+                        // The smaller threshold trims idle cache entries only;
+                        // it never interrupts or limits an active reader.
+                        break;
                     };
                     entries.remove(&key);
                 }
