@@ -220,8 +220,11 @@ class Controls(unittest.TestCase):
                   'node': sys.executable, 'auth_home': str(self.root/'synthetic-normal'),
                   'credential_sources': {'codex': str(self.root/'synthetic-profile/auth.json')}}
         _, directory, run = lifecycle.begin(config)
-        nightly.invoke(config, run, directory, judge, self.root/'descriptor', self.root/'archive', {},
-                       run['invocations'][0], time.monotonic()+10)
+        # This argv-only producer does no build or provider work. Give its capacity
+        # boundary a deterministic adequate observation, including on small CI hosts.
+        with unittest.mock.patch.object(nightly, 'capacity', return_value=34*1024**3):
+            nightly.invoke(config, run, directory, judge, self.root/'descriptor', self.root/'archive', {},
+                           run['invocations'][0], time.monotonic()+10)
         argv = json.loads((directory/'1-codex-first-hour.argv').read_text())
         self.assertEqual(argv[argv.index('--credential-source')+1], config['credential_sources']['codex'])
         self.assertEqual(set(run['invocations'][0]['box_load']), {'before','after'})
