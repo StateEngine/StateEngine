@@ -51,7 +51,7 @@ approved policy, busy guests, unavailable capacity and infrastructure loss use t
 complete hosted Linux chain. A known compile/test/resource/output/deadline failure
 is red. Both Windows Clippy and Linux outcomes remain required by `check.py`.
 Windows Clippy runs for applicable drafts too; the informational Windows archive
-and smoke retain the draft exemption and ready-for-review trigger.
+and smoke run only on the nightly schedule and on manual runs.
 
 The controller has no inbound port, runner registration, candidate host command or
 worker-mounted credential. It uses the same networkless rootless container engine,

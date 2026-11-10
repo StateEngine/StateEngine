@@ -84,6 +84,34 @@ def write(path, value):
         os.fsync(output.fileno())
 
 
+def changed_policy(repository, source, token, policy):
+    commit = fetch(repository, "git/commits/" + source, token)
+    if not isinstance(commit, dict) or commit.get("sha") != source:
+        raise RuntimeError("source commit could not be read")
+    tree_id = commit.get("tree", {}).get("sha")
+    if not isinstance(tree_id, str) or not re.fullmatch(r"[a-f0-9]{40}", tree_id):
+        raise RuntimeError("source tree identity unavailable")
+    tree = fetch(repository, "git/trees/" + tree_id + "?recursive=1", token)
+    if (not isinstance(tree, dict) or tree.get("sha") != tree_id or tree.get("truncated") is not False or not isinstance(tree.get("tree"), list)
+            or any(not isinstance(row, dict) or not isinstance(row.get("path"), str) for row in tree["tree"])
+            or len({row["path"] for row in tree["tree"]}) != len(tree["tree"])):
+        raise RuntimeError("complete source tree could not be read")
+    paths = {row["path"]: row for row in tree["tree"]}
+    changed = []
+    for path, expected in policy.items():
+        node = paths.get(path)
+        if node is None or node.get("type") != "blob" or node.get("mode") not in {"100644", "100755"}:
+            changed.append(path)
+            continue
+        observed = fetch(repository, "contents/" + urllib.parse.quote(path, safe="/") + "?ref=" + source, token)
+        if not isinstance(observed, dict) or observed.get("encoding") != "base64" or not isinstance(observed.get("content"), str):
+            raise RuntimeError("approved CI policy could not be read")
+        content = base64.b64decode(observed["content"].replace("\n", ""), validate=True)
+        if hashlib.sha256(content).hexdigest() != expected:
+            changed.append(path)
+    return changed
+
+
 def prepare(request, config, report, context):
     capacity(2*1024**3)
     job = request["args"].get("container")
@@ -100,17 +128,16 @@ def prepare(request, config, report, context):
         raise RuntimeError("the ephemeral repository read token is absent")
     # Policy is checked through the repository API, without extracting candidate
     # bytes onto the host or trusting a manifest written by the candidate.
-    for path, expected in report["policy"].items():
-        observed = fetch(repository, "contents/" + urllib.parse.quote(path, safe="/") + "?ref=" + source, token)
-        if observed.get("encoding") != "base64" or hashlib.sha256(
-                base64.b64decode(observed["content"], validate=False)).hexdigest() != expected:
-            raise RuntimeError("approved CI policy changed; use the hosted fallback until approval")
+    changed = changed_policy(repository, source, token, report["policy"])
     directory = Path(config["state"]) / uuid.uuid4().hex
     directory.mkdir(mode=0o700)
-    with (directory / "source.tar.gz").open("xb") as output:
-        output.write(fetch(repository, "tarball/" + source, token, raw=True))
+    # Policy drift permits only fixed metadata operations. No candidate archive
+    # is downloaded or unpacked on this machine until policy is approved.
+    if not changed:
+        with (directory / "source.tar.gz").open("xb") as output:
+            output.write(fetch(repository, "tarball/" + source, token, raw=True))
     write(directory / "binding.json", {"repository": repository, "source": source,
-        "run": context["GITHUB_RUN_ID"], "attempt": context["GITHUB_RUN_ATTEMPT"]})
+        "run": context["GITHUB_RUN_ID"], "attempt": context["GITHUB_RUN_ATTEMPT"], "policy_changed": changed})
     return {"state": {"job": directory.name}, "isAlpine": False}
 
 
@@ -157,12 +184,16 @@ def script_step(request, config, report, directory):
     operation = request.get("operation")
     if operation not in {"changes", "route", "linux", "check"}:
         raise RuntimeError("only the four fixed CI operations are supported")
+    binding = json.loads((directory / "binding.json").read_text())
+    changed = binding.get("policy_changed", [])
+    if changed and operation not in {"changes", "route"}:
+        raise RuntimeError("approved CI policy changed; this workload must run on hosted")
     if operation == "changes":
         # Conservative full checking avoids running a candidate change detector
         # on the host and needs no shared Git checkout.
         return {"exit_code": 0, "outputs": {"rust": "true", "windows": "true"}}
     if operation == "route":
-        return {"exit_code": 0, "outputs": {"route": "box"}}
+        return {"exit_code": 0, "outputs": {"route": "hosted" if changed else "box"}}
     capacity(12*1024**3 if operation == "linux" else 2*1024**3)
     canceled = threading.Event()
     cohort = None

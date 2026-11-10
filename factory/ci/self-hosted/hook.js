@@ -70,7 +70,7 @@ async function execute() {
   if (result.outputs) {
     const target = runnerFile(request.args.environmentVariables.GITHUB_OUTPUT, '_runner_file_commands');
     for (const [name, value] of Object.entries(result.outputs)) {
-      if (!/^(rust|windows|route|status)$/.test(name) || !/^(true|false|box|passed|failed)$/.test(value)) throw Error('invalid fixed output');
+      if (!/^(rust|windows|route|status)$/.test(name) || !/^(true|false|box|hosted|passed|failed)$/.test(value)) throw Error('invalid fixed output');
       fs.appendFileSync(target, `${name}=${value}\n`);
     }
   }
