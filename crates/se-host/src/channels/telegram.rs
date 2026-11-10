@@ -146,7 +146,7 @@ impl Telegram {
         method: &'static str,
         args: Value,
     ) -> ChannelResult<Value> {
-        super::credentials::validate_token(token.expose())?;
+        validate_token(token.expose())?;
         let token = std::str::from_utf8(token.expose()).map_err(|_| Error::InvalidToken)?;
         let url = zeroize::Zeroizing::new(format!("https://api.telegram.org/bot{token}/{method}"));
         let sending = method == "sendMessage";
@@ -223,6 +223,21 @@ impl Telegram {
             _ => unknown(),
         })
     }
+}
+fn validate_token(bytes: &[u8]) -> ChannelResult<()> {
+    let Some(colon) = bytes.iter().position(|b| *b == b':') else {
+        return Err(Error::InvalidToken);
+    };
+    if !(1..=20).contains(&colon)
+        || !bytes[..colon].iter().all(u8::is_ascii_digit)
+        || !(20..=128).contains(&(bytes.len() - colon - 1))
+        || !bytes[colon + 1..]
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(b))
+    {
+        return Err(Error::InvalidToken);
+    }
+    Ok(())
 }
 fn name(value: &Value) -> ChannelResult<String> {
     let first = value

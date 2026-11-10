@@ -174,17 +174,8 @@ impl NativeChannelCredentials {
         Ok(())
     }
 }
-pub(super) fn validate_token(bytes: &[u8]) -> ChannelResult<()> {
-    let Some(colon) = bytes.iter().position(|b| *b == b':') else {
-        return Err(Error::InvalidToken);
-    };
-    if !(1..=20).contains(&colon)
-        || !bytes[..colon].iter().all(u8::is_ascii_digit)
-        || !(20..=128).contains(&(bytes.len() - colon - 1))
-        || !bytes[colon + 1..]
-            .iter()
-            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(b))
-    {
+fn validate_token(bytes: &[u8]) -> ChannelResult<()> {
+    if bytes.is_empty() || bytes.len() > 256 || !bytes.iter().all(u8::is_ascii_graphic) {
         return Err(Error::InvalidToken);
     }
     Ok(())

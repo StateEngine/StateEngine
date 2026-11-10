@@ -71,7 +71,21 @@ impl Transport {
 }
 impl ChannelTransport for Transport {
     fn descriptor(&self) -> ConnectorDescriptor {
-        Telegram::new().expect("fixture client").descriptor()
+        ConnectorDescriptor {
+            connector: Connector::Telegram,
+            name: "Fixture",
+            max_text_utf16: 4096,
+            edits: false,
+            buttons: true,
+            threads: false,
+            media: false,
+            identity_proof: "fixture_private_sender",
+            acknowledgement: "cursor_after_durable_save",
+            reconnect: "provider_replay",
+            retention_seconds: None,
+            setup: &[],
+            instructions: "Synthetic transport; no provider account.",
+        }
     }
     fn receiver(
         self: std::sync::Arc<Self>,
