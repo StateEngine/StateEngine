@@ -14,7 +14,7 @@ LABELS = {
     "B1": ("embedded A/B",), "B2": ("embedded A/B",),
     "B3": ("standalone persistent processes", "persistent processes after 1 seat(s)",
            "persistent processes after 2 seat(s)", "embedded A/B"),
-    "B4": ("standalone RSS one session", "W5 post-task RSS journey 2",
+    "B4": ("standalone RSS no session", "standalone RSS one session", "W5 post-task RSS journey 2",
            "W5 post-task RSS journey 3", "W5 post-task RSS journey 5"),
     "B5": ("idle no session", "idle one session"),
     "B6": ("idle no session", "idle one session"),
