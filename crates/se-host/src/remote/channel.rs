@@ -62,7 +62,7 @@ pub(super) async fn open(
     timeout(Duration::from_secs(10), async {
         let channel = match receive(&mut socket, Phase::PreAuth).await? {
             ServerFrame::Open { channel } => channel,
-            ServerFrame::Error { error, .. } => return Err(error.into()),
+            ServerFrame::Error { error, .. } => return Err(error.with_far_origin().into()),
             _ => return Err(auth::refused("native forwarded channel identity is absent")),
         };
         let credential = blocking
@@ -124,7 +124,7 @@ pub(super) async fn open(
                     ));
                 }
             }
-            ServerFrame::Error { error, .. } => return Err(error.into()),
+            ServerFrame::Error { error, .. } => return Err(error.with_far_origin().into()),
             _ => {
                 return Err(auth::refused(
                     "forwarded listener disagrees with native SSH authorization",

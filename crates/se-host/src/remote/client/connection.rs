@@ -282,8 +282,8 @@ impl Shared {
             ServerFrame::Error {
                 id: Some(id),
                 error,
-            } => self.fail(id, error.into()),
-            ServerFrame::Error { id: None, error } => return Err(error.into()),
+            } => self.fail(id, error.with_far_origin().into()),
+            ServerFrame::Error { id: None, error } => return Err(error.with_far_origin().into()),
             _ => return Err(unavailable("unexpected remote protocol phase")),
         }
         Ok(())

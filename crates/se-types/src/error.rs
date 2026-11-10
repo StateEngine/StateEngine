@@ -283,6 +283,10 @@ pub struct ErrorBody {
     retry: Retry,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     recovery: Option<Box<Remedy>>,
+    /// Terminal text of this body arrived from a remote peer; the renderer
+    /// escapes it before any display.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    far: bool,
 }
 impl ErrorBody {
     pub fn new(detail: Detail) -> Self {
@@ -294,6 +298,7 @@ impl ErrorBody {
             detail: Box::new(detail),
             retry,
             recovery: None,
+            far: false,
         }
     }
     pub fn with_retry(mut self, retry: Retry) -> Self {
@@ -320,6 +325,13 @@ impl ErrorBody {
     }
     pub fn retry(&self) -> &Retry {
         &self.retry
+    }
+    pub fn far(&self) -> bool {
+        self.far
+    }
+    pub fn with_far_origin(mut self) -> Self {
+        self.far = true;
+        self
     }
     pub fn message(&self) -> String {
         self.detail.message()
@@ -487,6 +499,18 @@ impl ErrorEnvelope {
     pub fn body(&self) -> &ErrorBody {
         &self.body
     }
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+    pub fn remedy(&self) -> &Remedy {
+        &self.remedy
+    }
+    /// Rebind only the terminal text; the body and its typed data stay as-is.
+    pub fn with_terminal_text(mut self, message: String, remedy_text: String) -> Self {
+        self.message = message;
+        self.remedy.text = remedy_text;
+        self
+    }
 }
 impl From<ErrorEnvelope> for ErrorEnvelopeWire {
     fn from(value: ErrorEnvelope) -> Self {
@@ -519,5 +543,42 @@ impl TryFrom<ErrorEnvelopeWire> for ErrorEnvelope {
             message: value.message,
             remedy: value.remedy,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn peer_detail() -> Detail {
+        Detail::ListenerUnavailable(details::ListenerUnavailable {
+            subject: "the socket".into(),
+            reason: "peer says \u{1b}[31mbad".into(),
+            next_step: "reconnect \u{1b}[1mnow".into(),
+        })
+    }
+
+    #[test]
+    fn old_wire_body_deserializes_without_far_flag() -> Result<(), Box<dyn std::error::Error>> {
+        let wire = r#"{"code":"listener-unavailable","detail":{"subject":"s","reason":"r","next_step":"n"}}"#;
+        let body: ErrorBody = serde_json::from_str(wire)?;
+        assert!(!body.far());
+        let out = serde_json::to_value(&body)?;
+        assert!(
+            out.get("far").is_none(),
+            "absent flag must not be re-emitted: {out}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn far_origin_survives_a_wire_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let body = ErrorBody::new(peer_detail()).with_far_origin();
+        let out = serde_json::to_value(&body)?;
+        assert_eq!(out["far"], true);
+        let back: ErrorBody = serde_json::from_value(out)?;
+        assert!(back.far());
+        assert_eq!(back.message(), body.message());
+        Ok(())
     }
 }

@@ -119,6 +119,17 @@ fn image(target: &str, executable: &Path) -> Result<PathBuf> {
     }
 }
 
+/// A refused bootstrap answer carries the peer's own error body: mark it as
+/// far-origin so the renderer escapes its terminal text. An unstructured
+/// refusal stays a local error.
+fn refused_setup(bytes: &[u8]) -> se_types::SeError {
+    if let Ok(body) = serde_json::from_slice::<se_types::ErrorBody>(bytes) {
+        return body.with_far_origin().into();
+    }
+    unavailable(
+        "remote bootstrap refused without a structured reason; the existing host was preserved",
+    )
+}
 pub async fn connect(
     destination: &str,
     source: RemoteHostId,
@@ -264,12 +275,7 @@ pub async fn connect(
     .await?;
     let bytes = zeroize::Zeroizing::new(bytes);
     if !success {
-        if let Ok(body) = serde_json::from_slice::<se_types::ErrorBody>(&bytes) {
-            return Err(body.into());
-        }
-        return Err(unavailable(
-            "remote bootstrap refused without a structured reason; the existing host was preserved",
-        ));
+        return Err(refused_setup(&bytes));
     }
     #[derive(serde::Deserialize)]
     struct Envelope {
@@ -289,4 +295,22 @@ pub async fn connect(
         ));
     }
     Ok((session, invoke("remote __authorize --json")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refused_setup_marks_the_peer_body_far_origin() {
+        let bytes = br#"{"code":"listener-unavailable","detail":{"subject":"the socket","reason":"peer says \u001b[31mbad","next_step":"reconnect \u001b[1mnow"}}"#;
+        let error = refused_setup(bytes);
+        assert!(error.body.far(), "peer body must be marked far-origin");
+    }
+
+    #[test]
+    fn refused_setup_without_a_structured_body_stays_local() {
+        let error = refused_setup(b"no structured body");
+        assert!(!error.body.far());
+    }
 }

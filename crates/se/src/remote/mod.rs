@@ -71,6 +71,7 @@ fn error(
         let envelope =
             se_types::ErrorEnvelope::new(error.body.clone(), &se_types::RenderCx::default())
                 .map_err(io::Error::other)?;
+        let envelope = crate::render::error::escape_far_text(envelope);
         if key.is_none() && original_key.is_none() {
             serde_json::to_writer(&mut *out, &envelope).map_err(io::Error::other)?;
             writeln!(out)?;
@@ -214,7 +215,12 @@ pub(crate) fn run(
             match dispatch(cx, AnyOp::RemoteSend(input), &mut diagnostic) {
                 Ok(AnyOutput::RemoteSend(v)) => {
                     if let se_types::Receipt::Refused { error: body } = &v.value.receipt {
-                        return error(&SeError::from((**body).clone()), json, Some(&p), stderr);
+                        return error(
+                            &SeError::from((**body).clone().with_far_origin()),
+                            json,
+                            Some(&p),
+                            stderr,
+                        );
                     }
                     crate::render::output(&AnyOutput::RemoteSend(v), json, quiet, stdout)
                 }
@@ -326,5 +332,95 @@ fn watch(
             }
             Err(e) => return self::error(&e, json, None, None, stderr),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn far_error() -> SeError {
+        SeError::from(
+            se_types::ErrorBody::new(se_types::Detail::ListenerUnavailable(
+                se_types::details::ListenerUnavailable {
+                    subject: "the socket".into(),
+                    reason: "peer says \u{1b}[31mbad".into(),
+                    next_step: "reconnect \u{1b}[1mnow".into(),
+                },
+            ))
+            .with_far_origin(),
+        )
+    }
+
+    fn preparation() -> io::Result<RemoteSendPreparation> {
+        Ok(RemoteSendPreparation {
+            host: se_types::remote::RemoteHostId(se_types::Sha256::from_bytes([0; 32])),
+            grant: "rgr_01920e00-7f00-7000-8000-000000000000"
+                .parse()
+                .map_err(io::Error::other)?,
+            target: se_types::remote::RemoteTarget {
+                project: "prj_01920e00-7f00-7000-8000-000000000000"
+                    .parse()
+                    .map_err(io::Error::other)?,
+                agent: "ag_01920e00-7f00-7000-8000-000000000000"
+                    .parse()
+                    .map_err(io::Error::other)?,
+            },
+            session: "ses_01920e00-7f00-7000-8000-000000000000"
+                .parse()
+                .map_err(io::Error::other)?,
+            idempotency_key: "test-idempotency-key".parse().map_err(io::Error::other)?,
+            body_bytes: 1,
+        })
+    }
+
+    #[test]
+    fn far_error_shapes_escape_terminal_text() -> io::Result<()> {
+        let far = far_error();
+        let binding = preparation()?;
+
+        // JSON without a binding: the bare escaped envelope.
+        let mut out = Vec::new();
+        assert_eq!(self::error(&far, true, None, None, &mut out)?, 1);
+        let value: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(out).map_err(io::Error::other)?)
+                .map_err(io::Error::other)?;
+        assert_eq!(
+            value["message"],
+            "Listener the socket: peer says \\u{1b}[31mbad"
+        );
+        assert_eq!(value["remedy"]["text"], "reconnect \\u{1b}[1mnow");
+        assert_eq!(value["far"], true);
+
+        // JSON with a binding: the send-status wrapper carries the same text.
+        let mut out = Vec::new();
+        assert_eq!(self::error(&far, true, Some(&binding), None, &mut out)?, 1);
+        let value: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(out).map_err(io::Error::other)?)
+                .map_err(io::Error::other)?;
+        assert_eq!(value["schema"], "stateengine.remote-send-status/v1");
+        assert_eq!(
+            value["error"]["message"],
+            "Listener the socket: peer says \\u{1b}[31mbad"
+        );
+
+        // Plain without a binding: the escaped diagnostic line.
+        let mut out = Vec::new();
+        assert_eq!(self::error(&far, false, None, None, &mut out)?, 1);
+        let text = String::from_utf8(out).map_err(io::Error::other)?;
+        assert!(!text.contains('\u{1b}'), "raw escape byte in {text:?}");
+        assert!(text.contains("peer says \\u{1b}[31mbad"), "{text:?}");
+
+        // Plain with a binding: the banner plus the escaped diagnostic.
+        let mut out = Vec::new();
+        assert_eq!(self::error(&far, false, Some(&binding), None, &mut out)?, 1);
+        let text = String::from_utf8(out).map_err(io::Error::other)?;
+        assert!(!text.contains('\u{1b}'), "raw escape byte in {text:?}");
+        assert!(
+            text.contains(&format!("Remote send {}", binding.idempotency_key)),
+            "{text:?}"
+        );
+        assert!(text.contains("  fix: reconnect \\u{1b}[1mnow"), "{text:?}");
+        Ok(())
     }
 }
