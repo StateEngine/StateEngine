@@ -123,12 +123,22 @@ extra=$(find "$work" -mindepth 1 -maxdepth 1 -type d | sed -n '2p')
     || fail 'the package must hold exactly one top-level folder; this one does not, so do not install it'
 [ -f "$pkgroot/secode" ] && [ -x "$pkgroot/secode" ] \
     || fail 'the package is missing its installer command (secode); do not install it'
-if [ -f "$pkgroot/stateengine/stateengine-payload.json" ]; then
+# The release package bundles the engine as one of two payload manifests:
+# stateengine/native-payload.json (schema stateengine.native-payload/v1)
+# from the current bundler, or the legacy
+# stateengine/stateengine-payload.json (schema stateengine.se-payload.v1)
+# from older packages. When both are present the native manifest is the
+# package's; a present manifest whose schema is wrong is a refusal, never a
+# fallback to the other file.
+bundles_se=0
+if [ -f "$pkgroot/stateengine/native-payload.json" ]; then
+    grep -q '"schema": "stateengine.native-payload/v1"' "$pkgroot/stateengine/native-payload.json" \
+        || fail 'the package carries a native StateEngine payload that is not a readable stateengine.native-payload/v1 manifest; do not install it'
+    bundles_se=1
+elif [ -f "$pkgroot/stateengine/stateengine-payload.json" ]; then
     grep -q '"schema": "stateengine.se-payload.v1"' "$pkgroot/stateengine/stateengine-payload.json" \
         || fail 'the package carries a StateEngine payload that is not a readable stateengine.se-payload.v1 manifest; do not install it'
     bundles_se=1
-else
-    bundles_se=0
 fi
 
 printf 'Installing release %s as your normal user...\n' "$index_version"

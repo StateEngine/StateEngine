@@ -135,12 +135,31 @@ try {
   if (!secodeStat) fail('the package is missing its installer command (secode); do not install it');
   if (!windows && (secodeStat.mode & 0o111) === 0) fail('the package installer command (secode) is not marked executable; do not install it');
 
+  // The release package bundles the engine as one of two payload manifests:
+  // stateengine/native-payload.json (schema stateengine.native-payload/v1)
+  // from the current bundler, or the legacy
+  // stateengine/stateengine-payload.json (schema stateengine.se-payload.v1)
+  // from older packages. When both are present the native manifest is the
+  // package's; a present manifest whose schema is wrong is a refusal, never
+  // a fallback to the other file.
   let bundlesSe = false;
-  const payload = path.join(pkgRoot, 'stateengine', 'stateengine-payload.json');
-  if (statSync(payload, { throwIfNoEntry: false })) {
+  const nativePayload = path.join(pkgRoot, 'stateengine', 'native-payload.json');
+  const legacyPayload = path.join(pkgRoot, 'stateengine', 'stateengine-payload.json');
+  if (statSync(nativePayload, { throwIfNoEntry: false })) {
     let payloadJson;
     try {
-      payloadJson = JSON.parse(readFileSync(payload, 'utf8'));
+      payloadJson = JSON.parse(readFileSync(nativePayload, 'utf8'));
+    } catch {
+      fail('the package carries a native StateEngine payload that is not a readable stateengine.native-payload/v1 manifest; do not install it');
+    }
+    if (payloadJson?.schema !== 'stateengine.native-payload/v1') {
+      fail('the package carries a native StateEngine payload that is not a readable stateengine.native-payload/v1 manifest; do not install it');
+    }
+    bundlesSe = true;
+  } else if (statSync(legacyPayload, { throwIfNoEntry: false })) {
+    let payloadJson;
+    try {
+      payloadJson = JSON.parse(readFileSync(legacyPayload, 'utf8'));
     } catch {
       fail('the package carries a StateEngine payload that is not a readable stateengine.se-payload.v1 manifest; do not install it');
     }

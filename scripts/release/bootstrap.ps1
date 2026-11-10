@@ -188,10 +188,30 @@ try {
     $pkgRoot = $topDirs[0].FullName
     $secode = Join-Path $pkgRoot 'secode.exe'
     if (-not (Test-Path -LiteralPath $secode)) { Fail 'the package is missing its installer command (secode.exe); do not install it' }
-    $payload = Join-Path $pkgRoot 'stateengine/stateengine-payload.json'
-    if (Test-Path -LiteralPath $payload) {
+    # The release package bundles the engine as one of two payload manifests:
+    # stateengine/native-payload.json (schema stateengine.native-payload/v1)
+    # from the current bundler, or the legacy
+    # stateengine/stateengine-payload.json (schema stateengine.se-payload.v1)
+    # from older packages. When both are present the native manifest is the
+    # package's; a present manifest whose schema is wrong is a refusal, never
+    # a fallback to the other file.
+    $bundlesSe = $false
+    $nativePayload = Join-Path $pkgRoot 'stateengine/native-payload.json'
+    $legacyPayload = Join-Path $pkgRoot 'stateengine/stateengine-payload.json'
+    if (Test-Path -LiteralPath $nativePayload) {
         try {
-            $payloadJson = Get-Content $payload -Raw | ConvertFrom-Json
+            $payloadJson = Get-Content $nativePayload -Raw | ConvertFrom-Json
+        } catch {
+            Fail 'the package carries a native StateEngine payload that is not a readable JSON manifest; do not install it'
+        }
+        if ($payloadJson.schema -ne 'stateengine.native-payload/v1') {
+            Fail 'the package carries a native StateEngine payload that is not a readable stateengine.native-payload/v1 manifest; do not install it'
+        }
+        $bundlesSe = $true
+    }
+    elseif (Test-Path -LiteralPath $legacyPayload) {
+        try {
+            $payloadJson = Get-Content $legacyPayload -Raw | ConvertFrom-Json
         } catch {
             Fail 'the package carries a StateEngine payload that is not a readable JSON manifest; do not install it'
         }
@@ -199,7 +219,7 @@ try {
             Fail 'the package carries a StateEngine payload that is not a readable stateengine.se-payload.v1 manifest; do not install it'
         }
         $bundlesSe = $true
-    } else { $bundlesSe = $false }
+    }
 
     Write-Host "Installing release $($index.version) as your normal user..."
     & $secode update --from $pkgRoot

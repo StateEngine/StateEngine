@@ -1,11 +1,13 @@
 """Exercise the one-shot install bootstrappers against a local release server.
 
 The server holds one signed stub package: a secode shim that records its
-argv, plus the StateEngine payload manifest. The harness generates an RSA
-key pair, signs the archive, and serves the index, archive and detached
-signature over 127.0.0.1. Every happy path must hand off to
-`secode update --from <dir>`; every bad release must be refused in plain
-words before any hand off.
+argv, plus the StateEngine payload manifest — the legacy
+``stateengine-payload.json`` by default, or any mix of the legacy and
+``native-payload.json`` manifests chosen with ``set_payloads`` before the
+run. The harness generates an RSA key pair, signs the archive, and serves
+the index, archive and detached signature over 127.0.0.1. Every happy path
+must hand off to `secode update --from <dir>`; every bad release must be
+refused in plain words before any hand off.
 """
 import base64
 import hashlib
@@ -30,6 +32,18 @@ TARGET = "x86_64-unknown-linux-gnu"
 ARCHIVE_NAME = f"stateengine-{VERSION}-{TARGET}.tar.gz"
 SIGNATURE_NAME = ARCHIVE_NAME + ".sig"
 PACKAGE_DIR_NAME = f"stateengine-{VERSION}-{TARGET}"
+
+LEGACY_PAYLOAD = {
+    "schema": "stateengine.se-payload.v1",
+    "name": "stateengine",
+    "version": VERSION,
+}
+NATIVE_PAYLOAD = {
+    "schema": "stateengine.native-payload/v1",
+    "name": "stateengine",
+    "runtime": "rust-embedded",
+    "version": VERSION,
+}
 
 
 def openssl(*args):
@@ -56,28 +70,41 @@ class ReleaseServer:
 
     def __init__(self, workdir, key, other_key, pub_b64):
         self.workdir = workdir
+        self.key = key
         self.releases = workdir / "releases"
         self.releases.mkdir()
-        package = workdir / PACKAGE_DIR_NAME
-        (package / "stateengine").mkdir(parents=True)
-        handoff = package / "secode"
+        self.package = workdir / PACKAGE_DIR_NAME
+        (self.package / "stateengine").mkdir(parents=True)
+        handoff = self.package / "secode"
         handoff.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "${SE_TEST_HANDOFF_LOG:?}"\nexit "${SE_TEST_EXIT:-0}"\n')
         handoff.chmod(0o755)
-        payload = {
-            "schema": "stateengine.se-payload.v1",
-            "name": "stateengine",
-            "version": VERSION,
-        }
-        (package / "stateengine" / "stateengine-payload.json").write_text(json.dumps(payload, indent=2) + "\n")
-        self.archive = self.releases / ARCHIVE_NAME
-        with tarfile.open(self.archive, "w:gz") as tar:
-            tar.add(package, arcname=PACKAGE_DIR_NAME)
-        self.archive_sha256 = hashlib.sha256(self.archive.read_bytes()).hexdigest()
-        self.sign(key)
-        self.write_index()
+        self.set_payloads(legacy=LEGACY_PAYLOAD)
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), lambda *a, **kw: QuietHandler(*a, directory=str(workdir), **kw))
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def set_payloads(self, legacy=LEGACY_PAYLOAD, native=None):
+        """Rebuild the signed package around a chosen payload mix.
+
+        ``legacy`` and ``native`` are the documents written at
+        ``stateengine/stateengine-payload.json`` and
+        ``stateengine/native-payload.json`` respectively; ``None`` omits a
+        file. The archive, its signature and the index are rebuilt from the
+        new bytes so the release stays verified.
+        """
+        for name, document in (("stateengine-payload.json", legacy), ("native-payload.json", native)):
+            payload_path = self.package / "stateengine" / name
+            if document is None:
+                if payload_path.exists():
+                    payload_path.unlink()
+            else:
+                payload_path.write_text(json.dumps(document, indent=2) + "\n")
+        self.archive = self.releases / ARCHIVE_NAME
+        with tarfile.open(self.archive, "w:gz") as tar:
+            tar.add(self.package, arcname=PACKAGE_DIR_NAME)
+        self.archive_sha256 = hashlib.sha256(self.archive.read_bytes()).hexdigest()
+        self.sign(self.key)
+        self.write_index()
 
     def sign(self, key):
         openssl("dgst", "-sha256", "-sign", str(key), "-out", str(self.releases / SIGNATURE_NAME), str(self.archive))
