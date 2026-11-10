@@ -22,6 +22,8 @@ pub use codex_rpc::CodexHarness;
 #[cfg(feature = "listener")]
 pub mod acp;
 pub mod codex_capture;
+#[cfg(feature = "listener")]
+pub(crate) mod progress;
 #[cfg(feature = "secode")]
 pub(crate) mod secode;
 #[cfg(feature = "listener")]

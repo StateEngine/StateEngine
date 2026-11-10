@@ -20,6 +20,7 @@ pub struct IgnoredNotifications {
 }
 #[derive(Default)]
 pub(super) struct State {
+    pub progress: crate::harness::progress::Progress,
     pub capture: bool,
     pub restoring: bool,
     pub ignored: IgnoredNotifications,
@@ -58,6 +59,14 @@ impl Completion {
     }
 }
 impl Binding {
+    pub(crate) fn activity(&self) -> Result<se_core::ops::ProviderActivityView> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| poisoned())?
+            .progress
+            .view("Codex"))
+    }
     pub fn ignored_notifications(&self) -> Result<IgnoredNotifications> {
         Ok(self.state.lock().map_err(|_| poisoned())?.ignored)
     }
@@ -112,6 +121,7 @@ impl Binding {
     }
     pub(super) fn fail(&self, error: SeError) {
         if let Ok(mut state) = self.state.lock() {
+            state.progress.terminal("failed", false);
             state.failure.get_or_insert_with(|| error.body.clone());
             for (_, reply) in std::mem::take(&mut state.pending) {
                 let _ = reply.send(Err(SeError::from(error.body.clone()).into()));
@@ -200,6 +210,16 @@ impl State {
             Some("idle") if active.is_none() => (),
             _ => return Err(invalid()),
         }
+        if active.is_some() {
+            self.progress.offered();
+        } else if let Some(turn) = turns.last() {
+            self.progress.terminal(
+                turn.get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("failed"),
+                crate::harness::progress::codex_authentication(&turn["error"]),
+            );
+        }
         self.active_turn = active;
         self.completed = completed;
         self.restoring = false;
@@ -217,6 +237,26 @@ impl State {
         Ok(())
     }
     fn observe(&mut self, method: String, params: Value) -> Result<bool> {
+        if !self.restoring
+            && self.conversation.as_ref().is_some_and(|id| {
+                params.get("threadId").and_then(Value::as_str) == Some(id.as_str())
+            })
+            && self
+                .active_turn
+                .as_deref()
+                .is_some_and(|id| params.get("turnId").and_then(Value::as_str) == Some(id))
+        {
+            if method == "error" {
+                let auth = crate::harness::progress::codex_authentication(&params["error"]);
+                if auth && params.get("willRetry").and_then(Value::as_bool) == Some(true) {
+                    self.progress.retrying_authentication();
+                } else if auth || params.get("willRetry").and_then(Value::as_bool) == Some(false) {
+                    self.progress.terminal("failed", auth);
+                }
+            } else if method.starts_with("item/") {
+                self.progress.event();
+            }
+        }
         if !matches!(
             method.as_str(),
             "turn/started" | "turn/completed" | "item/completed"
@@ -260,6 +300,7 @@ impl State {
                     return Ok(false);
                 }
                 state.active_turn = Some(id);
+                state.progress.offered();
             } else {
                 if !matches!(
                     params.pointer("/turn/status").and_then(Value::as_str),
@@ -284,6 +325,13 @@ impl State {
                     return Ok(false);
                 }
                 state.active_turn = None;
+                state.progress.terminal(
+                    params
+                        .pointer("/turn/status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("failed"),
+                    crate::harness::progress::codex_authentication(&params["turn"]["error"]),
+                );
                 if state.completed.len() >= 64 {
                     state.completed.pop_front();
                 }

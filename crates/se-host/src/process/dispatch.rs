@@ -28,7 +28,9 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
         deadline: &'a Deadline,
     ) -> HostFuture<'a, AnyOutput> {
         Box::pin(async move {
-            self.observe_acp_output(self.observe_secode_output(output, deadline).await?)
+            self.observe_provider_output(
+                self.observe_acp_output(self.observe_secode_output(output, deadline).await?)?,
+            )
         })
     }
 
@@ -128,7 +130,9 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
             match plan {
                 CustodyPlan::ObserveStatus(input) => {
                     let output = self.status(input, admission, deadline).await?;
-                    self.observe_secode_output(output, deadline).await
+                    self.observe_provider_output(
+                        self.observe_secode_output(output, deadline).await?,
+                    )
                 }
                 CustodyPlan::Launch(plan) => self
                     .launch(*plan, admission, deadline)

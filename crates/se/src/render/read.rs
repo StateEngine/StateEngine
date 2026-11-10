@@ -1,5 +1,7 @@
 #[path = "notification.rs"]
 pub(super) mod notification;
+#[path = "provider.rs"]
+pub(super) mod provider;
 #[path = "secode.rs"]
 pub(super) mod secode;
 use se_core::ops::outputs::*;
@@ -88,6 +90,9 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             }
             if let Some(notice) = &agent.harness_policy_notice {
                 writeln!(out, "    {notice}")?;
+            }
+            if let Some(activity) = &agent.provider_activity {
+                provider::activity(activity, "    ", out)?;
             }
             if let Some(runtime) = &agent.acp_runtime {
                 super::acp::runtime(runtime, "    ", out)?;

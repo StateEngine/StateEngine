@@ -66,8 +66,10 @@ pub(super) fn deadline() -> Result<std::time::Instant> {
 }
 pub(super) fn has_runtime_observation(output: &AnyOutput) -> bool {
     rows(output).iter().any(|row| {
-        row.provider == se_types::Provider::Acp
-            || matches!(&row.secode_binding, Some(Read::Present { .. }))
+        matches!(
+            row.provider,
+            se_types::Provider::Claude | se_types::Provider::Codex | se_types::Provider::Acp
+        ) || matches!(&row.secode_binding, Some(Read::Present { .. }))
     })
 }
 fn rows(output: &AnyOutput) -> Vec<&AgentRow> {
@@ -94,6 +96,21 @@ pub(super) fn merge_runtime_observation(
 ) -> Result<AnyOutput> {
     let observed = live.as_ref().map(rows);
     let mut apply = |row: &mut AgentRow| -> Result<()> {
+        if matches!(
+            row.provider,
+            se_types::Provider::Claude | se_types::Provider::Codex
+        ) {
+            row.provider_activity = Some(match &observed {
+                Ok(rows) => rows.iter().find(|other| other.id == row.id && other.session.session_id == row.session.session_id)
+                    .and_then(|other| other.provider_activity.clone()).unwrap_or_else(|| Read::Unknown {
+                        what: "The owning runtime did not return turn activity for this exact session. Check provider sign-in and saved history before resubmitting input.".into(),
+                    }),
+                Err(error) => Read::Unreadable {
+                    source: "provider turn observation".into(), reason: error.to_string(), error: Some(Box::new(error.body.clone())),
+                },
+            });
+            return Ok(());
+        }
         if row.provider == se_types::Provider::Acp {
             row.acp_runtime = Some(match &observed {
                 Ok(rows) => rows.iter().find(|other| other.id == row.id && other.session.session_id == row.session.session_id)

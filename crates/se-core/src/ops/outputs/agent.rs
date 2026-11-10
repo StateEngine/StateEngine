@@ -48,6 +48,8 @@ pub struct AgentRow {
     pub harness_policy_notice: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp_runtime: Option<Read<super::AcpRuntimeView>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_activity: Option<Read<ProviderActivityView>>,
     pub id: AgentId,
     pub name: String,
     pub role: Option<String>,
@@ -63,6 +65,14 @@ pub struct AgentRow {
     pub secode_binding: Option<Read<super::SecodeBindingView>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secode_runtime: Option<Read<super::SecodeRuntimeView>>,
+}
+/// A retained provider turn observation, not native liveness or task success.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderActivityView {
+    pub activity: String,
+    pub detail: String,
+    pub quiet_seconds: Option<u64>,
+    pub next_step: Option<String>,
 }
 /// Single-agent readback reuses the status/list row without flattening Read.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

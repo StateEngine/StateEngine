@@ -45,8 +45,41 @@ one default state home and a terminal you opened yourself.
 
 ### 1. Install and verify in this terminal
 
-Check the archive against its supplied checksum, then extract it. Open a terminal
-in the extracted folder and run the installer as your normal user:
+Put the archive and its adjacent `.sha256` file in the same folder, then open a
+terminal there. Replace `VERSION` below with the downloaded version. A checksum
+checks that the archive matches the supplied file; it does not authenticate an
+unsigned release. Do not extract or install if verification fails.
+
+**Linux:**
+
+```sh
+archive="stateengine-VERSION-x86_64-unknown-linux-gnu-unsigned.tar.gz"
+sha256sum -c "$archive.sha256" && tar -xzf "$archive" && cd "${archive%.tar.gz}"
+```
+
+**Windows PowerShell:**
+
+```powershell
+$archive = "stateengine-VERSION-x86_64-pc-windows-msvc-unsigned.zip"
+$expected = ((Get-Content -LiteralPath "$archive.sha256" -Raw).Trim() -split '\s+')[0]
+$actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+if ($expected -notmatch '^[0-9a-fA-F]{64}$' -or $actual -ne $expected) { throw "Archive checksum mismatch; do not install." }
+Expand-Archive -LiteralPath $archive -DestinationPath . -ErrorAction Stop
+Set-Location -LiteralPath ([IO.Path]::GetFileNameWithoutExtension($archive))
+```
+
+**macOS (installation and saved-state inspection only):**
+
+Use `x86_64-apple-darwin` instead of `aarch64-apple-darwin` on Intel Macs.
+
+```sh
+archive="stateengine-VERSION-aarch64-apple-darwin-unsigned.tar.gz"
+shasum -a 256 -c "$archive.sha256" && tar -xzf "$archive" && cd "${archive%.tar.gz}"
+```
+
+After a successful check and extraction, run the installer from that extracted
+folder as your normal user. On macOS, `sh ./install.sh` installs the limited
+package; do not continue to the managed-agent steps below.
 
 **Linux, sh/bash/zsh:**
 
