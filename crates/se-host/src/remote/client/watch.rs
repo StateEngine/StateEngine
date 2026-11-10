@@ -314,3 +314,7 @@ fn retryable(error: &SeError) -> bool {
             | se_types::Code::RemoteBusy
     )
 }
+
+#[cfg(test)]
+#[path = "../../../tests/support/watch_drain_consumer_review.rs"]
+mod review;
