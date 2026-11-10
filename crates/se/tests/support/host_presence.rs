@@ -64,7 +64,7 @@ pub fn client(args: &[std::ffi::OsString]) -> Check {
         value: "true".into(),
         idempotency_key: key(&format!("presence-{mode}"))?,
     });
-    for operation in [operation] {
+    {
         let name = operation.meta().name;
         let output = ipc::forward(
             &endpoint,

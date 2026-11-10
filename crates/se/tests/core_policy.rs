@@ -321,7 +321,7 @@ fn direct_cli_keeps_key_selected_human_presence() -> Check {
 /// Protects: a busy writer without an endpoint cannot hide the early human-only refusal.
 #[test]
 fn pipe_human_presence_refuses_before_busy_writer_rendezvous() -> Check {
-    let (f, store, _lease) = setup()?;
+    let (f, store, lease) = setup()?;
     let head = store.info()?.head;
     drop(lease);
     let holder = Lease::acquire(
