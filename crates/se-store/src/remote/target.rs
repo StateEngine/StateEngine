@@ -51,6 +51,47 @@ impl ReadPhase {
         {
             return Err(denied());
         }
+        self.client_target_facts(target)
+    }
+
+    /// Native IPC has already admitted this human. Recheck the exact local
+    /// generation and selected project's original owner before sharing a view.
+    /// This does not create a machine session or grant remote authority.
+    pub fn local_client_target(
+        &self,
+        admission: &crate::Admission,
+        target: &RemoteTarget,
+    ) -> StoreResult<TargetFacts> {
+        ready(&self.info)?;
+        let crate::Actor::Human(owner) = &admission.actor else {
+            return Err(denied());
+        };
+        if admission.session.is_some()
+            || matches!(&admission.scope, crate::Scope::Project(project) if project != &target.project)
+            || !matches!(self.runtime_owner()?, Read::Present { value } if value.generation.get() == admission.generation)
+        {
+            return Err(denied());
+        }
+        let p = crate::identity::key(&self.db, "project", target.project.as_str(), &[0], false)?;
+        let first: i64 = self
+            .db
+            .query_row(
+                "SELECT first_seq FROM projects WHERE project_id=? AND state='active'",
+                [&p],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql)?
+            .ok_or_else(denied)?;
+        if !matches!(crate::read::load_event(&self.db, first, &self.info)?.body,
+            EventBody::ProjectRegistered { owner: original, .. } if &original == owner)
+        {
+            return Err(denied());
+        }
+        self.client_target_facts(target)
+    }
+
+    fn client_target_facts(&self, target: &RemoteTarget) -> StoreResult<TargetFacts> {
         let p = crate::identity::key(&self.db, "project", target.project.as_str(), &[0], false)?;
         let mut namespace = vec![1];
         namespace.extend_from_slice(&p);

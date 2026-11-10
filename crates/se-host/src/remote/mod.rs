@@ -136,3 +136,5 @@ pub mod read;
 pub mod bindings;
 #[cfg(feature = "listener")]
 pub mod broker;
+
+mod view_request;

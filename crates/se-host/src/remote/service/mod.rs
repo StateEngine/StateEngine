@@ -54,6 +54,7 @@ impl listener::RemoteService for Service {
                 RemoteRequest::List(input) => {
                     let input = input.clone();
                     let service = self.clone();
+                    let request = view_request::ViewRequest::Remote(request);
                     self.blocking(move || list::page(&service, &request, &input))
                         .await
                         .map(|value| wire::Reply::List(Box::new(value)))

@@ -10,7 +10,7 @@ struct Position {
     wire: Option<RemoteCursorSet>,
 }
 struct State {
-    request: Arc<auth::AuthorizedRemoteRequest>,
+    request: Arc<view_request::ViewRequest>,
     input: RemoteWatch,
     positions: BTreeMap<RemoteTarget, Position>,
     manifest: bool,
@@ -26,6 +26,12 @@ pub(super) struct Watch {
 }
 impl Watch {
     pub fn new(service: Service, request: auth::AuthorizedRemoteRequest) -> Result<Self> {
+        Self::from_request(service, view_request::ViewRequest::Remote(request))
+    }
+    pub(crate) fn from_request(
+        service: Service,
+        request: view_request::ViewRequest,
+    ) -> Result<Self> {
         let RemoteRequest::Watch(input) = request.request() else {
             return Err(SeError::invalid("watch", "an authorized watch request"));
         };
@@ -108,7 +114,7 @@ impl State {
         if self.manifest {
             return self.manifest_page(service);
         }
-        let mut targets = self.request.admission().targets().to_vec();
+        let mut targets = self.request.targets().to_vec();
         targets.sort();
         if !targets.is_empty() {
             let len = targets.len();
