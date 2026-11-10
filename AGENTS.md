@@ -77,6 +77,9 @@ text and commit messages.
 - A test that breaks on an unrelated change gets fixed or removed, not re-pinned.
 - Test doubles must behave like the real thing they replace.
 - CI's one required status is `check`. Author test runs help you develop; they aren't proof.
+- Linux gates every PR. Windows is judged nightly in a VM. macOS compiles nightly.
+- Linux CI runs on the self-hosted runner. Hosted Linux is only the fallback when that runner is unavailable.
+- Owner-only commands in a test use a throwaway home, synthetic credentials and no provider markers.
 - Don't poll CI, because each check costs tokens. Wait with `gh pr checks --watch`.
 - Keep `main` releasable. If it breaks, fixing it comes before new work.
 
@@ -90,7 +93,7 @@ Risk sets the review, and the change sets the risk, not the author:
 |---|---|---|
 | Low | Docs, tests, copy | CI only |
 | Medium | Ordinary product changes | One reviewer |
-| High | Installers, credentials, migrations, process control, data deletion | Two reviewers, plus a native Windows run |
+| High | Installers, credentials, migrations, process control, data deletion | One reviewer. The maintainer also reads pivotal or very large changes. A native Windows run is required only for Windows-only code or the Windows installer. |
 
 Failure here means: it reports success nothing witnessed, it eats another agent's work or a user's
 data, it collapses absent, unreadable and zero, or it fails a stranger's first hour.
