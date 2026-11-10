@@ -23,10 +23,10 @@ def accepted(jobs):
     if route == "box" and routing["result"] == "success":
         if status == "failed":
             return False
-        if status == "passed":
-            return box["result"] == "success" and all(s == "skipped" for s in linux)
-        fallback = (status == "unavailable" and box["result"] == "success") or (
-            not status and box["result"] == "failure")
+        if status == "passed" and box["result"] == "success":
+            return all(s == "skipped" for s in linux)
+        fallback = (status == "unavailable" and box["result"] in {"success", "failure"}) or (
+            status in {"", "passed"} and box["result"] == "failure")
         return fallback and all(s == "success" for s in linux)
     if ((route == "hosted" and routing["result"] == "success") or
             (not route and routing["result"] == "failure")):

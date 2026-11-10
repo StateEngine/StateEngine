@@ -23,7 +23,7 @@ sys.path.insert(0, str(BOX))
 from custody import Journal
 from dispatch import trusted
 from engine import Container, capacity
-from transport import execute
+from transport import execute, WorkloadFailure
 from workload import Cohort
 
 CONFIG = Path("/etc/stateengine-ci/self-hosted.json")
@@ -210,6 +210,10 @@ def script_step(request, config, report, directory):
     binding = json.loads((directory / "binding.json").read_text())
     changed = binding.get("policy_changed", [])
     if changed and operation not in {"changes", "route"}:
+        if operation == "linux":
+            print("Linux infrastructure unavailable: approved CI policy changed; running on hosted",
+                  file=sys.stderr, flush=True)
+            return {"exit_code": 0, "outputs": {"status": "unavailable"}}
         raise RuntimeError("approved CI policy changed; this workload must run on hosted")
     if operation == "changes":
         # Conservative full checking avoids running a candidate change detector
@@ -217,28 +221,39 @@ def script_step(request, config, report, directory):
         return {"exit_code": 0, "outputs": {"rust": "true", "windows": "true"}}
     if operation == "route":
         return {"exit_code": 0, "outputs": {"route": "hosted" if changed else "box"}}
-    capacity(12*1024**3 if operation == "linux" else 2*1024**3)
+    if operation == "linux":
+        return linux_step(config, report, directory)
+    capacity(2*1024**3)
+    with venue(config):
+        journal = Journal()
+        journal.reconcile()
+        results = json.loads(args.get("environmentVariables", {}).get("RESULTS", "null"))
+        if not isinstance(results, dict):
+            raise RuntimeError("required job results are absent")
+        success = check_step(config, report, directory, results)
+    return {"exit_code": 0 if success else 1}
+
+
+def linux_step(config, report, directory):
     canceled = threading.Event()
     cohort = None
+    outcomes = {}
+    unavailable = False
+
     def stop(*_):
         canceled.set()
         if cohort:
             cohort.stop()
         raise InterruptedError("runner canceled this exact job")
+
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    success = False
-    with venue(config):
-        journal = Journal()
-        journal.reconcile()
-        if operation == "check":
-            results = json.loads(args.get("environmentVariables", {}).get("RESULTS", "null"))
-            if not isinstance(results, dict):
-                raise RuntimeError("required job results are absent")
-            success = check_step(config, report, directory, results)
-        else:
+    try:
+        capacity(12*1024**3)
+        with venue(config):
+            journal = Journal()
+            journal.reconcile()
             cohort = Cohort(report, journal, directory / "source.tar.gz", Path(config["cache"]), directory, canceled)
-            outcomes = {}
             try:
                 for name in ("fmt", "clippy", "archive", "test-1", "test-2"):
                     if name != "fmt" and not outcomes.get("fmt"):
@@ -249,15 +264,32 @@ def script_step(request, config, report, directory):
                     try:
                         outcomes[name] = cohort.stage(name)
                     except Exception as error:
-                        outcomes[name] = False
+                        print(f"Container stage {name} refused: {type(error).__name__}: {error}",
+                              file=sys.stderr, flush=True)
                         write(directory / (name + "-failure.json"), {"reason": str(error)})
-                success = len(outcomes) == 5 and all(outcomes.values()) and not canceled.is_set()
+                        if isinstance(error, WorkloadFailure):
+                            outcomes[name] = False
+                        else:
+                            raise
                 write(directory / "outcomes.json", outcomes)
             finally:
-                cohort.stop()
-                journal.reconcile()
-    return {"exit_code": 0 if success else 1,
-            "outputs": {"status": "passed" if success else "failed"} if operation == "linux" else {}}
+                try:
+                    cohort.stop()
+                finally:
+                    journal.reconcile()
+    except InterruptedError:
+        raise
+    except Exception as error:
+        if canceled.is_set():
+            raise InterruptedError("runner canceled this exact job") from error
+        unavailable = True
+        print(f"Linux infrastructure unavailable: {type(error).__name__}: {error}",
+              file=sys.stderr, flush=True)
+    # A cleanup or later admission failure cannot erase an already observed red.
+    failed = any(value is False for value in outcomes.values()) or bool(cohort and
+        any(row.get("exit") == 1 for row in cohort.outcomes.values()))
+    status = "failed" if failed else "unavailable" if unavailable else "passed"
+    return {"exit_code": 1 if failed else 0, "outputs": {"status": status}}
 
 
 def main():
