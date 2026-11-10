@@ -140,7 +140,9 @@ async fn exchange(
             // The native CLI's bounded public envelope retains its actual start
             // refusal and remedy. Never echo unstructured SSH diagnostics, which
             // may contain terminal control bytes or private command arguments.
-            if let Ok(error) = serde_json::from_slice::<se_types::ErrorEnvelope>(&response) {
+            if let Some(error) = [&response, &diagnostics].into_iter().find_map(|bytes| {
+                serde_json::from_slice::<se_types::ErrorEnvelope>(bytes).ok()
+            }) {
                 return Err(error.body().clone().into());
             }
             return Err(unavailable("SSH authorization refused; check the saved SSH destination and native owner access"));
