@@ -105,14 +105,27 @@ impl Channels {
         }
         let _running = Running(self.clone());
         let mut workers: HashMap<ChannelId, Receiver> = HashMap::new();
-        let mut timer = tokio::time::interval(Duration::from_secs(5));
+        let rescan_period = Duration::from_secs(5);
+        let mut timer = Some(tokio::time::interval(rescan_period));
+        let changed = self.changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
         let mut failure = None;
         loop {
             tokio::select! {
                 changed=stopped.changed()=>{if changed.is_err() || stopped.borrow().is_some() {break;}},
-                _=timer.tick()=>{},
-                _=self.changed.notified()=>{},
+                _=async {
+                    match timer.as_mut() {
+                        Some(timer) => { timer.tick().await; },
+                        None => std::future::pending::<()>().await,
+                    }
+                }=>{},
+                _=&mut changed=>{},
             }
+            // Register before reading: a connection committed during the scan
+            // must wake us even after an empty scan disarms the timer.
+            changed.set(self.changed.notified());
+            changed.as_mut().enable();
             let deadline = super::service::deadline(Duration::from_secs(5))?;
             let scan = self.read(None, &deadline, |cx| {
                 cx.read.channel_active().map_err(|e| store_error(&e))
@@ -130,7 +143,7 @@ impl Channels {
                     Err(error) if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(_)) => {
                         // A read timeout delays discovery while existing receivers retain custody.
                         eprintln!("Channel connection scan delayed: {error}");
-                        timer.reset();
+                        timer.get_or_insert_with(|| tokio::time::interval(rescan_period)).reset();
                         continue;
                     }
                     Err(error)
@@ -238,6 +251,14 @@ impl Channels {
                     Ok(())
                 });
                 workers.insert(state.id, Receiver { stop, task });
+            }
+            if workers.is_empty() {
+                timer = None;
+            } else if timer.is_none() {
+                timer = Some(tokio::time::interval_at(
+                    tokio::time::Instant::now() + rescan_period,
+                    rescan_period,
+                ));
             }
         }
         for receiver in workers.values() {
