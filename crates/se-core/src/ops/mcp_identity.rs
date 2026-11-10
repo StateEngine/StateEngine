@@ -6,7 +6,7 @@ pub enum IdentityRole {
     CallerProject,
     Target,
 }
-const CALLER_DESCRIPTION: &str = "Caller assertion; optional; must match the bound identity";
+const CALLER_DESCRIPTION: &str = "Optional; must match caller.";
 type FieldRole = (&'static str, IdentityRole, &'static str);
 pub const CALLER_FIELDS: &[FieldRole] = &[
     ("agent_id", IdentityRole::CallerAgent, CALLER_DESCRIPTION),

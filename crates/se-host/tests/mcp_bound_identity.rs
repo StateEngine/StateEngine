@@ -65,7 +65,7 @@ fn all_tools_check_each_identity_alias_against_the_authenticated_principal() -> 
                 for tool in listed["result"]["tools"].as_array().ok_or("tool list absent")? {
                     for field in ["agent_id", "project_id"] {
                         require(tool["inputSchema"]["properties"][field] == json!({
-                            "type": "string", "description": "Caller assertion; optional; must match the bound identity"
+                            "type": "string", "description": "Optional; must match caller."
                         }), format!("missing caller metadata {} {field}: {tool}", tool["name"]))?;
                         require(!tool["inputSchema"]["required"].as_array().is_some_and(|fields| fields.contains(&json!(field))), "caller assertion became required")?;
                     }
