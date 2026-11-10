@@ -438,3 +438,7 @@ impl Connection {
         Ok((guard, rx))
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/support/watch_drain_queue_fixture.rs"]
+pub(super) mod review_fixture;
