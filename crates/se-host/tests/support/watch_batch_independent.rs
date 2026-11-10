@@ -1,8 +1,7 @@
 //! Reviewer controls: batching must retain rendered-only cursors and fair target service.
 use super::*;
+use crate::runtime::test_support as support;
 use crate::{HostedRuntime, initialize_host_process};
-#[path = "wave2_host_fixture.rs"]
-mod support;
 use support::{Check, Fixture};
 fn run(control: impl FnOnce(&Service, &Fixture, u64) -> Check) -> Check {
     let initialized = initialize_host_process()?;
