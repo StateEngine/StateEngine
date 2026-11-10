@@ -1,6 +1,6 @@
 # Product operation allowlist
 
-This is the shipped Rust product's operation inventory. CLI, MCP, IPC and linked calls derive from one synchronous core registry, with async custody execution in the host. The reconciled rows contain **58 operations and 24 MCP tools (19 core, 5 optional Atlas)**; the registry currently registers 46 operations and 20 tools, and the generated command inventory at the end of this document lists the unbuilt rows as planned; a test fails when that inventory drifts from the registry or the design tables. A crate cannot introduce an unlisted public operation. This document is a design contract, not a running implementation or journey verdict. The Node repository keeps its private factory engine; no fleet cutover/import or CLI-only factory adaptation is part of this build.
+This is the shipped Rust product's operation inventory. CLI, MCP, IPC and linked calls derive from one synchronous core registry, with async custody execution in the host. The reconciled rows contain **58 operations and 24 MCP tools (19 core, 5 optional Atlas)**; the registry currently registers 47 operations and 21 tools, and the generated command inventory at the end of this document lists the unbuilt rows as planned; a test fails when that inventory drifts from the registry or the design tables. A crate cannot introduce an unlisted public operation. This document is a design contract, not a running implementation or journey verdict. The Node repository keeps its private factory engine; no fleet cutover/import or CLI-only factory adaptation is part of this build.
 
 ## Journeys and row conventions
 
@@ -207,7 +207,7 @@ The CLI retains replacement hints only for commands with a supported replacement
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 46 operations (40 core, 6 Atlas), 20 MCP tools (15 core, 5 Atlas). Planned: 14 operations, 5 MCP tools.
+Registered: 47 operations (41 core, 6 Atlas), 21 MCP tools (16 core, 5 Atlas). Planned: 13 operations, 4 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -220,6 +220,7 @@ Registered: 46 operations (40 core, 6 Atlas), 20 MCP tools (15 core, 5 Atlas). P
 | `meta.version` | --version | none | either | read |
 | `meta.help` | help | none | either | read |
 | `meta.schema` | schema | none | either | read |
+| `identity.whoami` | none — terminal actor is already known; session introspection is an agent tool | `stateengine_whoami` | session | read |
 | `store.import_node` | import | none | owner | custody |
 | `project.init` | init | none | owner | write |
 | `project.move` | project move | none | owner | write |
@@ -258,9 +259,9 @@ Registered: 46 operations (40 core, 6 Atlas), 20 MCP tools (15 core, 5 Atlas). P
 | `decision.retract` | decision retract | none | owner | write |
 | `decision.supersede` | decision supersede | none | owner | write |
 
-Planned operations (design tables, not yet registered): `agent.rename`, `agent.wake`, `config.list`, `credential.rotate`, `doctor.bundle`, `history.search`, `identity.whoami`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
+Planned operations (design tables, not yet registered): `agent.rename`, `agent.wake`, `config.list`, `credential.rotate`, `doctor.bundle`, `history.search`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
 
-Planned MCP tools: `stateengine_agent_status`, `stateengine_agent_wake`, `stateengine_search`, `stateengine_session_turn`, `stateengine_whoami`
+Planned MCP tools: `stateengine_agent_status`, `stateengine_agent_wake`, `stateengine_search`, `stateengine_session_turn`
 
 Registered without a design-table row: `atlas.augment` (no CLI or MCP exposure), `project.move` (CLI `project move`)
 

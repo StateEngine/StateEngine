@@ -92,6 +92,7 @@ SessionContext => SessionContextRequest, SessionContextOutput;
 MetaVersion => MetaVersion, VersionOutput;
 MetaHelp => MetaHelp, HelpOutput;
 MetaSchema => MetaSchema, SchemaCatalogue;
+IdentityWhoami => IdentityWhoami, PrincipalOutput;
 ProjectInit => ProjectInit, InitOutput;
 ProjectMove => ProjectMove, MoveOutput;
 ImportNode => ImportNode, ImportReceipt;

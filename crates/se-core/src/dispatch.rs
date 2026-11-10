@@ -528,6 +528,9 @@ impl Kernel {
                 )?
                 .into(),
             ),
+            AnyOp::IdentityWhoami(input) => {
+                OpStep::Complete(crate::ops::identity::whoami(input, cx)?.into())
+            }
             AnyOp::DecisionList(input) => {
                 OpStep::Complete(crate::ops::decision_list::read(input, cx)?.into())
             }

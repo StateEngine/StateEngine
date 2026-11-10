@@ -36,6 +36,11 @@ pub use doctor::{Diagnosis, DoctorInspect, DoctorRepair, RepairOutput};
 pub mod event;
 pub mod history;
 pub use history::{HistoryList, HistoryPage};
+pub mod identity;
+pub use identity::{
+    IdentityWhoami, PrincipalAgent, PrincipalBinding, PrincipalOutput, PrincipalProject,
+    PrincipalSession,
+};
 pub mod hook;
 pub mod inbox;
 pub mod inputs;
@@ -178,6 +183,7 @@ ops! {
     MetaVersion => MetaVersion, VersionOutput, ("meta.version",CliExposure::RootFlag { flag:"version" },no_mcp("Installed CLI metadata is not an agent task."),Either,true,Never,Read,None,None,"se.version",Version,&["J1"]);
     MetaHelp => MetaHelp, HelpOutput, ("meta.help",leaf(&["help"]),no_mcp("MCP descriptions derive from the same catalogue."),Either,true,Never,Read,None,None,"se.help",Help,&["J1"]);
     MetaSchema => MetaSchema, SchemaCatalogue, ("meta.schema",leaf(&["schema"]),no_mcp("MCP tools/list exposes the generated schemas."),Either,true,Never,Read,None,None,"se.schema-catalogue",Schema,&["J1"]);
+    IdentityWhoami => IdentityWhoami, PrincipalOutput, ("identity.whoami",CliExposure::None {reason:"terminal actor is already known; session introspection is an agent tool"},tool("stateengine_whoami","Identity","Who you are in StateEngine: your project, agent identity, session and what you are allowed to do."),Session,false,Never,Read,Session,None,"se.principal",Principal,&["J2","J3","J4"]);
     ImportNode => ImportNode, ImportReceipt, ("store.import_node",leaf(&["import"]),no_mcp("Explicit owner migration preserves the original Node history."),Owner,false,Never,Custody,Home,HostAutoStart,"se.import",Import,&["J2","J3","J4"]);
     ProjectInit => ProjectInit, InitOutput, ("project.init",leaf(&["init"]),no_mcp("Owner setup registers the managed workspace."),Owner,false,Never,Write,Home,None,"se.init",Init,&["J2"]);
     ProjectMove => ProjectMove, MoveOutput, ("project.move",leaf(&["project","move"]),no_mcp("Owner terminal operation: re-attach the project to a moved repository folder after verifying its recorded git identity."),Owner,false,Never,Write,Project,None,"se.project-move",ProjectMove,&["J3"]);
