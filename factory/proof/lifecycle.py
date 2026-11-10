@@ -23,6 +23,12 @@ def plan(config):
     for index, (surface, selection) in enumerate(config["probes"]):
         rows.append({"platform": "linux", "surface": surface, "selection": selection,
                      "output": f"{index + 1}-{surface}-{selection}", "exit": None, "state": "planned"})
+    for probe in config.get("native_receipts", []):
+        if probe.get("platform") not in {"win32", "darwin"} or probe.get("surface") != "claude" or probe.get("selection") != "wave-2":
+            raise ValueError("native receipts require a native platform and Claude wave-2 scope")
+        rows.append({key: probe[key] for key in ("platform", "surface", "selection")})
+        rows[-1].update(output=f"{len(rows)}-native-{probe['platform']}-claude-wave-2", exit=None,
+                        state="planned", native_receipt=True)
     return rows
 
 

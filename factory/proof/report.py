@@ -2,6 +2,7 @@
 import json
 import math
 from pathlib import Path
+from native import validate as validate_native
 
 PLATFORMS = ("linux", "win32", "darwin")
 NAMES = ("Install", "Adopt", "Come back", "Two agents", "Remove")
@@ -64,12 +65,21 @@ def budget_numbers(budget, row):
             and (budget not in {"B2", "B7", "B9"} or path.endswith(("_ms", ".ms")) or ".p95_ms." in path)}
 
 
-def invocation(inv, directory):
+def invocation(inv, directory, run=None):
     mode, expected = SELECTIONS.get(inv.get("selection"), ("unsupported", set(range(1, 6))))
     entry = {**inv, "mode": mode, "expected": sorted(expected), "results": [],
              "receipt_complete": False, "journeys": {}, "outcome": "UNKNOWN", "problems": [],
              "judge_outcome": "FAIL" if type(inv.get("exit")) is int and inv["exit"] != 0
                               else "PASS" if type(inv.get("exit")) is int and inv["exit"] == 0 else "UNKNOWN"}
+    if inv.get("native_receipt"):
+        try:
+            native = validate_native(inv, directory, run or {})
+            if native["exit"] != inv.get("exit") or inv.get("state") != "finished":
+                raise ValueError("native invocation differs from its observer receipt")
+        except (OSError, ValueError, TypeError) as error:
+            entry["problems"].append(str(error))
+            entry["judge_outcome"] = "UNKNOWN"
+            return entry
     receipt, error = read(directory / inv["output"] / "results.json")
     if error:
         entry["problems"].append("results.json: " + error)
@@ -138,7 +148,7 @@ def invocation(inv, directory):
 
 
 def summarize(run, directory):
-    entries = [invocation(inv, directory) for inv in run.get("invocations", [])]
+    entries = [invocation(inv, directory, run) for inv in run.get("invocations", [])]
     errors = list(run.get("errors", []))
     errors += [f"{entry['output']}: {problem}" for entry in entries for problem in entry["problems"]]
     terminal = all(entry["receipt_complete"] and entry["outcome"] != "UNKNOWN" for entry in entries)
@@ -192,6 +202,7 @@ def summarize(run, directory):
                     continue
                 numeric = budget_numbers(budget, row)
                 slots[budget].append({"output": entry["output"], "surface": entry["surface"],
+                    "platform": entry.get("platform"),
                     "label": row["label"], "numbers": numeric,
                     "box_load": entry.get("box_load"),
                     "sample_state": "observed" if numeric else row.get("state", "unavailable"),
