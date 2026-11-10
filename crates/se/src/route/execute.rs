@@ -226,7 +226,15 @@ fn dispatch_with_cold_recovery(
             );
             status.value.atlas = match &observed {
                 Ok(AnyOutput::ProjectStatus(live)) => {
-                    status.value.pending.extend(live.value.pending.clone());
+                    for pending in &live.value.pending {
+                        if !status.value.pending.iter().any(|known| {
+                            known.what == pending.what
+                                && known.since == pending.since
+                                && known.detail == pending.detail
+                        }) {
+                            status.value.pending.push(pending.clone());
+                        }
+                    }
                     live.value.atlas.clone()
                 }
                 Ok(_) => se_core::ops::status::atlas_view(Err(scope::unreadable(
