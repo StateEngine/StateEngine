@@ -13,6 +13,7 @@ import uuid
 ACCOUNT = "stateengine-ci"
 ENGINE_DOOR = "/usr/local/libexec/stateengine-ci-engine"
 GIB = 1024 ** 3
+ADMISSION_MARGIN = 6 * GIB
 
 
 def account_args(*args):
@@ -36,7 +37,7 @@ def engine_args(*args):
 
 def command(*args, input=None, timeout=90):
     result = subprocess.run(engine_args(*args), input=input, capture_output=True, timeout=timeout,
-                            close_fds=True)
+                            cwd="/", close_fds=True)
     if result.returncode:
         raise RuntimeError(f"engine {args[0]} refused (exit {result.returncode}): " +
                            result.stderr.decode(errors="replace")[-4000:])
@@ -46,8 +47,8 @@ def command(*args, input=None, timeout=90):
 def capacity(memory):
     available = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines()
                          if line.startswith("MemAvailable:"))) * 1024
-    if memory > 18 * GIB or memory <= 0 or available < 34 * GIB + memory:
-        raise RuntimeError("infrastructure unavailable: preserve 34 GiB after bounded allocation")
+    if memory > 18 * GIB or memory <= 0 or available < ADMISSION_MARGIN + memory:
+        raise RuntimeError("infrastructure unavailable: preserve 6 GiB after bounded allocation")
     return available
 
 
@@ -56,7 +57,7 @@ class Container:
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
             raise ValueError("immutable image ID required")
         if (type(cpus) is not int or not 1 <= cpus <= 12 or type(pids) is not int or
-                not 16 <= pids <= 512 or not 1 <= deadline <= 900 or
+                not 16 <= pids <= 512 or not 1 <= deadline <= 1800 or
                 not 1024**2 <= work <= 12 * GIB):
             raise ValueError("job resource limits exceed the admitted bounds")
         capacity(memory)
@@ -108,7 +109,7 @@ class Container:
                 # Creation may have succeeded before its response failed. The
                 # unpredictable controller-owned name recovers only that object.
                 exists = subprocess.run(engine_args("container", "exists", self.name),
-                                        capture_output=True, timeout=30, close_fds=True)
+                                        capture_output=True, timeout=30, cwd="/", close_fds=True)
                 if exists.returncode == 0:
                     value, = json.loads(command("inspect", self.name))
                     if value["Name"].lstrip("/") != self.name or not re.fullmatch(r"[a-f0-9]{64}", value["Id"]):
@@ -170,7 +171,7 @@ class Container:
             self.journal.observe(self.name, outside)
         command("rm", "--force", "--time=5", identity)
         observed = subprocess.run(engine_args("container", "exists", identity), capture_output=True,
-                                  timeout=30, close_fds=True)
+                                  timeout=30, cwd="/", close_fds=True)
         if observed.returncode != 1:
             raise RuntimeError("owned container removal is unproved")
         if self.journal:

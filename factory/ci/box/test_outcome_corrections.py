@@ -101,9 +101,12 @@ class Corrections(unittest.TestCase):
                 transport.export(box, "archive", Path(temporary)/"archive")
         self.assertTrue(children and all(p.poll() is not None for p in children))
 
-    def test_artifact_child_exit_and_post_eof_deadline_remain_workload_failures(self):
-        for command in ([sys.executable, "-c", "raise SystemExit(1)"],
-                        [sys.executable, "-c", "import os,time;os.close(1);os.close(2);time.sleep(5)"]):
+    def test_exporter_refusal_is_infrastructure_but_post_eof_deadline_is_workload(self):
+        cases = [([sys.executable, "-c", "raise SystemExit(1)"],
+                  RuntimeError, "infrastructure artifact export refused"),
+                 ([sys.executable, "-c", "import os,time;os.close(1);os.close(2);time.sleep(5)"],
+                  transport.WorkloadFailure, "artifact export deadline exceeded")]
+        for command, expected, reason in cases:
             children = []
             popen = subprocess.Popen
             def child(*args, **kwargs):
@@ -115,8 +118,10 @@ class Corrections(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temporary, \
                     patch("transport.engine_args", return_value=command), \
                     patch("transport.subprocess.Popen", side_effect=child):
-                with self.assertRaises(transport.WorkloadFailure):
+                with self.assertRaisesRegex(expected, reason) as observed:
                     transport.export(box, "archive", Path(temporary)/"archive")
+                if expected is RuntimeError:
+                    self.assertNotIsInstance(observed.exception, transport.WorkloadFailure)
             self.assertTrue(children and all(p.poll() is not None for p in children))
 
     def test_observed_limit_is_recorded_before_concurrent_cancellation_or_final_cleanup(self):

@@ -3,7 +3,8 @@
 This adapter uses the ordinary GitHub runner for scheduling and status. It reuses
 the approved networkless rootless containers and the existing `Cohort` consumers;
 there is no polling job on a hosted Linux machine. One listener admits one job at
-a time, and the full Linux chain executes its five container stages serially.
+a time, and the full chain executes six stages serially inside one disposable container.
+Compiled tests stay inside that container; no test archive crosses the host.
 
 The listener runs as the locked `stateengine-ci` account. Both container hooks and
 `ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER=true` are mandatory service environment,
@@ -26,7 +27,11 @@ staging candidate bytes. A changed or missing policy file downloads no candidate
 archive and returns an unavailable outcome, selecting the complete hosted chain.
 API failures and unreadable policy do not become an assertion of policy drift;
 a failed preparation also selects hosted. The `linux` operation runs existing
-fmt, Clippy, archive/doc and both nextest/custom harness partitions. The final
+formatting, Linux Clippy, test compilation/docs, both nextest/custom harness
+partitions and Windows MSVC-target Clippy. Windows checking uses the prepared
+public SDK and cross-checking tool inside the same networkless container.
+The hook emits a separate Windows outcome; the final reader permits skipping the
+hosted Windows job only when the complete box run and that outcome both passed. The final
 required-status consumer always runs on hosted.
 
 An infrastructure refusal before or between stages prints its reason and selects
@@ -37,8 +42,9 @@ binding are retained under the configured private controller state directory.
 The legacy fixed metadata and check operation markers remain available to the
 adapter, but this workflow does not schedule them on the box.
 
-Every container admission preserves 34 GiB available after its bounded memory
-allocation and keeps the existing resource caps. The existing CI lock serializes
+The full run has an 18 GiB memory cap, eight CPU cores and a 30-minute outside
+deadline. Container admission requires 24 GiB available for the full run, preserving
+6 GiB after its bounded allocation. The existing CI lock serializes
 against other CI work. This adapter adds no guest-admission fence or guest lock;
 guests use their own memory admission. Persistent container records still retain
 exact process custody after a controller crash, and reconciliation must join known
@@ -77,8 +83,12 @@ runner selector, for example `["self-hosted","Linux","X64","stateengine-box"]`.
 Clearing that one variable restores the complete hosted path. Disable the old
 App route variable as part of cutover. Box preparation or infrastructure refusal
 selects hosted automatically; known test red never becomes fallback success. An
-offline runner remains queued until the operator clears the selector. Required
-Windows Clippy and the sole `check` status are unchanged.
+offline runner remains queued until the maintainer clears the selector; an
+already stranded run may need a re-run after that change. Busy work queues on the
+box instead of overflowing to hosted. GitHub expires an unstarted self-hosted
+job after 24 hours; the job execution timeout does not shorten that queue limit.
+The sole required status remains `check`; it requires Windows-target Clippy
+from the box or the complete hosted fallback.
 The workflow allows hosted fmt/Clippy/archive/tests for an explicit hosted route,
 a failed routing observation, or an unavailable box workload, even with the box
 selector set. It always places `check` on hosted.
@@ -92,5 +102,5 @@ that arbitrary replacement workflow definitions have been authenticated.
 Before activation, independently exercise a real required check, a genuine test
 failure, workflow/container rejection, cancellation with a surviving container,
 free-memory refusal and exact cleanup. Syntax checks and isolated hook
-requests do not qualify these deployed effects. Windows and macOS do not execute
-this Linux-only adapter and remain native qualification lanes.
+requests do not qualify these deployed effects. Native Windows runtime and macOS qualification remain separate; a successful
+MSVC-target cross-check makes no claim about native runtime behavior.

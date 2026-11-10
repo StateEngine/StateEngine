@@ -1,21 +1,30 @@
 FROM docker.io/library/ubuntu@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
 RUN test "$(cat /sys/fs/cgroup/memory.max)" = 4294967296 && test "$(cat /sys/fs/cgroup/memory.swap.max)" = 0
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
-    python3 build-essential pkg-config libssl-dev cmake git strace xvfb xterm ca-certificates xz-utils \
+    python3 build-essential pkg-config libssl-dev cmake git strace xvfb xterm ca-certificates xz-utils clang lld llvm \
     && rm -r /var/lib/apt/lists/*
 RUN usermod --login ci --home /home/ci ubuntu && groupmod --new-name ci ubuntu \
     && mkdir -p /home/ci /opt/cargo /opt/rust /opt/node /opt/box /opt/bootstrap \
     && chown 1000:1000 /home/ci /opt/cargo /opt/bootstrap
 ADD rust.tar /opt/rust/
+ADD windows-sdk.tar /opt/windows-sdk/
 ADD node.tar.xz /opt/node/
 COPY cargo-nextest /opt/rust/bin/cargo-nextest
+COPY cargo-xwin /opt/rust/bin/cargo-xwin
+COPY rustup /opt/rustup/bin/rustup
+RUN mkdir /opt/rustup/toolchains \
+    && ln -s /opt/rust /opt/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu \
+    && for tool in cargo rustc rustdoc rustfmt cargo-fmt cargo-clippy clippy-driver; do \
+        ln -s rustup "/opt/rustup/bin/$tool"; done
 COPY probe.py runner.py /opt/box/
 RUN mkdir -p /etc/stateengine-test-accounts && printf '%s\n' '{"schema":"stateengine-test-account/v1","identity":"1000","profile":"/home/ci"}' > /etc/stateengine-test-accounts/1000.json
 ADD main.tar /opt/bootstrap/
-ENV PATH=/opt/rust/bin:/opt/node/node-v22.23.4-linux-x64/bin:/usr/bin:/bin HOME=/home/ci CARGO_HOME=/opt/cargo
+ENV PATH=/opt/rustup/bin:/opt/rust/bin:/opt/node/node-v22.23.4-linux-x64/bin:/usr/bin:/bin HOME=/home/ci CARGO_HOME=/opt/cargo \
+    RUSTUP_HOME=/opt/rustup RUSTUP_TOOLCHAIN=1.97.1 RUSTUP_AUTO_INSTALL=0
 USER 1000:1000
-RUN python3 -c "import subprocess; commands=[(['rustc','--version'],'rustc 1.97.1 '),(['cargo','nextest','--version'],'cargo-nextest 0.9.143 '),(['python3','--version'],'Python 3.12.'),(['node','--version'],'v22.23.4')]; [(_ for _ in ()).throw(RuntimeError('wrong tool version')) for c,p in commands if not subprocess.check_output(c,text=True).startswith(p)]"
+RUN python3 -c "import subprocess; commands=[(['rustc','+1.97.1','--version'],'rustc 1.97.1 '),(['cargo','+1.97.1','--version'],'cargo 1.97.1 '),(['cargo','nextest','--version'],'cargo-nextest 0.9.143 '),(['python3','--version'],'Python 3.12.'),(['node','--version'],'v22.23.4')]; [(_ for _ in ()).throw(RuntimeError('wrong tool version')) for c,p in commands if not subprocess.check_output(c,text=True).startswith(p)]"
 WORKDIR /opt/bootstrap
-RUN cargo fetch --locked --target x86_64-unknown-linux-gnu
+RUN cargo metadata --locked --format-version=1 --all-features --filter-platform x86_64-unknown-linux-gnu > /dev/null
+RUN cargo metadata --locked --format-version=1 --all-features --filter-platform x86_64-pc-windows-msvc > /dev/null
 WORKDIR /work
 ENTRYPOINT ["python3", "/opt/box/runner.py"]

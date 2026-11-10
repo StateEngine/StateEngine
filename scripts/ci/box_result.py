@@ -3,8 +3,8 @@ import json
 import re
 
 NAME = "StateEngine box Linux"
-SCHEMA = "stateengine-box-linux/v1"
-STAGES = {"fmt", "clippy", "archive", "test-1", "test-2"}
+SCHEMA = "stateengine-box-linux/v2"
+STAGES = {"fmt", "clippy", "archive", "test-1", "test-2", "windows-clippy"}
 SHA = re.compile(r"[a-f0-9]{40}")
 DIGEST = re.compile(r"[a-f0-9]{64}")
 

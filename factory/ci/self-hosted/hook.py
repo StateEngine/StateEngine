@@ -24,7 +24,7 @@ from custody import Journal
 from dispatch import trusted
 from engine import Container, capacity
 from transport import execute, WorkloadFailure
-from workload import Cohort
+from workload import Cohort, JOBS
 
 CONFIG = Path("/etc/stateengine-ci/self-hosted.json")
 
@@ -249,13 +249,13 @@ def linux_step(config, report, directory):
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        capacity(12*1024**3)
+        capacity(18*1024**3)
         with venue(config):
             journal = Journal()
             journal.reconcile()
             cohort = Cohort(report, journal, directory / "source.tar.gz", Path(config["cache"]), directory, canceled)
             try:
-                for name in ("fmt", "clippy", "archive", "test-1", "test-2"):
+                for name in JOBS:
                     if name != "fmt" and not outcomes.get("fmt"):
                         continue
                     if name.startswith("test-") and not outcomes.get("archive"):
@@ -288,8 +288,13 @@ def linux_step(config, report, directory):
     # A cleanup or later admission failure cannot erase an already observed red.
     failed = any(value is False for value in outcomes.values()) or bool(cohort and
         any(row.get("exit") == 1 for row in cohort.outcomes.values()))
+    if not failed and not unavailable and set(outcomes) != set(JOBS):
+        unavailable = True
     status = "failed" if failed else "unavailable" if unavailable else "passed"
-    return {"exit_code": 1 if failed else 0, "outputs": {"status": status}}
+    windows = "passed" if outcomes.get("windows-clippy") is True else "unavailable"
+    if outcomes.get("windows-clippy") is False:
+        windows = "failed"
+    return {"exit_code": 1 if failed else 0, "outputs": {"status": status, "windows": windows}}
 
 
 def main():

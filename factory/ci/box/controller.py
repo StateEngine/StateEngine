@@ -10,13 +10,12 @@ from pathlib import Path
 import re
 import signal
 import stat
-import time
+import threading
 
-from engine import Container, command
+from engine import command
+from custody import Journal
+from workload import Cohort
 from github_binding import GitHub, bind
-from transport import execute, export
-
-JOBS = {"fmt": 180, "clippy": 720, "archive": 900, "test-1": 360, "test-2": 360}
 
 
 def write(path, value):
@@ -35,10 +34,12 @@ def exclusive():
     fd = os.open(directory / "one-job.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        live = json.loads(command("ps", "--filter=label=stateengine.shadow=true", "--format=json"))
-        if live:
-            raise RuntimeError("infrastructure unavailable: an earlier owned container is still running")
-        yield
+        with open("/var/lib/stateengine-ci-locks/shadow.lock", "r") as shared:
+            fcntl.flock(shared, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            live = json.loads(command("ps", "--filter=label=stateengine.shadow=true", "--format=json"))
+            if live:
+                raise RuntimeError("infrastructure unavailable: an earlier owned container is still running")
+            yield
     finally:
         os.close(fd)
 
@@ -65,46 +66,19 @@ def run(args):
             dest.write(source)
         del source, api
         with exclusive():
-            for job, deadline in JOBS.items():
-                if job != "fmt" and not result["jobs"]["fmt"]["success"]:
-                    result["jobs"][job] = {"success": False, "reason": "format prerequisite failed"}
-                    continue
-                if job.startswith("test-") and not result["jobs"]["archive"]["success"]:
-                    result["jobs"][job] = {"success": False, "reason": "archive prerequisite failed"}
-                    continue
-                folder = args.output / job
-                folder.mkdir()
-                container = Container(report["image"], deadline=deadline)
-                started = time.monotonic()
-                try:
-                    write(folder / "admission.json", container.proof)
-                    if container.proof["seccomp_profile_sha256"] != report["seccomp_sha256"]:
-                        raise RuntimeError("job seccomp policy differs from the approved image report")
-                    with (args.output / "source.tar.gz").open("rb") as stream:
-                        stage = execute(container, ["python3", "/opt/box/runner.py", "source"],
-                                        folder / "source.log", stdin=stream)
-                    if not stage["success"]:
-                        result["jobs"][job] = stage
-                        continue
-                    if job.startswith("test-"):
-                        # Only a controller-selected opaque archive crosses jobs.
-                        with (args.output / "archive/tests.tar.zst").open("rb") as stream:
-                            stage = execute(container, ["python3", "-c",
-                                "import shutil,sys; f=open('/work/source/tests.tar.zst','xb'); shutil.copyfileobj(sys.stdin.buffer,f); f.close()"],
-                                folder / "archive-input.log", stdin=stream)
-                        if not stage["success"]:
-                            result["jobs"][job] = stage
-                            continue
-                    outcome = execute(container, ["python3", "/opt/box/runner.py", "run", job], folder / "job.log")
-                    result["jobs"][job] = outcome
-                    if outcome["success"] and job == "archive":
-                        outcome["archive"] = export(container, "archive", folder / "tests.tar.zst")
-                        outcome["trace"] = export(container, "trace", folder / "linker-processes.trace")
-                finally:
-                    container.close()
-                    result["jobs"].setdefault(job, {"success": False, "reason": "interrupted"})["seconds"] = round(time.monotonic()-started, 3)
-            result["success"] = all(value["success"] for value in result["jobs"].values())
+            journal = Journal()
+            journal.reconcile()
+            cohort = Cohort(report, journal, args.output / "source.tar.gz", args.cache,
+                            args.output, threading.Event())
+            try:
+                status, outcomes = cohort.run()
+                result["jobs"] = outcomes
+            finally:
+                result["jobs"] = cohort.outcomes
+                journal.reconcile()
+            result["success"] = status == "passed"
     except Exception as error:
+        result["success"] = False
         result["error"] = type(error).__name__ + ": " + str(error)
     finally:
         write(args.output / "result.json", result)
@@ -133,6 +107,7 @@ def parser():
     value.add_argument("--pr", type=positive, required=True)
     value.add_argument("--checkout", type=checkout, required=True)
     value.add_argument("--image-report", type=Path, required=True)
+    value.add_argument("--cache", type=Path, required=True)
     value.add_argument("--token-helper", type=Path, required=True)
     value.add_argument("--output", type=Path, required=True)
     return value
