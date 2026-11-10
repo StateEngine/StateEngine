@@ -170,9 +170,10 @@ impl LaunchCoordinator {
             let current=self.store.read(admission.clone(),deadline,move |cx| se_core::scope::require_present(cx.read.control_target(agent).map_err(|e|se_core::store_error::store_error(&e))?,"current stop control","Restore the current create grant or use the owner's terminal.")).await?;
             external = self.retire_embedded_bindings(&current, &row.target.agent.id, key, &admission, deadline).await?;
             if !external.is_empty() && current.processes.is_empty() {
-                row.result = "stopped".into();
+                let changed = external.iter().any(|binding| binding.changed);
+                row.result = if changed { "stopped" } else { "already-stopped" }.into();
                 row.target.session_id = external.last().map(|binding| binding.session.clone());
-                row.event_id = external.last().map(|binding| binding.event.clone());
+                row.event_id = external.iter().rev().find(|binding| binding.changed).map(|binding| binding.event.clone());
                 row.method = Some("engine-binding-retirement".into());
                 row.witness.state = "binding-retired".into();
                 row.witness.method = row.method.clone();

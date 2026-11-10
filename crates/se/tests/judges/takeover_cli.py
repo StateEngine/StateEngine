@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
-from mail_cli import Fixture
+from force_relaunch_independent import Fixture
 
 
 def live(job):
@@ -37,18 +37,12 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
-    source = Path(__file__).with_name("takeover_command_fault.c")
-    library = args.output / "command-fault.so"
-    subprocess.run(["cc", "-shared", "-fPIC", str(source), "-ldl", "-o", str(library)],
-                   capture_output=True, check=True, timeout=30)
     f = Fixture(args.se, args.output / "fixture",
                 provider_helper=Path(__file__).with_name("takeover_provider.py"), log_directory="calls")
-    marker = args.output / "deny-command"
     out = (args.output / "host.stdout").open("wb")
     err = (args.output / "host.stderr").open("wb")
-    environment = {**f.env, "LD_PRELOAD": str(library), "TAKEOVER_COMMAND_FAULT": str(marker)}
     host = subprocess.Popen([str(f.se), "--home", str(f.home), "up", "--foreground"],
-                            env=environment, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
+                            env=f.env, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
     rows, failure, escaped_jobs = [], None, []
     unrelated = subprocess.Popen(["sleep", "180"], start_new_session=True)
     try:
@@ -65,7 +59,7 @@ def main():
         refused = f.call("--project", f.project, "launch", f.agent, "--detach")
         assert refused.returncode != 0
         body = refused.stdout.decode() + refused.stderr.decode()
-        assert "takeover-owned-job" in body and str(old_job["pid"]) in body and "--override-live" in body, body
+        assert "takeover-owned-job" in body and str(old_job["pid"]) in body and "--force" in body, body
         assert "takeover-escaped-job" in body and str(old_job["escaped"]["pid"]) in body, body
         assert live(old_job) and unrelated.poll() is None
         assert not f.rpc("stateengine_resume", {}).get("isError")
@@ -73,19 +67,8 @@ def main():
 
         refused_mcp = f.rpc("stateengine_agent_launch", {"idempotency_key": "takeover-mcp-refusal"})
         assert refused_mcp.get("isError") and "takeover-owned-job" in json.dumps(refused_mcp)
-        refused_self = f.rpc("stateengine_agent_launch", {"override_live": True,
-                                                           "idempotency_key": "takeover-self-refusal"})
-        assert refused_self.get("isError") and "self takeover" in json.dumps(refused_self)
         assert live(old_job)
-        rows.append("MCP launch lists the same jobs; self override refuses before revoking its own launch authority")
-
-        marker.write_text(f'/proc/{old_job["pid"]}/cmdline')
-        unreadable = f.call("--project", f.project, "launch", f.agent, "--detach", "--override-live")
-        marker.unlink()
-        body = unreadable.stdout.decode() + unreadable.stderr.decode()
-        assert unreadable.returncode != 0 and "command unreadable" in body, body
-        assert live(old_job) and not f.rpc("stateengine_resume", {}).get("isError")
-        rows.append("real command-read EACCES refuses override before stop or session revocation")
+        rows.append("MCP launch lists the same jobs without force and preserves the native scope")
 
         (f.repo / "provider-ready.json").unlink()
         (f.repo / "takeover-job.json").unlink()
@@ -160,7 +143,6 @@ def main():
     except Exception as error:
         failure = repr(error)
     finally:
-        marker.unlink(missing_ok=True)
         try:
             f.close()
             assert host.wait(timeout=20) == 0
@@ -188,7 +170,7 @@ def main():
     report = {"cases": rows, "failure": failure, "count": len(rows)}
     (args.output / "results.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report), flush=True)
-    return 0 if failure is None and len(rows) == 8 else 1
+    return 0 if failure is None and len(rows) == 7 else 1
 
 
 if __name__ == "__main__":

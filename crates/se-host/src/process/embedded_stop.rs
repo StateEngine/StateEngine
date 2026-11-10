@@ -9,6 +9,7 @@ pub(super) struct EmbeddedRetirement {
     pub session: SessionId,
     pub event: EventId,
     pub service: String,
+    pub changed: bool,
 }
 impl EmbeddedRetirement {
     pub fn report(&self) -> TakeoverReport {
@@ -59,10 +60,11 @@ impl LaunchCoordinator {
             );
             let reason = format!("Engine binding retired; jobs in {service} were not stopped.");
             let observed = self.embedded_binding(&session, admission, deadline).await?;
-            if matches!(
+            let changed = matches!(
                 observed.current.body,
                 EventBody::SessionPrepared { .. } | EventBody::SessionActivated { .. }
-            ) {
+            );
+            if changed {
                 if observed.revision != original.revision {
                     return Err(error(
                         "embedded stop selection",
@@ -93,6 +95,7 @@ impl LaunchCoordinator {
             retired.push(EmbeddedRetirement {
                 session,
                 service,
+                changed,
                 event: observed.current.header.event,
             });
         }

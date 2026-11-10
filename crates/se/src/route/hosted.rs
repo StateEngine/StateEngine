@@ -123,6 +123,7 @@ pub fn forward<R: se_store::ReadStore>(
     };
     use std::io::IsTerminal;
     if cx.json
+        || !std::io::stdin().is_terminal()
         || !std::io::stderr().is_terminal()
         || !matches!(
             caller.terminal,
@@ -143,7 +144,11 @@ pub fn forward<R: se_store::ReadStore>(
         .read_line(&mut answer)
         .map_err(|error| scope::unreadable("launch confirmation input", &error.to_string()))?;
     if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        return result;
+        return Err(se_types::SeError::new(se_types::Detail::Cancelled(
+            se_types::details::Cancelled {
+                op: "launch confirmation".into(),
+            },
+        )));
     }
     input.override_live = true;
     input.force_selection = Some(se_core::ops::agent_launch::ForceSelection {
