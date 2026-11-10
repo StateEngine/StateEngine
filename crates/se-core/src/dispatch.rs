@@ -459,7 +459,7 @@ impl Kernel {
                     )
                 })?;
                 OpStep::Complete(
-                    crate::ops::agent_config::list(
+                    crate::ops::config_listing::list(
                         configuration,
                         self.config_origin.as_deref(),
                         input,

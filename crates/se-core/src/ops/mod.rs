@@ -32,6 +32,7 @@ pub use agent_session::{process_from_record, unobserved_session};
 pub use cli::parse_remote_target;
 pub mod agent_status;
 mod cli;
+pub mod config_listing;
 pub(crate) use cli::command_name;
 pub mod decision;
 pub mod decision_list;
