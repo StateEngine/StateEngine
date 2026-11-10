@@ -13,6 +13,7 @@ import uuid
 ACCOUNT = "stateengine-ci"
 ENGINE_DOOR = "/usr/local/libexec/stateengine-ci-engine"
 GIB = 1024 ** 3
+ADMISSION_MARGIN = 6 * GIB
 
 
 def account_args(*args):
@@ -46,8 +47,8 @@ def command(*args, input=None, timeout=90):
 def capacity(memory):
     available = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines()
                          if line.startswith("MemAvailable:"))) * 1024
-    if memory > 18 * GIB or memory <= 0 or available < 34 * GIB + memory:
-        raise RuntimeError("infrastructure unavailable: preserve 34 GiB after bounded allocation")
+    if memory > 18 * GIB or memory <= 0 or available < ADMISSION_MARGIN + memory:
+        raise RuntimeError("infrastructure unavailable: preserve 6 GiB after bounded allocation")
     return available
 
 

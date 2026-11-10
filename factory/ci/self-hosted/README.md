@@ -43,7 +43,8 @@ The legacy fixed metadata and check operation markers remain available to the
 adapter, but this workflow does not schedule them on the box.
 
 The full run has an 18 GiB memory cap, eight CPU cores and a 30-minute outside
-deadline. Container admission preserves 34 GiB available after that allocation. The existing CI lock serializes
+deadline. Container admission requires 24 GiB available for the full run, preserving
+6 GiB after its bounded allocation. The existing CI lock serializes
 against other CI work. This adapter adds no guest-admission fence or guest lock;
 guests use their own memory admission. Persistent container records still retain
 exact process custody after a controller crash, and reconciliation must join known
