@@ -1,6 +1,7 @@
 use super::*;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
+mod measure;
 #[derive(Default)]
 pub(crate) struct Watches {
     entries: Mutex<BTreeMap<String, Arc<Entry>>>,
@@ -13,6 +14,8 @@ struct Entry {
     state: AsyncMutex<State>,
 }
 struct State {
+    opened_at: Instant,
+    clock: Option<measure::Bracket>,
     request: RemoteWatch,
     stream: Option<Box<dyn RemoteWatchStream>>,
     cursors: Vec<RemoteCursorSet>,
@@ -64,6 +67,7 @@ impl Watches {
             source.map(|s| (&s.source, s.credential)),
             &request.targets,
             &request.visible,
+            request.measure,
         ))
         .map_err(|_| poisoned())?;
         self.read_with(
@@ -88,7 +92,7 @@ impl Watches {
     ) -> Result<RemoteWatchBatch> {
         let key = serde_json::to_string(&serde_json::json!({
             "native_owner":admission.actor,"generation":admission.generation,
-            "targets":request.targets,"visible":request.visible,
+            "targets":request.targets,"visible":request.visible,"measure":request.measure,
         }))
         .map_err(|_| poisoned())?;
         let admission = admission.clone();
@@ -133,6 +137,8 @@ impl Watches {
                         source: source.map(|s| s.source.clone()),
                         fence: source.map(|s| Arc::clone(&s.fence)),
                         state: AsyncMutex::new(State {
+                            opened_at: Instant::now(),
+                            clock: None,
                             request: request.clone(),
                             stream: None,
                             cursors: request.cursors.clone(),
@@ -180,6 +186,8 @@ impl Watches {
             state.stream = None;
         }
         if state.stream.is_none() {
+            state.opened_at = Instant::now();
+            state.clock = None;
             let mut resumed = request.clone();
             resumed.cursors = state.cursors.clone();
             state.stream = Some(open(entry.context(), resumed).await?);
@@ -196,7 +204,11 @@ impl Watches {
         // Take ownership across the await. Cancellation/error drops this read
         // subscription, leaving the last verified cursors for a safe replay.
         let mut stream = state.stream.take().ok_or_else(poisoned)?;
-        let result = stream.next(wait).await?;
+        let mut result = stream.next(wait).await?;
+        if request.measure {
+            let opened_at = state.opened_at;
+            measure::release(&mut state.clock, opened_at, &mut result)?;
+        }
         let validated = (|| {
             entry.context().check_current()?;
             check_size(&result, request.budget)?;

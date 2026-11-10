@@ -6,6 +6,7 @@ use se_core::ops::{AnyOp, AnyOutput, remote::*};
 use se_types::{Result, SeError};
 use serde::Serialize;
 use std::io::{self, Write};
+mod measure;
 type Dispatch<'a> =
     dyn FnMut(&Bootstrap, AnyOp, &mut dyn FnMut(&str) -> io::Result<()>) -> Result<AnyOutput> + 'a;
 #[derive(Serialize)]
@@ -228,19 +229,23 @@ pub(crate) fn run(
         }
         AnyOp::RemoteWatch(input) => watch(
             cx,
-            se_core::ops::ClientWatchCall {
-                request: input.request,
-                wait_ms: input.wait_ms,
-                follow: input.follow,
-            },
-            Some(input.host),
+            (
+                se_core::ops::ClientWatchCall {
+                    request: input.request,
+                    wait_ms: input.wait_ms,
+                    follow: input.follow,
+                },
+                Some(input.host),
+            ),
             json,
             quiet,
             stdout,
             stderr,
             dispatch,
         ),
-        AnyOp::ClientWatch(input) => watch(cx, input, None, json, quiet, stdout, stderr, dispatch),
+        AnyOp::ClientWatch(input) => {
+            watch(cx, (input, None), json, quiet, stdout, stderr, dispatch)
+        }
         operation => match dispatch(cx, operation, &mut diagnostic) {
             Ok(output) => crate::render::output(&output, json, quiet, stdout),
             Err(e) => error(&e, json, None, stderr),
@@ -250,20 +255,21 @@ pub(crate) fn run(
 
 fn watch(
     cx: &Bootstrap,
-    mut input: se_core::ops::ClientWatchCall,
-    host: Option<String>,
+    selection: (se_core::ops::ClientWatchCall, Option<String>),
     json: bool,
     quiet: bool,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
     dispatch: &mut Dispatch<'_>,
 ) -> io::Result<u8> {
+    let (mut input, host) = selection;
     let mut diagnostic = |_: &str| {
         Err(io::Error::other(
             "client watch requires typed status/errors",
         ))
     };
     loop {
+        let started = std::time::Instant::now();
         let follow = input.follow;
         let operation = match &host {
             Some(host) => AnyOp::RemoteWatch(RemoteWatchCall {
@@ -293,8 +299,13 @@ fn watch(
                         input.request.cursors.push(cursor.clone());
                     }
                 }
-                let code = crate::render::output(&AnyOutput::RemoteWatch(v), json, quiet, stdout)?;
+                let measured = input.request.measure;
+                let output = AnyOutput::RemoteWatch(v);
+                let code = crate::render::output(&output, json, quiet, stdout)?;
                 stdout.flush()?;
+                if measured && let AnyOutput::RemoteWatch(v) = &output {
+                    measure::flushed(&v.value, started, stderr)?;
+                }
                 if !follow || input.wait_ms == 0 || reset {
                     return Ok(code);
                 }

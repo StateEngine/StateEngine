@@ -50,6 +50,7 @@ impl Watch {
         RemoteWatchBatch {
             schema: RemoteWatchBatch::SCHEMA.into(),
             body: RemoteWatchBody {
+                observation_clock: None,
                 records: vec![],
                 cursors: self.request.cursors.clone(),
                 complete: false,
@@ -64,7 +65,7 @@ impl Watch {
         } else {
             &self.request.targets
         };
-        RemoteWatchBatch {schema:RemoteWatchBatch::SCHEMA.into(), body: RemoteWatchBody {records:targets.iter().cloned().map(|target| RemoteWatchRecord::Gap {target,
+        RemoteWatchBatch {schema:RemoteWatchBatch::SCHEMA.into(), body: RemoteWatchBody {observation_clock:None,records:targets.iter().cloned().map(|target| RemoteWatchRecord::Gap {target,
             reason:"connection interrupted; reconnecting from consumed scoped cursors; provisional continuity requires host confirmation".into(),reset_required:false}).collect(),
             cursors:self.request.cursors.clone(),complete:false,omitted_records:Omission::Unknown {reason:OmissionReason::SourceIncomplete},reset_required:false}}
     }

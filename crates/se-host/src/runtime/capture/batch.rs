@@ -16,6 +16,8 @@ impl Capturing<'_> {
         hook: crate::ClaudeHookInput,
         deadline: &Deadline,
     ) -> Result<CaptureBatch> {
+        #[cfg(feature = "remote")]
+        let observed_at = deadline.started();
         if selections.is_some() || admission.generation != self.execution.generation.get() {
             return Err(SeError::invalid(
                 "capture admission",
@@ -108,6 +110,7 @@ impl Capturing<'_> {
                             &capture.request.vendor_turn,
                             role,
                             capture.request.text.as_str(),
+                            observed_at,
                         );
                     }
                 }

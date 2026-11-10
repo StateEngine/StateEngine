@@ -140,10 +140,13 @@ pub(super) async fn read(
             return;
         };
         let result = match next {
-            Ok(Some(wire::Message::Response {
-                id: wire::RequestId::Number(id),
-                result,
-            })) => {
+            Ok(Some((
+                wire::Message::Response {
+                    id: wire::RequestId::Number(id),
+                    result,
+                },
+                _,
+            ))) => {
                 let reply = binding
                     .state
                     .lock()
@@ -165,17 +168,17 @@ pub(super) async fn read(
                     Err(error) => Err(error),
                 }
             }
-            Ok(Some(wire::Message::Response { .. })) => Err(SeError::invalid(
+            Ok(Some((wire::Message::Response { .. }, _))) => Err(SeError::invalid(
                 "Codex response",
                 "the binding's numeric request ID",
             )),
-            Ok(Some(wire::Message::Notification { method, params })) => {
-                binding.observe(method, params)
+            Ok(Some((wire::Message::Notification { method, params }, observed_at))) => {
+                binding.observe_at(method, params, observed_at)
             }
             // The remote TUI is subscribed to the same thread and answers its
             // interactive requests. This observer must not race it with a refusal.
-            Ok(Some(wire::Message::Request { .. })) if binding.attended => Ok(()),
-            Ok(Some(wire::Message::Request { id, .. })) => {
+            Ok(Some((wire::Message::Request { .. }, _))) if binding.attended => Ok(()),
+            Ok(Some((wire::Message::Request { id, .. }, _))) => {
                 let refused = wire::refusal(
                     &id,
                     "This headless connection cannot approve actions or answer interactive requests",

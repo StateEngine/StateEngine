@@ -55,6 +55,10 @@ pub(super) fn command(name: &str, c: Command) -> Command {
             .arg(value("cursor").help("Opaque continuation from this same remote grant"))
         } else {
             c.arg(
+                toggle("measure")
+                    .help("Include host observation ages for matched terminal timing comparisons"),
+            )
+            .arg(
                 toggle("once")
                     .help("Return one page and exit; otherwise follow with bounded waits"),
             )
@@ -110,6 +114,7 @@ pub(super) fn decode(
             let input = RemoteWatchCall {
                 host,
                 request: RemoteWatch {
+                    measure: flag(m, "measure"),
                     targets: many(m, "target")
                         .iter()
                         .map(|s| parse_remote_target(s))

@@ -26,7 +26,10 @@ pub(super) struct Watch {
 }
 impl Watch {
     pub fn new(service: Service, request: auth::AuthorizedRemoteRequest) -> Result<Self> {
-        Self::from_request(service, view_request::ViewRequest::Remote(request))
+        Self::from_request(
+            service,
+            view_request::ViewRequest::Remote(Box::new(request)),
+        )
     }
     pub(crate) fn from_request(
         service: Service,
@@ -98,6 +101,11 @@ impl State {
         let mut batch = RemoteWatchBatch {
             schema: RemoteWatchBatch::SCHEMA.into(),
             body: RemoteWatchBody {
+                observation_clock: self
+                    .input
+                    .measure
+                    .then(|| service.live.clock())
+                    .transpose()?,
                 records: vec![],
                 cursors: vec![],
                 complete: true,
@@ -197,6 +205,16 @@ impl State {
                         target: target.clone(),
                         cursor,
                         item: observation.item.clone(),
+                        observation: self
+                            .input
+                            .measure
+                            .then(|| {
+                                Ok::<_, SeError>(RemoteObservationTime {
+                                    at_us: service.live.clock_us(observation.observed_at)?,
+                                    age_upper_bound_us: None,
+                                })
+                            })
+                            .transpose()?,
                     },
                     Some(set.clone()),
                     self.input.budget,
@@ -359,7 +377,21 @@ fn push(
         }
     }
     // Reserve space for the explicit incomplete marker before advancing any cursor.
-    let bytes = wire::encode(batch, wire::Phase::Authenticated)?.len() + 96;
+    let measured = batch
+        .records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record,
+                RemoteWatchRecord::Provisional {
+                    observation: Some(_),
+                    ..
+                }
+            )
+        })
+        .count();
+    // A source release replaces null with up to twenty age digits.
+    let bytes = wire::encode(batch, wire::Phase::Authenticated)?.len() + 96 + measured * 16;
     if bytes <= budget as usize {
         return Ok(true);
     }

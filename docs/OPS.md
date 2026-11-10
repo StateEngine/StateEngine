@@ -13,6 +13,7 @@ never becomes a local human or agent principal.
 | --- | --- | --- | --- |
 | `remote.list` | `remote list --host NAME` | `stateengine_remote_list` | Current machine session and admitted source; bounded discovery |
 | `remote.watch` | `remote watch --host NAME` | `stateengine_remote_watch` | Same authority; scoped bounded replay without inbox marks |
+| `client.watch` | `watch --target PROJECT-ID/AGENT-ID` | None | Native human authority; same selected view, bounded replay and renderer |
 | `remote.send` | `remote send --host NAME` | `stateengine_remote_send` | Exact target/session, stable origin and original request key; ordinary native mail |
 | Machine setup | `remote add DESTINATION --name NAME` | None | Native owner IPC; system SSH discovers, stages, authorizes and verifies the destination |
 | Transport removal | `remote disconnect/forget --name NAME` | None | Native owner IPC; closes only source transport, preserving destination hosts and agents |
@@ -22,6 +23,24 @@ never becomes a local human or agent principal.
 define the complete boundary. The implementation's qualification status is
 separate from these contracts. UI integration and its performance measurements
 remain separate from the native CLI and MCP consumers.
+
+Launch agents with ordinary `se launch AGENT` on each host. A lead agent on the
+source uses its admitted remote MCP tools to list, watch and send to the
+destination agents. The machine connection grants no remote launch operation.
+
+For a matched terminal comparison, run `se watch --target PROJECT-ID/AGENT-ID`
+on the destination and `se remote watch --host NAME --target PROJECT-ID/AGENT-ID`
+on the source. Both render the same current view, durable changes and provisional
+provider items; local inspection uses native human authority rather than a remote
+grant. Native agents retain their ordinary admitted local read tools.
+
+Add `--measure --json` to either watch to retain optional observation clocks and
+per-page stdout-flush records on stderr. A monotonic request/host bracket includes
+decode and buffered-stream delay without assuming synchronized machine clocks.
+The terminal reports a conservative producer-to-flush upper bound; it does not
+measure UI paint. Pending send records are also flushed before host submission;
+they imply neither durable acceptance nor recipient delivery. Performance remains
+unqualified until the matched cohorts required by design 47 and 80 are complete.
 
 ## Journeys and row conventions
 

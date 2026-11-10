@@ -149,9 +149,15 @@ impl Sender {
     }
 }
 impl Receiver {
-    pub(super) async fn next(&mut self, cx: CallContext) -> Result<Option<wire::Message>> {
+    pub(super) async fn next(
+        &mut self,
+        cx: CallContext,
+    ) -> Result<Option<(wire::Message, std::time::Instant)>> {
         match self {
-            Self::Stdio { io, port, reader } => reader.next(io.as_ref(), port, cx).await,
+            Self::Stdio { io, port, reader } => match reader.next(io.as_ref(), port, cx).await? {
+                Some(message) => Ok(Some((message, reader.observed_at()?))),
+                None => Ok(None),
+            },
             #[cfg(unix)]
             Self::Socket(socket) => loop {
                 match tokio::time::timeout(cx.timeout, socket.next())
@@ -163,7 +169,9 @@ impl Receiver {
                         )
                     })? {
                     Some(Ok(WsMessage::Text(text))) => {
-                        return wire::decode(text.as_bytes()).map(Some);
+                        let observed_at = std::time::Instant::now();
+                        return wire::decode(text.as_bytes())
+                            .map(|message| Some((message, observed_at)));
                     }
                     Some(Ok(WsMessage::Close(_))) | None => return Ok(None),
                     Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_))) => continue,

@@ -67,6 +67,10 @@ pub struct RemoteWatch {
     pub visible: Option<RemoteTarget>,
     #[serde(default = "default_budget")]
     pub budget: u32,
+    /// Opt-in observation age, measured before response publication. Pair it
+    /// with the whole originating request-to-terminal span for an upper bound.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub measure: bool,
 }
 impl RemoteWatch {
     pub fn validate(&self) -> Result<()> {

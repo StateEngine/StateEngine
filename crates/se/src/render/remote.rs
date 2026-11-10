@@ -59,6 +59,7 @@ pub(super) fn watch(value: &RemoteWatchOutput, out: &mut impl Write) -> io::Resu
                 target,
                 cursor,
                 item,
+                ..
             } => writeln!(
                 out,
                 "  provisional/live {}/{} item {} cursor {}: {} (complete: {}; omitted UTF-8 bytes: {:?})",

@@ -7,11 +7,11 @@ use se_store::{
 use se_types::{Result, SeError};
 
 pub(crate) enum ViewRequest {
-    Remote(auth::AuthorizedRemoteRequest),
+    Remote(Box<auth::AuthorizedRemoteRequest>),
     Local {
         admission: Admission,
         owner: se_types::HumanId,
-        request: RemoteRequest,
+        request: Box<RemoteRequest>,
         targets: Vec<RemoteTarget>,
     },
 }
@@ -32,7 +32,7 @@ impl ViewRequest {
         Ok(Self::Local {
             admission,
             owner,
-            request: RemoteRequest::Watch(request),
+            request: Box::new(RemoteRequest::Watch(request)),
             targets,
         })
     }
