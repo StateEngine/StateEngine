@@ -15,6 +15,9 @@ Runner directories, credentials, sockets and environment are never mounted in a
 candidate container. A temporary repository read token stages an opaque source
 archive through the GitHub API, verifies approved policy, and is not persisted or
 passed into a container. Downloads use a credential-free approved archive redirect.
+An incomplete response retries the full idempotent GET up to three times with a
+short backoff. Partial bytes are discarded; exhausted retries refuse the job,
+and the response-size and credential-free redirect bounds remain unchanged.
 
 `changes` requests full checks conservatively, and `route` selects the box when
 the pinned policy matches. A changed or missing policy file selects the complete
