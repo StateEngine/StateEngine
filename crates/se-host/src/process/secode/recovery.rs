@@ -84,98 +84,115 @@ impl LaunchCoordinator {
         }
         Ok(failures)
     }
+    /// Reconcile the exact published checkpoint, including a reservation whose
+    /// native preparation refused. Missing handles alone never prove absence.
+    pub(super) async fn recover_secode_auxiliary(
+        &self,
+        service: &mut Service,
+        auxiliary: Auxiliary,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let checkpoint = service.journal.auxiliary(auxiliary).clone();
+        let Some(checkpoint) = checkpoint else {
+            return Ok(());
+        };
+        let native = self.native.clone();
+        let source = match &checkpoint.checkpoint {
+            CheckpointKind::Exit { source, .. } => recovery_source(source),
+            _ => custody::source(&checkpoint)?,
+        };
+        let generation = self.options.epoch.generation;
+        let outcome = self
+            .store
+            .pool
+            .run_owned(deadline, move || {
+                let plan = native
+                    .plan_recovery(source)
+                    .map_err(|e| error("SE Code native recovery plan", e))?;
+                native
+                    .recover(plan, generation)
+                    .map_err(|e| error("SE Code native recovery", e))
+            })
+            .await?;
+        match outcome {
+            RecoveryOutcome::Recovered { process, record } => {
+                *service.owner_mut(auxiliary) = Some(Arc::new(process));
+                if matches!(checkpoint.checkpoint, CheckpointKind::Exit { .. }) {
+                    return Err(error(
+                        "SE Code service recovery",
+                        "a terminal checkpoint has a live native scope; retain custody for explicit reconciliation",
+                    ));
+                }
+                service.checkpoint(auxiliary, CheckpointKind::Process(*record));
+                service.persist(self, deadline).await?;
+            }
+            RecoveryOutcome::PendingScope {
+                process,
+                checkpoint,
+            } => {
+                *service.owner_mut(auxiliary) = Some(Arc::new(process));
+                service.checkpoint(auxiliary, CheckpointKind::Scope(*checkpoint));
+                service.persist(self, deadline).await?;
+            }
+            RecoveryOutcome::Exited(witness) => {
+                // Recovery proves present absence, but cannot recover an
+                // old parent's wait status. Keep the already witnessed
+                // initializer result rather than replacing it with
+                // NotOurChild and making every later launch refuse.
+                if matches!(checkpoint.checkpoint, CheckpointKind::Exit { .. }) {
+                    return Ok(());
+                }
+                let source = match checkpoint.checkpoint {
+                    CheckpointKind::Reservation(v) => Box::new(CheckpointSource::Reservation(v)),
+                    CheckpointKind::Scope(v) => Box::new(CheckpointSource::Scope(v)),
+                    CheckpointKind::Root(v) => Box::new(CheckpointSource::Root(v)),
+                    CheckpointKind::Process(v) => Box::new(CheckpointSource::Process(v)),
+                    _ => {
+                        return Err(error(
+                            "SE Code native recovery",
+                            "unsupported original checkpoint",
+                        ));
+                    }
+                };
+                service.checkpoint(
+                    auxiliary,
+                    CheckpointKind::Exit {
+                        source,
+                        witness: *witness,
+                    },
+                );
+                service.persist(self, deadline).await?;
+            }
+            RecoveryOutcome::Unproved { error: failure, .. } => {
+                return Err(error("SE Code native recovery unproved", failure));
+            }
+            RecoveryOutcome::ReleasedOwnership(_) => {
+                return Err(error(
+                    "SE Code native recovery",
+                    "released ownership does not grant service control",
+                ));
+            }
+        }
+        Ok(())
+    }
     async fn recover_secode_service(
         &self,
         service: &mut Service,
         deadline: &Deadline,
     ) -> Result<()> {
         for auxiliary in Auxiliary::ALL {
-            let checkpoint = service.journal.auxiliary(auxiliary).clone();
-            let Some(checkpoint) = checkpoint else {
-                continue;
-            };
-            let native = self.native.clone();
-            let source = match &checkpoint.checkpoint {
-                CheckpointKind::Exit { source, .. } => recovery_source(source),
-                _ => custody::source(&checkpoint)?,
-            };
-            let generation = self.options.epoch.generation;
-            let outcome = self
-                .store
-                .pool
-                .run_owned(deadline, move || {
-                    let plan = native
-                        .plan_recovery(source)
-                        .map_err(|e| error("SE Code native recovery plan", e))?;
-                    native
-                        .recover(plan, generation)
-                        .map_err(|e| error("SE Code native recovery", e))
-                })
+            self.recover_secode_auxiliary(service, auxiliary, deadline)
                 .await?;
-            match outcome {
-                RecoveryOutcome::Recovered { process, record } => {
-                    *service.owner_mut(auxiliary) = Some(Arc::new(process));
-                    if matches!(checkpoint.checkpoint, CheckpointKind::Exit { .. }) {
-                        return Err(error(
-                            "SE Code service recovery",
-                            "a terminal checkpoint has a live native scope; retain custody for explicit reconciliation",
-                        ));
-                    }
-                    service.checkpoint(auxiliary, CheckpointKind::Process(*record));
-                    service.persist(self, deadline).await?;
-                }
-                RecoveryOutcome::PendingScope {
-                    process,
-                    checkpoint,
-                } => {
-                    *service.owner_mut(auxiliary) = Some(Arc::new(process));
-                    service.checkpoint(auxiliary, CheckpointKind::Scope(*checkpoint));
-                    service.persist(self, deadline).await?;
-                    return Err(error(
-                        "SE Code pre-exec recovery",
-                        "original scope is retained; finish its cleanup before another launch",
-                    ));
-                }
-                RecoveryOutcome::Exited(witness) => {
-                    // Recovery proves present absence, but cannot recover an
-                    // old parent's wait status. Keep the already witnessed
-                    // initializer result rather than replacing it with
-                    // NotOurChild and making every later launch refuse.
-                    if matches!(checkpoint.checkpoint, CheckpointKind::Exit { .. }) {
-                        continue;
-                    }
-                    let source = match checkpoint.checkpoint {
-                        CheckpointKind::Reservation(v) => {
-                            Box::new(CheckpointSource::Reservation(v))
-                        }
-                        CheckpointKind::Scope(v) => Box::new(CheckpointSource::Scope(v)),
-                        CheckpointKind::Root(v) => Box::new(CheckpointSource::Root(v)),
-                        CheckpointKind::Process(v) => Box::new(CheckpointSource::Process(v)),
-                        _ => {
-                            return Err(error(
-                                "SE Code native recovery",
-                                "unsupported original checkpoint",
-                            ));
-                        }
-                    };
-                    service.checkpoint(
-                        auxiliary,
-                        CheckpointKind::Exit {
-                            source,
-                            witness: *witness,
-                        },
-                    );
-                    service.persist(self, deadline).await?;
-                }
-                RecoveryOutcome::Unproved { error: failure, .. } => {
-                    return Err(error("SE Code native recovery unproved", failure));
-                }
-                RecoveryOutcome::ReleasedOwnership(_) => {
-                    return Err(error(
-                        "SE Code native recovery",
-                        "released ownership does not grant service control",
-                    ));
-                }
+            if service
+                .journal
+                .auxiliary(auxiliary)
+                .as_ref()
+                .is_some_and(|checkpoint| matches!(checkpoint.checkpoint, CheckpointKind::Scope(_)))
+            {
+                return Err(error(
+                    "SE Code pre-exec recovery",
+                    "original scope is retained; finish its cleanup before another launch",
+                ));
             }
         }
         if service.process.is_none() {

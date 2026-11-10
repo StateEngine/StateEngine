@@ -8,6 +8,7 @@ mod managed;
 mod stream;
 pub use image::Images;
 pub mod probe;
+pub(crate) mod sandbox;
 pub use contract::{
     Acceptance, AcceptedInput, NoticeBinding, NoticeStatus, ServiceIdentity, notice_text,
 };
