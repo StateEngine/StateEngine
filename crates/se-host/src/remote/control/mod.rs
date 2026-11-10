@@ -135,6 +135,7 @@ impl Control {
                 context.generation.get(),
                 owner,
             )?
+            .with_reads(context.reads.clone())
             .with_owner_fault(context.ownership_fault.clone()),
         );
         let security = Arc::new(auth::Security::new(

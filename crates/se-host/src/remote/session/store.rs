@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 pub struct SecurityStore {
     pub(crate) reader: SqliteReader,
+    reads: Option<se_store::ReadPhasePool>,
     pub(crate) writer: SqliteClient,
     pub(crate) info: StoreInfo,
     pub(crate) generation: u64,
@@ -31,12 +32,17 @@ impl SecurityStore {
         }
         Ok(Self {
             reader,
+            reads: None,
             writer,
             info,
             generation,
             owner,
             owner_fault: None,
         })
+    }
+    pub(crate) fn with_reads(mut self, reads: se_store::ReadPhasePool) -> Self {
+        self.reads = Some(reads);
+        self
     }
     pub(crate) fn with_owner_fault(
         mut self,
@@ -49,7 +55,11 @@ impl SecurityStore {
         &self,
         call: impl FnOnce(&se_store::ReadPhase) -> se_store::StoreResult<T>,
     ) -> Result<T> {
-        let phase = self.reader.read_phase().map_err(|e| store_error(&e))?;
+        let phase = match &self.reads {
+            Some(reads) => reads.read_phase(),
+            None => self.reader.read_phase(),
+        }
+        .map_err(|e| store_error(&e))?;
         let result = phase
             .remote_store_binding(&self.info, self.generation)
             .and_then(|()| call(&phase))
