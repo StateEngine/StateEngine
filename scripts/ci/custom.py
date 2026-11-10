@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import tomllib
+from input_judges import nightly_features, unavailable
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -19,9 +20,11 @@ def custom_targets():
     return targets
 
 
-def filterset():
+def filterset(all_features=False):
     terms = [f"(package(={key.split('::')[0]}) & binary(={key.split('::')[1]}))"
              for key in custom_targets()]
+    if all_features:
+        terms.extend(unavailable(ROOT))
     return "not (" + " or ".join(terms) + ")" if terms else "all()"
 
 
@@ -47,8 +50,9 @@ def run():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["filter", "run"])
+    parser.add_argument("--all-features", action="store_true", default=nightly_features())
     args = parser.parse_args()
     if args.action == "filter":
-        print(filterset())
+        print(filterset(args.all_features))
     else:
         raise SystemExit(run())

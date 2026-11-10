@@ -17,7 +17,7 @@ def call(args, timeout, stdout=None):
     return subprocess.run(args, cwd=ROOT, timeout=timeout, stdout=stdout).returncode
 
 
-def run(job):
+def run(job, all_features=False):
     # Only public dependency data enters a job's disposable writable home.
     if not Path("/home/ci/cargo").exists():
         shutil.copytree("/opt/cargo", "/home/ci/cargo", symlinks=True)
@@ -25,6 +25,7 @@ def run(job):
                       CARGO_BUILD_JOBS="8", CARGO_INCREMENTAL="0", CARGO_TERM_COLOR="always",
                       CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0")
     target = subprocess.check_output(["rustc", "--print", "host-tuple"], text=True).strip()
+    features = ["--all-features"] if all_features else []
     if job == "fmt":
         return call(["cargo", "fmt", "--all", "--", "--check"], 180) or call(
             ["python3", "-m", "unittest", "discover", "-s", "scripts/ci", "-p", "test_*.py", "-v"], 180)
@@ -42,13 +43,13 @@ def run(job):
         with metadata.open("x") as output:
             code = call(["strace", "-f", "-qq", "-ttt", "-s", "4096", "-e", "trace=execve,execveat,exit_group",
                          "-o", "target/cargo-timings/linker-processes.trace", "cargo", "nextest", "list",
-                         "--timings", "--target", target, "--workspace", "--locked",
+                         "--timings", "--target", target, "--workspace", *features, "--locked",
                          "--list-type", "binaries-only", "--message-format", "json"], 900, stdout=output)
-        return code or call(["cargo", "test", "--target", target, "--workspace", "--locked", "--doc"], 900)
+        return code or call(["cargo", "test", "--target", target, "--workspace", *features, "--locked", "--doc"], 900)
     if job.startswith("test-"):
         partition = job[-1]
-        filters = subprocess.check_output(["python3", "scripts/ci/custom.py", "filter"], cwd=ROOT, text=True).strip()
-        code = call(["cargo", "nextest", "run", "--target", target, "--workspace", "--locked", "--profile", "ci", "--test-threads", "4", "--partition", "slice:" + partition + "/2", "-E", filters], 360)
+        filters = subprocess.check_output(["python3", "scripts/ci/custom.py", "filter", *features], cwd=ROOT, text=True).strip()
+        code = call(["cargo", "nextest", "run", "--target", target, "--workspace", *features, "--locked", "--profile", "ci", "--test-threads", "4", "--partition", "slice:" + partition + "/2", "-E", filters], 360)
         custom = call(["python3", "scripts/ci/custom.py", "run"], 1080) if partition == "1" else 0
         return int(bool(code or custom))
     if job == "windows-clippy":
@@ -73,6 +74,7 @@ def run(job):
 if __name__ == "__main__":
     os.umask(0o077)
     parser = argparse.ArgumentParser()
+    parser.add_argument("--all-features", action="store_true")
     parser.add_argument("action", choices=["hold", "source", "run"])
     parser.add_argument("job", nargs="?", choices=["fmt", "clippy", "archive", "test-1", "test-2", "windows-clippy"])
     args = parser.parse_args()
@@ -99,4 +101,4 @@ if __name__ == "__main__":
                 member.name = str(Path(*parts[1:]))
                 archive.extract(member, ROOT, filter="data")
     else:
-        raise SystemExit(run(args.job))
+        raise SystemExit(run(args.job, args.all_features))
