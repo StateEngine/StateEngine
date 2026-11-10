@@ -388,3 +388,6 @@ mod generation;
 
 #[path = "channels/migration.rs"]
 mod migration;
+
+#[path = "channels/checkpoint_independent.rs"]
+mod checkpoint_independent;
