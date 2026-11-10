@@ -44,6 +44,10 @@ def build(args):
     version = subprocess.check_output([str(args.toolchain / "bin/rustc"), "--version"], text=True)
     if not version.startswith("rustc 1.97.1 "):
         raise ValueError("public Rust 1.97.1 toolchain directory required")
+    version = subprocess.check_output([str(args.rustup), "--version"], text=True,
+                                      stderr=subprocess.DEVNULL)
+    if not version.startswith("rustup 1.29.1 "):
+        raise ValueError("public rustup 1.29.1 executable required")
     version = subprocess.check_output([str(args.xwin), "--version"], text=True)
     if version.strip() != "cargo-xwin 0.23.1":
         raise ValueError("public cargo-xwin 0.23.1 executable required")
@@ -82,8 +86,8 @@ def build(args):
     source = Path(__file__).resolve().parent
     inputs = [(name, source / name) for name in ("Containerfile", "probe.py", "runner.py")]
     inputs += [(name, public / name) for name in ("rust.tar", "node.tar.xz", "windows-sdk.tar", "main.tar")]
-    inputs += [("cargo-nextest", args.nextest), ("cargo-xwin", args.xwin)]
-    manifest = [stage(context, name, path, name in {"cargo-nextest", "cargo-xwin"}) for name, path in inputs]
+    inputs += [("cargo-nextest", args.nextest), ("cargo-xwin", args.xwin), ("rustup", args.rustup)]
+    manifest = [stage(context, name, path, name in {"cargo-nextest", "cargo-xwin", "rustup"}) for name, path in inputs]
     (args.output / "inputs.json").write_text(json.dumps(manifest, indent=2))
     # The build runs trusted packages only. The outer scope bounds aggregate
     # tasks too; candidate jobs have independent native admission below this cap.
@@ -121,6 +125,7 @@ if __name__ == "__main__":
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--trusted-source", required=True)
     parser.add_argument("--toolchain", type=Path, required=True)
+    parser.add_argument("--rustup", type=Path, required=True)
     parser.add_argument("--nextest", type=Path, required=True)
     parser.add_argument("--xwin", type=Path, required=True)
     parser.add_argument("--windows-sdk", type=Path, required=True)

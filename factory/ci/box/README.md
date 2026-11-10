@@ -16,6 +16,8 @@ its root-owned seccomp policy. Run `build.py --help` for the trusted image build
 Its source must already be merged on local `main`; it fetches public dependencies
 before any PR code runs and records the immutable image ID and approved workflow
 hashes. Review those inputs before using the resulting `image.json`.
+Supply the public Rust 1.97.1 toolchain and rustup 1.29.1 executable explicitly;
+the image uses the proxy to honor toolchain-qualified release commands offline.
 
 Run `canary.py check --image IMAGE_ID --output NEW_DIRECTORY` to exercise the actual
 machine boundary. A reviewer must independently run the canaries before a PR
