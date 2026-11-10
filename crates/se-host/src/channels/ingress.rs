@@ -31,19 +31,6 @@ impl Channels {
             })
             .await?
         {
-            let change = Change::CursorAdvanced {
-                connection: state.id.clone(),
-                binding_revision: state.revision,
-                update: input.update,
-                cursor: input.cursor,
-            };
-            self.change(
-                state.target.project,
-                intent("channel.receive.advance", None, &change)?,
-                change,
-                deadline,
-            )
-            .await?;
             return Ok(());
         }
         if let IncomingContent::Text { phone, text } = &input.content
@@ -343,7 +330,24 @@ impl Channels {
                 return Err(channel_error(ChannelError::RevisionConflict));
             }
             let cursor = input.cursor.clone();
+            let update = input.update.clone();
             self.handle_update(current, input, deadline).await?;
+            // Replayed dispositions can carry an older cursor. Commit this
+            // delivery checkpoint before ACK, using the revision after pairing.
+            let current = self.connection(state.id.clone(), deadline).await?;
+            let change = Change::CursorAdvanced {
+                connection: current.id,
+                binding_revision: current.revision,
+                update,
+                cursor: cursor.clone(),
+            };
+            self.change(
+                current.target.project,
+                intent("channel.receive.advance", None, &change)?,
+                change,
+                deadline,
+            )
+            .await?;
             receiver.ack(&cursor).map_err(channel_error)?;
         }
         self.set_health(
