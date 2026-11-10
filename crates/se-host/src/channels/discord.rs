@@ -15,8 +15,8 @@ pub struct Discord {
     invalid_sessions: Mutex<VecDeque<String>>,
 }
 impl Discord {
-    pub fn new() -> ChannelResult<Self> {
-        let client = reqwest::Client::builder()
+    fn client_builder() -> reqwest::ClientBuilder {
+        reqwest::Client::builder()
             .https_only(true)
             .http1_only()
             .no_proxy()
@@ -25,6 +25,9 @@ impl Discord {
             .retry(reqwest::retry::never())
             .connect_timeout(Duration::from_secs(10))
             .user_agent("DiscordBot (https://github.com/StateEngine/StateEngine, 1)")
+    }
+    pub fn new() -> ChannelResult<Self> {
+        let client = Self::client_builder()
             .build()
             .map_err(|_| Error::ProviderUnreachable)?;
         Ok(Self {
