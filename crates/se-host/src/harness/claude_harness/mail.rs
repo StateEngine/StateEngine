@@ -37,6 +37,10 @@ impl ClaudeHarness {
         }
         let frame = claude::input_frame(text).map_err(MailWriteFailure::unsent)?;
         let expected = frame.len();
+        binding
+            .completion
+            .offered()
+            .map_err(MailWriteFailure::unsent)?;
         let written = binding
             .io
             .write(&binding.transport, frame, cx)

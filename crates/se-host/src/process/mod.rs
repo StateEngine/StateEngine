@@ -18,6 +18,7 @@ mod launch_util;
 mod mail;
 mod native_record;
 mod owned;
+mod provider_status;
 #[cfg(unix)]
 mod reactor;
 mod recovery;

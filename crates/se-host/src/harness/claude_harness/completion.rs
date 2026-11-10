@@ -7,11 +7,19 @@ use tokio::sync::Notify;
 pub(crate) const MAX_LINE: usize = 4 * 1024 * 1024;
 #[derive(Default)]
 pub(crate) struct Completion {
+    progress: Mutex<crate::harness::progress::Progress>,
     pending: Mutex<Option<Instant>>,
     wake: Mutex<Option<Weak<Notify>>>,
     failure: Mutex<Option<se_types::ErrorBody>>,
 }
 impl Completion {
+    pub(crate) fn offered(&self) -> Result<()> {
+        self.progress.lock().map_err(|_| poisoned())?.offered();
+        Ok(())
+    }
+    pub(crate) fn activity(&self) -> Result<se_core::ops::ProviderActivityView> {
+        Ok(self.progress.lock().map_err(|_| poisoned())?.view("Claude"))
+    }
     pub(super) fn inspect(&self, line: &[u8], conversation: &ProviderSessionId) {
         self.inspect_at(line, conversation, Instant::now());
     }
@@ -21,6 +29,8 @@ impl Completion {
             #[serde(rename = "type")]
             kind: String,
             session_id: Option<String>,
+            #[serde(default)]
+            is_error: bool,
         }
         let result = serde_json::from_slice::<Frame>(line)
             .map_err(|_| {
@@ -31,6 +41,9 @@ impl Completion {
             })
             .and_then(|frame| {
                 if frame.kind != "result" {
+                    if frame.session_id.as_deref() == Some(conversation.as_str()) {
+                        self.progress.lock().map_err(|_| poisoned())?.event();
+                    }
                     return Ok(false);
                 }
                 if frame.session_id.as_deref() != Some(conversation.as_str()) {
@@ -39,6 +52,14 @@ impl Completion {
                         "the exact bound provider conversation",
                     ));
                 }
+                self.progress.lock().map_err(|_| poisoned())?.terminal(
+                    if frame.is_error {
+                        "failed"
+                    } else {
+                        "completed"
+                    },
+                    false,
+                );
                 Ok(true)
             });
         match result {
@@ -62,6 +83,9 @@ impl Completion {
         }
     }
     pub(super) fn fail(&self, error: SeError) {
+        if let Ok(mut progress) = self.progress.lock() {
+            progress.terminal("failed", false);
+        }
         if let Ok(mut failure) = self.failure.lock() {
             *failure = Some(error.body);
         }

@@ -148,6 +148,12 @@ impl CodexHarness {
                 "the original unsent launch input; no duplicate turn/start",
             )
         })?;
+        binding
+            .state
+            .lock()
+            .map_err(|_| poisoned())?
+            .progress
+            .offered();
         let result = binding.request("turn/start", params, &cx).await?;
         binding.accept_turn_response(&result)
     }

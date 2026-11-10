@@ -132,6 +132,9 @@ pub fn agent_status(value: &AgentStatusOutput, out: &mut impl Write) -> io::Resu
             if let Some(notice) = &value.harness_policy_notice {
                 writeln!(out, "{notice}")?;
             }
+            if let Some(activity) = &value.provider_activity {
+                super::read::provider::activity(activity, "", out)?;
+            }
             if let Some(runtime) = &value.acp_runtime {
                 super::acp::runtime(runtime, "", out)?;
             }
@@ -171,6 +174,9 @@ pub(super) fn agents(
             agent.profile
         )?;
         writeln!(out, "  Session: {}", agent.session.state)?;
+        if let Some(activity) = &agent.provider_activity {
+            super::read::provider::activity(activity, "  ", out)?;
+        }
         if let Some(runtime) = &agent.secode_runtime {
             super::read::secode::runtime(runtime, "  ", out)?;
         }

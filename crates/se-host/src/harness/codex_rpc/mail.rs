@@ -48,6 +48,12 @@ impl CodexHarness {
             "se-{}",
             se_types::hex_lower(&Sha256::digest(key.as_bytes()))
         ));
+        binding
+            .state
+            .lock()
+            .map_err(|_| unsent(poisoned()))?
+            .progress
+            .offered();
         let result = binding
             .request(method, params, &cx)
             .await

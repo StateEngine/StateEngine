@@ -18,6 +18,7 @@ pub(super) async fn initialize(
 ) -> Result<Vec<u8>> {
     let deadline = Instant::now() + cx.timeout;
     let readiness = async {
+        binding.completion.offered()?;
         write_frame(binding, input, &within(cx, remaining(deadline)?)).await?;
         let mut pending = Vec::new();
         loop {
