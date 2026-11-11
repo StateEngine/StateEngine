@@ -52,7 +52,7 @@
   "crates/se-proc/src/platform/windows": 3196,
   "crates/se-proc/src/bootstrap": 3163,
   "crates/se-proc/src/runtime": 3136,
-  "crates/se-proc/src/native_ipc": 2999,
+  "crates/se-proc/src/native_ipc": 3300,
   "crates/se-host/src/atlas_renewal": 2670,
   "crates/se-proc/src/platform/linux": 2561,
   "crates/se-host/src/client": 2522,
@@ -180,5 +180,13 @@
   "crates/se-host/src/runtime/remote": 354,
   "crates/se-host/src/atlas_hooks": 351,
   "crates/se-host/src/process/status": 339
- }
+ },
+ "reviewed_exceptions": [
+  {
+   "path": "crates/se-proc/src/native_ipc",
+   "max_lines": 3300,
+   "owner": "Native process maintainers",
+   "remediation": "Separate platform observation from image-cache maintenance once that seam no longer depends on private native internals."
+  }
+ ]
 }

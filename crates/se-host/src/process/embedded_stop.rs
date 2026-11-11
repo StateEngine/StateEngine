@@ -102,32 +102,7 @@ impl LaunchCoordinator {
                     ));
                 }
                 if observed_provider {
-                    let project = se_core::scope::project(admission)?;
-                    let identity = crate::SessionIdentity {
-                        project: project.clone(),
-                        agent: agent.clone(),
-                        session: session.clone(),
-                    };
-                    let pin = se_core::scope::require_present(
-                        self.capture.recover_binding(identity, deadline).await?,
-                        "observed provider capture",
-                        "Restore access to the original transcript binding before retrying stop.",
-                    )?;
-                    // Preserve complete records already available from the
-                    // retained native source. The user-owned writer remains
-                    // live, so this is never a final-flush or exit claim.
-                    self.capture
-                        .catch_up(
-                            Admission {
-                                actor: se_store::Actor::Agent(agent.clone()),
-                                scope: se_store::Scope::Project(project),
-                                session: Some(session.clone()),
-                                generation: admission.generation,
-                            },
-                            pin.conversation,
-                            pin.path,
-                            deadline,
-                        )
+                    self.catch_up_observed_binding(agent, &session, admission, deadline)
                         .await?;
                 }
                 let agent = agent.clone();
@@ -219,5 +194,44 @@ impl LaunchCoordinator {
             }
         }
         Ok(pending)
+    }
+}
+
+impl LaunchCoordinator {
+    async fn catch_up_observed_binding(
+        &self,
+        agent: &se_types::AgentId,
+        session: &SessionId,
+        admission: &Admission,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let project = se_core::scope::project(admission)?;
+        let identity = crate::SessionIdentity {
+            project: project.clone(),
+            agent: agent.clone(),
+            session: session.clone(),
+        };
+        let pin = se_core::scope::require_present(
+            self.capture.recover_binding(identity, deadline).await?,
+            "observed provider capture",
+            "Restore access to the original transcript binding before retrying stop.",
+        )?;
+        // Preserve complete records already available from the
+        // retained native source. The user-owned writer remains
+        // live, so this is never a final-flush or exit claim.
+        self.capture
+            .catch_up(
+                Admission {
+                    actor: se_store::Actor::Agent(agent.clone()),
+                    scope: se_store::Scope::Project(project),
+                    session: Some(session.clone()),
+                    generation: admission.generation,
+                },
+                pin.conversation,
+                pin.path,
+                deadline,
+            )
+            .await?;
+        Ok(())
     }
 }

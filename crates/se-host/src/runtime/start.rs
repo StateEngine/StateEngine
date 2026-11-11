@@ -211,49 +211,7 @@ fn prepare(
         files.readback(&lock_path).map_err(|e| store_error(&e))?,
         "runtime lock",
     )?;
-    // A finite direct read can win the gap between the parent's rendezvous
-    // observation and this child acquiring its writer lease. Wait inside the
-    // original preparation deadline; no store work precedes exclusive custody.
-    // A competing writer must refuse immediately so its parent can rendezvous
-    // with the winner instead of leaving a successor queued behind its lease.
-    loop {
-        deadline.remaining()?;
-        match lock.try_lock() {
-            Ok(()) => break,
-            Err(std::fs::TryLockError::WouldBlock) => {
-                match lock.try_lock_shared() {
-                    Ok(()) => lock.unlock().map_err(|error| {
-                        se_core::scope::unreadable(
-                            "startup reader lease release",
-                            &error.to_string(),
-                        )
-                    })?,
-                    Err(std::fs::TryLockError::WouldBlock) => {
-                        return Err(SeError::new(se_types::Detail::StateConflict(
-                            se_types::details::StateConflict {
-                                subject: "runtime lease".into(),
-                                reason: "Another writer holds the runtime lease".into(),
-                                next_step: "Use se status for this data home; use the existing host or retry se up after it stops".into(),
-                            },
-                        )));
-                    }
-                    Err(std::fs::TryLockError::Error(error)) => {
-                        return Err(se_core::scope::unreadable(
-                            "exclusive runtime lease",
-                            &error.to_string(),
-                        ));
-                    }
-                }
-                std::thread::sleep(deadline.remaining()?.min(Duration::from_millis(10)));
-            }
-            Err(std::fs::TryLockError::Error(error)) => {
-                return Err(se_core::scope::unreadable(
-                    "exclusive runtime lease",
-                    &error.to_string(),
-                ));
-            }
-        }
-    }
+    acquire_runtime_lease(&lock, &deadline)?;
     let store_options = se_store::StoreOptions {
         state_directory: options.state_directory.clone(),
         busy_timeout: Duration::from_millis(250),
@@ -468,4 +426,54 @@ pub(crate) fn now_unix_micros() -> Result<i64> {
         .map_err(|error| se_core::scope::unreadable("system clock", &error.to_string()))?;
     i64::try_from(elapsed.as_micros())
         .map_err(|_| SeError::invalid("system clock", "representable Unix microseconds"))
+}
+
+fn acquire_runtime_lease(
+    lock: &std::fs::File,
+    deadline: &crate::client::lease::Deadline,
+) -> Result<()> {
+    // A finite direct read can win the gap between the parent's rendezvous
+    // observation and this child acquiring its writer lease. Wait inside the
+    // original preparation deadline; no store work precedes exclusive custody.
+    // A competing writer must refuse immediately so its parent can rendezvous
+    // with the winner instead of leaving a successor queued behind its lease.
+    loop {
+        deadline.remaining()?;
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                match lock.try_lock_shared() {
+                    Ok(()) => lock.unlock().map_err(|error| {
+                        se_core::scope::unreadable(
+                            "startup reader lease release",
+                            &error.to_string(),
+                        )
+                    })?,
+                    Err(std::fs::TryLockError::WouldBlock) => {
+                        return Err(SeError::new(se_types::Detail::StateConflict(
+                            se_types::details::StateConflict {
+                                subject: "runtime lease".into(),
+                                reason: "Another writer holds the runtime lease".into(),
+                                next_step: "Use se status for this data home; use the existing host or retry se up after it stops".into(),
+                            },
+                        )));
+                    }
+                    Err(std::fs::TryLockError::Error(error)) => {
+                        return Err(se_core::scope::unreadable(
+                            "exclusive runtime lease",
+                            &error.to_string(),
+                        ));
+                    }
+                }
+                std::thread::sleep(deadline.remaining()?.min(Duration::from_millis(10)));
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(se_core::scope::unreadable(
+                    "exclusive runtime lease",
+                    &error.to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
