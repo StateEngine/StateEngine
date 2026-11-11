@@ -129,8 +129,18 @@ def main():
             failures.append("post-COMMIT checkpoint failure relabelled a known committed receipt")
         if not report["results"][0].get("maintenance_pending"):
             failures.append("failed post-COMMIT checkpoint omitted maintenance_pending")
-        if report["results"][0].get("checkpoint_ran") is not True:
-            failures.append("attempted checkpoint omitted its measurement")
+        if report["returned"] != report["results"]:
+            failures.append("later maintenance changed the already returned receipt")
+        if json.loads((fault_root / "returned.json").read_text()) != report["returned"]:
+            failures.append("receipt captured before maintenance differs from final report")
+        if report["retained_primary"] != 1:
+            failures.append("known committed event missing from independently reopened store")
+        if report["returned"][0].get("maintenance_failed") is not False:
+            failures.append("receipt claimed a deferred checkpoint had already failed")
+        if report["returned"][0].get("checkpoint_ran") is not False:
+            failures.append("returned receipt claimed a deferred checkpoint already ran")
+        # The stack-bound injected walCheckpoint write above is the maintenance
+        # observation; its timing cannot be added to an already returned receipt.
         if report["next"]["code"] != "Committed":
             failures.append("checkpoint maintenance failure permanently closed ordinary write admission")
     print(json.dumps({"phase": marker, "errno": errno, "baseline": str(baseline_root),

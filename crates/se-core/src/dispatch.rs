@@ -599,7 +599,7 @@ impl Kernel {
         cx: &mut Cx<'_, R>,
     ) -> Result<crate::ops::AnyOutput> {
         use crate::ports::Then;
-        let maintenance_pending = receipt.maintenance_pending;
+        let maintenance_failed = receipt.maintenance_failed;
         let output: Result<crate::ops::AnyOutput> = match then {
             Then::AgentConfig(then) => {
                 Ok(crate::ops::agent_config_receipt::committed(then, receipt, cx)?.into())
@@ -622,7 +622,7 @@ impl Kernel {
                 Ok(crate::ops::receipt::working_state(raw, cx)?.into())
             }
         };
-        output.map(|value| value.with_maintenance_pending(maintenance_pending))
+        output.map(|value| value.with_maintenance_pending(maintenance_failed))
     }
 }
 

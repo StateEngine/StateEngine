@@ -104,7 +104,7 @@ pub struct Envelope<T> {
     schema: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<OutputDiagnostics>,
-    /// Transient obligation after a known successful commit, never an unknown outcome.
+    /// Failed maintenance after a known commit; healthy scheduled work is omitted.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub maintenance_pending: bool,
     #[serde(flatten)]

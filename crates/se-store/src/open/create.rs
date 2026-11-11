@@ -102,6 +102,7 @@ impl SqliteFactory {
                     pending: Vec::new(),
                     maintenance: None,
                     backup: None,
+                    checkpoints: Default::default(),
                 },
             ))
         })();

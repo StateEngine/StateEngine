@@ -63,7 +63,7 @@ fn append(
             "identity registration did not return FULL durability",
         ));
     }
-    if receipt.maintenance_pending {
+    if receipt.maintenance_failed {
         changed
             .push("committed setup facts; storage checkpoint maintenance remains pending".into());
     }

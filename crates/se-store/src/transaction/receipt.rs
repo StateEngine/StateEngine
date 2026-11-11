@@ -84,6 +84,7 @@ pub(super) fn receipt_members(
     Ok(CommitReceipt {
         write_timings: None,
         maintenance_pending: false,
+        maintenance_failed: false,
         request_key,
         state: CommitState::Committed,
         primary_event: primary.header.event.clone(),
