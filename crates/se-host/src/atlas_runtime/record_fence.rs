@@ -1,21 +1,24 @@
 //! Core writes fence record-cache freshness before entering the writer queue.
 use se_types::{Result, SeError};
-use std::sync::{Arc, Mutex};
+#[cfg(any(feature = "listener", test))]
+use std::sync::Arc;
+use std::sync::Mutex;
 
 #[derive(Default)]
 struct State {
     serial: u64,
     pending: u32,
     current: Vec<(RecordFeedScope, u64)>,
+    #[cfg(feature = "listener")]
     interests: Vec<se_types::ProjectId>,
-    #[cfg(all(feature = "runtime", target_os = "linux"))]
+    #[cfg(all(feature = "listener", target_os = "linux"))]
     activity: Vec<se_types::ProjectId>,
-    #[cfg(all(feature = "runtime", target_os = "linux"))]
+    #[cfg(all(feature = "listener", target_os = "linux"))]
     activity_overflow: bool,
-    #[cfg(all(feature = "runtime", target_os = "linux"))]
+    #[cfg(all(feature = "listener", target_os = "linux"))]
     registry_dirty: bool,
 }
-#[cfg(all(feature = "runtime", target_os = "linux"))]
+#[cfg(all(feature = "listener", target_os = "linux"))]
 pub(crate) struct Activity {
     pub projects: Vec<se_types::ProjectId>,
     pub overflow: bool,
@@ -40,17 +43,19 @@ impl From<&se_atlas::cache::CacheIdentity> for RecordFeedScope {
 #[derive(Default)]
 pub struct RecordFeedFence {
     state: Mutex<State>,
-    #[cfg(feature = "runtime")]
+    #[cfg(feature = "listener")]
     changed: tokio::sync::Notify,
 }
 /// Capture before opening the authoritative query/feed snapshot. A token from
 /// an older snapshot cannot certify a newer feed after a concurrent core write.
 #[derive(Clone, Copy)]
 pub struct RecordFeedTicket(u64);
+#[cfg(any(feature = "listener", test))]
 pub(crate) struct RecordFeedWrite {
     fence: Arc<RecordFeedFence>,
     release: bool,
 }
+#[cfg(any(feature = "listener", test))]
 impl RecordFeedWrite {
     /// An unknown commit outcome holds freshness false for this owner lifetime.
     pub(crate) fn uncertain(mut self) {
@@ -58,14 +63,15 @@ impl RecordFeedWrite {
     }
 }
 impl RecordFeedFence {
-    #[cfg(all(feature = "runtime", any(target_os = "linux", test)))]
+    #[cfg(all(feature = "listener", any(target_os = "linux", test)))]
     pub(crate) async fn changed(&self) {
         self.changed.notified().await;
     }
-    #[cfg(all(feature = "runtime", any(target_os = "linux", test)))]
+    #[cfg(all(feature = "listener", any(target_os = "linux", test)))]
     pub(crate) fn interests(&self) -> Result<Vec<se_types::ProjectId>> {
         Ok(self.lock()?.interests.clone())
     }
+    #[cfg(feature = "listener")]
     pub(crate) fn before_scoped_write(
         self: &Arc<Self>,
         scope: &se_store::Scope,
@@ -73,7 +79,7 @@ impl RecordFeedFence {
         let guard = self.before_write()?;
         if let se_store::Scope::Project(project) = scope {
             self.interest(project)?;
-            #[cfg(all(feature = "runtime", target_os = "linux"))]
+            #[cfg(target_os = "linux")]
             {
                 let mut state = self.lock()?;
                 if !state.activity.contains(project) {
@@ -85,7 +91,7 @@ impl RecordFeedFence {
                 }
             }
         }
-        #[cfg(all(feature = "runtime", target_os = "linux"))]
+        #[cfg(target_os = "linux")]
         if matches!(scope, se_store::Scope::Registry) {
             self.lock()?.registry_dirty = true;
         }
@@ -94,7 +100,7 @@ impl RecordFeedFence {
     /// Drain only settled authoritative activity. The source owner performs
     /// all cache/queue IO in its background work; core writers only set bounded
     /// hints. Overflow requests a paged catalogue pass instead of dropping work.
-    #[cfg(all(feature = "runtime", target_os = "linux"))]
+    #[cfg(all(feature = "listener", target_os = "linux"))]
     pub(crate) fn take_activity(&self) -> Result<Option<Activity>> {
         let mut state = self.lock()?;
         if state.pending != 0 {
@@ -108,6 +114,7 @@ impl RecordFeedFence {
     }
     /// Bounded owner interest is not an authoritative write or freshness fence.
     /// Repeated reads of the most recent project do not restart maintenance.
+    #[cfg(feature = "listener")]
     pub(crate) fn interest(&self, project: &se_types::ProjectId) -> Result<()> {
         let mut state = self.lock()?;
         if state.interests.last() == Some(project) {
@@ -122,8 +129,8 @@ impl RecordFeedFence {
         self.wake_owner();
         Ok(())
     }
+    #[cfg(feature = "listener")]
     pub(crate) fn wake_owner(&self) {
-        #[cfg(feature = "runtime")]
         self.changed.notify_one();
     }
 
@@ -170,6 +177,7 @@ impl RecordFeedFence {
                     .any(|(root, serial)| root == scope && *serial == ticket.0)
         }))
     }
+    #[cfg(any(feature = "listener", test))]
     pub(crate) fn before_write(self: &Arc<Self>) -> Result<RecordFeedWrite> {
         let mut state = self.lock()?;
         state.current.clear();
@@ -190,6 +198,7 @@ impl RecordFeedFence {
         })
     }
 }
+#[cfg(any(feature = "listener", test))]
 impl Drop for RecordFeedWrite {
     fn drop(&mut self) {
         // Poison remains a refusal on subsequent observations. Never restore an
@@ -201,7 +210,7 @@ impl Drop for RecordFeedWrite {
         }
         // One coalesced event remains pending when no waiter is armed. A
         // cancelled request's retained completion observer still wakes the owner.
-        #[cfg(feature = "runtime")]
+        #[cfg(feature = "listener")]
         self.fence.changed.notify_one();
     }
 }

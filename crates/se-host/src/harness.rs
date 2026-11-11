@@ -28,6 +28,7 @@ pub(crate) mod progress;
 pub(crate) mod secode;
 #[cfg(feature = "listener")]
 pub mod secode_process;
+#[cfg(feature = "listener")]
 pub(crate) mod tool_capture;
 
 /// One stock Codex feature/version floor for every launch/probe mode.
@@ -96,6 +97,7 @@ pub struct ProviderTransport {
 }
 impl ProviderTransport {
     /// A provider console is owned by the native process, with no host pipes.
+    #[cfg(feature = "listener")]
     pub(crate) fn console() -> Self {
         Self {
             #[cfg(all(unix, feature = "listener"))]

@@ -169,6 +169,7 @@ pub fn compact(
 
 /// Execute inside the existing admitted core read phase, lending the owner's
 /// cache/source for the duration. No read lease or borrowed handle survives.
+#[cfg(feature = "listener")]
 pub(crate) fn owner_read<R: Snapshot>(
     owner: &crate::atlas_runtime::read_port::AtlasOwnerPort,
     ticket: Option<crate::atlas_runtime::record_fence::RecordFeedTicket>,
@@ -341,6 +342,7 @@ fn with_prepared_owner_reader<R: Snapshot, T>(
     })
 }
 
+#[cfg(feature = "listener")]
 fn unavailable(request: &se_core::ops::AtlasRead, index: IndexSummary) -> se_core::ops::AnyOutput {
     use se_core::ops::*;
     fn answer<T>(index: IndexSummary) -> Answer<se_types::Read<T>> {
