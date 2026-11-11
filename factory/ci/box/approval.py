@@ -90,7 +90,9 @@ def installed_host_code(repo, source, paths, previous):
                   "factory/ci/box/worker-engine.py": "/usr/local/libexec/stateengine-ci-engine",
                   "factory/ci/box/idle.py": "/usr/local/libexec/stateengine-ci-idle",
                   "factory/ci/self-hosted/stateengine-actions-runner.service":
-                      "/etc/systemd/system/stateengine-actions-runner.service"}
+                      "/etc/systemd/system/stateengine-actions-runner.service",
+                  "factory/ci/self-hosted/stateengine-actions-runner-secondary.service":
+                      "/etc/systemd/system/stateengine-actions-runner-secondary.service"}
     for path in paths.keys() | previous.keys():
         executable = path.endswith(".py") and not Path(path).name.startswith("test_")
         if (path.startswith(("factory/ci/box/", "factory/ci/self-hosted/"))
