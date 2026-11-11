@@ -96,6 +96,10 @@ async fn until(
     }
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() -> Check {
     let f = Fixture::new()?;
     seed(&f)?;

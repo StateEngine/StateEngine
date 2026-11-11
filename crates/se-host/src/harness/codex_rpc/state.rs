@@ -236,6 +236,10 @@ impl State {
         }
         Ok(())
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn observe(&mut self, method: String, params: Value) -> Result<bool> {
         if !self.restoring
             && self.conversation.as_ref().is_some_and(|id| {

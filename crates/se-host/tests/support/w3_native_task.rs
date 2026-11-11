@@ -30,6 +30,11 @@ fn file_digest(path: &Path) -> Result<String, String> {
 /// real write/read tool effects and both durable public history events. Missing
 /// inputs or any driver/product failure fails, retaining the isolated fixture.
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn native_secode_task_captures_the_judge_nonce_through_public_surfaces() -> Result<(), String> {
     let driver = required_file("SE_W3_NATIVE_DRIVER")?;
     let server = required_file("SE_W3_SECODE_SERVER")?;

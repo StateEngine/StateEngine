@@ -23,6 +23,10 @@ fn trusted_tool_facts_survive_capture_readback_and_retry_for_both_providers() ->
     }
     Ok(())
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn capture_case(provider: Provider) -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

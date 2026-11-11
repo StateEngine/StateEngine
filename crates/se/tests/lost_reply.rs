@@ -149,6 +149,10 @@ fn retained_client(
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn lost_post_commit_reply_keeps_the_generated_key_and_replay_resolves_one_effect() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let initialized = se_host::initialize_host_process()?;

@@ -106,6 +106,10 @@ fn seed_mail(f: &Fixture) -> Check {
     drop(lease);
     Ok(())
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn roundtrip(lose_response: bool, long_reply: bool, mode: Mode) -> Check {
     let f = Fixture::new()?;
     seed_mail(&f)?;

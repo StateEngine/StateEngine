@@ -9,6 +9,10 @@ type Check = Result<(), Box<dyn Error>>;
 
 /// Protects: C1 — canonical storage bytes round-trip without minting legacy keys.
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn typed_ids_keep_canonical_bytes_and_legacy_spelling_distinct() -> Check {
     macro_rules! canonical {
         ($($kind:ty),+ $(,)?) => {$(
@@ -64,6 +68,10 @@ fn typed_ids_keep_canonical_bytes_and_legacy_spelling_distinct() -> Check {
 
 /// Protects: C1 — persisted generations and opaque/hash schemas match input limits.
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn persisted_value_limits_agree_with_their_wire_schemas() -> Check {
     for value in [
         json!(0),

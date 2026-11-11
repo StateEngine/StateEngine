@@ -29,6 +29,10 @@ fn path(text: &str) -> StoreResult<NativePath> {
     };
     NativePath::from_encoded(encoding).map_err(invalid)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn project<R: ImportSnapshot>(
     cx: &NodeContext,
     read: &mut R,

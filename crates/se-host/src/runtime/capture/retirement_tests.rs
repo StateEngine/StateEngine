@@ -40,6 +40,10 @@ fn changed_metadata_identity_is_refused_without_deleting_the_file() -> Check {
     scenario("identity")
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn scenario(case: &str) -> Check {
     let f = std::mem::ManuallyDrop::new(Fixture::new()?);
     seed(&f)?;

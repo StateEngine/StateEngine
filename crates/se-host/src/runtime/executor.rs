@@ -30,6 +30,10 @@ struct Planned {
     clippy::manual_async_fn,
     reason = "The public handoff checks its future is Send."
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn execute(
     context: ExecutionContext,
     call: ExecutionCall,
@@ -218,6 +222,10 @@ pub fn execute(
         }
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn plan(
     phase: se_store::ReadPhase,
     call: HostedCall,

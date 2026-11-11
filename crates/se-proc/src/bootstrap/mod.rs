@@ -290,6 +290,10 @@ impl NativeProcessApi for NativeProcessRuntime {
     fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
         crate::read_process(machine, pid)
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn spawn_runtime(spec: RuntimeLaunchSpec) -> Result<RuntimeLaunch, Box<RuntimeSpawnFailure>> {
         let before = || -> ProcResult<Frame> {
             check(spec.deadline)?;

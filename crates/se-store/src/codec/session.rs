@@ -13,6 +13,10 @@ pub(crate) struct SessionHead {
 pub(crate) fn head(c: &Connection, project: &[u8], session: &[u8]) -> StoreResult<SessionHead> {
     c.query_row("SELECT s.agent_id,d.provider,d.native_ref,d.generation,d.consent,s.state FROM sessions s JOIN session_data d ON d.event_seq=s.last_seq WHERE s.project_id=? AND s.session_id=?",rusqlite::params![project,session],|r|Ok(SessionHead {agent:r.get(0)?,provider:r.get(1)?,native_ref:r.get(2)?,generation:crate::sql_value::value(r,3)?,consent:r.get(4)?,state:r.get(5)?})).optional().map_err(sql)?.ok_or_else(||fail(StoreErrorCode::ReferenceMissing,"session head/data absent"))
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn decode(
     c: &Connection,
     seq: i64,

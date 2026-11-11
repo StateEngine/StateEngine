@@ -69,6 +69,10 @@ impl ReadPhase {
         Ok(self.info.head.clone())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn client_changes(
         &self,
         target: &RemoteTarget,

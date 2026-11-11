@@ -52,6 +52,10 @@ fn cli(image: &Path, root: &Path, args: &[&str]) -> Check<String> {
     Ok(String::from_utf8(out.stdout)?)
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check {
     let image = PathBuf::from(
         std::env::var_os("SE_SELECTOR_SE").ok_or("SE_SELECTOR_SE must name the candidate CLI")?,

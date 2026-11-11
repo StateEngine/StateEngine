@@ -109,6 +109,10 @@ fn shape(identity: &ProcessIdentityRecord, state: ProcessState) -> StoreResult<(
     }
     Ok(())
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn apply(
     c: &Connection,
     h: &EventHeader,

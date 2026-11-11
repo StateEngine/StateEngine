@@ -19,6 +19,10 @@ impl QueryReader<'_> {
         reader.compact = Some((max_bytes, explain));
         reader.find(query)
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn find(&self, query: &FindQuery) -> AtlasResult<Answer<Read<SearchResults>>> {
         query.scope.validate()?;
         if query.regex

@@ -211,6 +211,10 @@ fn duration_visible(text: &str) -> bool {
             .is_some_and(|n| n.parse::<u64>().is_ok_and(|n| n > 0))
     })
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn run_case(reply_case: bool, delayed_read: Option<bool>) -> Check {
     let f = Fixture::new()?;
     setup(&f, reply_case || delayed_read == Some(true))?;

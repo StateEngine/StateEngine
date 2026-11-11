@@ -31,6 +31,10 @@ fn present<T>(read: api::Read<T>) -> Check<T> {
     }
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn restart_replay_cannot_rebind_old_handles_or_change_its_original_identity() -> Check {
     let root = std::path::PathBuf::from(std::env::var_os("JUDGE_H14_ROOT").ok_or("root missing")?);
     let image = std::path::PathBuf::from(std::env::var_os("JUDGE_H14_SE").ok_or("image missing")?);

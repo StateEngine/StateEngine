@@ -45,6 +45,11 @@ fn prepared<'a>(
         .map_err(|e| fail(format!("{}: {e}", &statement[..statement.len().min(45)])))
 }
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
     let f = Fixture::new()?;
     let (mut direct, lease) = f.direct()?;

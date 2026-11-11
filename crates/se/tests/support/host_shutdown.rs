@@ -18,6 +18,10 @@ enum StopClient {
     Cancelled,
     Waiting,
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn run(control: StopClient) -> Check {
     let disconnect = !matches!(control, StopClient::Waiting);
     let cancelled = matches!(control, StopClient::Cancelled);

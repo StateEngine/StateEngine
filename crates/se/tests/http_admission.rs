@@ -127,6 +127,10 @@ fn request(
 
 /// Protects: T19 — actual loopback HTTP admission, not a private router or fake server.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn public_http_admission_precedes_anonymous_and_private_routes() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let f = std::mem::ManuallyDrop::new(fixture::Fixture::new()?);

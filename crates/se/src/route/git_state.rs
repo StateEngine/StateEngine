@@ -20,6 +20,10 @@ const STATUS_OBSERVATION_DEADLINE: Duration = Duration::from_secs(10);
 const STDERR_RETAIN: usize = 4096;
 const STDERR_TAIL: usize = 160;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn observe(root: &Path) -> Result<Option<GitView>> {
     if !root.is_dir() {
         return Ok(None);

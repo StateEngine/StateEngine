@@ -1,6 +1,10 @@
 //! Decode persisted event bodies using the shared codec helpers.
 use super::*;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn body(
     c: &Connection,
     seq: i64,

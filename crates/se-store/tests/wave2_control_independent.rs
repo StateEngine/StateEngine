@@ -23,6 +23,11 @@ mod control_fixture;
 use control_fixture::*;
 /// Protects: a creator controls only its direct child under a current grant; bounded metadata never widens ordinary private readers.
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;

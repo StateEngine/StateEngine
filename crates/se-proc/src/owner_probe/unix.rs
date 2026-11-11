@@ -24,6 +24,10 @@ pub(super) fn console() -> Result<(bool, bool)> {
     Ok((stdin, stdout))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn observe(
     pid: ProcessId,
     expected: Option<&StartIdentity>,

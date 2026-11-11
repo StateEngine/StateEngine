@@ -38,6 +38,10 @@ fn refused<T>(reply: api::Result<T>, reason: &str) -> Check {
 
 #[test]
 #[ignore = "requires SE_NATIVE_MAIL_HOME,SE_NATIVE_MAIL_SE,SE_NATIVE_MAIL_INIT_JSON owned fixture"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn restart_reattach_rebind_preserves_identity_and_holds_without_replacement() -> Check {
     let home = input("SE_NATIVE_MAIL_HOME")?;
     let image = input("SE_NATIVE_MAIL_SE")?;

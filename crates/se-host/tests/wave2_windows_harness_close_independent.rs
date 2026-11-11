@@ -210,6 +210,10 @@ fn main(){
 /// Protects: both real quiet reads are retained through task abortion, each
 /// completion is consumed/released, and exact All-close frees this native port.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Check {
     let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
     let root = std::env::temp_dir().join(format!(

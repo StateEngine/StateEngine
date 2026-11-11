@@ -7,6 +7,10 @@ use sha2::{Digest, Sha256};
 use std::io::Write;
 
 impl LaunchCoordinator {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn configure_secode(
         &self,
         service: &mut Service,
@@ -172,6 +176,10 @@ impl LaunchCoordinator {
         }
         Ok(())
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn provision_secode(
         &self,
         service: &mut Service,

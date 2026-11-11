@@ -47,6 +47,10 @@ fn epoch() -> core::Result<core::HostEpoch> {
 
 /// Protects: every exported ID pair validates incoming data and preserves its exact kind and bytes.
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn linked_ids_round_trip_and_refuse_malformed_inputs() -> Check {
     macro_rules! persistent {
         ($($name:ident),+) => {$(
@@ -286,6 +290,11 @@ fn fields(
 
 /// Protects: linked windows require producer accounting; wire-only and Atlas views refuse honestly.
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn linked_windows_and_pages_retain_source_bounds_and_refuse_unsupported() -> Check {
     let store = core::StoreId::from_parts(1_700_000_000_000, [3; 10])?;
     let project = core::ProjectId::from_parts(1_700_000_000_000, [4; 10])?;
@@ -546,6 +555,10 @@ fn linked_windows_and_pages_retain_source_bounds_and_refuse_unsupported() -> Che
 
 /// Protects: every ErrorBody class and Retry arm stays typed; literal CLI remedy arguments survive conversion.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn linked_errors_preserve_classes_retries_and_literal_remedies() -> Check {
     let cx = core::RenderCx::default();
     let cases = [

@@ -4,6 +4,10 @@ use super::*;
 impl SqliteSnapshot {
     /// The newest turns after `since`, oldest first, with the older turns
     /// this bounded tail left out counted exactly in `omitted_before`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) fn read_recent_turns(
         &self,
         agent: AgentId,

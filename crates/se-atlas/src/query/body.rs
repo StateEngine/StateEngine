@@ -2,6 +2,10 @@ use super::*;
 use std::io::{Read as _, SeekFrom};
 /// A stored declaration span is displayed only after the live whole-file hash
 /// agrees. This also covers bodyless declarations without inventing body hashes.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn source(
     reader: &QueryReader<'_>,
     pointer: &mut CodePointer,

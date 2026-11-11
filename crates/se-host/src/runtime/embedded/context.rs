@@ -8,6 +8,10 @@ use secode_stateengine_api as api;
 use std::num::NonZeroU32;
 
 impl EmbeddedHost {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn context(
         &self,
         session: &api::BoundSession,

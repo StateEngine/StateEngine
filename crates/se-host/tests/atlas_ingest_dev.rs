@@ -75,6 +75,10 @@ fn ingest(
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn complete_file_stale_recovery_and_publication() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let dir = std::env::temp_dir().join(format!(

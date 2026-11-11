@@ -124,6 +124,10 @@ fn uninstall_verifies_live_host_shutdown_before_removing_files() -> Check {
     Ok(())
 }
 #[cfg(any(target_os = "linux", windows))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn uninstall_live_host(json: bool) -> Check {
     let f = Fixture::new()?;
     let home = &f.options.state_directory;

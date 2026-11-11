@@ -209,6 +209,10 @@ impl HostedRuntime {
         self.capture_fenced
             .store(false, std::sync::atomic::Ordering::Release);
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     async fn publish_listener(
         &mut self,
         runtime: tokio::runtime::Handle,

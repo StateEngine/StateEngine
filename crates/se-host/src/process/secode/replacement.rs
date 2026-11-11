@@ -51,6 +51,10 @@ impl LaunchCoordinator {
         service.persist(self, deadline).await
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn replace_secode_session(
         &self,
         service: &mut Service,

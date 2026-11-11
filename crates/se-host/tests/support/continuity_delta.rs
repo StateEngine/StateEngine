@@ -29,6 +29,11 @@ impl McpBackend for Backend {
 }
 
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn mcp_since_keeps_new_capture_before_older_context() -> Check {
     for (short_state, trailing_user, long_answer) in [
         (false, false, false),

@@ -34,6 +34,10 @@ async fn output(stream: impl tokio::io::AsyncRead + Unpin) -> Result<Vec<u8>> {
 
 /// Bound both pipes while the child is running: a full pipe cannot deadlock
 /// the probe. Timeout/error kills only this direct child and awaits its exit.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub async fn probe(command: &Path, budget: Duration) -> Result<ProviderVersion> {
     if !command.is_absolute() {
         return Err(incompatible(

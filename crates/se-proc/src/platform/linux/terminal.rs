@@ -30,6 +30,10 @@ fn descriptor(value: i32, api: &str) -> ProcResult<File> {
     Ok(unsafe { File::from_raw_fd(value) })
 }
 impl Terminal {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn prepare(spec: &LaunchSpec) -> ProcResult<Option<Self>> {
         if spec.mode.is_headless() {
             return Ok(None);
@@ -175,6 +179,10 @@ impl Terminal {
     }
     /// Called only in the already-authorized fork child. No allocator or lock.
     /// The caller reports an errno on the retained exec channel on failure.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub unsafe fn start(
         &self,
         arguments: &[*const libc::c_char],

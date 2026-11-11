@@ -9,6 +9,10 @@ use support::*;
 
 /// Protects: actual HTTP tool discovery/calls refuse Remove, with project state retained.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn authenticated_mcp_cannot_remove_a_project() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

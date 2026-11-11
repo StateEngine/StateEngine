@@ -170,6 +170,10 @@ fn replay_target<R: Snapshot>(key: &IdempotencyKey, cx: &mut Cx<'_, R>) -> Resul
         }
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn set<R: Snapshot>(
     kernel: &Kernel,
     input: ConfigSet,

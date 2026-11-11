@@ -1,6 +1,10 @@
 //! Saved, notice, read, reply and provider-send facts stay independent.
 use super::*;
 use se_store::{Actor, EventBody, Role, SqliteSnapshot, channel::SavedUpdate};
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn receipt(
     read: &mut SqliteSnapshot,
     state: &Connection,

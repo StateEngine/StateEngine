@@ -95,6 +95,10 @@ fn custody_shutdown_error_skips_storage_drain_and_keeps_its_failure() -> Check {
 
 /// Retained public coordinators cannot keep native custody or use drained storage.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn retained_router_and_capture_refuse_after_drain_without_retaining_the_lease() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

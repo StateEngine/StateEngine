@@ -30,6 +30,10 @@ fn busy_session_start_remains_read_only() -> Check {
     scenario("session-start")
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn scenario(case: &'static str) -> Check {
     let _listener = LISTENER
         .lock()

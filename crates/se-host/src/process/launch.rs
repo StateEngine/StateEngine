@@ -11,6 +11,11 @@ use sha2::{Digest, Sha256};
 
 pub(super) use super::owned::Work;
 impl LaunchCoordinator {
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn start(&self, work: &mut Work, deadline: &Deadline) -> Result<LaunchResult> {
         let plan = work.plan.clone().ok_or_else(|| {
             se_core::scope::unreadable(
@@ -391,6 +396,10 @@ impl LaunchCoordinator {
         self.finish_pending(work, request, transport, ticket, argv, deadline)
             .await
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     async fn finish_pending(
         &self,
         work: &mut Work,

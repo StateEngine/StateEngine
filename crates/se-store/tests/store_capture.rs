@@ -164,6 +164,10 @@ fn session_source_and_turn_readers_apply_principal_visibility() -> Check {
 
 /// Protects: E3 — bootstrap hash reads report current credential state, and session end atomically requires revocation first.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn credential_transitions_and_session_end_have_current_revocation_metadata() -> Check {
     let f = Fixture::new()?;
     let (mut d, lease) = f.direct()?;
@@ -310,6 +314,10 @@ fn legacy_native_capture_metadata_is_readable_but_not_rewritten_on_replay() -> C
     native_capture_metadata(Some("first-delivery"))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn native_capture_metadata(request_key: Option<&str>) -> Check {
     let f = Fixture::new()?;
     let (mut d, lease) = f.direct()?;

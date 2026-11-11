@@ -8,6 +8,10 @@ pub(super) fn resolve(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Op
     Ok(resolve_inner(sql, target)?
         .filter(|t| !crate::policy::built_in_denied(&t.file.pointer.path)))
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<Target>> {
     if let AtlasTarget::File(path) = target {
         return Ok(file_by_path(sql, path)?.map(|file| Target { file, symbol: None }));

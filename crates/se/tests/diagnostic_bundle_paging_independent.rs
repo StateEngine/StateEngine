@@ -161,6 +161,11 @@ fn first_project_page(status: &Value) -> Check<BTreeSet<String>> {
 }
 
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn a_paged_home_status_remains_observed_but_makes_the_export_incomplete() -> Check {
     let fixture = Fixture::new()?;
     let mut registered = BTreeSet::new();

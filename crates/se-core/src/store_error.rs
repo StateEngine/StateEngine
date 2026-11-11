@@ -1,6 +1,10 @@
 //! One store-domain to public-catalogue mapping; the original cause is never dropped.
 use se_store::{StoreError, StoreErrorCode as C};
 use se_types::{Detail, SeError, details};
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn store_error(error: &StoreError) -> SeError {
     if let se_store::StoreDetail::PrincipalNameConflict {
         project,

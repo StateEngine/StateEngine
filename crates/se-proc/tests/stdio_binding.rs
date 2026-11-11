@@ -162,6 +162,10 @@ fn window_console_child() -> Check {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires a logged-in X desktop and xterm"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn native_window_owns_provider_pty_and_viewer_until_exact_stop() -> Check {
     let home = Home::new()?;
     let machine = MachineId::new("window-console-smoke")?;
@@ -292,6 +296,10 @@ fn window_backend_child() -> Check {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires a logged-in X desktop and xterm"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn native_window_backend_and_console_share_custody() -> Check {
     let home = Home::new()?;
     let machine = MachineId::new("window-console-smoke")?;
@@ -542,6 +550,17 @@ fn stdio_binding_child() -> Check {
 
 /// Protects: bind_stdio once-only admission, foreign arena refusal, deadline and failed-bind execution fences.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::cognitive_complexity,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )
+)]
 fn native_prepared_stream_bindings_keep_custody_through_success_and_refusal() -> Check {
     for case in [
         "roundtrip",

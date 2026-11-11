@@ -5,6 +5,10 @@ use super::*;
 /// Authenticated CLI routing metadata, separate from model-facing operation DTOs.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub struct CliSelections {
     pub preview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -42,6 +46,10 @@ impl CliSelections {
     }
     /// Called only by the authenticated CLI route inside its admitted finite read.
     /// The same metadata crosses IPC separately; MCP arguments never carry it.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn apply<R: se_store::Snapshot>(
         &self,
         op: &mut AnyOp,

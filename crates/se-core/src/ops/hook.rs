@@ -106,6 +106,10 @@ pub struct CaptureThen {
 }
 /// The host releases this snapshot before awaiting the canonical writer. A
 /// continuation subsequently opens a fresh snapshot through Kernel::committed.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn plan<R: Snapshot>(
     mut input: CaptureRequest,
     facts: CaptureFacts,
@@ -371,6 +375,10 @@ pub fn plan<R: Snapshot>(
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn committed<R: Snapshot>(
     then: CaptureThen,
     receipt: CommitReceipt,

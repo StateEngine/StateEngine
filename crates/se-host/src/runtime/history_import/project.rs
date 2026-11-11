@@ -15,6 +15,10 @@ pub(super) struct Source<'a> {
     pub human_names: &'a human_plan::Names,
     pub registry: &'a SourceEvidence,
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) async fn execute(
     context: &ExecutionContext,
     mut admission: Admission,

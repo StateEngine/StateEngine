@@ -12,6 +12,10 @@ impl Mode {
         }
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn file(
     source: &Source,
     connection: &CacheConnection<'_>,

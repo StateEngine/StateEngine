@@ -104,6 +104,10 @@ impl RemoteWatchStream for Watch {
     }
 }
 impl State {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn drain(&mut self, service: &Service) -> Result<(RemoteWatchBatch, bool)> {
         let mut batch = RemoteWatchBatch {
             schema: RemoteWatchBatch::SCHEMA.into(),

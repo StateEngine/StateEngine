@@ -11,6 +11,10 @@ pub(super) struct Identity {
     pub model: Option<String>,
     pub conversation: Option<String>,
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn resolve<R: Snapshot>(
     preview: Option<&AgentId>,
     cx: &mut Cx<'_, R>,

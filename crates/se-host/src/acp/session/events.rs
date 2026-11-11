@@ -100,6 +100,10 @@ impl Session {
             }
         }
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn update(&self, params: Value) -> Result<()> {
         let mut state = self.lock()?;
         ready(&state)?;
@@ -203,6 +207,10 @@ impl Session {
         }
         Ok(())
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn response(&self, id: u64, method: &str, outcome: Result<Value>) -> Result<()> {
         let result = outcome?;
         let mut state = self.lock()?;

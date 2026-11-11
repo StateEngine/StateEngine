@@ -3,6 +3,10 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 impl Generation {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(in crate::runtime::embedded) async fn native_adoptions(
         &self,
         request: api::PageRequest,

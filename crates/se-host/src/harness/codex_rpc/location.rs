@@ -141,6 +141,10 @@ impl CodexHarness {
     }
     /// Called only after native scope exit, including cold cleanup. No recursive
     /// removal, path reconstruction from provider output, or permission repair.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(crate) fn retire_socket(&self, session: &se_types::SessionId) -> Result<()> {
         let path = self.directory(session)?.join("codex-runtime.json");
         let Some(mut owned) = se_proc::OwnedFile::open(&path).map_err(native_error)? else {

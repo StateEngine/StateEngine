@@ -1,5 +1,9 @@
 //! Find or atomically create the initial saved identity, then read it back.
 use super::*;
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn initial_agent(
     cx: &Bootstrap,
     input: &ProjectInit,

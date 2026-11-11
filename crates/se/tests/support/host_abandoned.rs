@@ -1,6 +1,10 @@
 use crate::*;
 
 /// Protects: abandoning accepted receipt waits cannot permanently exhaust write admission; outside SQLite receipts prove every abandoned request completed before the next request.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub async fn check(f: &Fixture, session: &SessionId, runtime: &se_host::HostedRuntime) -> Check {
     let router = runtime.router()?;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;

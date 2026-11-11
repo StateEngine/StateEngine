@@ -40,6 +40,10 @@ pub enum Message {
     },
 }
 #[derive(Clone, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub struct Diagnostics {
     pub stdout_terminal: bool,
     pub stdout_complete: bool,

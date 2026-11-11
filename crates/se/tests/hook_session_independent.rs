@@ -57,6 +57,11 @@ fn checked(
 
 /// Protects: invalid hook credentials refuse before reading stdin or starting a
 /// host; current Prepared/Active credentials still reach native payload parsing.
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn check_case(case: &str) -> Check {
     se_proc::initialize_file_creation_owner()?;
     let mut f = std::mem::ManuallyDrop::new(Fixture::new()?);

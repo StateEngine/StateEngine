@@ -4,6 +4,10 @@ use super::{
     *,
 };
 use rusqlite::types::Value;
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn collect(
     reader: &QueryReader<'_>,
     sql: &SqlView<'_>,
@@ -152,6 +156,10 @@ fn ids(
     }
     Ok(output)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn neighbors(
     sql: &SqlView<'_>,
     seed: &Candidate,

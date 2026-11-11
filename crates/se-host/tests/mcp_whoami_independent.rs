@@ -9,6 +9,10 @@ mod support;
 use support::*;
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn whoami_reports_the_admitted_principal_without_credentials() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

@@ -12,6 +12,10 @@ struct ScopeFrame {
     node: usize,
     scope: u32,
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn extract(
     scope: &Scope,
     snapshot: &SourceSnapshot,

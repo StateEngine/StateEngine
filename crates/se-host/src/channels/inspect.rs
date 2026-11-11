@@ -58,6 +58,10 @@ impl Channels {
             tokio::select! {_=&mut notified=>{},_=tokio::time::sleep(wait)=>{}}
         }
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     async fn inspect_page(
         &self,
         input: &InspectChannels,

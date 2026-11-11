@@ -96,6 +96,10 @@ fn check_scope(admission: &se_store::Admission, pin: &crate::TranscriptPin) -> R
     }
     Ok(())
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn cursor(
     context: &ExecutionContext,
     admission: &se_store::Admission,

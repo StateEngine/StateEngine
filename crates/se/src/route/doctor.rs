@@ -51,6 +51,10 @@ fn raw_endpoint(files: &Files) -> Result<Option<Vec<u8>>> {
         })?;
     Ok(Some(bytes))
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn observe<R: se_store::ReadStore>(
     cx: &Bootstrap,
     files: &Files,

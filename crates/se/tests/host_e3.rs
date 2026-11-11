@@ -56,6 +56,10 @@ use std::{
 };
 /// Protects: wave-1 hosted E3 — real authenticated listener/supervisor commits message, working state and pinned Claude stop; fresh outside snapshots observe their atomic facts and natural replay.
 #[cfg(any(target_os = "linux", windows))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn listener_message_working_and_hook() -> Check {
     let initialized = se_host::initialize_host_process()?;
     let f = std::mem::ManuallyDrop::new(Fixture::new()?);

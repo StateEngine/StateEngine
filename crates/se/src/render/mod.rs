@@ -53,6 +53,10 @@ pub fn output_at(
     output(value, json, quiet, out)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) -> io::Result<u8> {
     if !json && matches!(value, AnyOutput::HookClaude(_)) {
         return Err(io::Error::other(

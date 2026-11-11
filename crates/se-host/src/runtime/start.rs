@@ -184,6 +184,10 @@ fn present<T>(read: Read<T>, subject: &str) -> Result<T> {
         Read::Unknown { what } => Err(se_core::scope::unreadable(subject, &what)),
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn prepare(
     options: HostStart,
     blocking: BlockingPool,

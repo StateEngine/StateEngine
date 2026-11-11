@@ -132,6 +132,10 @@ pub(crate) fn refusal(
 ) -> io::Result<u8> {
     self::error(error, json, None, operation.idempotency_key(), stderr)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn run(
     cx: &Bootstrap,
     operation: AnyOp,

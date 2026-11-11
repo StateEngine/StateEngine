@@ -5,6 +5,10 @@ use crate::commit::{AbsentRevision, ExpectedRevision};
 pub fn from_matches(matches: &ArgMatches) -> Result<AnyOp> {
     from_matches_with_key(matches, None)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn from_matches_with_key(
     matches: &ArgMatches,
     generated: Option<IdempotencyKey>,

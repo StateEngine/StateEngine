@@ -10,6 +10,10 @@ pub struct Capture<'a> {
 }
 
 /// Protects: cold native capture — a new authenticated host reopens the prior trusted pin, preserves every multi-record commit timing and confirmed partial key, and refuses changes to the last cursor-anchored raw range without blocking unrelated writes.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
     let machine =
         route::identity::require_machine(&route::files::Files::open(&f.options.state_directory)?)?;

@@ -193,6 +193,10 @@ pub fn absent<R: ReadStore>(
 }
 /// A project tombstone is permanent. A human retry can report its measured
 /// absence without starting a host, replacing a retired key or writing again.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn absent_project<R: ReadStore>(
     cx: &crate::bootstrap::Bootstrap,
     files: &Files,

@@ -84,6 +84,10 @@ impl LaunchCoordinator {
     pub fn subscribe_activity(&self) -> watch::Receiver<u32> {
         self.activity.subscribe()
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn launch_prepared(
         self: &Arc<Self>,
         plan: LaunchPlan,

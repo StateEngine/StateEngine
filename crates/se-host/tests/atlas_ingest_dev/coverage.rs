@@ -4,6 +4,10 @@ use se_atlas::coverage::CoverageScan;
 fn error(e: impl std::fmt::Display) -> se_types::SeError {
     se_types::SeError::invalid("coverage development SQL", &e.to_string())
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn exercise(db: &CacheConnection<'_>, initial: &Coverage) -> Check {
     for group in 0..3 {
         db.write(2_000_000, deadline(), |sql| {

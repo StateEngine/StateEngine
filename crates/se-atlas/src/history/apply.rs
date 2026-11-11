@@ -22,6 +22,10 @@ pub fn ingest(
 }
 /// The owner may call this inside its existing contained cold transaction. It
 /// opens no connection, raises no profile, and grants no publication authority.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn apply(sql: &SqlView<'_>, feed: &HistoryFeed) -> AtlasResult<HistoryReceipt> {
     feed.validate()?;
     let (project, root, generation, serial): (String, String, i64, i64) = sql

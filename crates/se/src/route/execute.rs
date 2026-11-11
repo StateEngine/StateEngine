@@ -114,6 +114,10 @@ pub(crate) fn stop_for_uninstall(
     dispatch_with_cold_recovery(cx, AnyOp::RuntimeDown(input), diagnostic, false)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn dispatch_with_cold_recovery(
     cx: &Bootstrap,
     op: AnyOp,

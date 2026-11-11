@@ -26,6 +26,10 @@ pub fn next_with_paths<R: Snapshot>(
 type PathResolver<'a> = Option<
     &'a mut dyn FnMut(&crate::ops::transcript::tool::ObservedPath) -> Result<Option<RelativePath>>,
 >;
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn next_scoped<R: Snapshot>(
     read: &mut R,
     admission: &Admission,

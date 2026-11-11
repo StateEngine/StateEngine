@@ -93,6 +93,10 @@ fn urgent(tx: &mpsc::Sender<Message>, message: Message) -> Result<()> {
     tx.try_send(message)
         .map_err(|_| unavailable("bounded client control queue full or closed"))
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 async fn reader(
     mut stream: Stream,
     endpoint: &Arc<ClientEndpoint>,

@@ -58,6 +58,10 @@ impl RecordReader for NoRecords {
         panic!("unexpected record body read")
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn rank_and_touch_absence(db: &CacheConnection<'_>) -> Check {
     let out = outside(db)?;
     assert_eq!(

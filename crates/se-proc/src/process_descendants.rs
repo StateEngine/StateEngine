@@ -10,6 +10,10 @@ use std::{
     time::Instant,
 };
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn read_process_descendants(
     root: &ProcessIdentity,
     deadline: Instant,

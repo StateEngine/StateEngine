@@ -9,6 +9,10 @@ use se_types::{Read, Result};
 mod resources;
 
 impl LaunchCoordinator {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn status(
         &self,
         input: ProjectStatus,

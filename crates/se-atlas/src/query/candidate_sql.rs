@@ -8,6 +8,11 @@ pub(super) struct Plan {
     pub values: Vec<Value>,
     pub lexical: bool,
 }
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn plans(query: &FindQuery, mode: SearchMode) -> AtlasResult<Vec<Plan>> {
     let mut output = Vec::new();
     if matches!(mode, SearchMode::Broad | SearchMode::Related)

@@ -7,6 +7,10 @@ use se_store::StateFiles;
 use se_types::{Result, SeError};
 use sha2::{Digest, Sha256};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn listener_port(cx: &Bootstrap, files: &Files, owner: &str) -> Result<(u16, bool)> {
     let path = match &cx.config.origin {
         Origin::File(path) => path.clone(),

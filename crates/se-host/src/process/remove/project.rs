@@ -2,6 +2,11 @@
 use super::*;
 
 impl LaunchCoordinator {
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn remove_project(
         self: &Arc<Self>,
         project: Named<ProjectId>,

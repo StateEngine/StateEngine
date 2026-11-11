@@ -34,6 +34,10 @@ fn page() -> api::PageRequest {
 
 #[test]
 #[ignore = "requires an explicitly owned initialized fixture and native helper"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn native_mail_reconciles_commit_wakes_lost_replies_and_holds_without_read_marks() -> Check {
     let home = input("SE_NATIVE_MAIL_HOME")?;
     let owner = input("SE_NATIVE_MAIL_OWNER")?;

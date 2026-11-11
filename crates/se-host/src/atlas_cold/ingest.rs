@@ -3,6 +3,10 @@ use se_atlas::{
     resolve::{self, catalog::SqlCatalog},
     update::{file, observation},
 };
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn file(
     source: &RegisteredSource<NativeAtlasSource>,
     db: &CacheConnection<'_>,

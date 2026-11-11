@@ -129,6 +129,10 @@ pub struct Observation {
 impl Observation {
     /// Call before committing each observation. CaptureRequest remains trusted
     /// host input; serializable durable metadata is not a new IPC write door.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn validate_binding(
         &self,
         session: &SessionId,

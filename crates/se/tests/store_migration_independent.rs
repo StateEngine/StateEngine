@@ -113,6 +113,10 @@ fn backup_is_original(f: &Fixture, expected_schema: u32, expected_head: u64) -> 
     );
     Ok(())
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn check(from: u32, obstruct: bool) -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

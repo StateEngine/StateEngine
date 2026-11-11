@@ -2,6 +2,10 @@
 use super::*;
 const HOST_PAGES: usize = 64;
 const SNAPSHOT_BYTES: u64 = 1024 * 1024;
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) async fn sessions(
     deadline: &crate::client::lease::Deadline,
     options: &api::CallOptions,

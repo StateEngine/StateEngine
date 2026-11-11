@@ -4,6 +4,10 @@ use super::*;
 use crate::client::lease::Deadline;
 
 impl EmbeddedHost {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn rebind(
         &self,
         router: &HostedRouter,

@@ -61,6 +61,10 @@ pub enum AncestryBound {
 /// terminal flags. Environment values (including session credentials) are not
 /// retained or exposed.
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub struct OwnerObservation {
     owner: NativeOwner,
     stdin_console: bool,

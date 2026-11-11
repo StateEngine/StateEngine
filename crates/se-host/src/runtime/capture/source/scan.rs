@@ -13,6 +13,10 @@ use std::collections::BTreeMap;
 const TAIL_RECORDS: usize = 1024;
 const TAIL_BYTES: u64 = 4 * 1024 * 1024;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn next(
     source: &mut BoundTranscript,
     revision: se_store::Revision,

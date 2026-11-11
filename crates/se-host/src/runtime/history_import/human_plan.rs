@@ -4,6 +4,10 @@ use se_types::HumanId;
 use std::collections::{BTreeMap, BTreeSet};
 pub(super) type Names = std::sync::Arc<BTreeMap<HumanId, String>>;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn inspect(
     context: &ExecutionContext,
     admission: &Admission,

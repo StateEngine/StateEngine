@@ -2,6 +2,10 @@
 use crate::fixture::present;
 use se_atlas::query::QueryReader;
 use se_types::code::*;
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn check(
     reader: &QueryReader<'_>,
     late_reader: &QueryReader<'_>,

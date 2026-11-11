@@ -209,6 +209,10 @@ pub fn uninstall(value: &UninstallOutput, out: &mut impl Write) -> io::Result<()
 pub fn uninstall_deferred(value: &UninstallOutput, out: &mut impl Write) -> io::Result<()> {
     uninstall_report(value, true, out)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn uninstall_report(
     value: &UninstallOutput,
     deferred: bool,

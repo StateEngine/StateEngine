@@ -97,6 +97,10 @@ async fn stdio_list(home: &Path, capability: &str) -> Result<Value, Box<dyn std:
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn real_stdio_client_lists_every_available_registered_tool() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

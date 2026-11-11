@@ -106,6 +106,10 @@ impl LaunchCoordinator {
             .map_err(|cause| error("live capture diagnostic", format!("capture failed: {failure}; retaining its public failure also failed: {cause}")).with_cause(cause))?;
         Ok(())
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     async fn capture_progress_inner(
         &self,
         work: &mut Work,

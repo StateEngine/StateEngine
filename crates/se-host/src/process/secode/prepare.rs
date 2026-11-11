@@ -6,6 +6,11 @@ use se_proc::{CheckpointKind, ProcessRuntime, StopObservation};
 use sha2::{Digest, Sha256};
 
 impl LaunchCoordinator {
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(in crate::process) async fn prepare_secode(
         &self,
         work: &mut owned::Work,

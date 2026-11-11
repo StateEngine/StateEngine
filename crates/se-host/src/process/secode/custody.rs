@@ -8,6 +8,10 @@ use std::io::Write;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) struct Journal {
     pub version: u16,
     #[serde(default)]

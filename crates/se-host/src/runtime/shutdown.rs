@@ -23,6 +23,11 @@ impl HostServeExit {
     /// Accepted tasks are already fenced and joined by serve. Drain errors and
     /// a disconnected stop client cannot skip transport or publication cleanup.
     /// Replies precede transport join because their channel is itself an instance.
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub async fn finish(mut self, drain_deadline: &Deadline) -> HostShutdown {
         // serve has already spent part of this budget joining admitted calls and
         // delivering their replies. A caller may shorten it, never renew it.

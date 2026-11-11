@@ -148,6 +148,10 @@ fn bounds(window: &Window) -> StoreResult<(u64, u64, u64, bool, Option<u64>)> {
         window.omitted().count,
     ))
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn apply(
     c: &Connection,
     h: &EventHeader,

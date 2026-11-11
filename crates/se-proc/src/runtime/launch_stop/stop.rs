@@ -297,6 +297,10 @@ fn pending_exit_image(cause: &ProcError) -> bool {
     let darwin = false;
     windows || darwin
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn witness_inner(s: &mut Slot) -> ProcResult<StopObservation> {
     if s.native.is_none() && !s.launched {
         // Failed preparation cannot have created a vendor. Query the exact

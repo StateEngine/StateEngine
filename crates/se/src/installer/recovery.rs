@@ -50,6 +50,10 @@ fn plain_tree(root: &Path) -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn check(arguments: &[OsString]) -> Result<i32> {
     if arguments.len() != 3 {
         return Err(args::invalid(

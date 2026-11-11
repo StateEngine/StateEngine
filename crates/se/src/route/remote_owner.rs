@@ -5,6 +5,10 @@ use se_core::{scope, store_error::store_error};
 use se_host::client::{ClientOptions, lease::Deadline};
 use se_types::{Result, SeError};
 use std::sync::Arc;
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn execute(cx: &Bootstrap, input: Input) -> Result<se_host::OperationOutput> {
     if cx.session.is_some() {
         return Err(SeError::invalid(

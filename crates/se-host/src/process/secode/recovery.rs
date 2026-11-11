@@ -177,6 +177,10 @@ impl LaunchCoordinator {
         }
         Ok(())
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     async fn recover_secode_service(
         &self,
         service: &mut Service,
@@ -288,6 +292,10 @@ impl LaunchCoordinator {
         service.control = Some(control);
         Ok(())
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(in crate::process) async fn restore_secode_work(
         &self,
         work: &mut owned::Work,

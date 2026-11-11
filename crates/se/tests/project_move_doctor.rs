@@ -185,6 +185,10 @@ fn event_id(stdout: &str) -> Result<&str, Box<dyn Error>> {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn move_replays_the_retained_receipt_on_the_same_request_key() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let fixture = Fixture::new()?;
@@ -406,6 +410,10 @@ fn move_refuses_an_unreadable_original_folder_instead_of_copying() -> Check {
 
 #[test]
 #[cfg(unix)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn move_replay_identifies_a_gone_target_spelled_through_a_folder_symlink() -> Check {
     use std::os::unix::fs::symlink;
     se_proc::initialize_file_creation_owner()?;

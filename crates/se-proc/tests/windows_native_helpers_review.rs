@@ -292,6 +292,10 @@ impl Drop for Scope<'_> {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn launched_child_has_only_explicit_stdio_and_starts_in_its_exact_job() -> Check {
     let home = Home::new()?;
     let executable = std::env::current_exe()?;

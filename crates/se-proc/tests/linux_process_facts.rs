@@ -60,6 +60,10 @@ mod linux {
             }
         }
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn run() -> Result {
         if std::env::args().nth(1).as_deref() == Some("--facts-child") {
             return child();

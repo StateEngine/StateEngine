@@ -160,6 +160,10 @@ fn sent_message_read_is_retained_in_authorized_sender_replay() -> Check {
 }
 /// Bug: an already committed keyed send stops resolving when its target ends normally.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn committed_send_retry_resolves_original_receipt_after_target_session_end() -> Check {
     let f = Fixture::new()?;
     let (mut d, l) = f.direct()?;
@@ -292,6 +296,10 @@ fn committed_send_retry_resolves_original_receipt_after_target_session_end() -> 
 
 /// Bug: recipient-addressed shared work mail updates the ordinary inbox but vanishes from remote replay.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn shared_work_message_addressed_to_granted_agent_is_not_silently_skipped() -> Check {
     let f = Fixture::new()?;
     let (mut d, l) = f.direct()?;

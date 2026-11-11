@@ -239,6 +239,10 @@ fn append_channel(
 
 #[test]
 #[ignore = "run on the historical revision with SE_CHANNEL_UPGRADE_PRODUCE set"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn produce_schema_eight() -> Check {
     let root = evidence_path("SE_CHANNEL_UPGRADE_PRODUCE")?;
     match fs::symlink_metadata(&root) {
@@ -476,6 +480,11 @@ fn produce_schema_eight() -> Check {
     Ok(())
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn check_public_readback(view: &mut SqliteSnapshot, m: &Manifest) -> Check {
     let state = present(view.channel_connection(&m.connection)?)?;
     let expected: channel::Connection = serde_json::from_value(m.connection_json.clone())?;

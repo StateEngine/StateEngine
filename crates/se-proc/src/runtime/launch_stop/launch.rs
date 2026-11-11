@@ -2,6 +2,10 @@
 use super::*;
 
 impl NativeProcessRuntime {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) fn native_prepare_launch(
         &self,
         reservation: LaunchReservation,
@@ -221,6 +225,10 @@ impl NativeProcessRuntime {
             }
         }
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) fn native_poll_launch(&self, ticket: &LaunchTicket) -> ProcResult<LaunchProgress> {
         let result = self.inner.apply(&ticket.key, false, |s| {
             if let Some(error) = &s.failure {

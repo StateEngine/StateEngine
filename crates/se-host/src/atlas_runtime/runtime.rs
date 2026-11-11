@@ -8,6 +8,10 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             .find(|r| &r.summary.root == root)
             .map(|r| r.summary.clone()))
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn step(
         &mut self,
         registration: &RootRegistration,

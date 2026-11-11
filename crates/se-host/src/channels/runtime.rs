@@ -76,6 +76,11 @@ impl Channels {
         })
         .await
     }
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(crate) async fn run(
         self: Arc<Self>,
         mut stopped: watch::Receiver<Option<Deadline>>,

@@ -10,6 +10,10 @@ use se_types::{Result, SeError};
 use std::num::NonZeroU64;
 
 impl LaunchCoordinator {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn release_target(
         &self,
         work: &mut Work,

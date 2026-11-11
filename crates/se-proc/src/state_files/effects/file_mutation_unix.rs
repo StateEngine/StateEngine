@@ -153,6 +153,10 @@ impl Pin {
             )),
         }
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(in crate::state_files) fn replace(self, expected: [u8; 32], bytes: &[u8]) -> Result<()> {
         self.check()?;
         verify(&self.file, &self.path, expected)?;

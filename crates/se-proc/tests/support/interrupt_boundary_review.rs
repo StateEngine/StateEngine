@@ -1,6 +1,10 @@
 //! Real native groups must keep interrupt separate from force and foreign custody.
 use super::*;
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn interrupt_is_exact_group_sigint_and_rejects_wrong_generation() -> Check {
     let home = Home::new()?;
     let other = Home::new()?;

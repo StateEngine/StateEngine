@@ -1,6 +1,10 @@
 //! Native renewal through the production controller.
 use super::*;
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn real_runtime_renews_watches_reconciles_and_preserves_failed_baselines() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let root = std::env::temp_dir().join(format!(

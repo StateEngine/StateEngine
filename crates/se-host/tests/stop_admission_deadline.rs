@@ -28,6 +28,10 @@ fn bound() -> se_types::Result<Deadline> {
 
 #[test]
 #[ignore = "native helper: invoke with the stop_admission_deadline Python consumer"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn native_admission_host() -> Check {
     let initialized = initialize_host_process()?;
     let root = PathBuf::from(std::env::var_os("STOP_ADMISSION_ROOT").ok_or("fixture root absent")?);

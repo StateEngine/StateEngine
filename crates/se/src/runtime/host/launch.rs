@@ -71,6 +71,10 @@ pub fn start_with_origin(
         }
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn start_recorded(
     home: &Path,
     configuration: &Path,

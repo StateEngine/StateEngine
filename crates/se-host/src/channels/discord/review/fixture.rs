@@ -22,6 +22,10 @@ struct Process {
 }
 
 impl Fixture {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn new(mode: &str) -> Check<Self> {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let root = std::env::temp_dir().join(format!(

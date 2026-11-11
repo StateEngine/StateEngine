@@ -36,6 +36,10 @@ pub fn prepare_agent_observation<S: Snapshot>(
         }
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn prepare<S: Snapshot>(
     project: &ProjectId,
     row: &AgentRow,
@@ -157,6 +161,10 @@ fn prepare<S: Snapshot>(
         setup_retryable: se_core::ops::agent_launch::retryable_attended_setup(&head),
     })
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn capture_evidence<S: Snapshot>(
     project: &ProjectId,
     session: &se_types::SessionId,

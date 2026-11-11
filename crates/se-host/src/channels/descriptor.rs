@@ -3,6 +3,10 @@ use super::*;
 use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub struct ConnectorDescriptor {
     pub connector: Connector,
     pub name: &'static str,

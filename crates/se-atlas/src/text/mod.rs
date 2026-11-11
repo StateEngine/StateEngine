@@ -19,6 +19,10 @@ pub struct TextRequest<'a> {
     pub deadline: Instant,
     pub max_matches: usize,
 }
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub struct TextFileResult {
     pub hits: Vec<(CodeHit, HitBody)>,
     pub omitted_matches: u64,
@@ -64,6 +68,10 @@ pub(crate) fn search_with_matcher(
 ) -> AtlasResult<TextFileResult> {
     search_with_terms(file, request, matcher, None)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn search_with_terms(
     mut file: Box<dyn SourceFile + '_>,
     request: TextRequest<'_>,

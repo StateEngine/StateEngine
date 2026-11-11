@@ -28,6 +28,10 @@ pub(super) fn busy(reason: &str) -> SeError {
         next_step: "Let outstanding work finish or cancel a read/watch, then retry the request; retain the SSH binding and original send idempotency key.".into(),
     }))
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) async fn open(
     route: &RemoteRoute,
     device: &MachineSession,

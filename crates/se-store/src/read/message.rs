@@ -30,6 +30,10 @@ impl SqliteSnapshot {
     ) -> StoreResult<Page<MessageRecord>> {
         self.read_messages_with_delivery(query, budget, false)
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) fn read_messages_with_delivery(
         &self,
         query: MessageQuery,

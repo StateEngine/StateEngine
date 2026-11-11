@@ -39,6 +39,10 @@ fn named(path: PathBuf, family: ImportFamily, kind: NodeKind) -> File {
         anchor: None,
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn inspect(
     path: &Path,
     owner: &HumanId,

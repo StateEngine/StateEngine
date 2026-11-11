@@ -268,6 +268,10 @@ fn public_history_page_and_exact_event_show_chat_text_without_payload_envelope()
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn public_tool_history_and_exact_events_show_actions_and_keep_unknowns_honest() -> Check {
     use se_core::ops::transcript::{Position, Record, tool::*};
     let f = Fixture::new()?;

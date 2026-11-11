@@ -127,6 +127,10 @@ pub struct NativeUnixStream {
     bound: IpcIoBound,
 }
 impl NativeUnixStream {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn connect(path: &Path, bound: IpcIoBound) -> IpcNativeResult<Self> {
         let parent = path.parent().ok_or_else(|| {
             refuse(

@@ -126,6 +126,10 @@ fn resumed_claude_uuids_keep_original_events_and_verify_new_source_ranges() -> C
 fn resumed_codex_tools_keep_one_execution_and_each_sources_verified_cursor() -> Check {
     resume_capture(Provider::Codex, true)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn resume_capture(backend: Provider, tools: bool) -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

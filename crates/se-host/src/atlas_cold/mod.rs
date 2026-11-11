@@ -119,6 +119,10 @@ pub fn private_entry() -> AtlasResult<u8> {
     })
 }
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn run_child(
     request: &protocol::Request,
     mut notify: impl FnMut(protocol::Reply) -> AtlasResult<()>,

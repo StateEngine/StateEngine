@@ -79,6 +79,10 @@ fn setup_deadline() -> Instant {
     Instant::now() + Duration::from_secs(60)
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let base = std::env::temp_dir().join(format!(

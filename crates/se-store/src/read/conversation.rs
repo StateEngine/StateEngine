@@ -4,6 +4,10 @@ use rusqlite::types::Value;
 use std::collections::BTreeSet;
 
 impl SqliteSnapshot {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) fn read_conversation_turns(
         &self,
         agent: AgentId,

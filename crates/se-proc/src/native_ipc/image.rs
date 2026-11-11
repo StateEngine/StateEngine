@@ -106,6 +106,10 @@ fn cache() -> &'static Mutex<Cache> {
 /// counter also rejects growth beyond the cap during an observation.
 const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn hash_image(mut file: std::fs::File, bound: &IpcIoBound) -> IpcNativeResult<Sha256> {
     use std::io::Read;
     let before = file

@@ -1,0 +1,11 @@
+{
+ "comment": "Shrink-only list of Rust source stitched with include!. A new carrier, a new fragment, or a larger stitched size is refused; convert a carrier to submodules with a real interface and delete its entry. lines is the carrier plus its fragments.",
+ "carriers": {
+  "crates/se-types/src/error.rs": {
+   "lines": 692,
+   "fragments": [
+    "crates/se-types/src/error/catalog.rs"
+   ]
+  }
+ }
+}

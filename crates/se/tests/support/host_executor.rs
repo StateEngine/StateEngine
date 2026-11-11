@@ -1,6 +1,10 @@
 use crate::*;
 
 /// Protects: owned async completion — actual SQLite contention refuses without effects, and cancellation after independently observed durable commit retains the original key for one-effect replay.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub async fn uncertain_write(
     f: &Fixture,
     session: &SessionId,

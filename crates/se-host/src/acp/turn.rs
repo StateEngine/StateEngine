@@ -91,6 +91,10 @@ impl Turn {
             text,
         }
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn update(&mut self, update: &Value) -> Result<()> {
         let kind = update
             .get("sessionUpdate")

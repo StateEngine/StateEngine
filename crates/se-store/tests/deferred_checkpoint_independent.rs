@@ -126,6 +126,10 @@ fn direct_receipt_defers_soft_maintenance_without_hiding_commit() -> Check {
 /// Protects: sustained writes cannot postpone the hard cutoff; a blocked reader
 /// permits at most one committed group overshoot, then retry is refused unchanged.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at the guardrail rebaseline onto current main; delete this expect when the lint is fixed"
+)]
 fn pressure_blocks_growth_and_retries_after_reader_releases() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;

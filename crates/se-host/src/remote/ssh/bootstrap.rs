@@ -130,6 +130,10 @@ fn refused_setup(bytes: &[u8]) -> se_types::SeError {
         "remote bootstrap refused without a structured reason; the existing host was preserved",
     )
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub async fn connect(
     destination: &str,
     source: RemoteHostId,

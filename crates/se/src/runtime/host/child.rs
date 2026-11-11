@@ -128,6 +128,10 @@ pub(crate) fn foreground(
     clippy::too_many_arguments,
     reason = "One shared host entry retains the authenticated detached frame or the authorized foreground callback."
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn serve(
     home: PathBuf,
     configuration: PathBuf,

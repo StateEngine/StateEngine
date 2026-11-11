@@ -16,6 +16,11 @@ use se_types::Result;
 use std::{sync::atomic::Ordering, time::Duration};
 
 impl LaunchCoordinator {
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn monitor(self: &Arc<Self>, job: Arc<Job>) {
         let mut retry_at = None;
         let mut backoff = Duration::from_millis(100);
@@ -258,6 +263,10 @@ impl LaunchCoordinator {
             monitor_wake(&wake.event, observation_retry_at.or(retry_at)).await;
         }
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn cleanup_failed(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
         if work.reservation_uncertain {
             let actor = work.admission.actor.clone();
@@ -410,6 +419,17 @@ impl LaunchCoordinator {
             })
             .await
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::cognitive_complexity,
+            reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+        )
+    )]
     pub(super) async fn stop_native(
         &self,
         work: &mut Work,

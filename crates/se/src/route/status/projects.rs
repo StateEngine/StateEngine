@@ -1,6 +1,10 @@
 //! Owner-scoped project summaries. Counts come from each project's own finite
 //! snapshot; native observations run only after that snapshot closes.
 use super::*;
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn page<R: ReadStore>(
     reader: &R,
     admission: &Admission,

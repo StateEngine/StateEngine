@@ -172,6 +172,10 @@ impl Harness for AcpHarness {
             })
         })
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn attach<'a>(
         &'a self,
         attach: HarnessAttach,

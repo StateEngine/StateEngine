@@ -19,6 +19,10 @@ fn pinned_capture_keeps_chat_separate_and_refuses_broken_known_records() -> Chec
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn capture_case(bad_bookkeeping: bool) -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

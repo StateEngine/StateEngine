@@ -7,6 +7,10 @@ pub struct TextRecord {
     pub role: se_store::Role,
     pub text: Body,
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<TextRecord>> {
     if bytes
         .iter()

@@ -56,6 +56,10 @@ fn plain_root(actual: &str, expected: &Path) -> Check {
 
 /// Protects: real init stores and prints ordinary project roots; JSON and human status select the correct persisted root by cwd when two projects prevent sole-project fallback.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn init_and_status_keep_plain_roots_and_match_each_cwd() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let f = Fixture::new()?;

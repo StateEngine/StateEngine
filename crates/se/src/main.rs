@@ -28,6 +28,10 @@ use std::{
 
 /// The binary supplies B03's concrete route once its native/store joins exist.
 /// Metadata completes here before environment, configuration or state access.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn run(
     args: Vec<OsString>,
     mut dispatch: impl FnMut(

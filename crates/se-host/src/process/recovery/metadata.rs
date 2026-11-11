@@ -1,6 +1,10 @@
 //! Resolve retained lifecycle and saved-session metadata in one finite read.
 use super::*;
 impl LaunchCoordinator {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(in crate::process) async fn recovery_metadata(
         &self,
         retained: &OwnerGuardProcess,

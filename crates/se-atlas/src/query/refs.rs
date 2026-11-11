@@ -2,6 +2,10 @@ use super::target::*;
 use super::*;
 use rusqlite::types::Value;
 impl QueryReader<'_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn refs(&self, query: &RefsQuery) -> AtlasResult<Answer<Read<Page<ReferenceHit>>>> {
         let end = deadline(query.budget)?;
         if query.kinds.len() > 5 {

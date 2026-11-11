@@ -27,6 +27,10 @@ fn transcript() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn metadata_queue_records_are_counted_and_later_native_turns_are_readable() -> Check {
     let initialized = initialize_host_process()?;
     let bytes = transcript()?;

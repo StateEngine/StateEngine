@@ -28,252 +28,265 @@ impl QueryReader<'_> {
             query.include_name_only,
             &self.viewer,
         ))?;
-        let answer = self.cache.read(end, |sql| {
-            let snapshot = self.snapshot(sql)?;
-            let previous = query
-                .next
-                .as_ref()
-                .map(PositionCursor::decode)
-                .transpose()?;
-            let advanced = previous
-                .as_ref()
-                .map(|p| p.validate(&snapshot.index, "impact", digest))
-                .transpose()?
-                .unwrap_or(false);
-            let after = previous.as_ref().map(|p| &p.last_key);
-            if let Some(key) = after {
-                validate_key(key)?;
+        let answer = self
+            .cache
+            .read(end, |sql| self.impact_page(query, end, digest, sql))?;
+        super::freshness::finish(self, answer, query.budget, end)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        clippy::cognitive_complexity,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
+    fn impact_page(
+        &self,
+        query: &ImpactQuery,
+        end: Instant,
+        digest: [u8; 32],
+        sql: &SqlView<'_>,
+    ) -> AtlasResult<Answer<Read<Impact>>> {
+        let snapshot = self.snapshot(sql)?;
+        let previous = query
+            .next
+            .as_ref()
+            .map(PositionCursor::decode)
+            .transpose()?;
+        let advanced = previous
+            .as_ref()
+            .map(|p| p.validate(&snapshot.index, "impact", digest))
+            .transpose()?
+            .unwrap_or(false);
+        let after = previous.as_ref().map(|p| &p.last_key);
+        if let Some(key) = after {
+            validate_key(key)?;
+        }
+        let mut nodes = Vec::with_capacity(32);
+        let mut root_files = Vec::new();
+        let mut limited = seed(
+            self,
+            sql,
+            &snapshot,
+            &query.target,
+            &mut nodes,
+            &mut root_files,
+        )?;
+        if nodes.is_empty() && root_files.is_empty() {
+            return Ok(snapshot.unknown(
+                "no indexed impact target; inspect coverage and explicit file/record links",
+            ));
+        }
+        if nodes.len() > 512 {
+            nodes.truncate(512);
+            limited = true;
+        }
+        let root_symbols = matches!(query.target, AtlasTarget::Symbol(_))
+            .then(|| nodes.iter().map(|n| n.symbol).collect::<Vec<_>>());
+        let mut results = Vec::with_capacity(32);
+        let mut examined = 0;
+        let mut exhausted = false;
+        let mut at = 0;
+        while at < nodes.len() {
+            if Instant::now() >= end {
+                exhausted = true;
+                break;
             }
-            let mut nodes = Vec::with_capacity(32);
-            let mut root_files = Vec::new();
-            let mut limited = seed(
-                self,
+            let node = nodes[at];
+            if node.depth >= query.depth {
+                at += 1;
+                continue;
+            }
+            let (edges, partial) = super::impact_edges::read(
                 sql,
-                &snapshot,
-                &query.target,
-                &mut nodes,
-                &mut root_files,
+                node.symbol,
+                query.include_name_only,
+                1024usize.saturating_sub(examined),
+                end,
             )?;
-            if nodes.is_empty() && root_files.is_empty() {
-                return Ok(snapshot.unknown(
-                    "no indexed impact target; inspect coverage and explicit file/record links",
-                ));
-            }
-            if nodes.len() > 512 {
-                nodes.truncate(512);
-                limited = true;
-            }
-            let root_symbols = matches!(query.target, AtlasTarget::Symbol(_))
-                .then(|| nodes.iter().map(|n| n.symbol).collect::<Vec<_>>());
-            let mut results = Vec::with_capacity(32);
-            let mut examined = 0;
-            let mut exhausted = false;
-            let mut at = 0;
-            while at < nodes.len() {
+            exhausted |= partial;
+            examined += edges.len();
+            for edge in edges {
                 if Instant::now() >= end {
                     exhausted = true;
                     break;
                 }
-                let node = nodes[at];
-                if node.depth >= query.depth {
-                    at += 1;
+                let Some(child) = edge.enclosing else {
+                    continue;
+                };
+                let (symbol, _) = symbol_by_id(sql, child)?;
+                if symbol.value.kind == SymbolKind::Module && symbol.value.parent.is_none() {
                     continue;
                 }
-                let (edges, partial) = super::impact_edges::read(
-                    sql,
-                    node.symbol,
-                    query.include_name_only,
-                    1024usize.saturating_sub(examined),
-                    end,
-                )?;
-                exhausted |= partial;
-                examined += edges.len();
-                for edge in edges {
-                    if Instant::now() >= end {
-                        exhausted = true;
-                        break;
-                    }
-                    let Some(child) = edge.enclosing else {
-                        continue;
-                    };
-                    let (symbol, _) = symbol_by_id(sql, child)?;
-                    if symbol.value.kind == SymbolKind::Module && symbol.value.parent.is_none() {
-                        continue;
-                    }
-                    let file = file_by_id(sql, edge.file)?;
-                    if crate::policy::built_in_denied(&file.pointer.path)
-                        || !matches!(file.coverage, FileCoverage::Indexed)
-                    {
-                        limited = true;
-                        continue;
-                    }
-                    if nodes.iter().any(|n| n.symbol == child) {
-                        continue;
-                    }
-                    if nodes.len() == 512 {
-                        exhausted = true;
-                        break;
-                    }
-                    let position = nodes.len();
-                    nodes.push(Node {
-                        symbol: child,
-                        parent: Some(at),
-                        via: Some(edge.id),
-                        depth: node.depth + 1,
-                    });
-                    results.push(ResultRow {
-                        node: position,
-                        file: file.pointer.file.0,
-                        symbol: symbol.value.id.0,
-                        site: edge.start,
-                    });
-                }
-                if exhausted {
-                    break;
-                }
-                at += 1;
-            }
-            limited |= exhausted;
-            let files = super::impact_files::collect(
-                sql,
-                root_files.clone(),
-                query.depth,
-                512usize.saturating_sub(nodes.len()),
-                1024usize.saturating_sub(examined),
-                end,
-                root_symbols.as_deref(),
-            )?;
-            limited |= files.limited;
-            for result in &results {
-                if Instant::now() >= end {
+                let file = file_by_id(sql, edge.file)?;
+                if crate::policy::built_in_denied(&file.pointer.path)
+                    || !matches!(file.coverage, FileCoverage::Indexed)
+                {
                     limited = true;
-                    break;
-                }
-                let mut statement = sql.prepare("SELECT id FROM files WHERE key=?1")?;
-                let id: i64 = statement
-                    .query_row([result.file.as_slice()], |r| r.get(0))
-                    .map_err(cache_error)?;
-                if !root_files.contains(&id) {
-                    root_files.push(id);
-                }
-            }
-            for id in files.file_rows() {
-                if !root_files.contains(&id) {
-                    root_files.push(id);
-                }
-            }
-            let mut positions = Vec::with_capacity(results.len() + files.results.len());
-            for at in 0..results.len() {
-                positions.push((false, at));
-            }
-            for &at in &files.results {
-                positions.push((true, at));
-            }
-            let order = |(file, at): (bool, usize)| {
-                if file {
-                    files.order(at)
-                } else {
-                    let result = &results[at];
-                    let mut bytes = [0; 48];
-                    bytes[..32].copy_from_slice(&result.symbol);
-                    bytes[32..].copy_from_slice(&result.file);
-                    (nodes[result.node].depth, bytes, result.site, 0)
-                }
-            };
-            positions.sort_by_key(|at| order(*at));
-            let mut output = Impact {
-                dependents: Vec::new(),
-                tests: Vec::new(),
-                records: Vec::new(),
-                omitted_frontier: 0,
-                frontier_count_complete: !limited,
-                next: None,
-                complete: !limited && snapshot.negative_complete() && !advanced,
-            };
-            let mut last = None;
-            let mut more = false;
-            for (file, position) in positions {
-                let (depth, bytes, site, kind) = order((file, position));
-                let key = Key {
-                    integers: vec![u64::from(depth), u64::from(kind), site],
-                    bytes: bytes.to_vec(),
-                };
-                if after.is_some_and(|a| compare(&key, a).is_le()) {
                     continue;
                 }
-                if output.dependents.len() + output.tests.len() == query.budget.max_results as usize
+                if nodes.iter().any(|n| n.symbol == child) {
+                    continue;
+                }
+                if nodes.len() == 512 {
+                    exhausted = true;
+                    break;
+                }
+                let position = nodes.len();
+                nodes.push(Node {
+                    symbol: child,
+                    parent: Some(at),
+                    via: Some(edge.id),
+                    depth: node.depth + 1,
+                });
+                results.push(ResultRow {
+                    node: position,
+                    file: file.pointer.file.0,
+                    symbol: symbol.value.id.0,
+                    site: edge.start,
+                });
+            }
+            if exhausted {
+                break;
+            }
+            at += 1;
+        }
+        limited |= exhausted;
+        let files = super::impact_files::collect(
+            sql,
+            root_files.clone(),
+            query.depth,
+            512usize.saturating_sub(nodes.len()),
+            1024usize.saturating_sub(examined),
+            end,
+            root_symbols.as_deref(),
+        )?;
+        limited |= files.limited;
+        for result in &results {
+            if Instant::now() >= end {
+                limited = true;
+                break;
+            }
+            let mut statement = sql.prepare("SELECT id FROM files WHERE key=?1")?;
+            let id: i64 = statement
+                .query_row([result.file.as_slice()], |r| r.get(0))
+                .map_err(cache_error)?;
+            if !root_files.contains(&id) {
+                root_files.push(id);
+            }
+        }
+        for id in files.file_rows() {
+            if !root_files.contains(&id) {
+                root_files.push(id);
+            }
+        }
+        let mut positions = Vec::with_capacity(results.len() + files.results.len());
+        for at in 0..results.len() {
+            positions.push((false, at));
+        }
+        for &at in &files.results {
+            positions.push((true, at));
+        }
+        let order = |(file, at): (bool, usize)| {
+            if file {
+                files.order(at)
+            } else {
+                let result = &results[at];
+                let mut bytes = [0; 48];
+                bytes[..32].copy_from_slice(&result.symbol);
+                bytes[32..].copy_from_slice(&result.file);
+                (nodes[result.node].depth, bytes, result.site, 0)
+            }
+        };
+        positions.sort_by_key(|at| order(*at));
+        let mut output = Impact {
+            dependents: Vec::new(),
+            tests: Vec::new(),
+            records: Vec::new(),
+            omitted_frontier: 0,
+            frontier_count_complete: !limited,
+            next: None,
+            complete: !limited && snapshot.negative_complete() && !advanced,
+        };
+        let mut last = None;
+        let mut more = false;
+        for (file, position) in positions {
+            let (depth, bytes, site, kind) = order((file, position));
+            let key = Key {
+                integers: vec![u64::from(depth), u64::from(kind), site],
+                bytes: bytes.to_vec(),
+            };
+            if after.is_some_and(|a| compare(&key, a).is_le()) {
+                continue;
+            }
+            if output.dependents.len() + output.tests.len() == query.budget.max_results as usize {
+                more = true;
+                break;
+            }
+            let dependent = if file {
+                files.dependent(sql, position)?
+            } else {
+                dependent(sql, &nodes, results[position].node)?
+            };
+            let is_test = test_path(dependent.pointer.path.as_str());
+            if size(&output)? + size(&dependent)? + size(&snapshot.index)? + 1200
+                > query.budget.max_bytes as usize
+            {
+                more = true;
+                break;
+            }
+            if is_test {
+                output.tests.push(dependent);
+            } else {
+                output.dependents.push(dependent);
+            }
+            last = Some(key);
+        }
+        let frontier = nodes.len().saturating_sub(at) as u64;
+        drop(nodes);
+        drop(results);
+        drop(files);
+        if !more {
+            let records = super::impact_records::collect(
+                self,
+                sql,
+                &snapshot,
+                &root_files,
+                end - Duration::from_millis(2),
+            )?;
+            limited |= records.limited;
+            for record in records.rows {
+                if after.is_some_and(|a| compare(&record.key, a).is_le()) {
+                    continue;
+                }
+                if output.dependents.len() + output.tests.len() + output.records.len()
+                    == query.budget.max_results as usize
+                    || size(&output)? + size(&record.hit)? + size(&snapshot.index)? + 1200
+                        > query.budget.max_bytes as usize
                 {
                     more = true;
                     break;
                 }
-                let dependent = if file {
-                    files.dependent(sql, position)?
-                } else {
-                    dependent(sql, &nodes, results[position].node)?
-                };
-                let is_test = test_path(dependent.pointer.path.as_str());
-                if size(&output)? + size(&dependent)? + size(&snapshot.index)? + 1200
-                    > query.budget.max_bytes as usize
-                {
-                    more = true;
-                    break;
-                }
-                if is_test {
-                    output.tests.push(dependent);
-                } else {
-                    output.dependents.push(dependent);
-                }
-                last = Some(key);
+                last = Some(record.key);
+                output.records.push(record.hit);
             }
-            let frontier = nodes.len().saturating_sub(at) as u64;
-            drop(nodes);
-            drop(results);
-            drop(files);
-            if !more {
-                let records = super::impact_records::collect(
-                    self,
-                    sql,
-                    &snapshot,
-                    &root_files,
-                    end - Duration::from_millis(2),
-                )?;
-                limited |= records.limited;
-                for record in records.rows {
-                    if after.is_some_and(|a| compare(&record.key, a).is_le()) {
-                        continue;
-                    }
-                    if output.dependents.len() + output.tests.len() + output.records.len()
-                        == query.budget.max_results as usize
-                        || size(&output)? + size(&record.hit)? + size(&snapshot.index)? + 1200
-                            > query.budget.max_bytes as usize
-                    {
-                        more = true;
-                        break;
-                    }
-                    last = Some(record.key);
-                    output.records.push(record.hit);
-                }
-            }
-            output.frontier_count_complete = !limited;
-            output.complete &= !limited;
-            // An exhausted graph budget cannot offer a cursor claiming complete traversal.
-            if limited {
-                output.omitted_frontier = frontier;
-                output.complete = false;
-            } else if more {
-                let key = last.ok_or_else(|| capacity("Atlas impact response bytes", 1, 0))?;
-                output.next = Some(
-                    PositionCursor::new(&snapshot.index, "impact", digest, key, None)?.encode()?,
-                );
-                output.complete = false;
-            }
+        }
+        output.frontier_count_complete = !limited;
+        output.complete &= !limited;
+        // An exhausted graph budget cannot offer a cursor claiming complete traversal.
+        if limited {
+            output.omitted_frontier = frontier;
+            output.complete = false;
+        } else if more {
+            let key = last.ok_or_else(|| capacity("Atlas impact response bytes", 1, 0))?;
+            output.next =
+                Some(PositionCursor::new(&snapshot.index, "impact", digest, key, None)?.encode()?);
+            output.complete = false;
+        }
 
-            check_output(
-                snapshot.answer(Read::Present { value: output }, advanced),
-                query.budget,
-            )
-        })?;
-        super::freshness::finish(self, answer, query.budget, end)
+        check_output(
+            snapshot.answer(Read::Present { value: output }, advanced),
+            query.budget,
+        )
     }
 }
 fn validate_key(key: &Key) -> AtlasResult<()> {
