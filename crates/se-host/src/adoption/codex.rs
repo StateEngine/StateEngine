@@ -1,8 +1,16 @@
 //! Native Codex hooks retain provider policy, history and user-owned processes.
 use super::*;
 use serde_json::{Value, json};
+#[cfg(target_os = "linux")]
+mod executable;
 mod queue;
+#[cfg(target_os = "linux")]
+pub use executable::resolve as native_executable;
 pub use queue::offer;
+#[cfg(not(target_os = "linux"))]
+pub fn native_executable(command: &Path) -> Result<std::path::PathBuf> {
+    Ok(command.to_owned())
+}
 
 fn run<T: Send + 'static>(
     work: impl std::future::Future<Output = Result<T>> + Send + 'static,

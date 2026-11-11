@@ -25,7 +25,7 @@ pub(crate) fn prepare(cx: &Bootstrap, input: &ProjectInit) -> Result<Plan> {
             ));
         }
     };
-    let provider = se_host::adoption::resolve_provider_for(
+    let mut provider = se_host::adoption::resolve_provider_for(
         kind,
         &cx.config.value,
         match &cx.config.origin {
@@ -39,6 +39,7 @@ pub(crate) fn prepare(cx: &Bootstrap, input: &ProjectInit) -> Result<Plan> {
             se_host::claude_config_home(&std::env::vars_os().collect::<Vec<_>>())?
         }
         Kind::Codex => {
+            provider = se_host::adoption::codex::native_executable(&provider)?;
             se_host::adoption::codex::qualify(&provider)?;
             se_host::codex_capture::existing_home()?
         }

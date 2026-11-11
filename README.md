@@ -124,18 +124,17 @@ not a Git repository yet, run `git init` there first. For Claude Code, use
 saved agent named `main`; it does not change your repository files or Git history.
 It ends by printing the exact first-launch command for your project and state home.
 
-On Linux and Windows with Claude Code 2.1.295 or newer, capture sessions you
-start directly by running
-`se init --adopt --provider claude` in the project before opening Claude Code.
-StateEngine merges its hooks into your user settings and leaves existing hooks,
-models and permissions intact. If Claude asks whether to trust these hooks,
-choose Allow to enable the integration; declining leaves Claude usable without
-capture or mail. Only explicitly registered project roots participate. Adopted sessions
-appear with the `observed` surface in status, and incoming mail uses Claude's
-native background wake. StateEngine observes these providers without owning or
-stopping them. Uninstall removes unchanged integration entries, preserves later
-user edits and revokes project adoption. Codex adoption is not available in this
-build.
+On Linux and Windows, capture sessions you start directly with
+`se init --adopt --provider claude` for Claude Code 2.1.295 or newer, or
+`se init --adopt --provider codex` for Codex 0.166.0 or newer. StateEngine adds
+its hooks to the provider's user settings and preserves existing hooks, models,
+permissions and settings text. Review and trust the new hooks in the provider's
+own prompt; declining leaves the provider usable with capture and mail inactive.
+Only explicitly registered project roots participate. Adopted sessions appear
+with the `observed` surface in status. Incoming mail uses the provider's native
+wake or input queue; an offer is not a recipient read receipt. StateEngine does
+not own or stop these user-started processes. Uninstall removes unchanged
+integration entries, preserves later user edits and revokes project adoption.
 
 Default state homes are:
 
