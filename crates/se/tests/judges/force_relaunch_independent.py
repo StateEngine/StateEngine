@@ -6,26 +6,8 @@ from pathlib import Path
 import subprocess
 import time
 import traceback
-from mail_cli import Fixture as MailFixture
+from mail_cli import Fixture
 from launch_startup import pin, exited
-
-
-
-class Fixture(MailFixture):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # This reader now requests native settings before launch. The old shared
-        # mail fixture predates that protocol; supply its real response shape.
-        source = self.root / 'provider.rs'
-        text = source.read_text()
-        needle = 'if a.get(1).map(String::as_str)==Some("--version")'
-        assert text.count(needle) == 1
-        reply = {"type": "control_response", "response": {"subtype": "success", "request_id": "settings",
-                 "response": {"effective": {}, "sources": [], "errors": []}}}
-        safe = 'if a.iter().any(|v|v=="--safe-mode") {println!("{}", r#"' + json.dumps(reply) + '"#);loop {std::thread::sleep(std::time::Duration::from_secs(1));}}\n'
-        source.write_text(text.replace(needle, safe + needle, 1))
-        subprocess.run(['rustc', '--edition=2024', str(source), '-o', str(self.root / 'provider')],
-                       capture_output=True, check=True, timeout=60)
 
 
 def wait_for(probe, name, seconds=20):
