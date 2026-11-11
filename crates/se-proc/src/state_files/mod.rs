@@ -7,7 +7,9 @@ use std::{
     path::{Path, PathBuf},
 };
 pub(crate) mod effects;
+mod metadata;
 mod permissions;
+pub use metadata::NativeMetadataPin;
 mod profile;
 pub use profile::NativeProfileFiles;
 pub(crate) mod source;
@@ -222,19 +224,29 @@ impl NativeStateFiles {
         self.check(path)?;
         Ok(result)
     }
-    /// Pin verified regular-file metadata without reading content. On Linux the
-    /// O_PATH descriptor preserves process-wide POSIX locks held by SQLite when
-    /// it closes. Other platforms retain the protected readback semantics.
-    pub fn pin_metadata(&self, path: &Path) -> Result<Option<File>> {
-        #[cfg(target_os = "linux")]
-        {
-            self.check(path)?;
-            let result = self.directory.pin_metadata(path, &self.root)?;
-            self.check(path)?;
-            Ok(result)
-        }
-        #[cfg(not(target_os = "linux"))]
-        self.readback(path)
+    /// Inspect a protected regular file without canceling SQLite's POSIX locks.
+    pub fn inspect_metadata(&self, path: &Path) -> Result<Option<std::fs::Metadata>> {
+        self.check(path)?;
+        #[cfg(target_os = "macos")]
+        let result = self.directory.inspect_metadata(path, &self.root)?;
+        #[cfg(not(target_os = "macos"))]
+        let result = {
+            #[cfg(target_os = "linux")]
+            let file = self.directory.pin_metadata(path, &self.root)?;
+            #[cfg(windows)]
+            let file = self.directory.readback(path, &self.root)?;
+            file.map(|file| {
+                file.metadata()
+                    .map_err(|e| io_error("inspect native metadata", path, e))
+            })
+            .transpose()?
+        };
+        self.check(path)?;
+        Ok(result)
+    }
+    /// Retain a metadata-only database identity, never a content-read descriptor.
+    pub fn pin_metadata(&self, path: &Path) -> Result<Option<NativeMetadataPin>> {
+        NativeMetadataPin::open(self, path)
     }
     /// Prepare one immediate protected child of this held root. Existing unsafe
     /// directories refuse and are never chmod/chowned to make them admissible.

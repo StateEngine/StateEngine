@@ -44,6 +44,15 @@ pub trait StateFiles: Send + Sync {
     /// Open without following links and verify regular-file identity and owner-only
     /// file/directory protection. Missing is Absent; unknown/unreadable is not absence.
     fn readback(&self, path: &std::path::Path) -> StoreResult<Read<std::fs::File>>;
+    /// Inspect protection and size without opening/closing a live SQLite inode.
+    fn inspect_metadata(&self, path: &std::path::Path) -> StoreResult<Read<std::fs::Metadata>> {
+        let _ = path;
+        Err(crate::error::fail(
+            StoreErrorCode::Unreadable,
+            "native protected metadata inspection is not wired",
+        ))
+    }
+
     /// All SQLite/backup handles have been closed. Sync staged data, publish without
     /// replacing any destination, and sync/read back the destination parent/name.
     /// Collision must return AlreadyExists and preserve the winner.

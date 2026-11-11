@@ -15,7 +15,7 @@ fn conflict(subject: &str, reason: String, next_step: &str) -> SeError {
 fn staging(files: &Files) -> Result<Vec<std::path::PathBuf>> {
     let root = files.0.root();
     files
-        .readback(&root.join("state.db"))
+        .inspect_metadata(&root.join("state.db"))
         .map_err(|e| store_error(&e))?;
     let entries = std::fs::read_dir(root).map_err(|e| {
         se_core::scope::unreadable("initialization staging inventory", &e.to_string())
@@ -58,7 +58,7 @@ fn staging(files: &Files) -> Result<Vec<std::path::PathBuf>> {
         }
     }
     files
-        .readback(&root.join("state.db"))
+        .inspect_metadata(&root.join("state.db"))
         .map_err(|e| store_error(&e))?;
     names.sort();
     Ok(names)

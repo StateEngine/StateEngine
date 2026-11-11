@@ -15,7 +15,7 @@ impl SqliteFactory {
             ));
         }
         let reader = SqliteReader::for_options(o)?;
-        match lease.files().readback(&reader.path)? {
+        match lease.files().inspect_metadata(&reader.path)? {
             Read::Absent { .. } => {}
             Read::Present { .. } => {
                 return Err(fail(
@@ -77,7 +77,7 @@ impl SqliteFactory {
                 }
             }
             lease.files().publish_no_replace(&staged, &reader.path)?;
-            match lease.files().readback(&reader.path)? {
+            match lease.files().inspect_metadata(&reader.path)? {
                 Read::Present { .. } => {}
                 _ => {
                     return Err(fail(

@@ -2,7 +2,7 @@
 use se_store::{ReadConnectionIdentity, StoreDetail, StoreError, StoreErrorCode, StoreResult};
 use std::path::Path;
 
-struct NativeIdentity(se_proc::NativeSourcePin);
+struct NativeIdentity(se_proc::NativeMetadataPin);
 fn refused(code: StoreErrorCode, reason: impl ToString) -> Box<StoreError> {
     Box::new(StoreError {
         code,
@@ -29,7 +29,11 @@ impl ReadConnectionIdentity for NativeIdentity {
     }
 }
 pub fn open_identity(path: &Path) -> StoreResult<Box<dyn ReadConnectionIdentity>> {
-    let pin = se_proc::NativeSourcePin::open(path)
+    let parent = path
+        .parent()
+        .ok_or_else(|| refused(StoreErrorCode::LocationUnsafe, "database parent absent"))?;
+    let pin = se_proc::NativeStateFiles::open(parent)
+        .and_then(|files| files.pin_metadata(path))
         .map_err(native_error)?
         .ok_or_else(|| refused(StoreErrorCode::Absent, "database absent"))?;
     Ok(Box::new(NativeIdentity(pin)))

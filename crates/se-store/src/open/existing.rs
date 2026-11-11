@@ -105,7 +105,7 @@ impl SqliteFactory {
         let path = o.state_directory.join("state.db");
         match lease
             .files()
-            .readback(&path)
+            .inspect_metadata(&path)
             .map_err(|error| context(error, &path, StoreIoStage::Open))?
         {
             Read::Present { .. } => Self::existing(o),

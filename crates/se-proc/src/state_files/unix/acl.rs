@@ -9,6 +9,7 @@ const ALLOW: i32 = 1;
 const DENY: i32 = 2;
 unsafe extern "C" {
     fn acl_get_fd_np(fd: i32, kind: i32) -> *mut c_void;
+    fn acl_get_link_np(path: *const libc::c_char, kind: i32) -> *mut c_void;
     fn acl_free(value: *mut c_void) -> i32;
     fn acl_get_entry(acl: *mut c_void, index: i32, entry: *mut *mut c_void) -> i32;
     fn acl_get_tag_type(entry: *mut c_void, tag: *mut i32) -> i32;
@@ -113,6 +114,28 @@ fn owner_only(acl: &Acl, uid: u32, path: &Path) -> Result<bool> {
 }
 pub(super) fn is_owner_only(file: &File, uid: u32, path: &Path) -> Result<bool> {
     read(file, path)?.map_or(Ok(true), |acl| owner_only(&acl, uid, path))
+}
+pub(super) fn verify_path(path: &Path, uid: u32) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| unsafe_path("NUL in database metadata path", path))?;
+    // SAFETY: NUL-terminated native path; the link-specific API never follows the leaf.
+    let raw = unsafe { acl_get_link_np(name.as_ptr(), EXTENDED) };
+    if raw.is_null() {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::ENOENT) {
+            Ok(())
+        } else {
+            Err(io_error("inspect database metadata ACL", path, error))
+        };
+    }
+    if !owner_only(&Acl(raw), uid, path)? {
+        return Err(unsafe_path(
+            "database metadata ACL allows another principal",
+            path,
+        ));
+    }
+    Ok(())
 }
 pub(super) fn verify(file: &File, uid: u32, path: &Path) -> Result<()> {
     if !is_owner_only(file, uid, path)? {

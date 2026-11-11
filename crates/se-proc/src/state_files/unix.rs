@@ -417,6 +417,79 @@ impl Directory {
         self.readback(path, root)?
             .ok_or_else(|| io_error("staging file absent", path, io::ErrorKind::NotFound.into()))
     }
+    #[cfg(target_os = "macos")]
+    pub fn inspect_metadata(&self, path: &Path, root: &Path) -> Result<Option<std::fs::Metadata>> {
+        use std::os::macos::fs::MetadataExt as _;
+        let (parent, name) = match self.parent(path, root) {
+            Ok(value) => value,
+            Err(error)
+                if error
+                    .source
+                    .as_ref()
+                    .is_some_and(|e| e.kind() == io::ErrorKind::NotFound) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let observed = match std::fs::symlink_metadata(path) {
+            Ok(value) => value,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(io_error(
+                    "inspect database metadata without opening",
+                    path,
+                    error,
+                ));
+            }
+        };
+        // SAFETY: geteuid reads the native current account.
+        if !observed.is_file()
+            || observed.uid() != unsafe { libc::geteuid() }
+            || observed.mode() & 0o077 != 0
+            || observed.nlink() != 1
+        {
+            return Err(unsafe_path(
+                "require owner-only native regular file metadata",
+                path,
+            ));
+        }
+        acl::verify_path(path, observed.uid())?;
+        // SAFETY: stat is a plain native output structure initialized before fstatat.
+        let mut named: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: retained parent, one native component, initialized no-follow stat output.
+        if unsafe {
+            libc::fstatat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                &mut named,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } < 0
+        {
+            return Err(io_error(
+                "recheck database metadata name",
+                path,
+                io::Error::last_os_error(),
+            ));
+        }
+        if named.st_dev as u64 != observed.dev()
+            || named.st_ino != observed.ino()
+            || named.st_uid != observed.uid()
+            || named.st_gid != observed.gid()
+            || named.st_mode as u32 != observed.mode()
+            || named.st_nlink as u64 != observed.nlink()
+            || named.st_birthtimespec.tv_sec != observed.st_birthtime()
+            || named.st_birthtimespec.tv_nsec != observed.st_birthtime_nsec()
+        {
+            return Err(failure(
+                StateFileErrorCode::SourceChanged,
+                "database metadata changed during no-open observation",
+                path,
+            ));
+        }
+        Ok(Some(observed))
+    }
     pub fn readback(&self, path: &Path, root: &Path) -> Result<Option<File>> {
         self.open_file(path, root, libc::O_RDONLY | libc::O_NONBLOCK)
     }

@@ -19,15 +19,15 @@ impl NativeStateFiles {
                 ));
             }
             let file = self
-                .readback(path)?
+                .pin_metadata(path)?
                 .ok_or_else(|| changed("owned inventory entry disappeared", path))?;
             // Retain each verified native object until its immediate outside
             // name check; this grants no later deletion authority to the list.
-            let identity = super::super::os::identity(&file, path)?;
+            let identity = file.identity()?;
             let outside = self
-                .readback(path)?
+                .pin_metadata(path)?
                 .ok_or_else(|| changed("owned inventory entry disappeared on readback", path))?;
-            if super::super::os::identity(&outside, path)? != identity {
+            if outside.identity()? != identity {
                 return Err(changed(
                     "owned inventory entry changed during readback",
                     path,
