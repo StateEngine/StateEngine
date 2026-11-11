@@ -71,12 +71,17 @@ impl IpcListener {
         }
         #[cfg(windows)]
         {
+            let mut listener_owner = self;
+            // Explicit cleanup can impose a shorter bound than the retained
+            // write. Native retirement below still reports pending release if
+            // that cleanup clock expires; it never claims a joined closure.
+            let _ = bounded(deadline, listener_owner.finish_startup_refusal()).await;
             let Self {
                 native,
                 listener,
                 startup_clients,
                 ..
-            } = self;
+            } = listener_owner;
             drop(listener);
             drop(startup_clients);
             let permit = match blocking.admit_owned(deadline).await {

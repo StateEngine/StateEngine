@@ -3,7 +3,20 @@
 //! until the normal post-commit handshake drives them.
 use super::*;
 
+/// The commit select may cancel pre-commit acceptance during a refusal. Keep
+/// that exact write future and clock owned until admission or joined closure.
+pub(super) struct StartupRefusal {
+    delivery: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + Sync>>,
+}
+
 impl IpcListener {
+    pub(super) async fn finish_startup_refusal(&mut self) {
+        if let Some(refusal) = &mut self.startup_refusal {
+            refusal.delivery.as_mut().await;
+        }
+        self.startup_refusal = None;
+    }
+
     pub(super) async fn accept_pipe(&mut self) -> Result<NativeStream> {
         self.listener
             .connect()
@@ -28,6 +41,7 @@ impl IpcListener {
 
     pub(crate) async fn retain_startup_clients(&mut self, deadline: &Deadline) -> Result<()> {
         loop {
+            self.finish_startup_refusal().await;
             deadline.remaining()?;
             let stream = self.accept_pipe().await?;
             // The same ingress capacity bounds handles before commit. Refuse
@@ -45,14 +59,15 @@ impl IpcListener {
                 let error = capacity_error("IPC startup handshake capacity is occupied");
                 let envelope =
                     se_types::ErrorEnvelope::new(error.body, &se_types::RenderCx::default())?;
-                // A disappeared early client has no request to lose. Its
-                // failed refusal write must not fence the startup parent.
-                let _ = send(
-                    &Arc::new(oldest),
-                    &auth::encode_hello_refusal(&envelope)?,
-                    &deadline.stage(WRITE_TIMEOUT)?,
-                )
-                .await;
+                let frame = auth::encode_hello_refusal(&envelope)?;
+                let write = deadline.stage(WRITE_TIMEOUT)?;
+                self.startup_refusal = Some(StartupRefusal {
+                    delivery: Box::pin(async move {
+                        // A vanished peer or silent-reader timeout is local to
+                        // this refusal. Neither renews the startup clock.
+                        let _ = send_refusal(&oldest, &frame, &write).await;
+                    }),
+                });
             }
         }
     }

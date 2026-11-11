@@ -8,7 +8,7 @@ use crate::client::{
     lease::{Deadline, HELLO_TIMEOUT, WRITE_TIMEOUT, native_error},
     wire,
 };
-use channel::{bounded, receive, send};
+use channel::{bounded, receive, send, send_refusal};
 #[path = "listener/connection.rs"]
 mod connection;
 #[path = "listener/retirement.rs"]
@@ -45,6 +45,8 @@ pub struct IpcListener {
     incoming: Arc<Semaphore>,
     #[cfg(windows)]
     startup_clients: std::collections::VecDeque<NativeStream>,
+    #[cfg(windows)]
+    startup_refusal: Option<startup::StartupRefusal>,
 }
 #[cfg(windows)]
 fn evented_pipe(native: &NativeEndpoint) -> Result<NativeListener> {
@@ -143,14 +145,18 @@ impl IpcListener {
             incoming: Arc::new(Semaphore::new(preauth + 1)),
             #[cfg(windows)]
             startup_clients: std::collections::VecDeque::new(),
+            #[cfg(windows)]
+            startup_refusal: None,
         })
     }
     /// The caller can cancel idle accept by dropping its future. No peer JSON
     /// or credential is read until bounded native peer proof has succeeded.
     pub async fn accept(&mut self, cancelled: Arc<AtomicBool>) -> Result<AcceptedIpcStream> {
-        // Bound tasks before OS accept. Once a channel is accepted no JSON,
-        // proof or refusal write holds up the next accept. Dropping this future
-        // cancels the admission wait just as it cancels an idle OS accept.
+        #[cfg(windows)]
+        self.finish_startup_refusal().await;
+        // Bound tasks before ordinary OS accept. Its handshake runs separately;
+        // only a retained pre-commit refusal is finished above. Dropping this
+        // future cancels admission just as it cancels an idle OS accept.
         let incoming_slot = Arc::clone(&self.incoming)
             .acquire_owned()
             .await
@@ -213,7 +219,7 @@ impl AcceptedIpcStream {
             let error = capacity_error("IPC pre-authentication capacity is occupied");
             let envelope =
                 se_types::ErrorEnvelope::new(error.body.clone(), &se_types::RenderCx::default())?;
-            send(&stream, &auth::encode_hello_refusal(&envelope)?, &deadline).await?;
+            send_refusal(&stream, &auth::encode_hello_refusal(&envelope)?, &deadline).await?;
             return Err(error);
         };
         let permit = bounded(&deadline, self.blocking.clone().acquire_owned())
@@ -335,7 +341,7 @@ impl PendingIpcHandshake {
                 wire::DEFAULT_REPLY_BYTES as usize,
             )?,
         };
-        send(&self.stream, &frame, &self.deadline).await
+        send_refusal(&self.stream, &frame, &self.deadline).await
     }
     /// The unforgeable crate-local admission value comes from the runtime's
     /// current core authorization. No external caller can manufacture it.
@@ -355,7 +361,7 @@ impl PendingIpcHandshake {
                     error.body.clone(),
                     &se_types::RenderCx::default(),
                 )?;
-                send(
+                send_refusal(
                     &self.stream,
                     &auth::encode_hello_refusal(&envelope)?,
                     &self.deadline,

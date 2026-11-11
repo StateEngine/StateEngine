@@ -97,6 +97,34 @@ pub(super) async fn send(
     Ok(())
 }
 
+/// A terminal refusal must reach a responsive peer before its server closes.
+/// Windows write completion alone does not establish client consumption.
+pub(super) async fn send_refusal(
+    stream: &NativeStream,
+    frame: &wire::WireBytes,
+    deadline: &Deadline,
+) -> Result<()> {
+    send(stream, frame, deadline).await?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsHandle;
+        let bound = deadline.native_bound();
+        loop {
+            if se_proc::native_ipc::pipe_write_drained(stream.as_handle(), &bound)
+                .map_err(native_error)?
+            {
+                break;
+            }
+            bounded(
+                deadline,
+                tokio::time::sleep(std::time::Duration::from_millis(1)),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 /// Idle time is independent of the operation budget. The call clock starts at
 /// the first frame byte, and bounds the remaining header/body and execution.
 pub(super) async fn receive_after_idle(
