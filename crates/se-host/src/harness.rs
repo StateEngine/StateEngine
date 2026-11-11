@@ -11,7 +11,10 @@ pub use claude::{
     config_home as claude_config_home, conversation as claude_conversation, provider_environment,
 };
 #[cfg(feature = "listener")]
-pub use claude_harness::{ClaudeHarness, transcript_location as claude_transcript_location};
+pub use claude_harness::{
+    ClaudeHarness, qualify_adoption as qualify_claude_adoption,
+    transcript_location as claude_transcript_location,
+};
 #[cfg(feature = "listener")]
 pub mod codex_input;
 #[cfg(feature = "listener")]

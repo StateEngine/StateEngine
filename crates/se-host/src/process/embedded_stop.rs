@@ -54,10 +54,24 @@ impl LaunchCoordinator {
                 continue;
             };
             let session = session.clone();
-            let service = format!(
-                "the externally owned SE Code service for conversation {}",
-                conversation.escape_debug()
-            );
+            let service = match original
+                .original
+                .as_deref()
+                .unwrap_or(&original.current)
+                .body
+            {
+                EventBody::SessionPrepared {
+                    surface: Some(se_store::SessionSurface::Observed),
+                    ..
+                } => format!(
+                    "the user-owned Claude provider for conversation {}",
+                    conversation.escape_debug()
+                ),
+                _ => format!(
+                    "the externally owned SE Code service for conversation {}",
+                    conversation.escape_debug()
+                ),
+            };
             let reason = format!("Engine binding retired; jobs in {service} were not stopped.");
             let observed = self.embedded_binding(&session, admission, deadline).await?;
             let changed = matches!(
@@ -119,5 +133,46 @@ impl LaunchCoordinator {
                 )
             })
             .await
+    }
+}
+
+impl LaunchCoordinator {
+    pub(super) async fn shutdown_observed(&self, deadline: &Deadline) -> Result<Vec<String>> {
+        let mut pending = Vec::new();
+        for identity in self.capture.identities()? {
+            let owner = se_store::Admission {
+                actor: se_store::Actor::Human(self.human.clone()),
+                scope: se_store::Scope::Project(identity.project.clone()),
+                session: None,
+                generation: self.store.generation.get(),
+            };
+            let agent = identity.agent.clone();
+            let selected = identity.session.clone();
+            let control = self.store.read(owner.clone(), deadline, move |cx| {
+                let target = se_core::scope::require_present(cx.read.control_target(agent).map_err(|e| se_core::store_error::store_error(&e))?, "observed shutdown binding", "Restore the original saved binding.")?;
+                let observed = target.sessions.iter().any(|row| matches!(&row.original.as_deref().unwrap_or(&row.current).body, EventBody::SessionPrepared { session, surface: Some(se_store::SessionSurface::Observed), .. } if session == &selected));
+                Ok(observed.then_some(target))
+            }).await?;
+            if let Some(control) = control {
+                let key: IdempotencyKey = format!(
+                    "observed-shutdown-{}-{}",
+                    self.store.generation.get(),
+                    identity.session
+                )
+                .parse()?;
+                if let Err(error) = self
+                    .retire_embedded_bindings(&control, &identity.agent, &key, &owner, deadline)
+                    .await
+                {
+                    pending.push(format!(
+                        "Observed session {} retirement is unconfirmed: {error}",
+                        identity.session
+                    ));
+                } else {
+                    self.capture.retire(identity, false, deadline).await?;
+                }
+            }
+        }
+        Ok(pending)
     }
 }

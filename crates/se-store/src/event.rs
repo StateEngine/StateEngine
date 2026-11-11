@@ -29,6 +29,7 @@ pub enum Provider {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionSurface {
+    Observed,
     Headless,
     Window,
     #[serde(rename = "secode")]
@@ -37,6 +38,7 @@ pub enum SessionSurface {
 impl SessionSurface {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Observed => "observed",
             Self::Headless => "headless",
             Self::Window => "window",
             Self::SeCode => "secode",

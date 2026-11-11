@@ -51,6 +51,9 @@ impl LaunchCoordinator {
             }
         }
         report.pending.extend(self.shutdown_secode(deadline).await?);
+        report
+            .pending
+            .extend(self.shutdown_observed(deadline).await?);
         let native = self.native.clone();
         match self
             .store

@@ -404,3 +404,21 @@ fn claude_binding(binding: &HarnessBinding) -> Result<&Binding> {
         .as_deref()
         .ok_or_else(|| SeError::invalid("provider binding", "a headless Claude binding"))
 }
+
+/// Opt-in global hooks require provider-owned fail-open and exec-form support.
+pub fn qualify_adoption(command: &Path) -> Result<()> {
+    let output = version_output(command, std::time::Duration::from_secs(2))?;
+    if !output.contains("Claude Code")
+        || output
+            .split_whitespace()
+            .next()
+            .and_then(parse_version)
+            .is_none_or(|version| version < (2, 1, 295))
+    {
+        return Err(SeError::invalid(
+            "Claude adoption",
+            "Claude Code 2.1.295 or newer; update Claude Code and retry se init --adopt",
+        ));
+    }
+    Ok(())
+}

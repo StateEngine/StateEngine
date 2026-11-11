@@ -19,6 +19,7 @@ use std::{
     sync::{Arc, Weak},
 };
 use zeroize::Zeroizing;
+mod adoption;
 mod channel;
 mod codex;
 mod http;

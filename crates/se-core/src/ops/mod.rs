@@ -14,6 +14,7 @@ pub use remote::{
 };
 pub mod continuity;
 pub use continuity::{Resume, ResumeOutput, SessionContextOutput, SessionContextRequest};
+pub mod adoption;
 pub mod agent;
 pub mod agent_launch;
 pub mod agent_stop;

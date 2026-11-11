@@ -93,19 +93,10 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
             },
         )));
     }
-    if input.adopt {
-        return Err(SeError::new(se_types::Detail::FeatureUnavailable(
-            se_types::details::FeatureUnavailable {
-                subject: "user-started provider integrations".into(),
-                reason:
-                    "installing unmanaged-session integrations isn't available in this build yet"
-                        .into(),
-                next_step:
-                    "Use se init without --adopt for managed setup without repository changes."
-                        .into(),
-            },
-        )));
-    }
+    let adoption = input
+        .adopt
+        .then(|| super::adoption::prepare(cx, &input))
+        .transpose()?;
     // Ordinary setup changes only this state home. Its no-replace publication
     // and direct writer lease coordinate setup without blocking other homes
     // behind an unrelated account-wide install or PATH edit.
@@ -219,8 +210,11 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
     );
     let closed = store.close().map_err(|e| store_error(&e));
     match result {
-        Ok(value) => {
+        Ok(mut value) => {
             closed?;
+            if let Some(plan) = adoption {
+                super::adoption::install(cx, &repository.path, plan, &mut value)?;
+            }
             Ok(value)
         }
         Err(error) => Err(match closed {

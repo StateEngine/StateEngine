@@ -11,9 +11,16 @@ pub fn execute(
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<UninstallOutput> {
     input.validate()?;
-    if let Some(result) = home::execute(context, &input, diagnostic)? {
+    if let Some(mut result) = home::execute(context, &input, diagnostic)? {
+        result
+            .integrations
+            .extend(super::adoption::uninstall(context)?);
         return Ok(result);
     }
-    let (plan, effects) = crate::runtime::uninstall(context, &input.idempotency_key, diagnostic)?;
+    let (plan, mut effects) =
+        crate::runtime::uninstall(context, &input.idempotency_key, diagnostic)?;
+    effects
+        .integrations
+        .extend(super::adoption::uninstall(context)?);
     finish_uninstall(&plan, input.idempotency_key, effects)
 }

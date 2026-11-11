@@ -15,7 +15,7 @@ use std::time::Duration;
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-pub(super) fn endpoint(
+pub(crate) fn endpoint(
     cx: &Bootstrap,
     files: &Files,
     bound: &Deadline,

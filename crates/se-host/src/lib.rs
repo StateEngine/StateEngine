@@ -10,6 +10,7 @@ mod acp_session_independent;
 #[cfg(all(test, feature = "listener"))]
 #[path = "../tests/support/acp_transport_independent.rs"]
 mod acp_transport_independent;
+pub mod adoption;
 #[cfg(feature = "runtime")]
 mod agent_observation;
 pub mod channels;

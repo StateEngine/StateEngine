@@ -57,6 +57,7 @@ pub struct AdmittedExchange {
     pub(super) request_id: u64,
     call: Option<Result<RoutedCall>>,
     pub(super) channels: Option<crate::channels::ChannelRequest>,
+    pub(super) adopted: Option<crate::adoption::NativeCall>,
     #[cfg(feature = "remote")]
     owner: Option<crate::remote::OwnerCall>,
     admission: Option<se_core::ops::HostPhaseSpan>,
@@ -212,7 +213,12 @@ impl HostedRouter {
                 };
                 #[cfg(feature = "remote")]
                 let mut owner = None;
+                let mut adopted = None;
                 let (call, channels) = match call {
+                    Ok(RouteChoice::Adopt(call)) => {
+                        adopted = Some(call);
+                        (None, None)
+                    }
                     #[cfg(feature = "remote")]
                     Ok(RouteChoice::Owner(call)) => {
                         owner = Some(*call);
@@ -227,6 +233,7 @@ impl HostedRouter {
                     request_id,
                     call,
                     channels,
+                    adopted,
                     #[cfg(feature = "remote")]
                     owner,
                     admission: None,
@@ -389,6 +396,7 @@ impl AdmittedExchange {
     }
 }
 enum RouteChoice {
+    Adopt(crate::adoption::NativeCall),
     #[cfg(feature = "remote")]
     Owner(Box<crate::remote::OwnerCall>),
     Core(Box<RoutedCall>),
@@ -403,6 +411,23 @@ fn route(
     admitted_at: Instant,
 ) -> Result<RouteChoice> {
     let (raw, hook) = match wire.request {
+        IpcRequest::Adopt(input) => {
+            if wire.cli_selections.is_some() || wire.presence.is_some() {
+                return Err(SeError::invalid(
+                    "adoption scope",
+                    "no CLI selectors or human presence claims",
+                ));
+            }
+            return context
+                .adoption(
+                    connection.connection.peer(),
+                    connection.connection.connection_authority(),
+                    wire.authority.as_ref(),
+                    &connection.grant,
+                    input,
+                )
+                .map(RouteChoice::Adopt);
+        }
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(input) => {
             input.validate()?;

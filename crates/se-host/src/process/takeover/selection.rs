@@ -112,11 +112,22 @@ impl LaunchCoordinator {
                 identity.record, identity.session
             ));
         }
-        for session in &plan.control.sessions {
+        for session_record in &plan.control.sessions {
             if let Some((session, conversation)) =
-                se_core::ops::process_commit::embedded_session(session)
+                se_core::ops::process_commit::embedded_session(session_record)
             {
-                observed.push(format!("Embedded binding {session}: externally owned SE Code service for conversation {}. --force retires only this engine binding; jobs in that service are not stopped.", conversation.escape_debug()));
+                let service = if matches!(
+                    session_record.original.as_deref().map(|event| &event.body),
+                    Some(EventBody::SessionPrepared {
+                        surface: Some(se_store::SessionSurface::Observed),
+                        ..
+                    })
+                ) {
+                    "user-owned provider"
+                } else {
+                    "externally owned SE Code service"
+                };
+                observed.push(format!("External binding {session}: {service} for conversation {}. --force retires only this engine binding; jobs in that provider are not stopped.", conversation.escape_debug()));
             }
         }
         if observed.is_empty() {

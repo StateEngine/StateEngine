@@ -42,6 +42,8 @@ mod drain;
 #[cfg(feature = "listener")]
 pub use drain::StorageDrainReport;
 #[cfg(feature = "listener")]
+mod adoption;
+#[cfg(feature = "listener")]
 mod channels;
 #[cfg(feature = "listener")]
 mod route;

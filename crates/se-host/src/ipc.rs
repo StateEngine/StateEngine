@@ -138,6 +138,7 @@ pub struct OperationOutput {
     pub window: Option<se_types::Window>,
 }
 pub enum IpcRequest {
+    Adopt(crate::adoption::Input),
     Channels(crate::channels::ChannelRequest),
     #[cfg(feature = "remote")]
     RemoteOwner(Box<crate::remote::OwnerInput>),

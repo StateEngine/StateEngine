@@ -3,20 +3,27 @@ use super::*;
 use se_store::{ProjectionRecord, SessionSurface};
 use se_types::{AgentId, SessionId};
 
-/// Exact original preparation distinguishes an external service binding from
-/// a managed headless client. Provider alone never authorizes this shortcut.
+/// Exact original preparation distinguishes external and observed bindings
+/// from managed clients. Provider alone never authorizes this shortcut.
 pub fn embedded_session(record: &ProjectionRecord) -> Option<(&SessionId, &str)> {
     let original = &record.original.as_deref().unwrap_or(&record.current).body;
     let EventBody::SessionPrepared {
         session,
-        provider: se_store::Provider::SeCode,
-        surface: Some(SessionSurface::SeCode),
+        provider,
+        surface: Some(surface),
         native_ref,
         ..
     } = original
     else {
         return None;
     };
+    if !matches!(
+        (provider, surface),
+        (se_store::Provider::SeCode, SessionSurface::SeCode)
+            | (se_store::Provider::Claude, SessionSurface::Observed)
+    ) {
+        return None;
+    }
     match &record.current.body {
         EventBody::SessionPrepared { .. }
         | EventBody::SessionRevoked { .. }
@@ -43,7 +50,7 @@ pub fn retire_embedded<R: Snapshot>(
     let (session, _) = embedded_session(&selected).ok_or_else(|| {
         se_types::SeError::invalid(
             "embedded retirement",
-            "an exact process-free external service binding",
+            "an exact process-free external or observed binding",
         )
     })?;
     let session = session.clone();

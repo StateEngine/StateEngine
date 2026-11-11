@@ -13,6 +13,8 @@ use std::{
 
 mod image;
 use image::hash_image;
+mod ancestor;
+pub use ancestor::{provider_ancestor, provider_is_live};
 mod executable;
 pub use executable::ExecutableStamp;
 mod image_cache;
