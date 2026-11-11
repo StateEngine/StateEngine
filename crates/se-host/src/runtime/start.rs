@@ -223,7 +223,10 @@ fn prepare(
             Err(std::fs::TryLockError::WouldBlock) => {
                 match lock.try_lock_shared() {
                     Ok(()) => lock.unlock().map_err(|error| {
-                        se_core::scope::unreadable("startup reader lease release", &error.to_string())
+                        se_core::scope::unreadable(
+                            "startup reader lease release",
+                            &error.to_string(),
+                        )
                     })?,
                     Err(error) => {
                         return Err(se_core::scope::unreadable(
