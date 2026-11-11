@@ -6,13 +6,13 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{ChildStdin, ChildStdout, Command},
 };
-const MAX: usize = 4 * 1024 * 1024;
+const MAX: usize = crate::client::wire::MAX_FRAME_BYTES;
 
 async fn request(writer: &mut ChildStdin, value: Value) -> Result<()> {
     let mut bytes =
         serde_json::to_vec(&value).map_err(|_| invalid("serializable native queue input"))?;
     if bytes.len() > MAX {
-        return Err(invalid("native queue input within four MiB"));
+        return Err(invalid("native queue input within one MiB"));
     }
     bytes.push(b'\n');
     writer.write_all(&bytes).await.map_err(io)?;

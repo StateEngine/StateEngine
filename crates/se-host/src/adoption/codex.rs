@@ -67,7 +67,7 @@ pub fn current(registration: &Registration, input: &Input) -> Result<bool> {
         let chunk = pin.read_at(offset, 65536).map_err(native)?;
         let end = chunk.bytes.iter().position(|b| *b == b'\n');
         bytes.extend_from_slice(&chunk.bytes[..end.unwrap_or(chunk.bytes.len())]);
-        if bytes.len() > 4 * 1024 * 1024 {
+        if bytes.len() > crate::client::wire::MAX_FRAME_BYTES {
             return Err(invalid("a bounded native Codex session header"));
         }
         if end.is_some() {
@@ -78,7 +78,8 @@ pub fn current(registration: &Registration, input: &Input) -> Result<bool> {
         }
         offset = chunk.next_offset;
     }
-    let row: Value = crate::client::wire::decode_json(&bytes, 4 * 1024 * 1024)?;
+    let row: Value =
+        crate::client::wire::decode_json(&bytes, crate::client::wire::MAX_FRAME_BYTES)?;
     let cwd = row
         .get("payload")
         .and_then(|p| p.get("cwd"))
