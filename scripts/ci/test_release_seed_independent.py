@@ -194,6 +194,16 @@ independent-dependency = { path = "../../../dependency" }
                          "one version's dependency hashes overwrote the other version")
         self.assertEqual((seeded / "se").read_bytes(), (fresh / "se").read_bytes())
 
+    def test_default_off_accepts_dependency_version_build_metadata(self):
+        self.fixture()
+        manifest = self.dep_source.parent.parent / "Cargo.toml"
+        manifest.write_text(manifest.read_text().replace('version = "0.0.1"',
+                                                       'version = "0.0.1+seed.1"'))
+        self.command("cargo", "generate-lockfile", "--offline")
+        self.commit_fixture()
+        built, _ = self.build("version-metadata", target_dir=False)
+        self.assertEqual(self.command(str(built / "se")), "seed-old")
+
     def test_default_off_build_matches_the_parent_release_builder(self):
         self.fixture()
         candidate, manifest = self.build("default-candidate", target_dir=False)

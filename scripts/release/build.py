@@ -279,55 +279,32 @@ def package_seed(target, path, key, created_from, members):
     return manifest
 
 
-def build_units(artifacts, stderr_text, metadata):
+def build_units(artifacts, metadata):
     """The work cargo actually performed.
 
-    Cargo reports a compiler-artifact event for every planned unit, fresh or
-    compiled, and prints a progress line only for the packages it compiled.
-    The plan comes from the events; the compiled set from the progress lines;
-    the fresh set is the difference. Package identity is the metadata package
-    id (name, version and source), because one name can occur at two versions
-    of an external path dependency; a line that attributes to no single
-    planned package refuses the build instead of miscounting the witness.
+    Cargo reports a compiler-artifact event for every planned unit, naming the
+    package id and carrying a fresh flag: false when this run compiled the
+    unit, true when a valid fingerprint was reused. The plan, the compiled
+    set and the fresh set all come from those events, so the witness is exact
+    for any version string, and an artifact for a package outside the plan
+    still refuses the build.
     """
-    packages = {package["id"]: package for package in metadata["packages"]}
-    by_id = {}
+    packages = {package["id"] for package in metadata["packages"]}
+    members = set(metadata["workspace_members"])
+    compiled = {}
     for artifact in artifacts:
         package_id = artifact["package_id"]
-        if package_id in by_id:
-            continue
         if package_id not in packages:
             raise ValueError(f"cargo reported an artifact for unknown package {package_id}")
-        by_id[package_id] = package_id in metadata["workspace_members"]
-    by_line = {}
-    by_name_version = {}
-    for package in metadata["packages"]:
-        by_line.setdefault((package["name"], package["version"],
-                            str(Path(package["manifest_path"]).parent)), []).append(package["id"])
-        by_name_version.setdefault((package["name"], package["version"]), []).append(package["id"])
-    compiled = {}
-    for line in stderr_text.splitlines():
-        match = re.match(r"Compiling (\S+) v([\d.]+)(?: \(([^)]+)\))?", line.strip())
-        if not match:
-            continue
-        name, version, location = match.groups()
-        candidates = None
-        if location is not None:
-            located = by_line.get((name, version, location))
-            if located is not None:
-                candidates = located
-        if candidates is None:
-            candidates = by_name_version.get((name, version))
-        if not candidates or len(candidates) > 1:
-            raise ValueError(f"cannot attribute a compiled package to one planned package: {line.strip()}")
-        package_id = candidates[0]
-        if package_id not in by_id:
-            raise ValueError(f"cargo compiled a package outside the planned build: {line.strip()}")
-        compiled[package_id] = by_id[package_id]
-    compiled_members = sum(1 for workspace in compiled.values() if workspace)
-    member_total = sum(1 for workspace in by_id.values() if workspace)
-    return {"compiled": {"total": len(compiled), "workspace_members": compiled_members},
-            "fresh": {"total": len(by_id) - len(compiled),
+        if not isinstance(artifact.get("fresh"), bool):
+            raise ValueError(f"cargo reported no usable fresh flag for {package_id}")
+        compiled[package_id] = compiled.get(package_id, False) or not artifact["fresh"]
+    compiled_total = sum(compiled.values())
+    compiled_members = sum(1 for package_id, is_compiled in compiled.items()
+                           if is_compiled and package_id in members)
+    member_total = sum(1 for package_id in compiled if package_id in members)
+    return {"compiled": {"total": compiled_total, "workspace_members": compiled_members},
+            "fresh": {"total": len(compiled) - compiled_total,
                       "workspace_members": member_total - compiled_members}}
 
 
@@ -461,7 +438,7 @@ def main():
         out.mkdir(parents=True)
         shutil.copyfile(binary[0]["executable"], out / name)
         stripping = strip_binary(out / name, args.target, sysroot, binary[0]["executable"])
-        units = build_units(artifacts, built.stderr, metadata)
+        units = build_units(artifacts, metadata)
         seed_published = None
         seed_publication = None
         if args.seed_out is not None:
