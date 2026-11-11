@@ -6,6 +6,8 @@ pub(crate) use metadata::metadata;
 pub(crate) mod capture;
 pub(crate) mod event;
 mod maintenance;
+#[cfg(test)]
+mod materialized_text_review;
 pub(crate) mod process;
 pub(crate) mod semantic;
 pub(crate) mod session;
