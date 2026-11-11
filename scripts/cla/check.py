@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -74,6 +75,27 @@ def signed(comment, user, digests):
     return False
 
 
+def exempt(github, user, association=None):
+    configured = os.environ.get("CLA_INTERNAL_APP_BOT_ID", "")
+    if configured and (not configured.isascii() or not configured.isdecimal() or int(configured) < 1):
+        raise ValueError("configure the internal App bot's positive numeric account ID")
+    if user.get("type") == "Bot" and configured and user["id"] == int(configured):
+        return True
+    if association in {"OWNER", "MEMBER", "COLLABORATOR"}:
+        return True
+    # Read each author's current repository role, including organization and
+    # team grants. An API failure is not evidence that an author is external.
+    login = urllib.parse.quote(user["login"], safe="")
+    role = github.request(f"collaborators/{login}/permission")
+    account = role.get("user") or {}
+    if account.get("id") != user["id"]:
+        raise ValueError("repository permission response has a different author identity")
+    permission = role.get("permission")
+    if permission not in {"admin", "write", "read", "none"}:
+        raise ValueError("repository author permission is unreadable")
+    return permission != "none"
+
+
 def validate_pull(github, pull):
     number, head = pull["number"], pull["head"]["sha"]
     repository = github.request("")
@@ -88,15 +110,20 @@ def validate_pull(github, pull):
     commits = list(github.pages(f"pulls/{number}/commits"))
     if len(commits) != pull["commits"]:
         raise ValueError("commit list is incomplete; retry the check")
-    # Organization members and the repository owner are internal contributors.
-    internal = pull.get("author_association") in {"OWNER", "MEMBER"}
-    users = {} if internal else {pull["user"]["id"]: pull["user"]}
+    users = {}
+    authors = {pull["user"]["id"]: pull["user"]}
     for commit in commits:
         user = commit.get("author")
-        if not user or user.get("type") != "User":
-            raise ValueError("a commit has no human GitHub author; associate its email with an account")
-        if not internal or user["id"] != pull["user"]["id"]:
-            users[user["id"]] = user
+        if not user:
+            raise ValueError("a commit has no GitHub author; associate its email with an account")
+        authors[user["id"]] = user
+    for user in authors.values():
+        association = pull.get("author_association") if user["id"] == pull["user"]["id"] else None
+        if exempt(github, user, association):
+            continue
+        if user.get("type") != "User":
+            raise ValueError("a nonhuman author is not the configured internal App or a repository collaborator")
+        users[user["id"]] = user
     digests = {kind: hashlib.sha256((ROOT / f"docs/cla/{kind}.md").read_bytes()).hexdigest()
                for kind in ("individual", "entity")}
     comments = list(github.pages(f"issues/{number}/comments"))

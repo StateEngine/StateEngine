@@ -23,10 +23,11 @@ authority to sign for it.
 
 The comment is a public electronic signature; do not publish an address, phone number or other
 private contact details. The check binds the signature to the exact agreement text and
-contributor account, and reruns when comments or pull-request commits change. The repository
-owner and organization members are internal contributors; other commit authors still need
-signatures. A changed agreement needs a new signature. Signatures on other pull requests are not
-carried over automatically.
+contributor account, and reruns when comments or pull-request commits change. The repository's
+configured internal App and accounts GitHub currently identifies as repository owners,
+organization members or collaborators are internal contributors. Each opener and commit author
+is checked separately; every other contributor needs a signature. A changed agreement needs a
+new signature. Signatures on other pull requests are not carried over automatically.
 
 ## Third-party contributions
 
