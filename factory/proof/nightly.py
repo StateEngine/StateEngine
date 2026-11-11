@@ -177,7 +177,8 @@ def run_nightly(config, prepared_build=None, native_only=False):
             archive, = (directory / "archive").glob("*.tar.gz")
             # Extraction is of the trusted assembler's exact pinned output.
             command(["tar", "-xzf", archive, "-C", directory / "archive"], directory / "assemble.log", env, remaining(deadline, 300))
-            bundle, = (path for path in (directory / "archive").iterdir() if path.is_dir())
+            bundle, = (path for path in (directory / "archive").iterdir()
+                       if path.is_dir() and not path.name.endswith(".symbols"))
             record["product"].update(archive_sha256=digest(archive), build_sha256=digest(bundle / "build.json"),
                                       binary_sha256=digest(bundle / "se"))
             descriptor = directory / "product.json"
