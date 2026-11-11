@@ -1,0 +1,9 @@
+{
+  "state": "/var/lib/stateengine-ci-approvals",
+  "cache_directory": "/var/cache/stateengine-ci",
+  "toolchain": "/opt/stateengine-ci/toolchain",
+  "rustup": "/opt/stateengine-ci/bin/rustup",
+  "nextest": "/opt/stateengine-ci/bin/cargo-nextest",
+  "xwin": "/opt/stateengine-ci/bin/cargo-xwin",
+  "windows_sdk": "/opt/stateengine-ci/windows-sdk"
+}
