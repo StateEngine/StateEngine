@@ -1,6 +1,6 @@
 //! Shared product values. No I/O, ambient identity, runtime, clock or random source.
 //! Prefer explicit imports for Read, Cursor and Result to avoid std name collisions.
-//! Public host-facing contracts are owned by SE Code, not this proprietary crate.
+//! Public host-facing contracts are owned by SE Code, not this crate.
 mod channel_error;
 pub mod code;
 pub use channel_error::MessagingChannelError;

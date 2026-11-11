@@ -31,12 +31,12 @@ def license_texts(package):
     supplement = ROOT / "scripts/release/licenses" / key
     texts = {}
     for directory in (crate, supplement):
-        for pattern in ("LICENSE*", "COPYING*", "NOTICE*"):
-            for path in sorted(directory.glob(pattern)):
-                if path.is_file() and not path.is_symlink():
-                    if path.name in texts and digest(texts[path.name]) != digest(path):
-                        raise ValueError(f"license text differs from pinned input for {key}: {path.name}")
-                    texts[path.name] = path
+        for path in sorted(directory.glob("*")):
+            if (path.name.lower().startswith(("license", "copying", "notice"))
+                    and path.is_file() and not path.is_symlink()):
+                if path.name in texts and digest(texts[path.name]) != digest(path):
+                    raise ValueError(f"license text differs from pinned input for {key}: {path.name}")
+                texts[path.name] = path
     if package.get("license_file"):
         path = crate / package["license_file"]
         if not path.is_file() or path.is_symlink():
@@ -240,11 +240,13 @@ def main():
     features = {}
     notices = out / "notices"
     notices.mkdir()
+    (notices / "stateengine").mkdir()
+    shutil.copyfile(ROOT / "LICENSE", notices / "stateengine/LICENSE")
     for artifact in artifacts:
         package = packages[artifact["package_id"]]
         key = f'{package["name"]}-{package["version"]}'
         features[key] = sorted(set(features.get(key, []) + artifact["features"]))
-        if package["source"] is None:
+        if package["id"] in metadata["workspace_members"]:
             continue
         texts = license_texts(package)
         dest = notices / key
