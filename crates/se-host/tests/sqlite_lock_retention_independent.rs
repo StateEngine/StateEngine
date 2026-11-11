@@ -102,18 +102,32 @@ fn publishing_and_retiring_a_native_manifest_preserves_sqlite_locks() -> Check {
 }
 
 #[test]
-fn custody_still_refuses_an_unsafe_database_and_a_replaced_root() -> Check {
+fn protected_store_open_still_refuses_an_unsafe_database() -> Check {
     use std::os::unix::fs::PermissionsExt;
     let f = initialized()?;
     let root = &f.options.state_directory;
-    let files = Files::open_with_policy(root, FilePolicy::Host)?;
+    let port = Port {
+        lease: Lease::acquire(root, LeaseMode::DirectClient, Some(f.store.clone()))?,
+        files: Files::open(root)?,
+    };
     let database = root.join("state.db");
     std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o644))?;
-    assert!(
-        files.prepare_directory(&root.join("staging")).is_err(),
-        "lock-safe custody must still reject a public database"
-    );
-    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o600))?;
+    match SqliteFactory::open_direct(&f.options, &port) {
+        Err(error) => assert!(matches!(
+            error.code,
+            StoreErrorCode::LocationUnsafe | StoreErrorCode::Unreadable
+        )),
+        Ok(se_types::Read::Unreadable { .. }) => {}
+        _ => return Err("protected store open did not refuse the unsafe database".into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn directory_custody_still_refuses_a_replaced_root() -> Check {
+    let f = initialized()?;
+    let root = &f.options.state_directory;
+    let files = Files::open_with_policy(root, FilePolicy::Host)?;
     std::fs::rename(root, f.home.join("original-state"))?;
     drop(se_proc::NativeStateFiles::create(root)?);
     assert!(
