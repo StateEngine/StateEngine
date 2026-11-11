@@ -519,6 +519,10 @@ impl NativePipeReservation {
 pub(super) use super::windows_peer::{peer, self_peer, stop_server};
 
 #[cfg(test)]
+#[path = "windows_eof_review.rs"]
+mod eof_review;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::{Arc, atomic::AtomicBool};
