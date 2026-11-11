@@ -3,6 +3,7 @@
 use super::failure::WriteIdentity;
 use super::timings::{self, Mode};
 use super::*;
+use crate::client::lease::Deadline;
 use se_core::{
     admission::read_scope,
     commit::{Cx, OpStep},
@@ -16,7 +17,7 @@ use se_types::{Read, Result, SeError};
 use std::future::Future;
 
 type Step = OpStep<AnyOutput, Then, CustodyPlan>;
-struct Planned {
+pub(super) struct Planned {
     step: Step,
     observations: Vec<crate::AgentObservationPlan>,
     kernel: Kernel,
@@ -30,38 +31,12 @@ struct Planned {
     clippy::manual_async_fn,
     reason = "The public handoff checks its future is Send."
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn execute(
     context: ExecutionContext,
     call: ExecutionCall,
 ) -> impl Future<Output = Result<ExecutedCall>> + Send {
     async move {
         let ExecutionCall { admitted, deadline } = call;
-        let deadline = if let HostedInput::Operation(se_core::ops::AnyOp::AtlasAugment(input)) =
-            &admitted.input
-        {
-            let remaining = input
-                .deadline
-                .and_then(|end| end.checked_duration_since(std::time::Instant::now()))
-                .filter(|remaining| !remaining.is_zero());
-            if let Some(remaining) = remaining {
-                deadline.stage(remaining)?
-            } else {
-                return Ok(ExecutedCall {
-                    host_phases: Default::default(),
-                    output: se_core::ops::AtlasHookOutput::default().into(),
-                    write_timings: None,
-                    committed: None,
-                    capture_commits: Vec::new(),
-                    capture_keys: Vec::new(),
-                });
-            }
-        } else {
-            deadline
-        };
         if let HostedInput::Operation(operation) = &admitted.input
             && operation.is_remote()
         {
@@ -69,166 +44,180 @@ pub fn execute(
         }
         let reader = context.reads.clone();
         let generation = context.generation;
-        if admitted.admission.generation != generation.get() {
-            return Err(SeError::invalid(
-                "admitted execution generation",
-                "this exact context's committed generation",
-            ));
-        }
+        let planning_context = context.clone();
         let plan_deadline = deadline.clone();
-        let atlas = context.atlas.clone();
-        let (planned, planning) =
+        let (prepared, planning) =
             timings::blocking(&context.blocking, Mode::Finite, &deadline, move || {
-                plan_deadline.remaining()?;
-                let needs_atlas = matches!(&admitted.input, HostedInput::Operation(operation) if operation.atlas_options().is_some() || matches!(operation, se_core::ops::AnyOp::AtlasAugment(_) | se_core::ops::AnyOp::Resume(_) | se_core::ops::AnyOp::SessionContext(_)));
-                let ticket = if needs_atlas {
-                    match atlas.records.ticket() {
-                        Ok(ticket)=>ticket,
-                        Err(error) if matches!(&admitted.input,HostedInput::Operation(op) if op.atlas_options().is_some())=>return Err(error),
-                        Err(_)=>None,
-                    }
-                } else { None };
+                let planner = super::planning::Planner::new(&planning_context);
                 let phase = checked_pooled_phase(&reader, generation)?;
-                plan(phase, admitted, Some((&atlas, ticket)))
+                planner.prepare(phase, admitted, plan_deadline)
             })
             .await?;
-        let mut host_phases = se_core::ops::HostPhaseTimings {
-            planning: Some(planning),
-            ..Default::default()
-        };
-        let Planned {
-            step,
-            observations,
-            kernel,
-            admission,
-            operation,
-            natural_key,
-        } = planned;
-        match step {
-            OpStep::Complete(mut output) => {
-                if !observations.is_empty() {
-                    let observe_deadline = deadline.clone();
-                    let command_home = context.state_directory.clone();
-                    output = context
-                        .blocking
-                        .run(BlockingClass::Foreground, &deadline, move || {
-                            observe_deadline.remaining()?;
-                            crate::agent_observation::output::observe(
+        prepared
+            .execute(
+                context,
+                se_core::ops::HostPhaseTimings {
+                    planning: Some(planning),
+                    ..Default::default()
+                },
+            )
+            .await
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the finish closure keeps every OpStep arm beside the shared read-phase seam; split only if the arm set grows"
+)]
+pub(super) async fn finish(
+    context: ExecutionContext,
+    planned: Planned,
+    deadline: Deadline,
+    mut host_phases: se_core::ops::HostPhaseTimings,
+) -> Result<ExecutedCall> {
+    let generation = context.generation;
+    let Planned {
+        step,
+        observations,
+        kernel,
+        admission,
+        operation,
+        natural_key,
+    } = planned;
+    match step {
+        OpStep::Complete(mut output) => {
+            let native = matches!(&output, AnyOutput::ProjectStatus(_))
+                .then(|| context.custody.get().cloned())
+                .flatten();
+            if !observations.is_empty() || native.is_some() {
+                let observe_deadline = deadline.clone();
+                let command_home = context.state_directory.clone();
+                let observed_admission = admission.clone();
+                output = context
+                    .blocking
+                    .run(BlockingClass::Foreground, &deadline, move || {
+                        observe_deadline.remaining()?;
+                        crate::agent_observation::output::observe(
+                            &mut output,
+                            observations,
+                            observe_deadline.at(),
+                            &command_home,
+                        )?;
+                        if let Some(native) = native {
+                            native.observe_native_output(
                                 &mut output,
-                                observations,
-                                observe_deadline.at(),
-                                &command_home,
+                                &observed_admission,
+                                &observe_deadline,
                             )?;
-                            observe_deadline.remaining()?;
-                            Ok(output)
-                        })
-                        .await?;
-                }
-                if let Some(custody) = context.custody.get() {
-                    output = custody.observe_output(output, &deadline).await?;
-                }
-                Ok(ExecutedCall {
-                    host_phases,
-                    output,
-                    write_timings: None,
-                    committed: None,
-                    capture_commits: Vec::new(),
-                    capture_keys: Vec::new(),
-                })
-            }
-            OpStep::Commit { batch, then } => {
-                let identity = WriteIdentity {
-                    operation,
-                    natural_key,
-                    key: batch.request.as_ref().map(|request| request.key.clone()),
-                    natural_events: if batch.request.is_none() {
-                        batch
-                            .events
-                            .iter()
-                            .map(|event| event.header.event.clone())
-                            .collect()
-                    } else {
-                        Vec::new()
-                    },
-                };
-                let (mut receipt, submission, completion_wait_us) =
-                    super::submit::measured(&context, batch, &identity, &deadline).await?;
-                host_phases.submission = Some(submission);
-                host_phases.completion_wait_us = Some(completion_wait_us);
-                let committed = CommittedWrite {
-                    operation: identity.operation.into(),
-                    key: identity.key.clone(),
-                    natural_events: identity.natural_events.clone(),
-                    committed_events: receipt.events.clone(),
-                };
-                let write_timings = receipt.write_timings.take();
-                let finish_deadline = deadline.clone();
-                let pool = context.blocking.clone();
-                let (output, continuation) =
-                    timings::blocking(&pool, Mode::Finite, &deadline, move || {
-                        finish_deadline.remaining()?;
-                        let phase = checked_pooled_phase(&context.reads, generation)?;
-                        let mut read = phase
-                            .into_snapshot(read_scope(&admission))
-                            .map_err(|error| store_error(&error))?;
-                        let result = kernel.committed(
-                            then,
-                            receipt,
-                            &mut Cx {
-                                read: &mut read,
-                                admission: &admission,
-                            },
-                        );
-                        close_read(result, read.close())
+                        }
+                        observe_deadline.remaining()?;
+                        Ok(output)
                     })
-                    .await
-                    .map_err(|error| committed.response_error(error))?;
-                host_phases.continuation = Some(continuation);
-                Ok(ExecutedCall {
-                    host_phases,
-                    output,
-                    write_timings,
-                    committed: Some(committed),
-                    capture_commits: Vec::new(),
-                    capture_keys: Vec::new(),
-                })
+                    .await?;
             }
-            #[cfg(feature = "import")]
-            OpStep::Custody(CustodyPlan::ImportNode(input)) => Ok(ExecutedCall {
+            if let Some(custody) = context.custody.get() {
+                output = custody.observe_output(output, &deadline).await?;
+            }
+            Ok(ExecutedCall {
                 host_phases,
-                output: super::history_import::execute(
-                    context, input, admission, kernel, &deadline,
-                )
+                output,
+                write_timings: None,
+                committed: None,
+                capture_commits: Vec::new(),
+                capture_keys: Vec::new(),
+            })
+        }
+        OpStep::Commit { batch, then } => {
+            let identity = WriteIdentity {
+                operation,
+                natural_key,
+                key: batch.request.as_ref().map(|request| request.key.clone()),
+                natural_events: if batch.request.is_none() {
+                    batch
+                        .events
+                        .iter()
+                        .map(|event| event.header.event.clone())
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+            };
+            let (mut receipt, submission, completion_wait_us) =
+                super::submit::measured(&context, batch, &identity, &deadline).await?;
+            host_phases.submission = Some(submission);
+            host_phases.completion_wait_us = Some(completion_wait_us);
+            let committed = CommittedWrite {
+                operation: identity.operation.into(),
+                key: identity.key.clone(),
+                natural_events: identity.natural_events.clone(),
+                committed_events: receipt.events.clone(),
+            };
+            let write_timings = receipt.write_timings.take();
+            let finish_deadline = deadline.clone();
+            let pool = context.blocking.clone();
+            let (output, continuation) =
+                timings::blocking(&pool, Mode::Finite, &deadline, move || {
+                    finish_deadline.remaining()?;
+                    let phase = checked_pooled_phase(&context.reads, generation)?;
+                    let mut read = phase
+                        .into_snapshot(read_scope(&admission))
+                        .map_err(|error| store_error(&error))?;
+                    let result = kernel.committed(
+                        then,
+                        receipt,
+                        &mut Cx {
+                            read: &mut read,
+                            admission: &admission,
+                        },
+                    );
+                    close_read(result, read.close())
+                })
+                .await
+                .map_err(|error| committed.response_error(error))?;
+            host_phases.continuation = Some(continuation);
+            Ok(ExecutedCall {
+                host_phases,
+                output,
+                write_timings,
+                committed: Some(committed),
+                capture_commits: Vec::new(),
+                capture_keys: Vec::new(),
+            })
+        }
+        #[cfg(feature = "import")]
+        OpStep::Custody(CustodyPlan::ImportNode(input)) => Ok(ExecutedCall {
+            host_phases,
+            output: super::history_import::execute(context, input, admission, kernel, &deadline)
                 .await?,
+            write_timings: None,
+            committed: None,
+            capture_commits: Vec::new(),
+            capture_keys: Vec::new(),
+        }),
+        OpStep::Custody(plan) => match context.custody.get() {
+            Some(custody) => Ok(ExecutedCall {
+                host_phases,
+                output: custody.execute(plan, admission, &deadline).await?,
                 write_timings: None,
                 committed: None,
                 capture_commits: Vec::new(),
                 capture_keys: Vec::new(),
             }),
-            OpStep::Custody(plan) => match context.custody.get() {
-                Some(custody) => Ok(ExecutedCall {
-                    host_phases,
-                    output: custody.execute(plan, admission, &deadline).await?,
-                    write_timings: None,
-                    committed: None,
-                    capture_commits: Vec::new(),
-                    capture_keys: Vec::new(),
-                }),
-                None => Err(se_core::scope::unreadable(
-                    "host native custody",
-                    "the typed native coordinator must resolve this plan before store execution; no transaction or synthetic receipt was produced",
-                )),
-            },
-        }
+            None => Err(se_core::scope::unreadable(
+                "host native custody",
+                "the typed native coordinator must resolve this plan before store execution; no transaction or synthetic receipt was produced",
+            )),
+        },
     }
 }
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-fn plan(
+pub(super) fn plan(
     phase: se_store::ReadPhase,
     call: HostedCall,
+    status_home: Option<&std::path::Path>,
     atlas: Option<(
         &crate::atlas_runtime::read_port::AtlasOwnerPort,
         Option<crate::atlas_runtime::record_fence::RecordFeedTicket>,
@@ -292,6 +281,12 @@ fn plan(
                         }
                         Ok(OpStep::Complete(output))
                     }
+                    OpStep::Custody(CustodyPlan::ObserveStatus(input)) => match status_home {
+                        Some(home) => Ok(OpStep::Complete(super::status::prepare(
+                            input, home, &mut cx,
+                        )?)),
+                        None => Ok(OpStep::Custody(CustodyPlan::ObserveStatus(input))),
+                    },
                     OpStep::Custody(CustodyPlan::AtlasAugment(input)) => {
                         let result = atlas.map_or_else(
                             || Ok(se_core::ops::AtlasHookOutput::default()),

@@ -43,12 +43,15 @@ impl AuthorizedStop {
             .await
     }
 }
-pub struct RoutedCall {
-    pub admitted: HostedCall,
-    /// An untrusted signal only. Source authority comes from the already held
-    /// supervisor pin; a hook cannot create or replace that pin.
-    pub hook: Option<crate::ClaudeHookInput>,
+pub enum RoutedCall {
+    Prepared(PreparedCall),
+    Deferred {
+        admitted: Box<HostedCall>,
+        /// Untrusted signal only; source authority comes from the supervisor pin.
+        hook: Option<Box<crate::ClaudeHookInput>>,
+    },
 }
+
 pub struct AdmittedExchange {
     pub(super) connection: HostedConnection,
     pub(super) request_id: u64,
@@ -187,6 +190,8 @@ impl HostedRouter {
         let request_id = wire.request_id;
         self.check_open()?;
         let context = self.context.clone();
+        let execution = self.execution.clone();
+        let request_deadline = deadline.clone();
         let fenced = std::sync::Arc::clone(&self.fenced);
         let (mut exchange, span) =
             timings::blocking(&self.execution.blocking, Mode::Owned, deadline, move || {
@@ -196,7 +201,14 @@ impl HostedRouter {
                         "a call admitted before its drain fence",
                     ))
                 } else {
-                    route(&context, &connection, wire)
+                    route(
+                        &context,
+                        &connection,
+                        wire,
+                        &execution,
+                        request_deadline,
+                        admitted_at,
+                    )
                 };
                 #[cfg(feature = "remote")]
                 let mut owner = None;
@@ -270,17 +282,11 @@ impl AdmittedExchange {
         Ok(self.connection)
     }
     pub fn take_call(&mut self) -> Result<RoutedCall> {
-        let mut call = self
-            .call
+        self.call
             .take()
-            .ok_or_else(|| SeError::invalid("admitted exchange", "one owned call consumer"))??;
-        if let HostedInput::Operation(se_core::ops::AnyOp::AtlasAugment(input)) =
-            &mut call.admitted.input
-        {
-            input.deadline = Some(self.admitted_at + std::time::Duration::from_millis(5));
-        }
-        Ok(call)
+            .ok_or_else(|| SeError::invalid("admitted exchange", "one owned call consumer"))?
     }
+
     /// The original id/API/G are taken from the admitted exchange. A complete
     /// response is budgeted and written once; an incomplete write consumes it.
     pub async fn reply(
@@ -392,6 +398,9 @@ fn route(
     context: &AdmissionContext,
     connection: &HostedConnection,
     wire: crate::IpcEnvelope,
+    execution: &ExecutionContext,
+    deadline: Deadline,
+    admitted_at: Instant,
 ) -> Result<RouteChoice> {
     let (raw, hook) = match wire.request {
         #[cfg(feature = "remote")]
@@ -458,9 +467,12 @@ fn route(
             )
         }
     };
-    let admitted = context.operation(
-        connection.connection.peer(),
-        connection.connection.connection_authority(),
+    let planner = super::planning::Planner::new(execution);
+    let call = context.with_operation(
+        (
+            connection.connection.peer(),
+            connection.connection.connection_authority(),
+        ),
         wire.authority.as_ref(),
         &connection.grant,
         raw,
@@ -468,9 +480,48 @@ fn route(
             selections: wire.cli_selections,
             presence: wire.presence,
         },
+        |phase, admitted| {
+            prepare_route(planner, phase, admitted, hook, Some(admitted_at), deadline)
+        },
     )?;
-    Ok(RouteChoice::Core(Box::new(RoutedCall { admitted, hook })))
+    Ok(RouteChoice::Core(Box::new(call)))
 }
+
+fn prepare_route(
+    planner: super::planning::Planner,
+    phase: se_store::ReadPhase,
+    mut admitted: HostedCall,
+    hook: Option<crate::ClaudeHookInput>,
+    admitted_at: Option<Instant>,
+    deadline: Deadline,
+) -> Result<RoutedCall> {
+    if let Some(admitted_at) = admitted_at
+        && let HostedInput::Operation(se_core::ops::AnyOp::AtlasAugment(input)) =
+            &mut admitted.input
+    {
+        input.deadline = Some(admitted_at + std::time::Duration::from_millis(5));
+    }
+    // Long polls, remote exchanges and pinned-source capture retain their
+    // specialized fresh checks. None may carry this finite pin across awaits.
+    let deferred = hook.is_some()
+        || matches!(&admitted.input,
+        HostedInput::Operation(operation) if operation.is_remote()
+            || matches!(operation, se_core::ops::AnyOp::ClientWatch(_)));
+    if deferred {
+        super::executor::close_read(
+            Ok(RoutedCall::Deferred {
+                admitted: Box::new(admitted),
+                hook: hook.map(Box::new),
+            }),
+            phase.close(),
+        )
+    } else {
+        planner
+            .prepare(phase, admitted, deadline)
+            .map(RoutedCall::Prepared)
+    }
+}
+
 /// The one completed-output encoding shared by IPC and loopback MCP replies.
 pub(crate) fn encode_executed(completed: ExecutedCall) -> Result<OperationOutput> {
     let output = match completed.write_timings {
@@ -513,8 +564,10 @@ impl HostedRouter {
         let admitted_at = Instant::now();
         self.check_open()?;
         let context = self.context.clone();
+        let execution = self.execution.clone();
+        let request_deadline = deadline.clone();
         let fenced = std::sync::Arc::clone(&self.fenced);
-        let (admitted, admission) =
+        let (call, admission) =
             timings::blocking(&self.execution.blocking, Mode::Owned, deadline, move || {
                 if fenced.load(std::sync::atomic::Ordering::Acquire) {
                     return Err(SeError::invalid(
@@ -522,18 +575,13 @@ impl HostedRouter {
                         "a call admitted before its drain fence",
                     ));
                 }
-                context.mcp_call(&secret, operation)
+                let planner = super::planning::Planner::new(&execution);
+                context.with_mcp_call(&secret, operation, |phase, admitted| {
+                    prepare_route(planner, phase, admitted, None, None, request_deadline)
+                })
             })
             .await?;
-        let mut completed = self
-            .execute_call(
-                RoutedCall {
-                    admitted,
-                    hook: None,
-                },
-                deadline,
-            )
-            .await?;
+        let mut completed = self.execute_call(call, deadline).await?;
         completed.host_phases.admission = Some(admission);
         completed.host_phases.admitted_to_encode_us = Some(timings::micros(admitted_at.elapsed()));
         let committed = completed.committed.clone();

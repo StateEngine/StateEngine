@@ -184,6 +184,7 @@ impl AdmissionContext {
             },
         })
     }
+    #[cfg(test)]
     pub fn operation(
         &self,
         peer: &PeerProof,
@@ -193,6 +194,25 @@ impl AdmissionContext {
         raw: RawOperation,
         metadata: OperationMetadata,
     ) -> Result<HostedCall> {
+        self.with_operation(
+            (peer, connection),
+            override_authority,
+            grant,
+            raw,
+            metadata,
+            |phase, call| super::executor::close_read(Ok(call), phase.close()),
+        )
+    }
+    pub fn with_operation<T>(
+        &self,
+        native: (&PeerProof, &PresentedAuthority),
+        override_authority: Option<&PresentedAuthority>,
+        grant: &ConnectionGrant,
+        raw: RawOperation,
+        metadata: OperationMetadata,
+        finish: impl FnOnce(se_store::ReadPhase, HostedCall) -> Result<T>,
+    ) -> Result<T> {
+        let (peer, connection) = native;
         let mut phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
@@ -255,12 +275,20 @@ impl AdmissionContext {
                 selections,
             })
         })();
-        super::executor::close_read(result, phase.close())
+        match result {
+            Ok(call) => finish(phase, call),
+            Err(error) => super::executor::close_read(Err(error), phase.close()),
+        }
     }
     /// MCP over loopback HTTP: a current session bearer only. This transport has
     /// no owner proof, launch activation or per-call authority override (§7.3).
     /// The shared consumer has already decoded the tool through core's registry.
-    pub fn mcp_call(&self, secret: &se_types::Secret, operation: ops::AnyOp) -> Result<HostedCall> {
+    pub fn with_mcp_call<T>(
+        &self,
+        secret: &se_types::Secret,
+        operation: ops::AnyOp,
+        finish: impl FnOnce(se_store::ReadPhase, HostedCall) -> Result<T>,
+    ) -> Result<T> {
         let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
@@ -283,7 +311,10 @@ impl AdmissionContext {
                 selections: None,
             })
         })();
-        super::executor::close_read(result, phase.close())
+        match result {
+            Ok(call) => finish(phase, call),
+            Err(error) => super::executor::close_read(Err(error), phase.close()),
+        }
     }
     pub fn mcp_principal(&self, secret: &se_types::Secret) -> Result<crate::mcp::McpPrincipal> {
         let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;

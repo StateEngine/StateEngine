@@ -205,17 +205,25 @@ impl HostedRouter {
             .as_ref()
             .map(super::memory::MemoryReclaim::after_work);
         self.check_open()?;
+        let (admitted, hook) = match call {
+            RoutedCall::Prepared(prepared) => {
+                return prepared
+                    .execute(self.execution.clone(), Default::default())
+                    .await;
+            }
+            RoutedCall::Deferred { admitted, hook } => (*admitted, hook.map(|hook| *hook)),
+        };
         if matches!(
-            &call.admitted.input,
+            &admitted.input,
             HostedInput::Operation(se_core::ops::AnyOp::ClientWatch(_))
         ) {
-            return super::local_client::watch(self, call.admitted, deadline).await;
+            return super::local_client::watch(self, admitted, deadline).await;
         }
-        let Some(hook) = call.hook else {
+        let Some(hook) = hook else {
             return execute(
                 self.execution.clone(),
                 ExecutionCall {
-                    admitted: call.admitted,
+                    admitted,
                     deadline: deadline.clone(),
                 },
             )
@@ -226,7 +234,7 @@ impl HostedRouter {
             terminal,
             selections,
             ..
-        } = call.admitted;
+        } = admitted;
         self.capturing()
             .signal(admission, terminal, selections, hook, deadline)
             .await

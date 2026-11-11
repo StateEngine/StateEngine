@@ -4,6 +4,9 @@ use crate::{CustodyExecutor, HostFuture, client::lease::Deadline};
 use se_core::{ops::AnyOutput, ports::CustodyPlan};
 use se_store::Admission;
 impl CustodyExecutor for Arc<LaunchCoordinator> {
+    fn prepares_status(&self) -> bool {
+        true
+    }
     fn notify_capture(&self, session: &crate::SessionIdentity) -> se_types::Result<()> {
         use std::sync::atomic::Ordering;
         let jobs = self
@@ -19,6 +22,17 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
                 job.capture_pending.store(true, Ordering::Release);
                 job.wake.event.notify_one();
             }
+        }
+        Ok(())
+    }
+    fn observe_native_output(
+        &self,
+        output: &mut AnyOutput,
+        admission: &Admission,
+        deadline: &Deadline,
+    ) -> se_types::Result<()> {
+        if matches!(output, AnyOutput::ProjectStatus(_)) {
+            self.observe_status(output, admission, deadline)?;
         }
         Ok(())
     }

@@ -517,10 +517,8 @@ async fn connection(
         }
         let output = match exchange.take_call() {
             Ok(call)
-                if matches!(
-                    &call.admitted.input,
-                    HostedInput::Operation(se_core::ops::AnyOp::RemoteWatch(_))
-                ) =>
+                if matches!(&call, RoutedCall::Deferred { admitted, .. }
+                    if matches!(&admitted.input, HostedInput::Operation(se_core::ops::AnyOp::RemoteWatch(_)))) =>
             {
                 // Unlike writes, a watch owns no commit. Retire its in-flight
                 // page as soon as this CLI disconnects, preserving consumed

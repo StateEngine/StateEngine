@@ -119,8 +119,8 @@ fn scenario(case: &'static str) -> Check {
             let result: Check = async {
                 let mut admission = f.self_scope(&f.a).admission;
                 admission.session = Some(session.clone());
-                let call = || RoutedCall {
-                    admitted: HostedCall {
+                let call = || RoutedCall::Deferred {
+                    admitted: Box::new(HostedCall {
                         remote_credential:None,
                         input: HostedInput::Operation(AnyOp::HookClaude(HookClaude {
                             event: HookEvent::Stop,
@@ -131,8 +131,8 @@ fn scenario(case: &'static str) -> Check {
                             reason: "hook is not a human terminal".into(),
                         },
                         selections: None,
-                    },
-                    hook: Some(ClaudeHookInput {
+                    }),
+                    hook: Some(Box::new(ClaudeHookInput {
                         kind: if case == "session-start" {
                             ClaudeHookKind::SessionStart
                         } else {
@@ -141,7 +141,7 @@ fn scenario(case: &'static str) -> Check {
                         conversation: conversation.clone(),
                         claimed_transcript: native_path.clone(),
                         payload: json!({}),
-                    }),
+                    })),
                 };
                 let short = || {
                     Deadline::from_options(&ClientOptions {

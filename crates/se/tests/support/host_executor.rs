@@ -12,8 +12,8 @@ pub async fn uncertain_write(
 ) -> Check {
     let router = runtime.router()?;
     let call = || -> Result<se_host::RoutedCall, Box<dyn std::error::Error>> {
-        Ok(se_host::RoutedCall {
-            admitted: se_host::HostedCall {
+        Ok(se_host::RoutedCall::Deferred {
+            admitted: Box::new(se_host::HostedCall {
                 remote_credential: None,
                 input: se_host::HostedInput::Operation(se_core::ops::AnyOp::WorkingStateSet(
                     se_core::ops::WorkingStateSet {
@@ -47,7 +47,7 @@ pub async fn uncertain_write(
                     reason: "agent operation does not require a human terminal".into(),
                 },
                 selections: None,
-            },
+            }),
             hook: None,
         })
     };
@@ -133,8 +133,11 @@ pub async fn uncertain_write(
     read.close()?;
     crate::continuation_judge::check(f, runtime, || {
         let mut routed = call()?;
+        let se_host::RoutedCall::Deferred { admitted, .. } = &mut routed else {
+            return Err("expected the deferred working-state fixture".into());
+        };
         let se_host::HostedInput::Operation(se_core::ops::AnyOp::WorkingStateSet(input)) =
-            &mut routed.admitted.input
+            &mut admitted.input
         else {
             return Err("expected the actual working-state operation".into());
         };
