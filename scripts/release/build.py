@@ -285,28 +285,49 @@ def build_units(artifacts, stderr_text, metadata):
     Cargo reports a compiler-artifact event for every planned unit, fresh or
     compiled, and prints a progress line only for the packages it compiled.
     The plan comes from the events; the compiled set from the progress lines;
-    the fresh set is the difference. Package names come from cargo metadata,
-    because a path dependency's package id may omit its name.
+    the fresh set is the difference. Package identity is the metadata package
+    id (name, version and source), because one name can occur at two versions
+    of an external path dependency; a line that attributes to no single
+    planned package refuses the build instead of miscounting the witness.
     """
     packages = {package["id"]: package for package in metadata["packages"]}
-    by_name = {}
+    by_id = {}
     for artifact in artifacts:
         package_id = artifact["package_id"]
-        if package_id in by_name:
+        if package_id in by_id:
             continue
-        package = packages.get(package_id)
-        if package is None:
+        if package_id not in packages:
             raise ValueError(f"cargo reported an artifact for unknown package {package_id}")
-        by_name[package["name"]] = package_id in metadata["workspace_members"]
+        by_id[package_id] = package_id in metadata["workspace_members"]
+    by_line = {}
+    by_name_version = {}
+    for package in metadata["packages"]:
+        by_line.setdefault((package["name"], package["version"],
+                            str(Path(package["manifest_path"]).parent)), []).append(package["id"])
+        by_name_version.setdefault((package["name"], package["version"]), []).append(package["id"])
     compiled = {}
     for line in stderr_text.splitlines():
-        match = re.match(r"Compiling (\S+) v[\d.]+", line.strip())
-        if match and match.group(1) in by_name:
-            compiled[match.group(1)] = by_name[match.group(1)]
+        match = re.match(r"Compiling (\S+) v([\d.]+)(?: \(([^)]+)\))?", line.strip())
+        if not match:
+            continue
+        name, version, location = match.groups()
+        candidates = None
+        if location is not None:
+            located = by_line.get((name, version, location))
+            if located is not None:
+                candidates = located
+        if candidates is None:
+            candidates = by_name_version.get((name, version))
+        if not candidates or len(candidates) > 1:
+            raise ValueError(f"cannot attribute a compiled package to one planned package: {line.strip()}")
+        package_id = candidates[0]
+        if package_id not in by_id:
+            raise ValueError(f"cargo compiled a package outside the planned build: {line.strip()}")
+        compiled[package_id] = by_id[package_id]
     compiled_members = sum(1 for workspace in compiled.values() if workspace)
-    member_total = sum(1 for workspace in by_name.values() if workspace)
+    member_total = sum(1 for workspace in by_id.values() if workspace)
     return {"compiled": {"total": len(compiled), "workspace_members": compiled_members},
-            "fresh": {"total": len(by_name) - len(compiled),
+            "fresh": {"total": len(by_id) - len(compiled),
                       "workspace_members": member_total - compiled_members}}
 
 
@@ -317,6 +338,8 @@ def path_dependency_sources(metadata):
     dependency outside the workspace has no such check and its freshness is
     mtime-based, so the seed key binds the exact bytes of every external path
     dependency; any change refuses the seed instead of reusing artifacts.
+    Entries are keyed by the full package id (name, version and source),
+    because one package name can occur at two versions of a path dependency.
     """
     covered = {}
     for package in metadata["packages"]:
@@ -333,7 +356,7 @@ def path_dependency_sources(metadata):
             if ".git" in relative.parts or "target" in relative.parts:
                 continue
             files[relative.as_posix()] = digest(file)
-        covered[package["name"]] = files
+        covered[package["id"]] = files
     return covered
 
 

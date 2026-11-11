@@ -161,6 +161,39 @@ independent-dependency = { path = "../../../dependency" }
         self.assertEqual((seeded / "se").read_bytes(), (fresh / "se").read_bytes(),
                          "seeded output differs from an independent fresh build")
 
+    def test_each_version_of_a_path_package_binds_its_source_bytes(self):
+        self.fixture()
+        second = self.work / "dependency-v2"
+        (second / "src").mkdir(parents=True)
+        (second / "Cargo.toml").write_text(
+            '[package]\nname = "independent-dependency"\nversion = "0.0.2"\nedition = "2021"\nlicense = "MIT-0"\n')
+        (second / "LICENSE").write_text("MIT No Attribution\n")
+        (second / "src/lib.rs").write_text(self.dep_source.read_text())
+        os.utime(second / "src/lib.rs", (1_700_000_000, 1_700_000_000))
+        manifest = self.source / "crates/se/Cargo.toml"
+        with manifest.open("a") as stream:
+            stream.write('other-dependency = { package = "independent-dependency", path = "../../../dependency-v2" }\n')
+        main = self.source / "crates/se/src/main.rs"
+        main.write_text(main.read_text().replace(
+            'println!("{}", independent_dependency::value());',
+            'println!("{}:{}", independent_dependency::value(), other_dependency::value());'))
+        self.command("cargo", "generate-lockfile", "--offline")
+        metadata = json.loads(self.command("cargo", "metadata", "--offline", "--format-version", "1"))
+        dependencies = [p for p in metadata["packages"] if p["name"] == "independent-dependency"]
+        self.assertEqual(len(dependencies), 2)
+        self.commit_fixture()
+        seed = self.work / "seed.tar.gz"
+        self.build("two-version-seed", "--seed-out", str(seed))
+        changed = Path(dependencies[0]["manifest_path"]).parent / "src/lib.rs"
+        before = changed.stat()
+        changed.write_text(changed.read_text().replace("seed-old", "seed-new"))
+        os.utime(changed, ns=(before.st_atime_ns, before.st_mtime_ns))
+        seeded, _ = self.build("two-version-seeded", "--seed", str(seed))
+        fresh, _ = self.build("two-version-fresh")
+        self.assertEqual(self.command(str(seeded / "se")), self.command(str(fresh / "se")),
+                         "one version's dependency hashes overwrote the other version")
+        self.assertEqual((seeded / "se").read_bytes(), (fresh / "se").read_bytes())
+
     def test_default_off_build_matches_the_parent_release_builder(self):
         self.fixture()
         candidate, manifest = self.build("default-candidate", target_dir=False)

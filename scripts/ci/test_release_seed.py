@@ -165,16 +165,26 @@ class SeedArchiveControls(unittest.TestCase):
             (dep / "src/lib.rs").write_bytes(b"pub fn f() {}")
             (dep / "target").mkdir()
             (dep / "target/junk.bin").write_bytes(b"build output")
+            dep2 = root / "dep2"
+            (dep2 / "src").mkdir(parents=True)
+            (dep2 / "Cargo.toml").write_bytes(b"[package]")
+            (dep2 / "src/lib.rs").write_bytes(b"pub fn g() {}")
             metadata = {"packages": [
                 {"id": "path+file:///x/dep#0.0.1", "name": "dep",
                  "manifest_path": str(dep / "Cargo.toml")},
+                {"id": "path+file:///x/dep2#dep@0.0.2", "name": "dep",
+                 "manifest_path": str(dep2 / "Cargo.toml")},
                 {"id": "registry+https://github.com/rust-lang/crates.io-index#other@1.0.0",
                  "name": "other", "manifest_path": str(root / "other/Cargo.toml")},
                 {"id": "path+file:///x/dep/member#1.0.0", "name": "member",
                  "manifest_path": str(dep / "member/Cargo.toml")}],
                 "workspace_members": ["path+file:///x/dep/member#1.0.0"]}
-            expected = {"dep": {"Cargo.toml": build.digest(dep / "Cargo.toml"),
-                                "src/lib.rs": build.digest(dep / "src/lib.rs")}}
+            expected = {"path+file:///x/dep#0.0.1":
+                        {"Cargo.toml": build.digest(dep / "Cargo.toml"),
+                         "src/lib.rs": build.digest(dep / "src/lib.rs")},
+                        "path+file:///x/dep2#dep@0.0.2":
+                        {"Cargo.toml": build.digest(dep2 / "Cargo.toml"),
+                         "src/lib.rs": build.digest(dep2 / "src/lib.rs")}}
             covered = build.path_dependency_sources(metadata)
         self.assertEqual(covered, expected)
 
