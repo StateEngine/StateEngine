@@ -1,7 +1,7 @@
 //! Native pre-commit traffic stays bounded, inert and independently closeable.
 use super::*;
 use crate::client::lease::Deadline;
-use std::{future::Future, io::Read, task::Poll};
+use std::io::Read;
 
 async fn queue(
     listener: &mut IpcListener,
@@ -215,39 +215,56 @@ fn silent_overflow_closes_within_the_original_bound_and_keeps_a_spare() -> Check
     .map_err(|error| error.into())
 }
 
+// A write larger than the native 64-KiB output quota holds the real write
+// pending while its client stays silent. This is synthetic transport pressure,
+// not a replacement for the separate typed-refusal protocol controls.
+async fn backpressure(
+    stream: &NativeStream,
+) -> std::result::Result<usize, Box<dyn std::error::Error>> {
+    tokio::time::timeout(Duration::from_secs(1), stream.writable()).await??;
+    let padding = vec![b'P'; 256 * 1024];
+    let queued = stream.try_write(&padding)?;
+    assert_eq!(
+        queued,
+        padding.len(),
+        "fixture did not queue its bounded padding"
+    );
+    assert!(
+        matches!(stream.try_write(b"P"), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+        "fixture did not establish native write backpressure"
+    );
+    Ok(queued)
+}
+
 #[test]
 fn cancelled_accept_preserves_the_refusal_clock_without_delaying_admission() -> Check {
     let home = Home::new()?;
     let (rt, mut listener, endpoint) = configured(&home, 2, 1)?;
-    let clients = std::thread::spawn(move || {
-        (0..2)
-            .map(|_| raw_connect(&endpoint).map_err(|error| error.to_string()))
-            .collect::<std::result::Result<Vec<_>, _>>()
-    });
+    let mut peers = rt.block_on(queue(&mut listener, &endpoint, 1))?;
+    let padding = rt.block_on(backpressure(
+        &listener
+            .startup_clients
+            .front()
+            .ok_or("first queued stream absent")?
+            .stream,
+    ))?;
+    let clients =
+        rt.spawn_blocking(move || raw_connect(&endpoint).map_err(|error| error.to_string()));
     let original = Deadline::from_options(&options(Duration::from_secs(2)))?;
-    rt.block_on(async {
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            std::future::poll_fn(|cx| {
-                let mut pumping = Box::pin(listener.retain_startup_clients(&original));
-                let outcome = pumping.as_mut().poll(cx);
-                // Cancel acceptance before this current-thread runtime polls the
-                // newly spawned refusal, as an ownership commit can do.
-                drop(pumping);
-                if let Poll::Ready(outcome) = outcome {
-                    return Poll::Ready(Err(format!("startup pump ended: {outcome:?}")));
-                }
-                if listener.startup_refusals.is_empty() {
-                    Poll::Pending
-                } else {
-                    Poll::Ready(Ok(()))
-                }
-            }),
-        )
-        .await?
-        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
-    })?;
-    let mut peers = clients.join().map_err(|_| "client producer panicked")??;
+    peers.push(rt.block_on(async {
+        let pumping = listener.retain_startup_clients(&original);
+        tokio::pin!(pumping);
+        let peer = tokio::select! {
+            outcome = &mut pumping => {
+                return Err(format!("startup pump ended: {outcome:?}").into());
+            }
+            result = clients => result?.map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
+        };
+        // Preserve this exact future through every Pending. Cancellation occurs
+        // only at the simulated ownership-commit boundary, with the write held.
+        assert!(tokio::time::timeout(Duration::from_millis(100), &mut pumping).await.is_err());
+        Ok::<_, Box<dyn std::error::Error>>(peer)
+    })?);
     assert_eq!(listener.startup_clients.len(), 1);
     assert_eq!(listener.startup_refusals.len(), 1);
     assert_eq!(listener.incoming.available_permits(), 0);
@@ -262,8 +279,6 @@ fn cancelled_accept_preserves_the_refusal_clock_without_delaying_admission() -> 
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
     })?;
     assert!(listener.startup_clients.is_empty());
-    // Stop driving the runtime until the original clock expires. A task that
-    // resets its clock when resumed would now write a refusal instead of closing.
     std::thread::sleep(
         original
             .at()
@@ -277,10 +292,11 @@ fn cancelled_accept_preserves_the_refusal_clock_without_delaying_admission() -> 
     assert!(listener.startup_refusals.is_empty());
     assert_eq!(listener.incoming.available_permits(), 1);
     peers[0].set_bound(bound(Duration::from_secs(2)));
-    assert_eq!(
-        peers[0].read(&mut [0u8; 1])?,
-        0,
-        "refusal received a new clock"
+    let mut closed = Vec::new();
+    Read::take(&mut peers[0], padding as u64 + 1).read_to_end(&mut closed)?;
+    assert!(
+        closed.len() <= padding && closed.iter().all(|byte| *byte == b'P'),
+        "refusal wrote new data after its original clock"
     );
     silent(&mut peers[1])?;
     drop(admitted);
