@@ -430,6 +430,34 @@ Answers are compact pointers: a line range and byte count show how much source a
 target contains before you read it. JSON retains the full span and byte offsets.
 Unverified or unavailable extents say `size unavailable`; stale revisions stay labelled.
 
+## Assistant tool arguments
+
+Managed Claude and Codex sessions discover the same compact MCP tool catalogue.
+It advertises argument shapes, required fields, enums and defaults; the runtime
+still checks complete value grammars, bounds and permissions. For full input and
+output schemas, run `se schema OP`, for example `se schema message.send` or
+`se schema atlas.refs`. The [operation reference](docs/OPS.md) lists operation names.
+
+- Omit `agent_id` and `project_id` in a managed session. If supplied, they must
+  match its authenticated caller; they never select another caller. Use
+  `target_agent_id` only where advertised to select a controlled agent.
+- Copy IDs and opaque cursors from results rather than constructing them. For a
+  mutation, retain its `idempotency_key`; retry an uncertain result with the same
+  arguments and key. Remote mail also pins the same target and expected session.
+  A committed message is not evidence of delivery, reading or task completion.
+- Direct messages use `to`; floor messages additionally require `work.action`
+  and explicit `work.addressees`. `quiet` leaves mail unread but suppresses its
+  notification. Listing or resuming does not mark messages read; reading and
+  acknowledging do, while dismissal does not.
+- `working_state_set.expect` is the revision just read, or `absent` on first
+  write. Launch normally resumes the saved conversation; `new` starts another.
+  `force` explicitly consents to stopping the existing lifecycle and jobs.
+- Atlas targets retain their tagged JSON shape, such as
+  `{"Symbol":{"Name":{"name":"authenticate"}}}` or `{"File":"src/auth.rs"}`.
+  Its `root` selects a registered worktree, and `regex` searches live source with
+  a case-sensitive expression (`(?i)` ignores case). Remote watch's `measure`
+  reports producer age at release, not a guaranteed delivery-latency bound.
+
 ## For developers
 
 The Rust workspace provides one `se` binary and libraries linked by the SE Code

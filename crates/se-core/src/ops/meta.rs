@@ -205,7 +205,9 @@ pub fn mcp_tools() -> Result<Vec<McpTool>> {
             description,
         } = meta.mcp
         {
-            let mut input_schema = input_schema(meta.name).ok_or_else(|| internal(meta.name))?;
+            let mut input_schema = super::mcp_schema::compact(
+                input_schema(meta.name).ok_or_else(|| internal(meta.name))?,
+            )?;
             super::mcp_identity::describe(name, &mut input_schema)?;
             tools.push(McpTool {
                 name,
