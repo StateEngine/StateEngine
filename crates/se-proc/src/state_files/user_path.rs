@@ -15,6 +15,7 @@ use windows_sys::Win32::{
 type Result<T> = std::result::Result<T, PathUpdateError>;
 const VALUE: &[u16] = &[b'P' as u16, b'a' as u16, b't' as u16, b'h' as u16, 0];
 const MAX_VALUE_BYTES: usize = 2 * 32768;
+const PATH_TRANSACTION_TIMEOUT_MS: u32 = 10_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PathKind {
@@ -188,10 +189,11 @@ impl NativeUserPath {
                 broadcast_completed: false,
             });
         }
+        let ms = PATH_TRANSACTION_TIMEOUT_MS;
         // SAFETY: no inherited handle, no transaction manager supplied, finite
         // native deadline. The transaction's final handle auto-aborts on failure.
         let raw = unsafe {
-            CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, 2000, ptr::null())
+            CreateTransaction(ptr::null_mut(), ptr::null_mut(), 0, 0, 0, ms, ptr::null())
         };
         if raw.is_null() || raw == INVALID_HANDLE_VALUE {
             return Err(error(
