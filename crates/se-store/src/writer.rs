@@ -254,7 +254,6 @@ pub(crate) fn start(
             identity,
         }),
     };
-    host.engine.checkpoints.writer = true;
     let context = host.context.clone();
     let thread = std::thread::Builder::new()
         .name("se-store-writer".into())

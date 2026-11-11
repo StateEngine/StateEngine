@@ -8,7 +8,6 @@ const RETRY: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
 pub(crate) struct Schedule {
-    pub(crate) writer: bool,
     pending: bool,
     next: Option<Instant>,
 }
@@ -129,12 +128,11 @@ impl Engine {
             return self.run_checkpoint(&wal);
         }
         if wal.log >= SOFT_FRAMES && wal.log > wal.done {
-            if self.checkpoints.writer {
-                self.defer_checkpoint(IDLE);
-                None
-            } else {
-                self.run_checkpoint(&wal)
-            }
+            // Direct/bootstrap connections have no idle worker. Their
+            // existing close path or hard-pressure check performs maintenance;
+            // starting the host transfers this debt to its sole writer.
+            self.defer_checkpoint(IDLE);
+            None
         } else {
             self.checkpoints.pending = false;
             self.checkpoints.next = None;
