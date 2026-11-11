@@ -5,6 +5,16 @@
    "owner": "se-host maintainers",
    "reason": "Reviewed native image qualification reuse; exact current size, no headroom.",
    "remediation": "Split image qualification from process management if the directory grows again."
+  },
+  "crates/se-host/src/ipc": {
+   "owner": "se-host maintainers",
+   "reason": "Reviewed startup listener controls require private access; exact current size, no headroom.",
+   "remediation": "Move startup reviewer controls beside the listener tests, or split startup into its own module, if the directory grows again."
+  },
+  "crates/se-host/src/ipc/listener": {
+   "owner": "se-host maintainers",
+   "reason": "Reviewed startup listener controls require private access; exact current size, no headroom.",
+   "remediation": "Move startup reviewer controls beside the listener tests, or split startup into its own module, if the directory grows again."
   }
  },
  "default_crate_lines": 40000,
@@ -68,7 +78,7 @@
   "crates/se-host/src/agent_observation": 1513,
   "crates/se-host/src/remote/client": 1459,
   "crates/se-types/src/code": 1441,
-  "crates/se-host/src/ipc": 1421,
+  "crates/se-host/src/ipc": 1656,
   "crates/se-host/src/channels/discord": 1403,
   "crates/se-host/src/process/io": 1397,
   "crates/se-proc/src/source_root": 1365,
@@ -89,7 +99,7 @@
   "crates/se-proc/src/runtime/launch_stop": 1067,
   "crates/se-host/src/atlas_cache": 1059,
   "crates/se-store/src/transaction": 1017,
-  "crates/se-host/src/ipc/listener": 987,
+  "crates/se-host/src/ipc/listener": 1217,
   "crates/se-host/src/process/remove": 952,
   "crates/se-proc/src/atlas_worker/windows": 940,
   "crates/se-store/src/import": 940,

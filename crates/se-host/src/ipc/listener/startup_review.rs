@@ -329,15 +329,22 @@ fn cancelled_accept_preserves_the_refusal_clock_without_delaying_admission() -> 
     ))?;
     assert!(listener.startup_refusals.is_empty());
     assert_eq!(listener.incoming.available_permits(), 1);
-    peers[0].set_bound(bound(Duration::from_secs(2)));
-    let mut closed = Vec::new();
-    ClockStep::new("drain refused padding and EOF")
-        .finish(Read::take(&mut peers[0], padding as u64 + 1).read_to_end(&mut closed))?;
+    let mut refused = peers.remove(0);
+    refused.set_bound(bound(Duration::from_secs(2)));
+    // The native client read is blocking. Await it with the server reactor
+    // running so its queued overlapped write can complete and release EOF.
+    let drain = rt.spawn_blocking(move || {
+        let mut closed = Vec::new();
+        Read::take(&mut refused, padding as u64 + 1).read_to_end(&mut closed)?;
+        Ok::<_, std::io::Error>(closed)
+    });
+    let closed = ClockStep::new("drain refused padding and EOF")
+        .finish(rt.block_on(async { drain.await? }))?;
     assert!(
         closed.len() <= padding && closed.iter().all(|byte| *byte == b'P'),
         "refusal wrote new data after its original clock"
     );
-    ClockStep::new("retained client stays silent").finish(silent(&mut peers[1]))?;
+    ClockStep::new("retained client stays silent").finish(silent(&mut peers[0]))?;
     drop(admitted);
     drop(peers);
     ClockStep::new("final listener close").finish(rt.block_on(listener.close_joined(
