@@ -571,6 +571,3 @@ pub(super) fn random(path: &Path) -> Result<[u8; 16]> {
         .map_err(|e| io_error("native staging entropy", path, io::Error::other(e)))?;
     Ok(bytes)
 }
-pub(super) fn identity(file: &File, path: &Path) -> Result<Identity> {
-    metadata(file, path, false, true)
-}

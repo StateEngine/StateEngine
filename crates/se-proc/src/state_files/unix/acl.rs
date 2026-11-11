@@ -1,5 +1,6 @@
 //! Darwin extended ACLs are independent of BSD mode bits. All observations and
-//! changes use a held descriptor, never a path resolved for a second time.
+//! changes normally use a held descriptor. Database metadata uses the no-follow
+//! path API so closing a descriptor cannot cancel SQLite locks.
 //! ABI: Apple Libc include/sys/acl.h, gen/filesec.c and XNU bsd/sys/fcntl.h.
 use crate::state_files::{Result, io_error, unsafe_path};
 use std::{ffi::c_void, fs::File, io, os::fd::AsRawFd, path::Path};

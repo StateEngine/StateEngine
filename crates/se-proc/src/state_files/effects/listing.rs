@@ -21,8 +21,8 @@ impl NativeStateFiles {
             let file = self
                 .pin_metadata(path)?
                 .ok_or_else(|| changed("owned inventory entry disappeared", path))?;
-            // Retain each verified native object until its immediate outside
-            // name check; this grants no later deletion authority to the list.
+            // Recheck each protected native identity immediately; this grants
+            // no later deletion authority to the list.
             let identity = file.identity()?;
             let outside = self
                 .pin_metadata(path)?
