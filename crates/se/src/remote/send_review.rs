@@ -15,17 +15,17 @@ impl Write for Observed {
     }
 }
 impl Observed {
-    fn rows(&self) -> Vec<serde_json::Value> {
+    fn rows(&self) -> io::Result<Vec<serde_json::Value>> {
         self.0
             .borrow()
             .0
             .split(|b| *b == b'\n')
             .filter(|v| !v.is_empty())
-            .map(|v| serde_json::from_slice(v).expect("structured status row"))
+            .map(|v| serde_json::from_slice(v).map_err(io::Error::other))
             .collect()
     }
 }
-fn input() -> RemoteSendCall {
+fn input() -> io::Result<RemoteSendCall> {
     serde_json::from_value(serde_json::json!({
         "host":"example", "request":{
             "target":{"project":"prj_01920e00-7f00-7000-8000-000000000000",
@@ -33,19 +33,19 @@ fn input() -> RemoteSendCall {
             "session":"ses_01920e00-7f00-7000-8000-000000000000",
             "idempotency_key":"synthetic-review-key", "body":"private synthetic body"}
     }))
-    .expect("synthetic valid request")
+    .map_err(io::Error::other)
 }
-fn preparation(input: &RemoteSendCall) -> RemoteSendPreparation {
-    RemoteSendPreparation {
+fn preparation(input: &RemoteSendCall) -> io::Result<RemoteSendPreparation> {
+    Ok(RemoteSendPreparation {
         host: se_types::remote::RemoteHostId(se_types::Sha256::from_bytes([3; 32])),
         grant: "rgr_01920e00-7f00-7000-8000-000000000000"
             .parse()
-            .expect("grant"),
+            .map_err(io::Error::other)?,
         target: input.request.target.clone(),
         session: input.request.session.clone(),
         idempotency_key: input.request.idempotency_key.clone(),
-        body_bytes: input.request.body.len() as u32,
-    }
+        body_bytes: u32::try_from(input.request.body.len()).map_err(io::Error::other)?,
+    })
 }
 fn bootstrap() -> Bootstrap {
     Bootstrap {
@@ -68,8 +68,8 @@ fn bootstrap() -> Bootstrap {
 
 #[test]
 fn pending_and_bound_facts_are_flushed_before_their_dispatches() -> io::Result<()> {
-    let input = input();
-    let prepared = preparation(&input);
+    let input = input()?;
+    let prepared = preparation(&input)?;
     let mut stderr = Observed::default();
     let observer = stderr.clone();
     let mut stdout = Vec::new();
@@ -83,7 +83,9 @@ fn pending_and_bound_facts_are_flushed_before_their_dispatches() -> io::Result<(
         &mut stderr,
         &mut |_, operation, _| {
             calls += 1;
-            let rows = observer.rows();
+            let rows = observer
+                .rows()
+                .map_err(|cause| SeError::invalid("review status JSON", &cause.to_string()))?;
             assert_eq!(rows.len(), calls);
             assert_eq!(observer.0.borrow().1, calls);
             assert_eq!(rows[0]["status"], "local_pending");
@@ -100,9 +102,9 @@ fn pending_and_bound_facts_are_flushed_before_their_dispatches() -> io::Result<(
                 AnyOp::RemoteSend(v) => {
                     assert_eq!(rows[1]["status"], "binding_ready");
                     assert_eq!(rows[1]["grant"], prepared.grant.to_string());
-                    let binding = v.expected_binding.expect("prepared binding is sent");
-                    assert_eq!(binding.host, prepared.host);
-                    assert_eq!(binding.grant, prepared.grant);
+                    let binding = v.expected_binding.as_ref();
+                    assert_eq!(binding.map(|binding| binding.host), Some(prepared.host));
+                    assert_eq!(binding.map(|binding| &binding.grant), Some(&prepared.grant));
                     assert_eq!(v.request.idempotency_key, input.request.idempotency_key);
                     assert_eq!(v.request.body, input.request.body);
                     Err(SeError::invalid(
@@ -116,7 +118,7 @@ fn pending_and_bound_facts_are_flushed_before_their_dispatches() -> io::Result<(
     )?;
     assert_eq!((code, calls), (1, 2));
     assert!(stdout.is_empty());
-    let rows = stderr.rows();
+    let rows = stderr.rows()?;
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[2]["status"], "failed");
     assert_eq!(rows[2]["idempotency_key"], rows[0]["idempotency_key"]);
@@ -129,19 +131,23 @@ fn pending_and_bound_facts_are_flushed_before_their_dispatches() -> io::Result<(
 #[test]
 fn preparation_mismatch_never_dispatches_a_mutating_send() -> io::Result<()> {
     for mismatch in 0..6 {
-        let mut input = input();
-        let mut p = preparation(&input);
+        let mut input = input()?;
+        let mut p = preparation(&input)?;
         match mismatch {
-            0 => p.idempotency_key = "different-synthetic-key".parse().expect("key"),
+            0 => {
+                p.idempotency_key = "different-synthetic-key"
+                    .parse()
+                    .map_err(io::Error::other)?
+            }
             1 => {
                 p.target.agent = "ag_01920e00-7f00-7000-8000-000000000001"
                     .parse()
-                    .expect("agent")
+                    .map_err(io::Error::other)?
             }
             2 => {
                 p.session = "ses_01920e00-7f00-7000-8000-000000000001"
                     .parse()
-                    .expect("session")
+                    .map_err(io::Error::other)?
             }
             3 => p.body_bytes += 1,
             4 | 5 => {
@@ -154,7 +160,7 @@ fn preparation_mismatch_never_dispatches_a_mutating_send() -> io::Result<()> {
                     grant: if mismatch == 5 {
                         "rgr_01920e00-7f00-7000-8000-000000000001"
                             .parse()
-                            .expect("grant")
+                            .map_err(io::Error::other)?
                     } else {
                         p.grant.clone()
                     },
@@ -180,7 +186,7 @@ fn preparation_mismatch_never_dispatches_a_mutating_send() -> io::Result<()> {
         )?;
         assert_eq!((code, calls), (1, 1));
         assert!(stdout.is_empty());
-        let rows = stderr.rows();
+        let rows = stderr.rows()?;
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[1]["status"], "failed");
         assert_eq!(rows[1]["idempotency_key"], rows[0]["idempotency_key"]);
@@ -189,7 +195,7 @@ fn preparation_mismatch_never_dispatches_a_mutating_send() -> io::Result<()> {
 }
 
 #[test]
-fn unflushed_status_never_allows_the_next_dispatch() {
+fn unflushed_status_never_allows_the_next_dispatch() -> io::Result<()> {
     struct FailFlush {
         flushes: usize,
         fail_at: usize,
@@ -208,8 +214,8 @@ fn unflushed_status_never_allows_the_next_dispatch() {
         }
     }
     for fail_at in 1..=2 {
-        let input = input();
-        let p = preparation(&input);
+        let input = input()?;
+        let p = preparation(&input)?;
         let mut calls = 0;
         let result = run(
             &bootstrap(),
@@ -230,4 +236,5 @@ fn unflushed_status_never_allows_the_next_dispatch() {
         assert!(result.is_err());
         assert_eq!(calls, fail_at - 1);
     }
+    Ok(())
 }
