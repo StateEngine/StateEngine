@@ -159,9 +159,9 @@ fn retained_router_and_capture_refuse_after_drain_without_retaining_the_lease() 
         let call = || -> Result<RoutedCall, Box<dyn std::error::Error>> {
             let mut admission = f.self_scope(&f.a).admission;
             admission.session = Some(session.clone());
-            Ok(RoutedCall {
+            Ok(RoutedCall::Deferred {
                 hook: None,
-                admitted: HostedCall {
+                admitted: Box::new(HostedCall {
                     remote_credential: None,
                     input: HostedInput::Operation(se_core::ops::AnyOp::WorkingStateGet(
                         Default::default(),
@@ -179,7 +179,7 @@ fn retained_router_and_capture_refuse_after_drain_without_retaining_the_lease() 
                         reason: "agent read".into(),
                     },
                     selections: None,
-                },
+                }),
             })
         };
         router.execute_call(call()?, &bound()?).await?;

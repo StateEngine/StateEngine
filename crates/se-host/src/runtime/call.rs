@@ -51,9 +51,24 @@ pub struct ExecutionContext {
 /// (native effects plus their FULL commits) for one admitted caller. Installed
 /// through `HostedRuntime::install_custody`; absent, custody plans refuse.
 pub trait CustodyExecutor: Send + Sync {
+    /// Opt into collecting status rows on the existing admission snapshot.
+    /// Other adapters keep their ordinary ObserveStatus custody dispatch.
+    fn prepares_status(&self) -> bool {
+        false
+    }
     /// A failed native hook leaves its cursor with the existing session monitor.
     /// This wake supplies no transcript, capture authority or completion proof.
     fn notify_capture(&self, _session: &crate::SessionIdentity) -> se_types::Result<()> {
+        Ok(())
+    }
+    /// Complete native facts in the existing finite observation worker, after
+    /// admission/planning has released its read pin. This opens no core-store read.
+    fn observe_native_output(
+        &self,
+        _output: &mut se_core::ops::AnyOutput,
+        _admission: &Admission,
+        _deadline: &Deadline,
+    ) -> se_types::Result<()> {
         Ok(())
     }
     /// Enrich retained provider coordinates with authenticated current reads,

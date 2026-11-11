@@ -257,7 +257,7 @@ fn finite_host_phases_return_both_slots_before_network_and_commit() -> Check {
             client.join().map_err(|_| "native client panicked")??;
             drop(connection);
 
-            let planned = plan(checked_phase(reader, host.generation())?, call, None)?;
+            let planned = plan(checked_phase(reader, host.generation())?, call, None, None)?;
             full_budget(reader, "after plan return with owned plan still alive")?;
             let Step::Commit { batch, then } = planned.step else {
                 return Err("write plan required".into());

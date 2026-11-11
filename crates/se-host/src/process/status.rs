@@ -1,39 +1,26 @@
-//! Host/MCP status uses the same recorded rows and outside observations as the
-//! direct CLI. The host's own identity is witnessed after the finite SQL read.
+//! Status native facts share the finite agent-observation worker. Core status
+//! rows are prepared earlier, under the request's admission/planning snapshot.
 use super::*;
 use crate::{BlockingClass, client::lease::Deadline};
-use se_core::{commit::Cx, ops::*, scope, store_error::store_error};
-use se_store::{Actor, Admission, EventBody, MessageQuery, Snapshot};
+use se_core::ops::*;
+use se_store::Admission;
 use se_types::{Read, Result};
 #[path = "status/resources.rs"]
 mod resources;
 
 impl LaunchCoordinator {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn status(
-        &self,
+        self: &Arc<Self>,
         input: ProjectStatus,
         admission: Admission,
         deadline: &Deadline,
     ) -> Result<AnyOutput> {
-        if input.all {
-            return Err(error("host status", "use the owner CLI for status --all"));
-        }
-        let home = self.options.home.display().to_string();
-        let (scope, actor) = (admission.scope.clone(), admission.actor.clone());
+        let home = self.options.home.clone();
+        let observed_admission = admission.clone();
         let (mut output, plans) = self
             .store
             .read(admission, deadline, move |cx| {
-                let generated = receipt::timestamp(crate::runtime::start::now_unix_micros()?)?;
-                let mut status =
-                    se_core::ops::status::missing(home, generated, "no project selected".into());
-                status.setup.state = SetupState::Configured;
-                status.setup.reason = None;
-                project(&mut status, cx)?;
-                let output = AnyOutput::from(status);
+                let output = crate::runtime::status::prepare(input, &home, cx)?;
                 let plans = crate::agent_observation::output::prepare(
                     &cx.admission.scope,
                     &output,
@@ -42,8 +29,29 @@ impl LaunchCoordinator {
                 Ok((output, plans))
             })
             .await?;
-        self.task_status(&mut output, &scope, &actor)?;
-        if let AnyOutput::ProjectStatus(status) = &mut output
+        let coordinator = Arc::clone(self);
+        let bound = deadline.clone();
+        let home = self.options.home.clone();
+        self.store
+            .pool
+            .run(BlockingClass::Foreground, deadline, move || {
+                bound.remaining()?;
+                crate::agent_observation::output::observe(&mut output, plans, bound.at(), &home)?;
+                coordinator.observe_status(&mut output, &observed_admission, &bound)?;
+                bound.remaining()?;
+                Ok(output)
+            })
+            .await
+    }
+    pub(super) fn observe_status(
+        &self,
+        output: &mut AnyOutput,
+        admission: &Admission,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        deadline.remaining()?;
+        self.task_status(output, &admission.scope, &admission.actor)?;
+        if let AnyOutput::ProjectStatus(status) = output
             && status.value.removal.is_none()
         {
             status.value.atlas = if !self.options.configuration.atlas.enabled {
@@ -52,7 +60,7 @@ impl LaunchCoordinator {
                 }));
                 view.state = "disabled".into();
                 view
-            } else if let se_store::Scope::Project(project) = &scope {
+            } else if let se_store::Scope::Project(project) = &admission.scope {
                 se_core::ops::status::atlas_view(self.atlas.status(project, None))
             } else {
                 se_core::ops::status::atlas_view(Ok(Read::Absent {
@@ -60,163 +68,46 @@ impl LaunchCoordinator {
                 }))
             };
         }
-        let owner = self.owner.clone();
-        let kind = self.kind;
-        let generation = self.store.generation.get();
-        let bound = deadline.clone();
-        let command_home = self.options.home.clone();
-        self.store
-            .pool
-            .run(BlockingClass::Foreground, deadline, move || {
-                bound.remaining()?;
-                crate::agent_observation::output::observe(
-                    &mut output,
-                    plans,
-                    bound.at(),
-                    &command_home,
-                )?;
-                let observed = se_proc::read_process(owner.machine.clone(), owner.pid)
-                    .map_err(|cause| error("host process observation", cause))?;
-                let se_proc::ProcessRead::Present(observed) = observed else {
-                    return Err(error(
-                        "host process observation",
-                        "the serving host is not present",
-                    ));
-                };
-                if observed.identity != owner
-                    || !matches!(
-                        observed.state,
-                        se_proc::NativeState::Running | se_proc::NativeState::Stopped
-                    )
-                {
-                    return Err(error(
-                        "host process observation",
-                        "the exact serving process instance must be live",
-                    ));
-                }
-                let AnyOutput::ProjectStatus(status) = &mut output else {
-                    return Err(error("host status", "the original status family"));
-                };
-                status.value.runtime.state = "running".into();
-                status.value.runtime.host = Some(
-                    match kind {
-                        crate::HostKind::Standalone => "daemon",
-                        crate::HostKind::EmbeddedSecode => "secode",
-                    }
-                    .into(),
-                );
-                status.value.runtime.process = Some(launch_util::view(&owner, bound.at())?);
-                status.value.runtime.generation = Some(generation);
-                status.value.runtime.version = Some(env!("CARGO_PKG_VERSION").into());
-                status.value.runtime.observed_at = Some(receipt::timestamp(
-                    i64::try_from(observed.observed_at_unix_ns / 1000).map_err(|_| {
-                        error("host observation clock", "representable Unix microseconds")
-                    })?,
-                )?);
-                resources::observe(&mut status.value.runtime);
-                bound.remaining()?;
-                Ok(output)
-            })
-            .await
-    }
-}
-
-fn project<S: Snapshot>(output: &mut StatusOutput, cx: &mut Cx<'_, S>) -> Result<()> {
-    let se_store::Scope::Project(project) = &cx.admission.scope else {
-        return Ok(());
-    };
-    let record = scope::require_present(
-        cx.read
-            .project(project.clone())
-            .map_err(|e| store_error(&e))?,
-        "selected project",
-        "Select an existing project in this data home.",
-    )?;
-    output.scope = "project".into();
-    if let Some(removal) = project_remove::removed_view(&record)? {
-        output.project = Read::Absent {
-            checked: format!("project {} was removed", removal.project.name),
-        };
-        output.removal = Some(removal);
-        output.capture.state = "off".into();
-        output.atlas.state = "absent".into();
-        return Ok(());
-    }
-    let (name, roots) = match &record.current.body {
-        EventBody::ProjectRegistered { name, roots, .. }
-        | EventBody::ProjectUpdated { name, roots, .. } => (name, roots),
-        _ => {
+        let observed = se_proc::read_process(self.owner.machine.clone(), self.owner.pid)
+            .map_err(|cause| error("host process observation", cause))?;
+        let se_proc::ProcessRead::Present(observed) = observed else {
             return Err(error(
-                "selected project",
-                "active project metadata is unavailable",
+                "host process observation",
+                "the serving host is not present",
+            ));
+        };
+        if observed.identity != self.owner
+            || !matches!(
+                observed.state,
+                se_proc::NativeState::Running | se_proc::NativeState::Stopped
+            )
+        {
+            return Err(error(
+                "host process observation",
+                "the exact serving process instance must be live",
             ));
         }
-    };
-    output.project = Read::Present {
-        value: ProjectView {
-            id: project.clone(),
-            name: name.clone(),
-            root: roots
-                .first()
-                .map(|root| root.path.to_local().map(|path| path.display().to_string()))
-                .transpose()?
-                .unwrap_or_default(),
-            registered_at: receipt::timestamp(
-                record
-                    .original
-                    .as_deref()
-                    .unwrap_or(&record.current)
-                    .recorded_at_us,
-            )?,
-            git: None,
-        },
-    };
-    let unread = cx
-        .read
-        .message_count(MessageQuery {
-            sender: None,
-            recipient: Some(cx.admission.actor.clone()),
-            kind: None,
-            unread_only: true,
-            full_body: false,
-        })
-        .map_err(|e| store_error(&e))?;
-    match &cx.admission.actor {
-        Actor::Remote(_) => {
-            return Err(se_types::SeError::invalid(
-                "local status",
-                "local human or agent authority",
-            ));
-        }
-        Actor::Human(_) => output.inbox.owner_unread = Some(unread),
-        Actor::Agent(agent) => {
-            output.inbox.self_unread = Some(unread);
-            if let Some(session) = &cx.admission.session {
-                output.principal = Some(PrincipalView {
-                    project: Named {
-                        id: project.clone(),
-                        name: name.clone(),
-                    },
-                    agent: receipt::named_agent(cx.read, agent)?,
-                    session_id: session.clone(),
-                });
+        let AnyOutput::ProjectStatus(status) = output else {
+            return Err(error("host status", "the original status family"));
+        };
+        status.value.runtime.state = "running".into();
+        status.value.runtime.host = Some(
+            match self.kind {
+                crate::HostKind::Standalone => "daemon",
+                crate::HostKind::EmbeddedSecode => "secode",
             }
-        }
+            .into(),
+        );
+        status.value.runtime.process = Some(launch_util::view(&self.owner, deadline.at())?);
+        status.value.runtime.generation = Some(self.store.generation.get());
+        status.value.runtime.version = Some(env!("CARGO_PKG_VERSION").into());
+        status.value.runtime.observed_at = Some(receipt::timestamp(
+            i64::try_from(observed.observed_at_unix_ns / 1000)
+                .map_err(|_| error("host observation clock", "representable Unix microseconds"))?,
+        )?);
+        resources::observe(&mut status.value.runtime);
+
+        deadline.remaining()?;
+        Ok(())
     }
-    output.agents = Some(
-        se_core::ops::listing::agents(
-            AgentList {
-                limit: 100,
-                cursor: None,
-            },
-            cx,
-        )?
-        .page,
-    );
-    output.next = NextStep {
-        text: "Read this agent's saved state.".into(),
-        command: "se agent show main".into(),
-        argv: vec!["se".into(), "agent".into(), "show".into(), "main".into()],
-    };
-    Ok(())
 }

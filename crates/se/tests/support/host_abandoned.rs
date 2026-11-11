@@ -9,8 +9,8 @@ pub async fn check(f: &Fixture, session: &SessionId, runtime: &se_host::HostedRu
     let router = runtime.router()?;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let call = |request: &str| -> Result<se_host::RoutedCall, Box<dyn std::error::Error>> {
-        Ok(se_host::RoutedCall {
-            admitted: se_host::HostedCall {
+        Ok(se_host::RoutedCall::Deferred {
+            admitted: Box::new(se_host::HostedCall {
                 remote_credential: None,
                 input: se_host::HostedInput::Operation(se_core::ops::AnyOp::MessageSend(
                     se_core::ops::MessageSend {
@@ -46,7 +46,7 @@ pub async fn check(f: &Fixture, session: &SessionId, runtime: &se_host::HostedRu
                     reason: "agent message does not require a human terminal".into(),
                 },
                 selections: None,
-            },
+            }),
             hook: None,
         })
     };
