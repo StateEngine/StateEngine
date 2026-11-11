@@ -26,6 +26,7 @@ def select(config, slot):
             path = Path(raw)
             if not path.is_absolute() or ".." in path.parts:
                 raise RuntimeError("absolute fixed runner slot paths required")
+            path = path.resolve(strict=True)
             if any(path == old or path in old.parents or old in path.parents for old in paths):
                 raise RuntimeError("runner slot paths must be separate")
             paths.append(path)
