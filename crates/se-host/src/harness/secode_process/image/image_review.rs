@@ -31,10 +31,26 @@ impl Package {
             "secode-server"
         });
         let package = Self { root, cli, server };
+        // Small synthetic native images: the digest and stamp machinery
+        // never executes the bytes, and the bounded CI /tmp cannot hold
+        // several copies of the test binary at once.
         for path in [&package.cli, &package.server] {
-            fs::copy(std::env::current_exe()?, path)?;
+            fs::write(path, Self::image_bytes())?;
         }
         Ok(package)
+    }
+
+    fn image_bytes() -> Vec<u8> {
+        let magic: &[u8] = if cfg!(windows) {
+            b"MZ"
+        } else if cfg!(target_os = "macos") {
+            b"\xfe\xed\xfa\xce"
+        } else {
+            b"\x7fELF"
+        };
+        let mut bytes = vec![0u8; 4096];
+        bytes[..magic.len()].copy_from_slice(magic);
+        bytes
     }
 
     fn declare_bundle(&self) -> Check {
