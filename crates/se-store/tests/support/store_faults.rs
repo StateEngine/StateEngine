@@ -58,7 +58,7 @@ fn wait_path(path: &std::path::Path) -> Check {
 fn outcome(value: StoreResult<CommitReceipt>) -> Value {
     match value {
         Ok(receipt) => {
-            json!({"code":"Committed","event":receipt.primary_event.as_str(),"state":format!("{:?}",receipt.state),"maintenance_pending":receipt.maintenance_pending,"checkpoint_ran":receipt.write_timings.as_ref().map(|timing|timing.checkpoint.is_some()),"timing_key":receipt.write_timings.as_ref().and_then(|timing|timing.request_key.as_ref()).map(ToString::to_string)})
+            json!({"code":"Committed","event":receipt.primary_event.as_str(),"event_hex":receipt.primary_event.as_str().strip_prefix("ev_").map(|value|value.replace('-',"")),"state":format!("{:?}",receipt.state),"maintenance_pending":receipt.maintenance_pending,"checkpoint_ran":receipt.write_timings.as_ref().map(|timing|timing.checkpoint.is_some()),"timing_key":receipt.write_timings.as_ref().and_then(|timing|timing.request_key.as_ref()).map(ToString::to_string)})
         }
         Err(error) => {
             json!({"code":format!("{:?}",error.code),"cause":error.cause,"detail":format!("{:?}",error.detail)})
@@ -157,6 +157,13 @@ fn fault_child_fixture() -> Check {
         .filter_map(|result| result.get("timing_key").and_then(Value::as_str))
         .map(str::to_owned)
         .collect();
+    let returned = results.clone();
+    if mode == "checkpoint" {
+        // The receipt precedes idle maintenance. Keep its original fields and
+        // let the external syscall tracer observe the later checkpoint fault.
+        std::fs::write(root.join("returned.json"), serde_json::to_vec(&returned)?)?;
+        std::thread::sleep(Duration::from_millis(600));
+    }
     let reopen_deadline = Instant::now() + Duration::from_secs(3);
     let mut reopen_busy = 0usize;
     let next = loop {
@@ -209,7 +216,12 @@ fn fault_child_fixture() -> Check {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     let integrity: String = database.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-    let report = json!({"mode":mode,"database":f.options.state_directory.join("state.db"),"results":results,"timing_keys":timing_keys,"reopen_busy":reopen_busy,"next":next,"drain":drain,"close":close,"integrity":integrity});
+    let retained_primary: i64 = database.query_row(
+        "SELECT count(*) FROM events WHERE lower(hex(event_id))=?",
+        [results[0].get("event_hex").and_then(Value::as_str)],
+        |r| r.get(0),
+    )?;
+    let report = json!({"mode":mode,"database":f.options.state_directory.join("state.db"),"results":results,"returned":returned,"retained_primary":retained_primary,"timing_keys":timing_keys,"reopen_busy":reopen_busy,"next":next,"drain":drain,"close":close,"integrity":integrity});
     std::fs::write(
         root.join("outcome.json"),
         serde_json::to_vec_pretty(&report)?,
