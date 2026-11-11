@@ -290,8 +290,11 @@ fn find_command(command: &str, provider: Option<se_types::Provider>) -> Result<O
         None => Ok(None),
     }
 }
-// Match native Windows executable lookup without invoking a command shell or
-// treating an npm batch shim as an executable process image.
+// Resolve packaged providers before their probe and native ownership setup.
+#[cfg(unix)]
+#[path = "unix_executable.rs"]
+mod unix_executable;
+// Windows script shims are never treated as executable process images.
 #[cfg(windows)]
 #[path = "windows_executable.rs"]
 mod windows_executable;
@@ -306,9 +309,16 @@ fn native_executable(
     }
     #[cfg(not(windows))]
     {
-        let _ = provider;
         match std::fs::metadata(path) {
-            Ok(metadata) if metadata.is_file() => Ok(Some(path.to_path_buf())),
+            Ok(metadata) if metadata.is_file() => {
+                #[cfg(unix)]
+                if provider == Some(se_types::Provider::Codex)
+                    && let Some(image) = unix_executable::packaged_codex(path)?
+                {
+                    return Ok(Some(image));
+                }
+                Ok(Some(path.to_path_buf()))
+            }
             Ok(_) => Ok(None),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
