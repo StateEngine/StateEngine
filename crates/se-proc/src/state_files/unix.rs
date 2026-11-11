@@ -444,8 +444,9 @@ impl Directory {
             }
         };
         // SAFETY: geteuid reads the native current account.
+        let current_user = unsafe { libc::geteuid() };
         if !observed.is_file()
-            || observed.uid() != unsafe { libc::geteuid() }
+            || observed.uid() != current_user
             || observed.mode() & 0o077 != 0
             || observed.nlink() != 1
         {
@@ -479,8 +480,8 @@ impl Directory {
             || named.st_gid != observed.gid()
             || named.st_mode as u32 != observed.mode()
             || named.st_nlink as u64 != observed.nlink()
-            || named.st_birthtimespec.tv_sec != observed.st_birthtime()
-            || named.st_birthtimespec.tv_nsec != observed.st_birthtime_nsec()
+            || named.st_birthtime != observed.st_birthtime()
+            || named.st_birthtime_nsec != observed.st_birthtime_nsec()
         {
             return Err(failure(
                 StateFileErrorCode::SourceChanged,
