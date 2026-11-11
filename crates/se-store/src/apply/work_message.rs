@@ -73,7 +73,7 @@ pub(super) fn send(
         c,
         seq,
         "body",
-        &codec::text(body, se_types::MESSAGE_BODY_MAX_BYTES)?,
+        &codec::text(body.as_materialized()?, se_types::MESSAGE_BODY_MAX_BYTES)?,
     )?;
     for agent in &work.addressees {
         let recipient = key(c, "agent", agent.as_str(), &scope, false)?;

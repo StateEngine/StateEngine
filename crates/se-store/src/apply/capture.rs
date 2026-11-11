@@ -322,7 +322,7 @@ pub(super) fn apply(
                     "turn source incarnation/cursor is absent or ambiguous",
                 ));
             }
-            let text = codec::text(text, 1024 * 1024)?;
+            let text = codec::text(text.as_materialized()?, 1024 * 1024)?;
             let payload = payload(c, seq, "body", &text)?;
             let path = symbol(c, codec::encode(&evidence.path)?.as_bytes())?;
             c.execute("INSERT INTO turn_data(event_seq,turn_id,project_id,agent_id,session_id,provider,vendor_ref,role,text_payload,source_path,source_offset,source_length,source_sha256)
