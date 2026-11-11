@@ -122,6 +122,7 @@ pub fn from_matches_with_key(
                 .map_err(|_| SeError::invalid("limit", "1..500"))?,
             cursor: text(m, "cursor").map(Cursor::new).transpose()?,
         }),
+        "diagnostic.bundle" => AnyOp::DiagnosticBundle(DiagnosticBundle {}),
         "doctor.inspect" => AnyOp::DoctorInspect(DoctorInspect {}),
         "doctor.repair" => AnyOp::DoctorRepair(DoctorRepair {
             check_id: required(m, "fix")?,

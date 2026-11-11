@@ -207,6 +207,10 @@ installation and names supported remedies. Follow its exact check and plan;
 se doctor --fix CHECK-ID requires owner human presence and is not a general
 repair shell. Diagnosis does not prove an unavailable source was empty or fixed.
 
+If stuck, ask the user to run se diagnostic-bundle and share the redacted file.
+This owner-only command includes home-wide status, diagnosis and recent startup
+logs; it is not an MCP tool. Missing or unreadable sections remain explicit.
+
 Read code, detail and remedy on refusals. Exit codes are 0 complete, 1 failed or
 refused, 2 incomplete, 3 unreadable, 4 unknown target and 64 usage. An owner's
 resume preview can exit 0 after dropping recent turns to its byte budget; its

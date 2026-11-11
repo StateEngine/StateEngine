@@ -549,6 +549,12 @@ impl Kernel {
             AnyOp::MessageInbox(input) => {
                 OpStep::Complete(crate::ops::inbox::read(input, cx)?.into())
             }
+            AnyOp::DiagnosticBundle(_) => {
+                return Err(SeError::invalid(
+                    "diagnostic bundle adapter",
+                    "the installed owner CLI; home-wide observations are not a project-session tool",
+                ));
+            }
             AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_) => {
                 return Err(SeError::invalid(
                     "doctor adapter",

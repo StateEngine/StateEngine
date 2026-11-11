@@ -68,8 +68,11 @@ impl Bootstrap {
             json,
             matches!(
                 operation,
-                se_core::ops::AnyOp::DoctorInspect(_) | se_core::ops::AnyOp::DoctorRepair(_)
+                se_core::ops::AnyOp::DoctorInspect(_)
+                    | se_core::ops::AnyOp::DoctorRepair(_)
+                    | se_core::ops::AnyOp::DiagnosticBundle(_)
             ),
+            matches!(operation, se_core::ops::AnyOp::DiagnosticBundle(_)),
         )
     }
     #[cfg(feature = "remote")]
@@ -85,7 +88,7 @@ impl Bootstrap {
                 },
             )));
         }
-        Self::resolve_mode(home, None, no_color, json, false)
+        Self::resolve_mode(home, None, no_color, json, false, false)
     }
     fn resolve_mode(
         home: Option<PathBuf>,
@@ -93,9 +96,14 @@ impl Bootstrap {
         no_color: bool,
         json: bool,
         recovery: bool,
+        diagnostic_export: bool,
     ) -> Result<Self> {
         let home = state_home(home)?;
-        check_home_directory(&home)?;
+        // Export must describe an unreadable home, not require its repair.
+        // The normal status/doctor routes retain their native checks below.
+        if !diagnostic_export {
+            check_home_directory(&home)?;
+        }
         let config = if recovery {
             // Doctor uses explicit named repairs, not runtime configuration.
             // In particular, root recovery must not read config through the
@@ -110,6 +118,7 @@ impl Bootstrap {
         };
         let session = session_input(&home)?;
         let project = match project {
+            _ if diagnostic_export => None,
             Some(project) => Some(project),
             None if session.is_none() => text_variable("SE_PROJECT")?,
             None => None,
@@ -129,7 +138,11 @@ impl Bootstrap {
             project,
             selections: se_core::ops::CliSelections::default(),
             session,
-            log: text_variable("SE_LOG")?,
+            log: if diagnostic_export {
+                None
+            } else {
+                text_variable("SE_LOG")?
+            },
             no_color: no_color
                 || std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
             json,

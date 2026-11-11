@@ -98,6 +98,24 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::ProjectMove, AnyOutput::ProjectMove(value)) => {
                 write::move_output(&value.value, out)?
             }
+            (HumanKind::Bundle, AnyOutput::DiagnosticBundle(value)) => {
+                writeln!(out, "Diagnostic file: {}", value.value.path)?;
+                writeln!(
+                    out,
+                    "{} bytes; SHA-256 {}",
+                    value.value.bytes, value.value.sha256
+                )?;
+                if !value.value.complete {
+                    writeln!(
+                        out,
+                        "Collection incomplete; the file names unreadable or omitted sections."
+                    )?;
+                }
+                writeln!(
+                    out,
+                    "Review the redacted file before sharing it. Delete it when no longer needed."
+                )?;
+            }
             (HumanKind::Diagnosis, AnyOutput::DoctorInspect(value)) => {
                 doctor::diagnosis(&value.value, out)?
             }
