@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(super) fn packaged_codex(launcher: &Path) -> io::Result<Option<PathBuf>> {
+pub(super) fn packaged_codex(launcher: &Path) -> io::Result<Option<(PathBuf, PathBuf)>> {
     let entry = fs::canonicalize(launcher)?;
     if entry.file_name().is_none_or(|name| name != "codex.js") {
         return Ok(None);
@@ -62,7 +62,7 @@ pub(super) fn packaged_codex(launcher: &Path) -> io::Result<Option<PathBuf>> {
     ] {
         let candidate = vendor.join(target).join("bin/codex");
         if native_image(&candidate)? {
-            return fs::canonicalize(candidate).map(Some);
+            return fs::canonicalize(candidate).map(|image| Some((image, package.to_path_buf())));
         }
     }
     Ok(None)
