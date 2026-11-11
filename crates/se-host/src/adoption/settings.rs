@@ -2,6 +2,7 @@
 use super::*;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+mod text;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,10 +97,9 @@ fn write_document(
     pin: Option<se_proc::OwnedFile>,
     before: &[u8],
     document: &Value,
+    edits: &[text::Edit],
 ) -> Result<()> {
-    let mut bytes =
-        serde_json::to_vec_pretty(document).map_err(|_| invalid("provider settings JSON"))?;
-    bytes.push(b'\n');
+    let bytes = text::apply(before, document, edits)?;
     if bytes.len() > LIMIT {
         return Err(invalid("provider settings within one MiB"));
     }
@@ -137,6 +137,7 @@ pub fn merge(path: &Path, entries: &[(String, Value)]) -> Result<bool> {
             invalid("an object-valued hooks setting; existing settings were preserved")
         })?;
     let mut changed = false;
+    let mut edits = Vec::new();
     for (event, entry) in entries {
         let list = hooks
             .entry(event)
@@ -147,11 +148,12 @@ pub fn merge(path: &Path, entries: &[(String, Value)]) -> Result<bool> {
             })?;
         if !list.contains(entry) {
             list.push(entry.clone());
+            edits.push(text::Edit::Append(event.clone(), entry.clone()));
             changed = true;
         }
     }
     if changed {
-        write_document(path, pin, &before, &document)?;
+        write_document(path, pin, &before, &document, &edits)?;
     }
     Ok(changed)
 }
@@ -162,6 +164,7 @@ pub fn uninstall(home: &Path) -> Result<Vec<PathBuf>> {
     let path = registration.settings.to_local()?;
     let (pin, before, mut document) = read_document(&path)?;
     let mut changed = false;
+    let mut edits = Vec::new();
     if let Some(hooks) = document.get_mut("hooks").and_then(Value::as_object_mut) {
         for (event, entry) in &registration.hooks {
             if let Some(list) = hooks.get_mut(event).and_then(Value::as_array_mut) {
@@ -169,6 +172,7 @@ pub fn uninstall(home: &Path) -> Result<Vec<PathBuf>> {
                 // duplicates remain user-owned rather than being wiped out.
                 if let Some(index) = list.iter().position(|value| value == entry) {
                     list.remove(index);
+                    edits.push(text::Edit::Remove(event.clone(), index));
                     changed = true;
                 }
             }
@@ -182,10 +186,12 @@ pub fn uninstall(home: &Path) -> Result<Vec<PathBuf>> {
                 .is_some_and(Vec::is_empty)
             {
                 hooks.remove(event);
+                edits.push(text::Edit::RemoveEvent(event.clone()));
             }
         }
         if registration.layout.created_hooks && hooks.is_empty() {
             document.as_object_mut().map(|o| o.remove("hooks"));
+            edits.push(text::Edit::RemoveHooks);
         }
     }
     if changed {
@@ -196,7 +202,7 @@ pub fn uninstall(home: &Path) -> Result<Vec<PathBuf>> {
                 pin.remove(digest(&before)).map_err(native)?;
             }
         } else {
-            write_document(&path, pin, &before, &document)?;
+            write_document(&path, pin, &before, &document, &edits)?;
         }
     }
     // Revocation is independent of edited hooks: an edited command can remain
