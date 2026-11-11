@@ -1,6 +1,7 @@
 //! Project-scoped latest hook outcomes, including refusals before agent binding.
 //! These are observations, never evidence that a caller belongs to an agent.
 use super::*;
+use crate::state_files::{Acquisition, AcquisitionRetry};
 use se_core::ops::{AgentCommand, PendingFact, StatusOutput};
 const MAX_BYTES: usize = 64 * 1024;
 
@@ -30,12 +31,15 @@ pub fn record(
     error: Option<&SeError>,
 ) -> Result<()> {
     let files = se_proc::NativeStateFiles::open(home).map_err(native)?;
+    let mut retry =
+        AcquisitionRetry::new(std::time::Instant::now() + std::time::Duration::from_secs(1));
     let directory = home.join("adoption-status");
     let target = path(home, project, action);
     if error.is_none() && files.readback(&target).map_err(native)?.is_none() {
         return Ok(());
     }
     files.prepare_directory(&directory).map_err(native)?;
+    let previous = acquire(&target, &mut retry)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| invalid(&e.to_string()))?;
@@ -54,7 +58,7 @@ pub fn record(
     if bytes.len() > MAX_BYTES {
         return Err(invalid("hook observation within 64 KiB"));
     }
-    if let Some(mut previous) = se_proc::OwnedFile::open(&target).map_err(native)? {
+    if let Some(mut previous) = previous {
         let hash = previous.sha256().map_err(native)?;
         return previous.replace(hash, &bytes).map_err(native);
     }
@@ -69,18 +73,32 @@ pub fn record(
     match files.publish_no_replace(&staged.path, &target) {
         Ok(()) => Ok(()),
         Err(error) if error.code == se_proc::StateFileErrorCode::AlreadyExists => {
-            if let Some(file) = se_proc::OwnedFile::open(&staged.path).map_err(native)? {
+            if let Some(file) = acquire(&staged.path, &mut retry)? {
                 file.remove(digest(&bytes)).map_err(native)?;
             }
             // A concurrent completion was retained. Retry with a fresh pin;
             // the final successful replacement is the last recorded attempt.
-            let mut previous = se_proc::OwnedFile::open(&target)
-                .map_err(native)?
+            let mut previous = acquire(&target, &mut retry)?
                 .ok_or_else(|| invalid("the concurrent hook observation"))?;
             let hash = previous.sha256().map_err(native)?;
             previous.replace(hash, &bytes).map_err(native)
         }
         Err(error) => Err(native(error)),
+    }
+}
+
+// Native file pins serialize edits in their parent directory. Overlapping
+// lifecycle events must wait for that acquisition, not lose a refusal merely
+// because another event is clearing its own diagnostic. Mutations never retry.
+fn acquire(path: &Path, retry: &mut AcquisitionRetry) -> Result<Option<se_proc::OwnedFile>> {
+    loop {
+        match retry
+            .acquire(|| se_proc::OwnedFile::open(path))
+            .map_err(|error| error.into_public(native))?
+        {
+            Acquisition::Ready(file) => return Ok(file),
+            Acquisition::Wait(wait) => std::thread::sleep(wait),
+        }
     }
 }
 
