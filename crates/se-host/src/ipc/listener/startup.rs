@@ -33,11 +33,15 @@ impl IpcListener {
             // The same ingress capacity bounds handles before commit. Refuse
             // the oldest excess handshake without reading any operation bytes,
             // then keep driving the spare for the native startup parent.
-            if self.startup_clients.len() > self.preauth.available_permits() {
-                let oldest = self
-                    .startup_clients
-                    .pop_front()
-                    .ok_or_else(|| capacity_error("IPC startup handshake queue is inconsistent"))?;
+            let oldest = if self.startup_clients.len() >= self.preauth.available_permits() {
+                self.startup_clients.pop_front()
+            } else {
+                None
+            };
+            // Retain the new channel before any await. The ownership commit
+            // can finish during a refusal write and cancel this future.
+            self.startup_clients.push_back(stream);
+            if let Some(oldest) = oldest {
                 let error = capacity_error("IPC startup handshake capacity is occupied");
                 let envelope =
                     se_types::ErrorEnvelope::new(error.body, &se_types::RenderCx::default())?;
@@ -50,7 +54,6 @@ impl IpcListener {
                 )
                 .await;
             }
-            self.startup_clients.push_back(stream);
         }
     }
 }
