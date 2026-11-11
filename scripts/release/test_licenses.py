@@ -16,7 +16,7 @@ def git(*args):
 
 class PinnedLicenseBytes(unittest.TestCase):
     def test_index_bytes_survive_autocrlf_checkout(self):
-        paths = git("ls-files", "-z", "--", "scripts/release/licenses").split(b"\0")
+        paths = git("ls-files", "-z", "--", "LICENSE", "scripts/release/licenses").split(b"\0")
         paths = [path.decode("utf-8") for path in paths if path]
         self.assertGreater(len(paths), 0, "pinned release licenses are absent")
         with tempfile.TemporaryDirectory() as directory:
