@@ -49,6 +49,10 @@ pub(super) async fn while_serving(
                     .run(|| {
                         // Best effort: false is a normal no-pages-released result.
                         se_proc::reclaim_unused_allocator_pages();
+                        // Demand-paged code pages stay resident until the
+                        // kernel's own reclaim; the idle budget cannot wait
+                        // for that on a loaded box.
+                        se_proc::release_read_only_mapped_pages();
                     })
                     .await;
             }
