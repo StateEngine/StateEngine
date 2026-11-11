@@ -32,4 +32,5 @@ jobs:
       - name: Verify authenticated signatures against the trusted agreements
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          CLA_INTERNAL_APP_BOT_ID: ${{ vars.CLA_INTERNAL_APP_BOT_ID }}
         run: python -I scripts/cla/check.py
