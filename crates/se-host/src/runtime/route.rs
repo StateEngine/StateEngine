@@ -200,10 +200,10 @@ impl HostedRouter {
                 let (call, channels) = match call {
                     #[cfg(feature = "remote")]
                     Ok(RouteChoice::Owner(call)) => {
-                        owner = Some(call);
+                        owner = Some(*call);
                         (None, None)
                     }
-                    Ok(RouteChoice::Channels(input)) => (None, Some(input)),
+                    Ok(RouteChoice::Channels(input)) => (None, Some(*input)),
                     Ok(RouteChoice::Core(call)) => (Some(Ok(*call)), None),
                     Err(error) => (Some(Err(error)), None),
                 };
@@ -381,9 +381,9 @@ impl AdmittedExchange {
 }
 enum RouteChoice {
     #[cfg(feature = "remote")]
-    Owner(crate::remote::OwnerCall),
+    Owner(Box<crate::remote::OwnerCall>),
     Core(Box<RoutedCall>),
-    Channels(crate::channels::ChannelRequest),
+    Channels(Box<crate::channels::ChannelRequest>),
 }
 fn route(
     context: &AdmissionContext,
@@ -408,10 +408,10 @@ fn route(
                 wire.presence.as_ref(),
                 input.requires_terminal(),
             )?;
-            return Ok(RouteChoice::Owner(crate::remote::OwnerCall {
+            return Ok(RouteChoice::Owner(Box::new(crate::remote::OwnerCall {
                 owner,
                 input: *input,
-            }));
+            })));
         }
         IpcRequest::Channels(input) => {
             context.channel_owner(
@@ -427,7 +427,7 @@ fn route(
                 ));
             }
             input.validate().map_err(|error| error.refusal())?;
-            return Ok(RouteChoice::Channels(input));
+            return Ok(RouteChoice::Channels(Box::new(input)));
         }
         IpcRequest::Operation(raw) => {
             if raw.name == "hook.claude" {
