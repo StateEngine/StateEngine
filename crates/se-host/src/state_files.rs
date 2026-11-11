@@ -35,6 +35,7 @@ impl AcquisitionError {
             retry: Retry::AfterReread,
         })
     }
+    #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
     pub(crate) fn into_public(
         self,
         fallback: impl FnOnce(StateFileError) -> se_types::SeError,

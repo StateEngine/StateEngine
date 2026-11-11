@@ -6,6 +6,7 @@ use se_types::{
     Read, Result, SeError,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "listener")]
 use sha2::{Digest, Sha256};
 use std::{io::Read as _, path::Path};
 
@@ -80,6 +81,7 @@ fn decode(bytes: &[u8]) -> Result<RuntimeClosure> {
 pub fn read(files: &dyn StateFiles, root: &Path) -> Result<Option<RuntimeClosure>> {
     bytes(files, root)?.map(|v| decode(&v)).transpose()
 }
+#[cfg(feature = "listener")]
 pub(crate) fn publish(files: &dyn StateFiles, root: &Path, record: &RuntimeClosure) -> Result<()> {
     let bytes = serde_json::to_vec(record)
         .map_err(|e| scope::unreadable("runtime close receipt codec", &e.to_string()))?;
@@ -131,6 +133,7 @@ pub(crate) fn publish(files: &dyn StateFiles, root: &Path, record: &RuntimeClosu
     }
     Ok(())
 }
+#[cfg(feature = "listener")]
 fn preserve_corrupt(files: &dyn StateFiles, root: &Path, prior: &[u8]) -> Result<()> {
     let digest = Sha256::digest(prior);
     let name: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();

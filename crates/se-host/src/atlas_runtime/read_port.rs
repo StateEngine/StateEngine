@@ -6,8 +6,10 @@ use crate::atlas_source::NativeAtlasSource;
 use se_atlas::{
     cache::connection::CacheConnection, lifecycle::AtlasController, source::RegisteredSource,
 };
+#[cfg(feature = "listener")]
+use se_types::SeError;
 use se_types::{
-    ProjectId, Result, SeError,
+    ProjectId, Result,
     code::{IndexSummary, RootId},
 };
 use std::sync::{Arc, Mutex, OnceLock};
@@ -120,6 +122,7 @@ impl AtlasOwnerPort {
     pub fn summary(&self, project: &ProjectId, root: Option<&RootId>) -> Result<IndexSummary> {
         self.reader.get().ok_or_else(|| se_core::scope::unreadable("Atlas owner read port", "the owner has not installed its controller; no registered root summary is available"))?.summary(project, root)
     }
+    #[cfg(feature = "listener")]
     pub(crate) fn install(&self, reader: Arc<dyn AtlasReadPort>) -> Result<()> {
         self.reader.set(reader).map_err(|_| {
             SeError::invalid(
