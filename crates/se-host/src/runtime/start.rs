@@ -211,9 +211,24 @@ fn prepare(
         files.readback(&lock_path).map_err(|e| store_error(&e))?,
         "runtime lock",
     )?;
-    lock.try_lock().map_err(|error| {
-        se_core::scope::unreadable("exclusive runtime lease", &error.to_string())
-    })?;
+    // A finite direct read can win the gap between the parent's rendezvous
+    // observation and this child acquiring its writer lease. Wait inside the
+    // original preparation deadline; no store work precedes exclusive custody.
+    loop {
+        deadline.remaining()?;
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                std::thread::sleep(deadline.remaining()?.min(Duration::from_millis(10)));
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(se_core::scope::unreadable(
+                    "exclusive runtime lease",
+                    &error.to_string(),
+                ));
+            }
+        }
+    }
     let store_options = se_store::StoreOptions {
         state_directory: options.state_directory.clone(),
         busy_timeout: Duration::from_millis(250),
