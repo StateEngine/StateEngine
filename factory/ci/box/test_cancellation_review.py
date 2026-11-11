@@ -54,8 +54,8 @@ class CancellationReview(unittest.TestCase):
                 if path.startswith('tarball/') else dict(app={'id': 9}, head_sha=BINDING['checkout'],
                     external_id=external_id(BINDING)))
             image = dict(image='sha256:'+'c'*64, policy_digest='d'*64, seccomp_sha256='d'*64)
-            def cohort(*args):
-                value = Cohort(*args)
+            def cohort(*args, **kwargs):
+                value = Cohort(*args, **kwargs)
                 canceled.append(value.canceled)
                 return value
             native_command = [sys.executable, '-c', 'print("owned workload failed");raise SystemExit(7)']

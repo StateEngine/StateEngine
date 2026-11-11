@@ -13,6 +13,14 @@ DEADLINE = 1800
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
+def resource_limits(parallel=False):
+    """Use one resource profile for the real dispatcher and its qualification."""
+    if type(parallel) is not bool:
+        raise ValueError("runner concurrency mode must be explicit")
+    return {"memory": 12 * GIB, "cpus": 4, "workers": 4} if parallel else {
+        "memory": MEMORY, "cpus": CPUS, "workers": 8}
+
+
 class Canceled(Exception):
     pass
 
@@ -67,7 +75,7 @@ class Cohort:
         if type(all_features) is not bool:
             raise ValueError("feature coverage must be an explicit boolean")
         self.all_features = all_features
-        if (memory, cpus, workers) not in ((MEMORY, CPUS, 8), (9 * GIB, 4, 4)):
+        if (memory, cpus, workers) not in ((MEMORY, CPUS, 8), (12 * GIB, 4, 4)):
             raise ValueError("fixed serial or paired runner limits required")
         self.memory, self.cpus, self.workers = memory, cpus, workers
         self.report, self.journal, self.source = report, journal, source
