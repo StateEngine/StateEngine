@@ -1,15 +1,19 @@
 //! Standalone glibc maintenance after a burst, never a periodic idle wakeup:
-//! the allocator trim follows the 1 s quiescence after each completed work
-//! burst, and the read-only code-page release follows a long idle, so a
-//! request that arrives after a short gap does not pay the one-time re-fault
-//! of released pages on its path.
+//! the allocator trim and the read-only code-page release each follow a 1 s
+//! quiescence after the completed work burst, so the idle RSS floor lands a
+//! couple of seconds after startup. A longer release window is not safer:
+//! the measured re-fault cost of a request after a short gap is within noise,
+//! while a long window lets periodic low-cost connection activity on a shared
+//! box keep resetting the window and defer the release past the 60 s idle
+//! measurement.
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use tokio::sync::Notify;
 
-/// Quiescence required before the read-only code pages are released. It must
-/// stay comfortably under the 60 s idle measurement window, and long enough
-/// that ordinary request gaps do not churn released pages.
-const CODE_RELEASE_IDLE: Duration = Duration::from_secs(10);
+/// Quiescence required before the read-only code pages are released, on top
+/// of the 1 s trim window. One second keeps the idle floor deterministic on a
+/// shared box: any connection activity spaced further apart than a second can
+/// only defer the release by seconds, never past the 60 s idle measurement.
+const CODE_RELEASE_IDLE: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Default)]
 pub(super) struct MemoryReclaim(Arc<Notify>);
