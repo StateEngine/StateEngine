@@ -140,17 +140,46 @@ impl Harness for SecodeHarness {
         Box::pin(async move {
             let deadline = crate::client::lease::Deadline::idle()?.stage(cx.timeout)?;
             let command = request.command.clone();
-            let mut images = tokio::task::spawn_blocking(move || Images::open(&command))
-                .await
-                .map_err(|e| unreadable("SE Code image probe", e))??;
-            let capabilities = probe::capabilities(&images.server, &deadline).await?;
-            images.resume_supported = probe::supports_resume(&capabilities);
-            let version = probe::version(&images.cli, &deadline).await?;
+            let previous = self
+                .images
+                .lock()
+                .map_err(|_| unreadable("SE Code image probe", "poisoned image registry"))?
+                .get(&command)
+                .cloned();
+            let images = tokio::task::spawn_blocking(move || {
+                if let Some(previous) = previous {
+                    let reusable = previous
+                        .lock()
+                        .map_err(|_| unreadable("SE Code image probe", "poisoned image custody"))?
+                        .reusable(&command)?;
+                    if reusable {
+                        return Ok(previous);
+                    }
+                }
+                Images::open(&command).map(|images| Arc::new(Mutex::new(images)))
+            })
+            .await
+            .map_err(|e| unreadable("SE Code image probe", e))??;
+            let (server, cli) = {
+                let images = images
+                    .lock()
+                    .map_err(|_| unreadable("SE Code image probe", "poisoned image custody"))?;
+                (images.server.clone(), images.cli.clone())
+            };
+            let capabilities = probe::capabilities(&server, &deadline).await?;
+            let resume_supported = probe::supports_resume(&capabilities);
+            let version = probe::version(&cli, &deadline).await?;
+            let reported_version = version.clone();
             let command = request.command.clone();
             let images = tokio::task::spawn_blocking(move || {
-                let mut images = images;
-                images.version = version.clone();
-                images.validate()?;
+                {
+                    let mut held = images.lock().map_err(|_| {
+                        unreadable("SE Code image readback", "poisoned image custody")
+                    })?;
+                    held.validate()?;
+                    held.version = version;
+                    held.resume_supported = resume_supported;
+                }
                 Ok::<_, se_types::SeError>(images)
             })
             .await
@@ -165,12 +194,11 @@ impl Harness for SecodeHarness {
                     "finite image registry is full",
                 ));
             }
-            let version = images.version.clone();
-            registry.insert(command.clone(), Arc::new(Mutex::new(images)));
+            registry.insert(command.clone(), images);
             Ok(crate::ProviderVersion {
                 kind: self.kind(),
                 executable: NativePath::from_local(command)?,
-                version,
+                version: reported_version,
                 protocol: "resident-jsonl+authenticated-control-v1".into(),
             })
         })

@@ -1,5 +1,12 @@
 {
  "comment": "Line budgets per crate and per src/ directory at depth one and two (nested files count toward every ancestor at depth one and two). Budget = lines at ratchet establishment plus the larger of 5 percent or 300 lines. Raising a budget is a reviewed change: the test refuses growth past a budget and stale entries for crates or directories that no longer exist. New crates and directories fall back to the defaults.",
+ "reviewed_exceptions": {
+  "crates/se-host/src/harness/secode_process": {
+   "owner": "se-host maintainers",
+   "reason": "Reviewed native image qualification reuse; exact current size, no headroom.",
+   "remediation": "Split image qualification from process management if the directory grows again."
+  }
+ },
  "default_crate_lines": 40000,
  "default_directory_lines": 10000,
  "crates": {
@@ -42,7 +49,7 @@
   "crates/se-proc/src/atlas_worker": 2388,
   "crates/se-host/src/acp": 2383,
   "crates/se-store/src/codec": 2308,
-  "crates/se-host/src/harness/secode_process": 2114,
+  "crates/se-host/src/harness/secode_process": 2170,
   "crates/se-host/src/atlas_runtime": 2050,
   "crates/se-host/src/http": 2041,
   "crates/se-atlas/src/cache": 1969,

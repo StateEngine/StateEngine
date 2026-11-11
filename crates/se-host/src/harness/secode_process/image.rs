@@ -88,6 +88,21 @@ impl Images {
         }
         Ok(())
     }
+    pub(super) fn reusable(&mut self, cli: &Path) -> Result<bool> {
+        if self.cli_stamp.is_none()
+            || self.server_stamp.is_none()
+            || se_proc::canonicalize_path(cli).map_err(|e| unreadable("SE Code native image", e))?
+                != self.cli
+            || observe_stamp(&self.cli)? != self.cli_stamp
+            || observe_stamp(&self.server)? != self.server_stamp
+        {
+            return Ok(false);
+        }
+        self.validate()?;
+        // The manifest can change independently of either retained image.
+        super::bundle::verify(self)?;
+        Ok(true)
+    }
     pub(super) fn require_entry(&self, server: bool, value: &serde_json::Value) -> Result<()> {
         let (path, hash, bytes) = if server {
             (&self.server, self.server_digest, self.server_bytes)
