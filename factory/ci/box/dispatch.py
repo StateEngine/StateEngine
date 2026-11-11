@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from app import App
 from custody import Journal, inventory
 from dispatch_binding import Request, bind, jobs, job, live
-from workload import Cohort, Canceled
+from workload import Canceled, Cohort, resource_limits
 from box_result import NAME, external_id, report
 
 STOP = threading.Event()
@@ -201,7 +201,8 @@ def execute(api, request, check_id, config, image, folder, journal):
         output.write(data)
     del data
     canceled, done = threading.Event(), threading.Event()
-    cohort = Cohort(image, journal, source, Path(config["cache"]), folder, canceled)
+    cohort = Cohort(image, journal, source, Path(config["cache"]), folder, canceled,
+                    **resource_limits(config.get("parallel", False)))
     reason, expired = [], []
 
     def watch():

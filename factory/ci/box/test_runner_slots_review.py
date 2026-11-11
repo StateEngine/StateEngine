@@ -174,7 +174,7 @@ class Controls(unittest.TestCase):
 
     def test_paired_caps_are_fixed_and_forwarded_to_container_and_runner(self):
         import threading
-        for limits in [(10 * 1024 ** 3, 4, 4), (9 * 1024 ** 3, 5, 4), (9 * 1024 ** 3, 4, 8)]:
+        for limits in [(10 * 1024 ** 3, 4, 4), (12 * 1024 ** 3, 5, 4), (12 * 1024 ** 3, 4, 8)]:
             with self.assertRaisesRegex(ValueError, 'fixed'):
                 workload.Cohort({}, None, None, None, self.root, threading.Event(), memory=limits[0], cpus=limits[1], workers=limits[2])
         seen = []
@@ -186,7 +186,7 @@ class Controls(unittest.TestCase):
                 self.proof = {'seccomp_profile_sha256': 'approved'}
         source = self.root / 'source'
         source.write_bytes(b'synthetic archive')
-        cohort = workload.Cohort({'image': 'fixed', 'seccomp_sha256': 'approved'}, None, source, None, self.root, threading.Event(), memory=9 * 1024 ** 3, cpus=4, workers=4)
+        cohort = workload.Cohort({'image': 'fixed', 'seccomp_sha256': 'approved'}, None, source, None, self.root, threading.Event(), memory=12 * 1024 ** 3, cpus=4, workers=4)
 
         def execute(box, args, log, **kw):
             if args[-2:] == ['run', 'fmt']:
@@ -195,7 +195,7 @@ class Controls(unittest.TestCase):
             return {'success': True, 'exit_code': 0}
         with patch('workload.Tracked', Box), patch('workload.execute', side_effect=execute):
             self.assertTrue(cohort.stage('fmt'))
-        self.assertEqual(seen[0]['memory'], 9 * 1024 ** 3)
+        self.assertEqual(seen[0]['memory'], 12 * 1024 ** 3)
         self.assertEqual(seen[0]['cpus'], 4)
 if __name__ == '__main__':
     unittest.main(verbosity=2)
