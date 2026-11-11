@@ -393,6 +393,7 @@ fn flush(
         maintenance_pending: host.engine.maintenance.is_some()
             || host.engine.poisoned
             || host.engine.checkpoint_pending(),
+        maintenance_failed: host.engine.maintenance.is_some() || host.engine.poisoned,
         through,
         pending_requests: 0,
         indeterminate: host.engine.indeterminate(),

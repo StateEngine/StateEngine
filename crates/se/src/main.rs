@@ -217,7 +217,7 @@ pub fn run(
         // change its receipt or turn that success into an uncertain outcome.
         let _ = writeln!(
             stderr,
-            "warning: the operation committed successfully, but database maintenance is pending; the next write will retry it"
+            "warning: the operation committed successfully, but database maintenance failed and remains pending"
         )
         .and_then(|()| stderr.flush());
     }

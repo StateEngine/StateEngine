@@ -260,6 +260,7 @@ impl Engine {
         };
         for receipt in results.iter_mut().filter_map(|r| r.as_mut().ok()) {
             receipt.maintenance_pending = self.maintenance.is_some() || self.checkpoint_pending();
+            receipt.maintenance_failed = self.maintenance.is_some();
         }
         Ok((
             results,

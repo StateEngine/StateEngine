@@ -219,8 +219,10 @@ pub struct CommitReceipt {
     /// Current host submission only; never persisted or reconstructed on receipt lookup.
     /// Direct writes and retained receipt reads leave this absent.
     pub write_timings: Option<crate::WriteTimings>,
-    /// A known commit succeeded but its checkpoint/maintenance still needs retry.
+    /// A known commit succeeded but maintenance is scheduled or needs retry.
     pub maintenance_pending: bool,
+    /// Maintenance actually failed; scheduled healthy work is not a warning.
+    pub maintenance_failed: bool,
     pub request_key: Option<IdempotencyKey>,
     pub state: CommitState,
     pub primary_event: EventId,
@@ -275,6 +277,7 @@ pub enum CommitState {
 #[derive(Clone, Debug)]
 pub struct FlushReport {
     pub maintenance_pending: bool,
+    pub maintenance_failed: bool,
     pub through: Option<StorePosition>,
     pub pending_requests: u32,
     pub indeterminate: Vec<PendingOperation>,
