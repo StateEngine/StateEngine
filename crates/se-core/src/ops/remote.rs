@@ -82,7 +82,8 @@ pub use se_types::remote::{
 };
 
 /// Internal source IPC only: obtain the nonsecret binding facts after native
-/// admission, before the CLI emits its pending row. No target request or mutation.
+/// admission, before the CLI submits its send. No target request or mutation;
+/// the earlier local pending echo carries only the submitted selectors.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemotePrepareSendCall {

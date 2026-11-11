@@ -148,6 +148,29 @@ pub(crate) fn run(
     };
     match operation {
         AnyOp::RemoteSend(mut input) => {
+            // Like native mail, echo the submitted request before host IPC.
+            // These are selectors, not admitted host/grant facts or a receipt.
+            let requested = serde_json::json!({
+                "host_selector": input.host,
+                "target": input.request.target,
+                "session": input.request.session,
+                "idempotency_key": input.request.idempotency_key,
+                "body_bytes": input.request.body.len(),
+            });
+            pending(
+                "stateengine.remote-send-status/v1",
+                &requested,
+                format_args!(
+                    "remote send {} to {}/{} session {} via {}",
+                    input.request.idempotency_key,
+                    input.request.target.project,
+                    input.request.target.agent,
+                    input.request.session,
+                    input.host,
+                ),
+                json,
+                stderr,
+            )?;
             let prepared = dispatch(
                 cx,
                 AnyOp::RemotePrepareSend(RemotePrepareSendCall {
@@ -202,16 +225,6 @@ pub(crate) fn run(
                 host: p.host,
                 grant: p.grant.clone(),
             }));
-            pending(
-                "stateengine.remote-send-status/v1",
-                &p,
-                format_args!(
-                    "remote send {} to {}/{} session {} (host {:?}, grant {})",
-                    p.idempotency_key, p.target.project, p.target.agent, p.session, p.host, p.grant
-                ),
-                json,
-                stderr,
-            )?;
             match dispatch(cx, AnyOp::RemoteSend(input), &mut diagnostic) {
                 Ok(AnyOutput::RemoteSend(v)) => {
                     if let se_types::Receipt::Refused { error: body } = &v.value.receipt {
