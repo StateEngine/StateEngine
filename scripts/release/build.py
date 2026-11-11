@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """Build the standalone CLI from lockfile-pinned inputs, fetching them by default.
 
-Pass --offline to build only from the local Cargo cache instead.
+Pass --offline to build only from the local Cargo cache instead. Pass --seed to
+restore dependency artifacts from a seed archive built from the same pinned inputs,
+and --seed-out to publish such a dependency-only seed after a successful build.
+Workspace crates are always compiled fresh; only non-member dependency artifacts
+are ever restored or republished.
 """
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -13,10 +18,17 @@ import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# Source and scratch prefixes are normalized before compilation, so a dependency
+# seed built on one machine fingerprints identically on another with the same key.
+REMAPPED = {"source": "/stateengine/source", "cargo": "/rust/cargo",
+            "toolchain": "/rust/toolchain", "target": "/stateengine/target"}
+SEED_SCHEMA = "se.release-build-seed/v1"
 
 
 def digest(path):
@@ -163,6 +175,128 @@ def feature_arguments(inputs):
     return arguments
 
 
+class SeedKeyMismatch(ValueError):
+    """A named seed was built from different pinned inputs; the build stays valid without it."""
+
+
+def seed_manifest_from_archive(path):
+    with tarfile.open(path, "r:gz") as archive:
+        try:
+            member = archive.getmember("seed.json")
+        except KeyError:
+            raise ValueError("seed archive has no seed.json manifest") from None
+        if not member.isreg():
+            raise ValueError("seed archive manifest is not a regular file")
+        stream = archive.extractfile(member)
+        if stream is None:
+            raise ValueError("seed archive manifest is unreadable")
+        return json.loads(stream.read())
+
+
+def restore_seed(path, target, key):
+    """Verify the seed key, then restore dependency artifacts into the fresh target directory."""
+    # File mtimes must survive the round trip: cargo calls a restored unit fresh
+    # when the fingerprint is newer than its sources, and an extraction-time
+    # mtime would beat even a changed source.
+    manifest = seed_manifest_from_archive(path)
+    if manifest.get("schema") != SEED_SCHEMA:
+        raise ValueError(f"seed archive schema differs: {str(manifest.get('schema'))[:40]}")
+    stored = manifest.get("key")
+    if stored != key:
+        reasons = ", ".join(name for name in sorted(set(stored or {}) | set(key))
+                            if (stored or {}).get(name) != key.get(name))
+        raise SeedKeyMismatch(f"seed key differs: {reasons}")
+    with tarfile.open(path, "r:gz") as archive:
+        for member in archive.getmembers():
+            name = member.name
+            if name in ("target", "seed.json"):
+                continue
+            if not name.startswith("target/"):
+                raise ValueError(f"seed archive entry escapes the target tree: {name}")
+            relative = name[len("target/"):]
+            if relative == "" or "\x00" in relative or ".." in relative.split("/"):
+                raise ValueError(f"seed archive entry escapes the target tree: {name}")
+            destination = Path(target) / relative
+            if member.isdir():
+                destination.mkdir(parents=True, exist_ok=True)
+            elif member.isreg():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                stream = archive.extractfile(member)
+                with stream, open(destination, "xb") as output:
+                    shutil.copyfileobj(stream, output)
+                os.utime(destination, (member.mtime, member.mtime))
+            else:
+                raise ValueError(f"seed archive entry is not a plain file or directory: {name}")
+    return manifest
+
+
+def prune_workspace(target, toolchain, overrides, target_triple, members, environment):
+    """Remove exactly the workspace members' artifacts, leaving dependency artifacts seedable."""
+    tag = Path(target) / "CACHEDIR.TAG"
+    if not tag.is_file():
+        # A pre-created scratch directory has no cargo cache tag, and cargo clean refuses it.
+        tag.write_text("Signature: 8a477f597d28d172789f06886806bc55\n"
+                       "# This file is a cache directory tag created by cargo.\n"
+                       "# For information about cache directory tags see https://bford.info/cachedir/\n")
+    arguments = ["cargo", "+" + toolchain, *overrides, "clean", "--locked", "--profile",
+                 "distribution", "--target", target_triple, "--target-dir", target]
+    for member in members:
+        arguments += ["-p", member]
+    result = subprocess.run(arguments, cwd=ROOT, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
+    if result.returncode:
+        raise RuntimeError(f"cargo clean exited {result.returncode}: {result.stderr.strip()[-400:]}")
+
+
+def package_seed(target, path, key, created_from, members):
+    """Package the remaining dependency artifacts as the next seed archive."""
+    target = Path(target)
+    manifest = {"schema": SEED_SCHEMA, "key": key, "created_from": created_from,
+                "workspace_packages_removed": list(members)}
+    with tarfile.open(path, "w:gz", compresslevel=1) as archive:
+        for member in sorted(target.rglob("*")):
+            if member.is_file():
+                archive.add(member, arcname="target/" + member.relative_to(target).as_posix(),
+                            recursive=False)
+        data = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+        info = tarfile.TarInfo("seed.json")
+        info.size = len(data)
+        info.mtime = 0
+        archive.addfile(info, io.BytesIO(data))
+    return manifest
+
+
+def build_units(artifacts, stderr_text, metadata):
+    """The work cargo actually performed.
+
+    Cargo reports a compiler-artifact event for every planned unit, fresh or
+    compiled, and prints a progress line only for the packages it compiled.
+    The plan comes from the events; the compiled set from the progress lines;
+    the fresh set is the difference. Package names come from cargo metadata,
+    because a path dependency's package id may omit its name.
+    """
+    packages = {package["id"]: package for package in metadata["packages"]}
+    by_name = {}
+    for artifact in artifacts:
+        package_id = artifact["package_id"]
+        if package_id in by_name:
+            continue
+        package = packages.get(package_id)
+        if package is None:
+            raise ValueError(f"cargo reported an artifact for unknown package {package_id}")
+        by_name[package["name"]] = package_id in metadata["workspace_members"]
+    compiled = {}
+    for line in stderr_text.splitlines():
+        match = re.match(r"Compiling (\S+) v[\d.]+", line.strip())
+        if match and match.group(1) in by_name:
+            compiled[match.group(1)] = by_name[match.group(1)]
+    compiled_members = sum(1 for workspace in compiled.values() if workspace)
+    member_total = sum(1 for workspace in by_name.values() if workspace)
+    return {"compiled": {"total": len(compiled), "workspace_members": compiled_members},
+            "fresh": {"total": len(by_name) - len(compiled),
+                      "workspace_members": member_total - compiled_members}}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True)
@@ -170,8 +304,21 @@ def main():
                         help="new build-output directory outside the source tree")
     parser.add_argument("--offline", action="store_true",
                         help="build only from the local Cargo cache instead of fetching the lockfile-pinned inputs")
+    parser.add_argument("--seed", type=Path,
+                        help="restore dependency artifacts from a seed archive built from the same pinned inputs")
+    parser.add_argument("--seed-out", dest="seed_out", type=Path,
+                        help="publish a dependency-only seed archive after a successful build")
+    parser.add_argument("--target-dir", type=Path,
+        help="dedicated scratch target directory, new or empty; keep its path constant across "
+             "seeded runs so restored dependency fingerprints still match")
     args = parser.parse_args()
     offline = ["--offline"] if args.offline else []
+    if args.seed is not None and not args.seed.is_file():
+        parser.error(f"--seed archive is absent: {args.seed}")
+    if args.seed_out is not None and args.seed_out.exists():
+        parser.error(f"--seed-out archive already exists: {args.seed_out}")
+    if args.target_dir is not None and args.target_dir.exists() and any(args.target_dir.iterdir()):
+        parser.error("--target-dir must be a new or empty directory")
     inputs = json.loads((ROOT / "scripts/release/inputs.json").read_text())
     if args.target not in inputs["targets"]:
         parser.error("target is not in scripts/release/inputs.json")
@@ -208,21 +355,40 @@ def main():
     sysroot = Path(run("rustc", "+" + toolchain, "--print", "sysroot"))
     config = tomllib.loads((ROOT / ".cargo/config.toml").read_text())
     flags = config.get("target", {}).get(args.target, {}).get("rustflags", [])
+    seed_key = {"schema": "se.release-build-seed-key/v1", "toolchain": toolchain,
+        "compiler": compiler, "target": args.target, "profile": "distribution",
+        "rustflags": flags, "cargo_config_overrides": overrides,
+        "cargo_lock_sha256": digest(ROOT / "Cargo.lock"),
+        "inputs_sha256": digest(ROOT / "scripts/release/inputs.json"),
+        "path_remap": REMAPPED}
     argv = ["cargo", "+" + toolchain, *overrides, "build", *offline, "--locked", "--profile", "distribution",
             "--package", inputs["package"], *features_selected, "--target", args.target,
             "--jobs", "1", "--message-format=json-render-diagnostics"]
     name = "se.exe" if "windows" in args.target else "se"
     # Never copy a cached Cargo artifact as an independent rebuild. Both source
     # and scratch prefixes are normalized before compilation, not after hashing.
-    with tempfile.TemporaryDirectory(prefix="se-native-build-") as target:
-        mappings = [(ROOT, "/stateengine/source"), (cargo_home, "/rust/cargo"),
-                    (sysroot, "/rust/toolchain"), (Path(target), "/stateengine/target")]
+    if args.target_dir is not None:
+        target = str(args.target_dir.resolve())
+    else:
+        target = tempfile.mkdtemp(prefix="se-native-build-")
+    try:
+        mappings = [(ROOT, REMAPPED["source"]), (cargo_home, REMAPPED["cargo"]),
+                    (sysroot, REMAPPED["toolchain"]), (Path(target), REMAPPED["target"])]
         remaps = [f"--remap-path-prefix={spelling}={replacement}" for prefix, replacement in mappings
                   for spelling in sorted({str(prefix), prefix.as_posix()})]
         environment = {**os.environ, "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags + remaps),
                        "SOURCE_DATE_EPOCH": str(epoch), "CARGO_INCREMENTAL": "0", "RUSTUP_AUTO_INSTALL": "0"}
+        seed_manifest = None
+        if args.seed is not None:
+            try:
+                seed_manifest = restore_seed(args.seed, target, seed_key)
+                print(f"restored dependency seed built from {seed_manifest['created_from']['source_commit']}",
+                      file=sys.stderr)
+            except SeedKeyMismatch as error:
+                print(f"seed rejected, dependencies build fresh: {error}", file=sys.stderr)
         built = subprocess.run(argv + ["--target-dir", target], cwd=ROOT, check=True, text=True,
-                               stdout=subprocess.PIPE, env=environment)
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
+        sys.stderr.write(built.stderr)
         artifacts = [json.loads(line) for line in built.stdout.splitlines() if line.strip()]
         artifacts = [a for a in artifacts if a.get("reason") == "compiler-artifact"]
         binary = [a for a in artifacts if a.get("executable") and a["target"]["name"] == "se"]
@@ -231,6 +397,28 @@ def main():
         out.mkdir(parents=True)
         shutil.copyfile(binary[0]["executable"], out / name)
         stripping = strip_binary(out / name, args.target, sysroot, binary[0]["executable"])
+        units = build_units(artifacts, built.stderr, metadata)
+        seed_published = None
+        seed_publication = None
+        if args.seed_out is not None:
+            try:
+                prune_workspace(target, toolchain, overrides, args.target,
+                                metadata["workspace_members"], environment)
+                document = package_seed(target, args.seed_out, seed_key,
+                    {"source_commit": source, "source_tree": run("git", "rev-parse", "HEAD^{tree}"),
+                     "source_timestamp": epoch}, metadata["workspace_members"])
+                sidecar = Path(str(args.seed_out) + ".key.json")
+                sidecar.write_text(json.dumps(
+                    {**document, "archive_sha256": digest(args.seed_out),
+                     "archive_bytes": args.seed_out.stat().st_size},
+                    indent=2, sort_keys=True) + "\n")
+                seed_published = {"sha256": digest(args.seed_out),
+                                  "bytes": args.seed_out.stat().st_size}
+            except Exception as error:  # the build itself is valid; the seed is a derived artifact
+                seed_publication = f"refused: {error}"
+    finally:
+        if args.target_dir is None:
+            shutil.rmtree(target, ignore_errors=True)
     (out / name).chmod(0o755)
     requirements = native_requirements(out / name, "windows" in args.target, args.target)
     version = subprocess.run([str(out / name), "--version"], cwd=out, check=True, text=True,
@@ -266,14 +454,22 @@ def main():
         "version": cargo["workspace"]["package"]["version"], "target": args.target,
         "toolchain": toolchain, "compiler": compiler, "panic": "unwind",
         "profile": "distribution",
-        "rustflags": flags, "source_date_epoch": epoch, "fresh_target": True,
+        "rustflags": flags, "source_date_epoch": epoch,
+        "fresh_target": seed_manifest is None,
+        "target_freshness": {"workspace": "fresh",
+            "dependencies": "fresh" if seed_manifest is None else "seed"},
+        "seed": None if seed_manifest is None else {"source_commit": seed_manifest["created_from"]["source_commit"],
+            "archive_sha256": digest(args.seed),
+            "workspace_packages_removed": seed_manifest["workspace_packages_removed"]},
+        "seed_published": seed_published, "seed_publication": seed_publication,
+        "build_units": units,
         "cargo_config_overrides": overrides,
-        "path_remap": {name: value for name, (_, value) in zip(("source", "cargo", "toolchain", "target"), mappings)},
+        "path_remap": dict(REMAPPED),
         "native_requirements": requirements, "version_stdout": version, "stripping": stripping,
         "default_features": False, "offline": args.offline,
         "features": inputs["features"], "compiled_features": features,
-        "cargo_lock_sha256": digest(ROOT / "Cargo.lock"),
-        "inputs_sha256": digest(ROOT / "scripts/release/inputs.json"),
+        "cargo_lock_sha256": seed_key["cargo_lock_sha256"],
+        "inputs_sha256": seed_key["inputs_sha256"],
         "release_assets": {p.name: digest(p) for p in sorted((ROOT / "scripts/release").iterdir())
                            if p.is_file()},
         "api_schema_sources": {p: digest(ROOT / p) for p in inputs["api_schema_sources"]},
