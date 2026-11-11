@@ -90,7 +90,9 @@ def installed_host_code(repo, source, paths, previous):
                   "factory/ci/box/worker-engine.py": "/usr/local/libexec/stateengine-ci-engine",
                   "factory/ci/box/idle.py": "/usr/local/libexec/stateengine-ci-idle",
                   "factory/ci/self-hosted/stateengine-actions-runner.service":
-                      "/etc/systemd/system/stateengine-actions-runner.service"}
+                      "/etc/systemd/system/stateengine-actions-runner.service",
+                  "factory/ci/self-hosted/stateengine-actions-runner-secondary.service":
+                      "/etc/systemd/system/stateengine-actions-runner-secondary.service"}
     for path in paths.keys() | previous.keys():
         executable = path.endswith(".py") and not Path(path).name.startswith("test_")
         if (path.startswith(("factory/ci/box/", "factory/ci/self-hosted/"))
@@ -194,8 +196,12 @@ def prepare(config, live, report, binding, directory, controller):
     if rebuild:
         from types import SimpleNamespace
         output = directory / "image"
-        build(SimpleNamespace(repo=repo, trusted_source=source, output=output,
-            **{name: Path(config[name]) for name in ("toolchain", "rustup", "nextest", "xwin", "windows_sdk")}))
+        # Image preparation shares the reserved CI memory budget. Keep it
+        # exclusive just like the dependency worker, even with two listeners.
+        with open(live["ci_lock"]) as maintenance:
+            fcntl.flock(maintenance, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            build(SimpleNamespace(repo=repo, trusted_source=source, output=output,
+                **{name: Path(config[name]) for name in ("toolchain", "rustup", "nextest", "xwin", "windows_sdk")}))
         image = json.loads((output / "image.json").read_text())
         if any(next(item["sha256"] for item in image["inputs"] if item["name"] == name) != expected
                for name, expected in compiler.items()):

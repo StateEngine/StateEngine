@@ -8,9 +8,13 @@ import stat
 import selectors
 import subprocess
 import time
+from contextlib import contextmanager
+from functools import wraps
+import threading
 
 import engine
 from engine import command, engine_args
+from journal_lock import locked
 
 RECORDS = Path("/var/lib/stateengine-ci-jobs")
 BOOT = Path("/proc/sys/kernel/random/boot_id")
@@ -61,13 +65,15 @@ def native_state(value):
     return {"processes": processes, "cgroup": group}
 
 
-def read_records(directory=RECORDS):
+def _read_records(directory=RECORDS):
     info = directory.lstat()
     if (not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o022 or
             (directory == RECORDS and info.st_uid != pwd.getpwnam("stateengine-ci-controller").pw_uid)):
         raise RuntimeError("controller-owned CI records unavailable")
     rows = []
     for path in directory.iterdir():
+        if path.name == ".lock":
+            continue  # The caller holds this validated regular lock descriptor.
         if not re.fullmatch(r"se-ci-[a-f0-9]{32}\.json", path.name):
             raise RuntimeError("unknown entry in CI custody directory")
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -78,12 +84,19 @@ def read_records(directory=RECORDS):
                 raise RuntimeError("CI record ownership/type differs")
             with os.fdopen(fd, closefd=False) as stream:
                 row = json.load(stream)
-            if row.get("name") + ".json" != path.name or set(row) != {"name", "id", "native"}:
+            if (row.get("name") + ".json" != path.name
+                    or set(row) not in ({"name", "id", "native"}, {"name", "id", "native", "slot"})
+                    or row.get("slot") not in (None, "primary", "secondary")):
                 raise RuntimeError("CI record identity malformed")
             rows.append((path, row))
         finally:
             os.close(fd)
     return rows
+
+
+def read_records(directory=RECORDS):
+    with locked(directory):
+        return _read_records(directory)
 
 
 def inventory():
@@ -94,30 +107,65 @@ def inventory():
 
 
 def idle(directory=RECORDS):
-    records = read_records(directory)
-    rows = inventory()
-    if rows:
-        raise RuntimeError("CI custody: persistent engine jobs remain")
-    for _, row in records:
-        if remaining(row["native"]):
-            raise RuntimeError("CI custody: native container/cgroup tasks remain")
-    if records:
-        raise RuntimeError("CI custody: creation or cleanup needs controller reconciliation")
+    with locked(directory):
+        records = _read_records(directory)
+        rows = inventory()
+        if rows:
+            raise RuntimeError("CI custody: persistent engine jobs remain")
+        for _, row in records:
+            if remaining(row["native"]):
+                raise RuntimeError("CI custody: native container/cgroup tasks remain")
+        if records:
+            raise RuntimeError("CI custody: creation or cleanup needs controller reconciliation")
     return {"schema": "stateengine-ci-idle/v1", "idle": True}
 
 
+def serialized(method):
+    @wraps(method)
+    def invoke(self, *args, **kwargs):
+        with self.transaction():
+            return method(self, *args, **kwargs)
+    return invoke
+
+
 class Journal:
-    def __init__(self, directory=RECORDS):
+    def __init__(self, directory=RECORDS, *, slot=None):
         self.directory = directory
+        if slot not in (None, "primary", "secondary"):
+            raise ValueError("fixed runner slot required")
+        self.slot = slot
+        self.mutex, self.depth = threading.RLock(), 0
         info = directory.lstat()
         if info.st_uid != os.getuid() or not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o022:
             raise RuntimeError("private controller job journal unavailable")
 
+    @contextmanager
+    def transaction(self):
+        with self.mutex:
+            if self.depth:
+                yield
+                return
+            with locked(self.directory, exclusive=True):
+                self.depth += 1
+                try:
+                    yield
+                finally:
+                    self.depth -= 1
+
+    @serialized
     def write(self, name, row, initial=False):
+        if self.slot is not None:
+            if row.get("slot", self.slot) != self.slot:
+                raise RuntimeError("journal write belongs to another runner slot")
+            row = {**row, "slot": self.slot}
         path = self.directory / (name + ".json")
         if initial:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o640)
         else:
+            if self.slot is not None:
+                previous = dict((row["name"], row) for _, row in _read_records(self.directory))[name]
+                if previous.get("slot") != self.slot:
+                    raise RuntimeError("journal update belongs to another runner slot")
             fd = os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW)
         os.fchmod(fd, 0o640)
         with os.fdopen(fd, "w") as out:
@@ -136,6 +184,7 @@ class Journal:
             raise ValueError("controller-generated CI name required")
         self.write(name, {"name": name, "id": None, "native": {}}, initial=True)
 
+    @serialized
     def create(self, name, args):
         # The worker door waits for acknowledgement before execing podman create.
         # A controller crash before pin persistence gives it EOF, not permission to create.
@@ -177,10 +226,13 @@ class Journal:
             for pipe in (child.stdin, child.stdout, child.stderr):
                 pipe.close()
 
+    @serialized
     def observe(self, name, value):
         if value["Name"].lstrip("/") != name or not re.fullmatch(r"[a-f0-9]{64}", value["Id"]):
             raise RuntimeError("engine identity differs from creation intent")
-        previous = dict((row["name"], row) for _, row in read_records(self.directory))[name]
+        previous = dict((row["name"], row) for _, row in _read_records(self.directory))[name]
+        if self.slot is not None and previous.get("slot") != self.slot:
+            raise RuntimeError("container observation belongs to another runner slot")
         if previous["id"] not in (None, value["Id"]):
             raise RuntimeError("recorded CI container identity changed")
         old, current = previous["native"], native_state(value)
@@ -189,11 +241,14 @@ class Journal:
         current["cgroup"] = old.get("cgroup") or current["cgroup"]
         current["processes"] = list({json.dumps(p, sort_keys=True): p for p in
                                      old.get("processes", []) + current["processes"]}.values())
-        self.write(name, {"name": name, "id": value["Id"], "native": current})
+        self.write(name, {**previous, "id": value["Id"], "native": current})
 
+    @serialized
     def closed(self, name):
-        entries = dict((row["name"], (path, row)) for path, row in read_records(self.directory))
+        entries = dict((row["name"], (path, row)) for path, row in _read_records(self.directory))
         path, row = entries[name]
+        if self.slot is not None and row.get("slot") != self.slot:
+            raise RuntimeError("container closure belongs to another runner slot")
         if remaining(row["native"]):
             raise RuntimeError("CI native closure has not joined")
         if any(row["name"] in x.get("Names", []) or row["id"] == x.get("Id") for x in inventory()):
@@ -205,8 +260,11 @@ class Journal:
         finally:
             os.close(fd)
 
+    @serialized
     def reconcile(self):
-        records = read_records(self.directory)
+        records = _read_records(self.directory)
+        if self.slot is not None and any(row.get("slot") is None for _, row in records):
+            raise RuntimeError("unassigned CI custody requires exclusive maintenance reconciliation")
         known = {row["name"]: row for _, row in records}
         # Never remove an unknown engine entry, even if it shares a label.
         for item in inventory():
@@ -216,11 +274,15 @@ class Journal:
             row = known[names[0]]
             if row["id"] not in (None, item["Id"]):
                 raise RuntimeError("CI reconciliation identity changed")
+            if self.slot is not None and row.get("slot") != self.slot:
+                continue
             value, = json.loads(command("inspect", item["Id"]))
             self.observe(row["name"], value)
             command("rm", "--force", "--time=5", item["Id"])
         end = time.monotonic() + 15
         for _, row in records:
+            if self.slot is not None and row.get("slot") != self.slot:
+                continue
             while True:
                 try:
                     self.closed(row["name"])
@@ -229,4 +291,6 @@ class Journal:
                     if time.monotonic() >= end:
                         raise
                     time.sleep(.1)
-        idle(self.directory)
+        if any(self.slot is None or row.get("slot") == self.slot
+               for _, row in _read_records(self.directory)):
+            raise RuntimeError("CI slot still has unresolved custody records")

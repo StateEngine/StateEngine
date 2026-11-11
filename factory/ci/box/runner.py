@@ -17,12 +17,12 @@ def call(args, timeout, stdout=None):
     return subprocess.run(args, cwd=ROOT, timeout=timeout, stdout=stdout).returncode
 
 
-def run(job, all_features=False):
+def run(job, all_features=False, jobs=8):
     # Only public dependency data enters a job's disposable writable home.
     if not Path("/home/ci/cargo").exists():
         shutil.copytree("/opt/cargo", "/home/ci/cargo", symlinks=True)
     os.environ.update(CARGO_HOME="/home/ci/cargo", CARGO_NET_OFFLINE="true",
-                      CARGO_BUILD_JOBS="8", CARGO_INCREMENTAL="0", CARGO_TERM_COLOR="always",
+                      CARGO_BUILD_JOBS=str(jobs), CARGO_INCREMENTAL="0", CARGO_TERM_COLOR="always",
                       CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0")
     target = subprocess.check_output(["rustc", "--print", "host-tuple"], text=True).strip()
     features = ["--all-features"] if all_features else []
@@ -75,6 +75,7 @@ if __name__ == "__main__":
     os.umask(0o077)
     parser = argparse.ArgumentParser()
     parser.add_argument("--all-features", action="store_true")
+    parser.add_argument("--jobs", type=int, choices=(4, 8), default=8)
     parser.add_argument("action", choices=["hold", "source", "run"])
     parser.add_argument("job", nargs="?", choices=["fmt", "clippy", "archive", "test-1", "test-2", "windows-clippy"])
     args = parser.parse_args()
@@ -101,4 +102,4 @@ if __name__ == "__main__":
                 member.name = str(Path(*parts[1:]))
                 archive.extract(member, ROOT, filter="data")
     else:
-        raise SystemExit(run(args.job, args.all_features))
+        raise SystemExit(run(args.job, args.all_features, args.jobs))

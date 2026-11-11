@@ -1,0 +1,26 @@
+[Unit]
+Description=StateEngine secondary self-hosted Linux checks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=stateengine-ci
+Group=stateengine-ci
+WorkingDirectory=/opt/stateengine-actions-runner-secondary
+Environment=HOME=/var/lib/stateengine-ci
+Environment=ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER=true
+Environment=ACTIONS_RUNNER_CONTAINER_HOOKS=/usr/local/lib/stateengine-box-ci/factory/ci/self-hosted/hook-secondary.js
+ExecStart=/opt/stateengine-actions-runner-secondary/bin/runsvc.sh
+KillMode=control-group
+KillSignal=SIGINT
+TimeoutStopSec=300
+Restart=on-failure
+RestartSec=10
+UMask=0077
+ProtectSystem=full
+# UNIX ownership still restricts publication to the fixed root approval owner.
+ReadWritePaths=/etc/stateengine-ci
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

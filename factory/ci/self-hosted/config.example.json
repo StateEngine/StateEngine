@@ -6,5 +6,17 @@
   "main_approval_helper": "/usr/local/libexec/stateengine-ci-approve-main",
   "state": "/var/lib/stateengine-ci-controller/actions",
   "runner_work": "/var/lib/stateengine-ci/actions-work",
-  "ci_lock": "REPLACE_WITH_EXISTING_SHADOW_LOCK"
+  "ci_lock": "REPLACE_WITH_EXISTING_SHADOW_LOCK",
+  "slots": {
+    "primary": {
+      "state": "/var/lib/stateengine-ci-controller/actions",
+      "runner_work": "/var/lib/stateengine-ci/actions-work",
+      "slot_lock": "/var/lib/stateengine-ci-controller/primary.lock"
+    },
+    "secondary": {
+      "state": "/var/lib/stateengine-ci-controller/actions-secondary",
+      "runner_work": "/var/lib/stateengine-ci/actions-work-secondary",
+      "slot_lock": "/var/lib/stateengine-ci-controller/secondary.lock"
+    }
+  }
 }

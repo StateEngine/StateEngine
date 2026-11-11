@@ -1,9 +1,9 @@
-# Serial self-hosted Linux CI
+# Self-hosted Linux CI
 
 This adapter uses the ordinary GitHub runner for scheduling and status. It reuses
 the approved networkless rootless containers and the existing `Cohort` consumers;
-there is no polling job on a hosted Linux machine. One listener admits one job at
-a time, and the full chain executes six stages serially inside one disposable container.
+there is no polling job on a hosted Linux machine. Each listener admits one job at a time. Two fixed runner slots can execute independently,
+and each full chain executes six stages serially inside one disposable container.
 Compiled tests stay inside that container; no test archive crosses the host.
 
 Pull requests and pushes retain default-feature tests. Scheduled runs on `main`
@@ -47,10 +47,17 @@ binding are retained under the configured private controller state directory.
 The legacy fixed metadata and check operation markers remain available to the
 adapter, but this workflow does not schedule them on the box.
 
-The full run has an 18 GiB memory cap, eight CPU cores and a 30-minute outside
-deadline. Container admission requires 24 GiB available for the full run, preserving
-6 GiB after its bounded allocation. The existing CI lock serializes
-against other CI work. This adapter adds no guest-admission fence or guest lock;
+Without a slots map the full run retains its 18 GiB cap and eight CPU cores.
+With both slots configured, each run has a 9 GiB cap, four CPU cores and four
+compiler workers; both together stay below 18 GiB, leaving 6 GiB in the reserved
+24 GiB. Every container still checks actual available memory and preserves 6 GiB
+after its own allocation. The outside deadline remains 30 minutes.
+Jobs take a shared maintenance lock and an exclusive lease for their fixed slot.
+Image/dependency preparation and manual shadow work keep the exclusive maintenance
+lock, so they cannot overlap either slot. Custody metadata updates are serialized;
+cleanup validates the complete engine inventory and closes only its leased slot.
+An unknown object or an unassigned legacy record refuses admission. Global idle
+queries still require both slots to be empty. This adapter adds no guest-admission fence or guest lock;
 guests use their own memory admission. Persistent container records still retain
 exact process custody after a controller crash, and reconciliation must join known
 native tasks before another container runs. Keep the dedicated App dispatcher
@@ -79,8 +86,21 @@ Root installation:
    registration token through `ACTIONS_RUNNER_INPUT_TOKEN` in the registration
    process environment, never argv, logs or a checked-in file. Return the binary
    directory to root ownership after registration.
-5. Install the supplied service unit without enabling it until the
-   approved policy and real container canaries pass. The hook itself executes
+5. For two slots, drain and stop the existing listener, reconcile under the
+   exclusive maintenance lock and read back global idle before installing the
+   reviewed controller. Configure both separate state/work paths and slot lease
+   files. Own state and leases as the controller (0700 directories, 0640 files).
+   Install a root-owned `hook-secondary.js` symlink to `hook.js`; only these two
+   fixed entrypoint names are admitted. Install a second official runner in
+   `/opt/stateengine-actions-runner-secondary`, with its own registration state,
+   diagnostics and configured work directory, using the same locked worker account
+   and the same repository label. Its standard runner registration is separate;
+   no observer or publisher credential is introduced.
+6. Install the supplied service units without enabling them until the
+   approved policy and real container canaries pass. Compare frozen serial and
+   paired workload throughput and memory use; verify that failure, cancellation
+   and controller-crash cleanup leave the other running slot intact. Keep both
+   listeners disabled until these observations are complete. The hook itself executes
    as the separate locked controller through its exact sudo door.
 
 The maintainer supplies the workflow change. `LINUX_CI_RUNNER` holds the JSON

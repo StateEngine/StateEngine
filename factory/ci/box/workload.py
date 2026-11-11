@@ -62,10 +62,14 @@ def counts(name, output, code):
 
 
 class Cohort:
-    def __init__(self, report, journal, source, cache, output, canceled, *, all_features=False):
+    def __init__(self, report, journal, source, cache, output, canceled, *, all_features=False,
+                 memory=MEMORY, cpus=CPUS, workers=8):
         if type(all_features) is not bool:
             raise ValueError("feature coverage must be an explicit boolean")
         self.all_features = all_features
+        if (memory, cpus, workers) not in ((MEMORY, CPUS, 8), (9 * GIB, 4, 4)):
+            raise ValueError("fixed serial or paired runner limits required")
+        self.memory, self.cpus, self.workers = memory, cpus, workers
         self.report, self.journal, self.source = report, journal, source
         self.cache, self.output, self.canceled = cache, output, canceled
         self.containers, self.outcomes, self.active = [], {}, set()
@@ -89,7 +93,7 @@ class Cohort:
             self.active.add(name)
         try:
             if self.box is None:
-                box = Tracked(self.report["image"], memory=MEMORY, cpus=CPUS,
+                box = Tracked(self.report["image"], memory=self.memory, cpus=self.cpus,
                               deadline=DEADLINE, journal=self.journal)
                 with self.lock:
                     self.containers.append(box)
@@ -110,7 +114,8 @@ class Cohort:
             if name == "archive":
                 self.transfer(box, self.cache, "/work/dependencies.tar.gz", folder / "cache.log")
             features = ["--all-features"] if self.all_features else []
-            result = execute(box, ["python3", "/opt/box/runner.py", *features, "run", name],
+            result = execute(box, ["python3", "/opt/box/runner.py", "--jobs", str(self.workers),
+                                  *features, "run", name],
                              folder / "job.log", canceled=self.canceled)
             observed_failure(result)
             if self.canceled.is_set():
