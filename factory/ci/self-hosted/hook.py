@@ -369,7 +369,7 @@ def main():
         return {"response": prepare(request, config, report, request["context"]), "exit_code": 0}
     if request["command"] == "cleanup_job":
         # Native custody is reconciled under the existing CI mutex.
-        with venue(config):
+        with venue(config, wait_seconds=600):
             journal_at(config).reconcile()
         return {"exit_code": 0}
     if request["command"] == "run_script_step":
