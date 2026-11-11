@@ -5,6 +5,9 @@ use se_types::Result;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod image_review;
+
 pub struct Images {
     pub cli: PathBuf,
     pub server: PathBuf,
