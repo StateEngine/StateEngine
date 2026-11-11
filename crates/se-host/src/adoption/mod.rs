@@ -127,6 +127,7 @@ pub struct Input {
     pub cursor: Option<se_types::Cursor>,
     pub offered: Vec<se_types::MessageId>,
 }
+#[cfg(feature = "listener")]
 pub(crate) struct NativeCall {
     pub input: Input,
     pub provider: se_proc::native_ipc::NativeIpcPeer,

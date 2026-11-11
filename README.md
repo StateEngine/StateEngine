@@ -130,7 +130,7 @@ start directly by running
 StateEngine merges its hooks into your user settings and leaves existing hooks,
 models and permissions intact. If Claude asks whether to trust these hooks,
 choose Allow to enable the integration; declining leaves Claude usable without
-capture or mail. Only explicitly registered projects participate. Adopted sessions
+capture or mail. Only explicitly registered project roots participate. Adopted sessions
 appear with the `observed` surface in status, and incoming mail uses Claude's
 native background wake. StateEngine observes these providers without owning or
 stopping them. Uninstall removes unchanged integration entries, preserves later

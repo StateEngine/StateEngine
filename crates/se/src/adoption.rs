@@ -240,12 +240,19 @@ fn mail(cx: &Bootstrap, mut input: Input) -> Result<u8> {
         } else {
             vec![]
         };
-    // A waiter may rendezvous once, but never restarts a host the owner stops.
-    // Later provider lifecycle hooks can start a fresh observation normally.
+    // Only lifecycle capture hooks start a host. A late-spawned mail waiter
+    // must not reopen a runtime the owner has just stopped.
     let route_files =
         route::files::Files::open(&cx.home).map_err(|e| se_core::store_error::store_error(&e))?;
-    let route_bound = Deadline::from_options(&route::execute::options())?;
-    let target = route::autostart::endpoint(cx, &route_files, &route_bound, &mut |_| Ok(()))?;
+    let target = match route::execute::endpoint(&route_files)? {
+        se_types::Read::Present { value } => value,
+        se_types::Read::Absent { .. } => return Ok(0),
+        other => se_core::scope::require_present(
+            other,
+            "native mail runtime",
+            "Restore access to the runtime publication.",
+        )?,
+    };
     loop {
         if !se_proc::native_ipc::provider_is_live(&provider, &native_bound())
             .map_err(|e| SeError::invalid("native mail wait liveness", &e.to_string()))?
