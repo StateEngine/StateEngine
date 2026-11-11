@@ -5,7 +5,6 @@ pub(crate) mod allocation;
 pub(crate) mod attributes;
 pub(crate) mod console;
 mod parent;
-pub(crate) mod pipe;
 mod process_query;
 pub(crate) use parent::parent;
 use std::{

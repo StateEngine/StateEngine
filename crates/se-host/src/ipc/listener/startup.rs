@@ -3,18 +3,31 @@
 //! until the normal post-commit handshake drives them.
 use super::*;
 
-/// The commit select may cancel pre-commit acceptance during a refusal. Keep
-/// that exact write future and clock owned until admission or joined closure.
-pub(super) struct StartupRefusal {
-    delivery: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + Sync>>,
+pub(super) struct StartupClient {
+    pub(super) stream: NativeStream,
+    pub(super) incoming_slot: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl IpcListener {
-    pub(super) async fn finish_startup_refusal(&mut self) {
-        if let Some(refusal) = &mut self.startup_refusal {
-            refusal.delivery.as_mut().await;
+    pub(crate) async fn join_startup_refusals(&mut self, deadline: &Deadline) -> Result<()> {
+        bounded(deadline, async {
+            while let Some(joined) = self.startup_refusals.join_next().await {
+                joined.map_err(|error| {
+                    se_core::scope::unreadable("IPC startup refusal task", &error.to_string())
+                })?;
+            }
+            Ok(())
+        })
+        .await?
+    }
+
+    pub(super) fn reap_startup_refusals(&mut self) -> Result<()> {
+        while let Some(joined) = self.startup_refusals.try_join_next() {
+            joined.map_err(|error| {
+                se_core::scope::unreadable("IPC startup refusal task", &error.to_string())
+            })?;
         }
-        self.startup_refusal = None;
+        Ok(())
     }
 
     pub(super) async fn accept_pipe(&mut self) -> Result<NativeStream> {
@@ -41,9 +54,9 @@ impl IpcListener {
 
     pub(crate) async fn retain_startup_clients(&mut self, deadline: &Deadline) -> Result<()> {
         loop {
-            self.finish_startup_refusal().await;
-            deadline.remaining()?;
-            let stream = self.accept_pipe().await?;
+            self.reap_startup_refusals()?;
+            let incoming_slot = bounded(deadline, self.incoming_slot()).await??;
+            let stream = bounded(deadline, self.accept_pipe()).await??;
             // The same ingress capacity bounds handles before commit. Refuse
             // the oldest excess handshake without reading any operation bytes,
             // then keep driving the spare for the native startup parent.
@@ -52,22 +65,34 @@ impl IpcListener {
             } else {
                 None
             };
-            // Retain the new channel before any await. The ownership commit
-            // can finish during a refusal write and cancel this future.
-            self.startup_clients.push_back(stream);
+            // Retain the new channel before any await. The independent task
+            // below keeps its refused stream even when the commit wins.
+            self.startup_clients.push_back(StartupClient {
+                stream,
+                incoming_slot,
+            });
             if let Some(oldest) = oldest {
-                let error = capacity_error("IPC startup handshake capacity is occupied");
-                let envelope =
-                    se_types::ErrorEnvelope::new(error.body, &se_types::RenderCx::default())?;
-                let frame = auth::encode_hello_refusal(&envelope)?;
-                let write = deadline.stage(WRITE_TIMEOUT)?;
-                self.startup_refusal = Some(StartupRefusal {
-                    delivery: Box::pin(async move {
-                        // A vanished peer or silent-reader timeout is local to
-                        // this refusal. Neither renews the startup clock.
-                        let _ = send_refusal(&oldest, &frame, &write).await;
-                    }),
-                });
+                // Reuse ordinary capacity refusal without native proof or
+                // request reads. The task owns the extra incoming slot and its
+                // original write clock independently of startup cancellation.
+                let refused = AcceptedIpcStream {
+                    stream: Arc::new(oldest.stream),
+                    record: self.record.clone(),
+                    runtime: self.runtime.clone(),
+                    blocking: Arc::clone(&self.blocking),
+                    preauth_slot: None,
+                    incoming_slot: oldest.incoming_slot,
+                    connections: Arc::clone(&self.connections),
+                    deadline: deadline.stage(WRITE_TIMEOUT)?,
+                };
+                self.startup_refusals.spawn_on(
+                    async move {
+                        // Vanished peers and bounded silent-reader closes are
+                        // local to this refused handshake, never a startup fence.
+                        let _ = refused.handshake().await;
+                    },
+                    &self.runtime,
+                );
             }
         }
     }

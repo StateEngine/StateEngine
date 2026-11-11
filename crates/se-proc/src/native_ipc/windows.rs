@@ -387,19 +387,6 @@ impl Write for NativePipeStream {
         Ok(())
     }
 }
-/// Observe consumption without blocking on a silent client. The caller keeps
-/// the server alive and bounds polling with this same absolute clock.
-pub fn pipe_write_drained(channel: BorrowedIpc<'_>, bound: &IpcIoBound) -> IpcNativeResult<bool> {
-    bound
-        .remaining()
-        .map_err(|e| error("observe IPC write deadline", e))?;
-    let drained = crate::windows_native::pipe::write_drained(channel)
-        .map_err(|e| error(e.operation, e.source))?;
-    bound
-        .remaining()
-        .map_err(|e| error("observe IPC write deadline", e))?;
-    Ok(drained)
-}
 /// Reserves the first protected instance while an evented host creates later
 /// instances through its existing reactor. The occupied reservation cannot
 /// receive application calls. No Tokio dependency or handle ownership cast is
