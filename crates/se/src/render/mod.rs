@@ -5,6 +5,7 @@ mod control;
 mod doctor;
 pub mod error;
 mod event;
+mod guide;
 #[cfg(feature = "import")]
 mod import;
 mod labels;
@@ -60,7 +61,10 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
     if json {
         serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
         writeln!(out)?;
-    } else if !quiet || value.exit_code() != 0 || matches!(value.human_kind(), HumanKind::Help) {
+    } else if !quiet
+        || value.exit_code() != 0
+        || matches!(value.human_kind(), HumanKind::Help | HumanKind::Guide)
+    {
         if let Some(text) =
             se_host::atlas_queries::compact(value, 4096, false).map_err(io::Error::other)?
         {
@@ -86,6 +90,7 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
                 writeln!(out, "stateengine {}", value.value.version)?
             }
             (HumanKind::Help, AnyOutput::MetaHelp(value)) => write!(out, "{}", value.value.usage)?,
+            (HumanKind::Guide, AnyOutput::MetaGuide(value)) => guide::output(&value.value, out)?,
             (HumanKind::Schema, AnyOutput::MetaSchema(value)) => read::schema(&value.value, out)?,
             #[cfg(feature = "import")]
             (HumanKind::Import, AnyOutput::ImportNode(value)) => import::output(&value.value, out)?,

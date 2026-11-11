@@ -58,6 +58,7 @@ pub fn metadata_output(op: &AnyOp) -> Result<Option<AnyOutput>> {
                 .into(),
             ))
         }
+        AnyOp::MetaGuide(value) => Ok(Some(guide::read(value)?.into())),
         AnyOp::MetaSchema(value) => {
             value.validate()?;
             Ok(Some(schema_catalogue(value.op.as_deref())?.into()))

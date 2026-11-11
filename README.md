@@ -298,6 +298,10 @@ starting over. If capture was disabled, use `--new` for a new conversation.
 
 Run `se --help`, then a command's own help, such as `se launch --help` or
 `se history --help`, for the commands implemented by your installed version.
+For workflow guidance, run `se guide` to list short topics, then `se guide TOPIC`
+to read just one. Agents use `stateengine_help` with no topic for the same index,
+or with `topic` set to one exact name. The CLI guide works before project setup
+and without a running host.
 [OPS](docs/OPS.md) describes the operation design; some listed paths are not shipped.
 
 For one default Linux installation, stop its service and remove the installed

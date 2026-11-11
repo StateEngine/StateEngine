@@ -69,6 +69,7 @@ pub enum HumanKind {
     RemoteSend,
     Version,
     Help,
+    Guide,
     Schema,
     Principal,
     Init,

@@ -572,7 +572,10 @@ impl Kernel {
             AnyOp::Uninstall(input) => OpStep::Custody(CustodyPlan::Uninstall(input)),
             AnyOp::AtlasAugment(input) => OpStep::Custody(CustodyPlan::AtlasAugment(input)),
             AnyOp::HookClaude(input) => OpStep::Custody(CustodyPlan::ClaudeHook(input)),
-            AnyOp::MetaVersion(_) | AnyOp::MetaHelp(_) | AnyOp::MetaSchema(_) => {
+            AnyOp::MetaVersion(_)
+            | AnyOp::MetaHelp(_)
+            | AnyOp::MetaGuide(_)
+            | AnyOp::MetaSchema(_) => {
                 return Err(scope::unreadable(
                     "metadata dispatch",
                     "registered metadata produced no output",

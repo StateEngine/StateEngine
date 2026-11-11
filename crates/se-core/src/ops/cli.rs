@@ -281,6 +281,7 @@ fn input_command(name: &str, c: Command) -> Command {
                     .help("Command words to explain, e.g. help msg send; omit them for the full catalogue"),
             )
             .arg(toggle("all").help("Also show hidden commands")),
+        "meta.guide" => c.arg(positional("topic", 1, false).help("Exact topic name from se guide; omit to list names and short summaries")),
         "meta.schema" => c.arg(
             positional("op", 1, false)
                 .help("Exact registered operation name, e.g. project.status; omit it for the full catalogue"),
