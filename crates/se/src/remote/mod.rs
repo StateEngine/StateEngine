@@ -7,6 +7,8 @@ use se_types::{Result, SeError};
 use serde::Serialize;
 use std::io::{self, Write};
 mod measure;
+#[cfg(test)]
+mod send_review;
 type Dispatch<'a> =
     dyn FnMut(&Bootstrap, AnyOp, &mut dyn FnMut(&str) -> io::Result<()>) -> Result<AnyOutput> + 'a;
 #[derive(Serialize)]
@@ -16,8 +18,9 @@ struct SendStatus<'a, T> {
     #[serde(flatten)]
     binding: &'a T,
 }
-fn pending<T: Serialize>(
+fn send_status<T: Serialize>(
     schema: &'static str,
+    status: &'static str,
     binding: &T,
     description: std::fmt::Arguments<'_>,
     json: bool,
@@ -28,14 +31,14 @@ fn pending<T: Serialize>(
             &mut *out,
             &SendStatus {
                 schema,
-                status: "local_pending",
+                status,
                 binding,
             },
         )
         .map_err(io::Error::other)?;
         writeln!(out)?;
     } else {
-        writeln!(out, "Pending {description}; no durable receipt yet")?;
+        writeln!(out, "{description}; no durable receipt yet")?;
     }
     out.flush()
 }
@@ -52,10 +55,11 @@ pub(crate) fn pending_native(
         "project_selector":cx.project,"recipient_selector":input.to,
         "body_bytes":input.body.len(),
     });
-    pending(
+    send_status(
         "stateengine.send-status/v1",
+        "local_pending",
         &binding,
-        format_args!("send {} to {}", input.idempotency_key, input.to),
+        format_args!("Pending send {} to {}", input.idempotency_key, input.to),
         json,
         out,
     )
@@ -148,6 +152,30 @@ pub(crate) fn run(
     };
     match operation {
         AnyOp::RemoteSend(mut input) => {
+            // Like native mail, echo the submitted request before host IPC.
+            // These are selectors, not admitted host/grant facts or a receipt.
+            let requested = serde_json::json!({
+                "host_selector": input.host,
+                "target": input.request.target,
+                "session": input.request.session,
+                "idempotency_key": input.request.idempotency_key,
+                "body_bytes": input.request.body.len(),
+            });
+            send_status(
+                "stateengine.remote-send-status/v1",
+                "local_pending",
+                &requested,
+                format_args!(
+                    "Pending remote send {} to {}/{} session {} via {}",
+                    input.request.idempotency_key,
+                    input.request.target.project,
+                    input.request.target.agent,
+                    input.request.session,
+                    input.host,
+                ),
+                json,
+                stderr,
+            )?;
             let prepared = dispatch(
                 cx,
                 AnyOp::RemotePrepareSend(RemotePrepareSendCall {
@@ -202,11 +230,14 @@ pub(crate) fn run(
                 host: p.host,
                 grant: p.grant.clone(),
             }));
-            pending(
+            // Preserve the resolved retry binding before a mutation can cross
+            // the wire, even if this process loses the eventual final reply.
+            send_status(
                 "stateengine.remote-send-status/v1",
+                "binding_ready",
                 &p,
                 format_args!(
-                    "remote send {} to {}/{} session {} (host {:?}, grant {})",
+                    "Prepared remote send {} to {}/{} session {} (host {:?}, grant {})",
                     p.idempotency_key, p.target.project, p.target.agent, p.session, p.host, p.grant
                 ),
                 json,
