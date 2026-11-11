@@ -35,7 +35,7 @@ class GuestFence(unittest.TestCase):
 
     def test_both_guest_readers_refuse_failed_malformed_and_missing_helper(self):
         for index,(code,output) in enumerate([(1,''),(0,'{}'),(0,'not-json'),(0,json.dumps({'schema':'stateengine-ci-idle/v1','idle':1}))]):
-            for name in ('stateengine-winvm','secode-winvm'):
+            for name in ('stateengine-winvm','secondary-winvm'):
                 store,record=self.store(name,str(index))
                 answer=subprocess.CompletedProcess([],code,output,'')
                 with patch('subprocess.run',return_value=answer):
@@ -44,7 +44,7 @@ class GuestFence(unittest.TestCase):
                 self.assertEqual(store.read()['phase'],'admitted')
 
     def test_both_guest_readers_consume_only_the_exact_idle_proof(self):
-        for name in ('stateengine-winvm','secode-winvm'):
+        for name in ('stateengine-winvm','secondary-winvm'):
             store,record=self.store(name)
             answer=subprocess.CompletedProcess([],0,json.dumps({'schema':'stateengine-ci-idle/v1','idle':True}),'')
             with patch('subprocess.run',return_value=answer),patch.object(self.module,'available_memory',return_value=64*1024**3):
