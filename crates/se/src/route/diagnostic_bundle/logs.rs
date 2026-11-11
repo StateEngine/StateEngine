@@ -17,7 +17,7 @@ pub(super) fn log_name(name: &std::ffi::OsStr) -> bool {
         })
 }
 fn unreadable(reason: &str) -> Value {
-    json!({"state":"unreadable", "inventory_complete":false, "omitted":0,
+    json!({"state":"unreadable", "inventory_complete":false, "omitted":null,
         "entries":[], "reason":reason})
 }
 pub(super) fn collect(home: &Path) -> Value {

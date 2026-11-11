@@ -46,9 +46,26 @@ fn section(result: Result<AnyOutput>) -> Value {
                 Ok(data) => {
                     let exit_code = output.exit_code();
                     // An unhealthy diagnosis is collected; a partial/unreadable
-                    // source is not. In particular status can contain a page cursor.
-                    let complete = exit_code == 0
-                        || (matches!(&output, AnyOutput::DoctorInspect(_)) && exit_code == 1);
+                    // source is not. A normal first status page may exit zero
+                    // while its continuation still makes this collection partial.
+                    let pages_complete = match &output {
+                        AnyOutput::ProjectStatus(status) => {
+                            status
+                                .value
+                                .agents
+                                .as_ref()
+                                .is_none_or(|page| page.window().complete())
+                                && status
+                                    .value
+                                    .projects
+                                    .as_ref()
+                                    .is_none_or(|page| page.window().complete())
+                        }
+                        _ => true,
+                    };
+                    let complete = pages_complete
+                        && (exit_code == 0
+                            || (matches!(&output, AnyOutput::DoctorInspect(_)) && exit_code == 1));
                     json!({"state":"observed", "exit_code":exit_code, "complete":complete, "data":data})
                 }
                 Err(_) => {
@@ -143,9 +160,13 @@ fn publish(bytes: &[u8], complete: bool) -> Result<AnyOutput> {
     // Native creation supplies owner-only mode/DACL on every supported platform.
     // A fresh directory avoids demanding that a damaged state home be repaired first.
     let directory = std::env::temp_dir().join(format!("se-diagnostic-{}", uuid::Uuid::new_v4()));
+    let path = directory.join("bundle.json");
+    // Refuse an unrepresentable receipt before creating any output artifacts.
+    let path_text = path.to_str().ok_or_else(|| {
+        scope::unreadable("diagnostic path", "Select a UTF-8 temporary directory with TMPDIR (Unix) or TEMP (Windows), then retry; no file was created")
+    })?;
     let files = se_proc::NativeStateFiles::create(&directory)
         .map_err(|error| scope::unreadable("private diagnostic directory", &error.to_string()))?;
-    let path = directory.join("bundle.json");
     let mut staged = files
         .create_staging(&directory)
         .map_err(|error| scope::unreadable("diagnostic staging", &error.to_string()))?;
@@ -172,15 +193,7 @@ fn publish(bytes: &[u8], complete: bool) -> Result<AnyOutput> {
         ));
     }
     Ok(DiagnosticBundleOutput {
-        path: path
-            .to_str()
-            .ok_or_else(|| {
-                scope::unreadable(
-                    "diagnostic path",
-                    "private temporary directory must have a lossless UTF-8 path",
-                )
-            })?
-            .into(),
+        path: path_text.into(),
         bytes: bytes.len() as u64,
         sha256: se_types::hex_lower(&Sha256::digest(bytes)),
         complete,

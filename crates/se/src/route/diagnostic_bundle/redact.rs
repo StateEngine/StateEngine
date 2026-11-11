@@ -72,7 +72,9 @@ impl Redactor {
         }
         let mut roots: Vec<String> = roots
             .into_iter()
-            .filter_map(|path| path.to_str().map(str::to_owned))
+            // Compare only the displayed diagnostic text, never a native path.
+            // This also removes replacement-character renderings of non-UTF-8 homes.
+            .map(|path| path.to_string_lossy().into_owned())
             .filter(|path| path.len() > 1)
             .collect();
         roots.sort_by_key(|path| std::cmp::Reverse(path.len()));
@@ -84,7 +86,10 @@ impl Redactor {
                 root.replace('\\', "/"),
                 root.replace('\\', "\\\\"),
             ] {
-                paths.push(compile(&format!("(?i){}", regex::escape(&variant)))?);
+                paths.push(compile(&format!(
+                    r#"(?i){}(?:[\\/]+[^\r\n"'<>]*)?"#,
+                    regex::escape(&variant)
+                ))?);
             }
         }
         Ok(Self {
