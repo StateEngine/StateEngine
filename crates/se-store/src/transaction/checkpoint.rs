@@ -3,7 +3,7 @@
 use super::*;
 
 const SOFT_FRAMES: i64 = 256;
-const IDLE: Duration = Duration::from_millis(50);
+const IDLE: Duration = Duration::from_millis(250);
 const RETRY: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
@@ -61,9 +61,9 @@ impl Engine {
     }
     fn defer_checkpoint(&mut self, delay: Duration) {
         self.checkpoints.pending = true;
-        self.checkpoints
-            .next
-            .get_or_insert_with(|| Instant::now() + delay);
+        // Every foreground commit starts a fresh quiet gap. Sustained work
+        // can defer maintenance only until the hard WAL cutoff.
+        self.checkpoints.next = Some(Instant::now() + delay);
     }
     fn run_checkpoint(&mut self, wal: &Wal) -> Option<Duration> {
         if self.checkpoint_suppressed(wal) {
