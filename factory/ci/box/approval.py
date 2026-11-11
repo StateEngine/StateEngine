@@ -140,8 +140,11 @@ def worker(arguments, log):
         except BaseException:
             if process.poll() is None:
                 # This exact child remains unreaped, so its PID cannot be reused.
-                Path("/proc", str(process.pid), "cmdline").read_bytes()
-                process.terminate()
+                observed = Path("/proc", str(process.pid), "cmdline").read_bytes().split(b"\0")
+                if str(BOX / "approval_cache.py").encode() in observed:
+                    process.terminate()
+                elif process.poll() is None:
+                    raise RuntimeError("dependency worker identity changed; preserving process custody")
                 process.wait(timeout=180)
             raise
     if code:

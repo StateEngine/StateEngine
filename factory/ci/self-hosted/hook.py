@@ -117,8 +117,11 @@ def approve_main(config, report, context, token):
             print("Main approval did not finish; using the last published approval", file=sys.stderr, flush=True)
     except BaseException:
         if child.poll() is None:
-            Path("/proc", str(child.pid), "cmdline").read_bytes()
-            child.terminate()
+            arguments = Path("/proc", str(child.pid), "cmdline").read_bytes().split(b"\0")
+            if str(path).encode() in arguments:
+                child.terminate()
+            elif child.poll() is None:
+                raise RuntimeError("approval helper identity changed; preserving process custody")
             child.wait(timeout=210)
         raise
     return config_at()
