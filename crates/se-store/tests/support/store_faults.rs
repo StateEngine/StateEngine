@@ -58,7 +58,7 @@ fn wait_path(path: &std::path::Path) -> Check {
 fn outcome(value: StoreResult<CommitReceipt>) -> Value {
     match value {
         Ok(receipt) => {
-            json!({"code":"Committed","event":receipt.primary_event.as_str(),"event_hex":receipt.primary_event.as_str().strip_prefix("ev_").map(|value|value.replace('-',"")),"state":format!("{:?}",receipt.state),"maintenance_pending":receipt.maintenance_pending,"checkpoint_ran":receipt.write_timings.as_ref().map(|timing|timing.checkpoint.is_some()),"timing_key":receipt.write_timings.as_ref().and_then(|timing|timing.request_key.as_ref()).map(ToString::to_string)})
+            json!({"code":"Committed","event":receipt.primary_event.as_str(),"event_hex":receipt.primary_event.as_str().strip_prefix("ev_").map(|value|value.replace('-',"")),"state":format!("{:?}",receipt.state),"maintenance_pending":receipt.maintenance_pending,"maintenance_failed":receipt.maintenance_failed,"checkpoint_ran":receipt.write_timings.as_ref().map(|timing|timing.checkpoint.is_some()),"timing_key":receipt.write_timings.as_ref().and_then(|timing|timing.request_key.as_ref()).map(ToString::to_string)})
         }
         Err(error) => {
             json!({"code":format!("{:?}",error.code),"cause":error.cause,"detail":format!("{:?}",error.detail)})

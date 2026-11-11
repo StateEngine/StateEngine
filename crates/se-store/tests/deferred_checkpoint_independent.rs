@@ -258,6 +258,7 @@ fn backup_during_pending_maintenance_reopens_consistently() -> Check {
     pin(&pinned)?;
     let receipt = wait(writer.client().submit(payload(&f, "backup-pending")?)?)??;
     assert!(receipt.maintenance_pending);
+    assert!(!receipt.maintenance_failed);
     assert!(
         receipt
             .write_timings

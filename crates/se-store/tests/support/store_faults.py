@@ -135,6 +135,8 @@ def main():
             failures.append("receipt captured before maintenance differs from final report")
         if report["retained_primary"] != 1:
             failures.append("known committed event missing from independently reopened store")
+        if report["returned"][0].get("maintenance_failed") is not False:
+            failures.append("receipt claimed a deferred checkpoint had already failed")
         if report["returned"][0].get("checkpoint_ran") is not False:
             failures.append("returned receipt claimed a deferred checkpoint already ran")
         # The stack-bound injected walCheckpoint write above is the maintenance
