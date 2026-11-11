@@ -175,7 +175,7 @@ def controller_file(path, controller, limit):
 
 def prepare(config, live, report, binding, directory, controller):
     source = binding["source"]
-    repo = fetch_main(live["repository"], source, config.pop("token"), directory / "source.git")
+    repo = fetch_main(live["repository"], source, config.pop("token"), directory / "source.git", scoped=True)
     policy = source_policy(repo, source)
     changed = sorted(p for p in policy.keys() | report["policy"].keys() if policy.get(p) != report["policy"].get(p))
     installed_host_code(repo, source, policy, report["policy"])

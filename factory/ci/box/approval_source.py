@@ -1,8 +1,10 @@
 """Bind automatic CI approval to a merged main commit, never a PR checkout."""
 import base64
+import json
 from pathlib import Path
 import re
 import subprocess
+import uuid
 
 
 def main_source(api, repository, context):
@@ -44,7 +46,7 @@ def current_main(api, expected):
         raise ValueError("main advanced; only its newest merged commit may update approval")
 
 
-def fetch_main(repository, source, token, directory):
+def fetch_main(repository, source, token, directory, *, scoped=False):
     """Fetch bare objects with an ephemeral header; no checkout, hooks or secret file."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("configured repository is invalid")
@@ -58,8 +60,23 @@ def fetch_main(repository, source, token, directory):
             credential = base64.b64encode(("x-access-token:" + token).encode()).decode()
             env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.https://github.com/.extraheader",
                        GIT_CONFIG_VALUE_0="Authorization: Basic " + credential)
-        result = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "http.followRedirects=false",
-                                 *arguments], env=env, capture_output=True, timeout=180, close_fds=True)
+        command = ["git", "-c", "core.hooksPath=/dev/null", "-c", "http.followRedirects=false", *arguments]
+        unit = "se-ci-source-" + uuid.uuid4().hex if authenticated and scoped else None
+        if unit:
+            (directory.parent / "source-fetch.json").write_text(json.dumps({"unit": unit, "source": source}))
+            command = ["systemd-run", "--scope", "--quiet", "--collect", "--unit=" + unit,
+                       "-p", "RuntimeMaxSec=180", "-p", "MemoryMax=512M", "-p", "MemorySwapMax=0",
+                       "-p", "TasksMax=64", *command]
+        try:
+            result = subprocess.run(command, env=env, capture_output=True, timeout=190, close_fds=True)
+        finally:
+            if unit:
+                # Stop the exact generated scope, including Git's HTTP child.
+                # Exit 5 means the completed, collected scope is already absent.
+                stopped = subprocess.run(["systemctl", "stop", unit + ".scope"], env=environment,
+                                         capture_output=True, timeout=30, close_fds=True)
+                if stopped.returncode not in (0, 5):
+                    raise RuntimeError("source transport closure is unproved")
         if result.returncode:
             raise RuntimeError("trusted main fetch failed; credential-bearing transport output withheld")
         return result.stdout
