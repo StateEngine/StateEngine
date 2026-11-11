@@ -25,7 +25,7 @@ from dispatch import trusted
 from engine import Container, capacity
 from github_binding import policy_paths
 from transport import execute, WorkloadFailure
-from workload import Cohort, JOBS
+from workload import Cohort, JOBS, resource_limits
 from runner_slot import select, venue
 
 CONFIG = Path("/etc/stateengine-ci/self-hosted.json")
@@ -301,17 +301,15 @@ def linux_step(config, report, directory, *, all_features=False):
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        memory = (9 if config.get("parallel") else 18) * 1024**3
-        capacity(memory)
+        limits = resource_limits(config.get("parallel", False))
+        capacity(limits["memory"])
         with venue(config):
             journal = journal_at(config)
             journal.reconcile()
             print("Feature coverage: " + ("all features" if all_features else "default features"),
                   file=sys.stderr, flush=True)
             cohort = Cohort(report, journal, directory / "source.tar.gz", Path(config["cache"]), directory,
-                            canceled, all_features=all_features,
-                            memory=memory, cpus=4 if config.get("parallel") else 8,
-                            workers=4 if config.get("parallel") else 8)
+                            canceled, all_features=all_features, **limits)
             try:
                 for name in JOBS:
                     if name != "fmt" and not outcomes.get("fmt"):
