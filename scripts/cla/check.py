@@ -148,6 +148,14 @@ def same_head(github, head, branch):
                   if pull["head"]["sha"] == head and pull["base"]["ref"] == branch)
 
 
+def membership(pulls):
+    members = {}
+    for pull in pulls:
+        members.setdefault(pull["head"]["sha"], set()).add(
+            (pull["number"], pull["base"]["sha"]))
+    return members
+
+
 def check_pull(github, number):
     # Commit statuses belong to a SHA, not a pull request. Every open request
     # sharing that head must qualify before the SHA can receive success.
@@ -185,6 +193,7 @@ def run():
     github = GitHub()
     branch = github.request("")["default_branch"]
     pulls = [pull for pull in github.pages("pulls") if pull["base"]["ref"] == branch]
+    checked_members = membership(pulls)
     # Every event checks the current open set. A newer globally serialized
     # event covers an older canceled event, including signature deletions.
     heads = {pull["head"]["sha"]: pull["number"] for pull in pulls}
@@ -198,13 +207,30 @@ def run():
             print(f"Pull request {number}: agreement check refused: {error}")
             results[head] = False
             github.status(head, "failure", "Contributor identity or agreement could not be verified")
+    # Later status writes can race a synchronization after check_pull's own
+    # final read. Approval remains bound to the requests and bases we checked.
+    try:
+        current_members = membership(pull for pull in github.pages("pulls")
+                                     if pull["base"]["ref"] == branch)
+    except (KeyError, OSError, ValueError, urllib.error.URLError) as error:
+        for head in results:
+            github.status(head, "failure", "Pull-request membership could not be rechecked")
+        raise ValueError("pull-request membership is unreadable; rerun the check") from error
+    for head in checked_members.keys() | current_members.keys():
+        if checked_members.get(head) != current_members.get(head):
+            results[head] = False
+            github.status(head, "failure", "Pull-request membership changed; rerun the check")
     # Keep refreshing every head under global serialization, but a pull-request
     # event's run belongs to that request. Shared-head peers still qualify together.
     if subject is not None:
         current = github.request(f"pulls/{subject}")
         if current["state"] == "closed":
             return
-        complete = results.get(current["head"]["sha"], False)
+        head = current["head"]["sha"]
+        if (subject, current["base"]["sha"]) not in checked_members.get(head, set()):
+            results[head] = False
+            github.status(head, "failure", "Pull request changed; the new revision needs its own check")
+        complete = results.get(head, False)
     else:
         complete = all(results.values())
     if not complete:
