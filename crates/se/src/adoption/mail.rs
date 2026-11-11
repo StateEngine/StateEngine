@@ -51,8 +51,16 @@ impl MailWait {
         let files = se_proc::NativeStateFiles::open(&cx.home).map_err(native)?;
         files.prepare_directory(&directory).map_err(native)?;
         let mut offer_identity = Sha256::new();
-        offer_identity.update(input.conversation.as_str());
-        offer_identity.update(provider.binding());
+        if input.kind == Kind::Codex {
+            // Native queues survive a provider restart. Unknown acceptance must
+            // remain suppressed when the same conversation is resumed.
+            offer_identity.update(b"codex-conversation-mail/v1");
+            offer_identity.update(input.project.as_str());
+            offer_identity.update(input.conversation.as_str());
+        } else {
+            offer_identity.update(input.conversation.as_str());
+            offer_identity.update(provider.binding());
+        }
         let name = format!("{:x}", offer_identity.finalize());
         let lock_path = directory.join(format!("{name}.lock"));
         if files.readback(&lock_path).map_err(native)?.is_none() {
@@ -214,7 +222,7 @@ impl MailWait {
             if self.offered.len() + messages.len() > 4096 {
                 return Err(SeError::invalid(
                     "native mail offers",
-                    "at most 4096 pending offers; read or dismiss older mail using StateEngine",
+                    "at most 4096 automatic offers; read additional mail directly from the StateEngine inbox",
                 ));
             }
             for row in &messages {
