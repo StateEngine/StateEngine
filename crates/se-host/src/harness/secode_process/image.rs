@@ -119,10 +119,10 @@ fn observe_stamp(path: &Path) -> Result<Option<ExecutableStamp>> {
     ExecutableStamp::observe(path).map_err(|e| unreadable("SE Code executable stamp", e))
 }
 fn pin(path: &Path) -> Result<PinnedImage> {
-    let before = observe_stamp(path)?;
     let mut pin = se_proc::NativeSourcePin::open(path)
         .map_err(|e| unreadable("SE Code image pin", e))?
         .ok_or_else(|| incompatible("a selected SE Code native image is absent"))?;
+    let before = observe_stamp(path)?;
     let (digest, bytes) = digest(&mut pin)?;
     if observe_stamp(path)? != before {
         return Err(incompatible(
