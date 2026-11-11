@@ -20,6 +20,8 @@ class Case:
     def __init__(self, image, root):
         self.image, self.root = image, root
         self.home = root / "state"
+        self.repo = root / "repository"
+        self.repo.mkdir()
         self.rows = []
         self.env = {key: value for key, value in os.environ.items()
                     if not key.startswith(("SE_", "STATEENGINE_", "SECODE_", "CODEX_",
@@ -36,7 +38,7 @@ class Case:
         stem = self.root / f"{len(self.rows):02}-{operation}"
         with stem.with_suffix(".stdout").open("wb") as out, \
                 stem.with_suffix(".stderr").open("wb") as err:
-            child = subprocess.Popen(command, env=self.env, cwd=self.root,
+            child = subprocess.Popen(command, env=self.env, cwd=self.repo,
                                      stdin=subprocess.DEVNULL, stdout=out, stderr=err)
         row = dict(argv=command, pid=child.pid, started=time.monotonic(), exit=None,
                    stdout=str(stem.with_suffix(".stdout")),
