@@ -5,6 +5,7 @@ mod control;
 mod doctor;
 pub mod error;
 mod event;
+#[cfg(feature = "import")]
 mod import;
 mod labels;
 #[cfg(test)]
@@ -86,6 +87,7 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             }
             (HumanKind::Help, AnyOutput::MetaHelp(value)) => write!(out, "{}", value.value.usage)?,
             (HumanKind::Schema, AnyOutput::MetaSchema(value)) => read::schema(&value.value, out)?,
+            #[cfg(feature = "import")]
             (HumanKind::Import, AnyOutput::ImportNode(value)) => import::output(&value.value, out)?,
             (HumanKind::Init, AnyOutput::ProjectInit(value)) => write::init(&value.value, out)?,
             (HumanKind::ProjectMove, AnyOutput::ProjectMove(value)) => {

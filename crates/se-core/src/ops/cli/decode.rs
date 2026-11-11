@@ -151,6 +151,7 @@ pub fn from_matches_with_key(
             event: serde_json::from_value(serde_json::Value::String(required(m, "event")?))
                 .map_err(|_| SeError::invalid("event", "a fixed Claude hook event"))?,
         }),
+        #[cfg(feature = "import")]
         "store.import_node" => AnyOp::ImportNode(ImportNode {
             from_node: required(m, "from_node")?,
             source_owner: text(m, "source_owner")
@@ -164,6 +165,7 @@ pub fn from_matches_with_key(
                 .collect::<Result<Vec<_>>>()?,
             idempotency_key: key()?,
         }),
+
         "project.init" => AnyOp::ProjectInit(ProjectInit {
             repo: text(m, "repo"),
             name: text(m, "name"),

@@ -53,7 +53,9 @@ pub mod queued_input;
 pub mod transcript;
 pub use inbox::MessageInbox;
 pub mod installation;
+#[cfg(feature = "import")]
 pub mod store_import;
+#[cfg(feature = "import")]
 pub use store_import::{ImportNode, ImportReceipt};
 pub mod listing;
 pub mod mail;
@@ -113,30 +115,30 @@ impl<T> Envelope<T> {
 }
 
 macro_rules! ops {
-    ($( $variant:ident => $input:ty, $output:ty,
+    ($( $( #[$cfg:meta] )* $variant:ident => $input:ty, $output:ty,
         ($name:literal, $cli:expr, $mcp:expr, $auth:ident, $anonymous:literal, $human:ident, $effect:ident, $scope:ident, $runtime:ident, $family:literal, $render:ident, $journeys:expr); )+) => {
         #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
         #[serde(tag="op",content="input",deny_unknown_fields)]
-        pub enum AnyOp { $( #[serde(rename=$name)] $variant($input), )+ }
-        $(impl $input { pub const META: OpMeta = OpMeta {
+        pub enum AnyOp { $( $( #[$cfg] )* #[serde(rename=$name)] $variant($input), )+ }
+        $( $( #[$cfg] )* impl $input { pub const META: OpMeta = OpMeta {
             name:$name, cli:$cli, mcp:$mcp, auth:Auth::$auth, anonymous:$anonymous,
             human_only:HumanPolicy::$human, effect:Effect::$effect, variants:&[],
             scope:Scope::$scope, runtime:RuntimeNeed::$runtime, feature:operation_feature($name),
             family:Family { name:$family, major:1 }, human:HumanKind::$render,
             since:API_VERSION, journeys:$journeys,
         }; })+
-        pub static CATALOGUE: &[&OpMeta] = &[ $( &<$input>::META, )+ ];
+        pub static CATALOGUE: &[&OpMeta] = &[ $( $( #[$cfg] )* &<$input>::META, )+ ];
         impl AnyOp {
-            pub fn meta(&self) -> &'static OpMeta { match self { $( Self::$variant(_)=><$input>::META_REF(), )+ } }
-            pub fn validate(&self) -> Result<()> { match self { $( Self::$variant(value)=>value.validate(), )+ } }
-            pub fn input_schema(&self) -> serde_json::Value { match self { $( Self::$variant(_)=>advertised_input_schema(schemars::schema_for!($input).to_value()), )+ } }
+            pub fn meta(&self) -> &'static OpMeta { match self { $( $( #[$cfg] )* Self::$variant(_)=><$input>::META_REF(), )+ } }
+            pub fn validate(&self) -> Result<()> { match self { $( $( #[$cfg] )* Self::$variant(value)=>value.validate(), )+ } }
+            pub fn input_schema(&self) -> serde_json::Value { match self { $( $( #[$cfg] )* Self::$variant(_)=>advertised_input_schema(schemars::schema_for!($input).to_value()), )+ } }
         }
-        $(impl $input { #[allow(non_snake_case)] fn META_REF() -> &'static OpMeta { &Self::META } })+
+        $( $( #[$cfg] )* impl $input { #[allow(non_snake_case)] fn META_REF() -> &'static OpMeta { &Self::META } })+
         pub(crate) fn input_schema(name:&str) -> Option<serde_json::Value> {
-            match name { $( $name=>Some(advertised_input_schema(schemars::schema_for!($input).to_value())), )+ _=>None }
+            match name { $( $( #[$cfg] )* $name=>Some(advertised_input_schema(schemars::schema_for!($input).to_value())), )+ _=>None }
         }
         pub fn schemas(name:&str) -> Option<(serde_json::Value,serde_json::Value)> {
-            match name { $( $name=>{
+            match name { $( $( #[$cfg] )* $name=>{
                 let mut output=schemars::schema_for!(Envelope<$output>).to_value();
                 if let Some(properties)=output.get_mut("properties").and_then(serde_json::Value::as_object_mut) {
                     properties.insert("schema".into(),serde_json::json!({"const":<$input>::META.family.schema()}));
@@ -206,6 +208,7 @@ ops! {
     MetaHelp => MetaHelp, HelpOutput, ("meta.help",leaf(&["help"]),no_mcp("MCP descriptions derive from the same catalogue."),Either,true,Never,Read,None,None,"se.help",Help,&["J1"]);
     MetaSchema => MetaSchema, SchemaCatalogue, ("meta.schema",leaf(&["schema"]),no_mcp("MCP tools/list exposes the generated schemas."),Either,true,Never,Read,None,None,"se.schema-catalogue",Schema,&["J1"]);
     IdentityWhoami => IdentityWhoami, PrincipalOutput, ("identity.whoami",CliExposure::None {reason:"terminal actor is already known; session introspection is an agent tool"},tool("stateengine_whoami","Identity","Who you are in StateEngine: your project, agent identity, session and what you are allowed to do."),Session,false,Never,Read,Session,None,"se.principal",Principal,&["J2","J3","J4"]);
+    #[cfg(feature = "import")]
     ImportNode => ImportNode, ImportReceipt, ("store.import_node",leaf(&["import"]),no_mcp("Explicit owner migration preserves the original Node history."),Owner,false,Never,Custody,Home,HostAutoStart,"se.import",Import,&["J2","J3","J4"]);
     ProjectInit => ProjectInit, InitOutput, ("project.init",leaf(&["init"]),no_mcp("Owner setup registers the managed workspace."),Owner,false,Never,Write,Home,None,"se.init",Init,&["J2"]);
     ProjectMove => ProjectMove, MoveOutput, ("project.move",leaf(&["project","move"]),no_mcp("Owner terminal operation: re-attach the project to a moved repository folder after verifying its recorded git identity."),Owner,false,Never,Write,Project,None,"se.project-move",ProjectMove,&["J3"]);
@@ -274,6 +277,7 @@ impl AnyOp {
     pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
         match self {
             Self::ProjectInit(v) => Some(&v.idempotency_key),
+            #[cfg(feature = "import")]
             Self::ImportNode(v) => Some(&v.idempotency_key),
             Self::RemoteSend(v) => Some(&v.request.idempotency_key),
             Self::MessageSend(v) => Some(&v.idempotency_key),
@@ -340,6 +344,7 @@ impl AnyOutput {
             Self::DoctorInspect(v) => v.value.exit_code(),
             Self::DoctorRepair(v) if !v.value.complete => 2,
             Self::Uninstall(v) if !v.value.complete => 2,
+            #[cfg(feature = "import")]
             Self::ImportNode(v) if !v.value.complete => 2,
             Self::AgentStop(v) if !v.value.complete => 2,
             Self::ProjectRemove(v) if !matches!(v.value.outcome.as_str(), "removed" | "absent") => {

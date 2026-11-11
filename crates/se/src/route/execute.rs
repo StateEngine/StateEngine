@@ -116,28 +116,33 @@ pub(crate) fn stop_for_uninstall(
 
 fn dispatch_with_cold_recovery(
     cx: &Bootstrap,
-    mut op: AnyOp,
+    op: AnyOp,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
     recover_cold: bool,
 ) -> Result<AnyOutput> {
     let observation_deadline = super::session_observation::deadline()?;
-    if let AnyOp::ImportNode(input) = &mut op {
-        let path = std::path::PathBuf::from(&input.from_node);
-        let absolute = if path.is_absolute() {
-            path
-        } else {
-            cx.cwd.join(path)
-        };
-        input.from_node = absolute
-            .to_str()
-            .ok_or_else(|| {
-                SeError::invalid(
-                    "Node source path",
-                    "an exact UTF-8 CLI path; lossy path conversion is refused",
-                )
-            })?
-            .into();
-    }
+    #[cfg(feature = "import")]
+    let op = {
+        let mut op = op;
+        if let AnyOp::ImportNode(input) = &mut op {
+            let path = std::path::PathBuf::from(&input.from_node);
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                cx.cwd.join(path)
+            };
+            input.from_node = absolute
+                .to_str()
+                .ok_or_else(|| {
+                    SeError::invalid(
+                        "Node source path",
+                        "an exact UTF-8 CLI path; lossy path conversion is refused",
+                    )
+                })?
+                .into();
+        }
+        op
+    };
     if let AnyOp::ProjectInit(input) = op {
         return super::init::execute(cx, input);
     }
@@ -462,6 +467,7 @@ fn complete(outcome: direct::Outcome) -> Result<AnyOutput> {
                     se_core::ports::CustodyPlan::AtlasRead(_) => "host Atlas reader",
                     se_core::ports::CustodyPlan::ClaudeHook(_) => "hook",
                     se_core::ports::CustodyPlan::Initialize(_) => "init",
+                    #[cfg(feature = "import")]
                     se_core::ports::CustodyPlan::ImportNode(_) => "host history importer",
                     se_core::ports::CustodyPlan::ObserveStatus(_) => "status",
                     se_core::ports::CustodyPlan::RuntimeUp(_) => "runtime.up",

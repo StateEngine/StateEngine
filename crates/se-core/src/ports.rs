@@ -21,6 +21,7 @@ pub enum CustodyPlan {
     Remove(Box<crate::ops::project_remove::RemovePlan>),
     ClaudeHook(crate::ops::hook::HookClaude),
     Initialize(ProjectInit),
+    #[cfg(feature = "import")]
     ImportNode(crate::ops::ImportNode),
     /// A read-only native observation, followed by core status construction.
     ObserveStatus(ProjectStatus),

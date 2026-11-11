@@ -17,7 +17,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use se_core::ops::CATALOGUE;
-use se_core::registry::{Auth, CliExposure, Effect, Feature, McpExposure, OpMeta, Selector};
+use se_core::registry::{
+    Auth, CliExposure, Effect, Family, Feature, HumanKind, HumanPolicy, McpExposure, OpMeta,
+    RuntimeNeed, Scope, Selector,
+};
+use se_types::API_VERSION;
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->";
 const END: &str = "<!-- END GENERATED: ops-inventory -->";
@@ -168,10 +172,58 @@ fn unlisted_note(meta: &OpMeta) -> String {
     }
 }
 
+/// The `store.import_node` registry row, hand-written for default-feature
+/// builds, where the `import` cargo feature keeps the operation out of
+/// `CATALOGUE`. `docs/OPS.md` describes the complete surface, so the drift
+/// check below always compares against the registry as if the feature were
+/// on.
+fn import_meta() -> OpMeta {
+    OpMeta {
+        name: "store.import_node",
+        cli: CliExposure::Leaf {
+            path: &["import"],
+            hidden: false,
+            select: Selector::Always,
+        },
+        mcp: McpExposure::None {
+            reason: "Explicit owner migration preserves the original Node history.",
+        },
+        auth: Auth::Owner,
+        anonymous: false,
+        human_only: HumanPolicy::Never,
+        effect: Effect::Custody,
+        variants: &[],
+        scope: Scope::Home,
+        runtime: RuntimeNeed::HostAutoStart,
+        feature: Feature::Core,
+        family: Family {
+            name: "se.import",
+            major: 1,
+        },
+        human: HumanKind::Import,
+        since: API_VERSION,
+        journeys: &["J2", "J3", "J4"],
+    }
+}
+
+fn effective_catalogue() -> Vec<&'static OpMeta> {
+    let mut rows: Vec<&'static OpMeta> = CATALOGUE.to_vec();
+    if !cfg!(feature = "import") {
+        let literal = Box::leak(Box::new(import_meta()));
+        let position = rows
+            .iter()
+            .position(|row| row.name == "project.init")
+            .unwrap_or_else(|| panic!("registry lost its project.init row"));
+        rows.insert(position, literal);
+    }
+    rows
+}
+
 fn render_block(md: &str) -> String {
     let (design_ops, design_tools) = design_tables(md);
-    let registry_ops: BTreeSet<String> = CATALOGUE.iter().map(|m| m.name.to_string()).collect();
-    let registry_tools: BTreeSet<String> = CATALOGUE
+    let rows = effective_catalogue();
+    let registry_ops: BTreeSet<String> = rows.iter().map(|m| m.name.to_string()).collect();
+    let registry_tools: BTreeSet<String> = rows
         .iter()
         .filter_map(|m| match m.mcp {
             McpExposure::Tool { name, .. } => Some(name.to_string()),
@@ -180,21 +232,21 @@ fn render_block(md: &str) -> String {
         .collect();
     let planned_ops: Vec<String> = design_ops.difference(&registry_ops).cloned().collect();
     let planned_tools: Vec<String> = design_tools.difference(&registry_tools).cloned().collect();
-    let unlisted_ops: Vec<&OpMeta> = CATALOGUE
+    let unlisted_ops: Vec<&OpMeta> = rows
         .iter()
         .copied()
         .filter(|m| !design_ops.contains(m.name))
         .collect();
     let unlisted_tools: Vec<String> = registry_tools.difference(&design_tools).cloned().collect();
 
-    let ops = CATALOGUE.len();
-    let atlas_ops = CATALOGUE
+    let ops = rows.len();
+    let atlas_ops = rows
         .iter()
         .filter(|m| matches!(m.feature, Feature::Atlas))
         .count();
     let core_ops = ops - atlas_ops;
     let tools = registry_tools.len();
-    let atlas_tools = CATALOGUE
+    let atlas_tools = rows
         .iter()
         .filter(|m| matches!(m.feature, Feature::Atlas))
         .filter(|m| matches!(m.mcp, McpExposure::Tool { .. }))
@@ -209,7 +261,7 @@ fn render_block(md: &str) -> String {
     ));
     out.push_str("| Operation | CLI | MCP tool | Auth | Effect |\n");
     out.push_str("| --- | --- | --- | --- | --- |\n");
-    for meta in CATALOGUE {
+    for meta in rows {
         out.push_str(&format!(
             "| `{}` | {} | {} | {} | {} |\n",
             meta.name,
@@ -285,4 +337,30 @@ fn ops_inventory_is_in_sync_with_registry() {
         &full,
         "docs/OPS.md ops inventory drifted from the se-core registry or the design tables; regenerate with {UPDATE}=1 cargo test -p se-core --test ops_inventory_drift"
     );
+}
+
+#[cfg(feature = "import")]
+#[test]
+fn import_row_literal_matches_the_registry() {
+    let row = CATALOGUE
+        .iter()
+        .find(|row| row.name == "store.import_node")
+        .unwrap_or_else(|| panic!("registry lost store.import_node"));
+    let literal = import_meta();
+    let row = **row;
+    assert_eq!(literal.name, row.name);
+    assert_eq!(literal.cli, row.cli);
+    assert_eq!(literal.mcp, row.mcp);
+    assert_eq!(literal.auth, row.auth);
+    assert_eq!(literal.anonymous, row.anonymous);
+    assert_eq!(literal.human_only, row.human_only);
+    assert_eq!(literal.effect, row.effect);
+    assert_eq!(literal.variants, row.variants);
+    assert_eq!(literal.scope, row.scope);
+    assert_eq!(literal.runtime, row.runtime);
+    assert_eq!(literal.feature, row.feature);
+    assert_eq!(literal.family, row.family);
+    assert_eq!(literal.human, row.human);
+    assert_eq!(literal.since, row.since);
+    assert_eq!(literal.journeys, row.journeys);
 }

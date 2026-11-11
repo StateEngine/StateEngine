@@ -564,6 +564,7 @@ impl Kernel {
                     "the owner CLI with the native git identity observation",
                 ));
             }
+            #[cfg(feature = "import")]
             AnyOp::ImportNode(input) => OpStep::Custody(CustodyPlan::ImportNode(input)),
             AnyOp::ProjectStatus(input) => OpStep::Custody(CustodyPlan::ObserveStatus(input)),
             AnyOp::RuntimeUp(input) => OpStep::Custody(CustodyPlan::RuntimeUp(input)),
