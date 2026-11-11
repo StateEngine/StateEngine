@@ -1,14 +1,90 @@
 """Actual in-scope MCP self-relaunch and successor-authenticated replay (Linux)."""
 import argparse
 import json
+import os
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import traceback
 from pathlib import Path
+from unittest.mock import patch
 sys.dont_write_bytecode = True
 from force_relaunch_independent import Fixture, wait_for
 from launch_startup import pin, exited
+
+
+def provider_readiness():
+    import force_self_provider as provider
+
+    observed, finished = threading.Event(), threading.Event()
+    admissions, failures = [], []
+
+    class Readiness(threading.Event):
+        def wait(self, timeout=None):
+            observed.set()
+            assert super().wait(5), 'provider readiness was never signalled'
+            return True
+
+    class ChildBoundary(Exception):
+        pass
+
+    ready = Readiness()
+
+    def run_worker():
+        try:
+            provider.worker()
+        except ChildBoundary:
+            pass
+        except BaseException as error:
+            failures.append(error)
+        finally:
+            finished.set()
+            observed.set()
+
+    cwd = Path.cwd()
+    with tempfile.TemporaryDirectory(prefix='se-self-ready-') as directory:
+        repo = Path(directory)
+        ready_file = repo / 'provider-ready.json'
+        ready_file.touch()
+
+        def admit_child(*args, **kwargs):
+            assert ready.is_set(), 'child admitted before provider readiness'
+            assert json.loads(ready_file.read_text())['helper_pid'] == os.getpid()
+            admissions.append(args[0])
+            raise ChildBoundary()
+
+        try:
+            os.chdir(repo)
+            with patch.dict(os.environ, {'SE_SESSION': 'synthetic-ready-session'}), \
+                    patch.object(provider, 'provider_ready', ready, create=True), \
+                    patch.object(provider.subprocess, 'Popen', admit_child):
+                thread = threading.Thread(target=run_worker)
+                thread.start()
+                try:
+                    assert observed.wait(5), 'worker never reached its readiness barrier'
+                    if failures:
+                        raise failures[0]
+                    assert not finished.is_set(), 'worker stopped before readiness'
+                    assert ready_file.read_bytes() == b''
+                    assert not admissions, 'empty readiness file admitted a child'
+                    assert not list((repo / 'self-admissions').iterdir())
+                    ready_file.write_text(json.dumps({'conversation': 'synthetic-conversation',
+                        'session_discovery': True, 'http_discovery': True,
+                        'native_root_pid': os.getppid(), 'helper_pid': os.getpid()}))
+                    ready.set()
+                    assert finished.wait(5), 'worker did not advance after readiness'
+                    if failures:
+                        raise failures[0]
+                    assert len(admissions) == 1, admissions
+                finally:
+                    ready.set()
+                    thread.join(5)
+                    assert not thread.is_alive(), 'readiness worker did not join'
+        finally:
+            os.chdir(cwd)
+    print('PASS self-force worker waits for complete provider readiness before child admission', flush=True)
 
 
 def self_relaunch(binary, root):
@@ -94,6 +170,7 @@ def main():
     parser.add_argument('--se', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
+    provider_readiness()
     self_relaunch(args.se.resolve(), args.output)
 
 
