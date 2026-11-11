@@ -189,15 +189,6 @@ impl HostedRuntime {
             }
             Err(error) => (bootstrap, Err(error)),
         };
-        #[cfg(windows)]
-        let committed = match committed {
-            Ok(admission) => listener
-                .listener
-                .join_startup_refusals(deadline)
-                .await
-                .map(|()| admission),
-            Err(error) => Err(error),
-        };
         if let Err(error) = committed {
             let (closed, retired) = listener.finish_transport(&self.execution.blocking).await;
             let pending: Vec<_> = closed.err().into_iter().chain(retired.err()).collect();
