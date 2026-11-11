@@ -191,7 +191,11 @@ impl HostedRuntime {
         };
         #[cfg(windows)]
         let committed = match committed {
-            Ok(()) => listener.listener.join_startup_refusals(deadline).await,
+            Ok(admission) => listener
+                .listener
+                .join_startup_refusals(deadline)
+                .await
+                .map(|()| admission),
             Err(error) => Err(error),
         };
         if let Err(error) = committed {
