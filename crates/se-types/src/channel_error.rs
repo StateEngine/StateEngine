@@ -8,6 +8,7 @@ pub enum MessagingChannelError {
     PollerConflict,
     ProviderUnreachable,
     ProviderProtocol,
+    ReplayUnavailable,
     PairingExpired,
     RevisionConflict,
     IdempotencyConflict,
@@ -39,6 +40,7 @@ impl MessagingChannelError {
             Self::PollerConflict => "poller_conflict",
             Self::ProviderUnreachable => "provider_unreachable",
             Self::ProviderProtocol => "provider_protocol",
+            Self::ReplayUnavailable => "receive_replay_unavailable",
             Self::PairingExpired => "pairing_expired",
             Self::RevisionConflict => "revision_conflict",
             Self::IdempotencyConflict => "idempotency_conflict",
@@ -92,10 +94,10 @@ impl MessagingChannelError {
                 "Inspect the original saved receipt before resending. Provider updates retain their original deduplication identity."
             }
             Self::SendOutcomeUnknown => {
-                "Inspect the original reply and Telegram send status; an uncertain send is never automatically resent."
+                "Inspect the original reply and delivery status; an uncertain send is never automatically resent."
             }
             Self::QueueFull => {
-                "Wait for pending mail or Telegram output to drain; this input has not been reported as Saved."
+                "Wait for pending mail or channel output to drain; this input has not been reported as Saved."
             }
             Self::MessageTooLarge => {
                 "Shorten or split the message explicitly; StateEngine does not silently truncate channel text."
@@ -105,6 +107,9 @@ impl MessagingChannelError {
             }
             Self::InvalidInput => {
                 "Refresh Channels and use its typed inputs, exact revisions and original mutation keys."
+            }
+            Self::ReplayUnavailable => {
+                "The provider could not replay an earlier receive session. Inspect the receive coverage gap; unsaved messages in that interval may need resending."
             }
             Self::ProviderProtocol | Self::ProviderUnreachable | Self::RateLimited { .. } => {
                 "Keep the connection open and inspect its retry status; saved local mail remains durable during the outage."
@@ -126,6 +131,7 @@ impl MessagingChannelError {
             ))),
             Self::ProviderUnreachable
             | Self::ProviderProtocol
+            | Self::ReplayUnavailable
             | Self::RevisionConflict
             | Self::CredentialStoreUnavailable
             | Self::SaveOutcomeUnknown

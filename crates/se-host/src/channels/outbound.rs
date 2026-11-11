@@ -115,12 +115,7 @@ impl Channels {
                 | ChannelError::ProviderUnreachable,
             ) => OutputOutcome::Unknown,
             Err(error) => {
-                self.set_health(
-                    state.id.clone(),
-                    ConnectionHealth::Unavailable {
-                        code: error.code().into(),
-                    },
-                )?;
+                self.unavailable(state.id.clone(), error.code())?;
                 OutputOutcome::Failed { reason: error }
             }
         };

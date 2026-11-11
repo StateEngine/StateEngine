@@ -34,12 +34,16 @@ pub use validation::CHANNEL_CONSENT;
 mod coverage;
 pub use coverage::{ReceiveCoverage, ReceiveGap, ReceiveGapReason};
 mod credentials;
+#[cfg(feature = "listener")]
+mod discord;
 mod error;
 #[cfg(feature = "listener")]
 mod telegram;
 #[cfg(feature = "listener")]
 mod transport;
 pub use credentials::NativeChannelCredentials;
+#[cfg(feature = "listener")]
+pub use discord::Discord;
 pub use error::{ChannelError, ChannelResult};
 #[cfg(feature = "listener")]
 pub use telegram::Telegram;

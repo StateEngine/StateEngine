@@ -54,7 +54,7 @@ impl HostedRouter {
                 committed = Some(known("channel.connect", &result.receipt));
                 let link = std::str::from_utf8(result.ticket.expose_link())
                     .map_err(|_| SeError::invalid("pairing link", "UTF-8 native presentation"))?;
-                json!({"receipt":receipt(&result.receipt),"connection":result.connection.id,"revision":result.connection.revision,"verified_bot":result.connection.bot,"pairing":{"uri":link,"expires_at_us":result.ticket.expires_at_us,"revision":result.ticket.revision}})
+                json!({"receipt":receipt(&result.receipt),"connection":result.connection.id,"revision":result.connection.revision,"verified_bot":result.connection.bot,"pairing":{"uri":link,"message":result.ticket.expose_message(),"expires_at_us":result.ticket.expires_at_us,"revision":result.ticket.revision}})
             }
             ChannelRequest::RestartPairing(input) => {
                 let result = self.channels.restart_pairing(input, deadline).await?;
@@ -64,7 +64,7 @@ impl HostedRouter {
                     .map(|receipt| known("channel.pairing.restart", receipt));
                 let link = std::str::from_utf8(result.expose_link())
                     .map_err(|_| SeError::invalid("pairing link", "UTF-8 native presentation"))?;
-                json!({"connection":result.connection,"revision":result.revision,"pairing":{"uri":link,"expires_at_us":result.expires_at_us,"revision":result.revision}})
+                json!({"connection":result.connection,"revision":result.revision,"pairing":{"uri":link,"message":result.expose_message(),"expires_at_us":result.expires_at_us,"revision":result.revision}})
             }
             ChannelRequest::ConfirmPairing(input) => {
                 let result = self.channels.confirm_pairing(input, deadline).await?;
