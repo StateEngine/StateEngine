@@ -215,13 +215,34 @@ fn silent_overflow_closes_within_the_original_bound_and_keeps_a_spare() -> Check
     .map_err(|error| error.into())
 }
 
+struct ClockStep(&'static str, std::time::Instant);
+impl ClockStep {
+    fn new(name: &'static str) -> Self {
+        eprintln!("REFUSAL_CLOCK {name} begin");
+        Self(name, std::time::Instant::now())
+    }
+    fn finish<T, E: std::fmt::Display>(
+        self,
+        result: std::result::Result<T, E>,
+    ) -> std::result::Result<T, Box<dyn std::error::Error>> {
+        let elapsed = self.1.elapsed().as_millis();
+        eprintln!(
+            "REFUSAL_CLOCK {} elapsed_ms={elapsed} ok={}",
+            self.0,
+            result.is_ok()
+        );
+        result.map_err(|error| format!("{} after {elapsed} ms: {error}", self.0).into())
+    }
+}
+
 // A write larger than the native 64-KiB output quota holds the real write
 // pending while its client stays silent. This is synthetic transport pressure,
 // not a replacement for the separate typed-refusal protocol controls.
 async fn backpressure(
     stream: &NativeStream,
 ) -> std::result::Result<usize, Box<dyn std::error::Error>> {
-    tokio::time::timeout(Duration::from_secs(1), stream.writable()).await??;
+    ClockStep::new("backpressure writable")
+        .finish(tokio::time::timeout(Duration::from_secs(1), stream.writable()).await)??;
     let padding = vec![b'P'; 256 * 1024];
     let queued = stream.try_write(&padding)?;
     assert_eq!(
@@ -238,20 +259,30 @@ async fn backpressure(
 
 #[test]
 fn cancelled_accept_preserves_the_refusal_clock_without_delaying_admission() -> Check {
-    let home = Home::new()?;
-    let (rt, mut listener, endpoint) = configured(&home, 2, 1)?;
-    let mut peers = rt.block_on(queue(&mut listener, &endpoint, 1))?;
-    let padding = rt.block_on(backpressure(
-        &listener
-            .startup_clients
-            .front()
-            .ok_or("first queued stream absent")?
-            .stream,
-    ))?;
-    let clients =
-        rt.spawn_blocking(move || raw_connect(&endpoint).map_err(|error| error.to_string()));
+    let home = ClockStep::new("create test home").finish(Home::new())?;
+    let (rt, mut listener, endpoint) =
+        ClockStep::new("bind configured listener").finish(configured(&home, 2, 1))?;
+    let mut peers = ClockStep::new("initial client queue").finish(rt.block_on(queue(
+        &mut listener,
+        &endpoint,
+        1,
+    )))?;
+    let padding = ClockStep::new("prime native backpressure").finish(
+        rt.block_on(backpressure(
+            &listener
+                .startup_clients
+                .front()
+                .ok_or("first queued stream absent")?
+                .stream,
+        )),
+    )?;
+    let clients = rt.spawn_blocking(move || {
+        ClockStep::new("second native connect")
+            .finish(raw_connect(&endpoint))
+            .map_err(|error| error.to_string())
+    });
     let original = Deadline::from_options(&options(Duration::from_secs(2)))?;
-    peers.push(rt.block_on(async {
+    peers.push(ClockStep::new("pump until second connection").finish(rt.block_on(async {
         let pumping = listener.retain_startup_clients(&original);
         tokio::pin!(pumping);
         let peer = tokio::select! {
@@ -262,50 +293,57 @@ fn cancelled_accept_preserves_the_refusal_clock_without_delaying_admission() -> 
         };
         // Preserve this exact future through every Pending. Cancellation occurs
         // only at the simulated ownership-commit boundary, with the write held.
-        assert!(tokio::time::timeout(Duration::from_millis(100), &mut pumping).await.is_err());
+        let cancelled = ClockStep::new("commit cancellation boundary")
+            .finish(Ok::<_, std::convert::Infallible>(
+                tokio::time::timeout(Duration::from_millis(100), &mut pumping).await,
+            ))?;
+        assert!(cancelled.is_err());
         Ok::<_, Box<dyn std::error::Error>>(peer)
-    })?);
+    }))?);
     assert_eq!(listener.startup_clients.len(), 1);
     assert_eq!(listener.startup_refusals.len(), 1);
     assert_eq!(listener.incoming.available_permits(), 0);
     assert_eq!(listener.preauth.available_permits(), 1);
     // Normal post-commit admission must not join or await this pending refusal.
-    let admitted = rt.block_on(async {
-        tokio::time::timeout(
-            Duration::from_millis(100),
-            listener.accept(Arc::new(AtomicBool::new(false))),
-        )
-        .await?
-        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
-    })?;
+    let admitted =
+        ClockStep::new("immediate post-commit admission").finish(rt.block_on(async {
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                listener.accept(Arc::new(AtomicBool::new(false))),
+            )
+            .await?
+            .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
+        }))?;
     assert!(listener.startup_clients.is_empty());
+    let wait = ClockStep::new("original clock expiry");
     std::thread::sleep(
         original
             .at()
             .saturating_duration_since(std::time::Instant::now())
             + Duration::from_millis(20),
     );
+    wait.finish(Ok::<_, std::convert::Infallible>(()))?;
     assert!(original.remaining().is_err());
-    rt.block_on(
+    ClockStep::new("join refusal task").finish(rt.block_on(
         listener.join_startup_refusals(&Deadline::from_options(&options(Duration::from_secs(2)))?),
-    )?;
+    ))?;
     assert!(listener.startup_refusals.is_empty());
     assert_eq!(listener.incoming.available_permits(), 1);
     peers[0].set_bound(bound(Duration::from_secs(2)));
     let mut closed = Vec::new();
-    Read::take(&mut peers[0], padding as u64 + 1).read_to_end(&mut closed)?;
+    ClockStep::new("drain refused padding and EOF")
+        .finish(Read::take(&mut peers[0], padding as u64 + 1).read_to_end(&mut closed))?;
     assert!(
         closed.len() <= padding && closed.iter().all(|byte| *byte == b'P'),
         "refusal wrote new data after its original clock"
     );
-    silent(&mut peers[1])?;
+    ClockStep::new("retained client stays silent").finish(silent(&mut peers[1]))?;
     drop(admitted);
     drop(peers);
-    rt.block_on(listener.close_joined(
+    ClockStep::new("final listener close").finish(rt.block_on(listener.close_joined(
         &crate::runtime::BlockingPool::new(rt.handle().clone()),
         &Deadline::from_options(&options(Duration::from_secs(2)))?,
-    ))
-    .map_err(|error| error.into())
+    )))
 }
 
 #[test]
