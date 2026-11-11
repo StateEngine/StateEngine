@@ -11,15 +11,15 @@ import urllib.request
 sys.dont_write_bytecode = True
 from mail_provider import main
 
+provider_ready = threading.Event()
+
 
 def worker():
     repo = Path.cwd()
     session = os.environ['SE_SESSION']
     records = repo / 'self-admissions'
     records.mkdir(exist_ok=True)
-    ready = repo / 'provider-ready.json'
-    while not ready.exists() or json.loads(ready.read_text()).get('helper_pid') != os.getpid():
-        time.sleep(.02)
+    provider_ready.wait()
     child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(180)', 'owned-self-force-job'],
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     identity = dict(session=session, pids=[os.getppid(), os.getpid(), child.pid])
@@ -83,4 +83,4 @@ if __name__ == '__main__':
         except BaseException:
             (Path.cwd() / ('self-error-' + session + '.txt')).write_text(traceback.format_exc())
     threading.Thread(target=observed_worker, daemon=True).start()
-    main()
+    main(on_ready=provider_ready.set)

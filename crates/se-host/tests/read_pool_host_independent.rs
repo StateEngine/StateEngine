@@ -166,9 +166,18 @@ fn real_http_refuses_a_replaced_inode_even_after_its_first_refusal_empties_idle(
                 let path = f.options.state_directory.join("state.db");
                 let original = f.options.state_directory.join("retained-original.db");
                 fs::rename(&path, &original)?;
+                // Observe the actual missing-path window before publishing the
+                // replacement; no scheduler timing is needed to exercise it.
+                let absent = working(port).await;
                 let copied = fs::copy(&original, &path);
                 let checked: Check = async {
                     copied?;
+                    let output = absent?;
+                    require(
+                        output["result"]["isError"] == true
+                            && !output.to_string().contains("pool-private-marker"),
+                        format!("missing database was admitted: {output}"),
+                    )?;
                     for _ in 0..3 {
                         let output = working(port).await?;
                         require(
@@ -198,8 +207,13 @@ fn real_http_refuses_a_replaced_inode_even_after_its_first_refusal_empties_idle(
             result
         };
         let (exit, result) = join(host.serve(listener), consumer).await;
-        // The channel worker may read while this test deliberately replaces the
-        // database. Its retained refusal is expected; it is not a drain failure.
+        // The channel worker may observe either the deliberate pathname gap or
+        // the replacement inode. Retain either exact refusal, not unrelated errors.
+        let expected_missing = format!(
+            "inspect installation leaf at {}: Unreadable: {}",
+            f.options.state_directory.join("state.db").display(),
+            std::io::Error::from_raw_os_error(2), // Linux ENOENT; this test is Linux-only.
+        );
         let expected_reason = format!(
             "transcript pathname no longer names the retained source at {}: SourceChanged",
             f.options.state_directory.join("state.db").display(),
@@ -208,9 +222,10 @@ fn real_http_refuses_a_replaced_inode_even_after_its_first_refusal_empties_idle(
             None => Ok(Vec::new()),
             Some(error)
                 if matches!(error.body.detail(), se_types::Detail::SourceUnreadable(detail)
-                    if detail.subject == "store SourceChanged" && detail.reason == expected_reason) =>
+                    if (detail.subject == "store SourceChanged" && detail.reason == expected_reason)
+                        || (detail.subject == "store Unreadable" && detail.reason == expected_missing)) =>
             {
-                eprintln!("retained injected database replacement refusal observed");
+                eprintln!("retained injected database pathname refusal observed");
                 Ok(vec![error.to_string()])
             }
             Some(error) => Err(format!("unexpected host failure: {error}")),

@@ -9,7 +9,7 @@ import traceback
 import urllib.request
 
 
-def main():
+def main(on_ready=None):
     se, home, *arguments = sys.argv[1:]
     cwd = Path.cwd()
     (cwd / "provider-argv.txt").write_text("\n".join(arguments))
@@ -66,6 +66,8 @@ def main():
     (cwd / "provider-ready.json").write_text(json.dumps({"conversation": conversation,
                                                        "session_discovery": True, "http_discovery": True,
                                                        "native_root_pid": os.getppid(), "helper_pid": os.getpid()}))
+    if on_ready is not None:
+        on_ready()
     # Keep the actual native root alive until the caller observes running/C3.
     while True:
         time.sleep(1)
