@@ -15,6 +15,7 @@ mod read;
 mod remote;
 mod stop;
 mod transcript;
+mod wake;
 mod write;
 
 use se_core::{ops::AnyOutput, registry::HumanKind};
@@ -141,6 +142,7 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
                 control::launch(&value.value, out)?
             }
             (HumanKind::Stop, AnyOutput::AgentStop(value)) => stop::output(&value.value, out)?,
+            (HumanKind::Wake, AnyOutput::AgentWake(value)) => wake::output(&value.value, out)?,
             (HumanKind::Remove, AnyOutput::ProjectRemove(value)) => {
                 control::remove(&value.value, out)?
             }

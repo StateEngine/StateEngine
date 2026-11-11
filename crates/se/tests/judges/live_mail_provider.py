@@ -15,6 +15,12 @@ import urllib.request
 
 def main():
     se, home, *arguments = sys.argv[1:]
+    if "--safe-mode" in arguments:
+        request = json.loads(sys.stdin.readline())
+        print(json.dumps({"type": "control_response", "response": {
+            "request_id": request["request_id"], "subtype": "success",
+            "response": {"effective": {}, "sources": [], "errors": []}}}), flush=True)
+        return
     cwd = Path.cwd()
     (cwd / "provider-argv.txt").write_text("\n".join(arguments))
     flag = "--resume" if "--resume" in arguments else "--session-id"

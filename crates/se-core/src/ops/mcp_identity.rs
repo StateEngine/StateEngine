@@ -31,6 +31,7 @@ const fn agent_target(description: &'static str) -> [FieldRole; 6] {
 }
 const LAUNCH_FIELDS: &[FieldRole] = &agent_target("The agent to launch.");
 const STOP_FIELDS: &[FieldRole] = &agent_target("The agent to stop.");
+const WAKE_FIELDS: &[FieldRole] = &agent_target("The running agent to wake.");
 pub const MCP_IDENTITY_ARGUMENT_ROLES: &[(&str, &[FieldRole])] = &[
     ("stateengine_help", CALLER_FIELDS),
     ("stateengine_whoami", CALLER_FIELDS),
@@ -50,6 +51,7 @@ pub const MCP_IDENTITY_ARGUMENT_ROLES: &[(&str, &[FieldRole])] = &[
     ("stateengine_resume", CALLER_FIELDS),
     ("stateengine_agent_launch", LAUNCH_FIELDS),
     ("stateengine_agent_stop", STOP_FIELDS),
+    ("stateengine_agent_wake", WAKE_FIELDS),
     ("stateengine_atlas_find", CALLER_FIELDS),
     ("stateengine_atlas_refs", CALLER_FIELDS),
     ("stateengine_atlas_impact", CALLER_FIELDS),

@@ -121,6 +121,7 @@ Uninstall => Uninstall, UninstallOutput;
 AgentCreate => AgentCreate, AgentReceipt;
 AgentLaunch => AgentLaunch, LaunchReply;
 AgentStop => AgentStop, StopResult;
+AgentWake => AgentWake, WakeResult;
 ProjectRemove => ProjectRemove, RemoveResult;
 AgentShow => AgentShow, AgentStatusOutput;
 AgentList => AgentList, AgentPage;

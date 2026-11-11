@@ -146,6 +146,7 @@ impl CliSelections {
                 // control_target read applies the current direct-creator grant.
                 AnyOp::AgentLaunch(input) => input.owner_agent = Some(selector.clone()),
                 AnyOp::AgentStop(input) => input.owner_agent = Some(selector.clone()),
+                AnyOp::AgentWake(input) => input.owner_agent = Some(selector.clone()),
                 AnyOp::WorkingStateGet(_)
                 | AnyOp::WorkingStateSet(_)
                 | AnyOp::AgentShow(_)

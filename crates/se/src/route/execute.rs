@@ -478,6 +478,7 @@ fn complete(outcome: direct::Outcome) -> Result<AnyOutput> {
                     se_core::ports::CustodyPlan::Uninstall(_) => "uninstall",
                     se_core::ports::CustodyPlan::Launch(_) => "host launch coordinator",
                     se_core::ports::CustodyPlan::Stop(_) => "host stop coordinator",
+                    se_core::ports::CustodyPlan::AgentWake(_) => "host wake coordinator",
                     se_core::ports::CustodyPlan::Remove(_) => "host removal coordinator",
                 }
                 .into(),

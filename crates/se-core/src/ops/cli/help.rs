@@ -60,6 +60,7 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "agent.list" => "List the saved agents in this project",
         "agent.launch" => "Start or resume a saved agent; --detach runs without opening a window",
         "agent.stop" => "Stop a selected agent's running session",
+        "agent.wake" => "Offer a running agent's pending mail and report the committed result",
         "project.remove" => "Unregister projects while preserving repository files and history",
         "agent.show" => "Show one saved agent's identity and saved settings",
         "config.get" => "Read one saved agent setting",

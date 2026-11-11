@@ -65,6 +65,10 @@ impl CommonArgs {
                 stop_release: flag(m, "release"),
                 ..CliSelections::default()
             },
+            "agent.wake" => CliSelections {
+                agent: text(m, "agent"),
+                ..CliSelections::default()
+            },
             "project.remove" => CliSelections {
                 control_all: flag(m, "all"),
                 ..CliSelections::default()
@@ -321,6 +325,9 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(positional("agent", 1, false).conflicts_with("all").help("Saved agent name or ID to stop"))
             .arg(toggle("all").conflicts_with("release").help("Stop every running agent in this project"))
             .arg(toggle("release").help("Also release the stopped agent's reserved resources; one target only")),
+        "agent.wake" => c.arg(
+            positional("agent", 1, true).help("Running saved agent whose pending mail to offer"),
+        ),
         "continuity.resume" => c
             .arg(positional("agent", 1, false).conflicts_with("preview").help("Show the launch command that reopens this agent's saved conversation"))
             .arg(value("since").value_parser(clap::builder::StringValueParser::new()).help("An opaque cursor from resume for this same agent"))

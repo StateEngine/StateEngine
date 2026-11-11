@@ -120,7 +120,7 @@ Plain `se init` (including `--repo DIR`) is managed setup and writes nothing ins
 | `agent.rename` | `agent rename AGENT NAME` | none — owner controls identity labels | owner | write | agent selector, new display name | `AgentReceipt`: stable ID, prior/new name and readback; history remains attached | support J2–J4 |
 | `agent.launch` | `launch AGENT [--new --provider PROVIDER --model MODEL --task TEXT --detach]` | `stateengine_agent_launch` — bound self or explicit creator-authorized `target_agent_id`, never an actor override | either | custody | owner selector, implicit self or direct-created target with current create grant; first-ever conversation or verified saved-conversation resume/new choice, optional provider/model/task/detach; existing-but-missing/unverifiable references refuse | `LaunchResult`: launch/session/lifecycle IDs, provider conversation, readiness/refusal, running vs finished facts and resume instruction | J2–J4 |
 | `agent.stop` | `stop AGENT [--release] \| --all` | `stateengine_agent_stop` — bound self or explicit creator-authorized `target_agent_id`; all is owner-only | either | custody | owner selector/all, implicit self or direct-created target with current create grant; exact owned lifecycle resolved and rechecked | `StopReceipt`: per-agent exact-instance witness or unknown population with reason and original-conversation resume command; release command/result: 50 A.6; native mechanics: 30; persistence/recovery: 20 | J3, J5 |
-| `agent.wake` | `wake AGENT` | `stateengine_agent_wake` — explicit `target_agent_id` and creator authorization for sessions | either | custody | explicit running agent target and observed lifecycle; owner or its direct creator with current create grant | `WakeReceipt`: offered/delivered/pending/refused facts; never a spawn or a recipient-read claim | J4 |
+| `agent.wake` | `agent wake AGENT` | `stateengine_agent_wake` — explicit `target_agent_id` and creator authorization for sessions | either | custody | explicit running agent target and observed lifecycle; owner or its direct creator with current create grant | `WakeReceipt`: offered/delivered/pending/refused facts; never a spawn or a recipient-read claim | J4 |
 | `continuity.resume` | `resume [--since CURSOR --budget BYTES --limit N] [--preview AGENT]` | `stateengine_resume` | either | read | opaque since cursor, bounded context budget; preview target only for owner | `Resume`: verified principal, continuity/working state, required reads, omissions/deferred retrieval, next cursor and integrity/readiness facts | J3, J4 |
 | `working_state.get` | `working-state [--agent AGENT]` | none — bound MCP resume includes working state | either | read | owner selector or implicit self | `Read<WorkingState>`: text and revision/absence fact | J3 |
 | `working_state.set` | `working-state set TEXT [--agent AGENT] --expect REV` | `stateengine_working_state_set` | either | write | text, expected revision or explicit absent sentinel; owner selector or implicit self | `WorkingStateReceipt`: new revision/readback; revision conflict uses the common error channel with expected/current revision and no event | J3 |
@@ -241,7 +241,7 @@ The CLI retains replacement hints only for commands with a supported replacement
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 49 operations (43 core, 6 Atlas), 23 MCP tools (18 core, 5 Atlas). Planned: 10 operations, 4 MCP tools.
+Registered: 50 operations (44 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). Planned: 9 operations, 3 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -289,15 +289,16 @@ Registered: 49 operations (43 core, 6 Atlas), 23 MCP tools (18 core, 5 Atlas). P
 | `agent.list` | agent list | none | owner | read |
 | `agent.launch` | launch | `stateengine_agent_launch` | either | custody |
 | `agent.stop` | stop | `stateengine_agent_stop` | either | custody |
+| `agent.wake` | agent wake | `stateengine_agent_wake` | either | custody |
 | `project.remove` | remove | none | owner | custody |
 | `agent.show` | agent show | none | owner | read |
 | `config.get` | config get | none | owner | read |
 | `config.set` | config set | none | owner | write |
 | `config.list` | config list | none | owner | read |
 
-Planned operations (design tables, not yet registered): `agent.wake`, `credential.rotate`, `history.search`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
+Planned operations (design tables, not yet registered): `credential.rotate`, `history.search`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
 
-Planned MCP tools: `stateengine_agent_status`, `stateengine_agent_wake`, `stateengine_search`, `stateengine_session_turn`
+Planned MCP tools: `stateengine_agent_status`, `stateengine_search`, `stateengine_session_turn`
 
 Registered without a design-table row: `atlas.augment` (no CLI or MCP exposure), `remote.prepare_send` (no CLI or MCP exposure), `project.move` (CLI `project move`)
 
