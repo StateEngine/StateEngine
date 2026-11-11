@@ -1,0 +1,7 @@
+{
+ "comment": "Shrink-only list of files that reach three levels up with super::super::super. Reaching three levels up means the module boundary is wrong; a new file doing so is refused. Remove an entry when the file stops reaching that far.",
+ "files": [
+  "crates/se-host/src/remote/client/connection/pump.rs",
+  "crates/se-host/src/runtime/capture/source/verification.rs"
+ ]
+}

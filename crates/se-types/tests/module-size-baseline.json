@@ -1,0 +1,7 @@
+{
+ "schema_version": 1,
+ "comment": "Per-file ceiling for Rust source under crates/: 800 physical lines for source files, 1,000 for files under a crate's tests/ directory, the implementation rules of AGENTS.md. Existing overages get an exact-line exception with an owner and a remediation; the list may only shrink, and the git history since the ratchet establishment commit refuses new exceptions or raised ceilings. No file exceeded its ceiling when the ratchet was established on main 14559356a, so exceptions starts empty.",
+ "default_max_lines": 800,
+ "test_max_lines": 1000,
+ "exceptions": []
+}
