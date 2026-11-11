@@ -20,6 +20,10 @@ impl PackageLaunch {
     ) -> io::Result<Self> {
         let root = fs::canonicalize(root)?;
         let marker = manager(&root, launcher)?;
+        // Ownership uses canonical spelling; the launcher exports a plain
+        // Windows path when that spelling names the same destination.
+        #[cfg(windows)]
+        let root = se_proc::canonicalize_path(&root)?;
         let search = image
             .parent()
             .and_then(Path::parent)
