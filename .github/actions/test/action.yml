@@ -10,6 +10,9 @@ inputs:
   mode:
     description: Full suite or supported hosted Windows smoke tests
     default: full
+  all-features:
+    description: Feature mode used by the archive producer
+    default: "false"
 runs:
   using: composite
   steps:
@@ -31,8 +34,11 @@ runs:
       shell: bash
       env:
         CI_TEST_MODE: ${{ inputs.mode }}
+        CI_ALL_FEATURES: ${{ inputs.all-features }}
       run: |
-        filter="$(python scripts/ci/custom.py filter)"
+        features=()
+        if [[ "$CI_ALL_FEATURES" == true ]]; then features+=(--all-features); fi
+        filter="$(python scripts/ci/custom.py filter "${features[@]}")"
         if [[ "$RUNNER_OS" == Windows && "$CI_TEST_MODE" == smoke ]]; then
           smoke='kind(lib)'
           smoke="$smoke or (binary(=atlas_hook_native) and test(=missing_host_and_unclosed_provider_input_are_silent_and_finite))"

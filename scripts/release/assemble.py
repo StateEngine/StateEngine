@@ -82,7 +82,7 @@ def main():
     for name, checksum in metadata["files"].items():
         path = PurePosixPath(name)
         if (not re.fullmatch(r"[A-Za-z0-9_./+-]+", name) or path.is_absolute() or ".." in path.parts
-                or (name != binary and not name.startswith("notices/"))):
+                or (name != binary and not name.startswith(("notices/", "symbols/")))):
             raise ValueError(f"unexpected payload path: {name}")
         if digest(build / name) != checksum:
             raise ValueError(f"build checksum mismatch: {name}")
@@ -110,7 +110,7 @@ def main():
         for name, checksum in inventory.items():
             path = PurePosixPath(name)
             if (not re.fullmatch(r"[A-Za-z0-9_./+-]+", name) or path.is_absolute() or ".." in path.parts
-                    or (name != executable and not name.startswith("notices/"))):
+                    or (name != executable and not name.startswith(("notices/", "symbols/")))):
                 raise ValueError("unexpected remote payload path")
             if digest(directory / name) != checksum:
                 raise ValueError("remote build checksum mismatch")
@@ -123,13 +123,14 @@ def main():
     flavor = "-native-only" if args.native_only else ""
     stem = f'stateengine-{metadata["version"]}-{metadata["target"]}{flavor}-unsigned'
     archive = args.out / (stem + (".zip" if windows else ".tar.gz"))
-    if archive.exists() or archive.with_suffix(archive.suffix + ".sha256").exists():
+    symbols_root = args.out / (stem + ".symbols")
+    if archive.exists() or archive.with_suffix(archive.suffix + ".sha256").exists() or symbols_root.exists():
         raise ValueError(f"archive already exists: {archive}; choose a new output directory")
     with tempfile.TemporaryDirectory(prefix="se-assemble-") as scratch:
         root = Path(scratch) / stem
         root.mkdir()
         for name in sorted(expected):
-            if name.startswith("notices/"):
+            if name.startswith(("notices/", "symbols/")):
                 continue
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -217,10 +218,31 @@ def main():
                                 output.addfile(info, stream)
                         else:
                             output.addfile(info)
+    # Diagnostic files are separate artifacts: none are installed or downloaded
+    # with the ordinary package, but each stays bound to its exact native image.
+    symbol_sources = [(metadata["target"], build, metadata, binary)] + [
+        (target, directory, companion, executable)
+        for target, (directory, companion, executable) in sorted(companions.items())]
+    symbols = {}
+    for target, directory, info, executable in symbol_sources:
+        entries = {name: checksum for name, checksum in info["files"].items() if name.startswith("symbols/")}
+        if not entries:
+            continue
+        destination = symbols_root / target
+        destination.mkdir(parents=True, exist_ok=False)
+        for name in entries:
+            output = destination / Path(name).relative_to("symbols")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(directory / name, output)
+        record = {"source_commit": info["source_commit"], "target": target,
+                  "executable_sha256": info["files"][executable],
+                  "files": {str(PurePosixPath(name).relative_to("symbols")): checksum for name, checksum in entries.items()}}
+        (destination / "manifest.json").write_text(json.dumps(record, indent=2) + "\n")
+        symbols[target] = str(destination.resolve())
     checksum = digest(archive)
     archive.with_suffix(archive.suffix + ".sha256").write_text(f"{checksum}  {archive.name}\n")
     print(json.dumps({"archive": str(archive.resolve()), "sha256": checksum,
-                      "source_commit": metadata["source_commit"], "trust": "unsigned"}))
+                      "source_commit": metadata["source_commit"], "trust": "unsigned", "symbols": symbols}))
 
 
 if __name__ == "__main__":

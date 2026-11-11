@@ -115,6 +115,47 @@ def native_requirements(path, windows, target=None):
             "inspector_sha256": digest(Path(inspector))}
 
 
+def strip_binary(path, target, sysroot, cargo_artifact):
+    """Strip with the pinned compiler's own tool, retaining cheap diagnostics."""
+    windows = target.endswith("windows-msvc")
+    tool = sysroot / "lib/rustlib" / target / "bin" / ("rust-objcopy.exe" if windows else "rust-objcopy")
+    if not tool.is_file():
+        raise ValueError("the pinned Rust compiler's rust-objcopy is absent; reinstall the pinned toolchain")
+    environment = dict(os.environ)
+    if windows:
+        prefixes = [str(sysroot / "bin"), str(sysroot / "lib")]
+        environment["PATH"] = os.pathsep.join(prefixes + [environment.get("PATH", "")])
+    else:
+        loader = "DYLD_LIBRARY_PATH" if target.endswith("apple-darwin") else "LD_LIBRARY_PATH"
+        environment[loader] = os.pathsep.join([str(sysroot / "lib"), environment.get(loader, "")])
+    before = {"sha256": digest(path), "bytes": path.stat().st_size}
+    retained = []
+
+    def objcopy(*arguments):
+        subprocess.run([str(tool), *map(str, arguments)], check=True, env=environment)
+
+    if target.endswith("linux-gnu"):
+        symbols = path.parent / "symbols" / (path.name + ".debug")
+        symbols.parent.mkdir()
+        objcopy("--only-keep-debug", path, symbols)
+        retained.append(symbols.relative_to(path.parent).as_posix())
+    elif windows:
+        pdb = Path(cargo_artifact).with_suffix(".pdb")
+        if pdb.is_file():
+            symbols = path.parent / "symbols" / pdb.name
+            symbols.parent.mkdir()
+            shutil.copyfile(pdb, symbols)
+            retained.append(symbols.relative_to(path.parent).as_posix())
+    objcopy("--strip-all", path)
+    if target.endswith("linux-gnu"):
+        objcopy("--add-gnu-debuglink=" + str(symbols), path)
+    return {"mode": "all", "tool_sha256": digest(tool), "unstripped": before,
+            "stripped": {"sha256": digest(path), "bytes": path.stat().st_size},
+            "diagnostics": {"state": "retained" if retained else "not_retained", "files": retained,
+                "reason": None if retained else ("the build produced no PDB" if windows
+                    else "a separate native symbol bundle was not produced")}}
+
+
 def feature_arguments(inputs):
     arguments = ["--no-default-features"]
     if inputs["features"]:
@@ -189,6 +230,7 @@ def main():
             raise ValueError("Cargo did not report exactly one se executable")
         out.mkdir(parents=True)
         shutil.copyfile(binary[0]["executable"], out / name)
+        stripping = strip_binary(out / name, args.target, sysroot, binary[0]["executable"])
     (out / name).chmod(0o755)
     requirements = native_requirements(out / name, "windows" in args.target, args.target)
     version = subprocess.run([str(out / name), "--version"], cwd=out, check=True, text=True,
@@ -225,7 +267,7 @@ def main():
         "rustflags": flags, "source_date_epoch": epoch, "fresh_target": True,
         "cargo_config_overrides": overrides,
         "path_remap": {name: value for name, (_, value) in zip(("source", "cargo", "toolchain", "target"), mappings)},
-        "native_requirements": requirements, "version_stdout": version,
+        "native_requirements": requirements, "version_stdout": version, "stripping": stripping,
         "default_features": False, "offline": args.offline,
         "features": inputs["features"], "compiled_features": features,
         "cargo_lock_sha256": digest(ROOT / "Cargo.lock"),
