@@ -7,6 +7,10 @@ use crate::client::{BlockingIpcClient, lease::ClientCredential};
 use fixture::*;
 use std::time::Duration;
 
+#[cfg(windows)]
+#[path = "startup_review.rs"]
+mod startup_review;
+
 fn limits(
     active: u32,
     preauth: u32,

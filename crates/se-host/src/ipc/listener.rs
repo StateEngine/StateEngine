@@ -13,6 +13,9 @@ use channel::{bounded, receive, send};
 mod connection;
 #[path = "listener/retirement.rs"]
 mod retirement;
+#[cfg(windows)]
+#[path = "listener/startup.rs"]
+mod startup;
 pub use connection::IpcConnection;
 pub use retirement::IpcClose;
 use se_types::{Result, SeError};
@@ -40,6 +43,10 @@ pub struct IpcListener {
     connections: Arc<Semaphore>,
     preauth: Arc<Semaphore>,
     incoming: Arc<Semaphore>,
+    #[cfg(windows)]
+    startup_clients: std::collections::VecDeque<startup::StartupClient>,
+    #[cfg(windows)]
+    startup_refusals: tokio::task::JoinSet<()>,
 }
 #[cfg(windows)]
 fn evented_pipe(native: &NativeEndpoint) -> Result<NativeListener> {
@@ -136,7 +143,17 @@ impl IpcListener {
             // One additional incoming channel can deliver a typed capacity
             // refusal while every pre-authentication slot is occupied.
             incoming: Arc::new(Semaphore::new(preauth + 1)),
+            #[cfg(windows)]
+            startup_clients: std::collections::VecDeque::new(),
+            #[cfg(windows)]
+            startup_refusals: tokio::task::JoinSet::new(),
         })
+    }
+    async fn incoming_slot(&self) -> Result<tokio::sync::OwnedSemaphorePermit> {
+        Arc::clone(&self.incoming)
+            .acquire_owned()
+            .await
+            .map_err(|_| capacity_error("IPC incoming admission is closed"))
     }
     /// The caller can cancel idle accept by dropping its future. No peer JSON
     /// or credential is read until bounded native peer proof has succeeded.
@@ -144,10 +161,8 @@ impl IpcListener {
         // Bound tasks before OS accept. Once a channel is accepted no JSON,
         // proof or refusal write holds up the next accept. Dropping this future
         // cancels the admission wait just as it cancels an idle OS accept.
-        let incoming_slot = Arc::clone(&self.incoming)
-            .acquire_owned()
-            .await
-            .map_err(|_| capacity_error("IPC incoming admission is closed"))?;
+        #[cfg(unix)]
+        let incoming_slot = self.incoming_slot().await?;
         #[cfg(unix)]
         let stream = self
             .listener
@@ -156,28 +171,18 @@ impl IpcListener {
             .map_err(|e| wire::io_failure("accept IPC", e))?
             .0;
         #[cfg(windows)]
-        let stream = {
-            self.listener
-                .connect()
-                .await
-                .map_err(|e| wire::io_failure("accept IPC", e))?;
-            let entered = self.runtime.enter();
-            let next = match evented_pipe(&self.native) {
-                Ok(next) => next,
-                Err(error) => {
-                    // A transient allocation failure must leave the retained
-                    // server ready for another accept rather than connected.
-                    if let Err(disconnect) = self.listener.disconnect() {
-                        return Err(se_core::scope::unreadable(
-                            "IPC accept recovery",
-                            &format!("{error}; could not reset accepted pipe: {disconnect}"),
-                        ));
-                    }
-                    return Err(error);
+        let (stream, incoming_slot) = {
+            self.reap_startup_refusals()?;
+            match self.startup_clients.pop_front() {
+                Some(startup::StartupClient {
+                    stream,
+                    incoming_slot,
+                }) => (stream, incoming_slot),
+                None => {
+                    let slot = self.incoming_slot().await?;
+                    (self.accept_pipe().await?, slot)
                 }
-            };
-            drop(entered);
-            std::mem::replace(&mut self.listener, next)
+            }
         };
         let deadline = Deadline::from_options(&crate::client::ClientOptions {
             expected_generation: None,
