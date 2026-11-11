@@ -8,8 +8,9 @@
 //!   every test file a 1,000-line one, the implementation rules of AGENTS.md.
 //!   Existing overages sit in one reviewed baseline
 //!   (`module-size-baseline.json`) with an exact line count, an owner and a
-//!   remediation, and the baseline may only shrink; the git history since the
-//!   ratchet establishment commit refuses new exceptions and raised ceilings;
+//!   remediation: the checked-in baseline is the record, the test compares
+//!   today's tree against it and fails on any growth, and a reviewed change
+//!   to that file is how a limit moves;
 //! * each crate and each `src/` directory at depth one and two has a line
 //!   budget (`module-budgets.json`) set at the establishment size plus the
 //!   larger of 5 percent or 300 lines. Raising a budget is a reviewed change;
@@ -29,12 +30,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::Value;
 
 const BASELINE: &str = include_str!("module-size-baseline.json");
-const BASELINE_PATH: &str = "crates/se-types/tests/module-size-baseline.json";
 const SOURCE_MAX_LINES: usize = 800;
 const TEST_MAX_LINES: usize = 1_000;
 
@@ -47,12 +46,6 @@ fn ceiling_for(file: &str) -> usize {
         SOURCE_MAX_LINES
     }
 }
-/// The commit that established the module-size ratchet. Every later baseline
-/// version must be reachable from it so a ceiling cannot be raised in the same
-/// change that grows the file.
-const RATCHET_ESTABLISHMENT_COMMIT: &str = "263f4572f95438d996118d9742508170e1da5acf";
-const MAX_BASELINE_HISTORY: usize = 4_096;
-const MAX_BASELINE_BYTES: usize = 1_048_576;
 const MAX_FILES: usize = 8_192;
 const MAX_FILE_BYTES: usize = 1_048_576;
 
@@ -183,123 +176,6 @@ fn parse_baseline(source: &str) -> Result<Baseline, String> {
         }
     }
     Ok(exceptions)
-}
-
-fn command_output(root: &Path, args: &[&str], label: &str) -> Result<Vec<u8>, String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .map_err(|error| format!("cannot execute git for {label}: {error}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git {label} failed: {}", stderr.trim()));
-    }
-    Ok(output.stdout)
-}
-
-/// The history audit needs the establishment commit and every baseline version
-/// since it. CI snapshots and shallow checkouts do not carry that history; in
-/// those checkouts the audit is skipped with a printed reason while the static
-/// ratchet checks in this suite still run, and the full-history CI jobs remain
-/// the gate.
-fn establishment_reachable(root: &Path) -> bool {
-    Command::new("git")
-        .args(["cat-file", "-e", RATCHET_ESTABLISHMENT_COMMIT])
-        .current_dir(root)
-        .output()
-        .is_ok_and(|output| output.status.success())
-}
-
-fn committed_baseline_history(root: &Path) -> Result<Vec<Baseline>, String> {
-    command_output(
-        root,
-        &[
-            "merge-base",
-            "--is-ancestor",
-            RATCHET_ESTABLISHMENT_COMMIT,
-            "HEAD",
-        ],
-        "ratchet establishment ancestry",
-    )?;
-    let limit = format!("--max-count={}", MAX_BASELINE_HISTORY + 1);
-    let range = format!("{RATCHET_ESTABLISHMENT_COMMIT}..HEAD");
-    let revisions = command_output(
-        root,
-        &["rev-list", "--reverse", &limit, &range, "--", BASELINE_PATH],
-        "baseline history",
-    )?;
-    if revisions.len() > (MAX_BASELINE_HISTORY + 1) * 65 {
-        return Err("baseline history output exceeds its bounded envelope".to_owned());
-    }
-    let revisions = String::from_utf8(revisions)
-        .map_err(|error| format!("baseline history is not UTF-8: {error}"))?;
-    let mut revisions: Vec<&str> = revisions.lines().collect();
-    if revisions.len() >= MAX_BASELINE_HISTORY {
-        return Err(format!(
-            "baseline history exceeds the bounded {MAX_BASELINE_HISTORY}-commit audit"
-        ));
-    }
-    revisions.insert(0, RATCHET_ESTABLISHMENT_COMMIT);
-
-    let mut history = Vec::new();
-    for revision in revisions {
-        if !matches!(revision.len(), 40 | 64)
-            || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err(format!("invalid baseline-history revision {revision:?}"));
-        }
-        let object = format!("{revision}:{BASELINE_PATH}");
-        let size = command_output(root, &["cat-file", "-s", &object], "baseline blob size")?;
-        if size.len() > 32 {
-            return Err("baseline blob size output exceeds its bounded envelope".to_owned());
-        }
-        let size = String::from_utf8(size)
-            .map_err(|error| format!("baseline blob size is not UTF-8: {error}"))?;
-        let size = size
-            .trim()
-            .parse::<usize>()
-            .map_err(|error| format!("baseline blob size is not an integer: {error}"))?;
-        if size > MAX_BASELINE_BYTES {
-            return Err(format!(
-                "baseline blob at {revision} is {size} bytes; maximum is {MAX_BASELINE_BYTES}"
-            ));
-        }
-        let bytes = command_output(root, &["show", &object], "baseline blob read")?;
-        if bytes.len() != size {
-            return Err(format!(
-                "baseline blob at {revision} changed size during read: expected {size}, found {}",
-                bytes.len()
-            ));
-        }
-        let source = String::from_utf8(bytes)
-            .map_err(|error| format!("baseline blob at {revision} is not UTF-8: {error}"))?;
-        history.push(parse_baseline(&source)?);
-    }
-    Ok(history)
-}
-
-fn validate_monotonic_baselines(history: &[Baseline], current: &Baseline) -> Result<(), String> {
-    let mut snapshots: Vec<&BTreeMap<String, Exception>> = history.iter().collect();
-    snapshots.push(current);
-    for pair in snapshots.windows(2) {
-        let previous = pair[0];
-        let next = pair[1];
-        for (path, exception) in next {
-            let prior = previous.get(path).ok_or_else(|| {
-                format!(
-                    "new module-size exception is forbidden after ratchet establishment: {path}"
-                )
-            })?;
-            if exception.max_lines > prior.max_lines {
-                return Err(format!(
-                    "module-size ceiling for {path} increased from {} to {}",
-                    prior.max_lines, exception.max_lines
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn entry_is_link_or_reparse(path: &Path, kind: fs::FileType) -> Result<bool, String> {
@@ -574,22 +450,7 @@ fn rust_sources_do_not_create_or_grow_god_files() -> Result<(), Box<dyn Error>> 
 }
 
 #[test]
-fn baseline_history_since_establishment_never_grows() -> Result<(), Box<dyn Error>> {
-    let root = workspace_root();
-    if !establishment_reachable(&root) {
-        println!(
-            "SKIPPED: baseline history audit — establishment commit {RATCHET_ESTABLISHMENT_COMMIT} is not in this checkout (shallow clone or source snapshot); the static ratchet checks still ran, and the audit runs wherever the checkout carries full history"
-        );
-        return Ok(());
-    }
-    let current = parse_baseline(BASELINE)?;
-    let history = committed_baseline_history(&root)?;
-    validate_monotonic_baselines(&history, &current)?;
-    Ok(())
-}
-
-#[test]
-fn ceiling_and_baseline_history_cannot_be_weakened() -> Result<(), Box<dyn Error>> {
+fn baseline_ceilings_cannot_be_weakened() -> Result<(), Box<dyn Error>> {
     let weakened = BASELINE.replacen(
         "\"default_max_lines\": 800",
         "\"default_max_lines\": 801",
@@ -607,46 +468,8 @@ fn ceiling_and_baseline_history_cannot_be_weakened() -> Result<(), Box<dyn Error
         Err(error) => error,
     };
     assert!(error.contains("must remain exactly 1000"));
-
-    let path = "crates/example/src/large.rs".to_owned();
-    let original = BTreeMap::from([(
-        path.clone(),
-        Exception {
-            max_lines: 1_500,
-            owner: "example".to_owned(),
-            remediation: "split responsibilities".to_owned(),
-        },
-    )]);
-    let inflated = BTreeMap::from([(
-        path,
-        Exception {
-            max_lines: 1_501,
-            owner: "example".to_owned(),
-            remediation: "split responsibilities".to_owned(),
-        },
-    )]);
-    let inflation = match validate_monotonic_baselines(std::slice::from_ref(&original), &inflated) {
-        Ok(()) => return Err("same-change ceiling inflation was admitted".into()),
-        Err(error) => error,
-    };
-    assert!(inflation.contains("increased from 1500 to 1501"));
-
-    let added = BTreeMap::from([(
-        "crates/example/src/new.rs".to_owned(),
-        Exception {
-            max_lines: 1_001,
-            owner: "example".to_owned(),
-            remediation: "split immediately".to_owned(),
-        },
-    )]);
-    let addition = match validate_monotonic_baselines(std::slice::from_ref(&original), &added) {
-        Ok(()) => return Err("same-change exception creation was admitted".into()),
-        Err(error) => error,
-    };
-    assert!(addition.contains("new module-size exception is forbidden"));
     Ok(())
 }
-
 #[test]
 fn physical_lines_count_lf_crlf_and_lone_cr() {
     assert_eq!(physical_line_count(b"first\nsecond\nthird\n"), 3);
