@@ -1,7 +1,12 @@
 StateEngine
 
-License identifier: LicenseRef-StateEngine-Proprietary
-StateEngine is proprietary software. This archive does not grant an open-source license.
+License identifier: AGPL-3.0-only
+StateEngine is licensed under the GNU Affero General Public License, version 3 only.
+The complete license is notices/stateengine/LICENSE inside notices.tar.
+Corresponding source: https://github.com/StateEngine/StateEngine
+The source commit for this archive is recorded in build.json.
+
+StateEngine comes with no warranty; see the license for details.
 
 Third-party notices and license texts are included in notices.tar.
 Extract them with: tar -xf notices.tar
@@ -32,3 +37,24 @@ windows-link-0.2.1: MIT OR Apache-2.0
 windows-sys-0.61.2: MIT OR Apache-2.0
   Source: https://github.com/microsoft/windows-rs/tree/32c3144490c016fe496a0aed769bce60987a2e9d
   Texts: notices/windows-sys-0.61.2/
+jni-0.22.4: MIT OR Apache-2.0
+  Source: https://github.com/jni-rs/jni-rs/tree/5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7
+  Texts: notices/jni-0.22.4/
+jni-macros-0.22.4: MIT OR Apache-2.0
+  Source: https://github.com/jni-rs/jni-rs/tree/33045a124105c939d1e2cbdcb5a39e5d868ffa03
+  Texts: notices/jni-macros-0.22.4/
+jni-sys-macros-0.4.1: MIT OR Apache-2.0
+  Source: https://github.com/jni-rs/jni-sys/tree/64d77b7a5f119d7b55b4e2c169a4668067ff59e6
+  Texts: notices/jni-sys-macros-0.4.1/
+r-efi-5.3.0: MIT OR Apache-2.0 OR LGPL-2.1-or-later
+  Source: https://github.com/r-efi/r-efi/tree/97b55bed1c2c91dcbf787674849f05337ff80b33
+  Texts: notices/r-efi-5.3.0/
+r-efi-6.0.0: MIT OR Apache-2.0 OR LGPL-2.1-or-later
+  Source: https://github.com/r-efi/r-efi/tree/7e1b0322d31d625f81a5656096330934f9cd835d
+  Texts: notices/r-efi-6.0.0/
+rsqlite-vfs-0.1.1: MIT
+  Source: https://github.com/Spxg/sqlite-wasm-rs/tree/1bb309784f25c401ddf95131dcde4c4cdad7aee7
+  Texts: notices/rsqlite-vfs-0.1.1/
+rustls-platform-verifier-android-0.2.0: MIT OR Apache-2.0
+  Source: https://github.com/rustls/rustls-platform-verifier/tree/252e25161a91af476cbea620e29d277592d27ec7
+  Texts: notices/rustls-platform-verifier-android-0.2.0/

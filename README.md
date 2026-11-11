@@ -497,3 +497,13 @@ release inputs. Remote-enabled archives include every supported destination's
 executable and notices; assembly refuses missing or mismatched companion builds.
 Use the matching target from the platform table for other native builds. Building
 or cross-checking a target does not qualify its runtime behavior on that OS.
+
+## License and contributions
+
+The Rust workspace is licensed under the [GNU Affero General Public License, version 3 only](LICENSE).
+Third-party components retain their own licenses. The separately licensed commercial server is
+outside this workspace's license declaration.
+
+Outside pull requests require a signed [contributor agreement](CONTRIBUTING.md) before merge.
+The agreement preserves your ownership and permits StateEngine LLC to offer your contribution
+under additional licenses while continuing to offer it under the submission-date license.

@@ -1,2 +1,3 @@
 # Release inputs must retain the exact published license bytes on every host.
-scripts/release/licenses/** -text
+scripts/release/licenses/** -text whitespace=-blank-at-eof
+LICENSE -text
