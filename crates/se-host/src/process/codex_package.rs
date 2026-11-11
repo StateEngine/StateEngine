@@ -135,12 +135,12 @@ fn alternate_owner(ancestor: &Path, root: &Path) -> io::Result<bool> {
 fn manager(root: &Path, launcher: &Path) -> io::Result<&'static str> {
     for start in [root, launcher.parent().unwrap_or(root)] {
         for ancestor in start.ancestors() {
+            if alternate_owner(ancestor, root)? {
+                return Ok("CODEX_MANAGED_BY_VITE_PLUS");
+            }
             let modules = ancestor.join("node_modules");
             if modules.join(".modules.yaml").try_exists()? && same_package(&modules, root)? {
                 return Ok("CODEX_MANAGED_BY_PNPM");
-            }
-            if alternate_owner(ancestor, root)? {
-                return Ok("CODEX_MANAGED_BY_VITE_PLUS");
             }
         }
     }
