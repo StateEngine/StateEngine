@@ -451,7 +451,7 @@ output schemas, run `se schema OP`, for example `se schema message.send` or
   acknowledging do, while dismissal does not.
 - `working_state_set.expect` is the revision just read, or `absent` on first
   write. Launch normally resumes the saved conversation; `new` starts another.
-  `override_live` explicitly consents to stopping the existing lifecycle and jobs.
+  `force` explicitly consents to stopping the existing lifecycle and jobs.
 - Atlas targets retain their tagged JSON shape, such as
   `{"Symbol":{"Name":{"name":"authenticate"}}}` or `{"File":"src/auth.rs"}`.
   Its `root` selects a registered worktree, and `regex` searches live source with
