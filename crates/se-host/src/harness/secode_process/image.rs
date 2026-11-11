@@ -1,8 +1,12 @@
 //! Hold both native images across probing and launch.
 use super::{incompatible, unreadable};
+use se_proc::native_ipc::ExecutableStamp;
 use se_types::Result;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+mod image_review;
 
 pub struct Images {
     pub cli: PathBuf,
@@ -15,6 +19,8 @@ pub struct Images {
     server_digest: [u8; 32],
     cli_bytes: u64,
     server_bytes: u64,
+    cli_stamp: Option<ExecutableStamp>,
+    server_stamp: Option<ExecutableStamp>,
 }
 impl Images {
     pub fn server_sha256(&self) -> se_types::Sha256 {
@@ -31,8 +37,8 @@ impl Images {
         } else {
             "secode-server"
         });
-        let (cli_pin, cli_digest, cli_bytes) = pin(&cli)?;
-        let (server_pin, server_digest, server_bytes) = pin(&server)?;
+        let (cli_pin, cli_digest, cli_bytes, cli_stamp) = pin(&cli)?;
+        let (server_pin, server_digest, server_bytes, server_stamp) = pin(&server)?;
         let mut images = Self {
             cli,
             server,
@@ -44,26 +50,41 @@ impl Images {
             server_digest,
             cli_bytes,
             server_bytes,
+            cli_stamp,
+            server_stamp,
         };
         images.validate()?;
         super::bundle::verify(&images)?;
         Ok(images)
     }
     pub fn validate(&mut self) -> Result<()> {
-        for (pin, expected) in [
-            (&mut self.cli_pin, (self.cli_digest, self.cli_bytes)),
+        for (pin, expected, stamp) in [
+            (
+                &mut self.cli_pin,
+                (self.cli_digest, self.cli_bytes),
+                &mut self.cli_stamp,
+            ),
             (
                 &mut self.server_pin,
                 (self.server_digest, self.server_bytes),
+                &mut self.server_stamp,
             ),
         ] {
             pin.validate_path(pin.path())
                 .map_err(|e| unreadable("SE Code executable identity", e))?;
-            if digest(pin)? != expected {
+            let before = observe_stamp(pin.path())?;
+            // The held source still checks parent protection and pathname identity.
+            // Native change time also detects in-place edits with restored mtime.
+            // Scripts and aliases have no reusable stamp and retain full reads.
+            if before.is_some() && before == *stamp {
+                continue;
+            }
+            if digest(pin)? != expected || observe_stamp(pin.path())? != before {
                 return Err(incompatible(
                     "a selected SE Code image changed after its probe; retain the original launch identities",
                 ));
             }
+            *stamp = before;
         }
         Ok(())
     }
@@ -91,12 +112,27 @@ impl Images {
         Ok(())
     }
 }
-fn pin(path: &Path) -> Result<(se_proc::NativeSourcePin, [u8; 32], u64)> {
+type PinnedImage = (
+    se_proc::NativeSourcePin,
+    [u8; 32],
+    u64,
+    Option<ExecutableStamp>,
+);
+fn observe_stamp(path: &Path) -> Result<Option<ExecutableStamp>> {
+    ExecutableStamp::observe(path).map_err(|e| unreadable("SE Code executable stamp", e))
+}
+fn pin(path: &Path) -> Result<PinnedImage> {
     let mut pin = se_proc::NativeSourcePin::open(path)
         .map_err(|e| unreadable("SE Code image pin", e))?
         .ok_or_else(|| incompatible("a selected SE Code native image is absent"))?;
+    let before = observe_stamp(path)?;
     let (digest, bytes) = digest(&mut pin)?;
-    Ok((pin, digest, bytes))
+    if observe_stamp(path)? != before {
+        return Err(incompatible(
+            "a selected SE Code image changed while its bytes were qualified",
+        ));
+    }
+    Ok((pin, digest, bytes, before))
 }
 fn digest(pin: &mut se_proc::NativeSourcePin) -> Result<([u8; 32], u64)> {
     let mut hash = Sha256::new();
