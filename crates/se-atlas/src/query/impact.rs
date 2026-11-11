@@ -15,8 +15,8 @@ struct ResultRow {
     symbol: [u8; 32],
     site: u64,
 }
-impl QueryReader<'_> {
-    pub fn impact(&self, query: &ImpactQuery) -> AtlasResult<Answer<Read<Impact>>> {
+impl QueryReader<'_, '_, '_> {
+    pub fn impact(&mut self, query: &ImpactQuery) -> AtlasResult<Answer<Read<Impact>>> {
         let end = deadline(query.budget)?;
         if !(1..=3).contains(&query.depth) {
             return Err(se_types::SeError::invalid("impact depth", "1..3"));
@@ -26,11 +26,13 @@ impl QueryReader<'_> {
             &query.target,
             query.depth,
             query.include_name_only,
-            &self.viewer,
+            &self.ctx.viewer,
         ))?;
-        let answer = self
-            .cache
-            .read(end, |sql| self.impact_page(query, end, digest, sql))?;
+        let identity = self.cache.identity().clone();
+        let env = self.ctx.split();
+        let answer = self.cache.read(end, |sql| {
+            Self::impact_page(&identity, &env, query, end, digest, sql)
+        })?;
         super::freshness::finish(self, answer, query.budget, end)
     }
 
@@ -40,13 +42,14 @@ impl QueryReader<'_> {
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
     fn impact_page(
-        &self,
+        identity: &CacheIdentity,
+        env: &QueryEnv<'_>,
         query: &ImpactQuery,
         end: Instant,
         digest: [u8; 32],
         sql: &SqlView<'_>,
     ) -> AtlasResult<Answer<Read<Impact>>> {
-        let snapshot = self.snapshot(sql)?;
+        let snapshot = snapshot(identity, env, sql)?;
         let previous = query
             .next
             .as_ref()
@@ -64,7 +67,7 @@ impl QueryReader<'_> {
         let mut nodes = Vec::with_capacity(32);
         let mut root_files = Vec::new();
         let mut limited = seed(
-            self,
+            env,
             sql,
             &snapshot,
             &query.target,
@@ -247,7 +250,7 @@ impl QueryReader<'_> {
         drop(files);
         if !more {
             let records = super::impact_records::collect(
-                self,
+                env,
                 sql,
                 &snapshot,
                 &root_files,
@@ -313,7 +316,7 @@ fn compare(a: &Key, b: &Key) -> std::cmp::Ordering {
 }
 
 fn seed(
-    reader: &QueryReader<'_>,
+    env: &QueryEnv<'_>,
     sql: &SqlView<'_>,
     snapshot: &Snapshot,
     target: &AtlasTarget,
@@ -370,9 +373,9 @@ fn seed(
                     source_event: get::<String>(row, 1)?.parse()?,
                 }
             };
-            match reader
+            match env
                 .records
-                .read(&snapshot.index.project, &reader.viewer, &pointer, None)?
+                .read(&snapshot.index.project, env.viewer, &pointer, None)?
             {
                 Read::Present { value } if value.pointer == pointer => (),
                 Read::Absent { .. } => return Ok(false),

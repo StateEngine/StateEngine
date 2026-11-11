@@ -144,7 +144,7 @@ impl SqliteSnapshot {
         Ok(Read::Present { value: event })
     }
     pub(super) fn read_turns(
-        &self,
+        &mut self,
         agent: AgentId,
         budget: ReadBudget,
     ) -> StoreResult<Page<StoredEvent>> {

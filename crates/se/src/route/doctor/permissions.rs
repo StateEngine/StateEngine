@@ -467,8 +467,8 @@ pub(in crate::route) fn recover(
     // Resume the regular protected reader and complete custody guard now. Any
     // failure remains an obligation; it never erases the achieved tightening.
     match super::super::setup::inspect_phase(&cx.home, at.clone()) {
-        Ok(super::super::setup::Setup::Present((files, (reader, phase)))) => {
-            let admission = super::super::admit::observe(cx, &phase, &files);
+        Ok(super::super::setup::Setup::Present((files, (reader, mut phase)))) => {
+            let admission = super::super::admit::observe(cx, &mut phase, &files);
             drop(phase);
             drop(reader);
             if let Err(error) = admission {

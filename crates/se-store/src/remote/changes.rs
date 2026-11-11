@@ -37,7 +37,7 @@ impl ReadPhase {
     /// The shared transport supplies an already scope-bound decoded cursor. Every
     /// page rechecks durable authority on this pin before selecting any row/count.
     pub fn remote_changes(
-        &self,
+        &mut self,
         grant_id: &RemoteGrantId,
         revision: Revision,
         target: &RemoteTarget,
@@ -51,7 +51,7 @@ impl ReadPhase {
     /// The local consumer uses the same indexed records and bounds, after its
     /// native human/project authority is checked on this very snapshot.
     pub fn local_client_changes(
-        &self,
+        &mut self,
         admission: &crate::Admission,
         target: &RemoteTarget,
         request: ChangeRequest<'_>,
@@ -74,7 +74,7 @@ impl ReadPhase {
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
     fn client_changes(
-        &self,
+        &mut self,
         target: &RemoteTarget,
         request: ChangeRequest<'_>,
     ) -> StoreResult<ChangePage> {

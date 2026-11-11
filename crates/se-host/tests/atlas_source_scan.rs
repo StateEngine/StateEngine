@@ -98,7 +98,7 @@ fn compact_literal_and_regex_reach_ten_files_past_unmatched_files_and_prefix_byt
     let coverage = serde_json::from_value(
         serde_json::json!({"discovered_files":230,"indexed_files":0,"partial_files":0,"deferred_files":230,"failed_files":0,"discovery_complete":true,"stale_files":0,"resolved_references":0,"name_only_references":0,"watched_directories":0,"unwatched_directories":0,"watch_discovery_complete":true,"watch_stats_started":null,"watch_activation_attempts":0,"watch_limited_activations":0,"reasons":[]}),
     )?;
-    let cache = CacheConnection::create(
+    let mut cache = CacheConnection::create(
         &native,
         &CacheSeed {
             identity: CacheIdentity {
@@ -124,8 +124,8 @@ fn compact_literal_and_regex_reach_ten_files_past_unmatched_files_and_prefix_byt
         }
         Ok(())
     })?;
-    let reader = QueryReader::new(
-        &cache,
+    let mut reader = QueryReader::new(
+        &mut cache,
         ReaderContext {
             memory: None,
             viewer: AtlasPrincipal::Agent(f.a.clone()),
@@ -146,7 +146,7 @@ fn compact_literal_and_regex_reach_ten_files_past_unmatched_files_and_prefix_byt
             return Err("wrong operation".into());
         };
         let result =
-            se_host::atlas_queries::execute(&reader, &se_core::ops::AtlasRead::Find(input))?;
+            se_host::atlas_queries::execute(&mut reader, &se_core::ops::AtlasRead::Find(input))?;
         let compact =
             se_host::atlas_queries::compact(&result, 4096, false)?.ok_or("compact absent")?;
         assert!(compact.len() <= 4096);
@@ -198,7 +198,7 @@ fn compact_literal_and_regex_reach_ten_files_past_unmatched_files_and_prefix_byt
             return Err("wrong operation".into());
         };
         let result =
-            se_host::atlas_queries::execute(&reader, &se_core::ops::AtlasRead::Find(input))?;
+            se_host::atlas_queries::execute(&mut reader, &se_core::ops::AtlasRead::Find(input))?;
         let se_core::ops::AnyOutput::AtlasFind(output) = result else {
             return Err("wrong output".into());
         };
@@ -236,7 +236,7 @@ fn compact_literal_and_regex_reach_ten_files_past_unmatched_files_and_prefix_byt
             return Err("wrong operation".into());
         };
         let result =
-            se_host::atlas_queries::execute(&reader, &se_core::ops::AtlasRead::Find(input))?;
+            se_host::atlas_queries::execute(&mut reader, &se_core::ops::AtlasRead::Find(input))?;
         let compact =
             se_host::atlas_queries::compact(&result, 4096, false)?.ok_or("compact absent")?;
         assert!(compact.len() <= 4096);
@@ -287,7 +287,7 @@ fn compact_literal_and_regex_reach_ten_files_past_unmatched_files_and_prefix_byt
             return Err("wrong operation".into());
         };
         let result =
-            se_host::atlas_queries::execute(&reader, &se_core::ops::AtlasRead::Find(input))?;
+            se_host::atlas_queries::execute(&mut reader, &se_core::ops::AtlasRead::Find(input))?;
         let se_core::ops::AnyOutput::AtlasFind(output) = result else {
             return Err("wrong output".into());
         };

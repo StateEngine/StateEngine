@@ -7,11 +7,11 @@ use std::io::{Read as _, SeekFrom};
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 pub(super) fn source(
-    reader: &QueryReader<'_>,
+    env: &QueryEnv<'_>,
     pointer: &mut CodePointer,
     end: Instant,
 ) -> AtlasResult<Option<HitBody>> {
-    let source = reader.source.ok_or_else(|| {
+    let source = env.source.ok_or_else(|| {
         se_types::SeError::invalid(
             "Atlas source bodies",
             "the registered native source adapter",

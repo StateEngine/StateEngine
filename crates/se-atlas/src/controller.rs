@@ -34,7 +34,7 @@ pub trait Runtime {
         &self,
         root: &RootId,
         read: impl FnOnce(
-            &crate::cache::connection::CacheConnection<'_>,
+            &mut crate::cache::connection::CacheConnection<'_>,
             &Self::Source,
         ) -> AtlasResult<T>,
     ) -> AtlasResult<T>;
@@ -364,7 +364,7 @@ impl<R: Runtime> AtlasController for Controller<R> {
         &self,
         id: RootId,
         read: impl FnOnce(
-            &crate::cache::connection::CacheConnection<'_>,
+            &mut crate::cache::connection::CacheConnection<'_>,
             &Self::Source,
         ) -> AtlasResult<T>,
     ) -> AtlasResult<T> {

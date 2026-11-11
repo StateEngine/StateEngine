@@ -337,7 +337,7 @@ pub trait RenewalDriver {
     fn step(
         &mut self,
         source: &RegisteredSource<NativeAtlasSource>,
-        connection: &CacheConnection<'_>,
+        connection: &mut CacheConnection<'_>,
         policy: &AtlasPolicy,
         work: &Scheduled,
         deadline: Instant,
@@ -345,7 +345,7 @@ pub trait RenewalDriver {
     fn poll_events(
         &mut self,
         source: &RegisteredSource<NativeAtlasSource>,
-        connection: &CacheConnection<'_>,
+        connection: &mut CacheConnection<'_>,
         policy: &AtlasPolicy,
         deadline: Instant,
     ) -> AtlasResult<Vec<SourceHint>>;
@@ -355,7 +355,7 @@ pub trait RenewalDriver {
     fn close(
         &mut self,
         root: &RootId,
-        connection: Option<&CacheConnection<'_>>,
+        connection: Option<&mut CacheConnection<'_>>,
         deadline: Instant,
     ) -> AtlasResult<()>;
     #[cfg(unix)]

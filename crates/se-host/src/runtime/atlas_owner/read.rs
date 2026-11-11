@@ -248,7 +248,7 @@ impl AtlasReadPort for Service {
             se_core::scope::unreadable("Atlas cache", "the published root cache is absent")
         })?;
         let deadline = Instant::now() + Duration::from_secs(5);
-        let current = pointer::open_current(
+        let mut current = pointer::open_current(
             &cache,
             &source.scope,
             ConnectionRole::QueryReader,
@@ -263,7 +263,7 @@ impl AtlasReadPort for Service {
         })?;
         let observed = self.reader_root(project, Some(&source.scope.registration.root))?;
         read(
-            &current.connection,
+            &mut current.connection,
             &source,
             AtlasReadObservation {
                 summary: observed.summary,

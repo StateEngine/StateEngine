@@ -8,7 +8,7 @@ fn error(e: impl std::fmt::Display) -> se_types::SeError {
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-pub(super) fn exercise(db: &CacheConnection<'_>, initial: &Coverage) -> Check {
+pub(super) fn exercise(db: &mut CacheConnection<'_>, initial: &Coverage) -> Check {
     for group in 0..3 {
         db.write(2_000_000, deadline(), |sql| {
             for offset in 0..64 {

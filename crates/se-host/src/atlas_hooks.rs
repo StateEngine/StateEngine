@@ -50,7 +50,7 @@ pub fn owner_augment<R: Snapshot>(
 }
 /// Execute against an already scoped reader; never opens a cache or starts work.
 pub fn augment(
-    reader: &QueryReader<'_>,
+    reader: &mut QueryReader<'_, '_, '_>,
     source: &RegisteredSource<crate::atlas_source::NativeAtlasSource>,
     input: &AtlasAugment,
 ) -> Result<AtlasHookOutput> {
@@ -89,7 +89,11 @@ fn location(pointer: &CodePointer) -> String {
         None => pointer.path.as_str().to_owned(),
     }
 }
-fn symbol(reader: &QueryReader<'_>, name: &QueryText, end: Instant) -> Result<Option<String>> {
+fn symbol(
+    reader: &mut QueryReader<'_, '_, '_>,
+    name: &QueryText,
+    end: Instant,
+) -> Result<Option<String>> {
     let Some(context) = reader.hook_context(HookTarget::Symbol(name.as_str()), end)? else {
         return Ok(None);
     };
@@ -108,7 +112,7 @@ fn symbol(reader: &QueryReader<'_>, name: &QueryText, end: Instant) -> Result<Op
     Ok(encode(&text).filter(|_| Instant::now() < end))
 }
 fn outline(
-    reader: &QueryReader<'_>,
+    reader: &mut QueryReader<'_, '_, '_>,
     source: &RegisteredSource<crate::atlas_source::NativeAtlasSource>,
     path: &std::path::Path,
     end: Instant,

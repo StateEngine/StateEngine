@@ -1,11 +1,11 @@
 use super::candidates::{Candidate, Kind};
 use super::*;
 use rusqlite::params;
-impl QueryReader<'_> {
+impl QueryReader<'_, '_, '_> {
     /// Compact consumers fit the actual rendered page as well as its typed
     /// representation. Moving a whole hit behind the cursor preserves progress.
     pub fn find_compact(
-        &self,
+        &mut self,
         query: &FindQuery,
         max_bytes: usize,
         explain: bool,
@@ -15,15 +15,17 @@ impl QueryReader<'_> {
                 "compact search budget must be 1024..32768 bytes",
             ));
         }
-        let mut reader = self.clone();
-        reader.compact = Some((max_bytes, explain));
-        reader.find(query)
+        let saved = self.ctx.compact.take();
+        self.ctx.compact = Some((max_bytes, explain));
+        let result = self.find(query);
+        self.ctx.compact = saved;
+        result
     }
     #[expect(
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    pub fn find(&self, query: &FindQuery) -> AtlasResult<Answer<Read<SearchResults>>> {
+    pub fn find(&mut self, query: &FindQuery) -> AtlasResult<Answer<Read<SearchResults>>> {
         query.scope.validate()?;
         if query.regex
             && (!matches!(
@@ -53,21 +55,23 @@ impl QueryReader<'_> {
             query.mode,
             query.order,
             query.full,
-            &self.viewer,
+            &self.ctx.viewer,
         ))?;
+        let identity = self.cache.identity().clone();
+        let env = self.ctx.split();
         let answer = self.cache.read(end, |sql| {
-            let snapshot = self.snapshot(sql)?;
+            let snapshot = snapshot(&identity, &env, sql)?;
             let previous = query
                 .next
                 .as_ref()
                 .map(PositionCursor::decode)
                 .transpose()?;
-            let mut ranking = self.clone();
+            let mut ranking = env.clone();
             ranking.now_unix_ms = previous
                 .as_ref()
                 .map(PositionCursor::ranking_time)
                 .transpose()?
-                .unwrap_or(self.now_unix_ms);
+                .unwrap_or(env.now_unix_ms);
             let after = previous
                 .as_ref()
                 .map(|p| {
@@ -147,7 +151,7 @@ impl QueryReader<'_> {
                 if after.as_ref().is_some_and(|p| compare(&key, p).is_le()) {
                     continue;
                 }
-                let Some(mut hit) = materialize(self, sql, &snapshot, &candidate, query, mode)?
+                let Some(mut hit) = materialize(&env, sql, &snapshot, &candidate, query, mode)?
                 else {
                     continue;
                 };
@@ -161,10 +165,10 @@ impl QueryReader<'_> {
 
                 if query.full {
                     hit.body = match &mut hit.target {
-                        HitTarget::Code(code) => super::body::source(self, &mut code.pointer, end)?,
-                        HitTarget::Record(record) => match self.records.body(
+                        HitTarget::Code(code) => super::body::source(&env, &mut code.pointer, end)?,
+                        HitTarget::Record(record) => match env.records.body(
                             &snapshot.index.project,
-                            &self.viewer,
+                            env.viewer,
                             &record.pointer,
                             Some(&query.query),
                         )? {
@@ -267,7 +271,7 @@ impl QueryReader<'_> {
     }
 }
 pub(super) fn materialize(
-    reader: &QueryReader<'_>,
+    env: &QueryEnv<'_>,
     sql: &SqlView<'_>,
     snapshot: &Snapshot,
     candidate: &Candidate,
@@ -314,9 +318,9 @@ pub(super) fn materialize(
         }
         Kind::Record => {
             let pointer = super::candidates::record_pointer(sql, candidate.rowid)?;
-            match reader.records.read(
+            match env.records.read(
                 &snapshot.index.project,
-                &reader.viewer,
+                env.viewer,
                 &pointer,
                 Some(&query.query),
             )? {

@@ -1,7 +1,10 @@
 //! Search mode selection shares one finite source-scan deadline.
 use super::*;
-impl QueryReader<'_> {
-    pub(super) fn find_text(&self, query: &FindQuery) -> AtlasResult<Answer<Read<SearchResults>>> {
+impl QueryReader<'_, '_, '_> {
+    pub(super) fn find_text(
+        &mut self,
+        query: &FindQuery,
+    ) -> AtlasResult<Answer<Read<SearchResults>>> {
         deadline(query.budget)?;
         let end = Instant::now() + Duration::from_secs(1);
         let initial = query.mode.unwrap_or_else(|| {

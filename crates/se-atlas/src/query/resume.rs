@@ -19,13 +19,13 @@ struct Group {
     relevant: bool,
     mixed_authors: bool,
 }
-impl QueryReader<'_> {
+impl QueryReader<'_, '_, '_> {
     #[expect(
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    pub fn resume_code(&self, request: &ResumeRequest) -> AtlasResult<ResumeCode> {
-        if self.viewer != AtlasPrincipal::Agent(request.viewer.clone())
+    pub fn resume_code(&mut self, request: &ResumeRequest) -> AtlasResult<ResumeCode> {
+        if self.ctx.viewer != AtlasPrincipal::Agent(request.viewer.clone())
             || request.recently_edited_symbols.len() > 32
         {
             return Err(se_types::SeError::invalid(
@@ -33,9 +33,11 @@ impl QueryReader<'_> {
                 "the verified agent and at most 32 recent symbols",
             ));
         }
+        let identity = self.cache.identity().clone();
+        let env = self.ctx.split();
         self.cache
             .read(Instant::now() + Duration::from_millis(5), |sql| {
-                let snapshot = self.snapshot(sql)?;
+                let snapshot = snapshot(&identity, &env, sql)?;
                 let mut output = ResumeCode {
                     index: snapshot.index.clone(),
                     state: ResumeCodeState::Available,
@@ -60,7 +62,7 @@ impl QueryReader<'_> {
                     cursor.validate(
                         &snapshot.index,
                         "changes-range",
-                        cursor::digest(&("changes-range", &self.viewer))?,
+                        cursor::digest(&("changes-range", env.viewer))?,
                     )?;
                     if cursor.last_key.integers.len() != 2
                         || !cursor.last_key.bytes.is_empty()
@@ -70,7 +72,7 @@ impl QueryReader<'_> {
                             "resume needs its saved delivered fence, not a paged changes range",
                         ));
                     }
-                    check_retention(&snapshot, cursor.last_key.integers[0], &self.viewer)?;
+                    check_retention(&snapshot, cursor.last_key.integers[0], env.viewer)?;
                     cursor.last_key.integers[0]
                 } else {
                     output.state = ResumeCodeState::BaselineGap;
@@ -200,7 +202,7 @@ impl QueryReader<'_> {
                     .map(|_| available.saturating_sub(output.items.len()) as u64 + unrepresented);
                 output.complete &= output.omitted == Some(0);
                 let retrieval =
-                    range_cursor(&snapshot, &self.viewer, lower, Some(snapshot.published))?
+                    range_cursor(&snapshot, env.viewer, lower, Some(snapshot.published))?
                         .encode()?;
                 loop {
                     if !output.complete {
@@ -231,9 +233,9 @@ impl QueryReader<'_> {
                     output.state = ResumeCodeState::Updating;
                 }
                 let next =
-                    range_cursor(&snapshot, &self.viewer, snapshot.published.0, None)?.encode()?;
+                    range_cursor(&snapshot, env.viewer, snapshot.published.0, None)?.encode()?;
                 let offer = cursor::digest(&(
-                    &self.viewer,
+                    env.viewer,
                     &request.saved_cursor,
                     request.cursor_revision,
                     &next,

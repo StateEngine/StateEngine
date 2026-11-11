@@ -9,14 +9,14 @@ impl AdmissionContext {
         presence: Option<&crate::client::presence::OwnerPresence>,
         requires_terminal: bool,
     ) -> Result<crate::remote::auth::VerifiedLocalOwner> {
-        let phase = self
+        let mut phase = self
             .reads
             .read_phase()
             .map_err(|error| store_error(&error))?;
         let result = (|| {
             self.check_generation(&phase)?;
             let (admission, terminal) = self.caller(
-                &phase,
+                &mut phase,
                 peer,
                 connection,
                 override_authority,

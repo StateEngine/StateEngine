@@ -4,8 +4,8 @@ use std::io::Read as _;
 mod output;
 pub(super) use output::Verified;
 
-pub(super) fn finish<T: Verified + Serialize>(
-    reader: &QueryReader<'_>,
+pub(super) fn finish<'a, 'r, 'c, 'x, T: Verified + Serialize>(
+    reader: &'a QueryReader<'r, 'c, 'x>,
     mut answer: Answer<Read<T>>,
     budget: QueryBudget,
     end: Instant,
@@ -32,12 +32,12 @@ pub(super) fn finish<T: Verified + Serialize>(
     check_output(answer, budget)
 }
 
-pub(super) struct Verifier<'a, 'r> {
-    reader: &'a QueryReader<'r>,
+pub(super) struct Verifier<'a, 'r, 'c, 'x> {
+    reader: &'a QueryReader<'r, 'c, 'x>,
     end: Instant,
     reasons: Vec<CoverageReason>,
 }
-impl Verifier<'_, '_> {
+impl Verifier<'_, '_, '_, '_> {
     fn pointer(&mut self, pointer: &mut CodePointer) -> AtlasResult<Option<CoverageReason>> {
         if pointer.freshness != SnapshotFreshness::Current {
             return Ok(None);
@@ -52,7 +52,7 @@ impl Verifier<'_, '_> {
         Ok(reason)
     }
     fn observe(&self, pointer: &mut CodePointer) -> AtlasResult<Option<CoverageReason>> {
-        let (Some(source), Some(expected)) = (self.reader.source, pointer.content_hash) else {
+        let (Some(source), Some(expected)) = (self.reader.ctx.source, pointer.content_hash) else {
             return Ok(Some(CoverageReason::StaleSnapshot));
         };
         if Instant::now() >= self.end {

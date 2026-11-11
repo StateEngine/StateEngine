@@ -3,7 +3,7 @@ use super::*;
 
 impl SqliteSnapshot {
     pub(super) fn read_removed_projects(
-        &self,
+        &mut self,
         query: RemovedProjectQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<ProjectionRecord>> {

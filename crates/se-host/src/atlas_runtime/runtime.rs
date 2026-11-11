@@ -89,7 +89,7 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
                 .find(|r| r.summary.root == registration.root)
                 .ok_or_else(|| atlas_cold::failure("native root disappeared"))?;
             let cache = NativeAtlasCache::create(&self.home, root.source.scope.clone())?;
-            let current = super::connections::writer(&cache, root, profile, deadline)?
+            let mut current = super::connections::writer(&cache, root, profile, deadline)?
                 .ok_or_else(|| atlas_cold::failure("renewal index disappeared"))?;
             root.checked_epoch = Some(current.connection.identity().epoch.clone());
             if root.serial_domain.is_none() {
@@ -118,7 +118,7 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             };
             let step = self.driver.step(
                 &root.source,
-                &current.connection,
+                &mut current.connection,
                 &root.policy,
                 &mapped,
                 deadline,
@@ -184,8 +184,10 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             )
         })?;
         let serial = durable_serial(base, serial)?;
-        let published=self.with_writer(id,deadline,|db,_|db.write(2_000_000,deadline,|sql| {
-            if db.identity().epoch!=epoch {return Err(atlas_cold::failure("publication cache epoch differs from the reconciled serial domain"));}
+        let published=self.with_writer(id,deadline,|db,_| {
+            let db_epoch=db.identity().epoch.clone();
+            db.write(2_000_000,deadline,|sql| {
+            if db_epoch!=epoch {return Err(atlas_cold::failure("publication cache epoch differs from the reconciled serial domain"));}
             let observed:i64=sql.prepare("SELECT observed_serial FROM meta WHERE singleton=1")?
                 .query_row([],|r|r.get(0)).map_err(atlas_cold::failure)?;
             if u64::try_from(observed).map_err(atlas_cold::failure)?>serial {
@@ -216,7 +218,8 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             sql.prepare("UPDATE meta SET state_json=?1 WHERE singleton=1")?
                 .execute([serde_json::to_string(&summary.state).map_err(atlas_cold::failure)?]).map_err(atlas_cold::failure)?;
             Ok(summary)
-        }))?;
+        })
+        })?;
         if let Some(root) = self.roots.iter_mut().find(|r| &r.summary.root == id) {
             root.summary = published.clone();
         }
@@ -238,7 +241,7 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
     fn with_reader<T>(
         &self,
         id: &RootId,
-        read: impl FnOnce(&CacheConnection<'_>, &Self::Source) -> AtlasResult<T>,
+        read: impl FnOnce(&mut CacheConnection<'_>, &Self::Source) -> AtlasResult<T>,
     ) -> AtlasResult<T> {
         NativeRuntime::with_reader(self, id, read)
     }

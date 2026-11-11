@@ -24,7 +24,7 @@ impl SqliteSnapshot {
     }
 
     pub(super) fn read_messages(
-        &self,
+        &mut self,
         query: MessageQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<MessageRecord>> {
@@ -35,7 +35,7 @@ impl SqliteSnapshot {
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
     pub(super) fn read_messages_with_delivery(
-        &self,
+        &mut self,
         query: MessageQuery,
         budget: ReadBudget,
         pending: bool,

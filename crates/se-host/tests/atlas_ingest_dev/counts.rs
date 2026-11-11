@@ -14,7 +14,7 @@ fn outside(db: &CacheConnection<'_>) -> Result<rusqlite::Connection, Box<dyn Err
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?)
 }
-pub(super) fn check(db: &CacheConnection<'_>) -> Check {
+pub(super) fn check(db: &mut CacheConnection<'_>) -> Check {
     let out = outside(db)?;
     for query in [
         "SELECT count(*) FROM symbols s WHERE coalesce((SELECT inbound_resolved FROM activity WHERE target_kind='symbol' AND target_key=s.key),0)!=(SELECT count(*) FROM refs r WHERE r.target=s.id AND r.accuracy!='NameOnly')",
@@ -62,7 +62,7 @@ impl RecordReader for NoRecords {
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-pub(super) fn rank_and_touch_absence(db: &CacheConnection<'_>) -> Check {
+pub(super) fn rank_and_touch_absence(db: &mut CacheConnection<'_>) -> Check {
     let out = outside(db)?;
     assert_eq!(
         out.query_row(
@@ -78,14 +78,15 @@ pub(super) fn rank_and_touch_absence(db: &CacheConnection<'_>) -> Check {
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    let read = || {
+    let project = db.identity().scope.registration.project.clone();
+    let read = |db: &mut CacheConnection<'_>| {
         db.read(deadline(), |sql| {
             rank::activity(
                 sql,
                 "symbol",
                 &key,
                 rank::ActivityQuery {
-                    project: &db.identity().scope.registration.project,
+                    project: &project,
                     viewer: &viewer,
                     records: &NoRecords,
                     now: Some(1000),
@@ -93,7 +94,7 @@ pub(super) fn rank_and_touch_absence(db: &CacheConnection<'_>) -> Check {
             )
         })
     };
-    let result = read()?;
+    let result = read(db)?;
     assert_eq!(
         result.last, None,
         "reference popularity fabricated a touch time"
@@ -110,7 +111,7 @@ pub(super) fn rank_and_touch_absence(db: &CacheConnection<'_>) -> Check {
             "file",
             &file_key,
             rank::ActivityQuery {
-                project: &db.identity().scope.registration.project,
+                project: &project,
                 viewer: &viewer,
                 records: &NoRecords,
                 now: Some(1000),
@@ -121,7 +122,6 @@ pub(super) fn rank_and_touch_absence(db: &CacheConnection<'_>) -> Check {
     assert!((file_activity.score - 0.3 * (1.0 + file_count as f64).log2()).abs() < 1e-9);
     // The public record feed, including removal and restricted replacement,
     // must leave popularity intact and an absent last touch absent.
-    let project = db.identity().scope.registration.project.clone();
     let record = RecordKey::new("record-count-test")?;
     let event = se_types::EventId::from_parts(1, [23; 10])?;
     let restricted_event = se_types::EventId::from_parts(2, [24; 10])?;
@@ -196,7 +196,7 @@ pub(super) fn rank_and_touch_absence(db: &CacheConnection<'_>) -> Check {
         )?,
         0
     );
-    let result = read()?;
+    let result = read(db)?;
     assert_eq!(result.last, None);
     assert!((result.score - 0.3 * (1.0 + count as f64).log2()).abs() < 1e-9);
     let before:(i64,i64,i64)=out.query_row("SELECT (SELECT sum(inbound_resolved) FROM activity WHERE target_kind='file'),(SELECT sum(inbound_resolved) FROM activity WHERE target_kind='symbol'),(SELECT count(*) FROM refs)",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;

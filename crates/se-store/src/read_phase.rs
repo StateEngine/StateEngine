@@ -84,11 +84,11 @@ impl ReadPhase {
     /// Read a complete protected owner inventory on this same pin. Native
     /// file custody and the supplied finite inventory budget are still checked.
     pub fn owner_guard(
-        &self,
+        &mut self,
         files: &dyn StateFiles,
         budget: ReadBudget,
     ) -> StoreResult<OwnerGuardInventory> {
-        crate::owner_guard::read_at(&self.db, &self.path, files, budget)
+        crate::owner_guard::read_at(&mut self.db, &self.path, files, budget)
     }
 
     /// Re-read the presented credential on this pin, retaining the ordinary

@@ -56,10 +56,10 @@ pub(crate) fn execute(cx: &Bootstrap, input: Input) -> Result<se_host::Operation
             se_core::ops::receipt::timestamp(execute::now_us()?)?,
         )?;
     }
-    let setup::Setup::Present((files, (reader, phase))) = setup else {
+    let setup::Setup::Present((files, (reader, mut phase))) = setup else {
         return Err(setup::required(cx));
     };
-    let caller = admit::observe(cx, &phase, &files);
+    let caller = admit::observe(cx, &mut phase, &files);
     let closed = phase.close().map_err(|error| store_error(&error));
     let caller = match (caller, closed) {
         (Ok(caller), Ok(())) => caller,

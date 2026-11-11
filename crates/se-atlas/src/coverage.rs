@@ -33,7 +33,7 @@ enum Phase {
 impl CoverageScan {
     /// No cursor or partial counts escape a failed transaction. No statement,
     /// snapshot, row inventory or connection is retained between calls.
-    pub fn step(&mut self, db: &CacheConnection<'_>, deadline: Instant) -> AtlasResult<bool> {
+    pub fn step(&mut self, db: &mut CacheConnection<'_>, deadline: Instant) -> AtlasResult<bool> {
         let next = db.read(deadline, |sql| {
             let mut next = self.clone();
             next.advance(sql)?;

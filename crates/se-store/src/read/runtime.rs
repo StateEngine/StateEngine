@@ -5,7 +5,10 @@ fn blob(v: Vec<u8>) -> rusqlite::types::Value {
     rusqlite::types::Value::Blob(v)
 }
 impl SqliteSnapshot {
-    pub(super) fn read_processes(&self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+    pub(super) fn read_processes(
+        &mut self,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<ProjectionRecord>> {
         let p = self.project_bytes()?;
         if let Visibility::SelfOnly(agent) = &self.scope.visibility {
             let a = self.agent_bytes(agent)?;
@@ -28,7 +31,7 @@ impl SqliteSnapshot {
     /// Pending and offered effects in request order; a self-scoped agent sees
     /// only effects naming it as the affected principal.
     pub(super) fn read_pending_effects(
-        &self,
+        &mut self,
         budget: ReadBudget,
     ) -> StoreResult<Page<ProjectionRecord>> {
         let p = self.project_bytes()?;
@@ -63,7 +66,7 @@ impl SqliteSnapshot {
     /// Owned file edits are owner metadata; a self-scoped agent is refused
     /// rather than shown an empty list.
     pub(super) fn read_integrations(
-        &self,
+        &mut self,
         budget: ReadBudget,
     ) -> StoreResult<Page<ProjectionRecord>> {
         if let Visibility::SelfOnly(_) = &self.scope.visibility {

@@ -10,13 +10,13 @@ pub(crate) fn read(
     budget: ReadBudget,
 ) -> StoreResult<OwnerGuardInventory> {
     with_source(&reader.path, files, budget, |budget, deadline| {
-        let phase = reader.read_phase()?;
-        let result = inventory_at(&phase.db, &phase.path, budget, deadline);
+        let mut phase = reader.read_phase()?;
+        let result = inventory_at(&mut phase.db, &phase.path, budget, deadline);
         phase.finish(result)
     })
 }
 pub(crate) fn read_at(
-    db: &Connection,
+    db: &mut Connection,
     path: &std::path::Path,
     files: &dyn StateFiles,
     budget: ReadBudget,
@@ -59,7 +59,7 @@ fn with_source(
     read(&budget, start + budget.deadline)
 }
 fn inventory_at(
-    db: &Connection,
+    db: &mut Connection,
     path: &std::path::Path,
     budget: &ReadBudget,
     deadline: Instant,

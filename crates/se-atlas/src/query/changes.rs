@@ -1,13 +1,15 @@
 use super::*;
 use rusqlite::params;
-impl QueryReader<'_> {
-    pub fn changes(&self, query: &ChangesQuery) -> AtlasResult<Answer<Read<Page<CodeChange>>>> {
+impl QueryReader<'_, '_, '_> {
+    pub fn changes(&mut self, query: &ChangesQuery) -> AtlasResult<Answer<Read<Page<CodeChange>>>> {
         let end = deadline(query.budget)?;
-        let digest = cursor::digest(&("changes", &query.since, &query.scope, &self.viewer))?;
+        let digest = cursor::digest(&("changes", &query.since, &query.scope, &self.ctx.viewer))?;
         query.scope.validate()?;
+        let identity = self.cache.identity().clone();
+        let env = self.ctx.split();
         let answer = self.cache.read(end, |sql| {
-            let snapshot = self.snapshot(sql)?;
-            let baseline = baseline(self, sql, &snapshot, &query.since)?;
+            let snapshot = snapshot(&identity, &env, sql)?;
+            let baseline = baseline(&env, sql, &snapshot, &query.since)?;
             let previous = query.next.as_ref().map(PositionCursor::decode).transpose()?;
             let advanced = previous.as_ref().map(|p| p.validate(&snapshot.index, "changes", digest)).transpose()?.unwrap_or(false);
             let last = previous.as_ref().map_or(&baseline.last_key, |p| &p.last_key);
@@ -16,7 +18,7 @@ impl QueryReader<'_> {
             if fence.0 > snapshot.published.0 || fence.0 < last.integers[0] {
                 return Err(cursor::invalid("invalid changes fence"));
             }
-            check_retention(&snapshot, last.integers[0], &self.viewer)?;
+            check_retention(&snapshot, last.integers[0], env.viewer)?;
             let ids={
                 let mut stmt=sql.prepare("SELECT generation,ordinal FROM changes WHERE (generation,ordinal)>(?1,?2) AND generation<=?3 ORDER BY generation,ordinal LIMIT 513")?;
                 let mut rows=stmt.query(params![signed(last.integers[0])?,signed(last.integers[1])?,signed(fence.0)?]).map_err(cache_error)?;
@@ -155,7 +157,7 @@ pub(super) fn check_retention(
     Ok(())
 }
 fn baseline(
-    reader: &QueryReader<'_>,
+    env: &QueryEnv<'_>,
     sql: &SqlView<'_>,
     snapshot: &Snapshot,
     since: &ChangeBaseline,
@@ -166,10 +168,10 @@ fn baseline(
             cursor.validate(
                 &snapshot.index,
                 "changes-range",
-                cursor::digest(&("changes-range", &reader.viewer))?,
+                cursor::digest(&("changes-range", &env.viewer))?,
             )?;
             validate_key(&cursor.last_key)?;
-            check_retention(snapshot, cursor.last_key.integers[0], &reader.viewer)?;
+            check_retention(snapshot, cursor.last_key.integers[0], env.viewer)?;
             return Ok(cursor);
         }
         ChangeBaseline::ObservedCommit(oid) => {
@@ -209,8 +211,8 @@ fn baseline(
             })? as u64
         }
     };
-    check_retention(snapshot, generation, &reader.viewer)?;
-    range_cursor(snapshot, &reader.viewer, generation, None)
+    check_retention(snapshot, generation, env.viewer)?;
+    range_cursor(snapshot, env.viewer, generation, None)
 }
 
 pub(super) fn public_change(change: &mut CodeChange) -> bool {

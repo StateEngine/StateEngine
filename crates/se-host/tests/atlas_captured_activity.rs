@@ -220,7 +220,7 @@ fn check(provider: Provider) -> Check {
         )?,
         state: IndexState::Current,
     };
-    let cache = CacheConnection::create(
+    let mut cache = CacheConnection::create(
         &files,
         &seed,
         ConnectionRole::HostWriter,
@@ -244,7 +244,7 @@ fn check(provider: Provider) -> Check {
                 );
             }
         }
-        se_atlas::records::apply(&cache, &feed, end())?;
+        se_atlas::records::apply(&mut cache, &feed, end())?;
         after = Some(feed.through);
         if feed.complete {
             break;

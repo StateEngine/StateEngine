@@ -8,7 +8,7 @@ use rusqlite::{OptionalExtension, params};
 use std::time::Instant;
 
 pub fn ingest(
-    cache: &CacheConnection<'_>,
+    cache: &mut CacheConnection<'_>,
     feed: &HistoryFeed,
     deadline: Instant,
 ) -> AtlasResult<HistoryReceipt> {

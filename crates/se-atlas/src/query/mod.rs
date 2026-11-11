@@ -26,6 +26,7 @@ mod text_metadata;
 mod text_modes;
 mod text_rank;
 use crate::{
+    cache::CacheIdentity,
     cache::connection::{CacheConnection, SqlView},
     errors::{AtlasResult, cache_error, capacity},
     model::*,
@@ -95,22 +96,60 @@ pub struct ReaderContext<'a> {
     /// it before a reader can observe that commit; hostless/unknown is false.
     pub record_feed_current: bool,
 }
-#[derive(Clone)]
-pub struct QueryReader<'a> {
-    pub(crate) compact: Option<(usize, bool)>,
-    pub(crate) memory: Option<MemoryBudget>,
-    pub(crate) cache: &'a CacheConnection<'a>,
-    pub(crate) viewer: AtlasPrincipal,
-    pub(crate) records: &'a dyn RecordReader,
-    pub(crate) hostless: bool,
-    pub(crate) epoch_retired: bool,
-    pub(crate) source: Option<&'a dyn LiveSource>,
-    pub(crate) now_unix_ms: Option<i64>,
-    pub(crate) record_feed_current: bool,
-    source_state: Option<IndexState>,
+pub struct QueryReader<'a, 'c, 'x> {
+    pub(crate) cache: &'a mut CacheConnection<'c>,
+    pub(crate) ctx: QueryCtx<'x>,
 }
-impl<'a> QueryReader<'a> {
-    pub fn new(cache: &'a CacheConnection<'a>, context: ReaderContext<'a>) -> Self {
+/// Owned non-cache reader state. Held as one field of the reader so a
+/// finite cache read can borrow it by field while the connection borrow
+/// stays disjoint.
+pub(crate) struct QueryCtx<'a> {
+    pub viewer: AtlasPrincipal,
+    pub records: &'a dyn RecordReader,
+    pub source: Option<&'a dyn LiveSource>,
+    pub memory: Option<MemoryBudget>,
+    pub compact: Option<(usize, bool)>,
+    pub hostless: bool,
+    pub epoch_retired: bool,
+    pub record_feed_current: bool,
+    pub now_unix_ms: Option<i64>,
+    pub source_state: Option<IndexState>,
+}
+impl<'a> QueryCtx<'a> {
+    /// A reference view for finite cache reads, so the read closure never
+    /// aliases the connection's mutable deadline state.
+    pub(super) fn split(&self) -> QueryEnv<'_> {
+        QueryEnv {
+            records: self.records,
+            viewer: &self.viewer,
+            source: &self.source,
+            memory: self.memory.clone(),
+            compact: self.compact,
+            hostless: self.hostless,
+            epoch_retired: self.epoch_retired,
+            record_feed_current: self.record_feed_current,
+            now_unix_ms: self.now_unix_ms,
+            source_state: self.source_state.clone(),
+        }
+    }
+}
+#[derive(Clone)]
+/// Borrowed non-cache reader context for one finite cache read.
+pub(super) struct QueryEnv<'a> {
+    pub records: &'a dyn RecordReader,
+    pub viewer: &'a AtlasPrincipal,
+    pub source: &'a Option<&'a dyn LiveSource>,
+    pub memory: Option<MemoryBudget>,
+    pub compact: Option<(usize, bool)>,
+    pub hostless: bool,
+    pub epoch_retired: bool,
+    pub record_feed_current: bool,
+    pub now_unix_ms: Option<i64>,
+    pub source_state: Option<IndexState>,
+}
+
+impl<'a, 'c, 'x> QueryReader<'a, 'c, 'x> {
+    pub fn new(cache: &'a mut CacheConnection<'c>, context: ReaderContext<'x>) -> Self {
         let ReaderContext {
             memory,
             viewer,
@@ -122,81 +161,80 @@ impl<'a> QueryReader<'a> {
             record_feed_current,
         } = context;
         Self {
-            compact: None,
-            memory,
             cache,
-            viewer,
-            records,
-            hostless,
-            epoch_retired,
-            source,
-            now_unix_ms,
-            record_feed_current,
-            source_state: None,
+            ctx: QueryCtx {
+                viewer,
+                records,
+                source,
+                memory,
+                compact: None,
+                hostless,
+                epoch_retired,
+                record_feed_current,
+                now_unix_ms,
+                source_state: None,
+            },
         }
     }
     /// The owner's work catalogue may be newer than the committed cache
     /// snapshot. Pending source work prevents a complete negative answer.
     pub fn with_source_state(mut self, state: IndexState) -> Self {
-        self.source_state = Some(state);
+        self.ctx.source_state = Some(state);
         self
     }
-    pub fn summary(&self) -> AtlasResult<IndexSummary> {
+    pub fn summary(&mut self) -> AtlasResult<IndexSummary> {
+        let identity = self.cache.identity().clone();
+        let env = self.ctx.split();
         self.cache
             .read(Instant::now() + Duration::from_millis(25), |sql| {
-                Ok(self.snapshot(sql)?.index)
+                snapshot(&identity, &env, sql).map(|value| value.index)
             })
     }
-    fn snapshot(&self, sql: &SqlView<'_>) -> AtlasResult<Snapshot> {
-        let mut stmt = sql.prepare("SELECT index_generation,published_generation,retention_floor,coverage_json,state_json,EXISTS(SELECT 1 FROM records WHERE body_truncated=1) FROM meta WHERE singleton=1")?;
-        let mut rows = stmt.query([]).map_err(cache_error)?;
-        let row = rows
-            .next()
-            .map_err(cache_error)?
-            .ok_or_else(|| cache_error("missing cache summary"))?;
-        let identity = self.cache.identity();
-        let mut index = IndexSummary {
-            memory: self.memory.clone(),
-            project: identity.scope.registration.project.clone(),
-            root: identity.scope.registration.root.clone(),
-            epoch: Some(identity.epoch.clone()),
-            generation: Some(Generation(number(row, 0)?)),
-            coverage: json(&get::<String>(row, 3)?)?,
-            state: json(&get::<String>(row, 4)?)?,
-        };
-        let record_body_limited = get::<bool>(row, 5)?;
-        if let Some(state) = &self.source_state
-            && !matches!(state, IndexState::Current)
+}
+fn snapshot(
+    identity: &CacheIdentity,
+    env: &QueryEnv<'_>,
+    sql: &SqlView<'_>,
+) -> AtlasResult<Snapshot> {
+    let mut stmt = sql.prepare("SELECT index_generation,published_generation,retention_floor,coverage_json,state_json,EXISTS(SELECT 1 FROM records WHERE body_truncated=1) FROM meta WHERE singleton=1")?;
+    let mut rows = stmt.query([]).map_err(cache_error)?;
+    let row = rows
+        .next()
+        .map_err(cache_error)?
+        .ok_or_else(|| cache_error("missing cache summary"))?;
+    let mut index = IndexSummary {
+        memory: env.memory.clone(),
+        project: identity.scope.registration.project.clone(),
+        root: identity.scope.registration.root.clone(),
+        epoch: Some(identity.epoch.clone()),
+        generation: Some(Generation(number(row, 0)?)),
+        coverage: json(&get::<String>(row, 3)?)?,
+        state: json(&get::<String>(row, 4)?)?,
+    };
+    let record_body_limited = get::<bool>(row, 5)?;
+    if let Some(state) = &env.source_state
+        && !matches!(state, IndexState::Current)
+    {
+        if matches!(index.state, IndexState::Current) {
+            index.state = state.clone();
+        }
+        if !index
+            .coverage
+            .reasons
+            .contains(&CoverageReason::StaleSnapshot)
         {
-            if matches!(index.state, IndexState::Current) {
-                index.state = state.clone();
-            }
-            if !index
-                .coverage
-                .reasons
-                .contains(&CoverageReason::StaleSnapshot)
-            {
-                index.coverage.reasons.push(CoverageReason::StaleSnapshot);
-            }
+            index.coverage.reasons.push(CoverageReason::StaleSnapshot);
         }
-        for (limited, reason) in [
-            (
-                self.hostless || self.epoch_retired,
-                CoverageReason::StaleSnapshot,
-            ),
-            (!self.record_feed_current, CoverageReason::RecordFeedLag),
-            (record_body_limited, CoverageReason::RecordBodyLimit),
-        ] {
-            if limited {
-                if matches!(index.state, IndexState::Current) {
-                    index.state = IndexState::VerificationNeeded { reason };
-                }
-                if !index.coverage.reasons.contains(&reason) {
-                    index.coverage.reasons.push(reason);
-                }
-            }
-        }
-        if let Some(reason) = crate::history::limitation(sql)? {
+    }
+    for (limited, reason) in [
+        (
+            env.hostless || env.epoch_retired,
+            CoverageReason::StaleSnapshot,
+        ),
+        (!env.record_feed_current, CoverageReason::RecordFeedLag),
+        (record_body_limited, CoverageReason::RecordBodyLimit),
+    ] {
+        if limited {
             if matches!(index.state, IndexState::Current) {
                 index.state = IndexState::VerificationNeeded { reason };
             }
@@ -204,14 +242,23 @@ impl<'a> QueryReader<'a> {
                 index.coverage.reasons.push(reason);
             }
         }
-        Ok(Snapshot {
-            index,
-            published: Generation(number(row, 1)?),
-            floor: Generation(number(row, 2)?),
-            epoch_retired: self.epoch_retired,
-        })
     }
+    if let Some(reason) = crate::history::limitation(sql)? {
+        if matches!(index.state, IndexState::Current) {
+            index.state = IndexState::VerificationNeeded { reason };
+        }
+        if !index.coverage.reasons.contains(&reason) {
+            index.coverage.reasons.push(reason);
+        }
+    }
+    Ok(Snapshot {
+        index,
+        published: Generation(number(row, 1)?),
+        floor: Generation(number(row, 2)?),
+        epoch_retired: env.epoch_retired,
+    })
 }
+
 struct Snapshot {
     index: IndexSummary,
     published: Generation,
@@ -334,26 +381,26 @@ fn check_output<T: Serialize>(answer: T, budget: QueryBudget) -> AtlasResult<T> 
     Ok(answer)
 }
 
-impl crate::queries::AtlasQueries for QueryReader<'_> {
-    fn find(&self, query: &FindQuery) -> AtlasResult<Answer<Read<SearchResults>>> {
+impl crate::queries::AtlasQueries for QueryReader<'_, '_, '_> {
+    fn find(&mut self, query: &FindQuery) -> AtlasResult<Answer<Read<SearchResults>>> {
         QueryReader::find(self, query)
     }
-    fn refs(&self, query: &RefsQuery) -> AtlasResult<Answer<Read<Page<ReferenceHit>>>> {
+    fn refs(&mut self, query: &RefsQuery) -> AtlasResult<Answer<Read<Page<ReferenceHit>>>> {
         QueryReader::refs(self, query)
     }
-    fn impact(&self, query: &ImpactQuery) -> AtlasResult<Answer<Read<Impact>>> {
+    fn impact(&mut self, query: &ImpactQuery) -> AtlasResult<Answer<Read<Impact>>> {
         QueryReader::impact(self, query)
     }
-    fn changes(&self, query: &ChangesQuery) -> AtlasResult<Answer<Read<Page<CodeChange>>>> {
+    fn changes(&mut self, query: &ChangesQuery) -> AtlasResult<Answer<Read<Page<CodeChange>>>> {
         QueryReader::changes(self, query)
     }
-    fn outline(&self, query: &OutlineQuery) -> AtlasResult<Answer<Read<Outline>>> {
+    fn outline(&mut self, query: &OutlineQuery) -> AtlasResult<Answer<Read<Outline>>> {
         QueryReader::outline(self, query)
     }
-    fn resume_code(&self, request: &ResumeRequest) -> AtlasResult<ResumeCode> {
+    fn resume_code(&mut self, request: &ResumeRequest) -> AtlasResult<ResumeCode> {
         QueryReader::resume_code(self, request)
     }
-    fn status(&self) -> AtlasResult<IndexSummary> {
+    fn status(&mut self) -> AtlasResult<IndexSummary> {
         self.summary()
     }
 }

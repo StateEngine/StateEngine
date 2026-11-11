@@ -169,7 +169,7 @@ pub(crate) fn run_child(
             discovered_files: 0,
         },
     };
-    let db = CacheConnection::create(
+    let mut db = CacheConnection::create(
         &cache,
         &seed,
         ConnectionRole::ColdWriter,
@@ -202,13 +202,20 @@ pub(crate) fn run_child(
             ));
         }
         coverage.discovered_files += 1;
-        ingest::file(&source, &db, &mut parser, &path, request, &mut |phase| {
-            notify(protocol::Reply::Working {
-                job: request.job,
-                path: Some(path.clone()),
-                phase,
-            })
-        })?;
+        ingest::file(
+            &source,
+            &mut db,
+            &mut parser,
+            &path,
+            request,
+            &mut |phase| {
+                notify(protocol::Reply::Working {
+                    job: request.job,
+                    path: Some(path.clone()),
+                    phase,
+                })
+            },
+        )?;
         completed += 1;
         if completed.is_multiple_of(16) {
             notify(protocol::Reply::Progress {
@@ -242,7 +249,7 @@ pub(crate) fn run_child(
         // Keep the reserved part of the existing job budget for coverage,
         // checkpoint and exact-reap publication; skipped files stay partial.
         if !discovery_complete || Instant::now() >= work_deadline {
-            finish::limited_resolution(&db, after, deadline)?;
+            finish::limited_resolution(&mut db, after, deadline)?;
             break;
         }
         let next = db.read(sql_deadline(), |sql| {
@@ -261,7 +268,7 @@ pub(crate) fn run_child(
         after = id;
         ingest::file(
             &source,
-            &db,
+            &mut db,
             &mut parser,
             &RelativePath::new(&path)?,
             request,
@@ -299,7 +306,7 @@ pub(crate) fn run_child(
         path: None,
         phase: protocol::Phase::Finalize,
     })?;
-    let summary = finish::finish(&db, coverage, deadline)?;
+    let summary = finish::finish(&mut db, coverage, deadline)?;
     // Closing the last writer checkpoints even a sub-threshold WAL. Exact
     // parent reopen/integrity validation happens only after process reap.
     drop(parser);

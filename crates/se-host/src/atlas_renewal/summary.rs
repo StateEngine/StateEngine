@@ -1,12 +1,14 @@
 use super::*;
 pub(super) fn get(
-    connection: &CacheConnection<'_>,
+    connection: &mut CacheConnection<'_>,
     root: &Root,
     watched: usize,
     counts: Option<&se_atlas::coverage::CoverageScan>,
     deadline: Instant,
 ) -> AtlasResult<IndexSummary> {
     let complete = counts.is_some();
+    let project = connection.identity().scope.registration.project.clone();
+    let epoch = connection.identity().epoch.clone();
     connection.write(65536, deadline, |sql| {
         let (generation, json, prior): (i64, String, String) = sql
             .prepare("SELECT index_generation,coverage_json,state_json FROM meta WHERE singleton=1")?
@@ -54,8 +56,8 @@ pub(super) fn get(
             .map_err(sql_error)?;
         Ok(IndexSummary {
             memory: None,
-            project: connection.identity().scope.registration.project.clone(),
-            root: root.id.clone(), epoch: Some(connection.identity().epoch.clone()),
+            project,
+            root: root.id.clone(), epoch: Some(epoch),
             generation: Some(Generation(u64::try_from(generation).map_err(sql_error)?)), state, coverage,
         })
     })

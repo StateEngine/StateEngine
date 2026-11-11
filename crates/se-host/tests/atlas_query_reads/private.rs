@@ -1,8 +1,13 @@
-//! Retained-cache policy checks use the same native reader as the outer test.
+//! Retained-cache policy checks use the same native cache as the outer test;
+//! the reader owns the connection, so it is built after the policy write.
 use super::*;
+#[allow(clippy::too_many_arguments)]
 pub(super) fn retained(
-    reader: &QueryReader<'_>,
-    cache: &CacheConnection<'_>,
+    cache: &mut CacheConnection<'_>,
+    viewer: &AtlasPrincipal,
+    records: &dyn se_atlas::query::RecordReader,
+    source: &se_atlas::source::RegisteredSource<NativeAtlasSource>,
+    feed_current: bool,
     pointer: &CodePointer,
     request: &ResumeRequest,
     query: &FindQuery,
@@ -24,6 +29,7 @@ pub(super) fn retained(
             .map_err(fail)?;
         Ok(())
     })?;
+    let mut reader = super::outer_reader(cache, viewer, records, source, 1, feed_current);
     let mut denied = query.clone();
     denied.kind = SearchKind::Symbol;
     assert!(present(reader.find(&denied)?.data)?.page.items().is_empty());

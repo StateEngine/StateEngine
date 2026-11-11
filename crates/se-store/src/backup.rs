@@ -304,7 +304,7 @@ fn copy(
 }
 fn validate(path: &Path, expected: &StoreInfo, deadline: Instant) -> StoreResult<()> {
     check(deadline)?;
-    let c = connection::connect(path, false, Duration::ZERO)?;
+    let mut c = connection::connect(path, false, Duration::ZERO)?;
     c.progress_handler(1000, Some(move || Instant::now() >= deadline))
         .map_err(sql)?;
     let observed = connection::info_at(&c, path)?;

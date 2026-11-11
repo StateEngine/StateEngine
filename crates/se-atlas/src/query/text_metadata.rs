@@ -5,7 +5,7 @@ pub(super) struct Metadata {
     pub truncated: bool,
 }
 pub(super) fn collect(
-    reader: &QueryReader<'_>,
+    env: &QueryEnv<'_>,
     sql: &SqlView<'_>,
     snapshot: &Snapshot,
     query: &FindQuery,
@@ -14,24 +14,23 @@ pub(super) fn collect(
 ) -> AtlasResult<Metadata> {
     // Metadata still has the short SQL budget; text uses the remaining scan budget.
     let metadata_end = end.min(Instant::now() + query.budget.work);
-    let candidates = super::candidates::collect(reader, sql, snapshot, query, mode, metadata_end)?;
+    let candidates = super::candidates::collect(env, sql, snapshot, query, mode, metadata_end)?;
     let mut output = Metadata {
         values: Vec::new(),
         truncated: candidates.truncated,
     };
     let mut bytes = 0;
     for candidate in candidates.values {
-        let Some(mut hit) =
-            super::find::materialize(reader, sql, snapshot, &candidate, query, mode)?
+        let Some(mut hit) = super::find::materialize(env, sql, snapshot, &candidate, query, mode)?
         else {
             continue;
         };
         if query.full {
             hit.body = match &mut hit.target {
-                HitTarget::Code(code) => super::body::source(reader, &mut code.pointer, end)?,
-                HitTarget::Record(record) => match reader.records.body(
+                HitTarget::Code(code) => super::body::source(env, &mut code.pointer, end)?,
+                HitTarget::Record(record) => match env.records.body(
                     &snapshot.index.project,
-                    &reader.viewer,
+                    env.viewer,
                     &record.pointer,
                     Some(&query.query),
                 )? {

@@ -44,6 +44,28 @@ fn prepared<'a>(
     sql.prepare(statement)
         .map_err(|e| fail(format!("{}: {e}", &statement[..statement.len().min(45)])))
 }
+fn outer_reader<'a, 'c, 'x>(
+    cache: &'a mut CacheConnection<'c>,
+    viewer: &'x AtlasPrincipal,
+    records: &'x dyn se_atlas::query::RecordReader,
+    source: &'x se_atlas::source::RegisteredSource<NativeAtlasSource>,
+    now_unix_ms: i64,
+    feed_current: bool,
+) -> QueryReader<'a, 'c, 'x> {
+    QueryReader::new(
+        cache,
+        ReaderContext {
+            memory: None,
+            viewer: viewer.clone(),
+            records,
+            source: Some(source),
+            hostless: false,
+            epoch_retired: false,
+            now_unix_ms: Some(now_unix_ms),
+            record_feed_current: feed_current,
+        },
+    )
+}
 #[test]
 #[expect(
     clippy::cognitive_complexity,
@@ -132,7 +154,7 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
         coverage,
         state: IndexState::Current,
     };
-    let cache = CacheConnection::create(
+    let mut cache = CacheConnection::create(
         &native,
         &seed,
         ConnectionRole::HostWriter,
@@ -181,25 +203,12 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
     let mut owner = store.snapshot(owner_scope.clone())?;
     let feed = se_core::atlas_records::feed::next(&mut owner, &owner_scope.admission, None)?
         .ok_or("missing feed")?;
-    se_atlas::records::apply(&cache, &feed, end())?;
+    se_atlas::records::apply(&mut cache, &feed, end())?;
     owner.close()?;
     let scope = f.self_scope(&f.a);
     let mut snapshot = store.snapshot(scope.clone())?;
     let records = AtlasRecordReader::new(&mut snapshot, &scope.admission);
     let viewer = AtlasPrincipal::Agent(f.a.clone());
-    let reader = QueryReader::new(
-        &cache,
-        ReaderContext {
-            memory: None,
-            viewer: viewer.clone(),
-            records: &records,
-            source: Some(&source),
-            hostless: false,
-            epoch_retired: false,
-            now_unix_ms: Some(1),
-            record_feed_current: feed.complete,
-        },
-    );
     let budget = Validate.query_budget(10, 4096)?;
     let query = FindQuery {
         query: QueryText::new("alpha")?,
@@ -215,7 +224,10 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
         full: false,
         regex: false,
     };
-    scan_deadline::check(&cache, &source, &records, &viewer, &query, &reader)?;
+    // The delayed first read must finish before its SQL deadline. The reader
+    // owns the connection exclusively, so it runs before the regular reader.
+    let deadline_query =
+        scan_deadline::delayed_scan(&mut cache, &source, &records, &viewer, &query)?;
     let public = se_core::ops::decode_tool(
         "stateengine_atlas_find",
         serde_json::json!({"query":"alpha","mode":"exact"}),
@@ -223,11 +235,14 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
     let se_core::ops::AnyOp::AtlasFind(public) = public else {
         return Err("wrong decoded family".into());
     };
-    let routed = se_host::atlas_queries::execute(&reader, &se_core::ops::AtlasRead::Find(public))?;
+    let mut reader = outer_reader(&mut cache, &viewer, &records, &source, 1, feed.complete);
+    scan_deadline::continuation(&mut reader, &deadline_query)?;
+    let routed =
+        se_host::atlas_queries::execute(&mut reader, &se_core::ops::AtlasRead::Find(public))?;
     let compact =
         se_host::atlas_queries::compact(&routed, 4096, false)?.ok_or("compact output absent")?;
     assert!(compact.contains("alpha.rs:1 (13 B) alpha"));
-    let result = present(AtlasQueries::find(&reader, &query)?.data)?;
+    let result = present(AtlasQueries::find(&mut reader, &query)?.data)?;
     assert_eq!(result.page.items()[0].reason.match_tier, 1);
     assert!(
         result
@@ -267,7 +282,9 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
             .count(),
         1
     );
-    hooks::check(&reader, &cache, &source, &records, &viewer, &f.b)?;
+    drop(reader);
+    hooks::check(&mut cache, &source, &records, &viewer, &f.b, feed.complete)?;
+    let mut reader = outer_reader(&mut cache, &viewer, &records, &source, 1, feed.complete);
     let impact = present(
         reader
             .impact(&ImpactQuery {
@@ -362,11 +379,13 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
     assert_eq!(news.unattributed_omitted, Some(1));
     assert!(!news.complete);
     assert!(news.advance.is_some());
+    drop(reader);
     let captured = serde_json::to_string(&AuthorHint::Captured {
         agent: f.b.clone(),
         evidence: feed.through.clone(),
     })?;
     cache.write(65536,end(),|sql|{sql.prepare("INSERT INTO authors(generation,ordinal,resolved_at_generation,hint_json) VALUES(1,0,1,?1)")?.execute([captured]).map_err(fail)?;Ok(())})?;
+    let mut reader = outer_reader(&mut cache, &viewer, &records, &source, 1, feed.complete);
     let news = reader.resume_code(&request)?;
     assert_eq!(news.items.len(), 1);
     assert!(
@@ -447,27 +466,25 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
             .as_ref()
             .is_some_and(|b| b.text == "fn alpha() {}")
     );
-    let late_reader = QueryReader::new(
-        &cache,
-        ReaderContext {
-            memory: None,
-            viewer: viewer.clone(),
-            records: &records,
-            source: Some(&source),
-            hostless: false,
-            epoch_retired: false,
-            now_unix_ms: Some(2 * 86_400_000),
-            record_feed_current: feed.complete,
-        },
-    );
-    let mut text = text_queries::check(&reader, &late_reader, &query)?;
+    drop(reader);
+    let mut text = text_queries::check(
+        &mut cache,
+        &viewer,
+        &records,
+        &source,
+        feed.complete,
+        &query,
+    )?;
     cache.write(65536, end(), |sql| {
         sql.prepare("UPDATE records SET body_truncated=1")?
             .execute([])
             .map_err(fail)?;
         Ok(())
     })?;
-    let limited = reader.summary()?;
+    let limited = {
+        let mut reader = outer_reader(&mut cache, &viewer, &records, &source, 1, feed.complete);
+        reader.summary()?
+    };
     assert!(
         limited
             .coverage
@@ -484,41 +501,50 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
         }],
         complete: true,
     };
-    let before = reader.summary()?.generation;
-    se_atlas::records::apply(&cache, &remove, end())?;
-    let after = reader.summary()?.generation;
+    let before = {
+        let mut reader = outer_reader(&mut cache, &viewer, &records, &source, 1, feed.complete);
+        reader.summary()?.generation
+    };
+    se_atlas::records::apply(&mut cache, &remove, end())?;
+    let after = {
+        let mut reader = outer_reader(&mut cache, &viewer, &records, &source, 1, feed.complete);
+        reader.summary()?.generation
+    };
     assert!(
         after.map(|g| g.0) > before.map(|g| g.0),
         "record publication did not fence live continuations"
     );
-    se_atlas::records::apply(&cache, &remove, end())?;
-    assert_eq!(
-        reader.summary()?.generation,
-        after,
-        "feed replay changed generation"
-    );
-    let behind = QueryReader::new(
-        &cache,
-        ReaderContext {
-            memory: None,
-            viewer: viewer.clone(),
-            records: &records,
-            source: Some(&source),
-            hostless: false,
-            epoch_retired: false,
-            now_unix_ms: Some(1),
-            record_feed_current: false,
-        },
-    );
-    let missing = behind.find(&record_query)?;
-    assert!(
-        missing
-            .index
-            .coverage
-            .reasons
-            .contains(&CoverageReason::RecordFeedLag)
-    );
-    assert!(!present(missing.data)?.page.window().complete());
+    se_atlas::records::apply(&mut cache, &remove, end())?;
+    let replayed = {
+        let mut reader = outer_reader(&mut cache, &viewer, &records, &source, 1, feed.complete);
+        reader.summary()?.generation
+    };
+    assert_eq!(replayed, after, "feed replay changed generation");
+    {
+        let mut behind = QueryReader::new(
+            &mut cache,
+            ReaderContext {
+                memory: None,
+                viewer: viewer.clone(),
+                records: &records,
+                source: Some(&source),
+                hostless: false,
+                epoch_retired: false,
+                now_unix_ms: Some(1),
+                record_feed_current: false,
+            },
+        );
+        let missing = behind.find(&record_query)?;
+        assert!(
+            missing
+                .index
+                .coverage
+                .reasons
+                .contains(&CoverageReason::RecordFeedLag)
+        );
+        assert!(!present(missing.data)?.page.window().complete());
+    }
+    let mut reader = outer_reader(&mut cache, &viewer, &records, &source, 1, feed.complete);
     let hits = present(reader.find(&record_query)?.data)?;
     assert!(hits.page.items().is_empty());
     fs::write(
@@ -527,7 +553,8 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
             .registration
             .canonical_source_root
             .join("alpha.rs"),
-        "fn newly_changed() {}\n",
+        "fn newly_changed() {}
+",
     )?;
     text.query = QueryText::new("newly_changed")?;
     let changed = reader.find(&text)?;
@@ -543,8 +570,33 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
     assert!(
         matches!(&page.page.items()[0].target, HitTarget::Code(code) if code.pointer.freshness == SnapshotFreshness::Stale)
     );
-    private::retained(&reader, &cache, &pointer, &request, &query, budget)?;
-    scope_queries::check(&reader, &cache, &source, &query)?;
-    literal_queries::check(&reader, &cache, &source, &query)?;
+    drop(reader);
+    private::retained(
+        &mut cache,
+        &viewer,
+        &records,
+        &source,
+        feed.complete,
+        &pointer,
+        &request,
+        &query,
+        budget,
+    )?;
+    scope_queries::check(
+        &mut cache,
+        &viewer,
+        &records,
+        &source,
+        feed.complete,
+        &query,
+    )?;
+    literal_queries::check(
+        &mut cache,
+        &viewer,
+        &records,
+        &source,
+        feed.complete,
+        &query,
+    )?;
     Ok(())
 }

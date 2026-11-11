@@ -90,7 +90,7 @@ pub struct Caller {
     pub terminal: HumanTerminal,
     pub owner: Option<owner::FileOwner>,
 }
-pub fn observe(cx: &Bootstrap, phase: &ReadPhase, files: &Files) -> Result<Caller> {
+pub fn observe(cx: &Bootstrap, phase: &mut ReadPhase, files: &Files) -> Result<Caller> {
     if let Some(secret) = &cx.session {
         let record = scope::require_present(
             phase

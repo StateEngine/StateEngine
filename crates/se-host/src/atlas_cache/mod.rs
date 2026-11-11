@@ -166,7 +166,7 @@ impl NativeAtlasCache {
 impl CacheFiles for NativeAtlasCache {
     fn configure_connection_role(
         &self,
-        connection: &se_atlas::cache::connection::NativeSqlConnection,
+        connection: &mut se_atlas::cache::connection::NativeSqlConnection,
         role: se_atlas::cache::connection::ConnectionRole,
     ) -> AtlasResult<()> {
         self.configure_connection(connection)?;
@@ -183,7 +183,7 @@ impl CacheFiles for NativeAtlasCache {
     }
     fn configure_connection(
         &self,
-        connection: &se_atlas::cache::connection::NativeSqlConnection,
+        connection: &mut se_atlas::cache::connection::NativeSqlConnection,
     ) -> AtlasResult<()> {
         se_proc::atlas_sql::configure(connection).map_err(|error| fail(error.to_string().as_str()))
     }

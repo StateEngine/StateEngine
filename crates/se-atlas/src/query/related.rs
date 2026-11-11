@@ -9,7 +9,7 @@ use rusqlite::types::Value;
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 pub(super) fn collect(
-    reader: &QueryReader<'_>,
+    env: &QueryEnv<'_>,
     sql: &SqlView<'_>,
     snapshot: &Snapshot,
     query: &FindQuery,
@@ -18,7 +18,7 @@ pub(super) fn collect(
     let mut seeds_query = query.clone();
     seeds_query.kind = SearchKind::All;
     let seeds =
-        super::candidates::collect(reader, sql, snapshot, &seeds_query, SearchMode::Broad, end)?;
+        super::candidates::collect(env, sql, snapshot, &seeds_query, SearchMode::Broad, end)?;
     let mut output = Candidates {
         values: Vec::new(),
         truncated: seeds.truncated,
@@ -70,9 +70,9 @@ pub(super) fn collect(
         let (key, tie) = super::candidates::metadata(sql, kind, rowid)?;
         if kind == Kind::Record {
             let pointer = super::candidates::record_pointer(sql, rowid)?;
-            match reader
+            match env
                 .records
-                .read(&snapshot.index.project, &reader.viewer, &pointer, None)?
+                .read(&snapshot.index.project, env.viewer, &pointer, None)?
             {
                 Read::Present { value } if value.pointer == pointer => (),
                 Read::Absent { .. } => continue,
@@ -91,9 +91,9 @@ pub(super) fn collect(
             &key,
             crate::rank::ActivityQuery {
                 project: &snapshot.index.project,
-                viewer: &reader.viewer,
-                records: reader.records,
-                now: reader.now_unix_ms,
+                viewer: env.viewer,
+                records: env.records,
+                now: env.now_unix_ms,
             },
         )?;
         let path = if kind == Kind::Symbol {

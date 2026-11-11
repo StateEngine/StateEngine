@@ -39,7 +39,7 @@ impl Plan {
         // opening the writer; this phase cannot overlap the parser or renewal.
         let source = request.source()?;
         let profile = SqlProfile::from_qualified_overhead(self.overhead)?;
-        let db = CacheConnection::open(
+        let mut db = CacheConnection::open(
             cache,
             CacheIdentity {
                 scope: source.scope,
@@ -52,7 +52,7 @@ impl Plan {
         .ok_or_else(|| failure("history candidate disappeared"))?;
         match feed {
             HistoryRead::Available(Some(feed)) => Ok((
-                se_atlas::history::ingest(&db, &feed, sql_deadline().min(deadline))?.generation,
+                se_atlas::history::ingest(&mut db, &feed, sql_deadline().min(deadline))?.generation,
                 None,
             )),
             HistoryRead::Unavailable(error) => {
@@ -83,9 +83,9 @@ impl Plan {
                     .map_err(failure)?;
                     Ok(())
                 })?;
-                Ok((generation(&db, deadline)?, Some(diagnostic)))
+                Ok((generation(&mut db, deadline)?, Some(diagnostic)))
             }
-            HistoryRead::Available(None) => Ok((generation(&db, deadline)?, None)),
+            HistoryRead::Available(None) => Ok((generation(&mut db, deadline)?, None)),
         }
     }
     // Unavailable enrichment is data. Failed process or private-directory
@@ -138,7 +138,7 @@ impl Plan {
         }
     }
 }
-fn generation(db: &CacheConnection<'_>, deadline: Instant) -> AtlasResult<Generation> {
+fn generation(db: &mut CacheConnection<'_>, deadline: Instant) -> AtlasResult<Generation> {
     db.read(sql_deadline().min(deadline), |sql| {
         let value: i64 = sql
             .prepare("SELECT index_generation FROM meta WHERE singleton=1")?

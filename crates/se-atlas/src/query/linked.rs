@@ -21,7 +21,7 @@ pub(super) struct LinkedRequest<'a> {
     pub end: Instant,
 }
 pub(super) fn for_file(
-    reader: &QueryReader<'_>,
+    env: &QueryEnv<'_>,
     sql: &SqlView<'_>,
     snapshot: &Snapshot,
     request: LinkedRequest<'_>,
@@ -68,9 +68,9 @@ pub(super) fn for_file(
             integers: vec![1, time_key(get(row, 3)?)],
             bytes: pointer.key.as_str().as_bytes().to_vec(),
         };
-        match reader
+        match env
             .records
-            .read(&snapshot.index.project, &reader.viewer, &pointer, query)?
+            .read(&snapshot.index.project, env.viewer, &pointer, query)?
         {
             Read::Present { value } => {
                 if value.pointer != pointer || value.line.len() > 160 || value.mentions.len() > 256

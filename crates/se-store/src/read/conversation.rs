@@ -9,7 +9,7 @@ impl SqliteSnapshot {
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
     pub(super) fn read_conversation_turns(
-        &self,
+        &mut self,
         agent: AgentId,
         provider: Provider,
         native_ref: &str,

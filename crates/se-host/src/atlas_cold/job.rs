@@ -222,7 +222,7 @@ impl ColdJob {
             return Err(failure("old epoch changed before cold adoption"));
         }
         let profile = SqlProfile::contained_cold();
-        let candidate = CacheConnection::open(
+        let mut candidate = CacheConnection::open(
             &cache,
             CacheIdentity {
                 scope: scope.clone(),
@@ -235,13 +235,13 @@ impl ColdJob {
             self.deadline,
         )?
         .ok_or_else(|| failure("staged candidate disappeared"))?;
-        let actual = metadata(&candidate, &self.request, self.deadline)?;
+        let actual = metadata(&mut candidate, &self.request, self.deadline)?;
         if actual != summary {
             return Err(failure(
                 "child summary differs from independently reopened candidate",
             ));
         }
-        let candidate = if let Some(history) = self.history.take() {
+        let mut candidate = if let Some(history) = self.history.take() {
             drop(candidate);
             let (generation, unavailable) = history.seed(&cache, &self.request, self.deadline)?;
             summary.generation = Some(generation);
@@ -261,7 +261,7 @@ impl ColdJob {
                     reason: CoverageReason::HistoryUnavailable,
                 };
             }
-            let candidate = CacheConnection::open(
+            let mut candidate = CacheConnection::open(
                 &cache,
                 CacheIdentity {
                     scope: scope.clone(),
@@ -272,19 +272,24 @@ impl ColdJob {
                 self.deadline,
             )?
             .ok_or_else(|| failure("staged candidate disappeared after history"))?;
-            if metadata(&candidate, &self.request, self.deadline)? != summary {
+            if metadata(&mut candidate, &self.request, self.deadline)? != summary {
                 return Err(failure("history candidate differs before publication"));
             }
             candidate
         } else {
             candidate
         };
-        pointer::publish(&cache, &candidate, self.expected.as_deref(), self.deadline)?;
+        pointer::publish(
+            &cache,
+            &mut candidate,
+            self.expected.as_deref(),
+            self.deadline,
+        )?;
         drop(candidate);
         drop(cache);
         let readback = NativeAtlasCache::open(&self.request.home.to_local()?, scope.clone())?
             .ok_or_else(|| failure("published cache missing on readback"))?;
-        let reopened = pointer::open_current(
+        let mut reopened = pointer::open_current(
             &readback,
             &scope,
             ConnectionRole::ExternalReader,
@@ -293,7 +298,7 @@ impl ColdJob {
         )?
         .ok_or_else(|| failure("published epoch missing on independent readback"))?;
         if reopened.epoch_retired
-            || metadata(&reopened.connection, &self.request, self.deadline)? != summary
+            || metadata(&mut reopened.connection, &self.request, self.deadline)? != summary
         {
             return Err(failure(
                 "published cold epoch differs on independent readback",
@@ -315,7 +320,7 @@ impl ColdJob {
     }
 }
 fn metadata(
-    db: &CacheConnection<'_>,
+    db: &mut CacheConnection<'_>,
     request: &protocol::Request,
     deadline: Instant,
 ) -> AtlasResult<IndexSummary> {

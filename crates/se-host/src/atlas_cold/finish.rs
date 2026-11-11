@@ -3,7 +3,7 @@ use super::*;
 /// Persist the limitation on each remaining parsed file so later coverage
 /// scans cannot erase it. Failed/deferred/stale observations keep their cause.
 pub(super) fn limited_resolution(
-    db: &CacheConnection<'_>,
+    db: &mut CacheConnection<'_>,
     mut after: i64,
     job_deadline: Instant,
 ) -> AtlasResult<()> {
@@ -47,7 +47,7 @@ pub(super) fn limited_resolution(
 }
 
 pub(super) fn finish(
-    db: &CacheConnection<'_>,
+    db: &mut CacheConnection<'_>,
     mut coverage: Coverage,
     job_deadline: Instant,
 ) -> AtlasResult<IndexSummary> {

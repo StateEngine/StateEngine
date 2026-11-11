@@ -101,7 +101,7 @@ impl ViewRequest {
     }
     pub(crate) fn changes(
         &self,
-        phase: &ReadPhase,
+        phase: &mut ReadPhase,
         target: &RemoteTarget,
         query: ChangeRequest<'_>,
         now: i64,

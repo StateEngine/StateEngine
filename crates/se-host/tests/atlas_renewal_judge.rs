@@ -110,14 +110,14 @@ fn seed(home: &Path, registration: &RootRegistration, n: u8) -> Check {
             reason: CoverageReason::StaleSnapshot,
         },
     };
-    let connection = CacheConnection::create(
+    let mut connection = CacheConnection::create(
         &files,
         &seed,
         ConnectionRole::HostWriter,
         &profile()?,
         deadline(),
     )?;
-    pointer::publish(&files, &connection, None, deadline())?;
+    pointer::publish(&files, &mut connection, None, deadline())?;
     Ok(())
 }
 fn scalar(controller: &Native, root: &RootId, query: &str) -> AtlasResult<i64> {

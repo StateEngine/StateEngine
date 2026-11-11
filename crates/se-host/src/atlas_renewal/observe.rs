@@ -18,7 +18,7 @@ impl Mode {
 )]
 pub(super) fn file(
     source: &Source,
-    connection: &CacheConnection<'_>,
+    connection: &mut CacheConnection<'_>,
     policy: &AtlasPolicy,
     profiles: &[ParserProfile],
     path: &RelativePath,
@@ -221,7 +221,7 @@ pub(super) fn file(
 }
 pub(super) fn eligible_file(
     source: &Source,
-    connection: &CacheConnection<'_>,
+    connection: &mut CacheConnection<'_>,
     policy: &AtlasPolicy,
     profiles: &[ParserProfile],
     path: &RelativePath,

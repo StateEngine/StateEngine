@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fn step(
             &mut self,
             _: &RegisteredSource<NativeAtlasSource>,
-            _: &CacheConnection<'_>,
+            _: &mut CacheConnection<'_>,
             _: &AtlasPolicy,
             _: &Scheduled,
             _: Instant,
@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fn poll_events(
             &mut self,
             _: &RegisteredSource<NativeAtlasSource>,
-            _: &CacheConnection<'_>,
+            _: &mut CacheConnection<'_>,
             _: &AtlasPolicy,
             _: Instant,
         ) -> AtlasResult<Vec<SourceHint>> {
@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fn close(
             &mut self,
             _: &RootId,
-            _: Option<&CacheConnection<'_>>,
+            _: Option<&mut CacheConnection<'_>>,
             _: Instant,
         ) -> AtlasResult<()> {
             Ok(())
@@ -132,7 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = NativeAtlasSource::open(registration, CaseMode::Sensitive)?;
     let cache =
         NativeAtlasCache::open(&home, source.scope.clone())?.ok_or("cache absent after child")?;
-    let current = pointer::open_current(
+    let mut current = pointer::open_current(
         &cache,
         &source.scope,
         ConnectionRole::ExternalReader,
@@ -140,10 +140,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Instant::now() + Duration::from_secs(5),
     )?
     .ok_or("pointer absent after child")?;
+    let epoch = current.connection.identity().epoch.clone();
+    let epoch_retired = current.epoch_retired;
     let counts=current.connection.read(Instant::now()+Duration::from_secs(5),|sql| {
         let files:i64=sql.prepare("SELECT count(*) FROM files")?.query_row([],|r|r.get(0)).map_err(|e|se_types::SeError::invalid("consumer SQL",&e.to_string()))?;
         let symbols:i64=sql.prepare("SELECT count(*) FROM symbols")?.query_row([],|r|r.get(0)).map_err(|e|se_types::SeError::invalid("consumer SQL",&e.to_string()))?;
-        Ok(serde_json::json!({"files":files,"symbols":symbols,"epoch":current.connection.identity().epoch,"epoch_retired":current.epoch_retired}))
+        Ok(serde_json::json!({"files":files,"symbols":symbols,"epoch":epoch,"epoch_retired":epoch_retired}))
     })?;
     println!("{}", serde_json::to_string_pretty(&counts)?);
     if counts["files"].as_i64().unwrap_or(0) == 0 || counts["symbols"].as_i64().unwrap_or(0) == 0 {

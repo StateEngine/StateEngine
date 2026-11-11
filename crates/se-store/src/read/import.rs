@@ -55,7 +55,7 @@ impl SqliteSnapshot {
         Ok(())
     }
     pub(super) fn read_import_progress(
-        &self,
+        &mut self,
         id: RecordId,
         budget: ReadBudget,
     ) -> StoreResult<Page<ImportCheckpoint>> {

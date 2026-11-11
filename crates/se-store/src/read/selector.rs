@@ -31,7 +31,7 @@ impl SqliteSnapshot {
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
     fn selector_heads(
-        &self,
+        &mut self,
         agents: bool,
         budget: ReadBudget,
     ) -> StoreResult<Page<ProjectionRecord>> {

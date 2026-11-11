@@ -1,9 +1,11 @@
 //! Native source and SQL scopes share exact file/directory boundaries.
 use super::*;
 pub(super) fn check(
-    reader: &QueryReader<'_>,
-    cache: &CacheConnection<'_>,
+    cache: &mut CacheConnection<'_>,
+    viewer: &AtlasPrincipal,
+    records: &dyn se_atlas::query::RecordReader,
     source: &se_atlas::source::RegisteredSource<NativeAtlasSource>,
+    feed_current: bool,
     query: &FindQuery,
 ) -> Check {
     let root = &source.scope.registration.canonical_source_root;
@@ -27,6 +29,7 @@ pub(super) fn check(
         sql.prepare("INSERT INTO activity VALUES('symbol',?1,1,0)")?.execute([[52u8;32].as_slice()]).map_err(fail)?;
         Ok(())
     })?;
+    let mut reader = super::outer_reader(cache, viewer, records, source, 1, feed_current);
     let mut scoped = query.clone();
     scoped.query = QueryText::new("directory_marker")?;
     scoped.budget = Validate.query_budget(1, 16384)?;
@@ -62,6 +65,7 @@ pub(super) fn check(
     scoped.query = QueryText::new("directory_marker")?;
     // A newly built cache has no touch rows. Exercise its indexed path walk
     // across multiple SQL batches and pages without retaining invented activity.
+    drop(reader);
     cache.write(65536, end(), |sql| {
         sql.prepare("DELETE FROM touches")?
             .execute([])
@@ -71,6 +75,7 @@ pub(super) fn check(
             .map_err(fail)?;
         Ok(())
     })?;
+    let mut reader = super::outer_reader(cache, viewer, records, source, 1, feed_current);
     scoped.scope.paths.clear();
     scoped.scope.languages.clear();
     let first = present(reader.find(&scoped)?.data)?;

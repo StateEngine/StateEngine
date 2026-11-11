@@ -24,11 +24,14 @@ pub trait ResumeCursorStore {
 /// Bound by the host to one registered project/worktree and authorized source
 /// scope. These methods never enable, open-for-write, index or launch anything.
 pub trait AtlasQueries {
-    fn find(&self, query: &FindQuery) -> AtlasResult<Answer<Read<se_types::code::SearchResults>>>;
-    fn refs(&self, query: &RefsQuery) -> AtlasResult<Answer<Read<Page<ReferenceHit>>>>;
-    fn impact(&self, query: &ImpactQuery) -> AtlasResult<Answer<Read<Impact>>>;
-    fn changes(&self, query: &ChangesQuery) -> AtlasResult<Answer<Read<Page<CodeChange>>>>;
-    fn outline(&self, query: &OutlineQuery) -> AtlasResult<Answer<Read<Outline>>>;
-    fn resume_code(&self, request: &ResumeRequest) -> AtlasResult<ResumeCode>;
-    fn status(&self) -> AtlasResult<IndexSummary>;
+    fn find(
+        &mut self,
+        query: &FindQuery,
+    ) -> AtlasResult<Answer<Read<se_types::code::SearchResults>>>;
+    fn refs(&mut self, query: &RefsQuery) -> AtlasResult<Answer<Read<Page<ReferenceHit>>>>;
+    fn impact(&mut self, query: &ImpactQuery) -> AtlasResult<Answer<Read<Impact>>>;
+    fn changes(&mut self, query: &ChangesQuery) -> AtlasResult<Answer<Read<Page<CodeChange>>>>;
+    fn outline(&mut self, query: &OutlineQuery) -> AtlasResult<Answer<Read<Outline>>>;
+    fn resume_code(&mut self, request: &ResumeRequest) -> AtlasResult<ResumeCode>;
+    fn status(&mut self) -> AtlasResult<IndexSummary>;
 }

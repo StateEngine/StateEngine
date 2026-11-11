@@ -103,7 +103,7 @@ fn sent_message_read_is_retained_in_authorized_sender_replay() -> Check {
     )?;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let target = &g.scope.targets[0];
-    let phase = reader.read_phase()?;
+    let mut phase = reader.read_phase()?;
     let before = phase.remote_changes(
         &g.grant,
         rev(1)?,
@@ -137,7 +137,7 @@ fn sent_message_read_is_retained_in_authorized_sender_replay() -> Check {
     let mut sender = reader.snapshot(f.self_scope(&f.a))?;
     assert_eq!(present(sender.message(id.clone())?)?.read, Some(read.last));
     sender.close()?;
-    let phase = reader.read_phase()?;
+    let mut phase = reader.read_phase()?;
     let after = phase.remote_changes(
         &g.grant,
         rev(1)?,
@@ -305,7 +305,7 @@ fn shared_work_message_addressed_to_granted_agent_is_not_silently_skipped() -> C
     let (mut d, l) = f.direct()?;
     let g = setup(&f, &mut d, &l)?;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
-    let phase = reader.read_phase()?;
+    let mut phase = reader.read_phase()?;
     let before = phase.remote_changes(
         &g.grant,
         rev(1)?,
@@ -347,7 +347,7 @@ fn shared_work_message_addressed_to_granted_agent_is_not_silently_skipped() -> C
     )?;
     assert!(inbox.items().iter().any(|m| m.message == id));
     recipient.close()?;
-    let phase = reader.read_phase()?;
+    let mut phase = reader.read_phase()?;
     let facts = phase.remote_target(
         &g.grant,
         rev(1)?,
@@ -386,7 +386,7 @@ fn shared_work_message_addressed_to_granted_agent_is_not_silently_skipped() -> C
         )?,
         &*l,
     )?;
-    let phase = reader.read_phase()?;
+    let mut phase = reader.read_phase()?;
     let target = phase.remote_target(
         &g.grant,
         rev(1)?,

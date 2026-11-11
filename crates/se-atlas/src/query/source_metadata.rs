@@ -19,7 +19,7 @@ impl Pool {
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
     pub fn collect(
-        reader: &QueryReader<'_>,
+        env: &QueryEnv<'_>,
         sql: &SqlView<'_>,
         snapshot: &Snapshot,
         query: &FindQuery,
@@ -37,7 +37,7 @@ impl Pool {
             return Ok(pool);
         }
         if mode == SearchMode::Related {
-            let candidates = super::related::collect(reader, sql, snapshot, query, end)?;
+            let candidates = super::related::collect(env, sql, snapshot, query, end)?;
             pool.truncated = candidates.truncated;
             for candidate in candidates.values {
                 let file = match candidate.kind {
@@ -151,7 +151,7 @@ impl Pool {
     }
     pub fn best(
         &self,
-        reader: &QueryReader<'_>,
+        env: &QueryEnv<'_>,
         sql: &SqlView<'_>,
         snapshot: &Snapshot,
         file: &FileRow,
@@ -176,7 +176,7 @@ impl Pool {
             lexical: entry.lexical,
             related: entry.related,
         };
-        if let Some(hit) = super::find::materialize(reader, sql, snapshot, &candidate, query, mode)?
+        if let Some(hit) = super::find::materialize(env, sql, snapshot, &candidate, query, mode)?
             && let HitTarget::Code(code) = hit.target
         {
             return Ok(Some((code, entry.tier, entry.lexical, entry.related)));

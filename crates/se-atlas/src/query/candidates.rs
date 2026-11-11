@@ -27,7 +27,7 @@ pub(super) struct Candidates {
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 pub(super) fn collect(
-    reader: &QueryReader<'_>,
+    env: &QueryEnv<'_>,
     sql: &SqlView<'_>,
     snapshot: &Snapshot,
     query: &FindQuery,
@@ -35,7 +35,7 @@ pub(super) fn collect(
     end: Instant,
 ) -> AtlasResult<Candidates> {
     if mode == SearchMode::Related {
-        return super::related::collect(reader, sql, snapshot, query, end);
+        return super::related::collect(env, sql, snapshot, query, end);
     }
     let mut output = Candidates {
         values: Vec::with_capacity(128),
@@ -101,16 +101,16 @@ pub(super) fn collect(
             if kind == Kind::Record {
                 let pointer = record_pointer(sql, rowid)?;
                 let visible = if mode == SearchMode::Literal {
-                    reader.records.literal_read(
+                    env.records.literal_read(
                         &snapshot.index.project,
-                        &reader.viewer,
+                        env.viewer,
                         &pointer,
                         &query.query,
                     )?
                 } else {
-                    reader.records.read(
+                    env.records.read(
                         &snapshot.index.project,
-                        &reader.viewer,
+                        env.viewer,
                         &pointer,
                         Some(&query.query),
                     )?
@@ -171,9 +171,9 @@ pub(super) fn collect(
             &candidate.key,
             crate::rank::ActivityQuery {
                 project: &snapshot.index.project,
-                viewer: &reader.viewer,
-                records: reader.records,
-                now: reader.now_unix_ms,
+                viewer: env.viewer,
+                records: env.records,
+                now: env.now_unix_ms,
             },
         )?;
         let path = if candidate.kind == Kind::Symbol {

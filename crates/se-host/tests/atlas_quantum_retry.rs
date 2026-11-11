@@ -25,7 +25,7 @@ struct PausedCache {
     armed: Arc<AtomicBool>,
 }
 impl CacheFiles for PausedCache {
-    fn configure_connection(&self, db: &NativeSqlConnection) -> se_types::Result<()> {
+    fn configure_connection(&self, db: &mut NativeSqlConnection) -> se_types::Result<()> {
         self.native.configure_connection(db)?;
         let armed = self.armed.clone();
         db.authorizer(Some(move |context: AuthContext<'_>| {
@@ -154,7 +154,7 @@ fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
         armed: armed.clone(),
     };
     // Synthetic reservation is behavior evidence, never native memory admission.
-    let db = CacheConnection::create(
+    let mut db = CacheConnection::create(
         &cache,
         &seed,
         ConnectionRole::HostWriter,
@@ -171,7 +171,7 @@ fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
     let error = driver
         .step(
             &source,
-            &db,
+            &mut db,
             &policy,
             &work,
             Instant::now() + Duration::from_millis(200),
@@ -191,7 +191,7 @@ fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
         if driver
             .step(
                 &source,
-                &db,
+                &mut db,
                 &policy,
                 &work,
                 Instant::now() + Duration::from_millis(200),
@@ -219,8 +219,8 @@ fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
         ["last.py"],
         "consumed source entry was lost after expiry"
     );
-    driver.close(&root, Some(&db), deadline())?;
-    let published = pointer::publish(&cache, &db, None, deadline())?;
+    driver.close(&root, Some(&mut db), deadline())?;
+    let published = pointer::publish(&cache, &mut db, None, deadline())?;
     let pin = cache
         .pin_database(&published.epoch)?
         .ok_or("legacy epoch disappeared")?;

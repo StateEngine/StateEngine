@@ -16,14 +16,14 @@ pub trait CacheFiles {
     /// disables lookaside here; other adapters must include their actual SQLite
     /// defaults in their independent profile measurement. This hook supplies no
     /// admission claim and cannot change another connection's allocation policy.
-    fn configure_connection(&self, _connection: &rusqlite::Connection) -> AtlasResult<()> {
+    fn configure_connection(&self, _connection: &mut rusqlite::Connection) -> AtlasResult<()> {
         Ok(())
     }
     /// Native adapters may give short-lived maintenance and read connections
     /// explicit checkpoint ownership without changing cold-writer behavior.
     fn configure_connection_role(
         &self,
-        connection: &rusqlite::Connection,
+        connection: &mut rusqlite::Connection,
         _role: connection::ConnectionRole,
     ) -> AtlasResult<()> {
         self.configure_connection(connection)

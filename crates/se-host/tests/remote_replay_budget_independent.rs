@@ -95,7 +95,7 @@ fn accepted_watch_budget_advances_or_refuses_escaped_turn() -> Check {
     let source = capture::record()?;
     capture::active(&f, &mut d, &l, &session, source)?;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
-    let phase = reader.read_phase()?;
+    let mut phase = reader.read_phase()?;
     let before = phase.remote_changes(
         &g.grant,
         rev(1)?,
@@ -137,7 +137,7 @@ fn accepted_watch_budget_advances_or_refuses_escaped_turn() -> Check {
         }
     }
     d.append(captured, &*l)?;
-    let phase = reader.read_phase()?;
+    let mut phase = reader.read_phase()?;
     let large = phase.remote_changes(
         &g.grant,
         rev(1)?,

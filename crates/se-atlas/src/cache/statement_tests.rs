@@ -141,10 +141,10 @@ fn literals(source: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
 #[test]
 fn expired_sql_is_not_started_and_live_submillisecond_budget_is_positive()
 -> Result<(), Box<dyn std::error::Error>> {
-    let db = Connection::open_in_memory()?;
+    let mut db = Connection::open_in_memory()?;
     let entered = Cell::new(false);
     assert!(
-        finite(&db, Instant::now(), |_| {
+        finite(&mut db, Instant::now(), |_, _| {
             entered.set(true);
             Ok(())
         })
@@ -167,14 +167,18 @@ fn expired_sql_is_not_started_and_live_submillisecond_budget_is_positive()
         "SQL was prepared after the snapshot expired: {error}"
     );
     for _ in 0..20 {
-        let _ = finite(&db, Instant::now() + Duration::from_micros(500), |budget| {
-            assert!(
-                budget > 0,
-                "live SQL work was admitted with zero milliseconds"
-            );
-            entered.set(true);
-            Ok(())
-        });
+        let _ = finite(
+            &mut db,
+            Instant::now() + Duration::from_micros(500),
+            |_, budget| {
+                assert!(
+                    budget > 0,
+                    "live SQL work was admitted with zero milliseconds"
+                );
+                entered.set(true);
+                Ok(())
+            },
+        );
         if entered.get() {
             break;
         }

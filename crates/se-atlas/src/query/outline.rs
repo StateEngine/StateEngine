@@ -1,11 +1,13 @@
 use super::*;
 use rusqlite::params;
-impl QueryReader<'_> {
-    pub fn outline(&self, query: &OutlineQuery) -> AtlasResult<Answer<Read<Outline>>> {
+impl QueryReader<'_, '_, '_> {
+    pub fn outline(&mut self, query: &OutlineQuery) -> AtlasResult<Answer<Read<Outline>>> {
         let end = deadline(query.budget)?;
-        let digest = cursor::digest(&("outline", &query.path, &self.viewer))?;
+        let digest = cursor::digest(&("outline", &query.path, &self.ctx.viewer))?;
+        let identity = self.cache.identity().clone();
+        let env = self.ctx.split();
         let answer = self.cache.read(end, |sql| {
-            let snapshot = self.snapshot(sql)?;
+            let snapshot = snapshot(&identity, &env, sql)?;
             if crate::policy::built_in_denied(&query.path) {return Ok(snapshot.unknown("source path is excluded by the built-in private-file policy"));}
             let previous = query.next.as_ref().map(PositionCursor::decode).transpose()?;
             let advanced = previous.as_ref().map(|p| p.validate(&snapshot.index, "outline", digest)).transpose()?.unwrap_or(false);
@@ -13,7 +15,7 @@ impl QueryReader<'_> {
             if let Some(k) = key { validate_key(k)?; }
             let Some(file) = file_by_path(sql, &query.path)? else {
                 return if snapshot.negative_complete() {
-                    Ok(snapshot.answer(Read::Absent { checked: format!("registered cache path {} in epoch {}", query.path.as_str(), self.cache.identity().epoch) }, advanced))
+                    Ok(snapshot.answer(Read::Absent { checked: format!("registered cache path {} in epoch {}", query.path.as_str(), identity.epoch) }, advanced))
                 } else { Ok(snapshot.unknown("path is not indexed; discovery or semantics are incomplete")) };
             };
             let mut output = Outline { file: file.pointer, language: file.language, coverage: file.coverage,
@@ -43,7 +45,7 @@ impl QueryReader<'_> {
                 }
             }
             if !more {
-                let linked = super::linked::for_file(self, sql, &snapshot, super::linked::LinkedRequest {
+                let linked = super::linked::for_file(&env, sql, &snapshot, super::linked::LinkedRequest {
                     file: &output.file, limit: query.budget.max_results as usize-output.symbols.len(),
                     bytes: (query.budget.max_bytes as usize).saturating_sub(size(&output)?),
                     after: if phase==1 {key} else {None}, query: None, end,

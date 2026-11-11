@@ -11,7 +11,7 @@ se-types = { path = "../se-types" }
 serde.workspace = true
 serde_json.workspace = true
 blake3 = { version = "=1.8.7", default-features = false, features = ["std", "pure"] }
-rusqlite = { version = "0.40", features = ["bundled", "hooks", "limits", "functions"] }
+rusqlite = { version = "0.41", features = ["bundled", "hooks", "limits", "functions"] }
 # MIT; safe Rust API over upstream C parsers, no WASM/runtime/network.
 tree-sitter = { version = "=0.26.13", default-features = false, features = ["std"] }
 tree-sitter-javascript = "=0.25.0"
