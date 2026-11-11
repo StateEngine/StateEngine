@@ -87,6 +87,11 @@ fn parse_smaps(smaps: &str) -> Vec<Vma> {
 /// page cache. Each file's RELRO and data mappings are left alone because
 /// they can hold process-private relocation state.
 ///
+/// Every eligible mapping is released in the same pass: a madvise that fails
+/// on one mapping must not stop the rest, because smaps lists VMAs in address
+/// order and the first eligible mapping is only the small read-only header
+/// segment, not the code.
+///
 /// Without this, an idle host keeps tens of MiB of demand-paged code resident
 /// until the kernel's own reclaim happens to run, which on a loaded box is
 /// later than the idle measurement window. False means no eligible page was
@@ -95,14 +100,16 @@ pub fn release_read_only_mapped_pages() -> bool {
     let Ok(smaps) = std::fs::read_to_string("/proc/self/smaps") else {
         return false;
     };
-    parse_smaps(&smaps)
-        .into_iter()
-        .filter(|vma| {
-            eligible(&vma.perms, &vma.offset, &vma.path)
-                && vma.anonymous_kib == 0
-                && vma.private_dirty_kib == 0
-        })
-        .any(|vma| release_vma(&vma))
+    let mut released_any = false;
+    for vma in parse_smaps(&smaps).into_iter().filter(|vma| {
+        eligible(&vma.perms, &vma.offset, &vma.path)
+            && vma.anonymous_kib == 0
+            && vma.private_dirty_kib == 0
+    }) {
+        // `|=` never short-circuits: every eligible mapping is released.
+        released_any |= release_vma(&vma);
+    }
+    released_any
 }
 
 fn release_vma(vma: &Vma) -> bool {
@@ -131,37 +138,53 @@ mod tests {
     use super::*;
 
     /// Resident kilobytes inside mappings the release rule addresses, read
-    /// from the same smaps the release trusts.
-    fn eligible_resident_kilobytes() -> u64 {
+    /// from the same smaps the release trusts, split by class: the `r-xp`
+    /// code pages first, then the `r--p` primary segment pages. The split
+    /// keeps a release that serves only the first eligible mapping from
+    /// passing on the header segment's drop alone.
+    fn eligible_resident_kilobytes() -> (u64, u64) {
         let smaps = std::fs::read_to_string("/proc/self/smaps")
             .unwrap_or_else(|_| panic!("own smaps unreadable"));
-        let mut total = 0;
+        let mut code_kib = 0;
+        let mut readonly_kib = 0;
         let mut current = false;
+        let mut current_is_code = false;
         for line in smaps.lines() {
             let head = line.split(' ').next().unwrap_or("");
             if head.len() > 8 && head.contains('-') {
                 let mut fields = line.splitn(6, ' ');
-                current = matches!(
-                    (
-                        fields.next(),
-                        fields.next(),
-                        fields.next(),
-                        fields.next(),
-                        fields.next(),
-                        fields.next()
-                    ),
+                match (
+                    fields.next(),
+                    fields.next(),
+                    fields.next(),
+                    fields.next(),
+                    fields.next(),
+                    fields.next(),
+                ) {
                     (Some(_), Some(perms), Some(offset), Some(_), Some(_), Some(path))
-                        if eligible(perms, offset, path.trim())
-                );
+                        if eligible(perms, offset, path.trim()) =>
+                    {
+                        current = true;
+                        current_is_code = perms == "r-xp";
+                    }
+                    _ => {
+                        current = false;
+                    }
+                }
             } else if current && let Some(rest) = line.strip_prefix("Rss:") {
-                total += rest
+                let rss = rest
                     .split_whitespace()
                     .next()
                     .and_then(|value| value.parse::<u64>().ok())
                     .unwrap_or(0);
+                if current_is_code {
+                    code_kib += rss;
+                } else {
+                    readonly_kib += rss;
+                }
             }
         }
-        total
+        (code_kib, readonly_kib)
     }
 
     #[test]
@@ -180,16 +203,24 @@ mod tests {
 
     #[test]
     fn releases_read_only_mapped_pages() {
-        let before = eligible_resident_kilobytes();
+        let (code_before, readonly_before) = eligible_resident_kilobytes();
         assert!(
-            before > 0,
-            "the test process must hold resident read-only file pages"
+            code_before > 0,
+            "the test process must hold resident r-xp code pages"
+        );
+        assert!(
+            readonly_before > 0,
+            "the test process must hold resident read-only primary pages"
         );
         assert!(release_read_only_mapped_pages());
-        let after = eligible_resident_kilobytes();
+        let (code_after, readonly_after) = eligible_resident_kilobytes();
         assert!(
-            after < before,
-            "eligible resident kilobytes should fall: before {before}, after {after}"
+            code_after < code_before,
+            "every eligible mapping must be released, not only the first: r-xp              before {code_before}, after {code_after}"
+        );
+        assert!(
+            readonly_after < readonly_before,
+            "r--p primary pages must fall: before {readonly_before}, after              {readonly_after}"
         );
     }
 
