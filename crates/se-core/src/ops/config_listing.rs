@@ -19,6 +19,10 @@ use std::num::{NonZeroU32, NonZeroU64};
 /// bounded by the requested row limit and the wire byte budget; the returned
 /// cursor continues the list, so a valid large configuration lists completely
 /// across pages instead of refusing the whole file.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn list(
     configuration: &ConfigFile,
     origin: Option<&str>,

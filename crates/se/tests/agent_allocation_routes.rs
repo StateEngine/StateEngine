@@ -248,6 +248,11 @@ fn hosted_agent_allocations_remain_distinct_and_replay_without_new_events() -> C
     check(true)
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn check(hosted: bool) -> Check {
     // Public init legitimately shares the native per-user installation claim.
     let _serial = ROUTES

@@ -80,6 +80,10 @@ impl Operation {
         matches!(self.status, Status::Pending)
     }
 }
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) struct State {
     pub identity: StdioIdentity,
     pub limits: StdioLimits,

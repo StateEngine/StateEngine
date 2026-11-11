@@ -129,6 +129,10 @@ fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(10)
 }
 #[cfg(any(target_os = "linux", windows))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn run() -> Result {
     let args: Vec<_> = std::env::args().collect();
     let rate = if args.get(1).is_some_and(|v| v == "--expect-native-rate") {

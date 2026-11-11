@@ -11,6 +11,10 @@ use support::*;
 /// Protects: only a live current Prepared bearer gets the retryable activation
 /// refusal. Expiry, revocation, purpose and supersession are checked first.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn prepared_refusals_validate_authority_before_naming_activation() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

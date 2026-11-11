@@ -20,6 +20,10 @@ pub struct Applied {
 }
 /// Installs a complete parse or preserves exactly one last-good semantic set.
 /// Failed/partial/deferred work never replaces that set with a smaller graph.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn apply(
     sql: &SqlView<'_>,
     scope: &Scope,
@@ -256,6 +260,10 @@ fn symbol(sql: &SqlView<'_>, id: Option<SymbolId>) -> AtlasResult<Option<i64>> {
     .transpose()
     .map(Option::flatten)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn install(
     sql: &SqlView<'_>,
     file: i64,

@@ -114,6 +114,10 @@ pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> 
     .map_err(sql)
     .map(Option::flatten)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn apply(
     c: &Connection,
     header: &EventHeader,

@@ -2,6 +2,10 @@
 //! Resume subscribes to the existing thread; no turn/start or launch is replayed.
 use super::*;
 impl CodexHarness {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(crate) async fn recover(
         &self,
         identity: &crate::SessionIdentity,

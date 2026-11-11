@@ -149,6 +149,10 @@ pub(crate) fn verify_live_identity(expected: &ProcessIdentity) -> ProcResult<()>
     }
     Ok(())
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
     let boot = boot()?;
     let Some(before) = stat(pid)? else {

@@ -89,6 +89,10 @@ impl LaunchCoordinator {
             },
         });
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     async fn secode_runtime(
         &self,
         row: &AgentRow,

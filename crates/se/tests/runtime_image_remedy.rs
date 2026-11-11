@@ -115,6 +115,10 @@ impl Drop for Host {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let fixture = std::env::temp_dir().join(format!(

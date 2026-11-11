@@ -3,6 +3,10 @@ use super::*;
 impl RemoteBroker {
     /// Native admission precedes this call; human key selection also requires
     /// the verified current console/ancestry observation.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(crate) async fn execute(
         &self,
         operation: AnyOp,

@@ -210,6 +210,10 @@ mod runtime_host;
 /// Protects: mismatched stale endpoint recovery reaches the actual se up user, preserves the foreign live socket, and permits restart after moving only the record under the same home lease.
 #[cfg(unix)]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn stale_address_cli_names_lease_safe_recovery_and_preserves_foreign_socket() -> Check {
     // The roots are independent; a failed case does not invalidate this
     // serialization primitive or prevent the remaining case from running.

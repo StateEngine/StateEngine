@@ -1,5 +1,9 @@
 use super::*;
 impl NativeRenewal {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) fn subscribe(
         &mut self,
         index: usize,
@@ -166,6 +170,10 @@ impl NativeRenewal {
         }
         Ok(())
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn poll_events(
         &mut self,
         source: &Source,

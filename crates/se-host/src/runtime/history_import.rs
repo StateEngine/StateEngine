@@ -120,6 +120,10 @@ async fn ensure(context: &ExecutionContext, cx: NodeContext, deadline: &Deadline
 }
 /// The owner operation's only entry. `Kernel::plan` already enforced the
 /// owner-only surface; repeat its native/store generation checks on every job.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) async fn execute(
     context: ExecutionContext,
     input: ImportNode,

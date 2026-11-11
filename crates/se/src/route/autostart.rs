@@ -11,6 +11,10 @@ use se_proc::{NativeProcessApi, NativeProcessRuntime, RuntimeExitObservation};
 use se_types::{Read, Result, SeError};
 use std::time::Duration;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn endpoint(
     cx: &Bootstrap,
     files: &Files,

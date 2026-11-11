@@ -19,6 +19,10 @@ impl HostedRuntime {
     /// Call after fencing admission and joining accepted operation tasks. A
     /// timed-out join remains owned here and can be polled with a later bound.
     /// This method never claims agent/capture/debt closure or releases the lease.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub async fn drain_storage(&mut self, deadline: &Deadline) -> Result<StorageDrainReport> {
         if let Some(report) = &self.storage_report {
             return Ok(report.clone());

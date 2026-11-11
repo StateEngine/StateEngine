@@ -1,6 +1,10 @@
 //! Publish a fresh protected store through verified same-volume staging.
 use super::*;
 impl SqliteFactory {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) fn create_engine(
         o: &StoreOptions,
         lease: &dyn RuntimeLease,

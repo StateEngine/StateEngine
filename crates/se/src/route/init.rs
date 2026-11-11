@@ -69,6 +69,10 @@ fn append(
     }
     Ok(receipt)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
     if cx.session.is_some() {
         return Err(SeError::new(se_types::Detail::OwnerRequired(

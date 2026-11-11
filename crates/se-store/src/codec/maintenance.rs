@@ -141,6 +141,10 @@ pub(super) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
         _ => return Err(invalid("maintenance codec dispatch")),
     })
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn body(c: &Connection, seq: i64, kind: &str) -> StoreResult<EventBody<StoredText>> {
     use EventBody::*;
     let v = facts(c, seq)?;

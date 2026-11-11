@@ -67,6 +67,10 @@ pub fn page<R: Snapshot>(
     se_types::Page::new(rows, se_types::Window::new(fields)?, next)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentStatusOutput> {
     let agent = scope::working_agent(cx.admission, input.target_agent_id.as_ref(), "agent.show")?;
     // An owner's saved profile and rename events are not session history.

@@ -34,6 +34,10 @@ impl LifecycleMetadata {
         }
     }
 }
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) struct Work {
     pub takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
     pub plan: Option<Arc<LaunchPlan>>,

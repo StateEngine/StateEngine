@@ -132,6 +132,10 @@ mod judge {
             }
         }
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn trial(mode: &str) -> Result {
         let root = std::env::temp_dir().join(format!(
             "se-retained-bootstrap-{}-{}",

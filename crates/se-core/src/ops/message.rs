@@ -9,6 +9,11 @@ use se_store::{Actor, MessageQuery, ReadBudget, Snapshot, StoredText};
 use se_types::{Detail, Page, PageRequest, Result, SeError, details};
 use std::{num::NonZeroU32, time::Duration};
 
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<MessagePage> {
     input.validate()?;
     scope::project(cx.admission)?;

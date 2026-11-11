@@ -6,6 +6,10 @@ use std::{error::Error, fs, io::Write, path::Path, str::FromStr, time::Duration}
 #[path = "../../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
 
+#[expect(
+    clippy::cognitive_complexity,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn prepare(home: &Path, init: &Path) -> Result<(), Box<dyn Error>> {
     let init: serde_json::Value = serde_json::from_slice(&fs::read(init)?)?;
     let text = |field: &str| {

@@ -34,6 +34,10 @@ async fn native(endpoint: EndpointRecord) -> Result<String, Box<dyn std::error::
     })
     .await??)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn check(fenced: bool) -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

@@ -123,6 +123,10 @@ impl LaunchCoordinator {
     }
     /// Called once, after loopback listener publication selected its actual
     /// port and before accepting process operations. All native setup is finite.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub async fn open(
         host_runtime: &crate::HostedRuntime,
         requested: ProcessOptions,

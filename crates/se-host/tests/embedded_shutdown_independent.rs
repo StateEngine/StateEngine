@@ -226,6 +226,10 @@ fn failed_linked_drain_refuses_close_and_retains_lease_until_application_exit() 
 /// Protects: public CLI down proves resource closure and releases the lease
 /// while the embedding application is still alive; API drain/close replay it.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn public_down_closes_an_embedded_host_without_claiming_application_exit() -> Check {
     let image = helper()?;
     let entropy =

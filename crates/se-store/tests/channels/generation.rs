@@ -2,6 +2,10 @@ use super::*;
 
 /// Protects: 49 — a new approved connection has its own update identity while bot ACK progress survives replacement.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn reconnect_scopes_dispositions_and_retains_the_bot_ack_cursor() -> Check {
     let f = Fixture::new()?;
     let (mut writer, lease) = f.direct()?;

@@ -4,6 +4,10 @@ use se_proc::*;
 use se_types::AgentId;
 use std::num::NonZeroU64;
 type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn fixture(mac: bool, stage: u8) -> Check<Checkpoint> {
     let lifecycle = LifecycleId::from_parts(1_700_000_000_000, [9; 10])?;
     let host = HostInstanceId([7; 16]);

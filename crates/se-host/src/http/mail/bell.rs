@@ -241,6 +241,10 @@ fn set_hold(path: &std::path::Path, held: bool, reason: Option<&str>) -> Result<
 
 /// Only this mail endpoint accepts a mail-only signature. It cannot be used as
 /// an MCP capability or carry a raw secret through a redirecting fetch API.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) async fn respond(
     router: &crate::HostedRouter,
     request: hyper::Request<hyper::body::Incoming>,

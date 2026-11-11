@@ -139,6 +139,13 @@ fn real_http_rechecks_committed_revocation_after_warming_the_admission_pool() ->
 #[cfg(target_os = "linux")]
 /// Protects: G6 — emptying the SQL cache cannot rebind the host to a replaced database.
 #[test]
+#[cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )
+)]
 fn real_http_refuses_a_replaced_inode_even_after_its_first_refusal_empties_idle() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

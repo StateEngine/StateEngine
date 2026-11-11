@@ -31,6 +31,10 @@ impl se_atlas::query::RecordReader for NoRecords {
     }
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn history_feed_filters_secrets_before_all_derivations_and_retries_immutably() -> Check {
     use se_atlas::history::*;
     let _serial = SERIAL.lock().map_err(|_| "lock")?;

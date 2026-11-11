@@ -135,6 +135,10 @@ struct Attempt {
     bytes: Vec<u8>,
     error: Option<ProcError>,
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn create(
     spec: &RuntimeLaunchSpec,
     frame: &mut Frame,

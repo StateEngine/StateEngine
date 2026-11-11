@@ -339,6 +339,10 @@ fn installation(cx: &Bootstrap, owner: &str) -> Result<()> {
 }
 /// Some returns a complete bounded diagnosis or exactly one named tightening.
 /// None continues ordinary owner-human admission, including the full inventory.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(in crate::route) fn recover(
     cx: &Bootstrap,
     op: &AnyOp,

@@ -86,6 +86,10 @@ impl se_types::OperationCommand for AgentChoices<'_> {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn actor_selector<R: Snapshot>(read: &mut R, selector: &str) -> Result<Actor> {
     if let Ok(id) = AgentId::from_legacy(selector.to_owned()) {
         let actor = Actor::Agent(id);

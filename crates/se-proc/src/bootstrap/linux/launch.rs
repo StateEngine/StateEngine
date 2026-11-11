@@ -1,5 +1,9 @@
 use super::*;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(in crate::bootstrap) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> ProcResult<Created> {
     let bytes = serde_json::to_vec(&frame).map_err(|e| input("runtime frame", &e.to_string()))?;
     if bytes.len() > MAX_FRAME {

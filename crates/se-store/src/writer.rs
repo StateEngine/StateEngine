@@ -28,6 +28,10 @@ pub struct WriteTimings {
     /// promotion by another request. A replay receipt retains its original stamp.
     pub durability: CommitDurability,
 }
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 struct AdmissionState {
     bytes: usize,
     requests: usize,
@@ -436,6 +440,10 @@ fn receive(
         },
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn run(
     mut host: SqliteHost,
     options: WriterOptions,

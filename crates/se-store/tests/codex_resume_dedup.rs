@@ -158,6 +158,10 @@ fn resume_reuses_six_native_events_and_timestamps_but_appends_new_items() -> Che
 fn claude_two_resumes_keep_nine_native_uuids_once() -> Check {
     resume_twice(Provider::Claude)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn resume_twice(backend: Provider) -> Check {
     let f = Fixture::new()?;
     let (mut d, lease) = f.direct()?;
@@ -302,6 +306,10 @@ fn end(f: &Fixture, d: &mut SqliteDirect, lease: &Lease, id: &SessionId) -> Chec
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn conflicting_native_facts_refuse_and_new_conversation_provider_or_agent_appends() -> Check {
     let f = Fixture::new()?;
     let (mut d, lease) = f.direct()?;

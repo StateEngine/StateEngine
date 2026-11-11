@@ -133,6 +133,10 @@ fn open_refuses_an_uninitialized_home_by_name() {
 /// single prepared/activated store pair; and a second binding for the same
 /// agent is refused by name until the first is revoked.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn bind_commits_once_and_replays_the_original_identity() {
     let judge = Judge::new("bind").required();
     let opened = judge.open().required();
@@ -253,6 +257,10 @@ fn bind_commits_once_and_replays_the_original_identity() {
 /// under the bound identity; and the public history shows both turns with the
 /// app-server provenance.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn capture_replays_by_natural_key_without_inventing_a_transcript_path() {
     let judge = Judge::new("capture").required();
     let opened = judge.open().required();

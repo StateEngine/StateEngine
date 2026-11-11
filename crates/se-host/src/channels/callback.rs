@@ -8,6 +8,10 @@ use se_store::{
 };
 use se_types::{Read, Result};
 impl Channels {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn confirm_resume(
         &self,
         state: &Connection,

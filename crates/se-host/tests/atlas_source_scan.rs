@@ -55,6 +55,10 @@ fn end() -> Instant {
     Instant::now() + Duration::from_secs(5)
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn compact_literal_and_regex_reach_ten_files_past_unmatched_files_and_prefix_bytes() -> Check {
     let f = Fixture::new()?;
     let root = RootId::from_parts(1, [2; 10])?;

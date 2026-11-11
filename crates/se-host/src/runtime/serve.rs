@@ -54,6 +54,11 @@ impl HostedRuntime {
     /// OS accept, bounded per-connection authentication and the sole core/store
     /// executor all share the supplied runtime. No callback/dispatcher or runtime
     /// is manufactured here. On stop/fault, fence and join accepted tasks first.
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub async fn serve(mut self, mut listener: HostedListener) -> HostServeExit {
         let router = match self.router() {
             Ok(router)

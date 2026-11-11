@@ -17,6 +17,10 @@ fn fresh_claude_and_codex_commands_reach_history_page_and_exact_event() -> Check
     }
     Ok(())
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn capture_and_read(provider: Provider) -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

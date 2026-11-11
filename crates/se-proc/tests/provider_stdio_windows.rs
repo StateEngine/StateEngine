@@ -169,6 +169,11 @@ fn provider_stdio_child() -> Check {
 }
 /// Protects: no ticket/port drop frees kernel buffers, stale bindings cannot consume, and only exact drained All-close releases.
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
     let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
     let root: PathBuf =

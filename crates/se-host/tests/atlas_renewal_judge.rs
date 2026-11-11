@@ -183,6 +183,10 @@ fn start(controller: &mut Native, registration: &RootRegistration) -> Check {
     })
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn native_events_repair_after_writer_contention_and_release_root_slots() -> Check {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let base: PathBuf =

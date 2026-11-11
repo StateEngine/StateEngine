@@ -19,6 +19,10 @@ fn id<'a>(value: &'a Value, name: &str) -> Result<&'a str> {
         .filter(|s| !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
         .ok_or_else(|| invalid("a bounded actual thread, turn or item ID"))
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn item(item: &Value, turn: &str, native: bool) -> Result<Option<Completed>> {
     let item_id = id(item, "id")?;
     let kind = item

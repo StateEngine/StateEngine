@@ -9,6 +9,10 @@ impl LaunchCoordinator {
         clippy::too_many_arguments,
         reason = "one native launch with distinct custody and policy coordinates"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn start_secode_auxiliary(
         &self,
         service: &mut Service,

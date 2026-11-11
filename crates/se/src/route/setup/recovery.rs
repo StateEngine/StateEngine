@@ -190,6 +190,10 @@ pub(super) fn corrupt_remedy(root: &Path) -> Result<String> {
     remedy(root, true)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn remedy(root: &Path, damaged: bool) -> Result<String> {
     use se_core::ops::AgentCommand;
     if AgentCommand::home_argument(root).is_none() {

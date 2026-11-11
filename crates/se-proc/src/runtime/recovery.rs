@@ -61,6 +61,10 @@ struct Silent;
 impl ExitSink for Silent {
     fn notify(&self, _notice: ExitNotice) {}
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn recover(
     runtime: &NativeProcessRuntime,
     supplied: RecoveryPlan,
@@ -275,6 +279,10 @@ pub(super) fn recover(
     cold_unix_tracked(runtime, checked, reservation, generation)
 }
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn cold_unix_tracked(
     runtime: &NativeProcessRuntime,
     checked: RecoveryPlan,

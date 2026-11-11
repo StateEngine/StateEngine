@@ -25,6 +25,10 @@ pub struct SettleResolved {
 
 /// The host calls this before reusing/selecting a pending notice after real
 /// read/dismiss triggers. Transport or capture alone cannot resolve debt.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn settle_resolved<S: MailSnapshot>(
     kernel: &Kernel,
     cx: &mut Cx<'_, S>,

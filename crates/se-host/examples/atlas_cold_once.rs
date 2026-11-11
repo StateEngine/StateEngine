@@ -1,6 +1,10 @@
 //! Development consumer of the production controller/child/pointer path.
 //! Run on a real repository; this supplies no incremental RAM qualification.
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use se_atlas::{
         cache::{connection::*, *},

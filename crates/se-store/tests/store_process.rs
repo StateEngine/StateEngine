@@ -178,6 +178,10 @@ fn successor_reconciliation_is_full_before_provider_control_resumes() -> Check {
 
 /// Protects: stale revision, wrong source state, terminal revival and native/principal drift never advance the process head.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn process_transition_cas_identity_and_atomic_rollback() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;
@@ -479,6 +483,10 @@ fn saved_native_identity_survives_loss_and_recovery() -> Check {
 
 /// A console's second C2 may change only argv, once, on the same pre-exec root.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;
@@ -605,6 +613,10 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
 
 /// Exec publication remains Starting until readiness, and cannot replace birth or argv.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn exec_checkpoint_precedes_readiness_without_reopening_identity() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;

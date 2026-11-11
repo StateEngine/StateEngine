@@ -77,6 +77,10 @@ impl EmbeddedFactory {
         retained.generations.push(Arc::clone(&generation));
         Ok(generation)
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn restart_generation(
         &self,
         reason: api::RestartReason,

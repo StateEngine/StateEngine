@@ -122,6 +122,11 @@ fn runtime(
 }
 
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn parser_limit_retains_stale_graph_and_other_files_keep_renewing() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let root = std::env::temp_dir().join(format!(

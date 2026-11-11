@@ -339,6 +339,10 @@ fn validate(path: &Path, expected: &StoreInfo, deadline: Instant) -> StoreResult
     c.close().map_err(|(_, e)| sql(e))?;
     check(deadline)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn run(
     options: &StoreOptions,
     lease: &dyn RuntimeLease,

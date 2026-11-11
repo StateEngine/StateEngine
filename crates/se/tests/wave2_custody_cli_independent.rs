@@ -45,6 +45,10 @@ struct Case {
     manifest: Vec<u8>,
 }
 impl Case {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         installation_account::require()?;
         se_proc::initialize_file_creation_owner()?;

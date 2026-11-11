@@ -69,6 +69,10 @@ pub(crate) fn canonicalize(c: &Connection, batch: &mut AtomicBatch) -> StoreResu
     }
     Ok(())
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn validate_batch(c: &Connection, batch: &AtomicBatch) -> StoreResult<()> {
     use EventBody::*;
     let mut turns = Vec::new();
@@ -263,6 +267,10 @@ fn bound_session(
     }
     Ok((id, head))
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn apply(
     c: &Connection,
     h: &EventHeader,

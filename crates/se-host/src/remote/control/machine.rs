@@ -24,6 +24,10 @@ pub struct BootstrapSession {
 }
 
 impl Control {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn bootstrap(
         &self,
         router: &crate::HostedRouter,

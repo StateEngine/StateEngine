@@ -1,0 +1,5 @@
+# Structure guardrails (SE Code parity): complexity ceilings for new code.
+# Existing offenders carry a one-line allow with a reason; the lists may only shrink.
+too-many-lines-threshold = 100
+cognitive-complexity-threshold = 25
+too-many-arguments-threshold = 7

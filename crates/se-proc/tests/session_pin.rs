@@ -26,6 +26,10 @@ fn session_pin_reader_child() -> Check {
 
 /// Protects: real pin producer/reader/remover, absent versus unsafe, and digest-checked foreign preservation.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn protected_session_pin_custody_refuses_drift_and_never_overwrites() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let session = SessionId::from_parts(1_700_000_000_001, [17; 10])?;

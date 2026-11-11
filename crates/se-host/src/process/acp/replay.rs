@@ -20,6 +20,10 @@ impl LaunchCoordinator {
             error
         })
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     async fn acp_replay_inner(
         &self,
         plan: &LaunchPlan,

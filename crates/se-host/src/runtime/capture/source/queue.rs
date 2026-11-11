@@ -19,6 +19,10 @@ struct Prompt {
     position: Position,
 }
 impl Tracker {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) fn observe(&mut self, bytes: &[u8], position: Position) -> Result<Vec<Record>> {
         let value: Value = serde_json::from_slice(bytes)
             .map_err(|_| SeError::invalid("queue provenance", "a complete native JSON record"))?;

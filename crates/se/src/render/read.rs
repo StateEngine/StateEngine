@@ -8,6 +8,11 @@ use se_core::ops::outputs::*;
 use se_types::{OmissionReason, Page, Read};
 use std::io::{self, Write};
 
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     if matches!(value.setup.state, SetupState::NotSetUp) {
         writeln!(out, "StateEngine {} — no project here yet.", value.version)?;

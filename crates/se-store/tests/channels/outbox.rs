@@ -220,6 +220,10 @@ fn status_delay_uses_saved_commit_time_and_never_marks_mail_read() -> Check {
 
 /// Protects: 49 — bound pending mail and status output while keeping read facts and failed inputs honest.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn pending_capacity_recovers_after_recipient_read_and_known_output_completion() -> Check {
     let f = Fixture::new()?;
     let (mut writer, lease) = f.direct()?;

@@ -165,6 +165,10 @@ fn quiet_prefix_cannot_hide_new_notification_debt_or_change_read_marks() -> Chec
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn notification_failure_retry_and_observation_are_per_recipient_and_never_read_marks() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;

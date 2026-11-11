@@ -3,6 +3,10 @@ use crate::windows_policy_fixture::{Check, Home};
 
 /// Protects: J5 — remove original empty directories while preserving occupied or replaced directories.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn readable_carrier_removes_only_original_empty_directories() -> Check {
     let home = Home::new()?;
     let empty = home.0.join("empty");

@@ -162,6 +162,10 @@ fn add_omission(
         ));
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
     input: &Resume,
     identity: &Identity,

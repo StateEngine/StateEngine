@@ -46,6 +46,10 @@ fn same_paths(
     let observed: BTreeSet<_> = actual.map(PathBuf::from).collect();
     expected == observed && observed.len() == actual_count
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn check_readback(plan: &ValidatedUninstallPlan, effects: &UninstallEffects) -> Result<bool> {
     let recovery_directories = plan.recovery_directories();
     if !same_paths(

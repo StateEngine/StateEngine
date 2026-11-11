@@ -68,6 +68,10 @@ fn summary(value: &Value, offset: u64) -> Check {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn exercise(broken: Option<Vec<u8>>) -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

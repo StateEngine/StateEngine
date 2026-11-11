@@ -2,6 +2,10 @@
 use super::*;
 use se_types::remote::RemoteVerb;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn validate_batch(
     c: &Connection,
     batch: &AtomicBatch,

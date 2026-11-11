@@ -11,6 +11,10 @@ pub(super) struct HistoryStream {
     exact_session: Option<SessionId>,
 }
 impl SqliteSnapshot {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) fn history_stream(
         &self,
         query: &HistoryQuery,

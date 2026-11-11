@@ -79,6 +79,10 @@ impl Engine {
         }
         result
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn group_inner(
         &mut self,
         batches: Vec<StoreResult<AtomicBatch>>,
@@ -302,6 +306,10 @@ impl Engine {
         }
         Ok(())
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn append(
         &self,
         mut batch: AtomicBatch,

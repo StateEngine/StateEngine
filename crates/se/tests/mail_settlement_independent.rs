@@ -36,6 +36,11 @@ fn kernel() -> Result<Kernel, Box<dyn std::error::Error>> {
 
 /// Bug: a09b427b — a settled reservation request was returned as live delivery work.
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn actual_recipient_read_and_dismiss_settle_only_complete_original_debt() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;

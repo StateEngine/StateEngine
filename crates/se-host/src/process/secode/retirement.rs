@@ -112,6 +112,10 @@ impl LaunchCoordinator {
         service.journal.registration = Some(bytes);
         service.persist(self, deadline).await
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn retire_secode_registration(
         &self,
         service: &mut Service,

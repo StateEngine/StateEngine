@@ -45,6 +45,10 @@ pub struct Observation {
     pub processed: u64,
 }
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 struct State {
     permission_refusal: Option<PermissionRefusal>,
     initializing: bool,

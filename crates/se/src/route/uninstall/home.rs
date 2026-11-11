@@ -8,6 +8,10 @@ use se_store::{ReadStore, StateFiles};
 use se_types::{Read, Result, SeError};
 use std::{io, path::Path};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn execute(
     cx: &Bootstrap,
     input: &Uninstall,

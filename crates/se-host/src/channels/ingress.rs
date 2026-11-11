@@ -15,6 +15,11 @@ use se_types::{IdempotencyKey, Result};
 use sha2::{Digest, Sha256};
 
 impl Channels {
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn handle_update(
         &self,
         state: Connection,

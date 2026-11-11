@@ -146,6 +146,10 @@ impl RemoteWatchStream for Pages {
 }
 /// Protects: the real MCP source broker merges partial cursor sets and resumes all targets after a stream failure.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn mcp_watch_reconnect_retains_every_rendered_target_cursor() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

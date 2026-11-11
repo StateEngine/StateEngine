@@ -22,6 +22,10 @@ pub(super) struct Candidates {
     pub values: Vec<Candidate>,
     pub truncated: bool,
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn collect(
     reader: &QueryReader<'_>,
     sql: &SqlView<'_>,

@@ -4,6 +4,10 @@ use crate::windows_policy_fixture::*;
 // never silently skipped by an ordinary Medium-token pass.
 #[test]
 #[ignore = "run --ignored --exact uninstall::staging::judges::high_label_policy under a High token"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn high_label_policy() -> Check {
     assert!(
         elevated()?,

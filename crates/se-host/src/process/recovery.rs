@@ -67,6 +67,11 @@ impl LaunchCoordinator {
     }
     /// The caller must pass the inventory taken from HostedRuntime after the
     /// writer and this executor have been installed, and before serving.
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub async fn reconcile(
         self: &Arc<Self>,
         inventory: Vec<OwnerGuardProcess>,

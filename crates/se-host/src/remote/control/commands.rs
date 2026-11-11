@@ -1,5 +1,9 @@
 use super::*;
 use se_store::Revision;
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) async fn execute(
     router: &crate::HostedRouter,
     call: OwnerCall,

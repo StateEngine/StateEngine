@@ -20,6 +20,10 @@ fn run(f: &Fixture, args: &[String]) -> Result<Output, Box<dyn std::error::Error
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn owner_resume_refusal_lists_saved_agents_with_the_exact_home_and_project() -> Check {
     let mut f = Fixture::new()?;
     let renamed = f.home.with_extension("owner's selected home");

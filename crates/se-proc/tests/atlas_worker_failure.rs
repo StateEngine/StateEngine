@@ -224,6 +224,11 @@ mod linux {
         }
         Ok(())
     }
+    #[expect(
+        clippy::cognitive_complexity,
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) fn run() -> Check {
         let args: Vec<_> = std::env::args_os().collect();
         if args.get(1).is_some_and(|arg| arg == ENTRY) {

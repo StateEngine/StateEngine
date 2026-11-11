@@ -64,6 +64,10 @@ fn commands(value: &Value, out: &mut Vec<(Vec<String>, String)>) -> Check {
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn preview_succeeds_when_only_turns_are_omitted_for_packet_budget() -> Check {
     let f = Fixture::new()?;
     let (mut store, lease) = f.direct()?;
@@ -195,6 +199,17 @@ fn preview_succeeds_when_only_turns_are_omitted_for_packet_budget() -> Check {
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
+#[cfg_attr(
+    not(windows),
+    expect(
+        clippy::cognitive_complexity,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )
+)]
 fn every_resume_recovery_argv_reaches_the_selected_home_without_writing() -> Check {
     let mut f = Fixture::new()?;
     let renamed = f.home.with_extension("selected home ' 日本語");

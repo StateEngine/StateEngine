@@ -36,6 +36,10 @@ pub fn observe<R: ReadStore>(
         }),
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn observe_snapshot<S: Snapshot>(
     cx: &Bootstrap,
     snap: &mut S,

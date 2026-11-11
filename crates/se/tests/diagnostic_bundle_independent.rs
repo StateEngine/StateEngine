@@ -83,6 +83,10 @@ impl Fixture {
         self.read_bundle(self.command(home).output()?, complete)
     }
 
+    #[expect(
+        clippy::cognitive_complexity,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn read_bundle(&self, output: Output, complete: bool) -> Check<Bundle> {
         assert_eq!(
             output.status.code(),
@@ -382,6 +386,10 @@ fn uninitialized_home_exports_real_observations_with_verified_private_unique_rec
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn actual_allowlisted_log_redacts_credentials_and_homes_but_preserves_benign_text() -> Check {
     let fixture = Fixture::new()?;
     // Every value below is synthetic and deliberately useless as a credential.

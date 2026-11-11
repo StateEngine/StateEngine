@@ -8,6 +8,10 @@ pub(super) struct CaptureBatch {
 }
 
 impl Capturing<'_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn batch(
         &self,
         admission: se_store::Admission,

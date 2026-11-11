@@ -273,6 +273,10 @@ fn insert(command: Command, path: &[&'static str], name: &str, hidden: bool) -> 
         command.subcommand(update(child))
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn input_command(name: &str, c: Command) -> Command {
     let c = match name {
         name if name.starts_with("atlas.") => atlas::command(name, c),

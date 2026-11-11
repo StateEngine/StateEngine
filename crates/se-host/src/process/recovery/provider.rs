@@ -64,6 +64,10 @@ impl LaunchCoordinator {
         )
         .await
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(in crate::process) async fn restore_provider(
         &self,
         work: &mut Work,

@@ -91,6 +91,11 @@ fn untouched_foreign(
 
 /// Protects: automatic CLI recovery reports the exact retained file in JSON/human output, preserves its native identity, never probes a mismatched address, and cannot mutate records under a live lease or bypass unsafe permissions.
 #[test]
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn automatic_retention_is_visible_and_live_or_unsafe_records_are_preserved() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let f = Fixture::new()?;

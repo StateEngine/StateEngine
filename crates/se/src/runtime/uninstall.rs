@@ -37,6 +37,17 @@ pub(super) fn execute(
 mod reinstall;
 pub(crate) use reinstall::remove_for_reinstall;
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::cognitive_complexity,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )
+)]
 fn execute_inner(
     cx: &Bootstrap,
     key: &se_types::IdempotencyKey,

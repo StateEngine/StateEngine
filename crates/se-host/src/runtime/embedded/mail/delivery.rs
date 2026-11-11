@@ -24,6 +24,10 @@ fn target(value: &api::HostSessionTarget, generation: api::Generation) -> Result
     })
 }
 impl Generation {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn deliver_native(
         &self,
         router: &HostedRouter,

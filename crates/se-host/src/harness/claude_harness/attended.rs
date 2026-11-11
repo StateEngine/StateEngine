@@ -3,6 +3,10 @@
 use super::*;
 
 impl ClaudeHarness {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn attach_attended(&self, request: HarnessAttach) -> Result<LaunchOutcome> {
         let provider = self
             .probed

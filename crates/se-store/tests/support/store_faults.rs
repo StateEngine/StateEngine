@@ -96,6 +96,10 @@ fn payload(
 /// Protects: store commit failure semantics — explicitly driven native fixture uses the public HostWriter while its real SQLite syscalls are traced outside the process.
 #[test]
 #[ignore = "explicitly spawned by the native syscall fault consumer"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn fault_child_fixture() -> Check {
     let root = ready_path()?;
     let mode = std::env::var("SE_SQLITE_FAULT_MODE")?;

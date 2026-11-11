@@ -71,6 +71,10 @@ struct Fixture {
     released: bool,
 }
 impl Fixture {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn new() -> Check<Self> {
         let home = Home::new()?;
         let machine = MachineId::new("owned-observation-fixture")?;

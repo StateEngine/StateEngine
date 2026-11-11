@@ -60,6 +60,10 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
         _ => return Err(invalid("import metadata dispatch")),
     })
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn decode(c: &Connection, seq: i64, kind: &str) -> StoreResult<EventBody<StoredText>> {
     use EventBody::*;
     use codec::field;

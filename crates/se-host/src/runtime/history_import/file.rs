@@ -5,6 +5,11 @@ pub(super) struct FileResult {
     pub counts: ImportCounts,
     pub resume: Vec<ImportResume>,
 }
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) async fn file(
     context: &ExecutionContext,
     cx: NodeContext,

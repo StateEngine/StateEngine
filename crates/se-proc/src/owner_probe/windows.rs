@@ -105,6 +105,10 @@ fn stamp(pid: ProcessId, parent: ProcessId, process: &OwnedHandle) -> Result<Pro
 pub(super) fn console_presence() -> Result<(bool, bool)> {
     Ok((console(STD_INPUT_HANDLE)?, console(STD_OUTPUT_HANDLE)?))
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn observe(
     target: ProcessId,
     expected: Option<&StartIdentity>,

@@ -354,6 +354,10 @@ impl CoreOps for Kernel {
 impl Kernel {
     /// The host releases the finite snapshot/worker after this returns, awaits
     /// only the store completion, then opens a fresh admitted continuation read.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn plan<R: Snapshot>(
         &self,
         op: crate::ops::AnyOp,

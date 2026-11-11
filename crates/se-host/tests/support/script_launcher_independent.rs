@@ -118,6 +118,10 @@ struct Scope {
     _executor: tokio::runtime::Runtime,
 }
 impl Scope {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn launch(home: &Home, invocation: ProviderInvocation) -> Check<Self> {
         let executor = tokio::runtime::Builder::new_multi_thread()
             .enable_all()

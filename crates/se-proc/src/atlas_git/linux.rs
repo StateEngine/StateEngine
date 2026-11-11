@@ -66,6 +66,10 @@ fn drain(reader: &mut impl Read, bytes: &mut Vec<u8>, maximum: usize) -> io::Res
         }
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn read(
     image: &Path,
     control: &Path,

@@ -154,6 +154,10 @@ pub fn reserve_notice<S: MailSnapshot>(
 }
 /// A native consumer may negotiate a smaller IDs-per-notice ceiling. The
 /// committed descriptor remains whole; no adapter truncates it after commit.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn reserve_notice_bounded<S: MailSnapshot>(
     kernel: &Kernel,
     cx: &mut Cx<'_, S>,

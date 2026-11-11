@@ -99,6 +99,10 @@ fn validate(binding: &FirstBinding) -> StoreResult<()> {
     }
     Ok(())
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn check_pair(
     c: &Connection,
     batches: &[StoreResult<AtomicBatch>],

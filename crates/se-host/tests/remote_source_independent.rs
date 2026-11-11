@@ -94,6 +94,10 @@ impl RemoteClient for Reader {
 }
 /// Protects: actual MCP admission and protected aliases remain effective after a source broker caches a connection.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn actual_mcp_source_broker_refuses_loosened_key_and_revoked_credential() -> Check {
     use std::os::unix::fs::PermissionsExt;
     let initialized = initialize_host_process()?;

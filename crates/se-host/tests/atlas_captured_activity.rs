@@ -38,6 +38,11 @@ fn both_providers_feed_only_bound_successful_root_paths_without_authorship() -> 
     }
     Ok(())
 }
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn check(provider: Provider) -> Check {
     let f = Fixture::new()?;
     let (mut direct, lease) = f.direct()?;

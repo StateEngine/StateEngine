@@ -60,6 +60,10 @@ fn check_summary(body: &Value, want: &Value) -> Check {
 
 /// Protects: a thousand noise records take two capture submissions, exact per-kind counts, and one cursor advance per batch.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn noise_accompanies_real_turns_and_a_live_noise_only_tail_waits() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

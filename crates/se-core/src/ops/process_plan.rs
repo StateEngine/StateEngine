@@ -51,6 +51,10 @@ pub fn target<R: Snapshot>(
         }
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn launch<R: Snapshot>(
     kernel: &Kernel,
     mut input: AgentLaunch,

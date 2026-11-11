@@ -101,6 +101,10 @@ fn native_abi_lists_exact_rust_selections_and_protected_credential_references() 
 }
 /// Protects: 49 — deny native Channels control to a valid agent session over actual IPC.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn current_agent_session_cannot_enter_native_owner_channel_frames() -> Check {
     let f = Fixture::new()?;
     seed(&f)?;

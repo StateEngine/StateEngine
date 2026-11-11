@@ -145,6 +145,10 @@ fn seed(f: &Fixture) -> Check {
 /// before network completion or writer submission. No separate reader budget,
 /// store double or production pause hook can hide a leaked transaction.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn finite_host_phases_return_both_slots_before_network_and_commit() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

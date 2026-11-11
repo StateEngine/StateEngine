@@ -222,6 +222,10 @@ pub(crate) fn named_project<R: Snapshot>(
     };
     Ok(Named { id, name })
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn message<R: Snapshot>(
     output: commit::MessageSendOutput,
     cx: &mut commit::Cx<'_, R>,

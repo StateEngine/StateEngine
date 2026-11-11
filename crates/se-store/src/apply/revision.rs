@@ -36,6 +36,10 @@ pub(crate) fn expected(
         .filter(|v| *v <= i64::MAX as u64)
         .ok_or_else(|| invalid("entity revision exhausted"))
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
     use EventBody::*;
     let s = scope_key(c, &e.header.scope, false)?;

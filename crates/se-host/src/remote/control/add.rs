@@ -3,6 +3,10 @@ use super::*;
 use se_types::Read;
 use sha2::Digest;
 impl Control {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn add(
         &self,
         router: &crate::HostedRouter,

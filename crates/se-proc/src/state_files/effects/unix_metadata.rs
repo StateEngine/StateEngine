@@ -40,6 +40,10 @@ pub(super) fn copy(source: &File, destination: &File, path: &Path) -> Result<()>
 }
 
 #[cfg(target_os = "linux")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn copy(source: &File, destination: &File, path: &Path) -> Result<()> {
     use std::ffi::CString;
     let meta = source

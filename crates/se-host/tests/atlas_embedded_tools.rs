@@ -91,6 +91,10 @@ fn unsupported_atlas_discovery_agrees_over_http_and_stdio() -> Check {
     check(Some(image))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn check(image: Option<std::path::PathBuf>) -> Check {
     let f = Fixture::new()?;
     let (mut store, lease) = f.direct()?;

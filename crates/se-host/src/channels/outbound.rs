@@ -9,6 +9,10 @@ use se_store::{
 use se_types::Result;
 
 impl Channels {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(super) async fn flush_output(&self, id: ChannelId, deadline: &Deadline) -> Result<()> {
         let gate = self.output_gate(&id)?;
         let _release = tokio::time::timeout(deadline.remaining()?, gate.lock_owned())

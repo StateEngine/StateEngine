@@ -17,6 +17,10 @@ pub(super) struct PlannedRow {
     pub resume: Vec<node::ResumeFact>,
     pub reason: Option<String>,
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn materialize(
     snapshot: &mut SqliteSnapshot,
     cx: &NodeContext,
@@ -206,6 +210,10 @@ pub(super) struct RowState {
     pub want: Expected,
     pub replay: Option<ImportCheckpoint>,
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn plan(
     context: &ExecutionContext,
     cx: &NodeContext,

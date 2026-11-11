@@ -1,5 +1,9 @@
 //! Historical user/assistant exchanges retain their provider-native reference.
 use super::*;
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn decode<R: Snapshot>(
     cx: &NodeContext,
     read: &mut R,

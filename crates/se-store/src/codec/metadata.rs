@@ -9,6 +9,10 @@ fn notification(mut facts: Value, quiet: bool) -> Value {
     facts
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
     use EventBody::*;
     Ok(match body {

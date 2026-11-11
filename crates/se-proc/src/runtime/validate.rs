@@ -18,6 +18,10 @@ fn units(value: &OsStr) -> Vec<u8> {
         value.encode_wide().flat_map(u16::to_le_bytes).collect()
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn spec(
     reservation: &LaunchReservation,
     spec: &LaunchSpec,

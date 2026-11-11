@@ -21,6 +21,10 @@ pub enum UnparsedObservation<'a> {
 }
 /// Preserve the last good semantic baseline without inventing a content hash,
 /// zero-byte file or code edit when a source read could not observe the bytes.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn unparsed(
     sql: &SqlView<'_>,
     scope: &Scope,

@@ -100,6 +100,17 @@ pub fn private_startup_serves_and_retires() -> Check {
 }
 
 /// Protects: a caller without TEMP, TMP or TMPDIR still launches a native host that commits its owner message using product-owned temporary storage.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
+#[cfg_attr(
+    not(windows),
+    expect(
+        clippy::cognitive_complexity,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )
+)]
 pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
     for name in ["TEMP", "TMP", "TMPDIR"] {
         assert!(

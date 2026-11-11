@@ -159,6 +159,10 @@ fn rejected_first_binding_leaves_no_owner_and_reopened_retry_keeps_both_receipts
     Ok(())
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn two_staged_turns_fit_the_resident_queue_but_split_materialized_groups() -> Check {
     let f = Fixture::new()?;
     let (mut direct, lease) = f.direct()?;

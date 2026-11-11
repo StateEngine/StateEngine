@@ -117,6 +117,10 @@ impl OpaqueTransport {
         self.lock()?.failed_before_delivery = true;
         Ok(())
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn before_ack(&self, input: &Incoming) -> Check {
         // Never inspect the host's reader or a fixture writer: ACK must see the
         // commit through a separately opened public SQLite control connection.
@@ -446,6 +450,10 @@ async fn inspect(
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn receiver_reconnect_commits_opaque_replay_checkpoint_before_ack_without_duplicate_mail() -> Check
 {
     let f = Fixture::new()?;

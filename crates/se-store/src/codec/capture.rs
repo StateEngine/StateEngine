@@ -52,6 +52,10 @@ fn parse_role(value: &str) -> StoreResult<Role> {
 pub(crate) fn record(bytes: Vec<u8>) -> StoreResult<RecordId> {
     RecordId::from_bytes(bytes.try_into().map_err(|_| invalid("record ID length"))?)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn decode(
     c: &Connection,
     seq: i64,

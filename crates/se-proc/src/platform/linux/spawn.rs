@@ -98,6 +98,11 @@ pub(super) fn pidfd(pid: ProcessId) -> ProcResult<Option<File>> {
 fn cstring(value: &[u8], field: &str) -> ProcResult<CString> {
     CString::new(value).map_err(|_| input(field, "NUL is not permitted"))
 }
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
     let deferred = matches!(
         spec.window,

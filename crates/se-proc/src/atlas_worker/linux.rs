@@ -69,6 +69,10 @@ impl AtlasWorker {
         use std::os::fd::AsFd;
         self.channel.as_fd()
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn spawn(image: &Path, payload: &[u8], deadline: Instant) -> io::Result<Self> {
         if !image.is_absolute()
             || payload.len() > FRAME_BYTES

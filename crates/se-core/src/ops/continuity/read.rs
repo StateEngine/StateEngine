@@ -80,6 +80,10 @@ pub(super) fn unread<R: Snapshot>(
     mail.page = se_types::Page::new(rows, mail.page.window().clone(), mail.page.next().cloned())?;
     Ok(mail)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn gather<R: Snapshot>(
     input: &Resume,
     identity: &Identity,

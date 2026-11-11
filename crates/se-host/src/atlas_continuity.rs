@@ -9,6 +9,10 @@ use se_store::{Actor, Admission, Scope, SqliteSnapshot};
 use se_types::{Read, Result, SeError, code::*};
 use std::time::{Duration, Instant};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn source(
     owner: &AtlasOwnerPort,
     ticket: Option<RecordFeedTicket>,

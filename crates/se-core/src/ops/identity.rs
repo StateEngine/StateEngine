@@ -61,6 +61,10 @@ pub struct PrincipalOutput {
     pub binding: PrincipalBinding,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn whoami<R: Snapshot>(_input: IdentityWhoami, cx: &mut Cx<'_, R>) -> Result<PrincipalOutput> {
     admitted(cx)?;
     let project_id = scope::project(cx.admission)?;

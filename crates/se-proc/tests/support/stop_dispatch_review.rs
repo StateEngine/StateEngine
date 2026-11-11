@@ -3,6 +3,10 @@ use super::*;
 
 /// Protects: G6 — the native public consumer distinguishes actual force from a stop after exact exit.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn native_force_and_already_exited_dispatch_are_distinct() -> Check {
     let mut failures = Vec::new();
     for case in ["exited", "live"] {

@@ -1,5 +1,9 @@
 use super::*;
 impl NativeRenewal {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn step(
         &mut self,
         source: &Source,

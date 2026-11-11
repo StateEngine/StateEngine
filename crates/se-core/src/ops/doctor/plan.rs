@@ -30,6 +30,10 @@ pub enum PermissionProtection {
     Windows { sddl: String, control: u16 },
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub struct PermissionAfter {
     pub same_native_object: bool,
     pub same_owner: bool,

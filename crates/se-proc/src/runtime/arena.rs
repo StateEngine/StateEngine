@@ -37,6 +37,10 @@ pub(crate) struct Reference {
     pub lifecycle: LifecycleId,
     pub generation: GenerationId,
 }
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) struct Slot {
     pub reservation: LaunchReservation,
     pub checkpoint: Option<ScopeCheckpoint>,

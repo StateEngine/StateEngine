@@ -83,6 +83,10 @@ impl Scope {
             other => other,
         }
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn observe_inner(&mut self) -> ProcResult<ScopeObservation> {
         let Some(group) = self.group else {
             if let Some(child) = &mut self.child

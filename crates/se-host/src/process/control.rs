@@ -368,6 +368,10 @@ fn empty_row(target: ControlAgent, home: &std::path::Path) -> AgentStopResult {
         },
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn fill_stopped(
     row: &mut AgentStopResult,
     work: &super::launch::Work,

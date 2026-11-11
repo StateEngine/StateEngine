@@ -20,6 +20,10 @@ struct Group {
     mixed_authors: bool,
 }
 impl QueryReader<'_> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn resume_code(&self, request: &ResumeRequest) -> AtlasResult<ResumeCode> {
         if self.viewer != AtlasPrincipal::Agent(request.viewer.clone())
             || request.recently_edited_symbols.len() > 32

@@ -3,6 +3,10 @@ use super::*;
 use se_proc::{CheckpointKind, CheckpointPrincipal, CheckpointSource, NativeState, ProcessRead};
 use se_store::{Actor, RecordedIdentity};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Result<()> {
     let target = plan
         .identity

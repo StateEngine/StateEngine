@@ -13,6 +13,10 @@ const PATHS: usize = 64;
 // Leave the rest of the 50 KB share for retained VecDeque capacity, the two
 // root states and allocator headers. Overflow retains a reconciliation request.
 const BYTES: usize = 32_000;
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 struct Root {
     id: RootId,
     serial: u64,

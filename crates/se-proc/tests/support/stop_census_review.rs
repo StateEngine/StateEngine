@@ -97,6 +97,10 @@ fn census_miss_is_recoverable_but_real_escape_remains_unproved() -> Check {
 
 #[test]
 #[ignore = "standalone native observer with one process-local census fault"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn native_census_observer() -> Check {
     let mode = std::env::var("SE_CENSUS_MODE")?;
     let home = Home::new()?;

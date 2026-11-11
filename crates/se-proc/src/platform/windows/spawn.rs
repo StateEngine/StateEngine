@@ -129,6 +129,10 @@ fn capability(source: &Handle, rights: u32) -> ProcResult<Handle> {
     }
     Handle::new(copy, "own console capability")
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
     let mut line = quoted(spec.executable.as_os_str());
     for arg in &spec.arguments {

@@ -100,6 +100,10 @@ pub fn client(args: &[std::ffi::OsString]) -> Check {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn clients(f: &Fixture) -> Check {
     let image = std::env::current_exe()?;
     let mut pipe = std::process::Command::new(&image);

@@ -4,6 +4,11 @@ use std::io::{self, Write};
 pub fn resume(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
     resume_at(value, None, out)
 }
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn resume_at(
     value: &ResumeOutput,
     home: Option<&std::path::Path>,

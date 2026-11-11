@@ -1,6 +1,10 @@
 use super::*;
 mod reference;
 use reference::MessageReference;
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn decode<R: ImportSnapshot>(
     cx: &NodeContext,
     read: &mut R,

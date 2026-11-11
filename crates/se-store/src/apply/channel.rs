@@ -50,6 +50,10 @@ pub(crate) fn revision(c: &Connection, change: &Change) -> StoreResult<u64> {
     }
     Ok(1)
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(crate) fn apply(
     c: &Connection,
     h: &EventHeader,

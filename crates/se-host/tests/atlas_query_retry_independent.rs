@@ -202,6 +202,10 @@ fn setup(state: IndexState) -> Result<Setup, Box<dyn std::error::Error>> {
     };
     Ok((f, source, native, seed))
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn exercise(case: Case) -> Check {
     let _case = CASE_LOCK.lock().map_err(|_| "fixture lock poisoned")?;
     let (f, source, native, seed) = setup(IndexState::Current)?;
@@ -361,6 +365,10 @@ fn accepted_write_timeout_is_not_replayed() -> Check {
 }
 
 #[cfg(target_os = "linux")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn native_quantum(prior_failure: bool) -> Check {
     let _case = CASE_LOCK.lock().map_err(|_| "fixture lock poisoned")?;
     use se_atlas::{controller::Controller, lifecycle::*};

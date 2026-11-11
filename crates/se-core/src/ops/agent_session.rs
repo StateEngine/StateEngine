@@ -54,6 +54,10 @@ pub fn unobserved_session() -> SessionView {
         containment_cause: None,
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views> {
     let mut session = unobserved_session();
     let latest = cx

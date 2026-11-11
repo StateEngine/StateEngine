@@ -244,6 +244,10 @@ fn invalid(subject: &str, reason: &str) -> SeError {
     ))
 }
 impl ConfigFile {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn validate(&self) -> Result<()> {
         if self.version != 1 {
             return Err(invalid("version", "expected version = 1"));

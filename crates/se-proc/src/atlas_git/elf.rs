@@ -33,6 +33,10 @@ fn string(bytes: &[u8], offset: usize) -> io::Result<String> {
         .map(str::to_owned)
         .map_err(|_| invalid("non-UTF8 Git ELF dependency"))
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub(super) fn dependencies(path: &Path) -> io::Result<Vec<PathBuf>> {
     let file = File::open(path)?;
     let h = bytes(&file, 0, 64)?;

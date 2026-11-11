@@ -37,6 +37,10 @@ fn entry(file: &File, path: &Path, kind: &'static str, sha: Option<[u8; 32]>) ->
 impl NativeUninstallCarrier {
     /// Core has admitted the original record, account and finite directory list.
     /// Nothing here accepts executable text or an alternate image to remove.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn prepare(
         files: &NativeStateFiles,
         claim: &NativeInstallationClaim,

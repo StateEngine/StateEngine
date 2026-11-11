@@ -23,6 +23,10 @@ mod control_fixture;
 use control_fixture::*;
 /// Protects: one root checkpoint and one exec image change preserve every other native identity and exact revision.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;

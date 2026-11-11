@@ -3,6 +3,10 @@ use super::*;
 
 /// C1: process reservation and both prepared credentials precede all native
 /// creation. Hashes bind the exact delivered sec1 and sels token bytes.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn reserve<R: Snapshot>(
     kernel: &Kernel,
     plan: &LaunchPlan,

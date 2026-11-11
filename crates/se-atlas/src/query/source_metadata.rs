@@ -14,6 +14,10 @@ pub(super) struct Pool {
     pub truncated: bool,
 }
 impl Pool {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn collect(
         reader: &QueryReader<'_>,
         sql: &SqlView<'_>,

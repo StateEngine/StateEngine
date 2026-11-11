@@ -17,6 +17,10 @@ struct Proof {
 /// authenticated planning and post-commit continuation. Every write must return
 /// its receipt and independently read back; neither refusal nor a confirmed
 /// commit with an unavailable response counts as successful behavior.
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 pub fn check() -> Check {
     let initialized = se_host::initialize_host_process()?;
     let f = Fixture::new()?;

@@ -34,6 +34,13 @@ unsafe_code = "forbid"
 unwrap_used = "deny"
 expect_used = "deny"
 unreachable = "deny"
+# Structure guardrails (SE Code parity), ceilings in clippy.toml: warn so CI's
+# -D warnings makes them hard stops. Existing offenders carry a one-line allow
+# with a reason; those lists may only shrink.
+too_many_lines = "warn"
+cognitive_complexity = "warn"
+too_many_arguments = "warn"
+struct_excessive_bools = "warn"
 
 [profile.release]
 panic = "unwind"

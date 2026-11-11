@@ -11,6 +11,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 impl LaunchCoordinator {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub(in crate::process) async fn capture_secode(
         &self,
         work: &mut owned::Work,

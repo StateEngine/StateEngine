@@ -44,6 +44,10 @@ impl Tracker {
                     .count()
             })
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn observe(&mut self, value: &Value) -> Result<Vec<Fact>> {
         let kind = value.get("type").and_then(Value::as_str);
         if !matches!(kind, Some("user" | "assistant"))

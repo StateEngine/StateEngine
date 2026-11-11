@@ -128,6 +128,10 @@ fn digest(value: &str) -> bool {
 }
 impl UninstallPlan {
     /// Consume untrusted input and establish the immutable execution boundary.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     pub fn validate(self) -> Result<ValidatedUninstallPlan> {
         if !self.state_home.is_absolute()
             || self

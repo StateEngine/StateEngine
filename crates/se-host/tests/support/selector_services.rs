@@ -44,6 +44,10 @@ impl api::HostServices for Services {
     ) -> api::HostFuture<'a, api::Read<Option<api::ActiveSession>>> {
         Box::pin(async { Err(services_refused()) })
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    )]
     fn active_sessions<'a>(
         &'a self,
         epoch: &'a api::HostEpoch,

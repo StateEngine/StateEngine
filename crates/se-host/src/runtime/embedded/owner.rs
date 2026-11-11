@@ -102,6 +102,10 @@ pub(super) fn owner_thread(
     (ready_rx, exited_rx, spawned.ok())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
 async fn run_owner(
     inputs: OwnerInputs,
     ready: oneshot::Sender<Started>,
