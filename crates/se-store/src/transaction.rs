@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
+mod checkpoint;
 mod first_binding;
 pub(crate) mod idempotency;
 mod input;
@@ -23,6 +24,7 @@ pub(crate) struct Engine {
     pub pending: Vec<Uncertain>,
     pub maintenance: Option<Box<StoreError>>,
     pub backup: Option<BackupContext>,
+    pub(crate) checkpoints: checkpoint::Schedule,
 }
 #[derive(Default, Clone, Debug)]
 pub(crate) struct Phases {
@@ -92,6 +94,7 @@ impl Engine {
         if batches.is_empty() {
             return Ok((Vec::new(), Phases::default()));
         }
+        let pressure_checkpoint = self.require_wal_capacity()?;
         let full = batches
             .iter()
             .filter_map(|b| b.as_ref().ok())
@@ -251,9 +254,12 @@ impl Engine {
             ));
         }
         let sync = commit.elapsed();
-        let checkpoint = self.checkpoint_due();
+        let checkpoint = match (pressure_checkpoint, self.checkpoint_due()) {
+            (Some(before), Some(after)) => Some(before + after),
+            (before, after) => before.or(after),
+        };
         for receipt in results.iter_mut().filter_map(|r| r.as_mut().ok()) {
-            receipt.maintenance_pending = self.maintenance.is_some();
+            receipt.maintenance_pending = self.maintenance.is_some() || self.checkpoint_pending();
         }
         Ok((
             results,
@@ -268,61 +274,6 @@ impl Engine {
     fn rollback(&mut self) {
         if !self.db.is_autocommit() && self.db.execute_batch("ROLLBACK").is_err() {
             self.poisoned = true
-        }
-    }
-    fn checkpoint_due(&mut self) -> Option<Duration> {
-        let observed = self.db.query_row("PRAGMA wal_checkpoint(NOOP)", [], |r| {
-            Ok((
-                crate::sql_value::value::<i64>(r, 0)?,
-                crate::sql_value::value::<i64>(r, 1)?,
-                crate::sql_value::value::<i64>(r, 2)?,
-            ))
-        });
-        let (_, log, done) = match observed {
-            Ok(value) => value,
-            Err(error) => {
-                self.maintenance = Some(sql(error));
-                return None;
-            }
-        };
-        if self
-            .backup
-            .as_ref()
-            .is_some_and(|c| c.suppress_checkpoint(log))
-        {
-            return None;
-        }
-        if log >= 256 && log > done {
-            let start = Instant::now();
-            let result = self
-                .db
-                .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |r| {
-                    Ok((
-                        crate::sql_value::value::<i64>(r, 0)?,
-                        crate::sql_value::value::<i64>(r, 1)?,
-                        crate::sql_value::value::<i64>(r, 2)?,
-                    ))
-                });
-            let elapsed = start.elapsed();
-            self.maintenance = match result {
-                Ok((0, log, done)) if log == done => None,
-                Ok(_) => Some(fail(
-                    StoreErrorCode::Busy,
-                    "committed checkpoint has pending frames",
-                )),
-                Err(error) => Some(sql(error)),
-            };
-            Some(elapsed)
-        } else {
-            if (log == -1 && done == -1) || (log >= 0 && done >= 0 && log <= done) {
-                self.maintenance = None;
-            } else if log < 0 || done < 0 {
-                self.maintenance = Some(fail(
-                    StoreErrorCode::Unreadable,
-                    "WAL accounting returned invalid frame counts",
-                ));
-            }
-            None
         }
     }
     fn compare_natural(

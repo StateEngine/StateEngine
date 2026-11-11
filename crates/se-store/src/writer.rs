@@ -8,7 +8,7 @@ use crate::{
 use std::{
     sync::{
         Arc, Mutex,
-        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
+        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -254,6 +254,7 @@ pub(crate) fn start(
             identity,
         }),
     };
+    host.engine.checkpoints.writer = true;
     let context = host.context.clone();
     let thread = std::thread::Builder::new()
         .name("se-store-writer".into())
@@ -390,11 +391,50 @@ fn flush(
         })?
         .head;
     Ok(FlushReport {
-        maintenance_pending: host.engine.maintenance.is_some() || host.engine.poisoned,
+        maintenance_pending: host.engine.maintenance.is_some()
+            || host.engine.poisoned
+            || host.engine.checkpoint_pending(),
         through,
         pending_requests: 0,
         indeterminate: host.engine.indeterminate(),
     })
+}
+// A pending checkpoint arms one idle delay. Without maintenance debt the
+// writer blocks on its ordinary channel and performs no periodic SQLite reads.
+fn receive(
+    host: &mut SqliteHost,
+    receiver: &Receiver<Command>,
+    lease: &dyn RuntimeLease,
+) -> StoreResult<Option<Command>> {
+    let closed = || {
+        fail(
+            StoreErrorCode::WriterClosed,
+            "writer channel ended without an owner drain",
+        )
+    };
+    let Some(wait) = host.engine.checkpoint_wait() else {
+        return receiver.recv().map(Some).map_err(|_| closed());
+    };
+    match receiver.recv_timeout(wait) {
+        Ok(command) => Ok(Some(command)),
+        Err(RecvTimeoutError::Disconnected) => Err(closed()),
+        Err(RecvTimeoutError::Timeout) => match receiver.try_recv() {
+            Ok(command) => Ok(Some(command)),
+            Err(TryRecvError::Disconnected) => Err(closed()),
+            Err(TryRecvError::Empty) => {
+                match connection::info(&host.engine.db)
+                    .and_then(|info| connection::validate_lease(&info, lease, LeaseMode::Host))
+                {
+                    Ok(_) => host.engine.checkpoint_idle(),
+                    Err(error) => {
+                        host.engine.maintenance = Some(error);
+                        host.engine.checkpoint_finished(false);
+                    }
+                }
+                Ok(None)
+            }
+        },
+    }
 }
 fn run(
     mut host: SqliteHost,
@@ -407,12 +447,10 @@ fn run(
     loop {
         let command = match deferred.take() {
             Some(c) => c,
-            None => receiver.recv().map_err(|_| {
-                fail(
-                    StoreErrorCode::WriterClosed,
-                    "writer channel ended without an owner drain",
-                )
-            })?,
+            None => match receive(&mut host, &receiver, &*lease)? {
+                Some(command) => command,
+                None => continue,
+            },
         };
         match command {
             Command::Atlas(request) => atlas::execute(&mut host, &*lease, &shared, request)?,

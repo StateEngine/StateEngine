@@ -97,6 +97,7 @@ impl StoreFactory for SqliteFactory {
                             pending: Vec::new(),
                             maintenance: None,
                             backup: None,
+                            checkpoints: Default::default(),
                         },
                     },
                 })
@@ -139,6 +140,7 @@ impl StoreFactory for SqliteFactory {
                             pending: Vec::new(),
                             maintenance: None,
                             backup: None,
+                            checkpoints: Default::default(),
                         },
                     )?,
                 })
@@ -414,6 +416,8 @@ impl HostStore for SqliteHost {
             Ok(_) => Some(fail(StoreErrorCode::Busy, "checkpoint has pending frames")),
             Err(error) => Some(error.clone()),
         };
+        self.engine
+            .checkpoint_finished(self.engine.maintenance.is_none());
         report
     }
     fn erase(

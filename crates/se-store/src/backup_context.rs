@@ -6,6 +6,8 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+pub(crate) const MAX_WAL_BYTES: u64 = 64 * 1024 * 1024;
+
 pub(crate) struct State {
     pub store: StoreId,
     pub incarnation: u64,
@@ -74,11 +76,11 @@ impl BackupContext {
         self.state.pinned.store(true, Ordering::Release);
         Ok(Pin(self.clone()))
     }
-    pub(crate) fn suppress_checkpoint(&self, wal_frames: i64) -> bool {
+    pub(crate) fn suppress_checkpoint(&self, wal_frames: i64, hard: bool) -> bool {
         if !self.state.pinned.load(Ordering::Acquire) {
             return false;
         }
-        if wal_frames >= 16384 {
+        if hard || wal_frames >= 16384 {
             self.state.abort.store(true, Ordering::Release);
         }
         true
