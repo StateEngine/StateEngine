@@ -14,8 +14,13 @@ struct Attempt {
     observed_at: String,
     refusal: Option<String>,
 }
-fn path(home: &Path, project: &ProjectId, action: Action) -> std::path::PathBuf {
-    home.join("adoption-status").join(format!(
+fn path(home: &Path, project: &ProjectId, action: Action, kind: Kind) -> std::path::PathBuf {
+    home.join(if kind == Kind::Claude {
+        "adoption-status"
+    } else {
+        "codex-adoption-status"
+    })
+    .join(format!(
         "{:x}-{}.json",
         Sha256::digest(project.as_str()),
         action.name()
@@ -30,11 +35,24 @@ pub fn record(
     action: Action,
     error: Option<&SeError>,
 ) -> Result<()> {
+    record_for(home, Kind::Claude, project, action, error)
+}
+pub fn record_for(
+    home: &Path,
+    kind: Kind,
+    project: &ProjectId,
+    action: Action,
+    error: Option<&SeError>,
+) -> Result<()> {
     let files = se_proc::NativeStateFiles::open(home).map_err(native)?;
     let mut retry =
         AcquisitionRetry::new(std::time::Instant::now() + std::time::Duration::from_secs(1));
-    let directory = home.join("adoption-status");
-    let target = path(home, project, action);
+    let directory = home.join(if kind == Kind::Claude {
+        "adoption-status"
+    } else {
+        "codex-adoption-status"
+    });
+    let target = path(home, project, action, kind);
     if error.is_none() && files.readback(&target).map_err(native)?.is_none() {
         return Ok(());
     }
@@ -107,9 +125,10 @@ fn read_attempt(
     home: &Path,
     project: &ProjectId,
     action: Action,
+    kind: Kind,
 ) -> Result<Option<Attempt>> {
     let Some(file) = files
-        .readback(&path(home, project, action))
+        .readback(&path(home, project, action, kind))
         .map_err(native)?
     else {
         return Ok(None);
@@ -127,6 +146,17 @@ fn read_attempt(
 
 /// Shared by offline CLI and hosted CLI/MCP status, with no new status schema.
 pub fn observe(home: &Path, output: &mut StatusOutput) {
+    for kind in Kind::ALL {
+        observe_for(home, output, kind);
+    }
+}
+fn observe_for(home: &Path, output: &mut StatusOutput, kind: Kind) {
+    let name = if kind == Kind::Claude {
+        "Claude"
+    } else {
+        "Codex"
+    };
+    let prefix = format!("{name} adoption ");
     let se_types::Read::Present { value: selected } = &output.project else {
         return;
     };
@@ -136,9 +166,9 @@ pub fn observe(home: &Path, output: &mut StatusOutput) {
     let project = selected.id.clone();
     output
         .pending
-        .retain(|fact| !fact.what.starts_with("Claude adoption "));
+        .retain(|fact| !fact.what.starts_with(&prefix));
     let files = match (|| {
-        let Some(registration) = read(home)? else {
+        let Some(registration) = read_for(home, kind)? else {
             return Ok(None);
         };
         if !registration.projects.iter().any(|p| p.project == project) {
@@ -151,7 +181,7 @@ pub fn observe(home: &Path, output: &mut StatusOutput) {
         Ok(Some(files)) => files,
         Ok(None) => return,
         Err(error) => {
-            output.pending.push(PendingFact { what: "Claude adoption registration".into(), since: None,
+            output.pending.push(PendingFact { what: format!("{name} adoption registration"), since: None,
                 detail: format!("Adoption registration is unreadable: {error}. Restore access to this data home's protected registration before repeating adoption setup.") });
             return;
         }
@@ -167,22 +197,22 @@ pub fn observe(home: &Path, output: &mut StatusOutput) {
                 selected.root.clone(),
                 "--adopt".into(),
                 "--provider".into(),
-                "claude".into(),
+                kind.name().into(),
             ])
         });
         match command {
-            Some(command) => format!("Restore access to the named source, run `{}` in your own terminal, then restart Claude Code in this folder. Provider work was allowed to continue; capture and mail are unconfirmed.", command.command),
-            None => "Restore access to the named source, then repeat the original adoption setup in your own terminal and restart Claude Code in this folder. Capture and mail are unconfirmed.".into(),
+            Some(command) => format!("Restore access to the named source, run `{}` in your own terminal, then restart {} in this folder. Provider work was allowed to continue; capture and mail are unconfirmed.", command.command, kind.label()),
+            None => "Restore access to the named source, then repeat the original adoption setup in your own terminal and restart the provider in this folder. Capture and mail are unconfirmed.".into(),
         }
     };
     for action in Action::ALL {
-        match read_attempt(&files, home, &project, action) {
+        match read_attempt(&files, home, &project, action, kind) {
             Ok(Some(Attempt {
                 observed_at,
                 refusal: Some(reason),
                 ..
             })) => output.pending.push(PendingFact {
-                what: format!("Claude adoption {}", action.name()),
+                what: format!("{name} adoption {}", action.name()),
                 since: Some(observed_at.clone()),
                 detail: format!(
                     "Latest {name} hook attempt at {observed_at} was refused {reason}. {remedy}",
@@ -192,7 +222,7 @@ pub fn observe(home: &Path, output: &mut StatusOutput) {
             }),
             Ok(_) => (),
             Err(error) => output.pending.push(PendingFact {
-                what: format!("Claude adoption {} observation", action.name()),
+                what: format!("{name} adoption {} observation", action.name()),
                 since: None,
                 detail: format!("Adoption outcome is unreadable: {error}. {}", remedy()),
             }),

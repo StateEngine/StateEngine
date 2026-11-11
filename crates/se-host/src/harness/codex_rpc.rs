@@ -7,7 +7,7 @@ mod connection;
 mod console;
 mod location;
 mod mail;
-mod probe;
+pub(crate) mod probe;
 mod qualification;
 mod recovery;
 mod rpc;

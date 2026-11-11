@@ -1,7 +1,7 @@
 //! Native inbox wait and protected offer journal for user-owned sessions.
 use super::{failure, forward_to, managed_ancestry_refusal, native};
 use crate::{bootstrap::Bootstrap, route};
-use se_host::adoption::{Input, Registration};
+use se_host::adoption::{Input, Kind, Registration};
 use se_types::{Result, SeError};
 use sha2::{Digest, Sha256};
 use std::{
@@ -37,7 +37,7 @@ fn native_bound() -> se_proc::native_ipc::IpcIoBound {
 }
 impl MailWait {
     fn open(cx: &Bootstrap, input: &Input) -> Result<Option<Self>> {
-        let registration = se_host::adoption::read(&cx.home)?
+        let registration = se_host::adoption::read_for(&cx.home, input.kind)?
             .ok_or_else(|| SeError::invalid("native mail wait", "current adoption registration"))?;
         let peer = se_proc::native_ipc::observe_ipc_self_bounded(&native_bound())
             .map_err(|e| SeError::invalid("native mail wait", &e.to_string()))?;
@@ -146,7 +146,7 @@ impl MailWait {
             if !se_host::adoption::metadata::current(&self.registration, &self.provider, &input)? {
                 return Ok(0);
             }
-            if se_host::adoption::read(&cx.home)?
+            if se_host::adoption::read_for(&cx.home, input.kind)?
                 .is_none_or(|r| r.project(&cx.cwd).is_ok_and(|p| p.is_none()))
             {
                 return Ok(0);
@@ -189,8 +189,8 @@ impl MailWait {
                 )
             })?;
             let Some(page) = page else { return Ok(0) };
-            if self.offer(&response, &page)? {
-                return Ok(2);
+            if self.offer(&input, &response, &page)? {
+                return Ok(if input.kind == Kind::Codex { 0 } else { 2 });
             }
             input.cursor = page.page.next().cloned();
             if input.cursor.is_none() {
@@ -200,6 +200,7 @@ impl MailWait {
     }
     fn offer(
         &mut self,
+        input: &Input,
         response: &serde_json::Value,
         page: &se_core::ops::MessagePage,
     ) -> Result<bool> {
@@ -237,7 +238,11 @@ impl MailWait {
             // A native wake is an offer, never a durable recipient read or
             // completion receipt. Sender labels are outside untrusted bodies.
             let frame = serde_json::json!({"stateengine_mail":{"agent":response.get("agent"),"messages":messages,"delivery":"offered; provider acceptance and recipient read unconfirmed"}});
-            writeln!(std::io::stdout(), "{frame}").map_err(failure)?;
+            if input.kind == Kind::Codex {
+                se_host::adoption::codex::offer(&self.registration, &input.conversation, &frame)?;
+            } else {
+                writeln!(std::io::stdout(), "{frame}").map_err(failure)?;
+            }
             return Ok(true);
         }
         Ok(false)

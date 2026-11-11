@@ -10,7 +10,20 @@ use sha2::{Digest, Sha256 as Hasher};
 use std::{fs::File, time::Duration};
 
 const HOOK: &str = "ipc-adoption-hook-image.json";
-const PROVIDER: &str = "ipc-adoption-provider-image.json";
+fn provider_name(provider: &Path) -> IpcNativeResult<String> {
+    let path = se_types::NativePath::from_local(provider.to_owned())
+        .map_err(|e| error("encode selected provider path", std::io::Error::other(e)))?;
+    let bytes = serde_json::to_vec(&path).map_err(|e| {
+        error(
+            "encode selected provider cache path",
+            std::io::Error::other(e),
+        )
+    })?;
+    Ok(format!(
+        "ipc-adoption-provider-{:x}.json",
+        Hasher::digest(bytes)
+    ))
+}
 const LOCK: &str = "ipc-adoption-image.lock";
 
 /// Warm both selected images at explicit installation or after an image update.
@@ -23,7 +36,7 @@ pub fn prepare_adoption_image_cache(
 ) -> IpcNativeResult<()> {
     let image = std::env::current_exe().map_err(|e| error("locate hook executable", e))?;
     prepare(root, HOOK, &image, bound)?;
-    prepare(root, PROVIDER, provider, bound)
+    prepare(root, &provider_name(provider)?, provider, bound)
 }
 
 /// The serving host restores the provider hint before its short native ancestry
@@ -35,7 +48,7 @@ pub fn restore_adoption_provider_cache(
 ) -> IpcNativeResult<ImageCacheRead> {
     let files = NativeStateFiles::open(root)
         .map_err(|e| error("pin adoption image cache home", std::io::Error::other(e)))?;
-    restore(&files, PROVIDER, provider, bound)
+    restore(&files, &provider_name(provider)?, provider, bound)
 }
 
 fn restore(

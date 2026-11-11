@@ -4,7 +4,7 @@ use crate::{bootstrap::Bootstrap, route};
 #[cfg(any(target_os = "linux", windows))]
 mod mail;
 use se_host::{
-    adoption::{Action, Input},
+    adoption::{Action, Input, Kind},
     client::{ClientOptions, lease::Deadline},
 };
 use se_types::{NativePath, Result, SeError};
@@ -16,23 +16,32 @@ use std::{
 };
 
 pub fn entry(args: &[OsString]) -> Option<u8> {
-    if !args.get(1).is_some_and(|a| a == "__se-claude-adopt") {
+    if kind(args).is_none() {
         return None;
     }
     // Every refusal remains provider-nonblocking. An unregistered project must
     // be a completely silent success and must never create state or a runtime.
     Some(run(args).unwrap_or(0))
 }
+fn kind(args: &[OsString]) -> Option<Kind> {
+    match args.get(1)?.to_str()? {
+        "__se-claude-adopt" => Some(Kind::Claude),
+        "__se-codex-adopt" => Some(Kind::Codex),
+        _ => None,
+    }
+}
 #[cfg(any(target_os = "linux", windows))]
 fn run(args: &[OsString]) -> Result<u8> {
     if args.len() != 4 {
         return Ok(0);
     }
+    let kind = kind(args)
+        .ok_or_else(|| SeError::invalid("native adoption", "a supported provider entry"))?;
     let home = PathBuf::from(&args[2]);
     if !home.is_absolute() {
         return Ok(0);
     }
-    let Some(registration) = se_host::adoption::read(&home)? else {
+    let Some(registration) = se_host::adoption::read_for(&home, kind)? else {
         return Ok(0);
     };
     let cwd =
@@ -58,8 +67,13 @@ fn run(args: &[OsString]) -> Result<u8> {
             return Ok(0);
         }
         if let Some(action) = args[3].to_str().and_then(Action::parse)
-            && let Err(record_error) =
-                se_host::adoption::status::record(&home, &project.project, action, Some(&error))
+            && let Err(record_error) = se_host::adoption::status::record_for(
+                &home,
+                kind,
+                &project.project,
+                action,
+                Some(&error),
+            )
         {
             let _ = writeln!(
                 std::io::stderr(),
@@ -121,7 +135,10 @@ fn registered(
         return Ok(0);
     }
     let transcript = NativePath::from_local(PathBuf::from(get("transcript_path")?))?;
+    let kind = kind(args)
+        .ok_or_else(|| SeError::invalid("native adoption", "a supported provider entry"))?;
     let input = Input {
+        kind,
         project: project.clone(),
         cwd: NativePath::from_local(cwd.clone())?,
         conversation,
@@ -144,7 +161,7 @@ fn registered(
         retry_invocation: None,
         legacy_environment_present: false,
     };
-    let registration = se_host::adoption::read(&cx.home)?
+    let registration = se_host::adoption::read_for(&cx.home, input.kind)?
         .ok_or_else(|| SeError::invalid("native adoption hook", "current adoption registration"))?;
     // Cold work is separate from native peer proof. Installation warms these
     // hints; subsequent hooks read image content only after a native file change.
@@ -207,6 +224,7 @@ fn forward_to(
     };
     let project = input.project.clone();
     let action = input.action;
+    let kind = input.kind;
     let output = crate::ipc::exchange_output(
         target,
         route::execute::credential(cx, &files)?,
@@ -227,7 +245,7 @@ fn forward_to(
             "the exact provider adoption family",
         ));
     }
-    se_host::adoption::status::record(&cx.home, &project, action, None)?;
+    se_host::adoption::status::record_for(&cx.home, kind, &project, action, None)?;
     Ok(output.value)
 }
 fn failure(error: std::io::Error) -> SeError {

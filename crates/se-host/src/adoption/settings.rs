@@ -158,7 +158,10 @@ pub fn merge(path: &Path, entries: &[(String, Value)]) -> Result<bool> {
     Ok(changed)
 }
 pub fn uninstall(home: &Path) -> Result<Vec<PathBuf>> {
-    let Some(registration) = super::read(home)? else {
+    uninstall_for(home, Kind::Claude)
+}
+pub fn uninstall_for(home: &Path, kind: Kind) -> Result<Vec<PathBuf>> {
+    let Some(registration) = super::read_for(home, kind)? else {
         return Ok(vec![]);
     };
     let path = registration.settings.to_local()?;
@@ -207,6 +210,6 @@ pub fn uninstall(home: &Path) -> Result<Vec<PathBuf>> {
     }
     // Revocation is independent of edited hooks: an edited command can remain
     // in the provider, but without this registration it is an inert success.
-    super::remove(home)?;
+    super::remove_for(home, kind)?;
     Ok(if changed { vec![path] } else { vec![] })
 }

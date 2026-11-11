@@ -20,6 +20,9 @@ pub fn current(
     provider: &NativeIpcPeer,
     input: &Input,
 ) -> Result<bool> {
+    if input.kind == Kind::Codex {
+        return super::codex::current(registration, input);
+    }
     let path = registration
         .config_home
         .to_local()?
@@ -77,6 +80,9 @@ fn witness(
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     hash.update(b"observed-provider-birth/v1");
+    if input.kind == Kind::Codex {
+        hash.update(b"codex");
+    }
     hash.update(provider.binding());
     hash.update(generation.get().to_le_bytes());
     hash.update(input.project.as_str());
