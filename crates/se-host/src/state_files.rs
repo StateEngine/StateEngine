@@ -228,10 +228,10 @@ impl Files {
         self.check_root()
     }
     fn check_root(&self) -> StoreResult<()> {
-        // The real database read revalidates the original retained root before
-        // and after opening. A missing database is still a valid root observation.
+        // Preserve both private-root and existing database protection checks.
+        // A metadata-only observation never cancels live SQLite POSIX locks.
         self.0
-            .readback(&self.0.root().join("state.db"))
+            .inspect_metadata(&self.0.root().join("state.db"))
             .map_err(native_error)?;
         Ok(())
     }
@@ -363,6 +363,14 @@ impl StateFiles for Files {
         Ok(se_store::ProtectedStaging {
             path: staged.path,
             file: staged.file,
+        })
+    }
+    fn inspect_metadata(&self, path: &Path) -> StoreResult<se_types::Read<std::fs::Metadata>> {
+        Ok(match self.0.inspect_metadata(path).map_err(native_error)? {
+            Some(value) => se_types::Read::Present { value },
+            None => se_types::Read::Absent {
+                checked: format!("native metadata absence at {}", path.display()),
+            },
         })
     }
     fn readback(&self, path: &Path) -> StoreResult<Read<File>> {

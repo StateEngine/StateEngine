@@ -89,6 +89,14 @@ impl StateFiles for Files {
             file: s.file,
         })
     }
+    fn inspect_metadata(&self, path: &Path) -> StoreResult<se_types::Read<std::fs::Metadata>> {
+        Ok(match self.0.inspect_metadata(path).map_err(native_error)? {
+            Some(value) => se_types::Read::Present { value },
+            None => se_types::Read::Absent {
+                checked: format!("native metadata absence at {}", path.display()),
+            },
+        })
+    }
     fn readback(&self, path: &Path) -> StoreResult<Read<fs::File>> {
         Ok(match self.0.readback(path).map_err(native_error)? {
             Some(value) => Read::Present { value },
@@ -105,6 +113,10 @@ impl StateFiles for Files {
 }
 struct BackupFiles(Files);
 impl StateFiles for BackupFiles {
+    fn inspect_metadata(&self, path: &Path) -> StoreResult<se_types::Read<std::fs::Metadata>> {
+        self.0.inspect_metadata(path)
+    }
+
     fn list_owned(&self, directory: &Path, maximum: usize) -> StoreResult<Vec<PathBuf>> {
         let paths = self.0.0.list_owned(directory).map_err(native_error)?;
         if maximum == 0 || paths.len() > maximum {

@@ -7,7 +7,7 @@ pub(crate) mod reference_counts;
 pub mod schema;
 pub mod write;
 use crate::{errors::AtlasResult, model::*, scope::Scope};
-use std::{fs::File, path::PathBuf};
+use std::path::PathBuf;
 /// The native adapter retains the directory/root and file pins while SQLite is
 /// open. SQLite's own NOFOLLOW flag also rejects a linked final database name.
 /// This trusted port is never constructed from CLI/MCP destination arguments.
@@ -49,9 +49,16 @@ pub trait CacheFiles {
     fn reserve_growth(&self, bytes: u64) -> AtlasResult<Box<dyn GrowthReservation + '_>>;
 }
 pub trait GrowthReservation {}
+pub type DatabaseFileIdentity = ([u8; 16], [u8; 16]);
+/// Metadata custody may use a retained handle or a no-open native observation.
+/// Its drop must preserve every SQLite connection's process-wide file locks.
+pub trait DatabaseFile {
+    fn metadata(&self) -> std::io::Result<std::fs::Metadata>;
+    fn identity(&self) -> std::io::Result<DatabaseFileIdentity>;
+}
+
 pub struct DatabasePin {
-    /// Native identity/metadata pin; content reads need not be supported.
-    pub file: File,
+    pub file: Box<dyn DatabaseFile>,
     pub path: PathBuf,
 }
 #[derive(Clone, Debug)]

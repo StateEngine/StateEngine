@@ -22,8 +22,8 @@ impl NativeAtlasCache {
         let pin = self
             .pin_database(epoch)?
             .ok_or_else(|| fail("cold candidate database absent"))?;
-        let identity = observe_file_revision(&pin.file).map_err(fail)?;
-        if identity.volume != record.volume || identity.file != record.file {
+        let identity = pin.file.identity().map_err(fail)?;
+        if identity.0 != record.volume || identity.1 != record.file {
             return Err(fail(
                 "cold candidate native identity changed; preserve epoch",
             ));
@@ -40,11 +40,11 @@ impl NativeAtlasCache {
         pin: &DatabasePin,
     ) -> AtlasResult<()> {
         self.require_writer()?;
-        let identity = observe_file_revision(&pin.file).map_err(fail)?;
+        let identity = pin.file.identity().map_err(fail)?;
         let bytes = serde_json::to_vec(&Record {
             epoch: epoch.clone(),
-            volume: identity.volume,
-            file: identity.file,
+            volume: identity.0,
+            file: identity.1,
         })
         .map_err(|error| fail("reservation custody JSON cannot be encoded").with_cause(error))?;
         let mut stage = self.root.create_staging(self.root.root()).map_err(fail)?;
@@ -53,9 +53,10 @@ impl NativeAtlasCache {
         self.root
             .publish_no_replace(&stage.path, &self.journal())
             .map_err(fail)?;
-        if self.read_reservation()?.is_none_or(|r| {
-            r.epoch != *epoch || r.volume != identity.volume || r.file != identity.file
-        }) {
+        if self
+            .read_reservation()?
+            .is_none_or(|r| r.epoch != *epoch || r.volume != identity.0 || r.file != identity.1)
+        {
             return Err(fail("reservation custody journal readback differs"));
         }
         Ok(())
@@ -118,8 +119,8 @@ impl NativeAtlasCache {
             self.clear_reservation()?;
             return Ok(());
         };
-        let identity = observe_file_revision(&pin.file).map_err(fail)?;
-        if identity.volume != record.volume || identity.file != record.file {
+        let identity = pin.file.identity().map_err(fail)?;
+        if identity.0 != record.volume || identity.1 != record.file {
             return Err(fail(
                 "crashed reservation native identity changed; preserve epoch",
             ));

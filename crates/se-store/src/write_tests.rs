@@ -52,6 +52,16 @@ impl StateFiles for StagingFiles {
             file: staged.file,
         })
     }
+    fn inspect_metadata(&self, path: &Path) -> StoreResult<se_types::Read<std::fs::Metadata>> {
+        Ok(
+            match self.native.inspect_metadata(path).map_err(file_error)? {
+                Some(value) => se_types::Read::Present { value },
+                None => se_types::Read::Absent {
+                    checked: format!("native metadata absence at {}", path.display()),
+                },
+            },
+        )
+    }
     fn readback(&self, path: &Path) -> StoreResult<se_types::Read<fs::File>> {
         Ok(match self.native.readback(path).map_err(file_error)? {
             Some(value) => se_types::Read::Present { value },

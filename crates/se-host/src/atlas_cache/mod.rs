@@ -14,13 +14,22 @@ use std::{
     path::{Path, PathBuf},
 };
 
+struct Metadata(se_proc::NativeMetadataPin);
+impl DatabaseFile for Metadata {
+    fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
+        self.0.metadata().map_err(std::io::Error::other)
+    }
+    fn identity(&self) -> std::io::Result<DatabaseFileIdentity> {
+        self.0.identity().map_err(std::io::Error::other)
+    }
+}
 pub struct NativeAtlasCache {
     home: NativeStateFiles,
     root: NativeStateFiles,
     scope: Scope,
     // Permanent inode, never unlinked. Kernel releases ownership on process exit.
     writer: Option<File>,
-    reserved: RefCell<Option<(CacheEpoch, se_proc::NativeFileRevision)>>,
+    reserved: RefCell<Option<(CacheEpoch, DatabaseFileIdentity)>>,
     growth: Cell<u64>,
 }
 impl NativeAtlasCache {
@@ -260,7 +269,10 @@ impl CacheFiles for NativeAtlasCache {
             .root
             .pin_metadata(&path)
             .map_err(fail)?
-            .map(|file| DatabasePin { file, path }))
+            .map(|file| DatabasePin {
+                file: Box::new(Metadata(file)),
+                path,
+            }))
     }
     fn reserve_database(&self, epoch: &CacheEpoch) -> AtlasResult<DatabasePin> {
         self.require_writer()?;
@@ -299,7 +311,7 @@ impl CacheFiles for NativeAtlasCache {
         let pin = self
             .pin_database(epoch)?
             .ok_or_else(|| fail("reserved database absent on readback"))?;
-        let identity = observe_file_revision(&pin.file).map_err(fail)?;
+        let identity = pin.file.identity().map_err(fail)?;
         self.remember_reservation(epoch, &pin)?;
         *self.reserved.borrow_mut() = Some((epoch.clone(), identity));
         Ok(pin)
@@ -307,12 +319,12 @@ impl CacheFiles for NativeAtlasCache {
     fn discard_unpublished(&self, pin: &DatabasePin) -> AtlasResult<()> {
         let epoch = self.epoch(pin)?;
         self.check_unpublished(&epoch)?;
-        let held = observe_file_revision(&pin.file).map_err(fail)?;
+        let held = pin.file.identity().map_err(fail)?;
         if !self
             .reserved
             .borrow()
             .as_ref()
-            .is_some_and(|(e, id)| e == &epoch && id.volume == held.volume && id.file == held.file)
+            .is_some_and(|(e, id)| e == &epoch && id == &held)
         {
             return Err(fail(
                 "no matching unpublished creation custody; preserve epoch",
@@ -368,7 +380,7 @@ impl CacheFiles for NativeAtlasCache {
         let named = self
             .pin_database(&epoch)?
             .ok_or_else(|| fail("retained database name absent"))?;
-        if !same(&pin.file, &named.file)? {
+        if pin.file.identity().map_err(fail)? != named.file.identity().map_err(fail)? {
             return Err(fail("retained database identity changed"));
         }
         Ok(())

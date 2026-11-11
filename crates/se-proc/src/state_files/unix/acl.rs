@@ -1,5 +1,6 @@
 //! Darwin extended ACLs are independent of BSD mode bits. All observations and
-//! changes use a held descriptor, never a path resolved for a second time.
+//! changes normally use a held descriptor. Database metadata uses the no-follow
+//! path API so closing a descriptor cannot cancel SQLite locks.
 //! ABI: Apple Libc include/sys/acl.h, gen/filesec.c and XNU bsd/sys/fcntl.h.
 use crate::state_files::{Result, io_error, unsafe_path};
 use std::{ffi::c_void, fs::File, io, os::fd::AsRawFd, path::Path};
@@ -9,6 +10,7 @@ const ALLOW: i32 = 1;
 const DENY: i32 = 2;
 unsafe extern "C" {
     fn acl_get_fd_np(fd: i32, kind: i32) -> *mut c_void;
+    fn acl_get_link_np(path: *const libc::c_char, kind: i32) -> *mut c_void;
     fn acl_free(value: *mut c_void) -> i32;
     fn acl_get_entry(acl: *mut c_void, index: i32, entry: *mut *mut c_void) -> i32;
     fn acl_get_tag_type(entry: *mut c_void, tag: *mut i32) -> i32;
@@ -113,6 +115,28 @@ fn owner_only(acl: &Acl, uid: u32, path: &Path) -> Result<bool> {
 }
 pub(super) fn is_owner_only(file: &File, uid: u32, path: &Path) -> Result<bool> {
     read(file, path)?.map_or(Ok(true), |acl| owner_only(&acl, uid, path))
+}
+pub(super) fn verify_path(path: &Path, uid: u32) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| unsafe_path("NUL in database metadata path", path))?;
+    // SAFETY: NUL-terminated native path; the link-specific API never follows the leaf.
+    let raw = unsafe { acl_get_link_np(name.as_ptr(), EXTENDED) };
+    if raw.is_null() {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::ENOENT) {
+            Ok(())
+        } else {
+            Err(io_error("inspect database metadata ACL", path, error))
+        };
+    }
+    if !owner_only(&Acl(raw), uid, path)? {
+        return Err(unsafe_path(
+            "database metadata ACL allows another principal",
+            path,
+        ));
+    }
+    Ok(())
 }
 pub(super) fn verify(file: &File, uid: u32, path: &Path) -> Result<()> {
     if !is_owner_only(file, uid, path)? {

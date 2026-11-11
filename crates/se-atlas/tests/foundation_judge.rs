@@ -28,6 +28,20 @@ impl Drop for Native {
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
+struct Metadata(std::fs::Metadata);
+impl DatabaseFile for Metadata {
+    fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
+        Ok(self.0.clone())
+    }
+    fn identity(&self) -> std::io::Result<DatabaseFileIdentity> {
+        use std::os::unix::fs::MetadataExt;
+        let mut volume = [0; 16];
+        let mut file = [0; 16];
+        volume[..8].copy_from_slice(&self.0.dev().to_be_bytes());
+        file[..8].copy_from_slice(&self.0.ino().to_be_bytes());
+        Ok((volume, file))
+    }
+}
 struct Reservation;
 impl GrowthReservation for Reservation {}
 impl CacheFiles for Native {
@@ -46,8 +60,11 @@ impl CacheFiles for Native {
     }
     fn pin_database(&self, epoch: &CacheEpoch) -> AtlasResult<Option<DatabasePin>> {
         let path = self.dir.join(epoch.as_str());
-        match File::open(&path) {
-            Ok(file) => Ok(Some(DatabasePin { file, path })),
+        match fs::symlink_metadata(&path) {
+            Ok(file) => Ok(Some(DatabasePin {
+                file: Box::new(Metadata(file)),
+                path,
+            })),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(cache_error(e)),
         }
@@ -60,7 +77,12 @@ impl CacheFiles for Native {
             .create_new(true)
             .open(&path)
             .map_err(cache_error)?;
-        Ok(DatabasePin { file, path })
+        let metadata = file.metadata().map_err(cache_error)?;
+        drop(file);
+        Ok(DatabasePin {
+            file: Box::new(Metadata(metadata)),
+            path,
+        })
     }
     fn discard_unpublished(&self, pin: &DatabasePin) -> AtlasResult<()> {
         self.validate_database(pin)?;

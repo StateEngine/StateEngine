@@ -45,7 +45,7 @@ fn with_source(
     let start = Instant::now();
     // A reader path alone proves no native custody. Require the actual native port.
     let _file = match files
-        .readback(path)
+        .inspect_metadata(path)
         .map_err(|error| context(error, path, StoreIoStage::Open))?
     {
         Read::Present { value } => value,

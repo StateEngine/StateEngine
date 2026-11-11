@@ -233,13 +233,9 @@ fn wal_limit(files: &dyn StateFiles, root: &Path, context: &BackupContext) -> St
             "backup aborted at the 64 MiB WAL limit",
         ));
     }
-    match files.readback(&root.join("state.db-wal"))? {
+    match files.inspect_metadata(&root.join("state.db-wal"))? {
         se_types::Read::Absent { .. } => Ok(()),
-        se_types::Read::Present { value }
-            if value.metadata().map_err(invalid)?.len() < 64 * 1024 * 1024 =>
-        {
-            Ok(())
-        }
+        se_types::Read::Present { value } if value.len() < 64 * 1024 * 1024 => Ok(()),
         se_types::Read::Present { .. } => {
             context.state.abort.store(true, Ordering::Release);
             Err(fail(
@@ -361,7 +357,15 @@ pub(crate) fn run(
         ));
     }
     let files = lease.files();
-    drop(present(files, &context.state.path)?);
+    if !matches!(
+        files.inspect_metadata(&context.state.path)?,
+        se_types::Read::Present { .. }
+    ) {
+        return Err(fail(
+            StoreErrorCode::BackupFailed,
+            "protected backup source metadata is not present",
+        ));
+    }
     // Native retirement is also required for crash-left pending artifacts.
     let reader = SqliteReader {
         path: context.state.path.clone(),

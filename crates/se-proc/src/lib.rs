@@ -108,6 +108,7 @@ pub use platform::process_attach_entry;
 mod creation_owner;
 pub use creation_owner::{FileOwnerError, FileOwnerInitialization, initialize_file_creation_owner};
 
+pub use state_files::NativeMetadataPin;
 pub use state_files::effects::{
     CreatedDirectoryCleanup, DirectoryRemoval, NativeDirectoryCreation, NativeInstallationClaim,
     OwnedFile, remove_empty_directory, scan_recovery, scan_temporary,

@@ -82,7 +82,7 @@ impl Engine {
             return Ok(());
         }
         if !matches!(
-            lease.files().readback(path)?,
+            lease.files().inspect_metadata(path)?,
             se_types::Read::Present { .. }
         ) {
             return Err(fail(
@@ -168,7 +168,7 @@ impl Engine {
         let committed = checked?;
         rollback?;
         if !matches!(
-            lease.files().readback(path)?,
+            lease.files().inspect_metadata(path)?,
             se_types::Read::Present { .. }
         ) {
             return Err(fail(
