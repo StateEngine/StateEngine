@@ -228,7 +228,16 @@ fn prepare(
                             &error.to_string(),
                         )
                     })?,
-                    Err(error) => {
+                    Err(std::fs::TryLockError::WouldBlock) => {
+                        return Err(SeError::new(se_types::Detail::StateConflict(
+                            se_types::details::StateConflict {
+                                subject: "runtime lease".into(),
+                                reason: "Another writer holds the runtime lease".into(),
+                                next_step: "Use se status for this data home; use the existing host or retry se up after it stops".into(),
+                            },
+                        )));
+                    }
+                    Err(std::fs::TryLockError::Error(error)) => {
                         return Err(se_core::scope::unreadable(
                             "exclusive runtime lease",
                             &error.to_string(),
