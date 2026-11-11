@@ -33,7 +33,7 @@ impl IpcListener {
             // The same ingress capacity bounds handles before commit. Refuse
             // the oldest excess handshake without reading any operation bytes,
             // then keep driving the spare for the native startup parent.
-            if self.startup_clients.len() >= self.preauth.available_permits() + 1 {
+            if self.startup_clients.len() > self.preauth.available_permits() {
                 let oldest = self
                     .startup_clients
                     .pop_front()
