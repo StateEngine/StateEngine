@@ -6,7 +6,7 @@ use se_store::{
     Actor, Admission, EventBody, Scope, Snapshot, StoredText,
     channel::{Change, Connection, Outbound, OutputOutcome, Pairing},
 };
-use se_types::{IdempotencyKey, Result};
+use se_types::Result;
 
 impl Channels {
     pub(super) async fn flush_output(&self, id: ChannelId, deadline: &Deadline) -> Result<()> {
@@ -39,12 +39,11 @@ impl Channels {
                 )
                 .await;
         }
-        let Pairing::Paired { ref phone } = state.pairing else {
+        let Pairing::Paired { .. } = state.pairing else {
             return Err(channel_error(ChannelError::BindingRevoked));
         };
         let text = match self.output_text(&state, &output, deadline).await {
-            Ok(text) if text.encode_utf16().count() <= 4096 => Ok(text),
-            Ok(_) => Err(ChannelError::MessageTooLarge),
+            Ok(text) => Ok(text),
             Err(error) => match error.body.detail() {
                 se_types::Detail::MessagingChannelRefused(detail)
                     if matches!(
@@ -59,22 +58,23 @@ impl Channels {
                 _ => return Err(error),
             },
         };
-        let keyboard = if text.is_ok() {
+        let transport = self.transport(state.connector)?;
+        let descriptor = transport.descriptor();
+        let mut buttons = if text.is_ok() {
             self.resume_keyboard(&state, &output, deadline).await?
         } else {
-            None
+            vec![]
         };
-        let credential = state.credential.clone();
-        let credentials = self.credentials.clone();
-        let token = if text.is_ok() {
-            Some(
-                self.context
-                    .blocking
-                    .run(crate::BlockingClass::Foreground, deadline, move || {
-                        credentials.resolve(&credential).map_err(channel_error)
-                    })
-                    .await?,
-            )
+        let chunks = text.and_then(|mut text| {
+            if !descriptor.buttons {
+                for button in buttons.drain(..) {
+                    text.push_str(&format!("\n{}: /confirm {}", button.label, button.data));
+                }
+            }
+            chunks(&text, descriptor.max_text_utf16)
+        });
+        let token = if chunks.is_ok() {
+            Some(self.token(state.credential.clone(), deadline).await?)
         } else {
             None
         };
@@ -84,24 +84,20 @@ impl Channels {
             output: output.output.clone(),
             expected_attempt: output.attempt,
         };
-        let key = IdempotencyKey::new(format!(
-            "channel-output-start-{}-{}",
-            output.output, output.attempt
-        ))
-        .map_err(|_| channel_error(ChannelError::InvalidInput))?;
         self.change(
             state.target.project.clone(),
-            intent("channel.output.start", key, &change)?,
+            intent("channel.output.start", None, &change)?,
             change,
             deadline,
         )
         .await?;
         let attempt = output.attempt + 1;
-        let result = match (text, token) {
-            (Ok(text), Some(token)) => {
-                self.telegram
-                    .send(&token, phone.private_chat, &text, keyboard)
-                    .await
+        let result = match (chunks, token) {
+            (Ok(chunks), Some(token)) => {
+                self.send_parts(
+                    &state, &output, attempt, &token, &chunks, &buttons, deadline,
+                )
+                .await?
             }
             (Err(reason), _) => Err(reason),
             _ => Err(ChannelError::InvalidInput),
@@ -130,6 +126,61 @@ impl Channels {
         };
         self.finish_output(&state, &output, attempt, outcome, deadline)
             .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    async fn send_parts(
+        &self,
+        state: &Connection,
+        output: &Outbound,
+        attempt: u64,
+        token: &se_types::Secret,
+        chunks: &[String],
+        buttons: &[ActionButton],
+        deadline: &Deadline,
+    ) -> Result<ChannelResult<ExternalId>> {
+        let Pairing::Paired { phone } = &state.pairing else {
+            return Ok(Err(ChannelError::BindingRevoked));
+        };
+        if output.provider_messages.len() > chunks.len() {
+            return Ok(Err(ChannelError::InvalidInput));
+        }
+        let mut last = output.provider_messages.last().cloned();
+        for (part, text) in chunks
+            .iter()
+            .enumerate()
+            .skip(output.provider_messages.len())
+        {
+            let current = self.connection(state.id.clone(), deadline).await?;
+            if current.revision != state.revision {
+                return Ok(Err(ChannelError::BindingRevoked));
+            }
+            let buttons = if part + 1 == chunks.len() {
+                buttons
+            } else {
+                &[]
+            };
+            let id = match self
+                .transport(state.connector)?
+                .send(token, &phone.private_chat, text, buttons)
+                .await
+            {
+                Ok(id) => id,
+                Err(error) => return Ok(Err(error)),
+            };
+            self.finish_output(
+                state,
+                output,
+                attempt,
+                OutputOutcome::PartSent {
+                    part: part as u16,
+                    provider_message: id.clone(),
+                },
+                deadline,
+            )
+            .await?;
+            last = Some(id);
+        }
+        Ok(last.ok_or(ChannelError::InvalidInput))
     }
     async fn output_text(
         &self,
@@ -209,7 +260,7 @@ impl Channels {
                 .await?
             }
             "reply_failed" => format!(
-                "A linked local reply to {original} could not be sent. Its content was retained locally or explicitly erased; inspect the reply's Telegram status in StateEngine. No truncated reply was forwarded."
+                "A linked local reply to {original} could not be sent. Its content was retained locally or explicitly erased; inspect the reply's delivery status in StateEngine. No truncated reply was forwarded."
             ),
             "reply" => {
                 let reply = output
@@ -250,9 +301,7 @@ impl Channels {
             attempt,
             outcome,
         };
-        let key = IdempotencyKey::new(format!("channel-output-finish-{}-{attempt}", output.output))
-            .map_err(|_| channel_error(ChannelError::InvalidInput))?;
-        let request = intent("channel.output.finish", key, &change)?;
+        let request = intent("channel.output.finish", None, &change)?;
         // Finish an already released attempt during the normal host drain.
         // External controls remain fenced; storage closes only after workers join.
         let admission = Admission {
@@ -275,4 +324,30 @@ impl Channels {
         self.changed.notify_waiters();
         Ok(())
     }
+}
+
+fn chunks(text: &str, limit: usize) -> ChannelResult<Vec<String>> {
+    let mut parts = Vec::new();
+    let (mut start, mut units) = (0, 0);
+    for (at, ch) in text.char_indices() {
+        if ch.len_utf16() > limit {
+            return Err(ChannelError::MessageTooLarge);
+        }
+        if units + ch.len_utf16() > limit {
+            parts.push(text[start..at].to_owned());
+            start = at;
+            units = 0;
+        }
+        units += ch.len_utf16();
+        if parts.len() >= 32 {
+            return Err(ChannelError::MessageTooLarge);
+        }
+    }
+    if start < text.len() {
+        parts.push(text[start..].to_owned());
+    }
+    if parts.is_empty() {
+        return Err(ChannelError::InvalidInput);
+    }
+    Ok(parts)
 }

@@ -10,13 +10,28 @@ pub(super) fn apply(
     seq: i64,
 ) -> StoreResult<()> {
     match change {
+        Change::CursorAdvanced {
+            binding_revision,
+            update,
+            cursor,
+            ..
+        } => {
+            let handled: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM channel_updates WHERE connection_id=? AND update_id=?)", rusqlite::params![state.id.as_str(), update], |r| r.get(0)).map_err(sql)?;
+            if *binding_revision != state.revision || !handled {
+                return Err(invalid(
+                    "checkpoint requires an already committed exact input",
+                ));
+            }
+            checkpoint(c, state, cursor.as_str(), false)?;
+        }
         Change::UpdateHandled {
             binding_revision,
             update,
+            cursor,
             disposition,
             ..
         } => {
-            if *binding_revision != state.revision || *update < 0 {
+            if *binding_revision != state.revision {
                 return Err(invalid("stale channel binding or invalid provider update"));
             }
             let (receipt, message) = match disposition {
@@ -97,7 +112,16 @@ pub(super) fn apply(
             } else {
                 None
             };
-            c.execute("INSERT INTO channel_updates(bot_id,update_id,connection_id,handled_seq,disposition,receipt_id,message_id,pending,status_due_at_us) VALUES(?,?,?,?,?,?,?,?,?)", crate::sql_value::sql_params![state.bot.id,update,state.id.as_str(),seq,codec::encode(disposition)?,receipt,message,pending,due]).map_err(sql)?;
+            c.execute("INSERT INTO channel_updates(bot_id,update_id,cursor,connection_id,handled_seq,disposition,receipt_id,message_id,pending,status_due_at_us) VALUES(?,?,?,?,?,?,?,?,?,?)", crate::sql_value::sql_params![state.bot.id,update,cursor,state.id.as_str(),seq,codec::encode(disposition)?,receipt,message,pending,due]).map_err(sql)?;
+            checkpoint(
+                c,
+                state,
+                cursor
+                    .as_ref()
+                    .map(|v| v.as_str())
+                    .unwrap_or(update.as_str()),
+                cursor.is_none(),
+            )?;
             if let Some(message) = message {
                 c.execute(
                     "UPDATE channel_connections SET saved_count=saved_count+1 WHERE id=?",
@@ -106,7 +130,7 @@ pub(super) fn apply(
                 .map_err(sql)?;
                 enqueue(c, state, Some(&message), None, "saved", seq)?;
             } else if matches!(disposition, Disposition::RejectedPaired { .. }) {
-                enqueue_rejected(c, state, *update, seq)?;
+                enqueue_rejected(c, state, update, cursor.is_none(), seq)?;
             }
         }
         Change::DelayQueued {
@@ -162,14 +186,23 @@ pub(super) fn apply(
             ..
         } => {
             let output = output.as_str();
+            if let OutputOutcome::PartSent {
+                part,
+                provider_message,
+            } = outcome
+            {
+                let changed = c.execute("UPDATE channel_outbox SET provider_messages=json_insert(provider_messages,'$[#]',?),last_seq=? WHERE connection_id=? AND output_id=? AND attempt=? AND state='sending' AND json_array_length(provider_messages)=? AND ?<32", rusqlite::params![provider_message,seq,state.id.as_str(),output,i64::try_from(*attempt).map_err(invalid)?,part,part]).map_err(sql)?;
+                if changed != 1 {
+                    return Err(invalid("output part has no exact in-flight predecessor"));
+                }
+                return Ok(());
+            }
             let revoked = matches!(state.pairing, Pairing::Revoked);
             let (status, provider, retry) = match outcome {
-                OutputOutcome::Sent { provider_message } if *provider_message > 0 => {
-                    ("sent", Some(*provider_message), None)
+                OutputOutcome::Sent { provider_message } => {
+                    ("sent", Some(provider_message.clone()), None)
                 }
-                OutputOutcome::Sent { .. } => {
-                    return Err(invalid("provider message ID must be positive"));
-                }
+                OutputOutcome::PartSent { .. } => unreachable!(),
                 OutputOutcome::Unknown => ("unknown", None, None),
                 OutputOutcome::Failed { .. } => ("failed", None, None),
                 OutputOutcome::Retry { after_us } if *after_us > 0 => (
@@ -186,7 +219,7 @@ pub(super) fn apply(
                 OutputOutcome::Failed { reason } => Some(codec::encode(reason)?),
                 _ => None,
             };
-            let changed = c.execute("UPDATE channel_outbox SET state=?,provider_message=?,retry_at_us=?,last_seq=?,failure=? WHERE connection_id=? AND output_id=? AND attempt=? AND state='sending'",crate::sql_value::sql_params![status,provider,retry,seq,failure,state.id.as_str(),output,attempt]).map_err(sql)?;
+            let changed = c.execute("UPDATE channel_outbox SET provider_messages=CASE WHEN ?='sent' AND json_array_length(provider_messages)=0 THEN json_array(?) ELSE provider_messages END,state=?,provider_message=?,retry_at_us=?,last_seq=?,failure=? WHERE connection_id=? AND output_id=? AND attempt=? AND state='sending'",crate::sql_value::sql_params![status,provider,status,provider,retry,seq,failure,state.id.as_str(),output,attempt]).map_err(sql)?;
             if changed != 1 {
                 return Err(invalid("outbox completion has no owned in-flight attempt"));
             }
@@ -321,14 +354,25 @@ pub(crate) fn enqueue_mark(
 fn enqueue_rejected(
     c: &Connection,
     state: &ChannelConnection,
-    update: i64,
+    update: &crate::channel::ExternalId,
+    legacy: bool,
     seq: i64,
 ) -> StoreResult<()> {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     hash.update(state.id.as_str());
     hash.update(b"rejected");
-    hash.update(update.to_be_bytes());
+    if legacy {
+        hash.update(
+            update
+                .as_str()
+                .parse::<i64>()
+                .map_err(invalid)?
+                .to_be_bytes(),
+        );
+    } else {
+        hash.update(update.as_str().as_bytes());
+    }
     let id = format!("cho-{}", se_types::hex_lower(&hash.finalize()[..16]));
     let pending:i64=c.query_row("SELECT count(*) FROM(SELECT 1 FROM channel_outbox WHERE connection_id=? AND state IN ('queued','sending') LIMIT ?)",crate::sql_value::sql_params![state.id.as_str(),crate::channel::MAX_PENDING as i64],|r|crate::sql_value::value(r,0)).map_err(sql)?;
     let status = if pending >= crate::channel::MAX_PENDING as i64 {
@@ -342,5 +386,17 @@ fn enqueue_rejected(
         None
     };
     c.execute("INSERT INTO channel_outbox(output_id,connection_id,binding_revision,kind,provider_update,queued_seq,last_seq,state,failure) VALUES(?,?,?,'rejected',?,?,?,?,?) ON CONFLICT(output_id) DO NOTHING",crate::sql_value::sql_params![id,state.id.as_str(),state.revision,update,seq,seq,status,failure]).map_err(sql)?;
+    Ok(())
+}
+
+fn checkpoint(
+    c: &Connection,
+    state: &ChannelConnection,
+    cursor: &str,
+    legacy: bool,
+) -> StoreResult<()> {
+    // Only historical integer events lack a cursor. Preserve their old maximum
+    // during replay; modern connector cursors are opaque and never compared.
+    c.execute("INSERT INTO channel_receive(connector,bot_id,cursor) VALUES(?,?,?) ON CONFLICT(connector,bot_id) DO UPDATE SET cursor=CASE WHEN ? AND CAST(excluded.cursor AS INTEGER)<CAST(channel_receive.cursor AS INTEGER) THEN channel_receive.cursor ELSE excluded.cursor END", rusqlite::params![state.connector.as_str(),state.bot.id,cursor,legacy]).map_err(sql)?;
     Ok(())
 }

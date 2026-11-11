@@ -133,7 +133,7 @@ pub(super) fn receipt(
             "reply commit",
             "Inspect the committed reply.",
         )?;
-        let telegram = output_fact(
+        let delivery = output_fact(
             &output.state,
             output.provider_message,
             output.at_us,
@@ -145,7 +145,8 @@ pub(super) fn receipt(
                 event: event.header.event,
                 at_us: event.recorded_at_us,
             },
-            telegram,
+            delivery,
+            provider_messages: output.provider_messages,
         });
     }
     let elapsed = at.saturating_sub(saved.at_us).max(0) as u64 / 1_000_000;
@@ -212,29 +213,29 @@ pub(super) fn receipt(
 
 pub(super) fn output_fact(
     state: &str,
-    provider: Option<i64>,
+    provider: Option<ExternalId>,
     at_us: i64,
     failure: Option<se_types::MessagingChannelError>,
-) -> Result<TelegramOutput> {
+) -> Result<ProviderOutput> {
     Ok(match state {
-        "queued" => TelegramOutput::Queued,
-        "sending" => TelegramOutput::Unknown {
+        "queued" => ProviderOutput::Queued,
+        "sending" => ProviderOutput::Unknown {
             code: "attempt_awaiting_reconciliation".into(),
         },
-        "sent" => TelegramOutput::Sent {
+        "sent" => ProviderOutput::Sent {
             provider_message: provider.ok_or_else(|| channel_error(ChannelError::InvalidInput))?,
             at_us,
         },
-        "unknown" => TelegramOutput::Unknown {
+        "unknown" => ProviderOutput::Unknown {
             code: "send_outcome_unknown".into(),
         },
-        "failed" => TelegramOutput::Failed {
+        "failed" => ProviderOutput::Failed {
             code: failure
                 .map(|reason| reason.code())
                 .unwrap_or("send_failed")
                 .into(),
         },
-        "revoked" => TelegramOutput::Revoked,
+        "revoked" => ProviderOutput::Revoked,
         _ => return Err(channel_error(ChannelError::InvalidInput)),
     })
 }

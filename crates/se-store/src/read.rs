@@ -173,7 +173,7 @@ impl Snapshot for SqliteSnapshot {
     fn channel_update_handled(
         &mut self,
         id: &crate::channel::ChannelId,
-        update: i64,
+        update: &crate::channel::ExternalId,
     ) -> StoreResult<bool> {
         self.read_update_handled(id, update)
     }
@@ -263,8 +263,11 @@ impl Snapshot for SqliteSnapshot {
     ) -> StoreResult<crate::channel::ChannelRows<crate::channel::Outbound>> {
         self.read_outbox(id, after)
     }
-    fn channel_offset(&mut self, id: &crate::channel::ChannelId) -> StoreResult<Option<i64>> {
-        self.read_channel_offset(id)
+    fn channel_cursor(
+        &mut self,
+        id: &crate::channel::ChannelId,
+    ) -> StoreResult<Option<crate::channel::ReceiveCursor>> {
+        self.read_channel_cursor(id)
     }
     fn info(&self) -> StoreInfo {
         self.info.clone()

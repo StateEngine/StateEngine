@@ -36,11 +36,13 @@ impl Provider {
             .lock()
             .map_err(|_| "provider rows poisoned")?
             .push(Incoming {
-                update,
+                update: update.into(),
+                cursor: ReceiveCursor::new(update.to_string())
+                    .map_err(|_| ChannelError::InvalidInput)?,
                 content: IncomingContent::Text {
                     phone: PhoneIdentity {
-                        subject,
-                        private_chat: chat,
+                        subject: subject.into(),
+                        private_chat: chat.into(),
                         display_name: "Owner".into(),
                         username: None,
                     },
@@ -60,39 +62,23 @@ impl Provider {
     }
 }
 impl ChannelTransport for Provider {
+    fn descriptor(&self) -> ConnectorDescriptor {
+        self.output.descriptor()
+    }
+    fn receiver(
+        self: std::sync::Arc<Self>,
+        cursor: Option<ReceiveCursor>,
+    ) -> ChannelResult<Box<dyn ChannelReceiver>> {
+        transport::receiver(self, cursor)
+    }
+    fn pairing_link(&self, bot: &BotIdentity, challenge: &str) -> ChannelResult<se_types::Secret> {
+        self.output.pairing_link(bot, challenge)
+    }
+
     fn identity<'a>(&'a self, token: &'a Secret) -> TransportFuture<'a, BotIdentity> {
         self.output.identity(token)
     }
-    fn poll<'a>(
-        &'a self,
-        _: &'a Secret,
-        offset: Option<i64>,
-    ) -> TransportFuture<'a, Vec<Incoming>> {
-        Box::pin(async move {
-            loop {
-                let changed = self.changed.notified();
-                tokio::pin!(changed);
-                changed.as_mut().enable();
-                {
-                    let mut rows = self
-                        .rows
-                        .lock()
-                        .map_err(|_| ChannelError::ProviderUnreachable)?;
-                    if let Some(offset) = offset {
-                        self.acknowledged.store(offset, Ordering::Release);
-                        rows.retain(|row| row.update >= offset);
-                    }
-                    if !rows.is_empty() {
-                        return Ok(rows.iter().take(10).cloned().collect());
-                    }
-                }
-                tokio::select! {
-                    _=&mut changed=>{},
-                    _=tokio::time::sleep(Duration::from_secs(1))=>return Ok(vec![]),
-                }
-            }
-        })
-    }
+
     fn answer_callback<'a>(
         &'a self,
         token: &'a Secret,
@@ -104,10 +90,10 @@ impl ChannelTransport for Provider {
     fn send<'a>(
         &'a self,
         token: &'a Secret,
-        chat: i64,
+        chat: &'a ExternalId,
         text: &'a str,
-        keyboard: Option<serde_json::Value>,
-    ) -> TransportFuture<'a, i64> {
+        buttons: &'a [ActionButton],
+    ) -> TransportFuture<'a, ExternalId> {
         if self.blocked.load(Ordering::Acquire) {
             return Box::pin(async {
                 Err(ChannelError::RateLimited {
@@ -115,7 +101,7 @@ impl ChannelTransport for Provider {
                 })
             });
         }
-        self.output.send(token, chat, text, keyboard)
+        self.output.send(token, chat, text, buttons)
     }
 }
 fn key(text: &str) -> Result<IdempotencyKey, Box<dyn std::error::Error>> {
@@ -243,7 +229,7 @@ fn run_case(reply_case: bool, delayed_read: Option<bool>) -> Check {
         let channels = host.channels()?;
         let vault = NativeChannelCredentials::open(&f.options.state_directory, f.store.clone(), f.owner.clone())?;
         let credential = vault.provision(&mut &b"123456:dummy_invalid_provider_token_123456"[..])?;
-        let connected = channels.connect_telegram(ConnectTelegram { credential,
+        let connected = channels.connect_channel(ConnectChannel { connector: Connector::Telegram, credential,
             target: ChannelTarget { project: f.project.clone(), agent: f.a.clone(), selection_revision: 1 },
             policy: ChannelPolicy::SaveOnly, key: key("independent-connect")? }, &bound()?).await?;
         let id = connected.connection.id;
@@ -398,4 +384,42 @@ fn unread_delayed_phone_status_shows_elapsed_time() -> Check {
 #[test]
 fn read_without_reply_delayed_phone_status_names_that_state() -> Check {
     run_case(false, Some(true))
+}
+
+impl transport::FixturePoll for Provider {
+    fn poll<'a>(
+        &'a self,
+        _: &'a Secret,
+        offset: Option<i64>,
+    ) -> TransportFuture<'a, Vec<Incoming>> {
+        Box::pin(async move {
+            loop {
+                let changed = self.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                {
+                    let mut rows = self
+                        .rows
+                        .lock()
+                        .map_err(|_| ChannelError::ProviderUnreachable)?;
+                    if let Some(offset) = offset {
+                        self.acknowledged.store(offset, Ordering::Release);
+                        rows.retain(|row| {
+                            row.update
+                                .as_str()
+                                .parse::<i64>()
+                                .is_ok_and(|update| update >= offset)
+                        });
+                    }
+                    if !rows.is_empty() {
+                        return Ok(rows.iter().take(10).cloned().collect());
+                    }
+                }
+                tokio::select! {
+                    _=&mut changed=>{},
+                    _=tokio::time::sleep(Duration::from_secs(1))=>return Ok(vec![]),
+                }
+            }
+        })
+    }
 }

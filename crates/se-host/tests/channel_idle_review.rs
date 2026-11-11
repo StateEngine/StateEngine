@@ -24,22 +24,23 @@ struct Provider {
     polled: Mutex<HashSet<Vec<u8>>>,
 }
 impl ChannelTransport for Provider {
+    fn descriptor(&self) -> ConnectorDescriptor {
+        self.wire.descriptor()
+    }
+    fn receiver(
+        self: std::sync::Arc<Self>,
+        cursor: Option<ReceiveCursor>,
+    ) -> ChannelResult<Box<dyn ChannelReceiver>> {
+        transport::receiver(self, cursor)
+    }
+    fn pairing_link(&self, bot: &BotIdentity, challenge: &str) -> ChannelResult<se_types::Secret> {
+        self.wire.pairing_link(bot, challenge)
+    }
+
     fn identity<'a>(&'a self, token: &'a Secret) -> TransportFuture<'a, BotIdentity> {
         self.wire.identity(token)
     }
-    fn poll<'a>(
-        &'a self,
-        token: &'a Secret,
-        offset: Option<i64>,
-    ) -> TransportFuture<'a, Vec<Incoming>> {
-        Box::pin(async move {
-            self.polled
-                .lock()
-                .map_err(|_| ChannelError::ReceiverNotRunning)?
-                .insert(token.expose().to_vec());
-            self.wire.poll(token, offset).await
-        })
-    }
+
     fn answer_callback<'a>(
         &'a self,
         token: &'a Secret,
@@ -51,11 +52,11 @@ impl ChannelTransport for Provider {
     fn send<'a>(
         &'a self,
         token: &'a Secret,
-        chat: i64,
+        chat: &'a ExternalId,
         text: &'a str,
-        keyboard: Option<serde_json::Value>,
-    ) -> TransportFuture<'a, i64> {
-        self.wire.send(token, chat, text, keyboard)
+        buttons: &'a [ActionButton],
+    ) -> TransportFuture<'a, ExternalId> {
+        self.wire.send(token, chat, text, buttons)
     }
 }
 fn key(value: &str) -> Result<IdempotencyKey, Box<dyn std::error::Error>> {
@@ -157,8 +158,8 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
                     tokio::time::sleep(Duration::from_micros((round % 8) * 175)).await;
                     let token = format!("123456:obviously_fake_receiver_control_{round:032}");
                     let credential = vault.provision(&mut token.as_bytes())?;
-                    let connected = channels.connect_telegram(
-                        ConnectTelegram {
+                    let connected = channels.connect_channel(
+                        ConnectChannel { connector: Connector::Telegram,
                             credential,
                             target: ChannelTarget {
                                 project: f.project.clone(), agent: f.a.clone(), selection_revision: 1,
@@ -227,4 +228,20 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
         assert!(report.transport_closed && report.endpoint_retired);
         result
     })
+}
+
+impl transport::FixturePoll for Provider {
+    fn poll<'a>(
+        &'a self,
+        token: &'a Secret,
+        offset: Option<i64>,
+    ) -> TransportFuture<'a, Vec<Incoming>> {
+        Box::pin(async move {
+            self.polled
+                .lock()
+                .map_err(|_| ChannelError::ReceiverNotRunning)?
+                .insert(token.expose().to_vec());
+            transport::FixturePoll::poll(&self.wire, token, offset).await
+        })
+    }
 }

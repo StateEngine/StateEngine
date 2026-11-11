@@ -25,11 +25,13 @@ impl Transport {
             .lock()
             .map_err(|_| ChannelError::ReceiverNotRunning)?
             .push(Incoming {
-                update,
+                update: update.into(),
+                cursor: ReceiveCursor::new(update.to_string())
+                    .map_err(|_| ChannelError::InvalidInput)?,
                 content: IncomingContent::Text {
                     phone: PhoneIdentity {
-                        subject: 42,
-                        private_chat: 42,
+                        subject: 42.into(),
+                        private_chat: 42.into(),
                         display_name: "Fixture phone".into(),
                         username: None,
                     },
@@ -48,7 +50,9 @@ impl Transport {
             .lock()
             .map_err(|_| ChannelError::ReceiverNotRunning)?
             .push(Incoming {
-                update,
+                update: update.into(),
+                cursor: ReceiveCursor::new(update.to_string())
+                    .map_err(|_| ChannelError::InvalidInput)?,
                 content: IncomingContent::Unsupported,
             });
         self.changed.notify_waiters();
@@ -66,15 +70,79 @@ impl Transport {
     }
 }
 impl ChannelTransport for Transport {
+    fn descriptor(&self) -> ConnectorDescriptor {
+        ConnectorDescriptor {
+            connector: Connector::Telegram,
+            name: "Fixture",
+            max_text_utf16: 4096,
+            edits: false,
+            buttons: true,
+            threads: false,
+            media: false,
+            identity_proof: "fixture_private_sender",
+            acknowledgement: "cursor_after_durable_save",
+            reconnect: "provider_replay",
+            retention_seconds: None,
+            setup: &[],
+            instructions: "Synthetic transport; no provider account.",
+        }
+    }
+    fn receiver(
+        self: std::sync::Arc<Self>,
+        cursor: Option<ReceiveCursor>,
+    ) -> ChannelResult<Box<dyn ChannelReceiver>> {
+        receiver(self, cursor)
+    }
+    fn pairing_link(&self, bot: &BotIdentity, challenge: &str) -> ChannelResult<se_types::Secret> {
+        se_types::Secret::new(
+            format!("https://t.me/{}?start={challenge}", bot.username).into_bytes(),
+        )
+        .map_err(|_| ChannelError::InvalidInput)
+    }
+
     fn identity<'a>(&'a self, _: &'a se_types::Secret) -> TransportFuture<'a, BotIdentity> {
         Box::pin(async {
             Ok(BotIdentity {
-                id: 23,
+                id: 23.into(),
                 username: "fixture_bot".into(),
                 display_name: "Fixture bot".into(),
             })
         })
     }
+
+    fn answer_callback<'a>(
+        &'a self,
+        _: &'a se_types::Secret,
+        _: &'a str,
+        _: bool,
+    ) -> TransportFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+    fn send<'a>(
+        &'a self,
+        _: &'a se_types::Secret,
+        chat: &'a ExternalId,
+        text: &'a str,
+        buttons: &'a [ActionButton],
+    ) -> TransportFuture<'a, ExternalId> {
+        Box::pin(async move {
+            self.sent
+                .lock()
+                .map_err(|_| ChannelError::ReceiverNotRunning)?
+                .push(Sent {
+                    chat: chat.as_str().parse().map_err(|_| ChannelError::InvalidInput)?,
+                    text: text.into(),
+                    keyboard: (!buttons.is_empty()).then(|| serde_json::json!({"inline_keyboard": buttons.iter().map(|b| vec![serde_json::json!({"text":b.label,"callback_data":b.data})]).collect::<Vec<_>>()})),
+                });
+            if text.starts_with("Reply to ") && self.lose_reply.swap(false, Ordering::AcqRel) {
+                return Err(ChannelError::SendOutcomeUnknown);
+            }
+            Ok((self.next.fetch_add(1, Ordering::Relaxed) + 1).into())
+        })
+    }
+}
+
+impl FixturePoll for Transport {
     fn poll<'a>(
         &'a self,
         _: &'a se_types::Secret,
@@ -96,7 +164,12 @@ impl ChannelTransport for Transport {
                         .lock()
                         .map_err(|_| ChannelError::ReceiverNotRunning)?;
                     if let Some(offset) = offset {
-                        rows.retain(|row| row.update >= offset);
+                        rows.retain(|row| {
+                            row.update
+                                .as_str()
+                                .parse::<i64>()
+                                .is_ok_and(|update| update >= offset)
+                        });
                     }
                     if !rows.is_empty() {
                         return Ok(rows.iter().take(10).cloned().collect());
@@ -106,34 +179,72 @@ impl ChannelTransport for Transport {
             }
         })
     }
-    fn answer_callback<'a>(
+}
+
+/// The fixture keeps its old provider poll protocol behind the new durable ACK seam.
+pub trait FixturePoll: Send + Sync {
+    fn poll<'a>(
         &'a self,
-        _: &'a se_types::Secret,
-        _: &'a str,
-        _: bool,
-    ) -> TransportFuture<'a, ()> {
-        Box::pin(async { Ok(()) })
-    }
-    fn send<'a>(
-        &'a self,
-        _: &'a se_types::Secret,
-        chat: i64,
-        text: &'a str,
-        keyboard: Option<serde_json::Value>,
-    ) -> TransportFuture<'a, i64> {
-        Box::pin(async move {
-            self.sent
-                .lock()
-                .map_err(|_| ChannelError::ReceiverNotRunning)?
-                .push(Sent {
-                    chat,
-                    text: text.into(),
-                    keyboard,
-                });
-            if text.starts_with("Reply to ") && self.lose_reply.swap(false, Ordering::AcqRel) {
-                return Err(ChannelError::SendOutcomeUnknown);
-            }
-            Ok(self.next.fetch_add(1, Ordering::Relaxed) + 1)
+        token: &'a se_types::Secret,
+        offset: Option<i64>,
+    ) -> TransportFuture<'a, Vec<Incoming>>;
+}
+pub fn receiver<T: FixturePoll + 'static>(
+    provider: std::sync::Arc<T>,
+    cursor: Option<ReceiveCursor>,
+) -> ChannelResult<Box<dyn ChannelReceiver>> {
+    let offset = cursor
+        .map(|c| {
+            c.as_str()
+                .parse::<i64>()
+                .ok()
+                .and_then(|n| n.checked_add(1))
+                .ok_or(ChannelError::InvalidInput)
         })
+        .transpose()?;
+    Ok(Box::new(Receiver {
+        provider,
+        offset,
+        ready: Default::default(),
+        pending: None,
+    }))
+}
+struct Receiver<T> {
+    provider: std::sync::Arc<T>,
+    offset: Option<i64>,
+    ready: std::collections::VecDeque<Incoming>,
+    pending: Option<ReceiveCursor>,
+}
+impl<T: FixturePoll> ChannelReceiver for Receiver<T> {
+    fn next<'a>(
+        &'a mut self,
+        token: &'a se_types::Secret,
+    ) -> TransportFuture<'a, Option<Incoming>> {
+        Box::pin(async move {
+            if self.pending.is_some() {
+                return Err(ChannelError::InvalidInput);
+            }
+            if self.ready.is_empty() {
+                self.ready = self.provider.poll(token, self.offset).await?.into();
+            }
+            let value = self.ready.pop_front();
+            self.pending = value.as_ref().map(|v| v.cursor.clone());
+            Ok(value)
+        })
+    }
+    fn ack(&mut self, cursor: &ReceiveCursor) -> ChannelResult<()> {
+        if self.pending.as_ref() != Some(cursor) {
+            return Err(ChannelError::InvalidInput);
+        }
+        self.offset = Some(
+            cursor
+                .as_str()
+                .parse::<i64>()
+                .ok()
+                .and_then(|n| n.checked_add(1))
+                .ok_or(ChannelError::InvalidInput)?,
+        );
+        self.pending = None;
+        Ok(())
     }
 }

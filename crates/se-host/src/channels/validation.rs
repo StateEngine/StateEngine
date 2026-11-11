@@ -6,7 +6,7 @@ impl ChannelRequest {
         let valid = match self {
             Self::CredentialCatalog | Self::Capabilities => true,
             Self::Targets(input) => input.after.as_ref().is_none_or(|c| c.as_str().len() <= 512),
-            Self::ConnectTelegram(input) => {
+            Self::Connect(input) => {
                 revision(input.credential.revision)
                     && revision(input.target.selection_revision)
                     && match &input.policy {
@@ -65,4 +65,4 @@ where
     Ok(value)
 }
 /// Shared consent text for the guided native TUI and desktop flows.
-pub const CHANNEL_CONSENT: &str = "Telegram can see this channel's contents. A paired account may send Owner instructions to the selected agent and read its linked replies. Receiving runs only while this StateEngine host is running; reopen StateEngine after logout or reboot. This setup does not install login startup. Messages not yet saved locally can expire from Telegram after its retention window (currently up to 24 hours). Disconnect revokes the binding, cancels queued output and forgets this channel's local token; rotate the bot credential separately if compromised. Saved, notice received, Read, Replied and Telegram send results are separate facts.";
+pub const CHANNEL_CONSENT: &str = "The messaging provider can see this channel's contents. A paired account may send Owner instructions to the selected agent and read its linked replies. Receiving runs only while this StateEngine host is running; reopen StateEngine after logout or reboot. This setup does not install login startup. Unsaved messages can expire under the connector's advertised retention policy. Disconnect revokes the binding, cancels queued output and forgets this channel's local token; rotate the provider credential separately if compromised. Saved, notice received, Read, Replied and provider send results are separate facts.";

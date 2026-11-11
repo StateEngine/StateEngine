@@ -69,14 +69,15 @@ impl SqliteSnapshot {
             Option<Vec<u8>>,
             Option<Vec<u8>>,
             String,
-            Option<i64>,
+            Option<crate::channel::ExternalId>,
             Option<i64>,
             i64,
-            Option<i64>,
+            Option<crate::channel::ExternalId>,
             Option<String>,
+            String,
         );
         let limit = if pending_at.is_some() { 10 } else { 100 };
-        let rows:Vec<Row>=self.db.prepare_cached(&format!("SELECT queued_seq,binding_revision,attempt,output_id,kind,original_id,reply_id,state,provider_message,retry_at_us,(SELECT recorded_at_us FROM events WHERE seq=channel_outbox.last_seq),provider_update,failure FROM channel_outbox WHERE {predicate} ORDER BY queued_seq LIMIT {limit}")).map_err(|e|self.read_sql(e))?.query_map(rusqlite::params_from_iter(parameters.iter()),|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?))).map_err(|e|self.read_sql(e))?.collect::<Result<_,_>>().map_err(|e|self.read_sql(e))?;
+        let rows:Vec<Row>=self.db.prepare_cached(&format!("SELECT queued_seq,binding_revision,attempt,output_id,kind,original_id,reply_id,state,provider_message,retry_at_us,(SELECT recorded_at_us FROM events WHERE seq=channel_outbox.last_seq),provider_update,failure,provider_messages FROM channel_outbox WHERE {predicate} ORDER BY queued_seq LIMIT {limit}")).map_err(|e|self.read_sql(e))?.query_map(rusqlite::params_from_iter(parameters.iter()),|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?))).map_err(|e|self.read_sql(e))?.collect::<Result<_,_>>().map_err(|e|self.read_sql(e))?;
         let end = rows.last().map(|r| r.0).unwrap_or(after);
         let mut items = Vec::new();
         for (
@@ -93,6 +94,7 @@ impl SqliteSnapshot {
             at_us,
             provider_update,
             failure,
+            provider_messages,
         ) in rows
         {
             let decode = |bytes: Vec<u8>| {
@@ -100,7 +102,7 @@ impl SqliteSnapshot {
                     .try_into()
                     .map_err(invalid)
             };
-            let rejection = if let Some(update) = provider_update {
+            let rejection = if let Some(update) = &provider_update {
                 let json:String=self.db.query_row("SELECT disposition FROM channel_updates WHERE connection_id=? AND update_id=?",crate::sql_value::sql_params![id.as_str(),update],|r|r.get(0)).map_err(|e|self.read_sql(e))?;
                 let Disposition::RejectedPaired { reason, .. } =
                     serde_json::from_str(&json).map_err(invalid)?
@@ -122,6 +124,7 @@ impl SqliteSnapshot {
                 reply: reply.map(decode).transpose()?,
                 state,
                 provider_message,
+                provider_messages: serde_json::from_str(&provider_messages).map_err(invalid)?,
                 retry_at_us,
                 rejection,
                 provider_update,

@@ -1,34 +1,18 @@
 //! Private-text Telegram transport. Error bodies and token-bearing URLs never
 //! escape this module. Redirects, proxies and automatic retries are disabled.
-use super::{BotIdentity, ChannelError as Error, ChannelResult, PhoneIdentity};
+use super::{
+    BotIdentity, ChannelError as Error, ChannelResult, Incoming, IncomingContent, PhoneIdentity,
+    ReceiveCursor,
+};
+mod transport;
 use se_types::Secret;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
 
+#[derive(Clone)]
 pub struct Telegram {
     client: reqwest::Client,
-}
-#[derive(Clone)]
-pub struct Incoming {
-    pub update: i64,
-    pub content: IncomingContent,
-}
-#[derive(Clone)]
-pub enum IncomingContent {
-    Text {
-        phone: PhoneIdentity,
-        text: String,
-    },
-    Callback {
-        phone: PhoneIdentity,
-        data: String,
-        callback_id: String,
-    },
-    UnsupportedPrivate {
-        phone: PhoneIdentity,
-    },
-    Unsupported,
 }
 impl Telegram {
     pub fn new() -> ChannelResult<Self> {
@@ -67,7 +51,7 @@ impl Telegram {
             .to_owned();
         let display_name = name(&result)?;
         Ok(BotIdentity {
-            id,
+            id: id.into(),
             username,
             display_name,
         })
@@ -87,6 +71,7 @@ impl Telegram {
             .filter(|v| v.len() <= 10)
             .ok_or(Error::ProviderProtocol)?;
         let mut updates = Vec::new();
+        let mut prior = None;
         for row in rows {
             let update = row
                 .get("update_id")
@@ -94,14 +79,14 @@ impl Telegram {
                 .filter(|n| *n >= 0 && *n < i64::MAX)
                 .ok_or(Error::ProviderProtocol)?;
             // Offset advancement relies on ordered handling of this exact batch.
-            if updates
-                .last()
-                .is_some_and(|prior: &Incoming| prior.update >= update)
-            {
+            if prior.is_some_and(|prior| prior >= update) {
                 return Err(Error::ProviderProtocol);
             }
+            prior = Some(update);
             updates.push(Incoming {
-                update,
+                update: update.into(),
+                cursor: ReceiveCursor::new(update.to_string())
+                    .map_err(|_| Error::ProviderProtocol)?,
                 content: normalize(row)?,
             });
         }
@@ -161,7 +146,7 @@ impl Telegram {
         method: &'static str,
         args: Value,
     ) -> ChannelResult<Value> {
-        super::credentials::validate_token(token.expose())?;
+        validate_token(token.expose())?;
         let token = std::str::from_utf8(token.expose()).map_err(|_| Error::InvalidToken)?;
         let url = zeroize::Zeroizing::new(format!("https://api.telegram.org/bot{token}/{method}"));
         let sending = method == "sendMessage";
@@ -239,6 +224,21 @@ impl Telegram {
         })
     }
 }
+fn validate_token(bytes: &[u8]) -> ChannelResult<()> {
+    let Some(colon) = bytes.iter().position(|b| *b == b':') else {
+        return Err(Error::InvalidToken);
+    };
+    if !(1..=20).contains(&colon)
+        || !bytes[..colon].iter().all(u8::is_ascii_digit)
+        || !(20..=128).contains(&(bytes.len() - colon - 1))
+        || !bytes[colon + 1..]
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(b))
+    {
+        return Err(Error::InvalidToken);
+    }
+    Ok(())
+}
 fn name(value: &Value) -> ChannelResult<String> {
     let first = value
         .get("first_name")
@@ -276,8 +276,8 @@ fn phone(user: &Value, chat: &Value) -> ChannelResult<Option<PhoneIdentity>> {
         return Err(Error::ProviderProtocol);
     }
     Ok(Some(PhoneIdentity {
-        subject,
-        private_chat: subject,
+        subject: subject.into(),
+        private_chat: subject.into(),
         display_name: name(user)?,
         username,
     }))
@@ -293,7 +293,7 @@ fn normalize(value: &Value) -> ChannelResult<IncomingContent> {
             return Ok(IncomingContent::Callback {
                 phone,
                 data: data.to_owned(),
-                callback_id: id.to_owned(),
+                callback_id: Some(id.to_owned()),
             });
         }
         return Ok(IncomingContent::Unsupported);

@@ -2,7 +2,7 @@ use crate::{error::*, identity, *};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, functions::FunctionFlags};
 use std::{path::Path, time::Duration};
 pub(crate) const APP: u32 = 0x53454e47;
-pub(crate) const SCHEMA: u32 = 8;
+pub(crate) const SCHEMA: u32 = 9;
 /// Oldest schema still served: 002 only adds indexes, so the same SQL reads
 /// schema 1 correctly while its host migrates it.
 pub(crate) const MIN_SCHEMA: u32 = 1;
