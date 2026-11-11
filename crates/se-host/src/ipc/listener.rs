@@ -13,6 +13,9 @@ use channel::{bounded, receive, send};
 mod connection;
 #[path = "listener/retirement.rs"]
 mod retirement;
+#[cfg(windows)]
+#[path = "listener/startup.rs"]
+mod startup;
 pub use connection::IpcConnection;
 pub use retirement::IpcClose;
 use se_types::{Result, SeError};
@@ -40,6 +43,8 @@ pub struct IpcListener {
     connections: Arc<Semaphore>,
     preauth: Arc<Semaphore>,
     incoming: Arc<Semaphore>,
+    #[cfg(windows)]
+    startup_clients: std::collections::VecDeque<NativeStream>,
 }
 #[cfg(windows)]
 fn evented_pipe(native: &NativeEndpoint) -> Result<NativeListener> {
@@ -136,6 +141,8 @@ impl IpcListener {
             // One additional incoming channel can deliver a typed capacity
             // refusal while every pre-authentication slot is occupied.
             incoming: Arc::new(Semaphore::new(preauth + 1)),
+            #[cfg(windows)]
+            startup_clients: std::collections::VecDeque::new(),
         })
     }
     /// The caller can cancel idle accept by dropping its future. No peer JSON
@@ -156,28 +163,9 @@ impl IpcListener {
             .map_err(|e| wire::io_failure("accept IPC", e))?
             .0;
         #[cfg(windows)]
-        let stream = {
-            self.listener
-                .connect()
-                .await
-                .map_err(|e| wire::io_failure("accept IPC", e))?;
-            let entered = self.runtime.enter();
-            let next = match evented_pipe(&self.native) {
-                Ok(next) => next,
-                Err(error) => {
-                    // A transient allocation failure must leave the retained
-                    // server ready for another accept rather than connected.
-                    if let Err(disconnect) = self.listener.disconnect() {
-                        return Err(se_core::scope::unreadable(
-                            "IPC accept recovery",
-                            &format!("{error}; could not reset accepted pipe: {disconnect}"),
-                        ));
-                    }
-                    return Err(error);
-                }
-            };
-            drop(entered);
-            std::mem::replace(&mut self.listener, next)
+        let stream = match self.startup_clients.pop_front() {
+            Some(stream) => stream,
+            None => self.accept_pipe().await?,
         };
         let deadline = Deadline::from_options(&crate::client::ClientOptions {
             expected_generation: None,

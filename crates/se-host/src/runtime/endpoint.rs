@@ -149,24 +149,43 @@ impl HostedRuntime {
                 return Err(error);
             }
         };
+        #[cfg(windows)]
+        let mut listener = listener;
         // Keep the uncommitted guard outside a closure until admission succeeds;
         // dropping a rejected closure would exit before publication cleanup.
         let admission = self.execution.blocking.admit_owned(deadline).await;
         let (mut bootstrap, committed) = match admission {
             Ok(permit) => {
-                self.execution
-                    .blocking
-                    .run_admitted_owned(permit, move || {
-                        let committed =
-                            bootstrap.await_commit_retained(instance).map_err(|error| {
-                                se_core::scope::unreadable(
-                                    "native runtime commit",
-                                    &format!("{error:?}"),
-                                )
-                            });
-                        Ok((bootstrap, committed))
-                    })
-                    .await?
+                let commit = self.execution.blocking.run_admitted_owned(permit, move || {
+                    let committed = bootstrap.await_commit_retained(instance).map_err(|error| {
+                        se_core::scope::unreadable("native runtime commit", &format!("{error:?}"))
+                    });
+                    Ok((bootstrap, committed))
+                });
+                #[cfg(not(windows))]
+                let outcome = commit.await?;
+                #[cfg(windows)]
+                let outcome = {
+                    tokio::pin!(commit);
+                    tokio::select! {
+                        biased;
+                        result = &mut commit => result?,
+                        spare = listener.listener.retain_startup_clients(deadline) => {
+                            // Join the original native wait before touching its
+                            // retained guard or closing any published listener.
+                            let (bootstrap, committed) = commit.await?;
+                            let committed = match spare {
+                                Ok(()) => committed,
+                                Err(error) => Err(match committed {
+                                    Ok(_) => error,
+                                    Err(commit_error) => error.with_cause(commit_error),
+                                }),
+                            };
+                            (bootstrap, committed)
+                        }
+                    }
+                };
+                outcome
             }
             Err(error) => (bootstrap, Err(error)),
         };

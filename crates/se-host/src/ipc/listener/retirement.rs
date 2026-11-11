@@ -18,9 +18,15 @@ impl IpcListener {
     /// hosted shutdown instead joins closure on the supplied executor.
     pub fn close(self) -> Result<IpcClose> {
         let Self {
-            native, listener, ..
+            native,
+            listener,
+            #[cfg(windows)]
+            startup_clients,
+            ..
         } = self;
         drop(listener);
+        #[cfg(windows)]
+        drop(startup_clients);
         #[cfg(unix)]
         {
             native.close().map_err(native_error)?;
@@ -66,9 +72,13 @@ impl IpcListener {
         #[cfg(windows)]
         {
             let Self {
-                native, listener, ..
+                native,
+                listener,
+                startup_clients,
+                ..
             } = self;
             drop(listener);
+            drop(startup_clients);
             let permit = match blocking.admit_owned(deadline).await {
                 Ok(permit) => permit,
                 Err(error) => return Err(pending(native, error)),
