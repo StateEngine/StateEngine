@@ -7,6 +7,8 @@ use se_types::{Result, SeError};
 use serde::Serialize;
 use std::io::{self, Write};
 mod measure;
+#[cfg(test)]
+mod send_review;
 type Dispatch<'a> =
     dyn FnMut(&Bootstrap, AnyOp, &mut dyn FnMut(&str) -> io::Result<()>) -> Result<AnyOutput> + 'a;
 #[derive(Serialize)]
