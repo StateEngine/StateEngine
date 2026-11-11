@@ -238,7 +238,7 @@ ops! {
     HookClaude => HookClaude, HookResult, ("hook.claude",CliExposure::Leaf {path:&["hook","claude"],hidden:true,select:Selector::Always},no_mcp("Provider hooks use authenticated native stdin and pinned-source capture."),Session,false,Never,Custody,Session,HostAutoStart,"se.hook-result",Hook,&["E3","J3"]);
     RuntimeUp => RuntimeUp, RuntimeStart, ("runtime.up",leaf(&["up"]),no_mcp("Runtime custody is an owner operation."),Owner,false,Never,Custody,Home,HostAutoStart,"se.runtime-start",RuntimeStart,&["J3"]);
     RuntimeDown => RuntimeDown, RuntimeStop, ("runtime.down",leaf(&["down"]),no_mcp("Runtime custody is an owner operation."),Owner,false,Never,Custody,Home,None,"se.runtime-stop",RuntimeStop,&["J3"]);
-    Uninstall => Uninstall, UninstallOutput, ("installation.uninstall",leaf(&["uninstall"]),no_mcp("Installation removal requires the owner at a human terminal."),Owner,false,Always,Custody,Home,None,"se.uninstall",Uninstall,&["J5"]);
+    Uninstall => Uninstall, UninstallOutput, ("installation.uninstall",leaf(&["uninstall"]),no_mcp("Installation removal uses the local owner CLI."),Owner,false,Always,Custody,Home,None,"se.uninstall",Uninstall,&["J5"]);
     AgentCreate => AgentCreate, AgentReceipt, ("agent.create",leaf(&["agent","add"]),tool("stateengine_agent_create","Create an agent","Save an agent/profile without launching. Requires your current create grant."),Either,false,Never,Write,Project,HostForWrites,"se.agent-receipt",AgentReceipt,&["E3","J2","J4"]);
     AgentRename => AgentRename, AgentReceipt, ("agent.rename",leaf(&["agent","rename"]),no_mcp("owner controls identity labels"),Owner,false,Never,Write,Project,HostForWrites,"se.agent-receipt",AgentReceipt,&["J2","J3","J4"]);
     Resume => Resume, ResumeOutput, ("continuity.resume",leaf(&["resume"]),tool("stateengine_resume","Restore your context","Restore your context; omitted detail names full reads. Does not acknowledge mail."),Either,false,Never,Read,Project,None,"se.resume",Resume,&["J3","J4"]);
@@ -268,6 +268,9 @@ impl AnyOp {
     }
     /// Shared per-operation/per-key classification for CLI and host admission.
     pub fn requires_human_terminal(&self) -> Result<bool> {
+        if let Self::Uninstall(input) = self {
+            return Ok(!input.yes);
+        }
         if matches!(self, Self::AgentStop(input) if input.release) {
             return Ok(true);
         }

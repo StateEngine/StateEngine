@@ -27,9 +27,10 @@ use recovery::recover;
 pub(super) fn execute(
     cx: &Bootstrap,
     key: &se_types::IdempotencyKey,
+    confirmed: bool,
     diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
 ) -> Result<(ValidatedUninstallPlan, UninstallEffects)> {
-    let (plan, effects, _lease) = execute_inner(cx, key, diagnostic, None)?;
+    let (plan, effects, _lease) = execute_inner(cx, key, diagnostic, None, confirmed)?;
     Ok((plan, effects))
 }
 
@@ -53,6 +54,7 @@ fn execute_inner(
     key: &se_types::IdempotencyKey,
     diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
     reinstall: Option<(&se_proc::NativeInstallationClaim, &Path)>,
+    confirmed: bool,
 ) -> Result<(ValidatedUninstallPlan, UninstallEffects, std::fs::File)> {
     // Store absence and a complete inventory with no unresolved custody are
     // distinct observations. Retained exit history is never live custody;
@@ -92,13 +94,14 @@ fn execute_inner(
         })
     };
     // Standalone installation accepts the native owner without a console. Keep
-    // ancestry/session/provider-marker checks; ordinary uninstall still needs a TTY.
+    // ancestry/session/provider-marker checks. Explicit unattended confirmation
+    // waives only the console requirement, never any native owner check.
     let (owner, _) = observe(false)?;
     owner.authorize(
         "installation.uninstall",
         owner.os_owner(),
         cx.session.is_some(),
-        reinstall.is_none(),
+        reinstall.is_none() && !confirmed,
     )?;
     let installation_claim = if reinstall.is_none() {
         Some(se_proc::NativeInstallationClaim::acquire().map_err(native_error)?)
@@ -142,7 +145,7 @@ fn execute_inner(
         "installation.uninstall",
         &parsed.owner,
         cx.session.is_some(),
-        reinstall.is_none(),
+        reinstall.is_none() && !confirmed,
     )?;
     let owned_plan = Installation {
         record_path: record_path.clone(),
@@ -226,7 +229,7 @@ fn execute_inner(
         "installation.uninstall",
         plan.owner(),
         cx.session.is_some(),
-        reinstall.is_none(),
+        reinstall.is_none() && !confirmed,
     )?;
 
     #[cfg(windows)]

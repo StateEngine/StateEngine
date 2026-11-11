@@ -21,6 +21,7 @@ pub fn replace_installation(arguments: &[OsString]) -> Result<i32> {
         .ok_or_else(|| args::invalid("an archive directory"))?;
     let operation = se_core::ops::AnyOp::Uninstall(se_core::ops::Uninstall {
         idempotency_key: se_types::IdempotencyKey::new(uuid::Uuid::new_v4().to_string())?,
+        yes: false,
     });
     crate::bootstrap::check_session_route(&operation)?;
     let context =

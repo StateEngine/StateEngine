@@ -428,6 +428,7 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("expect").required(true).help("The revision you last read, or absent for the first write"))
             .arg(value("agent").help("Saved agent name or ID whose working state the owner replaces")),
         "runtime.up" => c.arg(toggle("foreground").help("Run the runtime in this terminal instead of detaching")),
+        "installation.uninstall" => c.arg(toggle("yes").help("Confirm unattended removal; OS ownership and agent ancestry checks still apply")),
         "hook.claude" => c.arg(positional("event", 1, true).help("Claude Code lifecycle event carried on stdin").value_parser([
             "session-start",
             "prompt",

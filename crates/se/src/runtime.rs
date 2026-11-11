@@ -210,12 +210,13 @@ pub(crate) use uninstall::remove_for_reinstall;
 pub fn uninstall(
     cx: &crate::bootstrap::Bootstrap,
     key: &se_types::IdempotencyKey,
+    confirmed: bool,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<(
     ValidatedUninstallPlan,
     se_core::ops::installation::UninstallEffects,
 )> {
-    uninstall::execute(cx, key, diagnostic)
+    uninstall::execute(cx, key, confirmed, diagnostic)
 }
 
 #[cfg(windows)]

@@ -18,7 +18,7 @@ pub fn execute(
         return Ok(result);
     }
     let (plan, mut effects) =
-        crate::runtime::uninstall(context, &input.idempotency_key, diagnostic)?;
+        crate::runtime::uninstall(context, &input.idempotency_key, input.yes, diagnostic)?;
     effects
         .integrations
         .extend(super::adoption::uninstall(context)?);

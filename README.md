@@ -325,6 +325,10 @@ se down
 se --home "$HOME/.local/state/stateengine" uninstall
 ```
 
+For unattended removal, add `--yes` to `se uninstall`. This confirms removal
+without a terminal; OS ownership, managed-session and agent ancestry checks still
+apply. Retained history and provider login remain preserved.
+
 If you set `XDG_STATE_HOME`, use `"$XDG_STATE_HOME/stateengine"` instead. On Windows,
 run `se down`, then the old extracted archive's `uninstall.ps1` in PowerShell and
 wait for its final successful completion. The installation home is the directory
