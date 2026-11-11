@@ -210,6 +210,20 @@ pub enum InputText {
     Inline(String),
     Staged(StagedText),
 }
+impl InputText {
+    /// Apply-side view of queued text: staging::prepare materializes every
+    /// staged handle before apply, so only inline bytes are representable at
+    /// this seam. A staged handle here means that step was skipped; refuse
+    /// it by name instead of reporting a later wave.
+    pub(crate) fn as_materialized(&self) -> crate::StoreResult<&str> {
+        match self {
+            InputText::Inline(text) => Ok(text),
+            InputText::Staged(_) => Err(crate::error::invalid(
+                "staged text was not materialized before apply",
+            )),
+        }
+    }
+}
 #[derive(Clone)]
 pub enum StoredText {
     Present(String),

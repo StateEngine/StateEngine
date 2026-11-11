@@ -404,6 +404,51 @@ fn staged_work_mail_keeps_its_body_and_recipient_wake() -> Check {
 }
 
 #[test]
+fn staged_working_state_materializes_through_the_real_writer() -> Check {
+    let f = Fixture::new()?;
+    let (mut store, lease) = f.direct()?;
+    let lease = StagingLease::new(&f, lease)?;
+    let body = "staged working state 🦀";
+    let staged = store.stage_text(&mut Cursor::new(body.as_bytes()), 128, &lease)?;
+    let mut batch = f.working("unused", Expected::Absent, "staged-working")?;
+    if let EventBody::WorkingStateSet { text, .. } = &mut batch.events[0].body {
+        *text = InputText::Staged(staged);
+    }
+    let receipt = store.append(batch, &lease)?;
+    let mut read = store.snapshot(f.scoped(Visibility::Owner))?;
+    let saved = present(read.event(receipt.primary_event)?)?;
+    assert!(
+        matches!(saved.body, EventBody::WorkingStateSet { text: StoredText::Present(ref text), .. } if text == body)
+    );
+    let state = present(read.working_state(f.a.clone())?)?;
+    assert!(
+        matches!(state.current.body, EventBody::WorkingStateSet { text: StoredText::Present(ref text), .. } if text == body)
+    );
+    read.close()?;
+    store.close()?;
+    Ok(())
+}
+
+#[test]
+fn apply_side_text_view_refuses_an_unmaterialized_handle() -> Check {
+    let f = Fixture::new()?;
+    let (store, lease) = f.direct()?;
+    let lease = StagingLease::new(&f, lease)?;
+    let staged = store.stage_text(&mut Cursor::new(b"staged handle"), 64, &lease)?;
+    let error = InputText::Staged(staged)
+        .as_materialized()
+        .err()
+        .ok_or("unmaterialized handle passed the apply-side view")?;
+    assert_eq!(error.code, StoreErrorCode::EventInvalid);
+    assert_eq!(
+        InputText::Inline("already materialized".into()).as_materialized()?,
+        "already materialized"
+    );
+    store.close()?;
+    Ok(())
+}
+
+#[test]
 fn rejected_staged_payload_drops_its_native_handle() -> Check {
     let f = Fixture::new()?;
     let (mut store, lease) = f.direct()?;

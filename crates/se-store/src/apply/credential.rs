@@ -112,7 +112,12 @@ pub(super) fn apply(
                     "credential already terminal",
                 ));
             }
-            payload(c, seq, "reason", &codec::text(reason, 16384)?)?;
+            payload(
+                c,
+                seq,
+                "reason",
+                &codec::text(reason.as_materialized()?, 16384)?,
+            )?;
             codec::aux(c, seq, facts)?;
         }
         _ => return Err(invalid("credential apply dispatch")),

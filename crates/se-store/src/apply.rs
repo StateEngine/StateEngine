@@ -379,7 +379,7 @@ pub(crate) fn apply(
                 c,
                 seq,
                 "body",
-                &codec::text(body, se_types::MESSAGE_BODY_MAX_BYTES)?,
+                &codec::text(body.as_materialized()?, se_types::MESSAGE_BODY_MAX_BYTES)?,
             )?;
             let reply = reply_to
                 .map(|id| key(c, "message", id.as_str(), &s, false))
@@ -461,7 +461,7 @@ pub(crate) fn apply(
                 c,
                 seq,
                 "body",
-                &codec::text(text, se_types::WORKING_STATE_MAX_BYTES)?,
+                &codec::text(text.as_materialized()?, se_types::WORKING_STATE_MAX_BYTES)?,
             )?;
             let want = match want {
                 Expected::Absent => None,

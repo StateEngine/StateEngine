@@ -41,18 +41,17 @@ pub(crate) fn facts(c: &Connection, seq: i64) -> StoreResult<Value> {
         .map_err(sql)?;
     serde_json::from_str(&s).map_err(invalid)
 }
-pub(crate) fn text(input: InputText, max: usize) -> StoreResult<String> {
-    let s = match input {
-        InputText::Inline(s) => s,
-        InputText::Staged(_) => return later("staged capture text"),
-    };
-    if s.len() > max {
+/// Stored text is always the materialized inline form: staged handles are
+/// materialized by staging::prepare before apply, so this boundary cannot
+/// receive one.
+pub(crate) fn text(text: &str, max: usize) -> StoreResult<String> {
+    if text.len() > max {
         return Err(fail(
             StoreErrorCode::BodyTooLarge,
-            format!("text is {} bytes; limit {max}", s.len()),
+            format!("text is {} bytes; limit {max}", text.len()),
         ));
     }
-    Ok(s)
+    Ok(text.to_string())
 }
 pub(crate) fn stored_text(c: &Connection, seq: i64, field: &str) -> StoreResult<StoredText> {
     use rusqlite::OptionalExtension;

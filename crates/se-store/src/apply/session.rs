@@ -223,7 +223,12 @@ pub(super) fn apply(
                 seq,
                 serde_json::json!({"final_turn":final_turn,"final_cursor":final_cursor}),
             )?;
-            reason = Some(payload(c, seq, "reason", &codec::text(text, 16384)?)?);
+            reason = Some(payload(
+                c,
+                seq,
+                "reason",
+                &codec::text(text.as_materialized()?, 16384)?,
+            )?);
             (data, "ended")
         }
         SessionRevoked { reason: text, .. } => {
@@ -241,7 +246,12 @@ pub(super) fn apply(
                     "revoke session credentials before session revocation",
                 ));
             }
-            reason = Some(payload(c, seq, "reason", &codec::text(text, 16384)?)?);
+            reason = Some(payload(
+                c,
+                seq,
+                "reason",
+                &codec::text(text.as_materialized()?, 16384)?,
+            )?);
             (data, "revoked")
         }
         _ => return Err(invalid("session apply kind")),
