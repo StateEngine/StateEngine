@@ -214,11 +214,24 @@ fn prepare(
     // A finite direct read can win the gap between the parent's rendezvous
     // observation and this child acquiring its writer lease. Wait inside the
     // original preparation deadline; no store work precedes exclusive custody.
+    // A competing writer must refuse immediately so its parent can rendezvous
+    // with the winner instead of leaving a successor queued behind its lease.
     loop {
         deadline.remaining()?;
         match lock.try_lock() {
             Ok(()) => break,
             Err(std::fs::TryLockError::WouldBlock) => {
+                match lock.try_lock_shared() {
+                    Ok(()) => lock.unlock().map_err(|error| {
+                        se_core::scope::unreadable("startup reader lease release", &error.to_string())
+                    })?,
+                    Err(error) => {
+                        return Err(se_core::scope::unreadable(
+                            "exclusive runtime lease",
+                            &error.to_string(),
+                        ));
+                    }
+                }
                 std::thread::sleep(deadline.remaining()?.min(Duration::from_millis(10)));
             }
             Err(std::fs::TryLockError::Error(error)) => {
