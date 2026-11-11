@@ -24,8 +24,8 @@ struct Vma {
     perms: String,
     offset: String,
     path: String,
-    anonymous_kib: u64,
-    private_dirty_kib: u64,
+    anonymous_kib: Option<u64>,
+    private_dirty_kib: Option<u64>,
 }
 
 fn parse_smaps(smaps: &str) -> Vec<Vma> {
@@ -47,8 +47,11 @@ fn parse_smaps(smaps: &str) -> Vec<Vma> {
                     perms: perms.to_owned(),
                     offset: offset.to_owned(),
                     path: path.trim().to_owned(),
-                    anonymous_kib: 0,
-                    private_dirty_kib: 0,
+                    // Absent counters stay absent: smaps prints both for
+                    // every mapping, so None is an unparsed or changed
+                    // format, not a measured zero.
+                    anonymous_kib: None,
+                    private_dirty_kib: None,
                 });
             }
         } else if let Some(vma) = vmas.last_mut() {
@@ -58,9 +61,9 @@ fn parse_smaps(smaps: &str) -> Vec<Vma> {
                     .and_then(|value| value.parse::<u64>().ok())
             };
             if let Some(value) = counter("Anonymous:") {
-                vma.anonymous_kib = value;
+                vma.anonymous_kib = Some(value);
             } else if let Some(value) = counter("Private_Dirty:") {
-                vma.private_dirty_kib = value;
+                vma.private_dirty_kib = Some(value);
             }
         }
     }
@@ -94,22 +97,29 @@ fn parse_smaps(smaps: &str) -> Vec<Vma> {
 ///
 /// Without this, an idle host keeps tens of MiB of demand-paged code resident
 /// until the kernel's own reclaim happens to run, which on a loaded box is
-/// later than the idle measurement window. False means no eligible page was
-/// released, not an error or a claim about the remaining resident memory.
-pub fn release_read_only_mapped_pages() -> bool {
-    let Ok(smaps) = std::fs::read_to_string("/proc/self/smaps") else {
-        return false;
-    };
+/// later than the idle measurement window. `Ok(false)` means no eligible
+/// page was released, not an error or a claim about the remaining resident
+/// memory; `Err` means the smaps read itself failed, so nothing was
+/// released or attempted.
+pub fn release_read_only_mapped_pages() -> Result<bool, std::io::Error> {
+    let smaps = std::fs::read_to_string("/proc/self/smaps")?;
     let mut released_any = false;
-    for vma in parse_smaps(&smaps).into_iter().filter(|vma| {
-        eligible(&vma.perms, &vma.offset, &vma.path)
-            && vma.anonymous_kib == 0
-            && vma.private_dirty_kib == 0
-    }) {
+    for vma in parse_smaps(&smaps).into_iter().filter(clean_releasable) {
         // `|=` never short-circuits: every eligible mapping is released.
         released_any |= release_vma(&vma);
     }
-    released_any
+    Ok(released_any)
+}
+
+/// The release predicate, shared by the function and its tests: an eligible
+/// mapping whose smaps counters are present and both zero. Absent counters
+/// are a different fact from zero — smaps prints both for every mapping, so
+/// absence means an unparsed or changed format, and the mapping stays
+/// resident.
+fn clean_releasable(vma: &Vma) -> bool {
+    eligible(&vma.perms, &vma.offset, &vma.path)
+        && vma.anonymous_kib == Some(0)
+        && vma.private_dirty_kib == Some(0)
 }
 
 fn release_vma(vma: &Vma) -> bool {
@@ -212,7 +222,10 @@ mod tests {
             readonly_before > 0,
             "the test process must hold resident read-only primary pages"
         );
-        assert!(release_read_only_mapped_pages());
+        assert!(
+            matches!(release_read_only_mapped_pages(), Ok(true)),
+            "the release must succeed and release at least one mapping"
+        );
         let (code_after, readonly_after) = eligible_resident_kilobytes();
         assert!(
             code_after < code_before,
@@ -265,7 +278,7 @@ mod tests {
             );
         }
         assert!(
-            release_read_only_mapped_pages(),
+            matches!(release_read_only_mapped_pages(), Ok(true)),
             "clean code pages still released"
         );
         let mut buf = [0u8; PAGE];
@@ -286,15 +299,48 @@ mod tests {
         std::fs::remove_file(&file).ok();
     }
 
+    /// Absent smaps counters must not read as zero: smaps prints both
+    /// `Anonymous` and `Private_Dirty` for every mapping, so a block without
+    /// them is an unparsed or changed format, and its pages stay resident.
+    #[test]
+    fn missing_smaps_counters_stay_ineligible() {
+        let block = |anonymous: &str, dirty: &str| {
+            format!(
+                "7f0000000000-7f0000021000 r-xp 00000000 08:01 12345 \
+                 /usr/lib/x86_64-linux-gnu/libc.so.6\nSize: 132 kB\nOffset: \
+                 0\nRss: 128 kB\n{anonymous}{dirty}"
+            )
+        };
+        let parsed = parse_smaps(&block("", ""));
+        assert_eq!(parsed.len(), 1, "the synthetic block must parse");
+        assert!(
+            parsed[0].anonymous_kib.is_none(),
+            "an absent counter stays absent"
+        );
+        assert!(
+            parsed[0].private_dirty_kib.is_none(),
+            "an absent counter stays absent"
+        );
+        assert!(
+            !clean_releasable(&parsed[0]),
+            "absent counters are not clean"
+        );
+        let parsed = parse_smaps(&block("Anonymous: 0 kB\n", "Private_Dirty: 0 kB\n"));
+        assert!(
+            clean_releasable(&parsed[0]),
+            "present zero counters are clean"
+        );
+    }
+
     /// The smaps read plus parse plus madvise is a once-per-reclaim cost;
     /// keep it small enough to stay invisible in the idle CPU budget.
     #[test]
     fn smaps_verified_release_stays_small() {
-        release_read_only_mapped_pages();
+        let _ = release_read_only_mapped_pages();
         let iterations = 1000;
         let start = std::time::Instant::now();
         for _ in 0..iterations {
-            release_read_only_mapped_pages();
+            let _ = release_read_only_mapped_pages();
         }
         let per_call_us = start.elapsed().as_nanos() as u64 / iterations as u64 / 1000;
         println!(
