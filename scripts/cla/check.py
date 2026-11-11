@@ -74,12 +74,8 @@ def signed(comment, user, digests):
     return False
 
 
-def check_pull(github, number):
-    pull = github.request(f"pulls/{number}")
-    if pull["state"] != "open":
-        return True
-    head = pull["head"]["sha"]
-    github.status(head, "pending", "Checking contributor agreement signatures")
+def validate_pull(github, pull):
+    number, head = pull["number"], pull["head"]["sha"]
     repository = github.request("")
     branch = repository["default_branch"]
     if pull["base"]["repo"]["full_name"] != github.repository or pull["base"]["ref"] != branch:
@@ -112,38 +108,58 @@ def check_pull(github, number):
         print(entity_statement(user["login"], digests["entity"], "YOUR LEGAL ENTITY NAME"))
     # A synchronization or main merge during this read must never acquire stale success.
     current = github.request(f"pulls/{number}")
-    if current["head"]["sha"] != head or current["base"]["sha"] != pull["base"]["sha"]:
+    if (current["state"] != "open" or current["head"]["sha"] != head
+            or current["base"]["sha"] != pull["base"]["sha"]):
         raise ValueError("pull request changed; the new revision needs its own check")
     if github.request(f"git/ref/heads/{branch}")["object"]["sha"] != trusted:
         raise ValueError("agreement source changed; rerun against the current default branch")
-    state = "failure" if missing else "success"
-    description = f"{len(missing)} contributor signature(s) missing" if missing else "Contributor agreements signed"
-    github.status(head, state, description)
-    print(description)
     return not missing
+
+
+def same_head(github, head, branch):
+    return sorted(pull["number"] for pull in github.pages("pulls")
+                  if pull["head"]["sha"] == head and pull["base"]["ref"] == branch)
+
+
+def check_pull(github, number):
+    # Commit statuses belong to a SHA, not a pull request. Every open request
+    # sharing that head must qualify before the SHA can receive success.
+    pull = github.request(f"pulls/{number}")
+    head = pull["head"]["sha"]
+    github.status(head, "pending", "Checking all pull requests sharing this head")
+    branch = github.request("")["default_branch"]
+    peers = same_head(github, head, branch)
+    if not peers:
+        return True
+    complete = True
+    for peer in peers:
+        current = github.request(f"pulls/{peer}")
+        if current["state"] != "open" or current["head"]["sha"] != head:
+            raise ValueError("shared-head pull request changed; rerun the check")
+        complete = validate_pull(github, current) and complete
+    if same_head(github, head, branch) != peers:
+        raise ValueError("shared-head membership changed; rerun the check")
+    description = ("Contributor agreements signed for every shared-head pull request" if complete
+                   else "A shared-head pull request is missing contributor signatures")
+    github.status(head, "success" if complete else "failure", description)
+    print(description)
+    return complete
 
 
 def run():
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+    if os.environ["GITHUB_EVENT_NAME"] == "issue_comment" and not event.get("issue", {}).get("pull_request"):
+        return
     github = GitHub()
-    if os.environ["GITHUB_EVENT_NAME"] == "push":
-        pulls = [pull for pull in github.pages("pulls")
-                 if pull["base"]["ref"] == event["repository"]["default_branch"]]
-        # Clear every old success before any individual update can refuse.
-        for pull in pulls:
-            github.status(pull["head"]["sha"], "pending", "Agreement source changed; rechecking signatures")
-        numbers = [pull["number"] for pull in pulls]
-    else:
-        number = event.get("pull_request", {}).get("number")
-        if number is None:
-            if not event.get("issue", {}).get("pull_request"):
-                return
-            number = event["issue"]["number"]
-        if not isinstance(number, int) or number < 1:
-            raise ValueError("pull request number is absent or invalid")
-        numbers = [number]
+    branch = github.request("")["default_branch"]
+    pulls = [pull for pull in github.pages("pulls") if pull["base"]["ref"] == branch]
+    # Every event checks the current open set. A newer globally serialized
+    # event covers an older canceled event, including signature deletions.
+    heads = {pull["head"]["sha"]: pull["number"] for pull in pulls}
+    for head in heads:
+        github.status(head, "pending", "Rechecking contributor signatures")
     complete = True
-    for number in numbers:
+    for number in heads.values():
         try:
             complete = check_pull(github, number) and complete
         except (KeyError, OSError, ValueError, urllib.error.URLError, subprocess.SubprocessError) as error:
