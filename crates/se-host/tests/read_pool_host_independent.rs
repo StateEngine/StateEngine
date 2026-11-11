@@ -217,20 +217,19 @@ fn real_http_refuses_a_replaced_inode_even_after_its_first_refusal_empties_idle(
         // The channel worker may observe either the deliberate pathname gap or
         // the replacement inode. Retain either exact refusal, not unrelated errors.
         let expected_missing = format!(
-            "inspect installation leaf at {}: Unreadable: {}",
+            "database metadata name disappeared at {}: SourceChanged",
             f.options.state_directory.join("state.db").display(),
-            std::io::Error::from_raw_os_error(2), // Linux ENOENT; this test is Linux-only.
         );
         let expected_reason = format!(
-            "transcript pathname no longer names the retained source at {}: SourceChanged",
+            "database metadata identity changed at {}: SourceChanged",
             f.options.state_directory.join("state.db").display(),
         );
         let expected = match &exit.failure {
             None => Ok(Vec::new()),
             Some(error)
                 if matches!(error.body.detail(), se_types::Detail::SourceUnreadable(detail)
-                    if (detail.subject == "store SourceChanged" && detail.reason == expected_reason)
-                        || (detail.subject == "store Unreadable" && detail.reason == expected_missing)) =>
+                    if detail.subject == "store SourceChanged"
+                        && (detail.reason == expected_reason || detail.reason == expected_missing)) =>
             {
                 eprintln!("retained injected database pathname refusal observed");
                 Ok(vec![error.to_string()])
