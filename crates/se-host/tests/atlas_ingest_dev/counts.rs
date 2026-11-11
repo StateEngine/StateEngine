@@ -156,7 +156,7 @@ pub(super) fn rank_and_touch_absence(db: &CacheConnection<'_>) -> Check {
     restricted.after = Some(event);
     restricted.through = restricted_event.clone();
     let RecordFeedChange::Upsert(changed_record) = &mut restricted.changes[0] else {
-        unreachable!()
+        panic!("fixture must contain an upserted record")
     };
     changed_record.visibility = RecordVisibility::Restricted { audience: None };
     changed_record.pointer.source_event = restricted_event.clone();

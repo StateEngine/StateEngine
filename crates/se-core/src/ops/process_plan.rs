@@ -158,10 +158,18 @@ pub fn launch<R: Snapshot>(
         .read
         .operation_receipt(cx.admission.actor.clone(), input.idempotency_key.clone())
         .map_err(|e| store_error(&e))?;
-    let replayed = matches!(&replay, Read::Present { .. });
+    let replay = match replay {
+        Read::Absent { .. } => None,
+        read => Some(scope::require_present(
+            read,
+            "launch request receipt",
+            scope::COMMITTED_READ_RECOVERY,
+        )?),
+    };
+    let replayed = replay.is_some();
     let seed = match replay {
-        Read::Absent { .. } => kernel.facts()?.event.clone(),
-        Read::Present { value } => {
+        None => kernel.facts()?.event.clone(),
+        Some(value) => {
             let event = super::receipt::committed_event(cx.read, &value)?;
             if !matches!(event.body, EventBody::SessionPrepared { agent: ref target, .. } if target == &agent)
             {
@@ -171,14 +179,6 @@ pub fn launch<R: Snapshot>(
                 ));
             }
             event.header.event
-        }
-        other => {
-            return scope::require_present(
-                other,
-                "launch request receipt",
-                scope::COMMITTED_READ_RECOVERY,
-            )
-            .map(|_| unreachable!());
         }
     };
     let conversation = match (|| -> Result<Read<ProviderSessionId>> {
@@ -308,7 +308,19 @@ pub fn launch<R: Snapshot>(
                     },
                 }
             }
-            other => other.clone().map(|_| unreachable!()),
+            Read::Absent { checked } => Read::Absent {
+                checked: checked.clone(),
+            },
+            Read::Unknown { what } => Read::Unknown { what: what.clone() },
+            Read::Unreadable {
+                source,
+                reason,
+                error,
+            } => Read::Unreadable {
+                source: source.clone(),
+                reason: reason.clone(),
+                error: error.clone(),
+            },
         },
         Read::Absent { .. } => Read::Absent {
             checked: "This launch starts a new conversation".into(),

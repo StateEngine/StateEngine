@@ -108,8 +108,15 @@ pub async fn probe(command: &Path, budget: Duration) -> Result<ProviderVersion> 
         tokio::time::timeout_at(tokio::time::Instant::from_std(run_end), together).await
     };
     let measured = match read {
-        Ok(Ok(value)) => value,
-        failed => {
+        Ok(result) => result,
+        Err(_) => Err(incompatible(
+            "version probe exceeded its five-second deadline",
+            "Update or repair the configured Codex executable.",
+        )),
+    };
+    let measured = match measured {
+        Ok(value) => value,
+        Err(error) => {
             // start_kill is idempotent for this retained direct child. Keep the
             // original probe error unless cleanup itself cannot be proved.
             let _ = child.start_kill();
@@ -122,14 +129,7 @@ pub async fn probe(command: &Path, budget: Duration) -> Result<ProviderVersion> 
                     "Reconcile the exact probe child before retrying.",
                 ));
             }
-            return match failed {
-                Ok(Err(error)) => Err(error),
-                Err(_) => Err(incompatible(
-                    "version probe exceeded its five-second deadline",
-                    "Update or repair the configured Codex executable.",
-                )),
-                Ok(Ok(_)) => unreachable!(),
-            };
+            return Err(error);
         }
     };
     if !measured.2.success() {

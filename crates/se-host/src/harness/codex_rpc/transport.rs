@@ -8,10 +8,7 @@ use se_types::{Result, SeError};
 use std::{num::NonZeroU32, sync::Arc, time::Instant};
 use zeroize::{Zeroize, Zeroizing};
 
-const READ_CHUNK: NonZeroU32 = match NonZeroU32::new(64 * 1024) {
-    Some(value) => value,
-    None => unreachable!(),
-};
+const READ_CHUNK: NonZeroU32 = NonZeroU32::MIN.saturating_add(64 * 1024 - 1);
 
 enum Terminal {
     Eof,

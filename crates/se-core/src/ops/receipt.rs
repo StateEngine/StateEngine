@@ -402,7 +402,17 @@ pub fn working_state_get<R: Snapshot>(
                 }
             }
         }
-        other => other.map(|_| unreachable!()),
+        Read::Absent { checked } => Read::Absent { checked },
+        Read::Unknown { what } => Read::Unknown { what },
+        Read::Unreadable {
+            source,
+            reason,
+            error,
+        } => Read::Unreadable {
+            source,
+            reason,
+            error,
+        },
     };
     Ok(WorkingStateOutput { agent: name, value })
 }

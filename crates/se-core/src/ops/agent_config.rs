@@ -233,31 +233,27 @@ pub fn set<R: Snapshot>(
                     "current event is not ProfileSaved",
                 ));
             };
-            match field {
-                Field::Model => {
-                    profile.model = if input.value == "null" {
-                        None
-                    } else {
-                        super::inputs::bounded("model", &input.value, 256, false)?;
-                        Some(input.value.clone())
-                    }
+            if matches!(field, Field::Model) {
+                profile.model = if input.value == "null" {
+                    None
+                } else {
+                    super::inputs::bounded("model", &input.value, 256, false)?;
+                    Some(input.value.clone())
                 }
-                Field::Profile => {
-                    let provider = match profile.provider {
-                        se_store::Provider::Claude => crate::config_policy::Provider::Claude,
-                        se_store::Provider::Codex => crate::config_policy::Provider::Codex,
-                        se_store::Provider::SeCode => crate::config_policy::Provider::SeCode,
-                        se_store::Provider::Acp => crate::config_policy::Provider::Acp,
-                    };
-                    let resolved = configuration.resolve_profile(&input.value, provider, false)?;
-                    profile.permission = match resolved.sandbox {
-                        EffectiveSandbox::ReadOnly => PermissionProfile::ReadOnly,
-                        EffectiveSandbox::WorkspaceWrite => PermissionProfile::WorkspaceWrite,
-                        EffectiveSandbox::Bypass => PermissionProfile::NamedFullBypass,
-                    };
-                    profile.named_profile = input.value.clone();
-                }
-                Field::CanCreate => unreachable!(),
+            } else {
+                let provider = match profile.provider {
+                    se_store::Provider::Claude => crate::config_policy::Provider::Claude,
+                    se_store::Provider::Codex => crate::config_policy::Provider::Codex,
+                    se_store::Provider::SeCode => crate::config_policy::Provider::SeCode,
+                    se_store::Provider::Acp => crate::config_policy::Provider::Acp,
+                };
+                let resolved = configuration.resolve_profile(&input.value, provider, false)?;
+                profile.permission = match resolved.sandbox {
+                    EffectiveSandbox::ReadOnly => PermissionProfile::ReadOnly,
+                    EffectiveSandbox::WorkspaceWrite => PermissionProfile::WorkspaceWrite,
+                    EffectiveSandbox::Bypass => PermissionProfile::NamedFullBypass,
+                };
+                profile.named_profile = input.value.clone();
             }
             EventBody::ProfileSaved {
                 agent,

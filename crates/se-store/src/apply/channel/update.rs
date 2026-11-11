@@ -186,23 +186,21 @@ pub(super) fn apply(
             ..
         } => {
             let output = output.as_str();
-            if let OutputOutcome::PartSent {
-                part,
-                provider_message,
-            } = outcome
-            {
-                let changed = c.execute("UPDATE channel_outbox SET provider_messages=json_insert(provider_messages,'$[#]',?),last_seq=? WHERE connection_id=? AND output_id=? AND attempt=? AND state='sending' AND json_array_length(provider_messages)=? AND ?<32", rusqlite::params![provider_message,seq,state.id.as_str(),output,i64::try_from(*attempt).map_err(invalid)?,part,part]).map_err(sql)?;
-                if changed != 1 {
-                    return Err(invalid("output part has no exact in-flight predecessor"));
-                }
-                return Ok(());
-            }
             let revoked = matches!(state.pairing, Pairing::Revoked);
             let (status, provider, retry) = match outcome {
                 OutputOutcome::Sent { provider_message } => {
                     ("sent", Some(provider_message.clone()), None)
                 }
-                OutputOutcome::PartSent { .. } => unreachable!(),
+                OutputOutcome::PartSent {
+                    part,
+                    provider_message,
+                } => {
+                    let changed = c.execute("UPDATE channel_outbox SET provider_messages=json_insert(provider_messages,'$[#]',?),last_seq=? WHERE connection_id=? AND output_id=? AND attempt=? AND state='sending' AND json_array_length(provider_messages)=? AND ?<32", rusqlite::params![provider_message,seq,state.id.as_str(),output,i64::try_from(*attempt).map_err(invalid)?,part,part]).map_err(sql)?;
+                    if changed != 1 {
+                        return Err(invalid("output part has no exact in-flight predecessor"));
+                    }
+                    return Ok(());
+                }
                 OutputOutcome::Unknown => ("unknown", None, None),
                 OutputOutcome::Failed { .. } => ("failed", None, None),
                 OutputOutcome::Retry { after_us } if *after_us > 0 => (

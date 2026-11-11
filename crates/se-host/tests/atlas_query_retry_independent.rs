@@ -339,7 +339,7 @@ fn exercise(case: Case) -> Check {
                 "non-timeout read was replayed"
             );
         }
-        Case::Write => unreachable!(),
+        Case::Write => panic!("write fixture reached read-only result assertions"),
     }
     Ok(())
 }

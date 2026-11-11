@@ -274,7 +274,7 @@ mod native {
                 Case::Wide => "exceeds 32 changed paths",
                 Case::Unqualified => "requires measured host SQL overhead",
                 Case::Unreadable => "HEAD is absent",
-                Case::Bounded => unreachable!(),
+                Case::Bounded => panic!("bounded fixture reached unavailable-history assertions"),
             };
             assert!(text.contains(expected), "wrong history failure: {text}");
             assert!(

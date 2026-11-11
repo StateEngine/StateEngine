@@ -237,14 +237,25 @@ impl HostServeExit {
                 ));
             }
         }
-        let close_request = self.stop.as_ref().map(|stop| {
-            (
-                stop.request().expected_epoch.clone(),
-                stop.request().generation,
-                stop.request().key.clone(),
-            )
-        });
-        if let Some(stop) = self.stop.take() {
+        let close_request = match self.stop.as_ref().map(|stop| stop.request()).transpose() {
+            Ok(request) => request.map(|request| {
+                (
+                    request.expected_epoch.clone(),
+                    request.generation,
+                    request.key.clone(),
+                )
+            }),
+            Err(error) => {
+                pending.push(format!(
+                    "Stop request metadata remains unavailable: {error}"
+                ));
+                errors.push(error);
+                None
+            }
+        };
+        if let Some(stop) = self.stop.take()
+            && let Some((epoch, generation, key)) = &close_request
+        {
             let mut achieved = Vec::new();
             if agents_stopped {
                 achieved.push(RuntimeStopFact::AgentsStopped);
@@ -266,9 +277,9 @@ impl HostServeExit {
                 ]);
             }
             let reply = RuntimeStopReply {
-                epoch: stop.request().expected_epoch.clone(),
-                generation: stop.request().generation,
-                key: stop.request().key.clone(),
+                epoch: epoch.clone(),
+                generation: *generation,
+                key: key.clone(),
                 outcome: RuntimeStopOutcome::Facts {
                     achieved,
                     retained_resume: before.map_or_else(Vec::new, |value| value.resumes),

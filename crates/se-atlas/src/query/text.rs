@@ -520,7 +520,9 @@ impl QueryReader<'_> {
                     );
                 }
                 let Read::Present { value: output } = answer.data else {
-                    unreachable!()
+                    return Err(cache_error(
+                        "text response lost its observed search results",
+                    ));
                 };
                 items = output.page.into_items();
                 if let Some(hit) = items.iter_mut().rev().find(|hit| hit.body.is_some()) {

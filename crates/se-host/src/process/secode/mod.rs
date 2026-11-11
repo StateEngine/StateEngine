@@ -123,9 +123,10 @@ impl Service {
         self.pending_save = None;
         Ok(())
     }
-    fn checkpoint(&mut self, auxiliary: Auxiliary, kind: se_proc::CheckpointKind) {
-        let checkpoint = self.journal.checkpoint(kind);
+    fn checkpoint(&mut self, auxiliary: Auxiliary, kind: se_proc::CheckpointKind) -> Result<()> {
+        let checkpoint = self.journal.checkpoint(kind)?;
         *self.journal.auxiliary_mut(auxiliary) = Some(checkpoint);
+        Ok(())
     }
     fn owner(&self, auxiliary: Auxiliary) -> &Option<Arc<se_proc::OwnedProcess>> {
         match auxiliary {

@@ -12,9 +12,13 @@ impl LaunchCoordinator {
         admission: &Admission,
         deadline: &Deadline,
     ) -> Result<()> {
-        if plan.input.fresh || !matches!(plan.conversation, Read::Present { .. }) {
+        if plan.input.fresh {
             return Ok(());
         }
+        let conversation = match &plan.conversation {
+            Read::Present { value } => value.as_str().to_owned(),
+            Read::Absent { .. } | Read::Unknown { .. } | Read::Unreadable { .. } => return Ok(()),
+        };
         let selected = plan.clone();
         let source = self
             .store
@@ -37,10 +41,7 @@ impl LaunchCoordinator {
             let mut error = SeError::new(se_types::Detail::ResumeReferenceUnverifiable(
                 se_types::details::ResumeReferenceUnverifiable {
                     agent: selected.agent.id.clone(),
-                    conversation: match &selected.conversation {
-                        Read::Present { value } => value.as_str().into(),
-                        _ => unreachable!(),
-                    },
+                    conversation,
                     reason,
                 },
             ));

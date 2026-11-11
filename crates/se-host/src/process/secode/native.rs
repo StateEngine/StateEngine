@@ -48,7 +48,7 @@ impl LaunchCoordinator {
             },
             created_at_unix_ns: created_at.as_nanos(),
         };
-        service.checkpoint(auxiliary, CheckpointKind::Reservation(reservation.clone()));
+        service.checkpoint(auxiliary, CheckpointKind::Reservation(reservation.clone()))?;
         service.persist(self, deadline).await?;
         let mut environment = crate::harness::secode_process::provider_environment();
         let scratch = service
@@ -118,7 +118,7 @@ impl LaunchCoordinator {
             .await?;
         let owner = Arc::new(prepared.process);
         *service.owner_mut(auxiliary) = Some(owner);
-        service.checkpoint(auxiliary, CheckpointKind::Scope(prepared.checkpoint));
+        service.checkpoint(auxiliary, CheckpointKind::Scope(prepared.checkpoint))?;
         service.persist(self, deadline).await?;
         let owner = service
             .owner(auxiliary)
@@ -191,7 +191,7 @@ impl LaunchCoordinator {
             ticket = returned;
             match progress {
                 LaunchProgress::AwaitingExecCommit(root) => {
-                    service.checkpoint(auxiliary, CheckpointKind::Root(*root));
+                    service.checkpoint(auxiliary, CheckpointKind::Root(*root))?;
                     service.persist(self, deadline).await?;
                     let native = self.native.clone();
                     ticket = self
@@ -206,7 +206,8 @@ impl LaunchCoordinator {
                         .await?;
                 }
                 LaunchProgress::Started(success) => {
-                    service.checkpoint(auxiliary, CheckpointKind::Process(success.record.clone()));
+                    service
+                        .checkpoint(auxiliary, CheckpointKind::Process(success.record.clone()))?;
                     service.persist(self, deadline).await?;
                     return Ok(success.record);
                 }
@@ -349,7 +350,7 @@ impl LaunchCoordinator {
                 source: Box::new(source),
                 witness: witness.clone(),
             },
-        );
+        )?;
         service.persist(self, deadline).await?;
         let owner = service
             .owner(auxiliary)

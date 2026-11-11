@@ -191,7 +191,7 @@ impl LaunchCoordinator {
             {
                 work.cleanup_failure = Some(error.body);
             }
-            match outcome {
+            let reason = match outcome {
                 Ok(RecoveryOutcome::Recovered { process, record }) => {
                     let process = Arc::new(process);
                     let native = self.native.clone();
@@ -293,6 +293,7 @@ impl LaunchCoordinator {
                             Some(task);
                     }
                     report.adopted = report.adopted.saturating_add(1);
+                    continue;
                 }
                 Ok(RecoveryOutcome::Exited(witness)) => {
                     work.native_already_reconciled = true;
@@ -312,46 +313,37 @@ impl LaunchCoordinator {
                         .map_err(|_| error("recovered exit monitor", "poisoned task slot"))? =
                         Some(task);
                     report.exited = report.exited.saturating_add(1);
+                    continue;
                 }
-                other => {
-                    let reason = match other {
-                        Ok(RecoveryOutcome::Unproved { error, .. }) => format!("StopUnproved: {error:?}"),
-                        Ok(RecoveryOutcome::PendingScope { process, .. }) => {
-                            work.process = Some(Arc::new(process));
-                            "StopUnproved: native scope recovered without a published provider root".into()
-                        }
-                        Ok(RecoveryOutcome::ReleasedOwnership(_)) => "StopUnproved: recorded ownership was released; no signal authority was acquired".into(),
-                        Err(error) => format!("StopUnproved: native observation unavailable: {error}"),
-                        Ok(RecoveryOutcome::Recovered { .. } | RecoveryOutcome::Exited(_)) => unreachable!(),
-                    };
-                    self.mark_recovery_unproved(
-                        previous,
-                        retained.identity,
-                        reason.clone(),
-                        admission,
-                        deadline,
-                    )
-                    .await?;
-                    let mut reason = reason;
-                    if !work.active
-                        && !work.session_retired
-                        && let Err(failure) = self
-                            .retire_session(
-                                &mut work,
-                                "prepared launch interrupted before C3",
-                                deadline,
-                            )
-                            .await
-                    {
-                        reason
-                            .push_str(&format!("; prepared credential cleanup remains: {failure}"));
-                    }
-                    work.cleanup_failure =
-                        Some(se_core::scope::unreadable("retained native custody", &reason).body);
-                    self.retain_recovered(work)?;
-                    report.unproved.push(format!("{lifecycle}: {reason}"));
+                Ok(RecoveryOutcome::Unproved { error, .. }) => format!("StopUnproved: {error:?}"),
+                Ok(RecoveryOutcome::PendingScope { process, .. }) => {
+                    work.process = Some(Arc::new(process));
+                    "StopUnproved: native scope recovered without a published provider root".into()
                 }
+                Ok(RecoveryOutcome::ReleasedOwnership(_)) => "StopUnproved: recorded ownership was released; no signal authority was acquired".into(),
+                Err(error) => format!("StopUnproved: native observation unavailable: {error}"),
+            };
+            self.mark_recovery_unproved(
+                previous,
+                retained.identity,
+                reason.clone(),
+                admission,
+                deadline,
+            )
+            .await?;
+            let mut reason = reason;
+            if !work.active
+                && !work.session_retired
+                && let Err(failure) = self
+                    .retire_session(&mut work, "prepared launch interrupted before C3", deadline)
+                    .await
+            {
+                reason.push_str(&format!("; prepared credential cleanup remains: {failure}"));
             }
+            work.cleanup_failure =
+                Some(se_core::scope::unreadable("retained native custody", &reason).body);
+            self.retain_recovered(work)?;
+            report.unproved.push(format!("{lifecycle}: {reason}"));
         }
         Ok(report)
     }

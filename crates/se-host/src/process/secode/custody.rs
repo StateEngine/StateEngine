@@ -188,7 +188,7 @@ impl Journal {
         }
         Ok(wanted)
     }
-    pub fn checkpoint(&self, kind: CheckpointKind) -> Checkpoint {
+    pub fn checkpoint(&self, kind: CheckpointKind) -> Result<Checkpoint> {
         let (lifecycle, publication) = match &kind {
             CheckpointKind::Reservation(v) => {
                 (v.lifecycle.clone(), RootPublication::NoChildCreated)
@@ -213,16 +213,23 @@ impl Journal {
                     se_proc::RootWitness::Identified { .. } => RootPublication::Identified,
                 },
             ),
-            _ => unreachable!("only native managed checkpoints are constructed"),
+            CheckpointKind::Released { .. }
+            | CheckpointKind::FailedReservation { .. }
+            | CheckpointKind::Historical(_) => {
+                return Err(error(
+                    "SE Code checkpoint",
+                    "a native reservation, scope, root, process or exit is required",
+                ));
+            }
         };
-        Checkpoint {
+        Ok(Checkpoint {
             format_version: 1,
             lifecycle,
             principal: CheckpointPrincipal::Agent(self.agent.clone()),
             session: Some(self.session.clone()),
             root_identity: publication,
             checkpoint: kind,
-        }
+        })
     }
 }
 

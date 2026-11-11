@@ -227,7 +227,7 @@ fn released_checkpoint_refuses_drift_and_malformed_wire() -> Check {
                 "time-zero" => release(&mut checkpoint).released_at_unix_ns = 0,
                 "observation" => release(&mut checkpoint).remaining.observed_at_unix_ns = 4,
                 "publication" => checkpoint.root_identity = RootPublication::Unknown,
-                _ => unreachable!(),
+                _ => panic!("unrecognized checkpoint fault fixture"),
             }
             assert!(
                 encode_checkpoint(&checkpoint).is_err(),
@@ -269,7 +269,7 @@ fn released_checkpoint_never_relinquishes_a_kernel_cgroup() -> Check {
             boot_id: [3; 16],
         };
         let CheckpointKind::Released { source, release } = &mut checkpoint.checkpoint else {
-            unreachable!()
+            panic!("fixture must contain a released checkpoint")
         };
         match source.as_mut() {
             CheckpointSource::Reservation(v) => v.parent = parent,
@@ -301,7 +301,7 @@ fn released_checkpoint_never_relinquishes_a_kernel_cgroup() -> Check {
         // First prove the retained contained source itself is a valid checkpoint.
         let mut unreleased = checkpoint.clone();
         let CheckpointKind::Released { source, .. } = unreleased.checkpoint else {
-            unreachable!()
+            panic!("cloned fixture must contain a released checkpoint")
         };
         unreleased.checkpoint = match *source {
             CheckpointSource::Reservation(v) => CheckpointKind::Reservation(v),

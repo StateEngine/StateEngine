@@ -125,7 +125,7 @@ impl LaunchCoordinator {
                         "a terminal checkpoint has a live native scope; retain custody for explicit reconciliation",
                     ));
                 }
-                service.checkpoint(auxiliary, CheckpointKind::Process(*record));
+                service.checkpoint(auxiliary, CheckpointKind::Process(*record))?;
                 service.persist(self, deadline).await?;
             }
             RecoveryOutcome::PendingScope {
@@ -133,7 +133,7 @@ impl LaunchCoordinator {
                 checkpoint,
             } => {
                 *service.owner_mut(auxiliary) = Some(Arc::new(process));
-                service.checkpoint(auxiliary, CheckpointKind::Scope(*checkpoint));
+                service.checkpoint(auxiliary, CheckpointKind::Scope(*checkpoint))?;
                 service.persist(self, deadline).await?;
             }
             RecoveryOutcome::Exited(witness) => {
@@ -162,7 +162,7 @@ impl LaunchCoordinator {
                         source,
                         witness: *witness,
                     },
-                );
+                )?;
                 service.persist(self, deadline).await?;
             }
             RecoveryOutcome::Unproved { error: failure, .. } => {
