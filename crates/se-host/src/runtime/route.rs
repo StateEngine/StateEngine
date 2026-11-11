@@ -216,7 +216,7 @@ impl HostedRouter {
                 let mut adopted = None;
                 let (call, channels) = match call {
                     Ok(RouteChoice::Adopt(call)) => {
-                        adopted = Some(call);
+                        adopted = Some(*call);
                         (None, None)
                     }
                     #[cfg(feature = "remote")]
@@ -396,7 +396,7 @@ impl AdmittedExchange {
     }
 }
 enum RouteChoice {
-    Adopt(crate::adoption::NativeCall),
+    Adopt(Box<crate::adoption::NativeCall>),
     #[cfg(feature = "remote")]
     Owner(Box<crate::remote::OwnerCall>),
     Core(Box<RoutedCall>),
@@ -426,6 +426,7 @@ fn route(
                     &connection.grant,
                     input,
                 )
+                .map(Box::new)
                 .map(RouteChoice::Adopt);
         }
         #[cfg(feature = "remote")]
