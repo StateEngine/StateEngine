@@ -2,7 +2,7 @@
 use super::*;
 impl SqliteSnapshot {
     pub(super) fn read_transcript_events(
-        &self,
+        &mut self,
         agent: AgentId,
         session: Option<SessionId>,
         budget: ReadBudget,

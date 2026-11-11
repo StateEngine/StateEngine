@@ -48,7 +48,7 @@ fn policy(watches: u32) -> se_types::Result<AtlasPolicy> {
     })
 }
 fn strings(
-    connection: &CacheConnection<'_>,
+    connection: &mut CacheConnection<'_>,
     query: &str,
 ) -> se_atlas::errors::AtlasResult<Vec<String>> {
     connection.read(deadline(), |sql| {
@@ -149,7 +149,7 @@ fn retained(
     let source = NativeAtlasSource::open(registration.clone(), CaseMode::Sensitive)?;
     let cache = NativeAtlasCache::open(home, source.scope.clone())?.ok_or("cache absent")?;
     let profile = SqlProfile::from_qualified_overhead(1)?;
-    let current = pointer::open_current(
+    let mut current = pointer::open_current(
         &cache,
         &source.scope,
         ConnectionRole::ExternalReader,
@@ -157,7 +157,7 @@ fn retained(
         deadline(),
     )?
     .ok_or("published cache absent")?;
-    Ok(strings(&current.connection, query)?)
+    Ok(strings(&mut current.connection, query)?)
 }
 #[path = "atlas_renewal/runtime.rs"]
 mod runtime_consumer;

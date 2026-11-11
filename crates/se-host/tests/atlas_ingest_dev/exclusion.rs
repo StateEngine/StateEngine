@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn exercise(
     source: &RegisteredSource<NativeAtlasSource>,
-    db: &CacheConnection<'_>,
+    db: &mut CacheConnection<'_>,
     parser: &mut SemanticParser,
     dir: &std::path::Path,
 ) -> Check {

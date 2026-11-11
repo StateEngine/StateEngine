@@ -48,7 +48,7 @@ fn policy(watches: u32) -> se_types::Result<AtlasPolicy> {
     })
 }
 fn strings(
-    connection: &CacheConnection<'_>,
+    connection: &mut CacheConnection<'_>,
     query: &str,
 ) -> se_atlas::errors::AtlasResult<Vec<String>> {
     connection.read(deadline(), |sql| {
@@ -175,14 +175,14 @@ fn parser_limit_retains_stale_graph_and_other_files_keep_renewing() -> Check {
             reason: CoverageReason::StaleSnapshot,
         },
     };
-    let db = CacheConnection::create(
+    let mut db = CacheConnection::create(
         &cache,
         &seed,
         ConnectionRole::HostWriter,
         &SqlProfile::from_qualified_overhead(1)?,
         deadline(),
     )?;
-    pointer::publish(&cache, &db, None, deadline())?;
+    pointer::publish(&cache, &mut db, None, deadline())?;
     drop(db);
     drop(cache);
     for number in 0..48 {

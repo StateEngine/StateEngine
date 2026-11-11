@@ -15,17 +15,19 @@ pub struct HookContext {
     pub callers: Vec<CodePointer>,
     pub linked: LinkedSample,
 }
-impl QueryReader<'_> {
+impl QueryReader<'_, '_, '_> {
     pub fn hook_context(
-        &self,
+        &mut self,
         target: HookTarget<'_>,
         end: Instant,
     ) -> AtlasResult<Option<HookContext>> {
         // Native ingress supplies the five-millisecond deadline. Keeping the
         // supplied bound lets functional consumers exercise rows independently
         // of the separately measured native latency requirement.
+        let identity = self.cache.identity().clone();
+        let env = self.ctx.split();
         self.cache.read(end, |sql| {
-            let snapshot=self.snapshot(sql)?;
+            let snapshot=snapshot(&identity, &env, sql)?;
             let coverage = &snapshot.index.coverage;
             // Optional Git enrichment cannot disable fresh source hints. A
             // history-only limitation must still have complete source watches
@@ -41,7 +43,7 @@ impl QueryReader<'_> {
                             CoverageReason::StaleSnapshot | CoverageReason::RecordFeedLag
                             | CoverageReason::RecordBodyLimit | CoverageReason::PartialWatch
                             | CoverageReason::WatchLoss)));
-            if !source_current || snapshot.epoch_retired || self.hostless || !self.record_feed_current {
+            if !source_current || snapshot.epoch_retired || env.hostless || !env.record_feed_current {
                 return Ok(None);
             }
             match target {
@@ -72,7 +74,7 @@ impl QueryReader<'_> {
                             callers.push(reference.site);
                         }
                     }
-                    let linked=records::sample(self,sql,&file.file,Some(&symbol.value.id))?;
+                    let linked=records::sample(&env,sql,&file.file,Some(&symbol.value.id))?;
                     Ok(Some(HookContext {file,symbols:vec![symbol.value],callers,linked}))
                 }
                 HookTarget::File(path)=> {
@@ -88,7 +90,7 @@ impl QueryReader<'_> {
                     };
                     let mut symbols=Vec::with_capacity(4);
                     for id in ids {symbols.push(symbol_by_id(sql,id)?.0.value);}
-                    let linked=records::sample(self,sql,&file.pointer.file,None)?;
+                    let linked=records::sample(&env,sql,&file.pointer.file,None)?;
                     Ok(Some(HookContext {file:file.pointer,symbols,callers:vec![],linked}))
                 }
             }

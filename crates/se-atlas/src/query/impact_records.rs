@@ -14,7 +14,7 @@ pub(super) struct RecordRows {
     pub limited: bool,
 }
 pub(super) fn collect(
-    reader: &QueryReader<'_>,
+    env: &QueryEnv<'_>,
     sql: &SqlView<'_>,
     snapshot: &Snapshot,
     files: &[i64],
@@ -62,25 +62,24 @@ pub(super) fn collect(
                 }
                 seen.push(id);
                 let pointer = super::candidates::record_pointer(sql, id)?;
-                let hit = match reader.records.read(
-                    &snapshot.index.project,
-                    &reader.viewer,
-                    &pointer,
-                    None,
-                )? {
-                    Read::Present { value } if value.pointer == pointer => value,
-                    Read::Absent { .. } => continue,
-                    _ => return Err(cache_error("impact record authority unavailable")),
-                };
+                let hit =
+                    match env
+                        .records
+                        .read(&snapshot.index.project, env.viewer, &pointer, None)?
+                    {
+                        Read::Present { value } if value.pointer == pointer => value,
+                        Read::Absent { .. } => continue,
+                        _ => return Err(cache_error("impact record authority unavailable")),
+                    };
                 let activity = crate::rank::activity(
                     sql,
                     "record",
                     pointer.key.as_str().as_bytes(),
                     crate::rank::ActivityQuery {
                         project: &snapshot.index.project,
-                        viewer: &reader.viewer,
-                        records: reader.records,
-                        now: reader.now_unix_ms,
+                        viewer: env.viewer,
+                        records: env.records,
+                        now: env.now_unix_ms,
                     },
                 )?;
                 let candidate = Candidate {

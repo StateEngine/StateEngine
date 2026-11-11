@@ -9,7 +9,7 @@ use se_atlas::{
 )]
 pub(super) fn file(
     source: &RegisteredSource<NativeAtlasSource>,
-    db: &CacheConnection<'_>,
+    db: &mut CacheConnection<'_>,
     parser: &mut SemanticParser,
     path: &RelativePath,
     request: &protocol::Request,
@@ -156,7 +156,7 @@ pub(super) fn file(
 /// refusal still stops the job if this bounded metadata transaction cannot run.
 fn failed_file(
     source: &RegisteredSource<NativeAtlasSource>,
-    db: &CacheConnection<'_>,
+    db: &mut CacheConnection<'_>,
     path: &RelativePath,
     language: Language,
     snapshot: &SourceSnapshot,

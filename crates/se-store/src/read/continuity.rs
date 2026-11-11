@@ -9,7 +9,7 @@ impl SqliteSnapshot {
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
     pub(super) fn read_recent_turns(
-        &self,
+        &mut self,
         agent: AgentId,
         since: Option<StorePosition>,
         budget: ReadBudget,
@@ -120,7 +120,7 @@ impl SqliteSnapshot {
             from: Sequence::new(floor).map_err(invalid)?,
             to: Sequence::new(h).map_err(invalid)?,
             start_cursor: None,
-            end_cursor: Some(self.cursor(&binding, h, newest)?),
+            end_cursor: Some(SqliteSnapshot::cursor(self, &binding, h, newest)?),
             returned: items.len() as u64,
             limit: budget.page.limit,
             bytes,

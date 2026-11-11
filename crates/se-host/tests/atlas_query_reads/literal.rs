@@ -1,9 +1,11 @@
 //! A literal source window must not lose metadata behind an unrelated global cap.
 use super::*;
 pub(super) fn check(
-    reader: &QueryReader<'_>,
-    cache: &CacheConnection<'_>,
+    cache: &mut CacheConnection<'_>,
+    viewer: &AtlasPrincipal,
+    records: &dyn se_atlas::query::RecordReader,
     source: &se_atlas::source::RegisteredSource<NativeAtlasSource>,
+    feed_current: bool,
     query: &FindQuery,
 ) -> Check {
     let root = &source.scope.registration.canonical_source_root;
@@ -16,7 +18,8 @@ pub(super) fn check(
     }
     cache.write(1_000_000, end(), |sql| {
         sql.prepare("INSERT INTO names(text) VALUES('local_needle')")?
-            .execute([]).map_err(fail)?;
+            .execute([])
+            .map_err(fail)?;
         for id in 0i64..129 {
             let row = 1000 + id;
             let mut file = [0u8;16];
@@ -37,6 +40,7 @@ pub(super) fn check(
         }
         Ok(())
     })?;
+    let mut reader = super::outer_reader(cache, viewer, records, source, 1, feed_current);
     let mut query = query.clone();
     query.kind = SearchKind::Code;
     query.mode = Some(SearchMode::Literal);

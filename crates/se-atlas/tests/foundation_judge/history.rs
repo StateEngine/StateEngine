@@ -39,7 +39,7 @@ fn history_feed_filters_secrets_before_all_derivations_and_retries_immutably() -
     use se_atlas::history::*;
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
-    let db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
+    let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
     db.write(131072, deadline(), |sql| {
         sql.prepare("INSERT INTO files(key,path,path_key,coverage_json,last_code_generation,last_author_generation,baseline_reset) VALUES(?1,?2,?2,'{}',0,0,0)")?
             .execute(rusqlite::params![[0u8;16].as_slice(),"src/ok.rs"]).map_err(cache_error)?;
@@ -83,7 +83,7 @@ fn history_feed_filters_secrets_before_all_derivations_and_retries_immutably() -
             },
         ],
     };
-    let receipt = ingest(&db, &feed, deadline())?;
+    let receipt = ingest(&mut db, &feed, deadline())?;
     assert_eq!(
         (receipt.changed, receipt.denied_paths, receipt.generation.0),
         (1, 2, 1)
@@ -118,8 +118,8 @@ fn history_feed_filters_secrets_before_all_derivations_and_retries_immutably() -
         );
     }
     use se_types::code::*;
-    let reader = se_atlas::query::QueryReader::new(
-        &db,
+    let mut reader = se_atlas::query::QueryReader::new(
+        &mut db,
         se_atlas::query::ReaderContext {
             memory: None,
             viewer: AtlasPrincipal::Human(se_types::HumanId::from_parts(1, [8; 10])?),
@@ -168,10 +168,10 @@ fn history_feed_filters_secrets_before_all_derivations_and_retries_immutably() -
         None,
         "Git names are not Atlas identities"
     );
-    assert!(ingest(&db, &feed, deadline())?.replay);
+    assert!(ingest(&mut db, &feed, deadline())?.replay);
     let mut conflicting = feed.clone();
     conflicting.commits[0].subject = "changed immutable commit".into();
-    assert!(ingest(&db, &conflicting, deadline()).is_err());
+    assert!(ingest(&mut db, &conflicting, deadline()).is_err());
     assert_eq!(
         outside.query_row("SELECT index_generation FROM meta", [], |r| r
             .get::<_, i64>(0))?,
@@ -201,7 +201,7 @@ fn history_feed_filters_secrets_before_all_derivations_and_retries_immutably() -
         sql.prepare("WITH RECURSIVE n(x) AS (VALUES(2) UNION ALL SELECT x+1 FROM n WHERE x<20001) INSERT INTO commits(id,oid,author_unix_ms,author,subject) SELECT x,CAST(printf('%040d',x) AS BLOB),x,'author','subject' FROM n")?.execute([]).map_err(cache_error)?;
         Ok(())
     })?;
-    assert!(!prune::commits(&db, 1, deadline())?);
+    assert!(!prune::commits(&mut db, 1, deadline())?);
     assert_eq!(
         outside.query_row(
             "SELECT count(*) FROM touches WHERE target_kind='file'",
@@ -225,7 +225,7 @@ fn history_cursor_scope_and_quantum_refusals_preserve_the_previous_generation() 
     use se_atlas::history::*;
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
-    let db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
+    let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
     let a = "a".repeat(40);
     let feed = HistoryFeed {
         project: s.identity.scope.registration.project.clone(),
@@ -247,21 +247,21 @@ fn history_cursor_scope_and_quantum_refusals_preserve_the_previous_generation() 
             paths: vec![RelativePath::new("src/ok.rs")?],
         }],
     };
-    ingest(&db, &feed, deadline())?;
+    ingest(&mut db, &feed, deadline())?;
     let mut stale = feed.clone();
     let next = "c".repeat(40);
     stale.bound.head = next.clone();
     stale.bound.oldest = Some(next.clone());
     stale.commits[0].oid = next;
-    assert!(ingest(&db, &stale, deadline()).is_err());
+    assert!(ingest(&mut db, &stale, deadline()).is_err());
     let mut wrong_root = feed.clone();
     wrong_root.root = RootId::from_parts(1, [9; 10])?;
-    assert!(ingest(&db, &wrong_root, deadline()).is_err());
+    assert!(ingest(&mut db, &wrong_root, deadline()).is_err());
     let mut oversized = feed.clone();
     oversized.commits[0].paths = (0..33)
         .map(|n| RelativePath::new(format!("src/file-{n}.rs")))
         .collect::<Result<_, _>>()?;
-    assert!(ingest(&db, &oversized, deadline()).is_err());
+    assert!(ingest(&mut db, &oversized, deadline()).is_err());
     db.read(deadline(), |sql| {
         let generation: i64 = sql
             .prepare("SELECT index_generation FROM meta")?

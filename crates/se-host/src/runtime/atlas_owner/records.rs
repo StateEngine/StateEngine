@@ -50,7 +50,7 @@ pub(super) fn chunk(
     );
     executor::close_read(result, snapshot.close())
 }
-fn cursor(cache: &CacheConnection<'_>) -> Result<Option<se_types::EventId>> {
+fn cursor(cache: &mut CacheConnection<'_>) -> Result<Option<se_types::EventId>> {
     cache.read(Instant::now() + Duration::from_millis(100), |sql| {
         let after: Option<String> = sql
             .prepare("SELECT last_event FROM record_feed WHERE singleton=1")?

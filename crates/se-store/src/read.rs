@@ -545,7 +545,7 @@ impl Snapshot for SqliteSnapshot {
             }),
         }
     }
-    fn close(self) -> StoreResult<()> {
+    fn close(mut self) -> StoreResult<()> {
         // A deadline handler belongs to this snapshot, never the next borrower.
         self.db
             .progress_handler(0, None::<fn() -> bool>)

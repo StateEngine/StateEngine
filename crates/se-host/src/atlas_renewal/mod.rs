@@ -151,7 +151,7 @@ impl NativeRenewal {
     fn root(
         &mut self,
         source: &Source,
-        connection: &CacheConnection<'_>,
+        connection: &mut CacheConnection<'_>,
         policy: &AtlasPolicy,
         deadline: Instant,
     ) -> AtlasResult<usize> {
@@ -286,10 +286,10 @@ impl NativeRenewal {
     pub fn close(
         &mut self,
         root: &RootId,
-        connection: Option<&CacheConnection<'_>>,
+        connection: Option<&mut CacheConnection<'_>>,
         deadline: Instant,
     ) -> AtlasResult<()> {
-        if let Some(connection) = connection
+        if let Some(connection) = connection.as_ref()
             && &connection.identity().scope.registration.root != root
         {
             return Err(SeError::invalid(

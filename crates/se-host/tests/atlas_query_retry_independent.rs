@@ -39,7 +39,7 @@ struct ControlledCache {
     fault: Arc<Fault>,
 }
 impl CacheFiles for ControlledCache {
-    fn configure_connection(&self, db: &NativeSqlConnection) -> se_types::Result<()> {
+    fn configure_connection(&self, db: &mut NativeSqlConnection) -> se_types::Result<()> {
         self.native.configure_connection(db)?;
         let fault = self.fault.clone();
         db.authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
@@ -210,7 +210,7 @@ fn exercise(case: Case) -> Check {
     let _case = CASE_LOCK.lock().map_err(|_| "fixture lock poisoned")?;
     let (f, source, native, seed) = setup(IndexState::Current)?;
     let fault = native.fault.clone();
-    let cache = CacheConnection::create(
+    let mut cache = CacheConnection::create(
         &native,
         &seed,
         ConnectionRole::HostWriter,
@@ -256,7 +256,7 @@ fn exercise(case: Case) -> Check {
         assert_eq!(generation, 0, "expired write changed durable generation");
         return Ok(());
     }
-    pointer::publish(&native, &cache, None, end())?;
+    pointer::publish(&native, &mut cache, None, end())?;
     drop(cache);
     drop(native);
     // The real foreground adapter has no cache-writer lease. Read success
@@ -266,7 +266,7 @@ fn exercise(case: Case) -> Check {
             .ok_or("published read-only cache absent")?,
         fault: fault.clone(),
     };
-    let cache = CacheConnection::open(
+    let mut cache = CacheConnection::open(
         &read_files,
         seed.identity,
         ConnectionRole::QueryReader,
@@ -286,8 +286,8 @@ fn exercise(case: Case) -> Check {
     fault
         .deny
         .store(matches!(case, Case::Denied), Ordering::SeqCst);
-    let reader = QueryReader::new(
-        &cache,
+    let mut reader = QueryReader::new(
+        &mut cache,
         ReaderContext {
             memory: None,
             viewer: AtlasPrincipal::Agent(f.a.clone()),
@@ -306,7 +306,8 @@ fn exercise(case: Case) -> Check {
     else {
         return Err("query family mismatch".into());
     };
-    let answer = se_host::atlas_queries::execute(&reader, &se_core::ops::AtlasRead::Find(input));
+    let answer =
+        se_host::atlas_queries::execute(&mut reader, &se_core::ops::AtlasRead::Find(input));
     match case {
         Case::Once => {
             let se_core::ops::AnyOutput::AtlasFind(output) = answer? else {
@@ -397,9 +398,9 @@ fn native_quantum(prior_failure: bool) -> Check {
         .ok_or("cache home absent")?
         .to_owned();
     let profile = SqlProfile::from_qualified_overhead(1)?;
-    let cache =
+    let mut cache =
         CacheConnection::create(&native, &seed, ConnectionRole::HostWriter, &profile, end())?;
-    pointer::publish(&native, &cache, None, end())?;
+    pointer::publish(&native, &mut cache, None, end())?;
     drop(cache);
     drop(native);
     let policy = AtlasPolicy {

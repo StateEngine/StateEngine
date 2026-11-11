@@ -1,19 +1,24 @@
 //! Both provider hint targets use the real retained root and scoped index.
+//! Every reader owns the connection exclusively, so each phase below rebuilds
+//! its reader after the previous one drops.
 use super::*;
 pub(super) fn check(
-    reader: &QueryReader<'_>,
-    cache: &CacheConnection<'_>,
+    cache: &mut CacheConnection<'_>,
     source: &se_atlas::source::RegisteredSource<NativeAtlasSource>,
     records: &dyn se_atlas::query::RecordReader,
     viewer: &AtlasPrincipal,
     other: &se_types::AgentId,
+    feed_current: bool,
 ) -> Check {
     let mut hook = se_core::ops::AtlasAugment {
         target: se_core::ops::AtlasHookTarget::Symbol(QueryText::new("alpha")?),
         root: None,
         deadline: Some(Instant::now() + Duration::from_millis(500)),
     };
-    let augmentation = se_host::atlas_hooks::augment(reader, source, &hook)?;
+    let augmentation = {
+        let mut reader = super::outer_reader(cache, viewer, records, source, 1, feed_current);
+        se_host::atlas_hooks::augment(&mut reader, source, &hook)?
+    };
     let native: serde_json::Value = serde_json::from_str(&augmentation.stdout)?;
     let context = native["hookSpecificOutput"]["additionalContext"]
         .as_str()
@@ -25,19 +30,7 @@ pub(super) fn check(
         (AtlasPrincipal::Agent(other.clone()), true, Some(0)),
         (viewer.clone(), false, None),
     ] {
-        let hint_reader = QueryReader::new(
-            cache,
-            ReaderContext {
-                memory: None,
-                viewer,
-                records,
-                source: Some(source),
-                hostless: false,
-                epoch_retired: false,
-                now_unix_ms: Some(1),
-                record_feed_current: current,
-            },
-        );
+        let mut hint_reader = super::outer_reader(cache, &viewer, records, source, 1, current);
         let hints =
             hint_reader.hook_context(se_atlas::query::hooks::HookTarget::Symbol("alpha"), end())?;
         assert_eq!(
@@ -46,11 +39,12 @@ pub(super) fn check(
             "hook exposed another agent's private record or an uncertified feed"
         );
     }
-    history_is_optional(reader, cache, source, records, viewer)?;
+    history_is_optional(cache, source, records, viewer, feed_current)?;
     assert!(augmentation.stdout.len() <= 600);
+    let mut reader = super::outer_reader(cache, viewer, records, source, 1, feed_current);
     hook.deadline = Some(Instant::now() - Duration::from_millis(1));
     assert!(
-        se_host::atlas_hooks::augment(reader, source, &hook)?
+        se_host::atlas_hooks::augment(&mut reader, source, &hook)?
             .stdout
             .is_empty()
     );
@@ -62,7 +56,7 @@ pub(super) fn check(
             .join("hook_large.rs"),
     )?);
     hook.deadline = Some(Instant::now() + Duration::from_millis(500));
-    let large_hint = se_host::atlas_hooks::augment(reader, source, &hook)?;
+    let large_hint = se_host::atlas_hooks::augment(&mut reader, source, &hook)?;
     let large_json: serde_json::Value = serde_json::from_str(&large_hint.stdout)?;
     let large_context = large_json["hookSpecificOutput"]["additionalContext"]
         .as_str()
@@ -79,7 +73,7 @@ pub(super) fn check(
     )?);
     hook.deadline = Some(Instant::now() + Duration::from_millis(5));
     assert!(
-        se_host::atlas_hooks::augment(reader, source, &hook)?
+        se_host::atlas_hooks::augment(&mut reader, source, &hook)?
             .stdout
             .is_empty(),
         "small reads must not receive outline augmentation"
@@ -88,11 +82,11 @@ pub(super) fn check(
 }
 
 fn history_is_optional(
-    reader: &QueryReader<'_>,
-    cache: &CacheConnection<'_>,
+    cache: &mut CacheConnection<'_>,
     source: &se_atlas::source::RegisteredSource<NativeAtlasSource>,
     records: &dyn se_atlas::query::RecordReader,
     viewer: &AtlasPrincipal,
+    feed_current: bool,
 ) -> Check {
     let original: (String, String, Option<String>) = cache.read(end(), |sql| {
         sql.prepare("SELECT coverage_json,state_json,history_bound FROM meta,record_feed WHERE meta.singleton=1 AND record_feed.singleton=1")?
@@ -128,23 +122,11 @@ fn history_is_optional(
                 .map_err(fail)?;
             Ok(())
         })?;
-        let hint = reader
+        let hint = super::outer_reader(cache, viewer, records, source, 1, feed_current)
             .hook_context(se_atlas::query::hooks::HookTarget::Symbol("alpha"), end())?
             .ok_or("optional Git limitation suppressed a fresh source hint")?;
         assert_eq!(hint.linked.messages, 1);
-        let behind = QueryReader::new(
-            cache,
-            ReaderContext {
-                memory: None,
-                viewer: viewer.clone(),
-                records,
-                source: Some(source),
-                hostless: false,
-                epoch_retired: false,
-                now_unix_ms: Some(1),
-                record_feed_current: false,
-            },
-        );
+        let mut behind = super::outer_reader(cache, viewer, records, source, 1, false);
         assert!(
             behind
                 .hook_context(se_atlas::query::hooks::HookTarget::Symbol("alpha"), end())?
@@ -166,7 +148,7 @@ fn history_is_optional(
             Ok(())
         })?;
         assert!(
-            reader
+            super::outer_reader(cache, viewer, records, source, 1, feed_current)
                 .hook_context(se_atlas::query::hooks::HookTarget::Symbol("alpha"), end())?
                 .is_none(),
             "Git limitation bypassed incomplete source watches"

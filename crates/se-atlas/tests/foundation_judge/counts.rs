@@ -2,7 +2,7 @@
 use super::*;
 use se_atlas::cache::schema;
 
-fn graph(db: &CacheConnection<'_>) -> Check {
+fn graph(db: &mut CacheConnection<'_>) -> Check {
     db.write(1_000_000, deadline(), |sql| {
         sql.prepare("INSERT INTO names(text) VALUES('first'),('second')")?
             .execute([])
@@ -15,14 +15,14 @@ fn graph(db: &CacheConnection<'_>) -> Check {
 fn cold_wal_has_no_shared_file_mapping_and_host_reopens_normally() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
-    let db = CacheConnection::create(
+    let mut db = CacheConnection::create(
         &f,
         &s,
         ConnectionRole::ColdWriter,
         &SqlProfile::contained_cold(),
         deadline(),
     )?;
-    graph(&db)?;
+    graph(&mut db)?;
     let path = f.dir.join(s.identity.epoch.as_str());
     assert!(
         !PathBuf::from(format!("{}-shm", path.display())).try_exists()?,
@@ -36,7 +36,7 @@ fn cold_wal_has_no_shared_file_mapping_and_host_reopens_normally() -> Check {
         "cold cache data file is mapped"
     );
     drop(db);
-    let writer = CacheConnection::open(
+    let mut writer = CacheConnection::open(
         &f,
         s.identity.clone(),
         ConnectionRole::HostWriter,
@@ -44,7 +44,7 @@ fn cold_wal_has_no_shared_file_mapping_and_host_reopens_normally() -> Check {
         deadline(),
     )?
     .ok_or("writer absent")?;
-    let reader = CacheConnection::open(
+    let mut reader = CacheConnection::open(
         &f,
         s.identity.clone(),
         ConnectionRole::HostReader,
@@ -109,7 +109,7 @@ fn legacy_pointer_is_only_a_rebuild_fence_and_never_a_zero_count_cache() -> Chec
         deadline(),
     )?;
     drop(db);
-    let candidate = CacheConnection::open(
+    let mut candidate = CacheConnection::open(
         &f,
         next.identity.clone(),
         ConnectionRole::CandidateReader,
@@ -117,7 +117,7 @@ fn legacy_pointer_is_only_a_rebuild_fence_and_never_a_zero_count_cache() -> Chec
         deadline(),
     )?
     .ok_or("candidate absent")?;
-    let published = pointer::publish(&f, &candidate, Some(&bytes), deadline())?;
+    let published = pointer::publish(&f, &mut candidate, Some(&bytes), deadline())?;
     assert_eq!(published.schema, schema::SCHEMA_VERSION);
     assert_eq!(published.epoch, next.identity.epoch);
     Ok(())

@@ -37,7 +37,7 @@ fn budget() -> ParseBudget {
 }
 fn ingest(
     source: &RegisteredSource<NativeAtlasSource>,
-    db: &CacheConnection<'_>,
+    db: &mut CacheConnection<'_>,
     parser: &mut SemanticParser,
     path: &RelativePath,
     language: Language,
@@ -125,7 +125,7 @@ fn complete_file_stale_recovery_and_publication() -> Check {
         },
     };
     let sql_profile = SqlProfile::from_qualified_overhead(1)?;
-    let db = CacheConnection::create(
+    let mut db = CacheConnection::create(
         &cache,
         &seed,
         ConnectionRole::HostWriter,
@@ -168,14 +168,14 @@ fn complete_file_stale_recovery_and_publication() -> Check {
         fs::write(dir.join("a.js"), body)?;
         ingest(
             &source,
-            &db,
+            &mut db,
             &mut parser,
             &path,
             Language::JavaScript,
             index == 0,
             index as u64,
         )?;
-        let reader = CacheConnection::open(
+        let mut reader = CacheConnection::open(
             &cache,
             seed.identity.clone(),
             ConnectionRole::ExternalReader,
@@ -235,8 +235,8 @@ fn complete_file_stale_recovery_and_publication() -> Check {
         )
         .map(|_| ())
     })?;
-    counts::check(&db)?;
-    let reader = CacheConnection::open(
+    counts::check(&mut db)?;
+    let mut reader = CacheConnection::open(
         &cache,
         seed.identity.clone(),
         ConnectionRole::ExternalReader,
@@ -259,7 +259,7 @@ fn complete_file_stale_recovery_and_publication() -> Check {
     fs::write(dir.join("a.js"), "export function f(){return 4;} f();")?;
     ingest(
         &source,
-        &db,
+        &mut db,
         &mut parser,
         &path,
         Language::JavaScript,
@@ -274,7 +274,7 @@ fn complete_file_stale_recovery_and_publication() -> Check {
         batch::publish(sql, 1012, false)?;
         Ok(())
     })?;
-    counts::check(&db)?;
+    counts::check(&mut db)?;
     let cases = [
         (
             Language::JavaScript,
@@ -323,18 +323,18 @@ fn complete_file_stale_recovery_and_publication() -> Check {
     for (language, target, importer, target_body, importer_body) in cases {
         let importer = RelativePath::new(importer)?;
         fs::write(dir.join(importer.as_str()), importer_body)?;
-        ingest(&source, &db, &mut parser, &importer, language, true, 20)?;
+        ingest(&source, &mut db, &mut parser, &importer, language, true, 20)?;
         fs::write(dir.join(target), target_body)?;
         ingest(
             &source,
-            &db,
+            &mut db,
             &mut parser,
             &RelativePath::new(target)?,
             language,
             true,
             21,
         )?;
-        let reader = CacheConnection::open(
+        let mut reader = CacheConnection::open(
             &cache,
             seed.identity.clone(),
             ConnectionRole::ExternalReader,
@@ -350,7 +350,15 @@ fn complete_file_stale_recovery_and_publication() -> Check {
             assert!(queued, "missing {language:?} importer repair");
             Ok(())
         })?;
-        ingest(&source, &db, &mut parser, &importer, language, false, 22)?;
+        ingest(
+            &source,
+            &mut db,
+            &mut parser,
+            &importer,
+            language,
+            false,
+            22,
+        )?;
         reader.read(deadline(),|sql| {
             let resolved:i64=sql.prepare("SELECT count(*) FROM refs r JOIN files f ON f.id=r.file WHERE f.path=?1 AND r.accuracy='ExplicitImport' AND r.target IS NOT NULL")?.query_row([importer.as_str()],|r|r.get(0)).map_err(|e|se_types::SeError::invalid("development SQL",&e.to_string()))?;
             assert!(resolved>0,"unresolved {language:?} import");
@@ -378,7 +386,7 @@ fn complete_file_stale_recovery_and_publication() -> Check {
     ] {
         ingest(
             &source,
-            &db,
+            &mut db,
             &mut parser,
             path,
             Language::JavaScript,
@@ -398,7 +406,7 @@ fn complete_file_stale_recovery_and_publication() -> Check {
     )?;
     ingest(
         &source,
-        &db,
+        &mut db,
         &mut parser,
         &cycle_a,
         Language::JavaScript,
@@ -407,7 +415,7 @@ fn complete_file_stale_recovery_and_publication() -> Check {
     )?;
     ingest(
         &source,
-        &db,
+        &mut db,
         &mut parser,
         &cycle_b,
         Language::JavaScript,
@@ -446,7 +454,7 @@ fn complete_file_stale_recovery_and_publication() -> Check {
     for (path, serial) in [(&base, 40), (&barrel, 41), (&user, 42)] {
         ingest(
             &source,
-            &db,
+            &mut db,
             &mut parser,
             path,
             Language::JavaScript,
@@ -463,7 +471,7 @@ fn complete_file_stale_recovery_and_publication() -> Check {
     fs::write(dir.join(base.as_str()), "export const target=2;")?;
     ingest(
         &source,
-        &db,
+        &mut db,
         &mut parser,
         &base,
         Language::JavaScript,
@@ -472,7 +480,7 @@ fn complete_file_stale_recovery_and_publication() -> Check {
     )?;
     ingest(
         &source,
-        &db,
+        &mut db,
         &mut parser,
         &barrel,
         Language::JavaScript,
@@ -492,7 +500,7 @@ fn complete_file_stale_recovery_and_publication() -> Check {
     })?;
     ingest(
         &source,
-        &db,
+        &mut db,
         &mut parser,
         &user,
         Language::JavaScript,
@@ -511,7 +519,7 @@ fn complete_file_stale_recovery_and_publication() -> Check {
     )?;
     ingest(
         &source,
-        &db,
+        &mut db,
         &mut parser,
         &split,
         Language::JavaScript,
@@ -531,10 +539,10 @@ fn complete_file_stale_recovery_and_publication() -> Check {
         }
         Ok(())
     })?;
-    exclusion::exercise(&source, &db, &mut parser, &dir)?;
-    counts::check(&db)?;
-    counts::rank_and_touch_absence(&db)?;
-    coverage_scan::exercise(&db, &seed.coverage)?;
+    exclusion::exercise(&source, &mut db, &mut parser, &dir)?;
+    counts::check(&mut db)?;
+    counts::rank_and_touch_absence(&mut db)?;
+    coverage_scan::exercise(&mut db, &seed.coverage)?;
     drop(db);
     drop(cache);
     drop(source);

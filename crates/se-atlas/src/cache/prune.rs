@@ -14,7 +14,7 @@ pub struct PruneReport {
 /// newest published generation and all old changes. That is an expired baseline,
 /// never a checked empty changes range. Unpublished staging is not aged here.
 pub fn changes(
-    db: &CacheConnection<'_>,
+    db: &mut CacheConnection<'_>,
     observed_unix_ms: i64,
     rows: u32,
     deadline: Instant,
@@ -44,7 +44,7 @@ pub fn changes(
 }
 /// Each fixed cleanup has a bounded row batch. A caller repeats on its next
 /// admitted quantum while pending; it never declares Current with garbage queued.
-pub fn metadata(db: &CacheConnection<'_>, rows: u32, deadline: Instant) -> AtlasResult<bool> {
+pub fn metadata(db: &mut CacheConnection<'_>, rows: u32, deadline: Instant) -> AtlasResult<bool> {
     if !(1..=1024).contains(&rows) {
         return Err(se_types::SeError::invalid(
             "Atlas prune batch",
@@ -83,7 +83,7 @@ pub fn metadata(db: &CacheConnection<'_>, rows: u32, deadline: Instant) -> Atlas
 /// Keep referenced commit anchors and prune the oldest unreferenced excess.
 /// Incoming record/commit mentions are the references; outgoing changed paths
 /// disappear with the pruned commit rather than pinning every commit forever.
-pub fn commits(db: &CacheConnection<'_>, rows: u32, deadline: Instant) -> AtlasResult<bool> {
+pub fn commits(db: &mut CacheConnection<'_>, rows: u32, deadline: Instant) -> AtlasResult<bool> {
     if !(1..=1024).contains(&rows) {
         return Err(se_types::SeError::invalid(
             "Atlas prune batch",

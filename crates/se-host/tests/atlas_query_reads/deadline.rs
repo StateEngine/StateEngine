@@ -80,20 +80,21 @@ impl SourceFile for DelayedFile<'_> {
         self.inner.validate_path()
     }
 }
-pub(super) fn check(
-    cache: &CacheConnection<'_>,
+/// Run the delayed first read before the regular reader exists: the reader
+/// owns the connection exclusively, so the two readers never alias it.
+pub(super) fn delayed_scan(
+    cache: &mut CacheConnection<'_>,
     source: &dyn LiveSource,
     records: &dyn RecordReader,
     viewer: &AtlasPrincipal,
     query: &FindQuery,
-    regular: &QueryReader<'_>,
-) -> Check {
+) -> Result<FindQuery, Box<dyn std::error::Error>> {
     let delayed = Delayed {
         native: source,
         until: Instant::now() + Duration::from_millis(960),
         delayed: Cell::new(false),
     };
-    let reader = QueryReader::new(
+    let mut reader = QueryReader::new(
         cache,
         ReaderContext {
             memory: None,
@@ -124,7 +125,11 @@ pub(super) fn check(
         .ok_or("unfinished source file lost its continuation")?;
     assert!(page.page.items().iter().all(|hit| matches!(&hit.target, HitTarget::Code(code) if code.pointer.path.as_str() == "alpha.rs")));
     query.next = Some(AtlasCursor::new(next.as_str())?);
-    let resumed = present(regular.find(&query)?.data)?;
+    Ok(query)
+}
+/// Resume the delayed cursor through the regular reader after the first read.
+pub(super) fn continuation(regular: &mut QueryReader<'_, '_, '_>, query: &FindQuery) -> Check {
+    let resumed = present(regular.find(query)?.data)?;
     assert!(resumed.page.items().iter().any(|hit| matches!(&hit.target, HitTarget::Code(code) if code.pointer.path.as_str() == "consumer.rs")), "continuation skipped unfinished file");
     assert!(resumed.page.items().iter().all(|hit| matches!(&hit.target, HitTarget::Code(code) if code.pointer.path.as_str() != "alpha.rs")), "continuation repeated committed file");
     Ok(())

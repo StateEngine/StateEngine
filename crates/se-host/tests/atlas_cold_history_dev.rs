@@ -86,7 +86,7 @@ mod native {
             ))
         }
     }
-    fn count(db: &CacheConnection<'_>, sql: &str) -> se_types::Result<i64> {
+    fn count(db: &mut CacheConnection<'_>, sql: &str) -> se_types::Result<i64> {
         db.read(end(), |db| {
             db.prepare(sql)?
                 .query_row([], |r| r.get(0))
@@ -288,7 +288,7 @@ mod native {
         // A reconciled/legacy source snapshot may say Current while its Git
         // seed still has an older continuation. Reads must keep that limit.
         let legacy = NativeAtlasCache::create(&home, source.scope.clone())?;
-        let writer = CacheConnection::open(
+        let mut writer = CacheConnection::open(
             &legacy,
             CacheIdentity {
                 scope: source.scope.clone(),
@@ -306,7 +306,7 @@ mod native {
             Ok(())
         })?;
         let mut scan = se_atlas::coverage::CoverageScan::default();
-        while !scan.step(&writer, end())? {}
+        while !scan.step(&mut writer, end())? {}
         let mut scanned = summary.coverage.clone();
         scan.apply(&mut scanned)?;
         assert!(
@@ -324,7 +324,7 @@ mod native {
         drop(writer);
         drop(legacy);
         let cache = NativeAtlasCache::open(&home, source.scope.clone())?.ok_or("cache absent")?;
-        let current = pointer::open_current(
+        let mut current = pointer::open_current(
             &cache,
             &source.scope,
             ConnectionRole::ExternalReader,
@@ -334,19 +334,19 @@ mod native {
         .ok_or("pointer absent")?;
         assert!(!current.epoch_retired);
         assert_eq!(
-            count(&current.connection, "SELECT count(*) FROM commits")?,
+            count(&mut current.connection, "SELECT count(*) FROM commits")?,
             if bounded { 3 } else { 0 }
         );
         assert_eq!(
             count(
-                &current.connection,
+                &mut current.connection,
                 "SELECT count(*) FROM commits WHERE subject='secret_only_marker'"
             )?,
             0
         );
         assert_eq!(
             count(
-                &current.connection,
+                &mut current.connection,
                 "SELECT count(*) FROM files WHERE path='.env'"
             )?,
             0
@@ -371,17 +371,17 @@ mod native {
             );
         }
         assert_eq!(
-            count(&current.connection, "SELECT count(*) FROM files")?,
+            count(&mut current.connection, "SELECT count(*) FROM files")?,
             if case == Case::Wide { 34 } else { 1 },
             "source files did not publish independently"
         );
         assert_eq!(
-            count(&current.connection, "SELECT count(*) FROM changes")?,
+            count(&mut current.connection, "SELECT count(*) FROM changes")?,
             0,
             "cold history fabricated edits"
         );
         let touches = count(
-            &current.connection,
+            &mut current.connection,
             "SELECT count(*) FROM touches WHERE target_kind='file'",
         )?;
         if bounded {
@@ -392,8 +392,8 @@ mod native {
         use se_types::code::{
             AtlasValidation, FindQuery, SearchKind, SearchMode, SearchOrder, SearchScope,
         };
-        let reader = se_atlas::query::QueryReader::new(
-            &current.connection,
+        let mut reader = se_atlas::query::QueryReader::new(
+            &mut current.connection,
             se_atlas::query::ReaderContext {
                 memory: None,
                 viewer: AtlasPrincipal::Human(se_types::HumanId::from_parts(1, [44; 10])?),

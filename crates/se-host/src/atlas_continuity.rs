@@ -88,7 +88,7 @@ pub(crate) fn source(
                 ));
             }
             let records = AtlasRecordReader::new(read, admission);
-            let query = QueryReader::new(
+            let mut query = QueryReader::new(
                 cache,
                 ReaderContext {
                     memory: observed.summary.memory,

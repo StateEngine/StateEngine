@@ -5,13 +5,13 @@ pub struct LinkedSample {
     pub messages: u8,
 }
 pub(super) fn sample(
-    reader: &QueryReader<'_>,
+    env: &QueryEnv<'_>,
     sql: &SqlView<'_>,
     file: &FileId,
     symbol: Option<&SymbolId>,
 ) -> AtlasResult<LinkedSample> {
     let mut sample = LinkedSample::default();
-    if !reader.record_feed_current {
+    if !env.record_feed_current {
         return Ok(sample);
     }
     // Cap each covering-index walk before the join/deduplication. A popular
@@ -24,7 +24,7 @@ pub(super) fn sample(
         let visibility: String = get(row, 2)?;
         let allowed = match visibility.as_str() {
             "project" => true,
-            "restricted" if matches!(reader.viewer, AtlasPrincipal::Human(_)) => true,
+            "restricted" if matches!(env.viewer, AtlasPrincipal::Human(_)) => true,
             "restricted" => {
                 let audience: Option<Vec<u8>> = get(row, 3)?;
                 match audience {
@@ -34,7 +34,7 @@ pub(super) fn sample(
                         if keys.len() > 32 || keys.windows(2).any(|p| p[0] >= p[1]) {
                             return Err(cache_error("invalid hook audience hints"));
                         }
-                        keys.binary_search(&reader.viewer).is_ok()
+                        keys.binary_search(env.viewer).is_ok()
                     }
                     _ => false,
                 }

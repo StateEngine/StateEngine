@@ -14,7 +14,7 @@ pub struct FeedReceipt {
     pub complete: bool,
 }
 pub fn apply(
-    cache: &CacheConnection<'_>,
+    cache: &mut CacheConnection<'_>,
     feed: &RecordFeed,
     deadline: Instant,
 ) -> AtlasResult<FeedReceipt> {

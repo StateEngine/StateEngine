@@ -168,21 +168,21 @@ fn published_epoch_cannot_be_discarded_and_readers_do_no_inventory() -> Check {
     let cache = NativeAtlasCache::create(&f.home, f.scope.clone())?;
     let s = seed(&f)?;
     let profile = SqlProfile::from_qualified_overhead(1)?;
-    let db = CacheConnection::create(
+    let mut db = CacheConnection::create(
         &cache,
         &s,
         ConnectionRole::HostWriter,
         &profile,
         setup_deadline(),
     )?;
-    pointer::publish(&cache, &db, None, deadline())?;
+    pointer::publish(&cache, &mut db, None, deadline())?;
     let pin = cache.pin_database(&s.identity.epoch)?.ok_or("pin absent")?;
     assert!(cache.discard_unpublished(&pin).is_err());
     assert!(pin.path.exists());
     let unknown = f.scope.registration.cache.directory.join("keep.txt");
     fs::write(&unknown, b"preserve")?;
     let files = NativeAtlasCache::open(&f.home, f.scope.clone())?.ok_or("reader absent")?;
-    let reader = pointer::open_current(
+    let mut reader = pointer::open_current(
         &files,
         &f.scope,
         ConnectionRole::ExternalReader,
@@ -450,10 +450,10 @@ fn three_killed_unpublished_writers_do_not_exhaust_epoch_slots() -> Check {
         setup_deadline(),
     );
     drop(serial); // a real recovery failure must not poison unrelated judges
-    let database = result.map_err(|error| {
+    let mut database = result.map_err(|error| {
         format!("three killed reservations permanently exhausted epoch slots: {error}")
     })?;
-    pointer::publish(&cache, &database, None, deadline())?;
+    pointer::publish(&cache, &mut database, None, deadline())?;
     assert!(cache.read_pointer()?.is_some());
     for number in [5, 6, 7] {
         assert!(
@@ -479,14 +479,14 @@ fn crash_recovery_preserves_published_epoch_and_unowned_sidecars() -> Check {
     let published;
     {
         let cache = NativeAtlasCache::create(&f.home, f.scope.clone())?;
-        let database = CacheConnection::create(
+        let mut database = CacheConnection::create(
             &cache,
             &seed(&f)?,
             ConnectionRole::HostWriter,
             &profile,
             setup_deadline(),
         )?;
-        pointer::publish(&cache, &database, None, deadline())?;
+        pointer::publish(&cache, &mut database, None, deadline())?;
         published = cache.read_pointer()?.ok_or("published pointer absent")?;
     }
     let epochs = f.scope.registration.cache.directory.join("epochs");
@@ -508,7 +508,7 @@ fn crash_recovery_preserves_published_epoch_and_unowned_sidecars() -> Check {
     let cache = NativeAtlasCache::create(&f.home, f.scope.clone())?;
     assert_eq!(cache.read_pointer()?, Some(published));
     assert_eq!(fs::read(&wal)?, b"unowned WAL must survive crash recovery");
-    let reader = pointer::open_current(
+    let mut reader = pointer::open_current(
         &cache,
         &f.scope,
         ConnectionRole::ExternalReader,

@@ -26,7 +26,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
         } else {
             None
         };
-        let current =
+        let mut current =
             if let (Some(cache), Some(profile), Some(scope)) = (&cache, &self.profile, &scope) {
                 let known = self
                     .roots
@@ -67,8 +67,9 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             } else {
                 None
             };
-        if let Some(current) = &current {
-            self.driver.close(id, Some(&current.connection), deadline)?;
+        if let Some(current) = &mut current {
+            self.driver
+                .close(id, Some(&mut current.connection), deadline)?;
         }
         Ok(())
     }

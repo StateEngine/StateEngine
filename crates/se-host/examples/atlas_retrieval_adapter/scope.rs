@@ -130,7 +130,7 @@ impl Mapping {
     }
 }
 impl Prepared {
-    pub fn validate_cache(&self, cache: &CacheConnection<'_>) -> Result<()> {
+    pub fn validate_cache(&self, cache: &mut CacheConnection<'_>) -> Result<()> {
         let Some(tracked) = &self.tracked else {
             return Ok(());
         };

@@ -118,10 +118,10 @@ fn run(request: &Request) -> Result<(Vec<String>, bool, Value), Box<dyn std::err
             },
         })
     );
-    let cache = opened?.ok_or("prepared pointer absent; queries do not build it")?;
-    prepared.validate_cache(&cache.connection)?;
-    let reader = QueryReader::new(
-        &cache.connection,
+    let mut cache = opened?.ok_or("prepared pointer absent; queries do not build it")?;
+    prepared.validate_cache(&mut cache.connection)?;
+    let mut reader = QueryReader::new(
+        &mut cache.connection,
         ReaderContext {
             memory: None,
             viewer: AtlasPrincipal::Human(se_types::HumanId::from_parts(1, [44; 10])?),

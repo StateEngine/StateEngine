@@ -53,16 +53,16 @@ impl SecurityStore {
     }
     pub(crate) fn read<T>(
         &self,
-        call: impl FnOnce(&se_store::ReadPhase) -> se_store::StoreResult<T>,
+        call: impl FnOnce(&mut se_store::ReadPhase) -> se_store::StoreResult<T>,
     ) -> Result<T> {
-        let phase = match &self.reads {
+        let mut phase = match &self.reads {
             Some(reads) => reads.read_phase(),
             None => self.reader.read_phase(),
         }
         .map_err(|e| store_error(&e))?;
         let result = phase
             .remote_store_binding(&self.info, self.generation)
-            .and_then(|()| call(&phase))
+            .and_then(|()| call(&mut phase))
             .map_err(|e| store_error(&e));
         match (result, phase.close()) {
             (result, Ok(())) => result,

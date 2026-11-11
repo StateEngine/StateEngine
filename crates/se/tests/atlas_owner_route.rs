@@ -44,7 +44,7 @@ impl RenewalDriver for ColdOnly {
     fn step(
         &mut self,
         _: &RegisteredSource<NativeAtlasSource>,
-        _: &CacheConnection<'_>,
+        _: &mut CacheConnection<'_>,
         _: &AtlasPolicy,
         _: &Scheduled,
         _: Instant,
@@ -57,7 +57,7 @@ impl RenewalDriver for ColdOnly {
     fn poll_events(
         &mut self,
         _: &RegisteredSource<NativeAtlasSource>,
-        _: &CacheConnection<'_>,
+        _: &mut CacheConnection<'_>,
         _: &AtlasPolicy,
         _: Instant,
     ) -> AtlasResult<Vec<SourceHint>> {
@@ -69,7 +69,7 @@ impl RenewalDriver for ColdOnly {
     fn close(
         &mut self,
         _: &RootId,
-        _: Option<&CacheConnection<'_>>,
+        _: Option<&mut CacheConnection<'_>>,
         _: Instant,
     ) -> AtlasResult<()> {
         Ok(())

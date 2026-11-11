@@ -51,7 +51,7 @@ mod linux {
         let registered = NativeAtlasSource::open(registration, CaseMode::Sensitive)?;
         let old = CacheEpoch::from_parts(1, [45; 10])?;
         let cache = NativeAtlasCache::create(&home, registered.scope.clone())?;
-        let db = CacheConnection::create(
+        let mut db = CacheConnection::create(
             &cache,
             &CacheSeed {
                 identity: CacheIdentity {
@@ -72,7 +72,7 @@ mod linux {
             0,
             "baseline must actually be an empty repository"
         );
-        pointer::publish(&cache, &db, None, end())?;
+        pointer::publish(&cache, &mut db, None, end())?;
         drop(db);
         drop(cache);
         std::fs::write(source.join("good.js"), "export function added(){return 1;}")?;
@@ -187,7 +187,7 @@ mod linux {
             Some(old.as_slice()),
             "completion without reap changed the published pointer"
         );
-        let candidate = CacheConnection::open(
+        let mut candidate = CacheConnection::open(
             &cache,
             CacheIdentity {
                 scope: source.scope.clone(),
@@ -219,7 +219,7 @@ mod linux {
             !Path::new(&format!("/proc/{pid}")).exists(),
             "killed child was not reaped"
         );
-        let current = pointer::open_current(
+        let mut current = pointer::open_current(
             &cache,
             &source.scope,
             ConnectionRole::ExternalReader,
@@ -291,7 +291,7 @@ mod linux {
             summary.coverage.failed_files, 1,
             "memory pressure left a file Indexed instead of a typed refusal"
         );
-        let current = pointer::open_current(
+        let mut current = pointer::open_current(
             &cache,
             &source.scope,
             ConnectionRole::ExternalReader,

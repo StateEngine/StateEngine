@@ -4,7 +4,7 @@ use rusqlite::types::Value;
 
 impl SqliteSnapshot {
     pub(super) fn read_search(
-        &self,
+        &mut self,
         mut query: SearchQuery,
         budget: ReadBudget,
     ) -> StoreResult<SearchPage> {

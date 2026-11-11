@@ -59,7 +59,7 @@ path = "tests/w3_lifecycle_independent.rs"
 required-features = ["secode"]
 
 [dev-dependencies]
-rusqlite = { version = "0.40", features = ["hooks"] }
+rusqlite = { version = "0.41", features = ["hooks"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [[test]]

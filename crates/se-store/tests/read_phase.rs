@@ -24,7 +24,7 @@ fn one_pin_transfers_to_snapshot_without_another_slot() -> Check {
     let f = Fixture::new()?;
     let (mut writer, lease) = f.direct()?;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
-    let phase = reader.read_phase()?;
+    let mut phase = reader.read_phase()?;
     let other = reader.clone().read_phase()?;
     assert!(matches!(phase.runtime_owner()?, Read::Absent { .. }));
     assert!(matches!(phase.credential([19; 32])?, Read::Absent { .. }));
@@ -165,7 +165,7 @@ fn failed_queries_and_drop_return_the_shared_budget() -> Check {
     let (writer, lease) = f.direct()?;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     for _ in 0..4 {
-        let phase = reader.read_phase()?;
+        let mut phase = reader.read_phase()?;
         assert!(
             phase
                 .owner_guard(&lease.files, budget(1, 1024, None)?)

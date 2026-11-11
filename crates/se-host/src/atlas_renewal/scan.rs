@@ -7,7 +7,7 @@ impl NativeRenewal {
     pub fn step(
         &mut self,
         source: &Source,
-        connection: &CacheConnection<'_>,
+        connection: &mut CacheConnection<'_>,
         policy: &AtlasPolicy,
         work: &Scheduled,
         deadline: Instant,
@@ -491,7 +491,7 @@ impl NativeRenewal {
     }
 }
 fn remove_pending(
-    connection: &CacheConnection<'_>,
+    connection: &mut CacheConnection<'_>,
     path: &str,
     deadline: Instant,
 ) -> AtlasResult<()> {
@@ -503,7 +503,7 @@ fn remove_pending(
     })
 }
 fn next_path(
-    connection: &CacheConnection<'_>,
+    connection: &mut CacheConnection<'_>,
     query: &str,
     after: i64,
     last: i64,

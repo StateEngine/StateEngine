@@ -117,14 +117,14 @@ fn real_runtime_renews_watches_reconciles_and_preserves_failed_baselines() -> Ch
             reason: CoverageReason::StaleSnapshot,
         },
     };
-    let db = CacheConnection::create(
+    let mut db = CacheConnection::create(
         &cache,
         &seed,
         ConnectionRole::HostWriter,
         &SqlProfile::from_qualified_overhead(1)?,
         deadline(),
     )?;
-    pointer::publish(&cache, &db, None, deadline())?;
+    pointer::publish(&cache, &mut db, None, deadline())?;
     drop(db);
     drop(cache);
     let mut controller = Controller::new(runtime(&home)?);
@@ -661,7 +661,7 @@ fn real_runtime_renews_watches_reconciles_and_preserves_failed_baselines() -> Ch
     let mut replacement_seed = seed.clone();
     replacement_seed.identity.epoch = CacheEpoch::from_parts(1, [44; 10])?;
     let cache = NativeAtlasCache::create(&home, source.scope.clone())?;
-    let writer = CacheConnection::create(
+    let mut writer = CacheConnection::create(
         &cache,
         &replacement_seed,
         ConnectionRole::HostWriter,
@@ -669,7 +669,7 @@ fn real_runtime_renews_watches_reconciles_and_preserves_failed_baselines() -> Ch
         deadline(),
     )?;
     let expected = cache.read_pointer()?.ok_or("previous pointer absent")?;
-    pointer::publish(&cache, &writer, Some(&expected), deadline())?;
+    pointer::publish(&cache, &mut writer, Some(&expected), deadline())?;
     drop(writer);
     drop(cache);
     controller.enqueue(
@@ -720,14 +720,14 @@ fn real_runtime_renews_watches_reconciles_and_preserves_failed_baselines() -> Ch
         let cache = NativeAtlasCache::create(&home, other_source.scope.clone())?;
         let mut other_seed = seed.clone();
         other_seed.identity.scope = other_source.scope;
-        let db = CacheConnection::create(
+        let mut db = CacheConnection::create(
             &cache,
             &other_seed,
             ConnectionRole::HostWriter,
             &SqlProfile::from_qualified_overhead(1)?,
             deadline(),
         )?;
-        pointer::publish(&cache, &db, None, deadline())?;
+        pointer::publish(&cache, &mut db, None, deadline())?;
         drop(db);
         drop(cache);
         controller.register(other.clone(), policy(64)?)?;

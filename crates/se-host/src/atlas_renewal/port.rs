@@ -3,7 +3,7 @@ impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
     fn step(
         &mut self,
         source: &Source,
-        connection: &CacheConnection<'_>,
+        connection: &mut CacheConnection<'_>,
         policy: &AtlasPolicy,
         work: &Scheduled,
         deadline: Instant,
@@ -13,7 +13,7 @@ impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
     fn poll_events(
         &mut self,
         source: &Source,
-        connection: &CacheConnection<'_>,
+        connection: &mut CacheConnection<'_>,
         policy: &AtlasPolicy,
         deadline: Instant,
     ) -> AtlasResult<Vec<SourceHint>> {
@@ -22,7 +22,7 @@ impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
     fn close(
         &mut self,
         root: &RootId,
-        connection: Option<&CacheConnection<'_>>,
+        connection: Option<&mut CacheConnection<'_>>,
         deadline: Instant,
     ) -> AtlasResult<()> {
         NativeRenewal::close(self, root, connection, deadline)

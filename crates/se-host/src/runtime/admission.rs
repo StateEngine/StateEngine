@@ -73,12 +73,14 @@ impl AdmissionContext {
         })
     }
     pub fn handshake(&self, pending: &mut PendingIpcHandshake) -> Result<ConnectionGrant> {
-        let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
+        let mut phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
             match pending.input() {
                 HandshakeInput::Call(hello) => match &hello.authority {
-                    PresentedAuthority::OwnerProof { .. } => self.owner_handshake(&phase, pending),
+                    PresentedAuthority::OwnerProof { .. } => {
+                        self.owner_handshake(&mut phase, pending)
+                    }
                     PresentedAuthority::Session(secret) => {
                         self.session(&phase, secret)?;
                         Ok(ConnectionGrant { owner_key: None })
@@ -88,14 +90,14 @@ impl AdmissionContext {
                         "the dedicated prepared launch-activation route",
                     )),
                 },
-                HandshakeInput::Stop(_) => self.owner_handshake(&phase, pending),
+                HandshakeInput::Stop(_) => self.owner_handshake(&mut phase, pending),
             }
         })();
         super::executor::close_read(result, phase.close())
     }
     fn owner_handshake(
         &self,
-        phase: &se_store::ReadPhase,
+        phase: &mut se_store::ReadPhase,
         pending: &mut PendingIpcHandshake,
     ) -> Result<ConnectionGrant> {
         self.owner_peer(phase, pending.peer())?;
@@ -109,7 +111,7 @@ impl AdmissionContext {
     /// remote Owner controls. The latter still require actual human presence.
     fn caller(
         &self,
-        phase: &se_store::ReadPhase,
+        phase: &mut se_store::ReadPhase,
         peer: &PeerProof,
         connection: &PresentedAuthority,
         override_authority: Option<&PresentedAuthority>,
@@ -191,7 +193,7 @@ impl AdmissionContext {
         raw: RawOperation,
         metadata: OperationMetadata,
     ) -> Result<HostedCall> {
-        let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
+        let mut phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
             let operation = ops::decode_operation(&raw.name, raw.arguments, raw.key.as_ref())?;
@@ -206,7 +208,7 @@ impl AdmissionContext {
                 selection.validate()?;
             }
             let (mut admission, terminal) = self.caller(
-                &phase,
+                &mut phase,
                 peer,
                 connection,
                 override_authority,
@@ -458,7 +460,7 @@ impl AdmissionContext {
         }
         se_types::Secret::new(std::mem::take(&mut *bytes))
     }
-    fn owner_peer(&self, phase: &se_store::ReadPhase, peer: &PeerProof) -> Result<()> {
+    fn owner_peer(&self, phase: &mut se_store::ReadPhase, peer: &PeerProof) -> Result<()> {
         // This finite auth phase deliberately retains its SQL pin through the
         // protected readback and bounded native ancestry observation below.
         // machine_key likewise reads a protected file before the phase closes;

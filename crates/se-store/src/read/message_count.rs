@@ -4,7 +4,7 @@ impl SqliteSnapshot {
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    pub(super) fn count_messages(&self, query: MessageQuery) -> StoreResult<u64> {
+    pub(super) fn count_messages(&mut self, query: MessageQuery) -> StoreResult<u64> {
         self.mail_source()?;
         let project = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;

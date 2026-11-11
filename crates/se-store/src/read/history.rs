@@ -198,7 +198,7 @@ impl SqliteSnapshot {
         Ok(event)
     }
     pub(super) fn read_history(
-        &self,
+        &mut self,
         mut query: HistoryQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<StoredEvent>> {

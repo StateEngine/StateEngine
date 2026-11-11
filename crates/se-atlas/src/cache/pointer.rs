@@ -103,7 +103,7 @@ fn open_epoch<'a>(
 /// native compare/replace preserves a concurrent winner and witnesses readback.
 pub fn publish(
     files: &dyn CacheFiles,
-    candidate: &CacheConnection<'_>,
+    candidate: &mut CacheConnection<'_>,
     expected: Option<&[u8]>,
     deadline: Instant,
 ) -> AtlasResult<CachePointer> {

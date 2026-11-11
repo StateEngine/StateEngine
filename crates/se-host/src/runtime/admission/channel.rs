@@ -8,7 +8,7 @@ impl AdmissionContext {
         override_authority: Option<&PresentedAuthority>,
         grant: &ConnectionGrant,
     ) -> Result<()> {
-        let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
+        let mut phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
             if override_authority.is_some()
@@ -28,7 +28,7 @@ impl AdmissionContext {
                     "the same current protected machine credential",
                 ));
             }
-            self.owner_peer(&phase, peer)?;
+            self.owner_peer(&mut phase, peer)?;
             Ok(())
         })();
         super::super::executor::close_read(result, phase.close())

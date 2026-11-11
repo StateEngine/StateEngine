@@ -7,7 +7,7 @@ impl NativeRenewal {
     pub(super) fn subscribe(
         &mut self,
         index: usize,
-        connection: &CacheConnection<'_>,
+        connection: &mut CacheConnection<'_>,
         path: &str,
         identity: [u8; 32],
         deadline: Instant,
@@ -177,7 +177,7 @@ impl NativeRenewal {
     pub fn poll_events(
         &mut self,
         source: &Source,
-        connection: &CacheConnection<'_>,
+        connection: &mut CacheConnection<'_>,
         policy: &AtlasPolicy,
         deadline: Instant,
     ) -> AtlasResult<Vec<SourceHint>> {

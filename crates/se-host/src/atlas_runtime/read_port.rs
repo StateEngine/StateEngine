@@ -12,8 +12,8 @@ use se_types::{
 };
 use std::sync::{Arc, Mutex, OnceLock};
 
-pub type AtlasReadCallback<'a> =
-    dyn FnMut(&CacheConnection<'_>, &RegisteredSource<NativeAtlasSource>, bool) -> Result<()> + 'a;
+pub type AtlasReadCallback<'a> = dyn FnMut(&mut CacheConnection<'_>, &RegisteredSource<NativeAtlasSource>, bool) -> Result<()>
+    + 'a;
 pub struct AtlasReadObservation {
     pub summary: IndexSummary,
     pub epoch_retired: bool,
@@ -21,7 +21,7 @@ pub struct AtlasReadObservation {
     pub record_feed_current: bool,
 }
 pub type AtlasObservedReadCallback<'a> = dyn FnMut(
-        &CacheConnection<'_>,
+        &mut CacheConnection<'_>,
         &RegisteredSource<NativeAtlasSource>,
         AtlasReadObservation,
     ) -> Result<()>

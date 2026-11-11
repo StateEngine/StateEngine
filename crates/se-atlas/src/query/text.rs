@@ -9,9 +9,9 @@ const MAX_MATCHING_FILES: usize = 200;
 // compact rendering and the final native cache-custody check. Reserve one
 // quarter for those steps rather than spending nearly the entire snapshot on IO.
 pub(super) const FINALIZE_ALLOWANCE: Duration = Duration::from_millis(250);
-impl QueryReader<'_> {
+impl QueryReader<'_, '_, '_> {
     pub(super) fn text_mode(
-        &self,
+        &mut self,
         query: &FindQuery,
         mode: SearchMode,
         initial: SearchMode,
@@ -28,10 +28,12 @@ impl QueryReader<'_> {
             query.order,
             query.regex,
             query.full,
-            &self.viewer,
+            &self.ctx.viewer,
         ))?;
+        let identity = self.cache.identity().clone();
+        let env = self.ctx.split();
         let answer = self.cache.read(end, |sql| {
-            self.text_page(query, mode, initial, work_end, digest, sql)
+            Self::text_page(&identity, &env, query, mode, initial, work_end, digest, sql)
         })?;
         super::freshness::finish(self, answer, query.budget, end)
     }
@@ -41,8 +43,13 @@ impl QueryReader<'_> {
         clippy::cognitive_complexity,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the split read seam passes identity and env where one &self used to go; group only if the page signature changes"
+    )]
     fn text_page(
-        &self,
+        identity: &CacheIdentity,
+        env: &QueryEnv<'_>,
         query: &FindQuery,
         mode: SearchMode,
         initial: SearchMode,
@@ -50,19 +57,19 @@ impl QueryReader<'_> {
         digest: [u8; 32],
         sql: &SqlView<'_>,
     ) -> AtlasResult<Answer<Read<SearchResults>>> {
-        let source = self.source;
-        let mut snapshot = self.snapshot(sql)?;
+        let source = *env.source;
+        let mut snapshot = snapshot(identity, env, sql)?;
         let previous = query
             .next
             .as_ref()
             .map(PositionCursor::decode)
             .transpose()?;
-        let mut ranking = self.clone();
+        let mut ranking = env.clone();
         ranking.now_unix_ms = previous
             .as_ref()
             .map(PositionCursor::ranking_time)
             .transpose()?
-            .unwrap_or(self.now_unix_ms);
+            .unwrap_or(env.now_unix_ms);
         let pinned = previous.as_ref().and_then(|p| p.text_window.clone());
         let advanced = previous
             .as_ref()
@@ -266,7 +273,7 @@ impl QueryReader<'_> {
                     range_incomplete = true;
                     break 'scan;
                 }
-                let metadata = metadata_pool.best(self, sql, &snapshot, &file, query, mode)?;
+                let metadata = metadata_pool.best(env, sql, &snapshot, &file, query, mode)?;
                 if Instant::now() >= work_end {
                     window_end = previous_end;
                     more_window = true;
@@ -296,8 +303,8 @@ impl QueryReader<'_> {
                     &file.pointer.file.0,
                     crate::rank::ActivityQuery {
                         project: &snapshot.index.project,
-                        viewer: &self.viewer,
-                        records: self.records,
+                        viewer: env.viewer,
+                        records: env.records,
                         now: ranking.now_unix_ms,
                     },
                 )?;
@@ -321,7 +328,7 @@ impl QueryReader<'_> {
                         code.pointer.freshness = SnapshotFreshness::Stale;
                     }
                     let body = if query.full {
-                        super::body::source(self, &mut code.pointer, work_end)?
+                        super::body::source(env, &mut code.pointer, work_end)?
                     } else {
                         None
                     };
@@ -519,7 +526,7 @@ impl QueryReader<'_> {
             } else {
                 query.budget.max_bytes
             };
-            let compact_fits = self.compact.is_none_or(|(bytes, explain)| {
+            let compact_fits = env.compact.is_none_or(|(bytes, explain)| {
                 crate::render::search(&answer, bytes, explain).is_ok()
             });
             if size(&answer)? <= maximum as usize && compact_fits {

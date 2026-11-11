@@ -164,20 +164,20 @@ mod history;
 fn empty_cache_real_consumer_prune() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
-    let db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
-    assert_eq!(prune::changes(&db, 0, 64, deadline())?.deleted, 0);
+    let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
+    assert_eq!(prune::changes(&mut db, 0, 64, deadline())?.deleted, 0);
     assert!(
-        !prune::metadata(&db, 64, deadline())?,
+        !prune::metadata(&mut db, 64, deadline())?,
         "empty metadata must not have pending work"
     );
-    assert!(!prune::commits(&db, 64, deadline())?);
+    assert!(!prune::commits(&mut db, 64, deadline())?);
     Ok(())
 }
 #[test]
 fn read_snapshots_refuse_writes_and_sql_timeout_is_typed() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
-    let db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
+    let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
     assert!(
         db.read(deadline(), |v| {
             v.prepare("DELETE FROM names")?;
@@ -233,8 +233,8 @@ fn pointer_absence_corruption_scope_and_published_readback() -> Check {
         .is_err()
     );
     fs::remove_file(f.dir.join("current.json"))?;
-    let db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
-    let ptr = pointer::publish(&f, &db, None, deadline())?;
+    let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
+    let ptr = pointer::publish(&f, &mut db, None, deadline())?;
     assert_eq!(ptr.epoch, s.identity.epoch);
     let reader = pointer::open_current(
         &f,
@@ -256,7 +256,7 @@ fn pointer_absence_corruption_scope_and_published_readback() -> Check {
 fn transaction_error_rolls_back_native_database() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
-    let db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
+    let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
     let result: AtlasResult<()> = db.write(0, deadline(), |v| {
         v.prepare("INSERT INTO names(text) VALUES('rolled-back')")?
             .execute([])
@@ -304,7 +304,7 @@ fn portable_paths_reject_windows_aliases_at_shared_ingress() -> Check {
 fn fts_and_commit_dependents_are_erased_with_native_owner_rows() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
-    let db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
+    let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
     db.write(1_000_000,deadline(),|v|{
   for statement in [
    "INSERT INTO records(id,record_id,kind,occurred_unix_ms,title,source_event,visibility) VALUES(1,'record','message',0,'needle','event','project')",
@@ -348,7 +348,7 @@ fn fts_and_commit_dependents_are_erased_with_native_owner_rows() -> Check {
 fn populated_prune_uses_production_budget_and_keeps_referenced_commits() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
-    let db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
+    let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
     db.write(1_000_000,deadline(),|v|{
  for statement in [
   "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<20001) INSERT INTO commits(id,oid,author_unix_ms,author,subject) SELECT x,CAST(printf('%040d',x) AS BLOB),x,'author','subject' FROM n",
@@ -357,8 +357,8 @@ fn populated_prune_uses_production_budget_and_keeps_referenced_commits() -> Chec
   "INSERT INTO names(text) VALUES('orphan')"
  ]{v.prepare(statement)?.execute([]).map_err(cache_error)?;}Ok(())
  })?;
-    assert!(!prune::commits(&db, 64, deadline())?);
-    let _ = prune::metadata(&db, 64, deadline())?;
+    assert!(!prune::commits(&mut db, 64, deadline())?);
+    let _ = prune::metadata(&mut db, 64, deadline())?;
     let outside = rusqlite::Connection::open_with_flags(
         f.dir.join(s.identity.epoch.as_str()),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -510,7 +510,7 @@ fn native_source_absence_hashes_same_size_edits_and_budget_refusal() -> Check {
 fn statement_capacity_refusal_releases_arena_and_keeps_connection_usable() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
-    let db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
+    let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
     db.read(deadline(), |v| {
         let mut held = Vec::new();
         for _ in 0..9 {
@@ -547,12 +547,12 @@ fn statement_capacity_refusal_releases_arena_and_keeps_connection_usable() -> Ch
 fn quiet_month_expires_published_changes_but_preserves_unpublished_staging() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
-    let db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
+    let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
     db.write(1_000_000,deadline(),|v|{for statement in [
   "UPDATE meta SET index_generation=2,published_generation=1 WHERE singleton=1",
   "INSERT INTO generations VALUES(1,0,1,'file'),(2,0,2,'file')",
   "INSERT INTO changes(generation,ordinal,kind,baseline_reset) VALUES(1,0,'updated',0),(2,0,'updated',0)"]{v.prepare(statement)?.execute([]).map_err(cache_error)?;}Ok(())})?;
-    let report = prune::changes(&db, 31 * 24 * 60 * 60 * 1000, 64, deadline())?;
+    let report = prune::changes(&mut db, 31 * 24 * 60 * 60 * 1000, 64, deadline())?;
     assert_eq!(report.retention_floor, 1);
     assert_eq!(report.deleted, 1);
     assert!(!report.pending);
@@ -575,7 +575,7 @@ fn quiet_month_expires_published_changes_but_preserves_unpublished_staging() -> 
 fn file_retirement_removes_contentless_fts_and_record_incoming_mentions() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
-    let db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
+    let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
     db.write(1_000_000,deadline(),|v|{for statement in [
   "INSERT INTO files(id,key,path,path_key,bytes,identity,coverage_json,last_code_generation,last_author_generation,baseline_reset) VALUES(1,zeroblob(16),'a.rs','a.rs',0,x'01','{}',0,0,0)",
   "INSERT INTO names(id,text) VALUES(1,'needle')",
@@ -616,7 +616,7 @@ fn file_retirement_removes_contentless_fts_and_record_incoming_mentions() -> Che
 fn file_retirement_repairs_incoming_edges_and_handles_nested_symbols_atomically() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
     let (f, s, p) = setup()?;
-    let db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
+    let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
     db.write(1_000_000,deadline(),|v|{for statement in [
  "INSERT INTO files(id,key,path,path_key,bytes,identity,coverage_json,last_code_generation,last_author_generation,baseline_reset) VALUES(1,zeroblob(16),'a.rs','a.rs',0,x'01','{}',0,0,0)",
  "INSERT INTO files(id,key,path,path_key,bytes,identity,coverage_json,last_code_generation,last_author_generation,baseline_reset) VALUES(2,x'01010101010101010101010101010101','b.rs','b.rs',0,x'02','{}',0,0,0)",

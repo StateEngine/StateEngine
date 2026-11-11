@@ -2,7 +2,7 @@ use super::*;
 use crate::sql_value::value;
 impl SqliteSnapshot {
     pub(super) fn list_heads(
-        &self,
+        &mut self,
         table: &str,
         first: &str,
         filter: &str,
@@ -92,7 +92,7 @@ impl SqliteSnapshot {
         )
     }
     pub(super) fn query_seqs(
-        &self,
+        &mut self,
         sql: &str,
         params: Vec<rusqlite::types::Value>,
         budget: &ReadBudget,
@@ -100,7 +100,7 @@ impl SqliteSnapshot {
         self.query_seqs_before(sql, params, deadline(budget)?)
     }
     pub(super) fn query_seqs_before(
-        &self,
+        &mut self,
         sql: &str,
         params: Vec<rusqlite::types::Value>,
         deadline: Instant,

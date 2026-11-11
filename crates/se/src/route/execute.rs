@@ -161,7 +161,7 @@ fn dispatch_with_cold_recovery(
     {
         return Ok(output);
     }
-    let (files, (reader, phase)) =
+    let (files, (reader, mut phase)) =
         match setup::inspect_phase(&cx.home, se_core::ops::receipt::timestamp(now_us()?)?)? {
             setup::Setup::Absent(output) if matches!(op, AnyOp::ProjectStatus(_)) => {
                 return Ok((*output).into());
@@ -190,7 +190,7 @@ fn dispatch_with_cold_recovery(
     } else {
         None
     };
-    let mut caller = admit::observe(cx, &phase, &files)?;
+    let mut caller = admit::observe(cx, &mut phase, &files)?;
     let mut snapshot = phase
         .into_snapshot(se_core::admission::read_scope(&caller.admission))
         .map_err(|e| store_error(&e))?;

@@ -77,10 +77,10 @@ pub fn foreground(
         &cx.home,
         se_core::ops::receipt::timestamp(execute::now_us()?)?,
     )?;
-    let super::setup::Setup::Present((files, (reader, phase))) = setup else {
+    let super::setup::Setup::Present((files, (reader, mut phase))) = setup else {
         return Err(super::setup::required(cx));
     };
-    let admitted = super::admit::observe(cx, &phase, &files);
+    let admitted = super::admit::observe(cx, &mut phase, &files);
     let closed = phase
         .close()
         .map_err(|error| se_core::store_error::store_error(&error));

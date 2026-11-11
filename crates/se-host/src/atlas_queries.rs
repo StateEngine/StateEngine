@@ -21,7 +21,7 @@ pub struct QueryObservations {
 
 /// The runtime invokes this only inside with_reader, after admitted root lookup.
 pub fn execute(
-    reader: &QueryReader<'_>,
+    reader: &mut QueryReader<'_, '_, '_>,
     request: &se_core::ops::AtlasRead,
 ) -> AtlasResult<se_core::ops::AnyOutput> {
     match execute_once(reader, request) {
@@ -48,7 +48,7 @@ fn sql_deadline(error: &SeError) -> bool {
 }
 
 fn execute_once(
-    reader: &QueryReader<'_>,
+    reader: &mut QueryReader<'_, '_, '_>,
     request: &se_core::ops::AtlasRead,
 ) -> AtlasResult<se_core::ops::AnyOutput> {
     use se_core::ops::{
@@ -93,7 +93,7 @@ pub fn with_reader<C, R, T>(
     read: &mut R,
     admission: &Admission,
     observations: QueryObservations,
-    query: impl FnOnce(&QueryReader<'_>) -> AtlasResult<T>,
+    query: impl FnOnce(&mut QueryReader<'_, '_, '_>) -> AtlasResult<T>,
 ) -> AtlasResult<T>
 where
     C: AtlasController,
@@ -126,7 +126,7 @@ where
             ));
         }
         let records = AtlasRecordReader::new(read, admission);
-        let reader = QueryReader::new(
+        let mut reader = QueryReader::new(
             cache,
             ReaderContext {
                 memory: None,
@@ -139,7 +139,7 @@ where
                 now_unix_ms: observations.now_unix_ms,
             },
         );
-        query(&reader)
+        query(&mut reader)
     })
 }
 
@@ -259,7 +259,7 @@ pub(crate) fn with_owner_reader<R: Snapshot, T>(
     admission: &Admission,
     now_unix_ms: i64,
     query: impl FnOnce(
-        &QueryReader<'_>,
+        &mut QueryReader<'_, '_, '_>,
         &se_atlas::source::RegisteredSource<crate::atlas_source::NativeAtlasSource>,
     ) -> AtlasResult<T>,
 ) -> AtlasResult<T> {
@@ -281,7 +281,7 @@ fn with_prepared_owner_reader<R: Snapshot, T>(
     admission: &Admission,
     now_unix_ms: i64,
     query: impl FnOnce(
-        &QueryReader<'_>,
+        &mut QueryReader<'_, '_, '_>,
         &se_atlas::source::RegisteredSource<crate::atlas_source::NativeAtlasSource>,
     ) -> AtlasResult<T>,
 ) -> AtlasResult<T> {
@@ -316,7 +316,7 @@ fn with_prepared_owner_reader<R: Snapshot, T>(
             .take()
             .ok_or_else(|| SeError::invalid("Atlas owner callback", "one borrowed callback"))?;
         let records = AtlasRecordReader::new(read, admission);
-        let reader = QueryReader::new(
+        let mut reader = QueryReader::new(
             cache,
             ReaderContext {
                 memory: observed.summary.memory,
@@ -330,7 +330,7 @@ fn with_prepared_owner_reader<R: Snapshot, T>(
             },
         )
         .with_source_state(observed.summary.state);
-        output = Some(query(&reader, source)?);
+        output = Some(query(&mut reader, source)?);
         Ok(())
     })?;
     output.ok_or_else(|| {

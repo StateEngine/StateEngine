@@ -1,12 +1,12 @@
 use super::target::*;
 use super::*;
 use rusqlite::types::Value;
-impl QueryReader<'_> {
+impl QueryReader<'_, '_, '_> {
     #[expect(
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    pub fn refs(&self, query: &RefsQuery) -> AtlasResult<Answer<Read<Page<ReferenceHit>>>> {
+    pub fn refs(&mut self, query: &RefsQuery) -> AtlasResult<Answer<Read<Page<ReferenceHit>>>> {
         let end = deadline(query.budget)?;
         if query.kinds.len() > 5 {
             return Err(se_types::SeError::invalid(
@@ -19,10 +19,12 @@ impl QueryReader<'_> {
             &query.target,
             &query.kinds,
             query.include_name_only,
-            &self.viewer,
+            &self.ctx.viewer,
         ))?;
+        let identity = self.cache.identity().clone();
+        let env = self.ctx.split();
         let answer = self.cache.read(end, |sql| {
-            let snapshot = self.snapshot(sql)?;
+            let snapshot = snapshot(&identity, &env, sql)?;
             let Some(target) = resolve(sql, &query.target)? else {
                 return Ok(snapshot
                     .unknown("target not indexed; search by name or path and inspect coverage"));
@@ -112,7 +114,7 @@ impl QueryReader<'_> {
                     bytes: k.bytes.clone(),
                 });
                 let linked = super::linked::for_file(
-                    self,
+                    &env,
                     sql,
                     &snapshot,
                     super::linked::LinkedRequest {

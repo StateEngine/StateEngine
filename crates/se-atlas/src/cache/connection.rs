@@ -176,19 +176,19 @@ impl<'a> CacheConnection<'a> {
             None
         };
         files.validate_database(&pin)?;
-        let db = open(&pin, role, deadline)?;
-        files.configure_connection_role(&db, role)?;
+        let mut db = open(&pin, role, deadline)?;
+        files.configure_connection_role(&mut db, role)?;
         configure_limits(&db, role, profile)?;
-        finite(&db, deadline, |_| {
-            schema::validate(&db, &id)?;
+        finite(&mut db, deadline, |db, _| {
+            schema::validate(db, &id)?;
             if role.writable() && role != ConnectionRole::MaintenanceWriter {
-                schema::validate_integrity(&db)?;
+                schema::validate_integrity(db)?;
             }
             Ok(())
         })?;
         configure_access(&db, role)?;
         if role == ConnectionRole::CandidateReader {
-            finite(&db, deadline, |_| schema::validate_integrity(&db))?;
+            finite(&mut db, deadline, |db, _| schema::validate_integrity(db))?;
         }
         files.validate_database(&pin)?;
         Ok(Some(Self {
@@ -221,14 +221,14 @@ impl<'a> CacheConnection<'a> {
             if pin.file.metadata().map_err(cache_error)?.len() != 0 {
                 return Err(cache_error("new epoch reservation is not empty"));
             }
-            let db = open(&pin, role, deadline)?;
-            files.configure_connection_role(&db, role)?;
+            let mut db = open(&pin, role, deadline)?;
+            files.configure_connection_role(&mut db, role)?;
             db.execute_batch("PRAGMA page_size=4096")
                 .map_err(cache_error)?;
             configure(&db, role, profile)?;
-            finite(&db, deadline, |_| {
+            finite(&mut db, deadline, |db, _| {
                 db.execute_batch("BEGIN EXCLUSIVE").map_err(cache_error)?;
-                let result = schema::initialize(&db, seed);
+                let result = schema::initialize(db, seed);
                 if let Err(original) = result {
                     return match db.execute_batch("ROLLBACK") {
                         Ok(()) => Err(original),
@@ -236,8 +236,8 @@ impl<'a> CacheConnection<'a> {
                     };
                 }
                 db.execute_batch("COMMIT").map_err(cache_error)?;
-                schema::validate(&db, &seed.identity)?;
-                schema::validate_integrity(&db)
+                schema::validate(db, &seed.identity)?;
+                schema::validate_integrity(db)
             })?;
             db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
                 .map_err(cache_error)?;
@@ -263,10 +263,10 @@ impl<'a> CacheConnection<'a> {
             _slot: slot,
         })
     }
-    pub fn validate(&self, deadline: Instant) -> AtlasResult<()> {
+    pub fn validate(&mut self, deadline: Instant) -> AtlasResult<()> {
         self.files.validate_database(&self.pin)?;
-        finite(&self.db, deadline, |_| {
-            schema::validate(&self.db, &self.identity)
+        finite(&mut self.db, deadline, |db, _| {
+            schema::validate(db, &self.identity)
         })
     }
     pub fn identity(&self) -> &CacheIdentity {
@@ -275,7 +275,7 @@ impl<'a> CacheConnection<'a> {
     /// A finite snapshot ends at response completion, including error paths.
     /// Output allocations belong to the host's single 98304-byte query arena.
     pub fn read<T>(
-        &self,
+        &mut self,
         deadline: Instant,
         read: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
     ) -> AtlasResult<T> {
@@ -285,7 +285,7 @@ impl<'a> CacheConnection<'a> {
     /// runs; native reservation holds DB/WAL/retired/staging/global disk capacity.
     /// Underestimating emission is an invariant violation, never a renewed budget.
     pub fn write<T>(
-        &self,
+        &mut self,
         maximum_wal_bytes: u64,
         deadline: Instant,
         write: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
@@ -296,7 +296,7 @@ impl<'a> CacheConnection<'a> {
         self.transaction(true, maximum_wal_bytes, deadline, write)
     }
     fn transaction<T>(
-        &self,
+        &mut self,
         write: bool,
         growth: u64,
         deadline: Instant,
@@ -336,16 +336,16 @@ impl<'a> CacheConnection<'a> {
         } else {
             None
         };
-        finite(&self.db, deadline, |budget_ms| {
+        finite(&mut self.db, deadline, |db, budget_ms| {
             let behavior = if write {
                 rusqlite::TransactionBehavior::Immediate
             } else {
                 rusqlite::TransactionBehavior::Deferred
             };
             let transaction =
-                rusqlite::Transaction::new_unchecked(&self.db, behavior).map_err(cache_error)?;
+                rusqlite::Transaction::new_unchecked(db, behavior).map_err(cache_error)?;
             let result = work(&SqlView {
-                db: &self.db,
+                db,
                 count: Cell::new(0),
                 bytes: Cell::new(0),
                 readonly: !write,
@@ -368,7 +368,7 @@ impl<'a> CacheConnection<'a> {
     }
     /// Event/commit/drain driven only. External pinned snapshots keep writes
     /// suspended; no timer or forced reader expiry is introduced.
-    pub fn checkpoint(&self, deadline: Instant) -> AtlasResult<bool> {
+    pub fn checkpoint(&mut self, deadline: Instant) -> AtlasResult<bool> {
         if !self.role.writable() {
             return Err(cache_error("reader cannot checkpoint"));
         }
@@ -376,9 +376,8 @@ impl<'a> CacheConnection<'a> {
         if wal < 4_000_000 {
             return Ok(true);
         }
-        finite(&self.db, deadline, |_| {
-            let (busy, _, _): (i64, i64, i64) = self
-                .db
+        finite(&mut self.db, deadline, |db, _| {
+            let (busy, _, _): (i64, i64, i64) = db
                 .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?))
                 })
@@ -389,15 +388,15 @@ impl<'a> CacheConnection<'a> {
     /// Release reusable page buffers between cold files so the native parser
     /// margin does not become permanently occupied by the previous SQL work.
     /// No transaction or statement may cross this synchronous boundary.
-    pub fn release_cold_memory(&self, deadline: Instant) -> AtlasResult<()> {
+    pub fn release_cold_memory(&mut self, deadline: Instant) -> AtlasResult<()> {
         if self.role != ConnectionRole::ColdWriter {
             return Err(cache_error(
                 "cold memory release requires the contained writer",
             ));
         }
         self.files.validate_database(&self.pin)?;
-        finite(&self.db, deadline, |_| {
-            self.db.release_memory().map_err(cache_error)
+        finite(&mut self.db, deadline, |db, _| {
+            db.release_memory().map_err(cache_error)
         })
     }
 }
@@ -410,7 +409,7 @@ fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResu
     } else {
         OpenFlags::SQLITE_OPEN_READ_ONLY
     };
-    let db = Connection::open_with_flags(
+    let mut db = Connection::open_with_flags(
         &pin.path,
         flags
             | OpenFlags::SQLITE_OPEN_NOFOLLOW
@@ -428,7 +427,7 @@ fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResu
         // This epoch is unpublished and has exactly one contained writer.
         // Exclusive WAL uses an in-process index, never a mapped -shm file.
         // Host handles retain normal locking after exact child reap/close.
-        finite(&db, deadline, |_| {
+        finite(&mut db, deadline, |db, _| {
             let locking: String = db
                 .query_row("PRAGMA locking_mode=EXCLUSIVE", [], |r| r.get(0))
                 .map_err(cache_error)?;
@@ -509,9 +508,9 @@ fn configure_access(db: &Connection, role: ConnectionRole) -> AtlasResult<()> {
     Ok(())
 }
 fn finite<T>(
-    db: &Connection,
+    db: &mut Connection,
     deadline: Instant,
-    work: impl FnOnce(u64) -> AtlasResult<T>,
+    work: impl FnOnce(&Connection, u64) -> AtlasResult<T>,
 ) -> AtlasResult<T> {
     if Instant::now() >= deadline {
         return Err(timeout(0));
@@ -527,7 +526,7 @@ fn finite<T>(
         ));
     db.progress_handler(1000, Some(move || Instant::now() >= deadline))
         .map_err(cache_error)?;
-    let result = work(budget_ms);
+    let result = work(db, budget_ms);
     db.progress_handler(0, None::<fn() -> bool>)
         .map_err(cache_error)?;
     if Instant::now() >= deadline {
