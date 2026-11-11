@@ -54,6 +54,22 @@ impl LaunchCoordinator {
                 continue;
             };
             let session = session.clone();
+            let observed_provider = matches!(
+                original
+                    .original
+                    .as_deref()
+                    .unwrap_or(&original.current)
+                    .body,
+                EventBody::SessionPrepared {
+                    surface: Some(se_store::SessionSurface::Observed),
+                    ..
+                }
+            );
+            let _serial = if observed_provider {
+                Some(self.capture.lock_observed(&session, deadline).await?)
+            } else {
+                None
+            };
             let service = match original
                 .original
                 .as_deref()
@@ -84,6 +100,35 @@ impl LaunchCoordinator {
                         "embedded stop selection",
                         "the selected binding revision changed; no newer binding was retired",
                     ));
+                }
+                if observed_provider {
+                    let project = se_core::scope::project(admission)?;
+                    let identity = crate::SessionIdentity {
+                        project: project.clone(),
+                        agent: agent.clone(),
+                        session: session.clone(),
+                    };
+                    let pin = se_core::scope::require_present(
+                        self.capture.recover_binding(identity, deadline).await?,
+                        "observed provider capture",
+                        "Restore access to the original transcript binding before retrying stop.",
+                    )?;
+                    // Preserve complete records already available from the
+                    // retained native source. The user-owned writer remains
+                    // live, so this is never a final-flush or exit claim.
+                    self.capture
+                        .catch_up(
+                            Admission {
+                                actor: se_store::Actor::Agent(agent.clone()),
+                                scope: se_store::Scope::Project(project),
+                                session: Some(session.clone()),
+                                generation: admission.generation,
+                            },
+                            pin.conversation,
+                            pin.path,
+                            deadline,
+                        )
+                        .await?;
                 }
                 let agent = agent.clone();
                 let phase =

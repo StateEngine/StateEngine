@@ -3,6 +3,19 @@
 use super::*;
 
 impl CaptureHandle {
+    /// Owner retirement and native lifecycle hooks share the same session
+    /// boundary, so a prefix read cannot race a rebind or SessionEnd.
+    pub(crate) async fn lock_observed(
+        &self,
+        session: &se_types::SessionId,
+        deadline: &Deadline,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+        super::super::pool::within(
+            deadline,
+            self.sources.observed_serial(session)?.lock_owned(),
+        )
+        .await
+    }
     /// Terminal sessions retain recovery metadata only while capture is owed.
     /// Native source and directory handles do not outlive their session.
     pub(crate) async fn retire(
