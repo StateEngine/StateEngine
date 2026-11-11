@@ -116,7 +116,7 @@ impl Engine {
         }
         Ok(elapsed)
     }
-    pub(super) fn checkpoint_due(&mut self) -> Option<Duration> {
+    pub(crate) fn checkpoint_due(&mut self) -> Option<Duration> {
         let wal = match self.wal() {
             Ok(wal) => wal,
             Err(error) => {

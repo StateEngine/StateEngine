@@ -72,12 +72,16 @@ pub(super) fn execute(
                     "Atlas cursor writer lease changed",
                 ));
             }
+            host.engine.require_wal_capacity()?;
             host.engine
                 .db
                 .pragma_update(None, "synchronous", "FULL")
                 .map_err(sql)?;
             let result =
                 crate::atlas_resume::apply(&host.engine.db, request.mutation, identity.generation);
+            if result.is_ok() {
+                host.engine.checkpoint_due();
+            }
             if result
                 .as_ref()
                 .is_err_and(|e| e.code == StoreErrorCode::CommitOutcomeUnknown)
