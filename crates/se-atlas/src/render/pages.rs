@@ -32,12 +32,12 @@ fn coverage(value: &FileCoverage) -> String {
         }
     }
 }
-fn unavailable<T>(value: &Read<T>) -> Option<String> {
+fn available<T>(value: &Read<T>) -> std::result::Result<&T, String> {
     match value {
-        Read::Present { .. } => None,
-        Read::Absent { checked } => Some(format!("absent: {}\n", escape(checked))),
-        Read::Unknown { what } => Some(format!("unknown: {}\n", escape(what))),
-        Read::Unreadable { source, reason, .. } => Some(format!(
+        Read::Present { value } => Ok(value),
+        Read::Absent { checked } => Err(format!("absent: {}\n", escape(checked))),
+        Read::Unknown { what } => Err(format!("unknown: {}\n", escape(what))),
+        Read::Unreadable { source, reason, .. } => Err(format!(
             "unreadable {}: {}\n",
             escape(source),
             escape(reason)
@@ -67,12 +67,12 @@ fn finish(
 }
 pub fn refs(answer: &Answer<Read<Page<ReferenceHit>>>, max: usize) -> AtlasResult<String> {
     let mut output = state(&answer.index);
-    if let Some(text) = unavailable(&answer.data) {
-        output.push_str(&text);
-        return finish(output, true, None, max);
-    }
-    let Read::Present { value } = &answer.data else {
-        unreachable!()
+    let value = match available(&answer.data) {
+        Ok(value) => value,
+        Err(text) => {
+            output.push_str(&text);
+            return finish(output, true, None, max);
+        }
     };
     for hit in value.items() {
         let line = match hit {
@@ -102,12 +102,12 @@ pub fn refs(answer: &Answer<Read<Page<ReferenceHit>>>, max: usize) -> AtlasResul
 }
 pub fn impact(answer: &Answer<Read<Impact>>, max: usize) -> AtlasResult<String> {
     let mut output = state(&answer.index);
-    if let Some(text) = unavailable(&answer.data) {
-        output.push_str(&text);
-        return finish(output, true, None, max);
-    }
-    let Read::Present { value } = &answer.data else {
-        unreachable!()
+    let value = match available(&answer.data) {
+        Ok(value) => value,
+        Err(text) => {
+            output.push_str(&text);
+            return finish(output, true, None, max);
+        }
     };
     for (is_test, items) in [(false, &value.dependents), (true, &value.tests)] {
         for dependent in items {
@@ -153,12 +153,12 @@ pub fn impact(answer: &Answer<Read<Impact>>, max: usize) -> AtlasResult<String> 
 }
 pub fn changes(answer: &Answer<Read<Page<CodeChange>>>, max: usize) -> AtlasResult<String> {
     let mut output = state(&answer.index);
-    if let Some(text) = unavailable(&answer.data) {
-        output.push_str(&text);
-        return finish(output, true, None, max);
-    }
-    let Read::Present { value } = &answer.data else {
-        unreachable!()
+    let value = match available(&answer.data) {
+        Ok(value) => value,
+        Err(text) => {
+            output.push_str(&text);
+            return finish(output, true, None, max);
+        }
     };
     for change in value.items() {
         match change {
@@ -201,12 +201,12 @@ pub fn changes(answer: &Answer<Read<Page<CodeChange>>>, max: usize) -> AtlasResu
 }
 pub fn outline(answer: &Answer<Read<Outline>>, max: usize) -> AtlasResult<String> {
     let mut output = state(&answer.index);
-    if let Some(text) = unavailable(&answer.data) {
-        output.push_str(&text);
-        return finish(output, true, None, max);
-    }
-    let Read::Present { value } = &answer.data else {
-        unreachable!()
+    let value = match available(&answer.data) {
+        Ok(value) => value,
+        Err(text) => {
+            output.push_str(&text);
+            return finish(output, true, None, max);
+        }
     };
     output.push_str(&format!(
         "{} · {}\n",

@@ -59,7 +59,7 @@ fn regex_literal(text: &str) -> String {
     output
 }
 pub(super) fn text_pattern(text: &str, mode: SearchMode, regex: bool) -> (String, bool) {
-    if regex || mode == SearchMode::Literal {
+    if regex {
         return (text.into(), regex);
     }
     let expression = match mode {
@@ -81,7 +81,7 @@ pub(super) fn text_pattern(text: &str, mode: SearchMode, regex: bool) -> (String
                     .join("|")
             }
         }
-        SearchMode::Literal => unreachable!(),
+        SearchMode::Literal => return (text.into(), false),
     };
     (expression, true)
 }

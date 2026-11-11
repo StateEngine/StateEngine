@@ -77,19 +77,24 @@ pub fn pending_effects<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<Vec<Projection
 /// Only mail notifications become obsolete when the owner removes a project.
 /// Durable messages and recipient dispositions are independent and untouched.
 pub fn is_mail_notification(record: &ProjectionRecord) -> bool {
+    notification_effect(record).is_some()
+}
+fn notification_effect(record: &ProjectionRecord) -> Option<se_store::RecordId> {
     let original = record.original.as_deref().unwrap_or(&record.current);
-    matches!(
-        &original.body,
+    match &original.body {
         EventBody::EffectRequested {
+            effect,
             kind: se_store::EffectKind::Bell,
-            intent: se_store::EffectIntent::MailNotice(_)
+            intent:
+                se_store::EffectIntent::MailNotice(_)
                 | se_store::EffectIntent::Mail {
                     recipient: Actor::Agent(_),
                     ..
                 },
             ..
-        }
-    )
+        } => Some(*effect),
+        _ => None,
+    }
 }
 pub fn abandon_notification<R: Snapshot>(
     kernel: &Kernel,
@@ -97,23 +102,15 @@ pub fn abandon_notification<R: Snapshot>(
     record: ProjectionRecord,
     cx: &Cx<'_, R>,
 ) -> Result<AtomicBatch> {
-    if !is_mail_notification(&record) {
-        return Err(SeError::invalid(
-            "removal notification",
-            "an agent mail notification",
-        ));
-    }
-    let original = record.original.as_deref().unwrap_or(&record.current);
-    let EventBody::EffectRequested { effect, .. } = &original.body else {
-        unreachable!()
-    };
+    let effect = notification_effect(&record)
+        .ok_or_else(|| SeError::invalid("removal notification", "an agent mail notification"))?;
     process_commit::batch(
         kernel,
         "project.remove",
         process_commit::phase_key(key, &format!("notification/{effect:?}/abandon"))?,
         serde_json::json!({"effect":effect,"phase":"abandon-notification"}),
         vec![EventBody::EffectSettled {
-            effect: *effect,
+            effect,
             expected: Expected::Revision(record.revision),
             outcome: se_store::EffectOutcome::Abandoned,
             evidence: vec![],

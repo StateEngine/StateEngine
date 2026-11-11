@@ -191,10 +191,19 @@ impl LaunchCoordinator {
                 .push(obligation("agent inventory", &reason, None));
         }
         for integration in inventory.integrations {
-            let (path, entry, state) = match &integration.current.body {
+            let (path, entry, state, id) = match &integration.current.body {
                 EventBody::IntegrationRecorded {
-                    path, key, state, ..
-                } => (path.to_local()?.display().to_string(), key.clone(), *state),
+                    path,
+                    key,
+                    state,
+                    integration: id,
+                    ..
+                } => (
+                    path.to_local()?.display().to_string(),
+                    key.clone(),
+                    *state,
+                    *id,
+                ),
                 _ => {
                     return Err(se_core::scope::unreadable(
                         "removal integration",
@@ -251,12 +260,7 @@ impl LaunchCoordinator {
                 .pool
                 .run_owned(deadline, move || super::integration::reverse(&head))
                 .await?;
-            let effect = match &integration.current.body {
-                EventBody::IntegrationRecorded {
-                    integration: id, ..
-                } => remove_commit::integration_effect(&input.idempotency_key, *id)?,
-                _ => unreachable!(),
-            };
+            let effect = remove_commit::integration_effect(&input.idempotency_key, id)?;
             let effect_head = self
                 .store
                 .read(admission.clone(), deadline, move |cx| {

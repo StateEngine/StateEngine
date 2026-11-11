@@ -127,19 +127,18 @@ pub(super) async fn execute(
     kernel: se_core::dispatch::Kernel,
     deadline: &Deadline,
 ) -> Result<AnyOutput> {
-    if !matches!(admission.actor, Actor::Human(_)) || admission.session.is_some() {
-        return Err(scope::unreadable(
-            "history import",
-            "owner admission is required",
-        ));
-    }
+    let owner = match (&admission.actor, admission.session.is_none()) {
+        (Actor::Human(owner), true) => owner.clone(),
+        _ => {
+            return Err(scope::unreadable(
+                "history import",
+                "owner admission is required",
+            ));
+        }
+    };
     admission.scope = Scope::Registry;
     let from = PathBuf::from(&input.from_node);
     let bound = deadline.clone();
-    let Actor::Human(owner) = &admission.actor else {
-        unreachable!()
-    };
-    let owner = owner.clone();
     let selected = input.source_owner.clone();
     let human_mappings = std::sync::Arc::new(input.mappings()?);
     let plan_mappings = human_mappings.clone();

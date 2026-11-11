@@ -71,7 +71,17 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
                     }
                 }
             }
-            other => other.map(|_| unreachable!()),
+            Read::Absent { checked } => Read::Absent { checked },
+            Read::Unknown { what } => Read::Unknown { what },
+            Read::Unreadable {
+                source,
+                reason,
+                error,
+            } => Read::Unreadable {
+                source,
+                reason,
+                error,
+            },
         })
     }
     pub fn body(
@@ -92,7 +102,17 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
                     )?,
                 })
             }
-            other => Ok(other.map(|_| unreachable!())),
+            Read::Absent { checked } => Ok(Read::Absent { checked }),
+            Read::Unknown { what } => Ok(Read::Unknown { what }),
+            Read::Unreadable {
+                source,
+                reason,
+                error,
+            } => Ok(Read::Unreadable {
+                source,
+                reason,
+                error,
+            }),
         }
     }
     fn load(
@@ -121,7 +141,19 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
         }
         let source = match visible(self.read.event(pointer.source_event.clone()))? {
             Read::Present { value } => value,
-            other => return Ok(other.map(|_| unreachable!())),
+            Read::Absent { checked } => return Ok(Read::Absent { checked }),
+            Read::Unknown { what } => return Ok(Read::Unknown { what }),
+            Read::Unreadable {
+                source,
+                reason,
+                error,
+            } => {
+                return Ok(Read::Unreadable {
+                    source,
+                    reason,
+                    error,
+                });
+            }
         };
         if source.header.scope != Scope::Project(project.clone())
             || source.header.event != pointer.source_event
@@ -168,7 +200,19 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
             ) if agent.as_str() == pointer.key.as_str() => {
                 let current = match visible(self.read.working_state(agent.clone()))? {
                     Read::Present { value } => value,
-                    other => return Ok(other.map(|_| unreachable!())),
+                    Read::Absent { checked } => return Ok(Read::Absent { checked }),
+                    Read::Unknown { what } => return Ok(Read::Unknown { what }),
+                    Read::Unreadable {
+                        source,
+                        reason,
+                        error,
+                    } => {
+                        return Ok(Read::Unreadable {
+                            source,
+                            reason,
+                            error,
+                        });
+                    }
                 };
                 if current.current.header.event != pointer.source_event {
                     return Ok(stale());

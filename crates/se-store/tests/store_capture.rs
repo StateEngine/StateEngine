@@ -398,12 +398,12 @@ fn native_capture_metadata(request_key: Option<&str>) -> Check {
                                 .ok_or("source metadata is not an object")?
                                 .remove("request_key");
                         }
-                        _ => unreachable!(),
+                        _ => panic!("unrecognized native-source replay fault"),
                     }
                     *native_ref = value.to_string();
                 }
             }
-            _ => unreachable!(),
+            _ => panic!("unrecognized capture replay fault"),
         }
         let refused = d
             .append(changed, &*lease)

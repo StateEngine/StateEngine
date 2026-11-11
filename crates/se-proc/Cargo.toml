@@ -26,6 +26,7 @@ unsafe_code = "allow"
 undocumented_unsafe_blocks = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
+unreachable = "deny"
 
 [[test]]
 name = "process_birth"

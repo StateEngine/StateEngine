@@ -251,26 +251,27 @@ fn absent_project<R: ReadStore>(
         }
     };
     let credential = match super::credential::read(files)? {
-        Read::Present { .. } => project_remove::RemovedMachineCredential {
-            state: "kept".into(),
-            witness: project_remove::RemovalWitness {
-                state: "not-applicable".into(),
-                method: None,
-                observed_at: None,
-                detail: Some("This already removed project changes no machine credential.".into()),
-            },
-        },
         Read::Absent { checked } => project_remove::RemovedMachineCredential {
             state: "removed".into(),
             witness: witnessed("independent protected-file absence", Some(checked))?,
         },
-        other => {
+        read => {
             scope::require_present(
-                other,
+                read,
                 "removed project credential",
                 "Restore access to the original credential state before retrying; unreadable is not absent.",
             )?;
-            unreachable!()
+            project_remove::RemovedMachineCredential {
+                state: "kept".into(),
+                witness: project_remove::RemovalWitness {
+                    state: "not-applicable".into(),
+                    method: None,
+                    observed_at: None,
+                    detail: Some(
+                        "This already removed project changes no machine credential.".into(),
+                    ),
+                },
+            }
         }
     };
     Ok(Some(

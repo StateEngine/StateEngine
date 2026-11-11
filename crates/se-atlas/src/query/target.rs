@@ -18,53 +18,52 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
             "a symbol, path, or path and position",
         ));
     };
-    if let SymbolSelector::Id(id) = selector {
-        let found = {
-            let mut stmt = sql.prepare("SELECT id FROM symbols WHERE key=?1")?;
-            let mut rows = stmt.query([id.0.as_slice()]).map_err(cache_error)?;
-            rows.next()
-                .map_err(cache_error)?
-                .map(|r| get::<i64>(r, 0))
-                .transpose()?
-        };
-        return found.map(|id| load(sql, id)).transpose();
-    }
-    if let SymbolSelector::At { path, position } = selector {
-        if position.line == 0 {
-            return Err(se_types::SeError::invalid(
-                "Atlas position",
-                "a 1-based line",
-            ));
+    let (name, path, container) = match selector {
+        SymbolSelector::Id(id) => {
+            let found = {
+                let mut stmt = sql.prepare("SELECT id FROM symbols WHERE key=?1")?;
+                let mut rows = stmt.query([id.0.as_slice()]).map_err(cache_error)?;
+                rows.next()
+                    .map_err(cache_error)?
+                    .map(|r| get::<i64>(r, 0))
+                    .transpose()?
+            };
+            return found.map(|id| load(sql, id)).transpose();
         }
-        let Some(file) = file_by_path(sql, path)? else {
-            return Ok(None);
-        };
-        let found = {
-            let mut stmt=sql.prepare("SELECT id FROM symbols WHERE file=?1 AND (start_line<?2 OR (start_line=?2 AND start_column<=?3)) AND (end_line>?2 OR (end_line=?2 AND end_column>?3)) ORDER BY (end_byte-start_byte),key LIMIT 1")?;
-            let mut rows = stmt
-                .query(params![file.rowid, position.line, position.byte_column])
-                .map_err(cache_error)?;
-            rows.next()
-                .map_err(cache_error)?
-                .map(|r| get::<i64>(r, 0))
-                .transpose()?
-        };
-        return found
-            .map(|id| {
-                symbol_by_id(sql, id).map(|(symbol, _)| Target {
-                    file,
-                    symbol: Some(symbol),
+        SymbolSelector::At { path, position } => {
+            if position.line == 0 {
+                return Err(se_types::SeError::invalid(
+                    "Atlas position",
+                    "a 1-based line",
+                ));
+            }
+            let Some(file) = file_by_path(sql, path)? else {
+                return Ok(None);
+            };
+            let found = {
+                let mut stmt=sql.prepare("SELECT id FROM symbols WHERE file=?1 AND (start_line<?2 OR (start_line=?2 AND start_column<=?3)) AND (end_line>?2 OR (end_line=?2 AND end_column>?3)) ORDER BY (end_byte-start_byte),key LIMIT 1")?;
+                let mut rows = stmt
+                    .query(params![file.rowid, position.line, position.byte_column])
+                    .map_err(cache_error)?;
+                rows.next()
+                    .map_err(cache_error)?
+                    .map(|r| get::<i64>(r, 0))
+                    .transpose()?
+            };
+            return found
+                .map(|id| {
+                    symbol_by_id(sql, id).map(|(symbol, _)| Target {
+                        file,
+                        symbol: Some(symbol),
+                    })
                 })
-            })
-            .transpose();
-    }
-    let SymbolSelector::Name {
-        name,
-        path,
-        container,
-    } = selector
-    else {
-        unreachable!()
+                .transpose();
+        }
+        SymbolSelector::Name {
+            name,
+            path,
+            container,
+        } => (name, path, container),
     };
     let file = path.as_ref().map(|p| file_by_path(sql, p)).transpose()?;
     if file.as_ref().is_some_and(Option::is_none) {

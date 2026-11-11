@@ -315,10 +315,17 @@ impl HostedRuntime {
                         "runtime stop",
                         "the already admitted shutdown result; preserve this original key and rediscover",
                     );
+                    let request = match stop.request() {
+                        Ok(request) => request,
+                        Err(error) => {
+                            outcome.runtime.failed_connection(error);
+                            continue;
+                        }
+                    };
                     let reply = crate::client::endpoint::RuntimeStopReply {
-                        epoch: stop.request().expected_epoch.clone(),
-                        generation: stop.request().generation,
-                        key: stop.request().key.clone(),
+                        epoch: request.expected_epoch.clone(),
+                        generation: request.generation,
+                        key: request.key.clone(),
                         outcome: crate::client::endpoint::RuntimeStopOutcome::Refused {
                             error: match se_types::ErrorEnvelope::new(
                                 error.body,
@@ -542,7 +549,7 @@ fn shutdown_bound(stop: Option<&AuthorizedStop>) -> Result<Deadline> {
             let now = u64::try_from(super::start::now_unix_micros()?)
                 .map_err(|_| SeError::invalid("stop clock", "positive Unix microseconds"))?;
             std::time::Duration::from_micros(
-                stop.request().deadline_at.get().saturating_sub(now).max(1),
+                stop.request()?.deadline_at.get().saturating_sub(now).max(1),
             )
         }
         None => CALL_TIMEOUT,

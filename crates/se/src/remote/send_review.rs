@@ -166,7 +166,7 @@ fn preparation_mismatch_never_dispatches_a_mutating_send() -> io::Result<()> {
                     },
                 }));
             }
-            _ => unreachable!(),
+            _ => panic!("unexpected synthetic mismatch case"),
         }
         let mut calls = 0;
         let mut stderr = Observed::default();

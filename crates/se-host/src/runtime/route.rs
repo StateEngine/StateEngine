@@ -28,10 +28,13 @@ pub struct AuthorizedStop {
     pending: PendingIpcHandshake,
 }
 impl AuthorizedStop {
-    pub fn request(&self) -> &RuntimeStopRequest {
+    pub fn request(&self) -> Result<&RuntimeStopRequest> {
         match self.pending.input() {
-            HandshakeInput::Stop(request) => request,
-            HandshakeInput::Call(_) => unreachable!("constructed only after a stop handshake"),
+            HandshakeInput::Stop(request) => Ok(request),
+            HandshakeInput::Call(_) => Err(SeError::invalid(
+                "runtime stop handshake",
+                "an authenticated stop request",
+            )),
         }
     }
     pub async fn reply(self, reply: &RuntimeStopReply, deadline: &Deadline) -> Result<()> {
