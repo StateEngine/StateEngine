@@ -89,6 +89,10 @@ jobs:
             core.setOutput('route', route);
 
   linux-box:
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     needs: [changes, linux-route]
     if: ${{ !cancelled() && needs.linux-route.result == 'success' && needs.linux-route.outputs.route == 'box' }}
     runs-on: ${{ fromJSON(vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
@@ -96,7 +100,7 @@ jobs:
       image: stateengine-ci-approved
       env:
         CI_SOURCE_TOKEN: ${{ github.token }}
-    timeout-minutes: 60
+    timeout-minutes: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 100 || 60 }}
     outputs:
       status: ${{ steps.box.outputs.status }}
       windows: ${{ steps.box.outputs.windows }}
