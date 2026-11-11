@@ -139,6 +139,8 @@ jobs:
           shared-key: hosted-debug-v1
       - name: Strict Linux Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Minimal host Clippy
+        run: cargo clippy -p se-host --no-default-features --locked -- -D warnings
       - name: Cache observation
         if: ${{ always() }}
         run: echo 'Clippy cache exact hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
