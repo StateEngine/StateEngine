@@ -1481,6 +1481,7 @@ name = "se"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "regex",
  "rusqlite",
  "se-atlas",
  "se-core",

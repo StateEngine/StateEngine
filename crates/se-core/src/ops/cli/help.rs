@@ -32,6 +32,7 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         #[cfg(feature = "import")]
         "store.import_node" => "Import retained history without changing its source files",
         "project.init" => "Register this folder and save your first agent",
+        "diagnostic.bundle" => "Save a private redacted diagnostic file to share for support",
         "doctor.inspect" => "Check this installation and name exact supported repairs",
         "project.status" => "Show project, agent and unread-message status",
         "history.event_read" => "Read one committed event by ID",

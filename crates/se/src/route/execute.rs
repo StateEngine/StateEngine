@@ -143,6 +143,9 @@ fn dispatch_with_cold_recovery(
         }
         op
     };
+    if let AnyOp::DiagnosticBundle(input) = op {
+        return super::diagnostic_bundle::execute(cx, input);
+    }
     if let AnyOp::ProjectInit(input) = op {
         return super::init::execute(cx, input);
     }

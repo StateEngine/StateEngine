@@ -99,12 +99,12 @@ Common CLI rendering flags are `--json`, `-q`, `--no-color`, `-h/--help` and `-V
 | `project.status` | `status [--all]`; bare root | `stateengine_status` | either | read | owner project/all selection; bound session has no selector | `Status`: setup, agent/provider/session/runtime/capture facts, pending/unknown states and next step | J1–J5 |
 | `doctor.inspect` | `doctor` | none — local installation diagnostics are an owner support surface | owner | read | resolved project/home | `Diagnosis`: version/config/store/integration/custody checks, each measured or unknown, with remedies | support J1–J5 |
 | `doctor.repair` | `doctor --fix CHECK-ID` | none — explicit owner consent for owned configuration repairs | owner | write | one currently diagnosed check; printed exact plan and human-presence check; required request key | `RepairResult`: applied/skipped/refused changes, independent readbacks and remaining diagnoses | support J1–J5 |
-| `doctor.bundle` | `doctor --bundle [PATH]` | none — owner chooses a local support artifact | owner | write | destination; resolved diagnostic scope | `SupportBundle`: local path, redaction/content manifest and write readback; excludes turn/message text and secrets, never uploads | support J1–J5 |
+| `diagnostic.bundle` | `diagnostic-bundle` | none — home-wide owner observations must not leak into project sessions; ask the user to run the CLI and share the file | owner | read | selected home; bounded retained startup logs | `DiagnosticBundleOutput`: private local file path, byte count, SHA-256 readback and collection completeness; redacts credential-shaped text and home paths, excludes conversation/config/credential files, never uploads | support J1–J5 |
 | `config.get` | `config get KEY [--origin]` | none — configuration is owner administration | owner | read | typed file-setting key or explicit saved agent field; origin choice | `Read<ConfigValue>`: redacted value and optional precedence/source | support J2–J5 |
 | `config.set` | `config set KEY VALUE` | none — owner configuration; per-key human policy | owner; security keys require human presence | variant: hostless file custody for general keys; store write for agent records | typed key/value; required key; security metadata covers profiles/permissions, capture/privacy, listener/security and agent can-create; general config.toml writes never start a runtime | `ConfigReceipt`: changed/unchanged, validated value/origin and independent readback; file-only results invent no event/writer; unknown keys refuse | support J2–J5 |
 | `config.list` | `config list [--origin] [--limit N] [--cursor C]` | none — configuration is owner administration | owner | read | single config.toml settings and effective origins; bounded pages continue by cursor | `Page<ConfigValue>`: effective redacted settings and optional origins | support J2–J5 |
 
-Plain `se init` (including `--repo DIR`) is managed setup and writes nothing inside the repository; it registers existing repositories idempotently. Its human output ends with the scoped first-launch command, which also appears as literal argv in JSON. Run that command to start the saved initial agent. Managed Claude/Codex launches receive their wiring through launch flags rather than repository/global integration edits. Preserve unrelated files and Git history. Provider is the closed `claude`/`codex` choice; default permissions preserve sandbox/approval behavior, and full bypass requires a saved opt-in profile by name. The three doctor variants are mutually exclusive; configuration repair never rotates credentials or restores history, and `--fix` is not an arbitrary filesystem writer, SQL console or grant to weaken those defaults. Remove preserves history; erasure is the separate explicit operation below.
+Plain `se init` (including `--repo DIR`) is managed setup and writes nothing inside the repository; it registers existing repositories idempotently. Its human output ends with the scoped first-launch command, which also appears as literal argv in JSON. Run that command to start the saved initial agent. Managed Claude/Codex launches receive their wiring through launch flags rather than repository/global integration edits. Preserve unrelated files and Git history. Provider is the closed `claude`/`codex` choice; default permissions preserve sandbox/approval behavior, and full bypass requires a saved opt-in profile by name. Diagnostic export writes a new owner-private JSON file in a unique OS temporary directory without starting the host or repairing the source home. It reports unavailable sections and omitted logs explicitly; review it before sharing and delete it when no longer needed. Inspection and repair are mutually exclusive; configuration repair never rotates credentials or restores history, and `--fix` is not an arbitrary filesystem writer, SQL console or grant to weaken those defaults. Remove preserves history; erasure is the separate explicit operation below.
 
 ## Runtime, agents and continuity
 
@@ -241,7 +241,7 @@ The CLI retains replacement hints only for commands with a supported replacement
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 48 operations (42 core, 6 Atlas), 23 MCP tools (18 core, 5 Atlas). Planned: 11 operations, 4 MCP tools.
+Registered: 49 operations (43 core, 6 Atlas), 23 MCP tools (18 core, 5 Atlas). Planned: 10 operations, 4 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -264,6 +264,7 @@ Registered: 48 operations (42 core, 6 Atlas), 23 MCP tools (18 core, 5 Atlas). P
 | `store.import_node` | import | none | owner | custody |
 | `project.init` | init | none | owner | write |
 | `project.move` | project move | none | owner | write |
+| `diagnostic.bundle` | diagnostic-bundle | none | owner | read |
 | `doctor.inspect` | doctor | none | owner | read |
 | `doctor.repair` | doctor --fix | none | owner | write |
 | `project.status` | status | `stateengine_status` | either | read |
@@ -294,7 +295,7 @@ Registered: 48 operations (42 core, 6 Atlas), 23 MCP tools (18 core, 5 Atlas). P
 | `config.set` | config set | none | owner | write |
 | `config.list` | config list | none | owner | read |
 
-Planned operations (design tables, not yet registered): `agent.wake`, `credential.rotate`, `doctor.bundle`, `history.search`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
+Planned operations (design tables, not yet registered): `agent.wake`, `credential.rotate`, `history.search`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
 
 Planned MCP tools: `stateengine_agent_status`, `stateengine_agent_wake`, `stateengine_search`, `stateengine_session_turn`
 

@@ -36,6 +36,8 @@ pub mod agent_status;
 mod cli;
 pub mod config_listing;
 pub(crate) use cli::command_name;
+pub mod diagnostic_bundle;
+pub use diagnostic_bundle::{DiagnosticBundle, DiagnosticBundleOutput};
 pub mod doctor;
 pub use doctor::{Diagnosis, DoctorInspect, DoctorRepair, RepairOutput};
 pub mod event;
@@ -216,6 +218,7 @@ ops! {
     ImportNode => ImportNode, ImportReceipt, ("store.import_node",leaf(&["import"]),no_mcp("Explicit owner migration preserves the original Node history."),Owner,false,Never,Custody,Home,HostAutoStart,"se.import",Import,&["J2","J3","J4"]);
     ProjectInit => ProjectInit, InitOutput, ("project.init",leaf(&["init"]),no_mcp("Owner setup registers the managed workspace."),Owner,false,Never,Write,Home,None,"se.init",Init,&["J2"]);
     ProjectMove => ProjectMove, MoveOutput, ("project.move",leaf(&["project","move"]),no_mcp("Owner terminal operation: re-attach the project to a moved repository folder after verifying its recorded git identity."),Owner,false,Never,Write,Project,None,"se.project-move",ProjectMove,&["J3"]);
+    DiagnosticBundle => DiagnosticBundle, DiagnosticBundleOutput, ("diagnostic.bundle",leaf(&["diagnostic-bundle"]),no_mcp("Home-wide owner diagnostics must not leak into a project session; ask the user to run the installed CLI and share the file."),Owner,false,Never,Read,Home,None,"se.diagnostic-bundle",Bundle,&["J5"]);
     DoctorInspect => DoctorInspect, Diagnosis, ("doctor.inspect",leaf(&["doctor"]),no_mcp("Owner installation diagnosis uses the installed CLI."),Owner,false,Never,Read,Home,None,"se.diagnosis",Diagnosis,&["J5"]);
     DoctorRepair => DoctorRepair, RepairOutput, ("doctor.repair",CliExposure::Leaf {path:&["doctor"],hidden:false,select:Selector::Flag("fix")},no_mcp("One-check repair requires an owner terminal."),Owner,false,Always,Write,Home,None,"se.repair",Repair,&["J5"]);
     ProjectStatus => ProjectStatus, StatusOutput, ("project.status",leaf(&["status"]),tool("stateengine_status","Project status","Read project setup, agents and runtime facts."),Either,false,Never,Read,ProjectOrAll,None,"se.status",Status,&["J1","J2"]);
@@ -345,6 +348,7 @@ impl AnyOutput {
             Self::AtlasChanges(v) => atlas::page_exit(&v.value.answer.data),
             Self::AtlasImpact(v) => atlas::complete_exit(&v.value.answer.data, |v| v.complete),
             Self::AtlasOutline(v) => atlas::complete_exit(&v.value.answer.data, |v| v.complete),
+            Self::DiagnosticBundle(v) if !v.value.complete => 2,
             Self::DoctorInspect(v) => v.value.exit_code(),
             Self::DoctorRepair(v) if !v.value.complete => 2,
             Self::Uninstall(v) if !v.value.complete => 2,

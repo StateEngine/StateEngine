@@ -9,6 +9,7 @@ mod autostart;
 mod clock;
 #[path = "route/credential.rs"]
 pub mod credential;
+mod diagnostic_bundle;
 #[path = "route/direct.rs"]
 pub mod direct;
 mod doctor;

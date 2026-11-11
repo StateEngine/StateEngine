@@ -103,6 +103,7 @@ ProjectMove => ProjectMove, MoveOutput;
 #[cfg(feature = "import")]
 ImportNode => ImportNode, ImportReceipt;
 ProjectStatus => ProjectStatus, StatusOutput;
+DiagnosticBundle => DiagnosticBundle, DiagnosticBundleOutput;
 DoctorInspect => DoctorInspect, Diagnosis;
 DoctorRepair => DoctorRepair, RepairOutput;
 EventRead => EventRead, EventOutput;
