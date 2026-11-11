@@ -3,6 +3,21 @@ use crate::transport::Transport;
 use se_host::channels::*;
 use se_types::Secret;
 use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
+
+#[derive(Default)]
+pub struct FirstReplyGate {
+    entered: Notify,
+    release: Notify,
+}
+impl FirstReplyGate {
+    pub async fn entered(&self) {
+        self.entered.notified().await;
+    }
+    pub fn release(&self) {
+        self.release.notify_one();
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Mode {
@@ -23,6 +38,7 @@ struct Reply {
 pub struct FaultTransport {
     inner: Arc<Transport>,
     reply: Mutex<Option<Reply>>,
+    first_reply_gate: Mutex<Option<Arc<FirstReplyGate>>>,
 }
 impl std::ops::Deref for FaultTransport {
     type Target = Transport;
@@ -31,6 +47,14 @@ impl std::ops::Deref for FaultTransport {
     }
 }
 impl FaultTransport {
+    pub fn gate_first_reply(&self) -> ChannelResult<Arc<FirstReplyGate>> {
+        let gate = Arc::new(FirstReplyGate::default());
+        *self
+            .first_reply_gate
+            .lock()
+            .map_err(|_| ChannelError::ReceiverNotRunning)? = Some(gate.clone());
+        Ok(gate)
+    }
     pub fn arm(&self, expected: String, mode: Mode) -> ChannelResult<()> {
         *self
             .reply
@@ -86,6 +110,18 @@ impl ChannelTransport for FaultTransport {
         buttons: &'a [ActionButton],
     ) -> TransportFuture<'a, ExternalId> {
         Box::pin(async move {
+            let gate = if text.starts_with("Reply to ") {
+                self.first_reply_gate
+                    .lock()
+                    .map_err(|_| ChannelError::ReceiverNotRunning)?
+                    .take()
+            } else {
+                None
+            };
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
             let decision = {
                 let mut reply = self
                     .reply

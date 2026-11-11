@@ -186,6 +186,9 @@ fn roundtrip(lose_response: bool, long_reply: bool, mode: Mode) -> Check {
                 } else { "Fixture work completed and independently read back.".into() };
                 let full_reply = format!("Reply to {original}:\n{reply_body}");
                 if long_reply { provider.arm(full_reply.clone(), mode)?; }
+                let gate = if lose_response || mode == Mode::UnknownSecond {
+                    Some(provider.gate_first_reply()?)
+                } else { None };
                 let reply = rpc(port, "channel-http-fixture", "tools/call", json!({
                     "name": "stateengine_msg_send", "arguments": {
                         "to": f.owner, "body": reply_body, "reply_to": original,
@@ -193,17 +196,39 @@ fn roundtrip(lose_response: bool, long_reply: bool, mode: Mode) -> Check {
                     }
                 })).await?;
                 require(reply["result"]["isError"] != true, format!("MCP reply refused: {reply}"))?;
-                let done = wait_for(&channels, &id, |p| p.receipts.first()
+                if let Some(gate) = &gate {
+                    tokio::time::timeout(Duration::from_secs(10), gate.entered()).await?;
+                    let pending = inspect(&channels, &id).await?;
+                    let reply = pending.receipts.first().and_then(|r| r.replies.first())
+                        .ok_or("in-flight reply absent")?;
+                    assert!(matches!(&reply.delivery, ProviderOutput::Unknown { code }
+                        if code == "attempt_awaiting_reconciliation"));
+                    assert!(reply.provider_messages.is_empty());
+                }
+                let done = wait_for(&channels, &id, |p| {
+                    // Release only after this snapshot was read: the old predicate
+                    // must see the in-flight first send, not a scheduler-dependent result.
+                    if let Some(gate) = &gate { gate.release(); }
+                    p.receipts.first()
                     .and_then(|r| r.replies.first()).is_some_and(|r| {
                         if long_reply {
                             match mode {
                                 Mode::FailedSecond => matches!(&r.delivery, ProviderOutput::Failed { code } if code == "message_too_large"),
-                                Mode::UnknownSecond => matches!(&r.delivery, ProviderOutput::Unknown { .. }),
+                                Mode::UnknownSecond => matches!(&r.delivery, ProviderOutput::Unknown { code } if code == "send_outcome_unknown"),
                                 _ => matches!(&r.delivery, ProviderOutput::Sent { .. }),
                             }
-                        } else if lose_response { matches!(r.delivery, ProviderOutput::Unknown { .. }) }
+                        } else if lose_response { matches!(&r.delivery, ProviderOutput::Unknown { code } if code == "send_outcome_unknown") }
                         else { matches!(r.delivery, ProviderOutput::Sent { .. }) }
-                    })).await?;
+                    })
+                }).await?;
+                if gate.is_some() {
+                    // Drain the real provider outcome without replacing the snapshot
+                    // selected by the predicate under test.
+                    wait_for(&channels, &id, |p| p.receipts.first()
+                        .and_then(|r| r.replies.first()).is_some_and(|r|
+                            matches!(&r.delivery, ProviderOutput::Unknown { code }
+                                if code == "send_outcome_unknown"))).await?;
+                }
                 let receipt = done.receipts.first().ok_or("completed receipt absent")?;
                 assert!(receipt.read.is_some());
                 assert_eq!(receipt.replies.len(), 1);
@@ -235,6 +260,8 @@ fn roundtrip(lose_response: bool, long_reply: bool, mode: Mode) -> Check {
                     }
                 }
                 if lose_response {
+                    assert!(matches!(&receipt.replies[0].delivery, ProviderOutput::Unknown { code }
+                        if code == "send_outcome_unknown"), "in-flight send was mistaken for terminal uncertainty");
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     assert_eq!(provider.replies()?.len(), 1);
                 }
