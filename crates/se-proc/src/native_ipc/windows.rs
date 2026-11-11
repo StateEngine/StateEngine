@@ -301,10 +301,20 @@ impl NativePipeStream {
         }
         // The caller's slice and OVERLAPPED remain live until completion or
         // cancellation has been drained, including timeout/error paths.
-        wait(self.handle.as_raw_handle(), &mut operation, &self.bound)
+        wait(
+            self.handle.as_raw_handle(),
+            &mut operation,
+            reading,
+            &self.bound,
+        )
     }
 }
-fn wait(handle: HANDLE, operation: &mut OVERLAPPED, bound: &IpcIoBound) -> io::Result<usize> {
+fn wait(
+    handle: HANDLE,
+    operation: &mut OVERLAPPED,
+    reading: bool,
+    bound: &IpcIoBound,
+) -> io::Result<usize> {
     loop {
         let mut count = 0;
         // SAFETY: live pipe and the same retained OVERLAPPED, with writable count output.
@@ -314,6 +324,14 @@ fn wait(handle: HANDLE, operation: &mut OVERLAPPED, bound: &IpcIoBound) -> io::R
         // SAFETY: reads this thread's immediately preceding native operation error.
         let code = unsafe { GetLastError() };
         if code != ERROR_IO_INCOMPLETE {
+            if reading
+                && matches!(
+                    code,
+                    ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED | ERROR_HANDLE_EOF
+                )
+            {
+                return Ok(0);
+            }
             return Err(io::Error::from_raw_os_error(code as i32));
         }
         let remaining = match bound.remaining() {
@@ -499,3 +517,63 @@ impl NativePipeReservation {
 }
 
 pub(super) use super::windows_peer::{peer, self_peer, stop_server};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, atomic::AtomicBool};
+    use std::time::{Duration, Instant};
+
+    type Check = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn pending_read_reports_clean_eof_when_peer_closes() -> Check {
+        let mut entropy = [0; 16];
+        crate::fill_entropy(&mut entropy)?;
+        let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+        let name = std::ffi::OsString::from(format!(r"\\.\pipe\se-winpipe-eof-{suffix}"));
+        let server_handle = create(&name)?;
+        let path = wide(&name)?;
+        // SAFETY: NUL-terminated test pipe name with no sharing; ownership of
+        // the successful client handle transfers into owned() immediately below.
+        let client_raw = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
+                0,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                ptr::null_mut(),
+            )
+        };
+        if client_raw == INVALID_HANDLE_VALUE {
+            return Err("test client must connect while the server instance is live".into());
+        }
+        let client = owned(client_raw, "open test client pipe")?;
+        security::verify(client.as_raw_handle())?;
+        let bound = IpcIoBound {
+            deadline: Instant::now() + Duration::from_secs(10),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        let mut server = NativePipeStream {
+            handle: server_handle,
+            bound,
+        };
+        let mut buffer = [0u8; 16];
+        let reader = std::thread::spawn(move || server.read(&mut buffer));
+        // Let the overlapped read become pending before the peer goes away;
+        // closing earlier would fall into the synchronous path instead.
+        std::thread::sleep(Duration::from_millis(200));
+        drop(client);
+        let outcome = reader.join().map_err(|_| "read thread panicked")?;
+        let Ok(count) = outcome else {
+            return Err(format!(
+                "a read pending when the peer closes must be clean EOF, got {outcome:?}"
+            )
+            .into());
+        };
+        assert_eq!(count, 0);
+        Ok(())
+    }
+}
