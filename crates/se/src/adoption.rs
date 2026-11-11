@@ -16,9 +16,7 @@ use std::{
 };
 
 pub fn entry(args: &[OsString]) -> Option<u8> {
-    if kind(args).is_none() {
-        return None;
-    }
+    kind(args)?;
     // Every refusal remains provider-nonblocking. An unregistered project must
     // be a completely silent success and must never create state or a runtime.
     Some(run(args).unwrap_or(0))
