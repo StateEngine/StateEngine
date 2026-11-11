@@ -189,7 +189,11 @@ impl Control {
             // bearing URL so a timeout and a refused connection remain distinct.
             unreadable(
                 "SE Code authenticated control",
-                private_reason(format!("{operation}: {}", transport_reason(e)), secret, body),
+                private_reason(
+                    format!("{operation}: {}", transport_reason(e)),
+                    secret,
+                    body,
+                ),
             )
         })?;
         let status = response.status();
