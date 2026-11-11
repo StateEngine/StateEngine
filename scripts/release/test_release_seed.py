@@ -205,14 +205,31 @@ class SeedBuild(unittest.TestCase):
 
         # A changed dependency source keeps the same seed key: cargo must recompile
         # the stale dependency and the build must still qualify as seeded.
-        # The dependency source moves without changing the seed key: cargo's
-        # fingerprints must notice and recompile it.
-        (self.work / "dep/src/lib.rs").write_text(
-            FIXTURE_DEP_LIB.replace("fixture-dep", "fixture-dep-v2"))
-        third, m3, _ = self.build("third", "--seed", str(seed1))
-        self.assertIs(m3["fresh_target"], False)
+        # Re-cloned sources take new mtimes with identical bytes: the seed key
+        # hashes bytes, so the seed stays valid and the dependency stays fresh.
+        os.utime(self.work / "dep/src/lib.rs")
+        touched, mt, errt = self.build("touched", "--seed", str(seed1))
+        self.assertIn("restored dependency seed built from", errt)
+        self.assertIs(mt["fresh_target"], False)
+        self.assertEqual(mt["target_freshness"],
+                         {"workspace": "fresh", "dependencies": "seed"})
+        self.assertEqual(mt["build_units"], {"compiled": {"total": 1, "workspace_members": 1},
+                         "fresh": {"total": 1, "workspace_members": 0}})
+
+        # A byte change that preserves mtime and length: Cargo's mtime check
+        # cannot see it, so the seed key's content hashes must refuse the seed.
+        library = self.work / "dep/src/lib.rs"
+        before = library.stat()
+        library.write_text(FIXTURE_DEP_LIB.replace("fixture-dep", "fixture-dep-v2"))
+        os.utime(library, ns=(before.st_atime_ns, before.st_mtime_ns))
+        third, m3, err3 = self.build("third", "--seed", str(seed1))
+        self.assertIn("seed rejected", err3)
+        self.assertIn("path_dependency_sources", err3)
+        self.assertIs(m3["fresh_target"], True)
         self.assertEqual(m3["build_units"], {"compiled": {"total": 2, "workspace_members": 1},
                          "fresh": {"total": 0, "workspace_members": 0}})
+        run = subprocess.run([str(third / "se")], capture_output=True, text=True)
+        self.assertEqual(run.stdout.strip(), "fixture-dep-v2")
 
         # A changed pinned input changes the seed key: the seed is rejected and
         # every dependency builds fresh, and the build still succeeds.

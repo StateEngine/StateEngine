@@ -2,8 +2,9 @@
 """Build the standalone CLI from lockfile-pinned inputs, fetching them by default.
 
 Pass --offline to build only from the local Cargo cache instead. Pass --seed to
-restore dependency artifacts from a seed archive built from the same pinned inputs,
-and --seed-out to publish such a dependency-only seed after a successful build.
+restore dependency artifacts from a seed archive built from the same pinned inputs
+(lock file, build settings, and the bytes of every path dependency), and
+--seed-out to publish such a dependency-only seed after a successful build.
 Workspace crates are always compiled fresh; only non-member dependency artifacts
 are ever restored or republished.
 """
@@ -12,7 +13,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import struct
@@ -194,10 +195,14 @@ def seed_manifest_from_archive(path):
 
 
 def restore_seed(path, target, key):
-    """Verify the seed key, then restore dependency artifacts into the fresh target directory."""
-    # File mtimes must survive the round trip: cargo calls a restored unit fresh
-    # when the fingerprint is newer than its sources, and an extraction-time
-    # mtime would beat even a changed source.
+    """Verify the seed key, then restore dependency artifacts into the fresh target directory.
+
+    The key carries the content hashes the seed covers, so a changed dependency
+    is refused before any archive byte is written. Restored files intentionally
+    take extraction-time mtimes: Cargo's path-dependency freshness is
+    mtime-based, and a key-matched seed is correct by bytes, so the restored
+    fingerprint only needs to be at least as new as the sources it covers.
+    """
     manifest = seed_manifest_from_archive(path)
     if manifest.get("schema") != SEED_SCHEMA:
         raise ValueError(f"seed archive schema differs: {str(manifest.get('schema'))[:40]}")
@@ -207,6 +212,7 @@ def restore_seed(path, target, key):
                             if (stored or {}).get(name) != key.get(name))
         raise SeedKeyMismatch(f"seed key differs: {reasons}")
     with tarfile.open(path, "r:gz") as archive:
+        root = Path(target).resolve()
         for member in archive.getmembers():
             name = member.name
             if name in ("target", "seed.json"):
@@ -214,9 +220,17 @@ def restore_seed(path, target, key):
             if not name.startswith("target/"):
                 raise ValueError(f"seed archive entry escapes the target tree: {name}")
             relative = name[len("target/"):]
-            if relative == "" or "\x00" in relative or ".." in relative.split("/"):
+            parts = PurePosixPath(relative).parts
+            # Refuse rooted, absolute and drive forms in both platform
+            # dialects before anything is written: a leading separator after
+            # the prefix makes Path join discard the target directory.
+            if (relative == "" or "\x00" in relative or "\\" in relative
+                    or ":" in relative or ".." in parts
+                    or not parts or parts[0].startswith("/")):
                 raise ValueError(f"seed archive entry escapes the target tree: {name}")
             destination = Path(target) / relative
+            if not destination.resolve().is_relative_to(root):
+                raise ValueError(f"seed archive entry escapes the target tree: {name}")
             if member.isdir():
                 destination.mkdir(parents=True, exist_ok=True)
             elif member.isreg():
@@ -224,7 +238,6 @@ def restore_seed(path, target, key):
                 stream = archive.extractfile(member)
                 with stream, open(destination, "xb") as output:
                     shutil.copyfileobj(stream, output)
-                os.utime(destination, (member.mtime, member.mtime))
             else:
                 raise ValueError(f"seed archive entry is not a plain file or directory: {name}")
     return manifest
@@ -297,6 +310,33 @@ def build_units(artifacts, stderr_text, metadata):
                       "workspace_members": member_total - compiled_members}}
 
 
+def path_dependency_sources(metadata):
+    """Content hashes for the inputs only the seed key can bind by bytes.
+
+    Cargo verifies registry crates against the lock file, but a path
+    dependency outside the workspace has no such check and its freshness is
+    mtime-based, so the seed key binds the exact bytes of every external path
+    dependency; any change refuses the seed instead of reusing artifacts.
+    """
+    covered = {}
+    for package in metadata["packages"]:
+        if not package["id"].startswith("path+"):
+            continue
+        if package["id"] in metadata["workspace_members"]:
+            continue
+        manifest = Path(package["manifest_path"]).parent
+        files = {}
+        for file in sorted(manifest.rglob("*")):
+            if not file.is_file():
+                continue
+            relative = file.relative_to(manifest)
+            if ".git" in relative.parts or "target" in relative.parts:
+                continue
+            files[relative.as_posix()] = digest(file)
+        covered[package["name"]] = files
+    return covered
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True)
@@ -355,11 +395,12 @@ def main():
     sysroot = Path(run("rustc", "+" + toolchain, "--print", "sysroot"))
     config = tomllib.loads((ROOT / ".cargo/config.toml").read_text())
     flags = config.get("target", {}).get(args.target, {}).get("rustflags", [])
-    seed_key = {"schema": "se.release-build-seed-key/v1", "toolchain": toolchain,
+    seed_key = {"schema": "se.release-build-seed-key/v2", "toolchain": toolchain,
         "compiler": compiler, "target": args.target, "profile": "distribution",
         "rustflags": flags, "cargo_config_overrides": overrides,
         "cargo_lock_sha256": digest(ROOT / "Cargo.lock"),
         "inputs_sha256": digest(ROOT / "scripts/release/inputs.json"),
+        "path_dependency_sources": path_dependency_sources(metadata),
         "path_remap": REMAPPED}
     argv = ["cargo", "+" + toolchain, *overrides, "build", *offline, "--locked", "--profile", "distribution",
             "--package", inputs["package"], *features_selected, "--target", args.target,

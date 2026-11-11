@@ -51,6 +51,23 @@ def make_seed(path, key, entries, schema=build.SEED_SCHEMA, mtimes=None):
             archive.addfile(info, io.BytesIO(content))
 
 
+def make_seed_link(path, key, name, linkname, member_type):
+    manifest = {"schema": build.SEED_SCHEMA, "key": key,
+                "created_from": {"source_commit": "c" * 40, "source_tree": "d" * 40,
+                                 "source_timestamp": 1},
+                "workspace_packages_removed": ["se 0.0.1 (path+file:///fixture/crates/se)"]}
+    data = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+    with tarfile.open(path, "w:gz", compresslevel=1) as archive:
+        info = tarfile.TarInfo("seed.json")
+        info.size = len(data)
+        info.mtime = FIXED_MTIME
+        archive.addfile(info, io.BytesIO(data))
+        member = tarfile.TarInfo(name)
+        member.type = member_type
+        member.linkname = linkname
+        archive.addfile(member)
+
+
 class SeedArchiveControls(unittest.TestCase):
     def setUp(self):
         self.temporary = TemporaryDirectory(prefix="seed-control-")
@@ -67,14 +84,23 @@ class SeedArchiveControls(unittest.TestCase):
         self.assertEqual(manifest["created_from"]["source_commit"], "c" * 40)
         self.assertEqual((self.target / "dep/deps/libfixture-abc123.rlib").read_bytes(), b"dep-bytes")
 
-    def test_restore_preserves_file_mtimes(self):
-        # Cargo calls a restored unit fresh when the fingerprint is newer than
-        # its sources, so extraction must not rewrite the mtimes it restores.
-        make_seed(self.archive, make_key(),
-                  {"target/dep/deps/libfixture-abc123.rlib": b"dep-bytes"})
-        build.restore_seed(self.archive, self.target, make_key())
-        restored = self.target / "dep/deps/libfixture-abc123.rlib"
-        self.assertEqual(int(restored.stat().st_mtime), FIXED_MTIME)
+    def test_restore_refuses_rooted_absolute_and_drive_suffixes(self):
+        # A leading separator after the target prefix makes Path join discard
+        # the target directory, in either platform dialect.
+        for suffix in ("/etc/passwd", "//etc/passwd", "\\evil", "C:/evil", "C:evil"):
+            with self.subTest(suffix=suffix):
+                make_seed(self.archive, make_key(), {"target/" + suffix: b"escape"})
+                with self.assertRaisesRegex(ValueError, "escapes the target tree"):
+                    build.restore_seed(self.archive, self.target, make_key())
+        self.assertEqual(list(self.target.iterdir()), [])
+
+    def test_restore_refuses_link_members(self):
+        for member_type in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+            with self.subTest(member_type=member_type):
+                make_seed_link(self.archive, make_key(), "target/dep/link", "evil", member_type)
+                with self.assertRaisesRegex(ValueError, "not a plain file or directory"):
+                    build.restore_seed(self.archive, self.target, make_key())
+        self.assertEqual(list(self.target.iterdir()), [])
 
     def test_restore_names_every_key_field_that_differs(self):
         make_seed(self.archive, make_key(cargo_lock_sha256="f" * 64,
@@ -128,6 +154,29 @@ class SeedArchiveControls(unittest.TestCase):
             archive.addfile(info, io.BytesIO(b""))
         with self.assertRaisesRegex(ValueError, "no seed.json manifest"):
             build.seed_manifest_from_archive(self.archive)
+
+
+    def test_path_dependency_sources_hashes_every_regular_file(self):
+        with TemporaryDirectory(prefix="seed-sources-") as name:
+            root = Path(name)
+            dep = root / "dep"
+            (dep / "src").mkdir(parents=True)
+            (dep / "Cargo.toml").write_bytes(b"[package]")
+            (dep / "src/lib.rs").write_bytes(b"pub fn f() {}")
+            (dep / "target").mkdir()
+            (dep / "target/junk.bin").write_bytes(b"build output")
+            metadata = {"packages": [
+                {"id": "path+file:///x/dep#0.0.1", "name": "dep",
+                 "manifest_path": str(dep / "Cargo.toml")},
+                {"id": "registry+https://github.com/rust-lang/crates.io-index#other@1.0.0",
+                 "name": "other", "manifest_path": str(root / "other/Cargo.toml")},
+                {"id": "path+file:///x/dep/member#1.0.0", "name": "member",
+                 "manifest_path": str(dep / "member/Cargo.toml")}],
+                "workspace_members": ["path+file:///x/dep/member#1.0.0"]}
+            expected = {"dep": {"Cargo.toml": build.digest(dep / "Cargo.toml"),
+                                "src/lib.rs": build.digest(dep / "src/lib.rs")}}
+            covered = build.path_dependency_sources(metadata)
+        self.assertEqual(covered, expected)
 
 
 if __name__ == "__main__":
