@@ -13,11 +13,13 @@ Environment=ACTIONS_RUNNER_CONTAINER_HOOKS=/usr/local/lib/stateengine-box-ci/fac
 ExecStart=/opt/stateengine-actions-runner/bin/runsvc.sh
 KillMode=control-group
 KillSignal=SIGINT
-TimeoutStopSec=60
+TimeoutStopSec=300
 Restart=on-failure
 RestartSec=10
 UMask=0077
 ProtectSystem=full
+# UNIX ownership still restricts publication to the fixed root approval owner.
+ReadWritePaths=/etc/stateengine-ci
 ProtectHome=read-only
 
 [Install]

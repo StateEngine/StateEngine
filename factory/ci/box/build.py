@@ -83,6 +83,10 @@ def build(args):
                        stdout=dest, check=True, close_fds=True)
     context = Path("/var/lib/stateengine-ci") / ("bootstrap-" + uuid.uuid4().hex)
     subprocess.run(account_args("mkdir", "-m", "700", str(context)), check=True, close_fds=True)
+    # Persist only this invocation's staging identity before any large copies.
+    info = context.lstat()
+    (args.output / "staging.json").write_text(json.dumps({"context": str(context),
+        "device": info.st_dev, "inode": info.st_ino, "uid": info.st_uid}))
     source = Path(__file__).resolve().parent
     inputs = [(name, source / name) for name in ("Containerfile", "probe.py", "runner.py")]
     inputs += [(name, public / name) for name in ("rust.tar", "node.tar.xz", "windows-sdk.tar", "main.tar")]
@@ -95,7 +99,7 @@ def build(args):
     with (args.output / "build.stdout").open("xb") as out, (args.output / "build.stderr").open("xb") as err:
         try:
             result = subprocess.run(account_args("systemd-run", "--user", "--scope", "--collect",
-                "--unit=" + unit, "-p", "TasksMax=1024", "-p", "MemoryMax=4G",
+                "--unit=" + unit, "-p", "RuntimeMaxSec=1800", "-p", "TasksMax=1024", "-p", "MemoryMax=4G",
                 "-p", "MemorySwapMax=0", "-p", "CPUQuota=200%", "podman", "build", "--http-proxy=false",
                 "--memory=4g", "--memory-swap=4g", "--cpu-period=100000", "--cpu-quota=200000",
                 "--tag=localhost/stateengine-shadow:prepared", str(context)), stdout=out, stderr=err,
