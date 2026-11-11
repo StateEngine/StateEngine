@@ -244,14 +244,29 @@ fn mail(cx: &Bootstrap, mut input: Input) -> Result<u8> {
     // must not reopen a runtime the owner has just stopped.
     let route_files =
         route::files::Files::open(&cx.home).map_err(|e| se_core::store_error::store_error(&e))?;
-    let target = match route::execute::endpoint(&route_files)? {
-        se_types::Read::Present { value } => value,
-        se_types::Read::Absent { .. } => return Ok(0),
-        other => se_core::scope::require_present(
-            other,
-            "native mail runtime",
-            "Restore access to the runtime publication.",
-        )?,
+    let rendezvous = std::time::Instant::now() + Duration::from_secs(15);
+    let target = loop {
+        match route::execute::endpoint(&route_files)? {
+            se_types::Read::Present { value } => break value,
+            se_types::Read::Absent { .. } => {
+                // The parallel lifecycle hook may still be bootstrapping. Wait
+                // for its publication without starting or reviving any host.
+                if std::time::Instant::now() >= rendezvous
+                    || !se_host::adoption::metadata::current(&registration, &provider, &input)?
+                {
+                    return Ok(0);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            other => {
+                return se_core::scope::require_present(
+                    other,
+                    "native mail runtime",
+                    "Restore access to the runtime publication.",
+                )
+                .map(|_| 0);
+            }
+        }
     };
     loop {
         if !se_proc::native_ipc::provider_is_live(&provider, &native_bound())
