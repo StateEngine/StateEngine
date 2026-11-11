@@ -235,9 +235,7 @@ fn wal_limit(files: &dyn StateFiles, root: &Path, context: &BackupContext) -> St
     }
     match files.inspect_metadata(&root.join("state.db-wal"))? {
         se_types::Read::Absent { .. } => Ok(()),
-        se_types::Read::Present { value }
-            if value.len() < crate::backup_context::MAX_WAL_BYTES =>
-        {
+        se_types::Read::Present { value } if value.len() < crate::backup_context::MAX_WAL_BYTES => {
             Ok(())
         }
         se_types::Read::Present { .. } => {
