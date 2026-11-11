@@ -65,11 +65,11 @@ class Case:
         (self.root / "commands.json").write_text(json.dumps(self.rows, indent=2))
 
 
-def exercise(case, result):
+def exercise(case, result, near_deadline=False):
     native = Native()
     case.call("init")
     parent, row = case.start("up")
-    pause, early = None, None
+    pause, peers = None, []
     try:
         # Wait for the new child to own the writer lease, then freeze only our
         # retained startup parent. A published endpoint before freezing makes
@@ -92,7 +92,26 @@ def exercise(case, result):
         endpoint = native.endpoint(path, time.monotonic() + 10)
         result["paused_parent_before_publication"] = True
         result["endpoint_pid"] = endpoint["epoch"]["owner"]["pid"]
-        early = native.connect(endpoint)
+        if near_deadline:
+            # The public parent's original startup budget remains 30 seconds.
+            # Create overflow with at most five seconds left; never read these
+            # clients. 65 exceeds the public maximum of 64 pre-auth slots.
+            time.sleep(max(0, row["started"] + 25 - time.monotonic()))
+            for _ in range(65):
+                while True:
+                    if time.monotonic() >= row["started"] + 28:
+                        raise RuntimeError("REFUSE: overflow setup left insufficient startup time")
+                    try:
+                        peers.append(native.connect(endpoint))
+                        break
+                    except OSError as error:
+                        if error.winerror != 231:  # another accept is still becoming available
+                            raise
+                        time.sleep(0.001)
+            result["silent_overflow_clients"] = len(peers)
+            result["resume_seconds_from_up_start"] = time.monotonic() - row["started"]
+        else:
+            peers.append(native.connect(endpoint))
         result["early_client_connected_before_parent_resumed"] = True
         pause.resume()
         pause = None
@@ -108,8 +127,9 @@ def exercise(case, result):
         result["startup_passed"] = True
     finally:
         cleanup_errors = []
-        for release in ([pause.resume] if pause else []) + (
-                [lambda: native.close(early)] if early is not None else []):
+        releases = ([pause.resume] if pause else []) + [
+            lambda peer=peer: native.close(peer) for peer in peers]
+        for release in releases:
             try:
                 release()
             except (OSError, RuntimeError) as error:
@@ -138,6 +158,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--silent-overflow-near-deadline", action="store_true")
     args = parser.parse_args()
     account = standard_user()
     image = args.se.resolve(strict=True)
@@ -146,7 +167,7 @@ def main():
     result = dict(account=account, image_sha256=hashlib.sha256(image.read_bytes()).hexdigest(),
                   passed=False)
     try:
-        exercise(case, result)
+        exercise(case, result, args.silent_overflow_near_deadline)
         result["passed"] = result.get("startup_passed") and result.get("cleanup_complete")
     except (OSError, RuntimeError, AssertionError, ValueError, subprocess.TimeoutExpired) as error:
         result["failure"] = str(error)

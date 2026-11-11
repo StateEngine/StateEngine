@@ -1,7 +1,7 @@
 //! Native pre-commit traffic stays bounded, inert and independently closeable.
 use super::*;
 use crate::client::lease::Deadline;
-use std::io::Read;
+use std::{future::Future, io::Read, task::Poll};
 
 async fn queue(
     listener: &mut IpcListener,
@@ -125,15 +125,17 @@ fn startup_overflow_refuses_oldest_clients_and_keeps_exact_ingress_capacity() ->
     });
     let mut peer = rt.block_on(async {
         let deadline = Deadline::from_options(&options(Duration::from_secs(5)))?;
-        tokio::select! {
+        let peer = tokio::select! {
             outcome = listener.retain_startup_clients(&deadline) => {
                 Err(format!("pre-commit pump ended before responsive peers joined: {outcome:?}").into())
             }
             result = clients => result?.map_err(|error| -> Box<dyn std::error::Error> { error.into() }),
-        }
+        }?;
+        listener.join_startup_refusals(&deadline).await?;
+        Ok::<_, Box<dyn std::error::Error>>(peer)
     })?;
     assert_eq!(listener.startup_clients.len(), 1); // exact configured pre-auth bound
-    assert_eq!(listener.incoming.available_permits(), 2);
+    assert_eq!(listener.incoming.available_permits(), 1); // the queued stream owns one slot
     assert_eq!(listener.preauth.available_permits(), 1);
     silent(&mut peer)?;
     assert_eq!(
@@ -163,26 +165,33 @@ fn silent_overflow_closes_within_the_original_bound_and_keeps_a_spare() -> Check
     let started = std::time::Instant::now();
     let mut peers = rt.block_on(async {
         let deadline = Deadline::from_options(&options(Duration::from_millis(200)))?;
-        let pumping = listener.retain_startup_clients(&deadline);
-        tokio::pin!(pumping);
-        let peers = tokio::select! {
-            outcome = &mut pumping => {
-                return Err(format!("silent fixture ended before both clients connected: {outcome:?}").into());
-            }
-            result = clients => result?.map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
+        let peers = {
+            let pumping = listener.retain_startup_clients(&deadline);
+            tokio::pin!(pumping);
+            let peers = tokio::select! {
+                outcome = &mut pumping => {
+                    return Err(format!("silent fixture ended before both clients connected: {outcome:?}").into());
+                }
+                result = clients => result?.map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
+            };
+            // The real startup owner also retains its original absolute clock.
+            // Let that clock cancel an idle accept or a still-pending refusal.
+            let _ = tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline.at()),
+                &mut pumping,
+            )
+            .await;
+            peers
         };
-        // The real startup owner also retains its original absolute clock.
-        // Let that clock cancel an idle accept or a still-pending refusal.
-        let _ = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(deadline.at()),
-            &mut pumping,
-        )
-        .await;
+        // Task clocks remain original; this separate clock bounds observation.
+        listener
+            .join_startup_refusals(&Deadline::from_options(&options(Duration::from_secs(2)))?)
+            .await?;
         Ok::<_, Box<dyn std::error::Error>>(peers)
     })?;
     assert!(started.elapsed() < Duration::from_secs(2));
     assert_eq!(listener.startup_clients.len(), 1);
-    assert_eq!(listener.incoming.available_permits(), 2);
+    assert_eq!(listener.incoming.available_permits(), 1); // the queued stream owns one slot
     assert_eq!(listener.preauth.available_permits(), 1);
     peers[0].set_bound(bound(Duration::from_secs(1)));
     let mut closed = Vec::new();
@@ -202,6 +211,83 @@ fn silent_overflow_closes_within_the_original_bound_and_keeps_a_spare() -> Check
     rt.block_on(listener.close_joined(
         &crate::runtime::BlockingPool::new(rt.handle().clone()),
         &Deadline::from_options(&options(Duration::from_secs(5)))?,
+    ))
+    .map_err(|error| error.into())
+}
+
+#[test]
+fn cancelled_accept_preserves_the_refusal_clock_without_delaying_admission() -> Check {
+    let home = Home::new()?;
+    let (rt, mut listener, endpoint) = configured(&home, 2, 1)?;
+    let clients = std::thread::spawn(move || {
+        (0..2)
+            .map(|_| raw_connect(&endpoint).map_err(|error| error.to_string()))
+            .collect::<std::result::Result<Vec<_>, _>>()
+    });
+    let original = Deadline::from_options(&options(Duration::from_secs(2)))?;
+    rt.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            std::future::poll_fn(|cx| {
+                let mut pumping = Box::pin(listener.retain_startup_clients(&original));
+                let outcome = pumping.as_mut().poll(cx);
+                // Cancel acceptance before this current-thread runtime polls the
+                // newly spawned refusal, as an ownership commit can do.
+                drop(pumping);
+                if let Poll::Ready(outcome) = outcome {
+                    return Poll::Ready(Err(format!("startup pump ended: {outcome:?}")));
+                }
+                if listener.startup_refusals.is_empty() {
+                    Poll::Pending
+                } else {
+                    Poll::Ready(Ok(()))
+                }
+            }),
+        )
+        .await?
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
+    })?;
+    let mut peers = clients.join().map_err(|_| "client producer panicked")??;
+    assert_eq!(listener.startup_clients.len(), 1);
+    assert_eq!(listener.startup_refusals.len(), 1);
+    assert_eq!(listener.incoming.available_permits(), 0);
+    assert_eq!(listener.preauth.available_permits(), 1);
+    // Normal post-commit admission must not join or await this pending refusal.
+    let admitted = rt.block_on(async {
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            listener.accept(Arc::new(AtomicBool::new(false))),
+        )
+        .await?
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })
+    })?;
+    assert!(listener.startup_clients.is_empty());
+    // Stop driving the runtime until the original clock expires. A task that
+    // resets its clock when resumed would now write a refusal instead of closing.
+    std::thread::sleep(
+        original
+            .at()
+            .saturating_duration_since(std::time::Instant::now())
+            + Duration::from_millis(20),
+    );
+    assert!(original.remaining().is_err());
+    rt.block_on(
+        listener.join_startup_refusals(&Deadline::from_options(&options(Duration::from_secs(2)))?),
+    )?;
+    assert!(listener.startup_refusals.is_empty());
+    assert_eq!(listener.incoming.available_permits(), 1);
+    peers[0].set_bound(bound(Duration::from_secs(2)));
+    assert_eq!(
+        peers[0].read(&mut [0u8; 1])?,
+        0,
+        "refusal received a new clock"
+    );
+    silent(&mut peers[1])?;
+    drop(admitted);
+    drop(peers);
+    rt.block_on(listener.close_joined(
+        &crate::runtime::BlockingPool::new(rt.handle().clone()),
+        &Deadline::from_options(&options(Duration::from_secs(2)))?,
     ))
     .map_err(|error| error.into())
 }
