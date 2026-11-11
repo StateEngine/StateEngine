@@ -1,8 +1,6 @@
 #!/usr/bin/python3 -I
 """Fixed container-hook operations; repository code never executes on the host."""
 import base64
-from contextlib import contextmanager
-import fcntl
 import hashlib
 import http.client
 import json
@@ -28,6 +26,7 @@ from engine import Container, capacity
 from github_binding import policy_paths
 from transport import execute, WorkloadFailure
 from workload import Cohort, JOBS
+from runner_slot import select, venue
 
 CONFIG = Path("/etc/stateengine-ci/self-hosted.json")
 
@@ -79,9 +78,9 @@ def fetch(repository, path, token, raw=False):
             time.sleep(0.25 * (2**attempt))
 
 
-def config_at():
+def config_at(slot="primary"):
     config = trusted(CONFIG)
-    return config_values(config)
+    return config_values(select(config, slot))
 
 
 def config_values(config):
@@ -124,20 +123,11 @@ def approve_main(config, report, context, token):
                 raise RuntimeError("approval helper identity changed; preserving process custody")
             child.wait(timeout=210)
         raise
-    return config_at()
+    return config_at(config.get("slot", "primary"))
 
 
 def canceled(*_):
     raise InterruptedError("runner canceled this exact preparation")
-
-
-@contextmanager
-def venue(config):
-    # Serialize against the existing CI controller. Guest admission is separate;
-    # each actual container checks its bounded memory allocation before start.
-    with open(config["ci_lock"], "r") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield
 
 
 def write(path, value):
@@ -201,6 +191,7 @@ def prepare(request, config, report, context):
         with (directory / "source.tar.gz").open("xb") as output:
             output.write(fetch(repository, "tarball/" + source, token, raw=True))
     write(directory / "binding.json", {"repository": repository, "source": source,
+        "slot": config.get("slot", "primary"),
         "run": context["GITHUB_RUN_ID"], "attempt": context["GITHUB_RUN_ATTEMPT"], "policy_changed": changed,
         "approval": {"image_report": config["image_report"], "cache": config["cache"],
                      "cache_sha256": config["cache_sha256"], "image": report["image"]},
@@ -216,13 +207,15 @@ def directory_at(request, config):
     directory = Path(config["state"]) / identity
     if directory.is_symlink() or not directory.is_dir() or directory.stat().st_uid != os.getuid():
         raise RuntimeError("private hook job is unavailable")
+    if json.loads((directory / "binding.json").read_text()).get("slot") != config.get("slot", "primary"):
+        raise RuntimeError("hook job belongs to another runner slot")
     return directory
 
 
 def check_step(config, report, directory, results):
     folder = directory / "check"
     folder.mkdir()
-    box = Container(report["image"], memory=2*1024**3, cpus=2, deadline=180, journal=Journal())
+    box = Container(report["image"], memory=2*1024**3, cpus=2, deadline=180, journal=journal_at(config))
     try:
         if box.proof["seccomp_profile_sha256"] != report["seccomp_sha256"]:
             raise RuntimeError("approved seccomp identity differs")
@@ -280,13 +273,17 @@ def script_step(request, config, report, directory):
         return linux_step(config, report, directory, all_features=binding.get("all_features", False))
     capacity(2*1024**3)
     with venue(config):
-        journal = Journal()
+        journal = journal_at(config)
         journal.reconcile()
         results = json.loads(args.get("environmentVariables", {}).get("RESULTS", "null"))
         if not isinstance(results, dict):
             raise RuntimeError("required job results are absent")
         success = check_step(config, report, directory, results)
     return {"exit_code": 0 if success else 1}
+
+
+def journal_at(config):
+    return Journal(slot=config["slot"] if config.get("parallel") else None)
 
 
 def linux_step(config, report, directory, *, all_features=False):
@@ -304,14 +301,17 @@ def linux_step(config, report, directory, *, all_features=False):
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        capacity(18*1024**3)
+        memory = (9 if config.get("parallel") else 18) * 1024**3
+        capacity(memory)
         with venue(config):
-            journal = Journal()
+            journal = journal_at(config)
             journal.reconcile()
             print("Feature coverage: " + ("all features" if all_features else "default features"),
                   file=sys.stderr, flush=True)
             cohort = Cohort(report, journal, directory / "source.tar.gz", Path(config["cache"]), directory,
-                            canceled, all_features=all_features)
+                            canceled, all_features=all_features,
+                            memory=memory, cpus=4 if config.get("parallel") else 8,
+                            workers=4 if config.get("parallel") else 8)
             try:
                 for name in JOBS:
                     if name != "fmt" and not outcomes.get("fmt"):
@@ -362,13 +362,15 @@ def main():
     if len(raw) > 1024**2:
         raise RuntimeError("hook input exceeds bound")
     request = json.loads(raw)
-    config, report = config_at()
+    if len(sys.argv) > 2:
+        raise ValueError("only one fixed runner slot argument is allowed")
+    config, report = config_at(sys.argv[1] if len(sys.argv) == 2 else "primary")
     if request["command"] == "prepare_job":
         return {"response": prepare(request, config, report, request["context"]), "exit_code": 0}
     if request["command"] == "cleanup_job":
         # Native custody is reconciled under the existing CI mutex.
         with venue(config):
-            Journal().reconcile()
+            journal_at(config).reconcile()
         return {"exit_code": 0}
     if request["command"] == "run_script_step":
         return script_step(request, config, report, directory_at(request, config))

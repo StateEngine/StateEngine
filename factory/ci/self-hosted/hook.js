@@ -4,7 +4,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const config = JSON.parse(fs.readFileSync('/etc/stateengine-ci/self-hosted.json', 'utf8'));
+const installedName = path.basename(process.argv[1]);
+if (!['hook.js', 'hook-secondary.js'].includes(installedName)) throw Error('fixed runner hook entrypoint required');
+const slot = installedName === 'hook-secondary.js' ? 'secondary' : 'primary';
+const published = JSON.parse(fs.readFileSync('/etc/stateengine-ci/self-hosted.json', 'utf8'));
+if (slot === 'secondary' && !published.slots) throw Error('second runner slot is not configured');
+const config = published.slots ? { ...published, ...published.slots[slot] } : published;
 const request = JSON.parse(fs.readFileSync(0, 'utf8'));
 const work = fs.realpathSync(config.runner_work);
 function runnerFile(value, folder) {
@@ -41,7 +46,7 @@ async function execute() {
   process.on('SIGINT', interrupt); process.on('SIGTERM', terminate);
   let result, status, output = '', bytes = 0;
   try {
-    child = spawn('/usr/bin/sudo', ['-n', '-u', 'stateengine-ci-controller', '/usr/local/libexec/stateengine-ci-hook'],
+    child = spawn('/usr/bin/sudo', ['-n', '-u', 'stateengine-ci-controller', '/usr/local/libexec/stateengine-ci-hook', slot],
       { stdio: ['pipe', 'pipe', 'inherit'] });
     child.stdin.on('error', () => {});
     child.stdout.on('data', chunk => {

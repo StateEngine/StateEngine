@@ -1,5 +1,5 @@
 [Unit]
-Description=StateEngine serial self-hosted Linux checks
+Description=StateEngine primary self-hosted Linux checks
 After=network-online.target
 Wants=network-online.target
 

@@ -194,8 +194,12 @@ def prepare(config, live, report, binding, directory, controller):
     if rebuild:
         from types import SimpleNamespace
         output = directory / "image"
-        build(SimpleNamespace(repo=repo, trusted_source=source, output=output,
-            **{name: Path(config[name]) for name in ("toolchain", "rustup", "nextest", "xwin", "windows_sdk")}))
+        # Image preparation shares the reserved CI memory budget. Keep it
+        # exclusive just like the dependency worker, even with two listeners.
+        with open(live["ci_lock"]) as maintenance:
+            fcntl.flock(maintenance, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            build(SimpleNamespace(repo=repo, trusted_source=source, output=output,
+                **{name: Path(config[name]) for name in ("toolchain", "rustup", "nextest", "xwin", "windows_sdk")}))
         image = json.loads((output / "image.json").read_text())
         if any(next(item["sha256"] for item in image["inputs"] if item["name"] == name) != expected
                for name, expected in compiler.items()):

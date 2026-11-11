@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stdout
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
@@ -90,7 +90,8 @@ class InstalledHelperConsumer(unittest.TestCase):
         os.chdir(caller_cwd)
         try:
             with patch("subprocess.run", side_effect=fake_run), \
-                    patch("custody.read_records", return_value=[]), \
+                    patch("custody.locked", return_value=nullcontext()), \
+                    patch("custody._read_records", return_value=[]), \
                     synthetic_host(), \
                     redirect_stdout(io.StringIO()) as out:
                 sys.argv = [str(HELPER)]
