@@ -30,7 +30,7 @@ impl HostedRouter {
         let mut committed = None;
         let value = match input {
             ChannelRequest::Capabilities => {
-                json!({"consent":CHANNEL_CONSENT,"receiver":"existing_store_owning_host","automatic_login_startup":false,"remote_credentials":"unsupported_until_protected_native_add_machine_flow","cost_limit_override":false,"confirmed_resume":self.channels.supports_resume()})
+                json!({"consent":CHANNEL_CONSENT,"receiver":"existing_store_owning_host","automatic_login_startup":false,"remote_credentials":"unsupported_until_protected_native_add_machine_flow","cost_limit_override":false,"confirmed_resume":self.channels.supports_resume(),"connectors":self.channels.transports.iter().map(|t| t.descriptor()).collect::<Vec<_>>()})
             }
             ChannelRequest::Targets(input) => serde_json::to_value(
                 self.channels.targets(input, deadline).await?,
@@ -49,12 +49,12 @@ impl HostedRouter {
                 self.channels.inspect(input, deadline).await?,
             )
             .map_err(|_| SeError::invalid("channel snapshot", "serializable bounded facts"))?,
-            ChannelRequest::ConnectTelegram(input) => {
-                let result = self.channels.connect_telegram(input, deadline).await?;
+            ChannelRequest::Connect(input) => {
+                let result = self.channels.connect_channel(input, deadline).await?;
                 committed = Some(known("channel.connect", &result.receipt));
                 let link = std::str::from_utf8(result.ticket.expose_link())
                     .map_err(|_| SeError::invalid("pairing link", "UTF-8 native presentation"))?;
-                json!({"receipt":receipt(&result.receipt),"connection":result.connection.id,"revision":result.connection.revision,"verified_bot":result.connection.bot,"pairing":{"uri":link,"expires_at_us":result.ticket.expires_at_us,"revision":result.ticket.revision}})
+                json!({"receipt":receipt(&result.receipt),"connection":result.connection.id,"revision":result.connection.revision,"verified_bot":result.connection.bot,"pairing":{"uri":link,"message":result.ticket.expose_message(),"expires_at_us":result.ticket.expires_at_us,"revision":result.ticket.revision}})
             }
             ChannelRequest::RestartPairing(input) => {
                 let result = self.channels.restart_pairing(input, deadline).await?;
@@ -64,7 +64,7 @@ impl HostedRouter {
                     .map(|receipt| known("channel.pairing.restart", receipt));
                 let link = std::str::from_utf8(result.expose_link())
                     .map_err(|_| SeError::invalid("pairing link", "UTF-8 native presentation"))?;
-                json!({"connection":result.connection,"revision":result.revision,"pairing":{"uri":link,"expires_at_us":result.expires_at_us,"revision":result.revision}})
+                json!({"connection":result.connection,"revision":result.revision,"pairing":{"uri":link,"message":result.expose_message(),"expires_at_us":result.expires_at_us,"revision":result.revision}})
             }
             ChannelRequest::ConfirmPairing(input) => {
                 let result = self.channels.confirm_pairing(input, deadline).await?;

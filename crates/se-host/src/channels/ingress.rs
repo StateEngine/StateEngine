@@ -1,5 +1,5 @@
 //! Verified provider identity becomes only the exact paired Owner's mail.
-//! Provider offsets are read from committed dispositions, never local counters.
+//! Provider cursors are read from committed dispositions, never local counters.
 use super::{service::*, *};
 use crate::client::lease::Deadline;
 use se_core::{
@@ -18,23 +18,37 @@ impl Channels {
     pub(super) async fn handle_update(
         &self,
         state: Connection,
-        input: Incoming,
+        mut input: Incoming,
         deadline: &Deadline,
     ) -> Result<()> {
         let id = state.id.clone();
-        let update = input.update;
+        let update = input.update.clone();
         if self
             .read(Some(state.target.project.clone()), deadline, move |cx| {
                 cx.read
-                    .channel_update_handled(&id, update)
+                    .channel_update_handled(&id, &update)
                     .map_err(|e| store_error(&e))
             })
             .await?
         {
             return Ok(());
         }
-        let key = IdempotencyKey::new(format!("telegram-update-{}-{}", state.id, input.update))
-            .map_err(|_| channel_error(ChannelError::InvalidInput))?;
+        if let IncomingContent::Text { phone, text } = &input.content
+            && let Some(data) = text.strip_prefix("/confirm ")
+        {
+            input.content = IncomingContent::Callback {
+                phone: phone.clone(),
+                data: data.into(),
+                callback_id: None,
+            };
+        }
+        let key = IdempotencyKey::new(format!(
+            "{}-update-{}-{}",
+            state.connector.as_str(),
+            state.id,
+            se_types::hex_lower(&Sha256::digest(input.update.as_str().as_bytes()))
+        ))
+        .map_err(|_| channel_error(ChannelError::InvalidInput))?;
         // The fingerprint binds the normalized provider input without retaining
         // its body in channel metadata. Its ordinary mail body is stored once.
         let fingerprint = match &input.content {
@@ -63,9 +77,16 @@ impl Channels {
         {
             return Ok(());
         }
-        let update = input.update;
+        let update = input.update.clone();
         if self
-            .confirm_resume(&state, &input.content, &request, update, deadline)
+            .confirm_resume(
+                &state,
+                &input.content,
+                &request,
+                update.clone(),
+                input.cursor.clone(),
+                deadline,
+            )
             .await?
         {
             return Ok(());
@@ -90,6 +111,7 @@ impl Channels {
                 connection: state.id.clone(),
                 binding_revision: state.revision + 1,
                 update,
+                cursor: Some(input.cursor.clone()),
                 disposition: Disposition::Rejected {
                     reason: Rejection::Unpaired,
                 },
@@ -104,7 +126,7 @@ impl Channels {
             return Ok(());
         }
         let callback_id = match &input.content {
-            IncomingContent::Callback { callback_id, .. } => Some(callback_id.clone()),
+            IncomingContent::Callback { callback_id, .. } => callback_id.clone(),
             _ => None,
         };
         let (phone, text, callback_rejection) = match input.content {
@@ -167,8 +189,8 @@ impl Channels {
                 {
                     Disposition::RejectedPaired {
                         reason,
-                        subject: phone.subject,
-                        private_chat: phone.private_chat,
+                        subject: phone.subject.clone(),
+                        private_chat: phone.private_chat.clone(),
                     }
                 }
                 _ => Disposition::Rejected { reason },
@@ -181,6 +203,7 @@ impl Channels {
                     connection: state.id.clone(),
                     binding_revision: state.revision,
                     update,
+                    cursor: Some(input.cursor.clone()),
                     disposition,
                 },
                 deadline,
@@ -227,11 +250,12 @@ impl Channels {
                             connection: state.id,
                             binding_revision: state.revision,
                             update,
+                            cursor: Some(input.cursor.clone()),
                             disposition: Disposition::Saved {
                                 receipt,
                                 message,
-                                subject: phone.subject,
-                                private_chat: phone.private_chat,
+                                subject: phone.subject.clone(),
+                                private_chat: phone.private_chat.clone(),
                             },
                         },
                     },
@@ -250,33 +274,44 @@ impl Channels {
         }
         Ok(())
     }
-    pub(super) async fn poll_once(&self, id: ChannelId, deadline: &Deadline) -> Result<()> {
+    pub(super) async fn receive_once(
+        &self,
+        id: ChannelId,
+        receiver: &mut Option<Box<dyn ChannelReceiver>>,
+        deadline: &Deadline,
+    ) -> Result<bool> {
         let state = self.connection(id.clone(), deadline).await?;
         if matches!(state.pairing, Pairing::Revoked) {
             return Err(channel_error(ChannelError::BindingRevoked));
         }
-        let credential = state.credential.clone();
-        let credentials = self.credentials.clone();
-        let token = self
-            .context
-            .blocking
-            .run(crate::BlockingClass::Foreground, deadline, move || {
-                credentials.resolve(&credential).map_err(channel_error)
-            })
-            .await?;
-        let offset = self
-            .read(Some(state.target.project.clone()), deadline, move |cx| {
-                cx.read.channel_offset(&id).map_err(|e| store_error(&e))
-            })
-            .await?;
-        let updates = match self.telegram.poll(&token, offset).await {
-            Ok(updates) => updates,
-            Err(error) => {
+        let token = self.token(state.credential.clone(), deadline).await?;
+        if receiver.is_none() {
+            let cursor = self
+                .read(Some(state.target.project.clone()), deadline, move |cx| {
+                    cx.read.channel_cursor(&id).map_err(|e| store_error(&e))
+                })
+                .await?;
+            *receiver = Some(
+                self.transport(state.connector)?
+                    .receiver(cursor)
+                    .map_err(channel_error)?,
+            );
+        }
+        let receiver = receiver
+            .as_mut()
+            .ok_or_else(|| channel_error(ChannelError::ReceiverNotRunning))?;
+        let input = match tokio::time::timeout(deadline.remaining()?, receiver.next(&token)).await {
+            Ok(Ok(input)) => input,
+            outcome => {
+                let error = match outcome {
+                    Ok(Err(error)) => error,
+                    _ => ChannelError::ProviderUnreachable,
+                };
                 let seconds = match error {
                     ChannelError::RateLimited {
                         retry_after_seconds,
                     } => retry_after_seconds,
-                    _ => 60,
+                    _ => 1,
                 };
                 self.set_health(
                     state.id.clone(),
@@ -288,9 +323,32 @@ impl Channels {
                 return Err(channel_error(error));
             }
         };
-        for input in updates {
+        let received = input.is_some();
+        if let Some(input) = input {
             let current = self.connection(state.id.clone(), deadline).await?;
+            if current.revision != state.revision {
+                return Err(channel_error(ChannelError::RevisionConflict));
+            }
+            let cursor = input.cursor.clone();
+            let update = input.update.clone();
             self.handle_update(current, input, deadline).await?;
+            // Replayed dispositions can carry an older cursor. Commit this
+            // delivery checkpoint before ACK, using the revision after pairing.
+            let current = self.connection(state.id.clone(), deadline).await?;
+            let change = Change::CursorAdvanced {
+                connection: current.id,
+                binding_revision: current.revision,
+                update,
+                cursor: cursor.clone(),
+            };
+            self.change(
+                current.target.project,
+                intent("channel.receive.advance", None, &change)?,
+                change,
+                deadline,
+            )
+            .await?;
+            receiver.ack(&cursor).map_err(channel_error)?;
         }
         self.set_health(
             state.id,
@@ -298,6 +356,6 @@ impl Channels {
                 last_poll_at_us: Some(now()?),
             },
         )?;
-        Ok(())
+        Ok(received)
     }
 }

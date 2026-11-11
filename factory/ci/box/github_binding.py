@@ -17,7 +17,7 @@ POLICY_FILES = (".github/workflows/ci.yml", ".github/actions/rust/action.yml", "
 def policy_paths(paths):
     return {p for p in paths if p in POLICY_FILES or p in
             {"Cargo.lock", ".config/nextest.toml", ".cargo/config.toml", "rust-toolchain.toml"} or
-            p.endswith("Cargo.toml") or p.startswith(("scripts/ci/", "factory/ci/box/"))}
+            p.endswith("Cargo.toml") or p.startswith(("scripts/ci/", "factory/ci/box/", "factory/ci/self-hosted/"))}
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -26,11 +26,17 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class GitHub:
-    def __init__(self, helper):
-        token = subprocess.run([str(helper)], capture_output=True, text=True, timeout=30, close_fds=True)
-        if token.returncode or not token.stdout.strip():
-            raise RuntimeError("repository credential helper failed; output withheld")
-        self.headers = {"Authorization": "Bearer " + token.stdout.strip(),
+    def __init__(self, helper=None, *, token=None):
+        if (helper is None) == (token is None):
+            raise ValueError("one repository credential source is required")
+        if helper is not None:
+            result = subprocess.run([str(helper)], capture_output=True, text=True, timeout=30, close_fds=True)
+            if result.returncode or not result.stdout.strip():
+                raise RuntimeError("repository credential helper failed; output withheld")
+            token = result.stdout.strip()
+        if not isinstance(token, str) or not token or any(c.isspace() for c in token):
+            raise ValueError("repository credential is absent or malformed")
+        self.headers = {"Authorization": "Bearer " + token,
                         "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
 
     def get(self, path, limit=16 * 1024**2, raw=False, timeout=45):

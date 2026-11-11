@@ -12,13 +12,14 @@ fn reconnect_scopes_dispositions_and_retains_the_bot_ack_cursor() -> Check {
         change(
             &f,
             Change::UpdateHandled {
+                cursor: None,
                 connection: old.id.clone(),
                 binding_revision: old.revision,
-                update: 101,
+                update: 101.into(),
                 disposition: Disposition::RejectedPaired {
                     reason: Rejection::TooLarge,
-                    subject: 42,
-                    private_chat: 42,
+                    subject: 42.into(),
+                    private_chat: 42.into(),
                 },
             },
             "old-rejection",
@@ -52,9 +53,12 @@ fn reconnect_scopes_dispositions_and_retains_the_bot_ack_cursor() -> Check {
     replacement.credential.id = CredentialId::new("ccr-44444444444444444444444444444444")?;
     let replacement = paired_with(&f, &mut writer, &lease, replacement)?;
     let mut view = writer.snapshot(f.scoped(Visibility::Owner))?;
-    assert!(view.channel_update_handled(&old.id, 100)?);
-    assert!(!view.channel_update_handled(&replacement.id, 100)?);
-    assert_eq!(view.channel_offset(&replacement.id)?, Some(102));
+    assert!(view.channel_update_handled(&old.id, &100.into())?);
+    assert!(!view.channel_update_handled(&replacement.id, &100.into())?);
+    assert_eq!(
+        view.channel_cursor(&replacement.id)?,
+        Some(ReceiveCursor::new("101".into())?)
+    );
     view.close()?;
     let new_message = message()?;
     let repeated_input = || -> Result<AtomicBatch, Box<dyn std::error::Error>> {
@@ -63,6 +67,7 @@ fn reconnect_scopes_dispositions_and_retains_the_bot_ack_cursor() -> Check {
             if let EventBody::ChannelRecorded {
                 change:
                     Change::UpdateHandled {
+                        cursor: None,
                         disposition: Disposition::Saved { receipt, .. },
                         ..
                     },
@@ -82,13 +87,14 @@ fn reconnect_scopes_dispositions_and_retains_the_bot_ack_cursor() -> Check {
         change(
             &f,
             Change::UpdateHandled {
+                cursor: None,
                 connection: replacement.id.clone(),
                 binding_revision: replacement.revision,
-                update: 101,
+                update: 101.into(),
                 disposition: Disposition::RejectedPaired {
                     reason: Rejection::Unsupported,
-                    subject: 42,
-                    private_chat: 42,
+                    subject: 42.into(),
+                    private_chat: 42.into(),
                 },
             },
             "new-rejection",
@@ -102,7 +108,10 @@ fn reconnect_scopes_dispositions_and_retains_the_bot_ack_cursor() -> Check {
     assert_eq!(new_refusal.items.len(), 1);
     assert_eq!(old_refusal.items[0].reason, Rejection::TooLarge);
     assert_eq!(new_refusal.items[0].reason, Rejection::Unsupported);
-    assert_eq!(view.channel_offset(&replacement.id)?, Some(102));
+    assert_eq!(
+        view.channel_cursor(&replacement.id)?,
+        Some(ReceiveCursor::new("101".into())?)
+    );
     assert_eq!(view.channel_saved(&old.id, 0)?.items[0].message, original);
     assert_eq!(
         view.channel_saved(&replacement.id, 0)?.items[0].message,

@@ -13,7 +13,8 @@ impl Channels {
         state: &Connection,
         input: &IncomingContent,
         request: &se_store::RequestIdentity,
-        update: i64,
+        update: ExternalId,
+        cursor: ReceiveCursor,
         deadline: &Deadline,
     ) -> Result<bool> {
         let IncomingContent::Callback {
@@ -92,13 +93,14 @@ impl Channels {
         let confirm = Change::ResumeConfirmed {
             connection: state.id.clone(),
             action: id.clone(),
-            subject: phone.subject,
-            private_chat: phone.private_chat,
+            subject: phone.subject.clone(),
+            private_chat: phone.private_chat.clone(),
         };
         let handled = Change::UpdateHandled {
             connection: state.id.clone(),
             binding_revision: state.revision,
             update,
+            cursor: Some(cursor),
             disposition: se_store::channel::Disposition::Action { action: id },
         };
         self.commit(
@@ -113,8 +115,10 @@ impl Channels {
             },
         )
         .await?;
-        self.ack_callback(state, callback_id, true, deadline)
-            .await?;
+        if let Some(callback_id) = callback_id {
+            self.ack_callback(state, callback_id, true, deadline)
+                .await?;
+        }
         Ok(true)
     }
     pub(super) async fn ack_callback(
@@ -124,17 +128,9 @@ impl Channels {
         accepted: bool,
         deadline: &Deadline,
     ) -> Result<()> {
-        let credentials = self.credentials.clone();
-        let reference = state.credential.clone();
         let result = async {
-            let token = self
-                .context
-                .blocking
-                .run(crate::BlockingClass::Foreground, deadline, move || {
-                    credentials.resolve(&reference).map_err(channel_error)
-                })
-                .await?;
-            self.telegram
+            let token = self.token(state.credential.clone(), deadline).await?;
+            self.transport(state.connector)?
                 .answer_callback(&token, id, accepted)
                 .await
                 .map_err(channel_error)

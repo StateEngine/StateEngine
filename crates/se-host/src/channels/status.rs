@@ -24,7 +24,7 @@ pub(super) fn delayed_phone_status(
     )?;
     let elapsed = at.saturating_sub(sent.recorded_at_us).max(0) as u64 / 1_000_000;
     let state = if replied {
-        "A linked reply is saved; inspect its Telegram send result"
+        "A linked reply is saved; inspect its provider send result"
     } else if row.read.is_some() {
         "Read; no reply yet"
     } else {

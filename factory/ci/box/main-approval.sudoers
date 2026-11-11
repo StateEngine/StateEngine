@@ -1,0 +1,2 @@
+# Argument-free entrypoint; never grant a general root Python or shell command.
+stateengine-ci-controller ALL=(root) NOPASSWD: /usr/local/libexec/stateengine-ci-approve-main ""

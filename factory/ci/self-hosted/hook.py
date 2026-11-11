@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 import re
 import signal
+import stat
+import subprocess
 import sys
 import threading
 import time
@@ -23,6 +25,7 @@ sys.path.insert(0, str(BOX))
 from custody import Journal
 from dispatch import trusted
 from engine import Container, capacity
+from github_binding import policy_paths
 from transport import execute, WorkloadFailure
 from workload import Cohort, JOBS
 
@@ -78,6 +81,10 @@ def fetch(repository, path, token, raw=False):
 
 def config_at():
     config = trusted(CONFIG)
+    return config_values(config)
+
+
+def config_values(config):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", config["repository"]):
         raise RuntimeError("configured repository is invalid")
     report = trusted(Path(config["image_report"]))
@@ -89,6 +96,39 @@ def config_at():
         if hashlib.file_digest(source, "sha256").hexdigest() != config["cache_sha256"]:
             raise RuntimeError("dependency snapshot differs")
     return config, report
+
+
+def approve_main(config, report, context, token):
+    helper = config.get("main_approval_helper")
+    if (not helper or context.get("GITHUB_REF") != "refs/heads/main"
+            or context.get("GITHUB_EVENT_NAME") != "push"):
+        return config, report
+    path = Path(helper)
+    info = path.lstat()
+    if not path.is_absolute() or not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_mode & 0o022:
+        raise RuntimeError("fixed root-owned main approval helper required")
+    # The credential crosses only this fixed process boundary via stdin. The
+    # owner verifies the actual main workflow/merge through the repository API.
+    child = subprocess.Popen(["/usr/bin/sudo", "-n", str(path)], stdin=subprocess.PIPE,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    try:
+        child.communicate(json.dumps({"context": context, "token": token}).encode(), timeout=3900)
+        if child.returncode:
+            print("Main approval did not finish; using the last published approval", file=sys.stderr, flush=True)
+    except BaseException:
+        if child.poll() is None:
+            arguments = Path("/proc", str(child.pid), "cmdline").read_bytes().split(b"\0")
+            if str(path).encode() in arguments:
+                child.terminate()
+            elif child.poll() is None:
+                raise RuntimeError("approval helper identity changed; preserving process custody")
+            child.wait(timeout=210)
+        raise
+    return config_at()
+
+
+def canceled(*_):
+    raise InterruptedError("runner canceled this exact preparation")
 
 
 @contextmanager
@@ -120,7 +160,7 @@ def changed_policy(repository, source, token, policy):
             or len({row["path"] for row in tree["tree"]}) != len(tree["tree"])):
         raise RuntimeError("complete source tree could not be read")
     paths = {row["path"]: row for row in tree["tree"]}
-    changed = []
+    changed = sorted(policy_paths(paths) - policy.keys())
     for path, expected in policy.items():
         node = paths.get(path)
         if node is None or node.get("type") != "blob" or node.get("mode") not in {"100644", "100755"}:
@@ -132,7 +172,7 @@ def changed_policy(repository, source, token, policy):
         content = base64.b64decode(observed["content"].replace("\n", ""), validate=True)
         if hashlib.sha256(content).hexdigest() != expected:
             changed.append(path)
-    return changed
+    return sorted(changed)
 
 
 def prepare(request, config, report, context):
@@ -149,6 +189,7 @@ def prepare(request, config, report, context):
     token = env.get("CI_SOURCE_TOKEN", "")
     if not token:
         raise RuntimeError("the ephemeral repository read token is absent")
+    config, report = approve_main(config, report, context, token)
     # Policy is checked through the repository API, without extracting candidate
     # bytes onto the host or trusting a manifest written by the candidate.
     changed = changed_policy(repository, source, token, report["policy"])
@@ -161,6 +202,8 @@ def prepare(request, config, report, context):
             output.write(fetch(repository, "tarball/" + source, token, raw=True))
     write(directory / "binding.json", {"repository": repository, "source": source,
         "run": context["GITHUB_RUN_ID"], "attempt": context["GITHUB_RUN_ATTEMPT"], "policy_changed": changed,
+        "approval": {"image_report": config["image_report"], "cache": config["cache"],
+                     "cache_sha256": config["cache_sha256"], "image": report["image"]},
         "all_features": context.get("GITHUB_REF") == "refs/heads/main" and
             context.get("GITHUB_EVENT_NAME") in {"schedule", "workflow_dispatch"}})
     return {"state": {"job": directory.name}, "isAlpine": False}
@@ -210,6 +253,16 @@ def script_step(request, config, report, directory):
     if operation not in {"changes", "route", "linux", "check"}:
         raise RuntimeError("only the four fixed CI operations are supported")
     binding = json.loads((directory / "binding.json").read_text())
+    snapshot = binding.get("approval")
+    if snapshot is not None:
+        if (not isinstance(snapshot, dict)
+                or set(snapshot) != {"image_report", "cache", "cache_sha256", "image"}
+                or binding.get("repository") != config["repository"]):
+            raise RuntimeError("job approval snapshot is malformed")
+        config, report = config_values({**config, **{key: snapshot[key]
+            for key in ("image_report", "cache", "cache_sha256")}})
+        if report["image"] != snapshot["image"]:
+            raise RuntimeError("job approval image differs")
     changed = binding.get("policy_changed", [])
     if changed and operation not in {"changes", "route"}:
         if operation == "linux":
@@ -303,6 +356,8 @@ def linux_step(config, report, directory, *, all_features=False):
 
 
 def main():
+    signal.signal(signal.SIGTERM, canceled)
+    signal.signal(signal.SIGINT, canceled)
     raw = sys.stdin.buffer.read(1024**2 + 1)
     if len(raw) > 1024**2:
         raise RuntimeError("hook input exceeds bound")

@@ -6,7 +6,7 @@ pub enum IdentityRole {
     CallerProject,
     Target,
 }
-const CALLER_DESCRIPTION: &str = "Caller assertion; optional; must match the bound identity";
+const CALLER_DESCRIPTION: &str = "Optional; must match caller.";
 type FieldRole = (&'static str, IdentityRole, &'static str);
 pub const CALLER_FIELDS: &[FieldRole] = &[
     ("agent_id", IdentityRole::CallerAgent, CALLER_DESCRIPTION),
@@ -32,6 +32,7 @@ const fn agent_target(description: &'static str) -> [FieldRole; 6] {
 const LAUNCH_FIELDS: &[FieldRole] = &agent_target("The agent to launch.");
 const STOP_FIELDS: &[FieldRole] = &agent_target("The agent to stop.");
 pub const MCP_IDENTITY_ARGUMENT_ROLES: &[(&str, &[FieldRole])] = &[
+    ("stateengine_help", CALLER_FIELDS),
     ("stateengine_whoami", CALLER_FIELDS),
     ("stateengine_remote_list", CALLER_FIELDS),
     ("stateengine_remote_watch", CALLER_FIELDS),

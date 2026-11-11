@@ -34,7 +34,7 @@ impl Channels {
     }
     pub(super) async fn validate_resume_consent(
         &self,
-        input: &ConnectTelegram,
+        input: &ConnectChannel,
         deadline: &Deadline,
     ) -> Result<()> {
         let ChannelPolicy::ConfirmResume {
@@ -216,8 +216,8 @@ impl Channels {
                     .resume_configuration
                     .ok_or_else(|| channel_error(ChannelError::Unsupported))?,
             },
-            subject: phone.subject,
-            private_chat: phone.private_chat,
+            subject: phone.subject.clone(),
+            private_chat: phone.private_chat.clone(),
             expires_at_us: now()?.saturating_add(300000000),
             state: "offered".into(),
             code: None,
@@ -322,9 +322,9 @@ impl Channels {
         state: &Connection,
         output: &se_store::channel::Outbound,
         deadline: &Deadline,
-    ) -> Result<Option<serde_json::Value>> {
+    ) -> Result<Vec<ActionButton>> {
         if output.kind != "resume" {
-            return Ok(None);
+            return Ok(vec![]);
         }
         let message = output
             .original
@@ -344,10 +344,11 @@ impl Channels {
             "Inspect its original native action.",
         )?;
         if action.state != "offered" || action.expires_at_us <= now()? {
-            return Ok(None);
+            return Ok(vec![]);
         }
-        Ok(Some(
-            serde_json::json!({"inline_keyboard":[[{"text":"Start/resume selected agent","callback_data":format!("r:{}",action.id)}]]}),
-        ))
+        Ok(vec![ActionButton {
+            label: "Start/resume selected agent".into(),
+            data: format!("r:{}", action.id),
+        }])
     }
 }

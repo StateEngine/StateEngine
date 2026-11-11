@@ -14,7 +14,7 @@ fn forwarded_text_preserves_actual_private_subject_and_body() -> Check {
         &json!({"message":{"from":user(),"chat":chat(),"text":"literal owner task","forward_origin":{"type":"user","sender_user":{"id":999}}}}),
     )?;
     assert!(
-        matches!(content,IncomingContent::Text{phone,text} if phone.subject==42 && phone.private_chat==42 && text=="literal owner task")
+        matches!(content,IncomingContent::Text{phone,text} if phone.subject == 42.into() && phone.private_chat == 42.into() && text=="literal owner task")
     );
     Ok(())
 }
@@ -39,7 +39,9 @@ fn attachment_caption_is_not_silently_saved_as_the_attachment_contents() -> Chec
     let content = normalize(
         &json!({"message":{"from":user(),"chat":chat(),"photo":[{"file_id":"fixture"}],"caption":"this is not the file"}}),
     )?;
-    assert!(matches!(content,IncomingContent::UnsupportedPrivate{phone} if phone.subject==42));
+    assert!(
+        matches!(content,IncomingContent::UnsupportedPrivate{phone} if phone.subject == 42.into())
+    );
     Ok(())
 }
 /// Protects: 49 — bind callback identity to its actual private caller rather than the bot's message author.
@@ -47,7 +49,7 @@ fn attachment_caption_is_not_silently_saved_as_the_attachment_contents() -> Chec
 fn private_callback_uses_caller_and_checks_destination() -> Check {
     let mut callback = json!({"from":user(),"message":{"from":{"is_bot":true},"chat":chat()},"id":"fixture-callback","data":"r:cha-11111111111111111111111111111111"});
     assert!(
-        matches!(normalize(&json!({"callback_query":callback.clone()}))?,IncomingContent::Callback{phone,..} if phone.subject==42)
+        matches!(normalize(&json!({"callback_query":callback.clone()}))?,IncomingContent::Callback{phone,..} if phone.subject == 42.into())
     );
     callback["message"]["chat"]["id"] = json!(43);
     assert!(matches!(

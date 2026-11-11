@@ -130,7 +130,7 @@ impl Channels {
                                 update: row.update,
                                 reason: row.reason,
                                 at_us: row.at_us,
-                                telegram: output_fact(
+                                delivery: output_fact(
                                     &row.output_state,
                                     row.provider_message,
                                     row.output_at_us,
@@ -268,6 +268,7 @@ fn snapshot(
     let revoked = matches!(state.pairing, Pairing::Revoked);
     ChannelSnapshot {
         id: state.id.clone(),
+        connector: state.connector,
         revision: state.revision,
         target: state.target.clone(),
         bot: state.bot.clone(),

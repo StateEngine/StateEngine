@@ -16,10 +16,18 @@ import uuid
 from secode_external import PIN, capabilities, environment, image_hash, package
 
 
-def native_probe(root, value):
-    """A finite native probe with an observable refusal for every launch verb."""
+def native_probe(root, value, *, policy=None):
+    """Finite native probe; optional policy replies stop before service execution.
+
+    The policy fixture uses the vendor's sandbox-policy CLI contract. It only
+    creates an empty private profile, never a service, account or model turn.
+    """
     root.mkdir()
     (root / 'capabilities.json').write_text(json.dumps(value))
+    if policy is not None:
+        (root / 'sandbox-capabilities.json').write_text(json.dumps(policy['capabilities']))
+        (root / 'sandbox-readback.json').write_text(policy['readback'])
+        (root / 'sandbox-exit').write_text(str(policy.get('exit', 0)))
     source = root / 'probe.rs'
     source.write_text(r'''use std::{env,fs,io::Write};
 fn main() {
@@ -32,7 +40,67 @@ fn main() {
         [arg] if arg=="--version" => println!("secode refusal-fixture"),
         [arg] if arg=="--external-host-capabilities" =>
             print!("{}",fs::read_to_string(directory.join("capabilities.json")).unwrap()),
+        [verb, flag] if verb=="sandbox-policy" && flag=="--capabilities"
+            && directory.join("sandbox-capabilities.json").exists() =>
+            {
+                if let Ok(path)=fs::read_to_string(directory.join("hide-cwd")) {
+                    let original=std::path::PathBuf::from(path);
+                    fs::rename(&original,original.with_extension("held")).unwrap();
+                }
+                print!("{}",fs::read_to_string(directory.join("sandbox-capabilities.json")).unwrap());
+            },
+        [verb, service, profile, workspace, directory_arg] if verb=="sandbox-policy"
+            && service=="--service" && workspace=="--directory"
+            && directory.join("sandbox-readback.json").exists() => {
+                fs::write(directory.join("readback-profile"),profile).unwrap();
+                fs::write(directory.join("readback-workspace"),directory_arg).unwrap();
+                snapshot(&directory,"readback");
+                let report=fs::read_to_string(directory.join("sandbox-readback.json")).unwrap();
+                // Match the native reader's per-service temporary root, not
+                // the system temp directory of the fixture's parent process.
+                let scratch=format!("{:?}",env::var("TMPDIR").unwrap());
+                print!("{}",report.replace("\"$PRIVATE_SCRATCH\"",&scratch));
+                std::io::stdout().flush().unwrap();
+                let code=fs::read_to_string(directory.join("sandbox-exit")).unwrap();
+                std::process::exit(code.parse().unwrap());
+            },
+        [verb, flag, profile] if verb=="init-profile" && flag=="--service"
+            && directory.join("sandbox-readback.json").exists() => {
+                let mut builder=fs::DirBuilder::new();
+                builder.recursive(true);
+                #[cfg(unix)] {
+                    use std::os::unix::fs::DirBuilderExt;
+                    builder.mode(0o700);
+                }
+                builder.create(profile).unwrap();
+                if directory.join("bootstrap-gate").exists() {
+                    // The fixture releases this finite initializer only after
+                    // the host has persisted its exact executable observation.
+                    let pending=directory.join("bootstrap-pid.pending");
+                    fs::write(&pending,std::process::id().to_string()).unwrap();
+                    fs::rename(pending,directory.join("bootstrap-pid")).unwrap();
+                    let deadline=std::time::Instant::now()+std::time::Duration::from_secs(20);
+                    while !directory.join("bootstrap-release").exists() {
+                        assert!(std::time::Instant::now()<deadline,"bootstrap observation timed out");
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
+            },
+        [verb, ..] if verb=="serve-service"
+            && directory.join("sandbox-readback.json").exists() => {
+                snapshot(&directory,"service");
+                fs::write(directory.join("service-attempted"),b"refused before execution").unwrap();
+                std::process::exit(81);
+            },
         _ => std::process::exit(81),
+    }
+}
+fn snapshot(directory:&std::path::Path, label:&str) {
+    if let Some(path)=env::var_os("SECODE_CONFIG") {
+        fs::write(directory.join(format!("{label}-config-path")),path.as_encoded_bytes()).unwrap();
+        if let Ok(bytes)=fs::read(&path) {
+            fs::write(directory.join(format!("{label}-host-policy.json")),bytes).unwrap();
+        }
     }
 }''')
     suffix = '.exe' if os.name == 'nt' else ''
@@ -45,13 +113,15 @@ fn main() {
 
 
 class Fixture:
-    def __init__(self, se, root, provider, sandbox, approval):
+    def __init__(self, se, root, provider, sandbox, approval, *, setup_repo=None):
         self.se, self.root = se.resolve(), root.resolve()
         root.mkdir()
         self.env = environment(root)
         self.home, self.repo = root / 'state', root / 'repo'
         self.home.mkdir(mode=0o700)
         self.repo.mkdir()
+        if setup_repo is not None:
+            setup_repo(self.repo, self.env)
         self.calls = 0
         self.runtime = None
         config = self.home / 'config.toml'
@@ -165,12 +235,12 @@ def main():
     (root / 'images.json').write_text(json.dumps({'pin': args.pin, 'provider': hashes,
                                                  'host': image_hash(args.se)}, indent=2))
     cases = [
-        ('workspace', 'workspace-write', 'never', 'repository-metadata policy', True, None),
         ('attended', 'read-only', 'never', 'headless launch with --detach', False, None),
         ('approval', 'read-only', 'on-request', 'interactive approval transport', True, None),
         ('capability', 'read-only', 'never', '/initial_input/uncertain_write', True, 'pending-no-replay'),
     ]
-    print('1..5', flush=True)
+    total = len(cases) + 1
+    print(f'1..{total}', flush=True)
     for number, (name, sandbox, approval, reason, detach, mutation) in enumerate(cases, 1):
         altered = copy.deepcopy(value)
         if mutation:
@@ -194,9 +264,9 @@ def main():
         fixture.absent_service()
         assert row['secode_binding']['state'] == 'absent', row
         if row['secode_runtime']['state'] != 'absent':
-            print('not ok 5 - never-launched service absence is reported honestly', flush=True)
+            print(f'not ok {total} - never-launched service absence is reported honestly', flush=True)
             raise AssertionError(row['secode_runtime'])
-        print('ok 5 - never-launched service absence is reported honestly', flush=True)
+        print(f'ok {total} - never-launched service absence is reported honestly', flush=True)
     finally:
         fixture.close()
     assert package(args.secode.resolve(), args.pin) == hashes, 'pinned package changed'

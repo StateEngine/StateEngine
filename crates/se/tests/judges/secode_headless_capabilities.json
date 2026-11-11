@@ -1,0 +1,60 @@
+{
+  "external_host": true,
+  "initial_input": {
+    "acceptance_path": "/api/session/{sessionID}/input/{messageID}",
+    "cli_argument": "--input-id",
+    "key_type": "MessageId",
+    "uncertain_write": "pending-no-replay"
+  },
+  "native_notice": {
+    "acceptance_path": "/api/session/{sessionID}/input/{messageID}",
+    "binding_path": "/api/session/{sessionID}/stateengine/notice",
+    "body_delivery": false,
+    "message_limit": 32,
+    "offer_method": "POST",
+    "offer_path": "/api/session/{sessionID}/stateengine/notice",
+    "resume": {
+      "admits_input": false,
+      "fences": [
+        "service",
+        "targetID",
+        "binding",
+        "holdID"
+      ],
+      "method": "POST",
+      "path": "/api/session/{sessionID}/stateengine/resume",
+      "starts_execution": false
+    }
+  },
+  "schema": "secode.external-host-capabilities.v1",
+  "service": {
+    "argv": [
+      "serve-service",
+      "--service",
+      "<profile>",
+      "--port",
+      "0",
+      "--external-host"
+    ],
+    "profile_init_argv": [
+      "init-profile",
+      "--service",
+      "<new-absolute-profile>"
+    ],
+    "readiness": {
+      "authenticated_health_path": "/api/health",
+      "endpoint_field": "observed_endpoint",
+      "file": "serve-ready.json",
+      "schema": "secode.product.ready.v2"
+    },
+    "shutdown": [
+      "SIGTERM",
+      "SIGINT"
+    ]
+  },
+  "stateengine": {
+    "configured_mcp_transports": "unchanged",
+    "embedded_owner_composed": false,
+    "owner": "external"
+  }
+}

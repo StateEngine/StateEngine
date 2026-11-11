@@ -57,7 +57,7 @@ unqualified until the matched cohorts required by design 47 and 80 are complete.
 
 * **Name** is the stable registry key, not a Rust symbol or an old command alias. CLI paths omit the leading `se`. Bracketed arguments are optional; alternatives in one cell are explicit typed variants of one operation.
 * **MCP** names are exact and include `stateengine_`. `none` always gives a reason. All listed MCP operations also have an in-process typed entry point; transport-specific framing does not create a second implementation.
-* **Auth** is `owner`, `session` or `either`. Owner means machine credential plus the OS user's verified authority; human-only approval, destructive removal and secret erasure additionally require an interactive terminal outside an agent process tree. A label or an `--actor` flag never supplies authority. Session means a verified, unrevoked bound capability on external transports, or a generation-bound in-process handle in embedded SE Code. Embedded binding issues no credential events. Either accepts either authority subject to the scope rules below. These checks guard mistakes/drift; they are not proof against a determined agent running as the same OS user. The three public metadata operations (`meta.version`, `meta.help`, `meta.schema`) additionally permit anonymous access; they disclose no private state.
+* **Auth** is `owner`, `session` or `either`. Owner means machine credential plus the OS user's verified authority; human-only approval, destructive removal and secret erasure additionally require an interactive terminal outside an agent process tree. A label or an `--actor` flag never supplies authority. Session means a verified, unrevoked bound capability on external transports, or a generation-bound in-process handle in embedded SE Code. Embedded binding issues no credential events. Either accepts either authority subject to the scope rules below. These checks guard mistakes/drift; they are not proof against a determined agent running as the same OS user. The four public metadata operations (`meta.version`, `meta.help`, `meta.guide`, `meta.schema`) additionally permit anonymous access; they disclose no private state.
 * **Effect** is `read`, `write` or `custody`. Read has no durable domain mutation. Write changes durable state or writes an explicitly requested owned artifact. Custody starts/stops/controls a runtime, agent or listener and records its effects. A combined effect lists each typed variant's behavior; it never licenses a read to mutate silently.
 * Inputs name semantic fields, not arbitrary JSON. Every operation has a closed typed input, rejects unknown fields and carries bounded strings/pages. Authority is supplied by the host, never deserialized from input. IDs are opaque typed IDs; a friendly agent name resolves through the registry before dispatch. Optional input syntax here does not make required fields optional in generated schemas.
 * Outputs below are named contract families. Each serializes with an explicit `schema` version. `Read<T>` distinguishes present, absent, unreadable and unknown; `Page<T>` includes window, completeness, omissions and continuation. `Receipt` carries event/idempotency and committed-state facts; delivery or read status is a separate fact. A command does not turn refusal into success because it returned JSON.
@@ -91,6 +91,7 @@ Common CLI rendering flags are `--json`, `-q`, `--no-color`, `-h/--help` and `-V
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `meta.version` | `--version` | none — installer/CLI metadata, not an agent task | either | read | JSON rendering choice | `Version`: installed version/build and observed/unknown provenance | J1 |
 | `meta.help` | `help [PATH]`; `PATH --help` | none — MCP descriptions come from its catalogue | either | read | registered command path | `Help`: generated usage and argument descriptions | J1–J5 |
+| `meta.guide` | `guide [TOPIC]` | `stateengine_help` | either | read | optional exact topic name; no topic returns only the short index | `Guide`: topic names, titles and summaries, or one selected topic body; installed content without private state | support J1–J5 |
 | `meta.schema` | `schema [OP]` | none — MCP tools/list already exposes generated schemas | either | read | optional registered operation name | `SchemaCatalogue`: operation metadata plus input/output schemas and API version | support J1–J5 |
 | `identity.whoami` | none — terminal actor is already known; session introspection is an agent tool | `stateengine_whoami` | session | read | none | `Principal`: verified project/agent/session, authority scope and binding state; no credential | J2–J4 |
 | `project.init` | `init [--repo DIR --name NAME --agent NAME --provider PROVIDER --model MODEL]` | none — managed registration is owner setup | owner | write | existing repository root, display names and initial provider/model; safe permission profile | `InitResult`: registered/already-present facts, stable project/agent identities and the scoped first-launch command | J2 |
@@ -240,7 +241,7 @@ The CLI retains replacement hints only for commands with a supported replacement
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 47 operations (41 core, 6 Atlas), 22 MCP tools (17 core, 5 Atlas). Planned: 11 operations, 4 MCP tools.
+Registered: 48 operations (42 core, 6 Atlas), 23 MCP tools (18 core, 5 Atlas). Planned: 11 operations, 4 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -257,6 +258,7 @@ Registered: 47 operations (41 core, 6 Atlas), 22 MCP tools (17 core, 5 Atlas). P
 | `remote.send` | remote send | `stateengine_remote_send` | either | write |
 | `meta.version` | --version | none | either | read |
 | `meta.help` | help | none | either | read |
+| `meta.guide` | guide | `stateengine_help` | either | read |
 | `meta.schema` | schema | none | either | read |
 | `identity.whoami` | none — terminal actor is already known; session introspection is an agent tool | `stateengine_whoami` | session | read |
 | `store.import_node` | import | none | owner | custody |

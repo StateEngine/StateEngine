@@ -131,7 +131,7 @@ fn revoke_retains_inflight_success_but_prevents_next_private_release() -> Check 
                 output: output.output.clone(),
                 attempt: 1,
                 outcome: OutputOutcome::Sent {
-                    provider_message: 99,
+                    provider_message: 99.into(),
                 },
             },
             "inflight-finish",
@@ -146,7 +146,7 @@ fn revoke_retains_inflight_success_but_prevents_next_private_release() -> Check 
         .find(|o| o.output == output.output)
         .ok_or("lost in-flight output")?;
     assert_eq!(actual.state, "sent");
-    assert_eq!(actual.provider_message, Some(99));
+    assert_eq!(actual.provider_message, Some(99.into()));
     view.close()?;
     assert!(
         writer
@@ -249,7 +249,7 @@ fn pending_capacity_recovers_after_recipient_read_and_known_output_completion() 
                 output: paired.output,
                 attempt: 1,
                 outcome: OutputOutcome::Sent {
-                    provider_message: 1,
+                    provider_message: 1.into(),
                 },
             },
         ),
@@ -322,7 +322,7 @@ fn pending_capacity_recovers_after_recipient_read_and_known_output_completion() 
                 output: next.output,
                 attempt: 1,
                 outcome: OutputOutcome::Sent {
-                    provider_message: 2,
+                    provider_message: 2.into(),
                 },
             },
         ),

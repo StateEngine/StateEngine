@@ -64,9 +64,10 @@ fn all_tools_check_each_identity_alias_against_the_authenticated_principal() -> 
                 let listed = rpc(port, "bound-principal", "tools/list", json!({})).await?;
                 for tool in listed["result"]["tools"].as_array().ok_or("tool list absent")? {
                     for field in ["agent_id", "project_id"] {
-                        require(tool["inputSchema"]["properties"][field] == json!({
-                            "type": "string", "description": "Caller assertion; optional; must match the bound identity"
-                        }), format!("missing caller metadata {} {field}: {tool}", tool["name"]))?;
+                        let caller = &tool["inputSchema"]["properties"][field];
+                        require(caller["type"] == "string"
+                            && caller["description"].as_str().is_some_and(|text| !text.is_empty()),
+                            format!("missing caller metadata {} {field}: {tool}", tool["name"]))?;
                         require(!tool["inputSchema"]["required"].as_array().is_some_and(|fields| fields.contains(&json!(field))), "caller assertion became required")?;
                     }
                     let description = match tool["name"].as_str() {

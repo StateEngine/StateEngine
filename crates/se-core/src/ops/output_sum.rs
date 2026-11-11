@@ -95,6 +95,7 @@ Resume => Resume, ResumeOutput;
 SessionContext => SessionContextRequest, SessionContextOutput;
 MetaVersion => MetaVersion, VersionOutput;
 MetaHelp => MetaHelp, HelpOutput;
+MetaGuide => MetaGuide, GuideOutput;
 MetaSchema => MetaSchema, SchemaCatalogue;
 IdentityWhoami => IdentityWhoami, PrincipalOutput;
 ProjectInit => ProjectInit, InitOutput;
