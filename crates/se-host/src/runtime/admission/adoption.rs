@@ -28,6 +28,12 @@ impl AdmissionContext {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(3),
             cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
+        se_proc::native_ipc::restore_adoption_provider_cache(
+            &self.state_directory,
+            &registration.provider.to_local()?,
+            &bound,
+        )
+        .map_err(|e| se_core::scope::unreadable("adopted provider image cache", &e.to_string()))?;
         let provider = se_proc::native_ipc::provider_ancestor(
             peer.native(),
             &registration.provider.to_local()?,

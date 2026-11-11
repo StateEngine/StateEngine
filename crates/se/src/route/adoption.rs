@@ -101,6 +101,15 @@ pub(crate) fn install(
             "at most 4096 registered projects",
         ));
     }
+    se_proc::native_ipc::prepare_adoption_image_cache(
+        &cx.home,
+        &registration.provider.to_local()?,
+        &se_proc::native_ipc::IpcIoBound {
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        },
+    )
+    .map_err(|e| se_core::scope::unreadable("adoption executable cache", &e.to_string()))?;
     // Journal before changing provider files: a partial install always retains
     // the exact entries that uninstall must remove, never a whole-file backup.
     se_host::adoption::publish(&cx.home, &registration)?;

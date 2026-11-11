@@ -38,7 +38,16 @@ fn run(args: &[OsString]) -> Result<u8> {
     let Some(project) = registration.project(&cwd)? else {
         return Ok(0);
     };
-    registered(args, home, cwd, project.project.clone()).or_else(|error| {
+    registered(args, home.clone(), cwd, project.project.clone()).or_else(|error| {
+        if let Some(action) = args[3].to_str().and_then(Action::parse)
+            && let Err(record_error) =
+                se_host::adoption::status::record(&home, &project.project, action, Some(&error))
+        {
+            let _ = writeln!(
+                std::io::stderr(),
+                "StateEngine adoption status could not be saved: {record_error}"
+            );
+        }
         let _ = writeln!(
             std::io::stderr(),
             "StateEngine integration is unconfirmed [{}]: {}",
@@ -113,6 +122,19 @@ fn registered(
         retry_invocation: None,
         legacy_environment_present: false,
     };
+    let registration = se_host::adoption::read(&cx.home)?
+        .ok_or_else(|| SeError::invalid("native adoption hook", "current adoption registration"))?;
+    // Cold work is separate from native peer proof. Installation warms these
+    // hints; subsequent hooks read image content only after a native file change.
+    se_proc::native_ipc::prepare_adoption_image_cache(
+        &cx.home,
+        &registration.provider.to_local()?,
+        &se_proc::native_ipc::IpcIoBound {
+            deadline: std::time::Instant::now() + Duration::from_secs(25),
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        },
+    )
+    .map_err(|e| se_core::scope::unreadable("adoption executable proof", &e.to_string()))?;
     if action == Action::Mail {
         return mail(&cx, input);
     }
@@ -161,6 +183,8 @@ fn forward_to(
         timeout: Duration::from_secs(25),
         cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
+    let project = input.project.clone();
+    let action = input.action;
     let output = crate::ipc::exchange_output(
         target,
         route::execute::credential(cx, &files)?,
@@ -181,6 +205,7 @@ fn forward_to(
             "the exact provider adoption family",
         ));
     }
+    se_host::adoption::status::record(&cx.home, &project, action, None)?;
     Ok(output.value)
 }
 #[cfg(any(target_os = "linux", windows))]

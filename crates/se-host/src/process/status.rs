@@ -106,6 +106,7 @@ impl LaunchCoordinator {
                 .map_err(|_| error("host observation clock", "representable Unix microseconds"))?,
         )?);
         resources::observe(&mut status.value.runtime);
+        crate::adoption::status::observe(&self.options.home, &mut status.value);
 
         deadline.remaining()?;
         Ok(())

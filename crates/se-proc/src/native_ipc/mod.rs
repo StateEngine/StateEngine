@@ -17,7 +17,9 @@ mod ancestor;
 pub use ancestor::{provider_ancestor, provider_is_live};
 mod executable;
 pub use executable::ExecutableStamp;
+mod adoption_cache;
 mod image_cache;
+pub use adoption_cache::{prepare_adoption_image_cache, restore_adoption_provider_cache};
 pub use image_cache::{
     ImageCacheRead, publish_image_cache, publish_remote_image_cache, restore_image_cache,
     restore_remote_image_cache,

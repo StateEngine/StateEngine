@@ -10,6 +10,7 @@ use std::{
 #[cfg(feature = "listener")]
 pub mod metadata;
 pub mod settings;
+pub mod status;
 pub const JOURNAL: &str = "claude-adoption.json";
 const LIMIT: usize = 1024 * 1024;
 #[derive(Clone, Serialize, Deserialize)]
@@ -115,6 +116,29 @@ pub enum Action {
     Stop,
     End,
     Mail,
+}
+impl Action {
+    pub const ALL: [Self; 6] = [
+        Self::Start,
+        Self::Prompt,
+        Self::Capture,
+        Self::Stop,
+        Self::End,
+        Self::Mail,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Prompt => "prompt",
+            Self::Capture => "capture",
+            Self::Stop => "stop",
+            Self::End => "end",
+            Self::Mail => "mail",
+        }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|action| action.name() == value)
+    }
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
