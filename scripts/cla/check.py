@@ -175,8 +175,13 @@ def check_pull(github, number):
 
 def run():
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-    if os.environ["GITHUB_EVENT_NAME"] == "issue_comment" and not event.get("issue", {}).get("pull_request"):
+    name = os.environ["GITHUB_EVENT_NAME"]
+    if name == "issue_comment" and not event.get("issue", {}).get("pull_request"):
         return
+    subject = (event["issue"]["number"] if name == "issue_comment" else
+               event["pull_request"]["number"] if name == "pull_request_target" else None)
+    if subject is not None and (type(subject) is not int or subject < 1):
+        raise ValueError("event pull request identity is unreadable")
     github = GitHub()
     branch = github.request("")["default_branch"]
     pulls = [pull for pull in github.pages("pulls") if pull["base"]["ref"] == branch]
@@ -185,13 +190,23 @@ def run():
     heads = {pull["head"]["sha"]: pull["number"] for pull in pulls}
     for head in heads:
         github.status(head, "pending", "Rechecking contributor signatures")
-    complete = True
-    for number in heads.values():
+    results = {}
+    for head, number in heads.items():
         try:
-            complete = check_pull(github, number) and complete
+            results[head] = check_pull(github, number)
         except (KeyError, OSError, ValueError, urllib.error.URLError, subprocess.SubprocessError) as error:
             print(f"Pull request {number}: agreement check refused: {error}")
-            complete = False
+            results[head] = False
+            github.status(head, "failure", "Contributor identity or agreement could not be verified")
+    # Keep refreshing every head under global serialization, but a pull-request
+    # event's run belongs to that request. Shared-head peers still qualify together.
+    if subject is not None:
+        current = github.request(f"pulls/{subject}")
+        if current["state"] == "closed":
+            return
+        complete = results.get(current["head"]["sha"], False)
+    else:
+        complete = all(results.values())
     if not complete:
         raise SystemExit(1)
 
