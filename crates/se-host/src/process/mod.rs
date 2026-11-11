@@ -39,6 +39,7 @@ pub(crate) mod store;
 mod supervisor;
 mod takeover;
 mod tasks;
+mod wake;
 mod window;
 #[cfg(target_os = "linux")]
 mod window_join;

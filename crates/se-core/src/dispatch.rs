@@ -435,6 +435,9 @@ impl Kernel {
             AnyOp::AgentStop(input) => OpStep::Custody(CustodyPlan::Stop(Box::new(
                 crate::ops::stop_plan::plan(input, cx)?,
             ))),
+            AnyOp::AgentWake(input) => OpStep::Custody(CustodyPlan::AgentWake(
+                crate::ops::agent_wake::plan(input, cx)?,
+            )),
             AnyOp::ProjectRemove(input) => OpStep::Custody(CustodyPlan::Remove(Box::new(
                 crate::ops::project_remove::plan(input, cx)?,
             ))),

@@ -17,6 +17,7 @@ pub use continuity::{Resume, ResumeOutput, SessionContextOutput, SessionContextR
 pub mod agent;
 pub mod agent_launch;
 pub mod agent_stop;
+pub mod agent_wake;
 pub mod process_commit;
 pub mod process_plan;
 pub mod project_remove;
@@ -26,6 +27,7 @@ pub mod session_reference;
 pub mod stop_plan;
 pub use agent_launch::{AgentLaunch, LaunchPending, LaunchPendingState, LaunchReply, LaunchResult};
 pub use agent_stop::{AgentStop, StopResult};
+pub use agent_wake::{AgentWake, WakeResult};
 pub use project_remove::{ProjectRemove, RemoveResult};
 pub mod agent_config;
 pub mod agent_config_receipt;
@@ -243,6 +245,7 @@ ops! {
     AgentList => AgentList, AgentPage, ("agent.list",leaf(&["agent","list"]),no_mcp("Owner overview; bound agents use status for their own saved identity."),Owner,false,Never,Read,Project,None,"se.agent-page",AgentPage,&["J2","J3"]);
     AgentLaunch => AgentLaunch, LaunchReply, ("agent.launch",leaf(&["launch"]),tool("stateengine_agent_launch","Launch an agent","Launch self or your controlled child; same-key retry for pending. force consents to stop existing jobs."),Either,false,Never,Custody,Project,HostAutoStart,"se.launch",Launch,&["J2","J3"]);
     AgentStop => AgentStop, StopResult, ("agent.stop",leaf(&["stop"]),tool("stateengine_agent_stop","Stop an agent","Stop self or your controlled child; returns original-conversation resume command."),Either,false,Never,Custody,ProjectOrAll,HostAutoStart,"se.stop",Stop,&["J3","J5"]);
+    AgentWake => AgentWake, WakeResult, ("agent.wake",leaf(&["agent","wake"]),tool("stateengine_agent_wake","Wake an agent","Arm this running agent's pending mail delivery and report the committed offer; never launches a process."),Either,false,Never,Custody,Project,Host,"se.wake",Wake,&["J4"]);
     ProjectRemove => ProjectRemove, RemoveResult, ("project.remove",leaf(&["remove"]),no_mcp("Project removal requires the verified owner at a human terminal."),Owner,false,Always,Custody,ProjectOrAll,HostAutoStart,"se.remove",Remove,&["J5"]);
     AgentShow => AgentShow, AgentStatusOutput, ("agent.show",leaf(&["agent","show"]),no_mcp("This owner CLI read inspects saved agent metadata."),Owner,false,Never,Read,Project,None,"se.agent-status",AgentStatus,&["E3","J2"]);
     ConfigGet => ConfigGet, ConfigValueOutput, ("config.get",leaf(&["config","get"]),no_mcp("Saved agent settings are inspected by the owner CLI."),Owner,false,Never,Read,Project,None,"se.config-value",ConfigValue,&["E3"]);
@@ -355,6 +358,12 @@ impl AnyOutput {
             #[cfg(feature = "import")]
             Self::ImportNode(v) if !v.value.complete => 2,
             Self::AgentStop(v) if !v.value.complete => 2,
+            Self::AgentWake(v) => match &v.value.outcome {
+                crate::ops::agent_wake::WakeOutcome::Offered => 0,
+                crate::ops::agent_wake::WakeOutcome::Pending => 2,
+                crate::ops::agent_wake::WakeOutcome::Refused
+                | crate::ops::agent_wake::WakeOutcome::Delivered => 1,
+            },
             Self::ProjectRemove(v) if !matches!(v.value.outcome.as_str(), "removed" | "absent") => {
                 2
             }

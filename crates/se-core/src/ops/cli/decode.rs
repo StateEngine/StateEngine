@@ -304,6 +304,10 @@ pub fn from_matches_with_key(
             all: flag(m, "all"),
             release: flag(m, "release"),
         }),
+        "agent.wake" => AnyOp::AgentWake(AgentWake {
+            target_agent_id: None,
+            owner_agent: Some(required(m, "agent")?),
+        }),
         "project.remove" => AnyOp::ProjectRemove(ProjectRemove {
             all: flag(m, "all"),
             keep_integrations: flag(m, "keep-integrations"),
