@@ -15,24 +15,7 @@ import time
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from codex_first_launch import Model
-from mail_cli import Fixture as MailFixture
-
-class Fixture(MailFixture):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Settings discovery must remain in the retained native child: killing
-        # a wrapper that left a helper behind would not prove probe closure.
-        source = self.root / 'provider.rs'
-        text = source.read_text()
-        needle = 'if a.get(1).map(String::as_str)==Some("--version")'
-        assert text.count(needle) == 1
-        reply = {'type': 'control_response', 'response': {'subtype': 'success',
-            'request_id': 'settings', 'response': {'effective': {}, 'sources': [], 'errors': []}}}
-        safe = ('if a.iter().any(|v|v=="--safe-mode") {println!("{}", r#"'
-            + json.dumps(reply) + '"#);loop {std::thread::sleep(std::time::Duration::from_secs(1));}}\n')
-        source.write_text(text.replace(needle, safe + needle, 1))
-        subprocess.run(['rustc', '--edition=2024', str(source), '-o', str(self.root / 'provider')],
-            capture_output=True, check=True, timeout=60)
+from mail_cli import Fixture
 
 MARKER = 'REVIEW_RECOVERED_OK'
 class Loopback(Model):

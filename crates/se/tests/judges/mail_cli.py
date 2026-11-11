@@ -38,6 +38,9 @@ class Fixture:
         helper = (provider_helper or Path(__file__).with_name("mail_provider.py")).resolve()
         source = self.root / "provider.rs"
         source.write_text('''fn main(){let a:Vec<String>=std::env::args().collect();
+if a.iter().any(|v|v=="--safe-mode") {
+let mut request=String::new();std::io::stdin().read_line(&mut request).unwrap();
+println!(r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"settings","response":{{"effective":{{}},"sources":[],"errors":[]}}}}}}"#);return;}
 if a.get(1).map(String::as_str)==Some("--version"){println!("2.1.287 (Claude Code)");return;}
 if a.get(1).map(String::as_str)==Some("auth") {println!(r#"{{"loggedIn":true}}"#);return;}
 let s=std::process::Command::new(PYTHON).args([HELPER,SE,HOME]).args(&a[1..]).status().unwrap();
@@ -151,10 +154,10 @@ def run(f):
         assert refused.returncode != 0 and b"recipient-private-body" not in refused.stdout, (verb, refused.stdout, refused.stderr)
     print("ok 7 - foreign read, ack and dismiss refuse without body disclosure", flush=True)
     large = f.mail("send", f.agent, "mcp budget body " + "z" * 30000)["message_id"]
-    refused = f.rpc("stateengine_msg_read", {"msg_id": large})
+    refused = f.rpc("stateengine_msg_read", {"msg_id": large, "budget": 512})
     assert refused["isError"] and "too-large" in json.dumps(refused), refused
     assert any(row["id"] == large for row in f.mail("list", recipient=True)["items"])
-    print("ok 8 - actual MCP envelope budget refuses before a read marker", flush=True)
+    print("ok 8 - explicit MCP read budget refuses before a read marker", flush=True)
     ack = f.rpc("stateengine_msg_ack", {"msg_id": large})
     assert not ack.get("isError", False), ack
     replay = f.mail("ack", large, recipient=True)
