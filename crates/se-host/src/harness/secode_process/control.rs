@@ -5,6 +5,18 @@ use se_types::{Result, Secret};
 use serde_json::Value;
 use std::{collections::BTreeSet, io::Read, path::Path, sync::Arc};
 
+fn transport_reason(error: reqwest::Error) -> String {
+    let error = error.without_url();
+    let mut reason = error.to_string();
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        reason.push_str(": ");
+        reason.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    reason
+}
+
 fn private_reason(reason: impl AsRef<str>, secret: &str, body: Option<&Value>) -> String {
     let mut reason = reason.as_ref().replace(secret, "[credential]");
     if let Some(capability) = body
@@ -177,7 +189,7 @@ impl Control {
             // bearing URL so a timeout and a refused connection remain distinct.
             unreadable(
                 "SE Code authenticated control",
-                private_reason(format!("{operation}: {:?}", e.without_url()), secret, body),
+                private_reason(format!("{operation}: {}", transport_reason(e)), secret, body),
             )
         })?;
         let status = response.status();
