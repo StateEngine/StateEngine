@@ -5,6 +5,18 @@ use se_types::{Result, Secret};
 use serde_json::Value;
 use std::{collections::BTreeSet, io::Read, path::Path, sync::Arc};
 
+fn private_reason(reason: impl AsRef<str>, secret: &str, body: Option<&Value>) -> String {
+    let mut reason = reason.as_ref().replace(secret, "[credential]");
+    if let Some(capability) = body
+        .and_then(|body| body.get("capability"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        reason = reason.replace(capability, "[capability]");
+    }
+    reason
+}
+
 /// Authenticated loopback-only reader/control. No ambient proxies, redirects,
 /// credential-bearing URLs, implicit retries or alternate endpoints are used.
 pub struct Control {
@@ -161,7 +173,12 @@ impl Control {
             request = request.json(body);
         }
         let mut response = request.send().await.map_err(|e| {
-            unreadable("SE Code authenticated control", format!("{operation}: {e}"))
+            // Display omits the transport cause. Keep it without a credential-
+            // bearing URL so a timeout and a refused connection remain distinct.
+            unreadable(
+                "SE Code authenticated control",
+                private_reason(format!("{operation}: {:?}", e.without_url()), secret, body),
+            )
         })?;
         let status = response.status();
         let limit: usize = if status.is_success() {
@@ -194,16 +211,11 @@ impl Control {
                 .or_else(|| value.get("reason"))
                 .and_then(Value::as_str)
                 .filter(|reason| reason.len() <= 2048 && !reason.chars().any(char::is_control));
-            let mut reason = reason
-                .unwrap_or("The service supplied no bounded public reason")
-                .replace(secret, "[credential]");
-            if let Some(capability) = body
-                .and_then(|body| body.get("capability"))
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-            {
-                reason = reason.replace(capability, "[capability]");
-            }
+            let reason = private_reason(
+                reason.unwrap_or("The service supplied no bounded public reason"),
+                secret,
+                body,
+            );
             return Err(unreadable(
                 "SE Code authenticated control",
                 format!(
