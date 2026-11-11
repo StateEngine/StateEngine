@@ -5,10 +5,15 @@ use se_core::scope;
 use se_types::Result;
 use serde_json::Value;
 
+// Includes both ordinary JSON nesting and JSON encoded inside string values.
+const MAX_DEPTH: usize = 32;
+const OMITTED: &str = "[redacted unparseable or deeply nested structured text]";
+
 const SENSITIVE_LABEL: &str = r"token|secret|password|passwd|passphrase|credential|api[ _-]?key|access[ _-]?key|private[ _-]?key|authorization|cookie";
 
 pub(super) struct Redactor {
     sensitive_key: Regex,
+    sensitive_prefix: Regex,
     replacements: Vec<(Regex, &'static str)>,
     paths: Vec<Regex>,
 }
@@ -28,6 +33,9 @@ impl Redactor {
         );
         let flag = format!(
             r#"(?i)(--[a-z0-9_-]*(?:{SENSITIVE_LABEL})[a-z0-9_-]*\s+)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s]+)"#
+        );
+        let prefix = format!(
+            r#"(?is)(?:["']?[a-z0-9_-]*(?:{SENSITIVE_LABEL})[a-z0-9_-]*["']?\s*[:=]\s*|--[a-z0-9_-]*(?:{SENSITIVE_LABEL})[a-z0-9_-]*\s+)"#
         );
         let mut replacements = Vec::new();
         for (pattern, replacement) in [
@@ -94,12 +102,65 @@ impl Redactor {
         }
         Ok(Self {
             sensitive_key: compile(&format!("(?i)({SENSITIVE_LABEL})"))?,
+            sensitive_prefix: compile(&prefix)?,
             replacements,
             paths,
         })
     }
-    fn text(&self, text: &str) -> String {
-        let mut text = text.to_owned();
+    fn text(&self, text: &str, depth: usize) -> String {
+        if depth >= MAX_DEPTH {
+            return OMITTED.into();
+        }
+        // Find complete JSON fragments before applying prose patterns. Decoding
+        // first exposes escaped keys/paths and lets sensitive object-valued
+        // fields be removed as a whole. String values may themselves encode JSON.
+        let mut prefixes = self.sensitive_prefix.find_iter(text).peekable();
+        let mut remaining = text;
+        let mut decoded = String::new();
+        loop {
+            let offset = text.len() - remaining.len();
+            // JSON consumed on the previous iteration owns its internal labels;
+            // its decoded value walk has already redacted those fields.
+            while prefixes.peek().is_some_and(|prefix| prefix.end() < offset) {
+                prefixes.next();
+            }
+            let fragment = remaining.find(['{', '[', '"']).map(|at| offset + at);
+            let assigned = prefixes
+                .peek()
+                .filter(|prefix| fragment.is_none_or(|at| prefix.end() <= at))
+                .map(|prefix| prefix.end());
+            if let Some(start) = assigned {
+                prefixes.next();
+                // Lex the whole value, not just a JSON fragment in it. A prefix
+                // and suffix can belong to the same unquoted credential value.
+                let end = start + assigned_end(&text[start..]);
+                decoded.push_str(&text[offset..start]);
+                decoded.push_str("[redacted]");
+                remaining = &text[end..];
+                continue;
+            }
+            let Some(start) = fragment else { break };
+            decoded.push_str(&text[offset..start]);
+            let fragment = &text[start..];
+            let Some(end) = structured_end(fragment) else {
+                // Never export an undecodable suffix: it may contain an escaped
+                // credential label that prose patterns cannot recognize.
+                decoded.push_str(OMITTED);
+                remaining = "";
+                break;
+            };
+            let replacement = match serde_json::from_str::<Value>(&fragment[..end]) {
+                Ok(mut value) => {
+                    self.value_at(&mut value, depth + 1);
+                    serde_json::to_string(&value).unwrap_or_else(|_| OMITTED.into())
+                }
+                Err(_) => OMITTED.into(),
+            };
+            decoded.push_str(&replacement);
+            remaining = &fragment[end..];
+        }
+        decoded.push_str(remaining);
+        let mut text = decoded;
         // Exact known paths precede generic patterns so even a space-bearing
         // selected home is completely removed from diagnosis prose.
         for path in &self.paths {
@@ -111,9 +172,18 @@ impl Redactor {
         text
     }
     pub(super) fn value(&self, value: &mut Value) {
+        self.value_at(value, 0);
+    }
+    fn value_at(&self, value: &mut Value, depth: usize) {
+        if depth >= MAX_DEPTH {
+            *value = Value::String(OMITTED.into());
+            return;
+        }
         match value {
-            Value::String(text) => *text = self.text(text),
-            Value::Array(values) => values.iter_mut().for_each(|value| self.value(value)),
+            Value::String(text) => *text = self.text(text, depth),
+            Value::Array(values) => values
+                .iter_mut()
+                .for_each(|value| self.value_at(value, depth + 1)),
             Value::Object(values) => {
                 let original = std::mem::take(values);
                 for (key, mut value) in original {
@@ -126,12 +196,70 @@ impl Redactor {
                     {
                         // Validated runtime log filenames are generated metadata,
                         // not opaque credential values; retain their correlation.
-                        self.value(&mut value);
+                        self.value_at(&mut value, depth + 1);
                     }
-                    values.insert(self.text(&key), value);
+                    values.insert(self.text(&key, depth + 1), value);
                 }
             }
             _ => (),
         }
     }
+}
+
+// A single linear scan isolates each candidate, including quoted scalar strings.
+// Do not repeatedly parse overlapping suffixes of malformed text. The JSON
+// parser validates delimiter types and has its own finite parsing depth bound.
+fn structured_end(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let quote = if text.starts_with('\'') { '\'' } else { '"' };
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, ch) in text.char_indices() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == quote {
+                quoted = false;
+                if depth == 0 {
+                    return Some(index + 1);
+                }
+            }
+        } else {
+            match ch {
+                ch if ch == quote => quoted = true,
+                '{' | '[' => depth += 1,
+                '}' | ']' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(index + 1);
+                    }
+                }
+                _ => (),
+            }
+        }
+    }
+    None
+}
+
+// Top-level whitespace and prose separators end an assigned value; separators
+// inside balanced containers or quoted segments do not. An unclosed segment
+// consumes the suffix rather than publishing an uncertain partial credential.
+fn assigned_end(text: &str) -> usize {
+    let mut remaining = text;
+    while let Some(ch) = remaining.chars().next() {
+        if ch.is_whitespace() || matches!(ch, ',' | ';' | ']' | '}') {
+            break;
+        }
+        if matches!(ch, '{' | '[' | '"' | '\'') {
+            let Some(end) = structured_end(remaining) else {
+                return text.len();
+            };
+            remaining = &remaining[end..];
+        } else {
+            remaining = &remaining[ch.len_utf8()..];
+        }
+    }
+    text.len() - remaining.len()
 }
