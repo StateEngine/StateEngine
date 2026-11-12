@@ -445,6 +445,12 @@ mod judge {
 }
 #[cfg(any(target_os = "linux", windows))]
 fn main() {
+    if std::env::args().any(|v| v == "--list") {
+        if !std::env::args().any(|v| v == "--ignored") {
+            println!("bootstrap_stderr: test");
+        }
+        return;
+    }
     if let Err(e) = judge::run() {
         eprintln!("FAIL bootstrap_stderr: {e}");
         std::process::exit(1);
@@ -452,5 +458,11 @@ fn main() {
 }
 #[cfg(not(any(target_os = "linux", windows)))]
 fn main() {
+    if std::env::args().any(|v| v == "--list") {
+        if !std::env::args().any(|v| v == "--ignored") {
+            println!("bootstrap_stderr: test");
+        }
+        return;
+    }
     println!("bootstrap_stderr: NOT GRADED on this platform");
 }

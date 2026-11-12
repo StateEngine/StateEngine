@@ -174,9 +174,21 @@ mod linux {
 }
 #[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().any(|v| v == "--list") {
+        if !std::env::args().any(|v| v == "--ignored") {
+            println!("linux_process_facts: test");
+        }
+        return Ok(());
+    }
     linux::run()
 }
 #[cfg(not(target_os = "linux"))]
 fn main() {
+    if std::env::args().any(|v| v == "--list") {
+        if !std::env::args().any(|v| v == "--ignored") {
+            println!("linux_process_facts: test");
+        }
+        return;
+    }
     println!("linux_process_facts: 0 cases; Linux native consumer only");
 }
