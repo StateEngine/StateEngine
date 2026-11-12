@@ -3,6 +3,7 @@
 mod inventory;
 mod reopen;
 mod reservation;
+mod writer;
 use se_atlas::{cache::*, errors::AtlasResult, model::CacheEpoch, scope::Scope};
 use se_proc::{NativeStateFiles, OwnedFile, observe_file_revision};
 use se_types::{Detail, SeError, details};
@@ -28,7 +29,7 @@ pub struct NativeAtlasCache {
     root: NativeStateFiles,
     scope: Scope,
     // Permanent inode, never unlinked. Kernel releases ownership on process exit.
-    writer: Option<File>,
+    writer: Option<writer::WriterLease>,
     reserved: RefCell<Option<(CacheEpoch, DatabaseFileIdentity)>>,
     growth: Cell<u64>,
 }
@@ -124,7 +125,7 @@ impl NativeAtlasCache {
             .readback(&self.home.root().join("writer.lock"))
             .map_err(fail)?
             .ok_or_else(|| fail("retained writer lock is absent"))?;
-        if !same(writer, &named)? {
+        if !same(writer::opened(writer), &named)? {
             return Err(fail("retained writer lock replaced"));
         }
         Ok(())

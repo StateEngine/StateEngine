@@ -199,6 +199,97 @@ fn published_epoch_cannot_be_discarded_and_readers_do_no_inventory() -> Check {
     assert_eq!(fs::read(unknown)?, b"preserve");
     Ok(())
 }
+/// A second lease on the same home must be refused on every platform.
+///
+/// This is deterministic, not timing-based: one cache holds the writer lease
+/// while a second acquisition is attempted. On Windows the readback handle
+/// shares READ|WRITE|DELETE, so the open grants nothing and the byte-range lock
+/// is the only exclusion; if that lock were dropped, this check would pass two
+/// holders and fail here.
+#[test]
+fn a_second_writer_lease_on_one_home_is_refused() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "lock")?;
+    let f = fixture()?;
+    let held = NativeAtlasCache::create(&f.home, f.scope.clone())?;
+    let second = NativeAtlasCache::create(&f.home, f.scope.clone());
+    let refused = match second {
+        Ok(_) => false,
+        Err(error) => matches!(
+            error.body.detail(),
+            se_types::Detail::AtlasResourceBudget(detail)
+                if detail.resource == "Atlas home writer lease"
+        ),
+    };
+    assert!(refused, "a second lease was granted on a held Atlas home");
+    drop(held);
+    NativeAtlasCache::create(&f.home, f.scope.clone())?;
+    Ok(())
+}
+
+/// The Atlas writer lease must end explicitly, not by close.
+///
+/// `flock` belongs to the open file description, and a child forked on another
+/// thread inherits a duplicate of it until it execs. A lease that releases only
+/// by closing this process's duplicate therefore stays held by that child's
+/// copy, and the same process's next step is refused with a spurious
+/// "Atlas home writer lease" busy. This takes and drops the real cache writer
+/// through the production adapter while a spawner thread runs, then reacquires:
+/// with the explicit release it never refuses, and on the close-only release it
+/// refused often (five base runs in five, about ten percent of lease cycles).
+#[test]
+#[cfg(unix)]
+fn writer_lease_ends_explicitly_while_another_thread_spawns() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "lock")?;
+    let f = fixture()?;
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let spawns = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let spawner = {
+        let (stop, spawns) = (std::sync::Arc::clone(&stop), std::sync::Arc::clone(&spawns));
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = std::process::Command::new("/bin/true").status();
+                spawns.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        })
+    };
+    // Take the home once so the writer lock exists, then cycle the lease.
+    drop(NativeAtlasCache::create(&f.home, f.scope.clone())?);
+    let mut refusals = 0;
+    let mut leases = 0;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        match NativeAtlasCache::create(&f.home, f.scope.clone()) {
+            Ok(cache) => {
+                leases += 1;
+                drop(cache);
+            }
+            Err(error) => {
+                let writer_busy = matches!(
+                    error.body.detail(),
+                    se_types::Detail::AtlasResourceBudget(detail)
+                        if detail.resource == "Atlas home writer lease"
+                );
+                if !writer_busy {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    spawner.join().ok();
+                    return Err(format!("unexpected cache failure: {error}").into());
+                }
+                refusals += 1;
+            }
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    spawner.join().ok();
+    let spawned = spawns.load(std::sync::atomic::Ordering::Relaxed);
+    println!("leases={leases} refusals={refusals} spawns={spawned}");
+    assert!(spawned > 0, "the spawner ran");
+    assert_eq!(
+        refusals, 0,
+        "the released writer lease was refused {refusals} times in {leases} leases while {spawned} children were spawned"
+    );
+    Ok(())
+}
+
 #[test]
 fn writer_lease_releases_on_drop_and_sparse_growth_obeys_disk_budget() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
