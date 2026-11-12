@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import stat
 import subprocess
@@ -201,6 +202,9 @@ def main():
         print(json.dumps(result))
         assert not live, f"owned runtime processes remain: {live}"
     assert len(passed) == 2
+    # A passing run leaves no artifacts behind. A failing run raises above and
+    # keeps ROOT, whose path was printed and written to result.json.
+    shutil.rmtree(ROOT, ignore_errors=True)
 
 
 if __name__ == "__main__":

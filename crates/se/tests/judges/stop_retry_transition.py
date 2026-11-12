@@ -38,7 +38,8 @@ else:
     checks, failures, cases = [], [], []
     for mode in ["retry", "down"]:
         f = Fixture(args.se, args.output / mode, provider_helper=helper, log_directory="calls")
-        runtime = Path(tempfile.mkdtemp(prefix="se-sretry-", dir="/tmp"))
+        runtime_dir = tempfile.TemporaryDirectory(prefix="se-sretry-", dir="/tmp")
+        runtime = Path(runtime_dir.name)
         arm, hit = f.root / "deny-signal", f.root / "signal-refused"
         f.env.update(XDG_RUNTIME_DIR=str(runtime), TMPDIR=str(runtime), LD_PRELOAD=str(library),
                      SE_STOP_REVIEW_ARM=str(arm), SE_STOP_REVIEW_HIT=str(hit))
@@ -127,6 +128,7 @@ else:
                 failures.append(mode + " cleanup: " + traceback.format_exc())
             record["outside"] = [{"expected": pin, "observed": native(pin["pid"])} for pin in pins]
             cases.append(record)
+        runtime_dir.cleanup()
     result = {"se_sha256": hashlib.sha256(args.se.read_bytes()).hexdigest(),
               "checks": checks, "failures": failures, "cases": cases}
     (args.output / "result.json").write_text(json.dumps(result, indent=2))

@@ -8,7 +8,7 @@ type Check<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 )]
 mod directory;
 struct Fixture {
-    root: PathBuf,
+    root: directory::PrivateDirectory,
     socket: PathBuf,
     record: PathBuf,
     target: PathBuf,

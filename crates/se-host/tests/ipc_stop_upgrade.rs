@@ -70,7 +70,7 @@ fn stop_keeps_exact_process_proof_across_real_executable_replacement() -> Check 
             "--nocapture",
             "--test-threads=1",
         ])
-        .env("SE_IPC_UPGRADE_JUDGE_HOME", &home.0)
+        .env("SE_IPC_UPGRADE_JUDGE_HOME", home.0.to_path_buf())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

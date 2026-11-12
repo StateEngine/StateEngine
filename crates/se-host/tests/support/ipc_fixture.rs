@@ -13,7 +13,6 @@ use std::{
     error::Error,
     fs,
     num::NonZeroU32,
-    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64},
@@ -32,7 +31,7 @@ pub type Check = Result<(), Box<dyn Error>>;
 static NEXT: AtomicU64 = AtomicU64::new(1);
 static FIXTURES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub struct Home(
-    pub PathBuf,
+    pub directory::PrivateDirectory,
     #[allow(
         dead_code,
         reason = "Avoids concurrent native image hashing in bounded handshake fixtures."

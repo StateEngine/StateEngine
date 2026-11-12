@@ -97,7 +97,8 @@ pub struct Fixture {
 }
 impl Fixture {
     pub fn new() -> Check<Self> {
-        let root = se_proc::canonicalize_path(directory::private_directory()?)?;
+        let root = directory::private_directory()?;
+        let root = se_proc::canonicalize_path(&root)?;
         #[cfg(not(windows))]
         let image = root.join("native-provider");
         #[cfg(windows)]

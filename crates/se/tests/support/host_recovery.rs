@@ -123,6 +123,7 @@ pub fn child(args: &[std::ffi::OsString]) -> Check {
             busy_timeout: Duration::from_secs(2),
         },
         home,
+        _root: None,
         store,
         owner,
         project,

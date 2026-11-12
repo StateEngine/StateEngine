@@ -286,6 +286,7 @@ impl Lease {
 }
 pub struct Fixture {
     pub home: PathBuf,
+    pub _root: Option<directory::PrivateDirectory>,
     pub options: StoreOptions,
     pub store: StoreId,
     pub owner: HumanId,
@@ -296,11 +297,13 @@ pub struct Fixture {
 impl Fixture {
     pub fn new() -> Result<Self, Box<dyn Error>> {
         let n = serial();
-        let home = directory::private_directory()?;
+        let directory = directory::private_directory()?;
+        let home = directory.to_path_buf();
         let root = home.join("state");
         drop(NativeStateFiles::create(&root)?);
         Ok(Self {
             home,
+            _root: Some(directory),
             options: StoreOptions {
                 state_directory: root,
                 busy_timeout: Duration::from_secs(2),
@@ -471,7 +474,11 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if let Err(e) = fs::remove_dir_all(&self.home) {
+        // `_root` removes the home on its own drop; this only reports an
+        // unexpected residue after the path is gone.
+        if let Err(e) = fs::remove_dir_all(&self.home)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
             eprintln!("cleanup {}: {e}", self.home.display());
         }
     }
