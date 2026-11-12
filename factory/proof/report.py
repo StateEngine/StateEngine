@@ -134,17 +134,19 @@ def invocation(inv, directory, run=None):
     cleanup_failed = bool(cleanup) if mode == "first-hour" else any(cleanup) if cleanup_known else False
     qualification = receipt.get("qualification")
     budget = receipt.get("budgets")
+    behavior_only = (mode == "first-hour" and isinstance(qualification, str)
+                     and qualification.startswith("Five behavior checks only;"))
     qualified = (isinstance(qualification, str) and isinstance(budget, dict)
-                 and (qualification.startswith("Five behavior checks only;") if mode == "first-hour"
-                      else qualification == "see journey scope and required budgets"))
-    budget_artifact, budget_error = read(directory / inv["output"] / "budgets.json") if mode != "first-hour" else ({}, None)
-    if mode != "first-hour" and (budget_error or budget_artifact.get("profile") != "rust"
+                 and (behavior_only or qualification == "see journey scope and required budgets"
+                      and (mode != "first-hour" or budget.get("state") == "assessed")))
+    budget_artifact, budget_error = read(directory / inv["output"] / "budgets.json") if not behavior_only else ({}, None)
+    if not behavior_only and (budget_error or budget_artifact.get("profile") != "rust"
                                 or not isinstance(budget_artifact.get("measurements"), list)
                                 or any(not isinstance(row, dict) or not isinstance(row.get("label"), str)
                                        or type(row.get("passed")) is not bool for row in budget_artifact["measurements"])):
         entry["problems"].append("budget artifact unavailable or invalid: " + str(budget_error))
         budget_error = budget_error or "invalid budget artifact"
-    if mode != "first-hour" and not budget_error:
+    if not behavior_only and not budget_error:
         required = budget.get("required") if isinstance(budget, dict) else None
         labels = {row["label"] for row in budget_artifact["measurements"]}
         if (not isinstance(required, list) or not required or any(not isinstance(label, str) for label in required)
@@ -152,7 +154,7 @@ def invocation(inv, directory, run=None):
                 or budget.get("passed") is True and any(row["passed"] is not True for row in budget_artifact["measurements"])):
             budget_error = "required measurement coverage or verdict differs from the receipt"
             entry["problems"].append(budget_error)
-    entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification,
+    entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification, behavior_only=behavior_only,
                  receipt_complete=budget_error is None and cleanup_known and qualified)
     code = inv.get("exit")
     # Judge exit 1 includes budget misses. Journey verdicts depend only on
@@ -169,7 +171,7 @@ def invocation(inv, directory, run=None):
                                  str([row["journey"] for row in rows if row["result"] == "FAIL"]))
     elif not cleanup_known or not qualified or budget_error:
         entry["problems"].append("cleanup or qualification unavailable")
-    elif mode != "first-hour" and budget.get("passed") is not True:
+    elif not behavior_only and budget.get("passed") is not True:
         entry["outcome"] = "FAIL"
         entry["problems"].append("required budgets did not pass")
     else:
@@ -240,7 +242,11 @@ def summarize(run, directory):
                     "invocation_outcome": entry["outcome"], "reason": row.get("reason"), "limits": measured.get("limits")})
     gaps = [f"{key}: {label}" for key, labels in LABELS.items() for label in labels
             if not any(row["label"] == label and row["numbers"] for row in slots[key])]
-    gaps += ["FULL: independent FULL-write probe unavailable", "Codex budgets: first-hour selection measures no budgets"]
+    gaps += ["FULL: independent FULL-write probe unavailable"]
+    for entry in entries:
+        if entry.get("surface") == "codex" and entry["mode"] == "first-hour" and (
+                entry.get("behavior_only") or not entry["receipt_complete"]):
+            gaps.append("Codex budgets: " + entry["output"] + " has no validated first-hour budget receipt")
     budgets = []
     for key, probes in slots.items():
         missing = any(gap.startswith(key + ":") for gap in gaps)

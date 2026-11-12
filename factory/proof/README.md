@@ -97,7 +97,9 @@ probe verdicts, using PASS, MISS or NOT MEASURED. A witnessed miss remains a mis
 when other probes are missing; missing coverage is named separately and prevents a
 whole-budget pass. Raw samples stay in the original judge receipts. Budget misses
 never change journey cells. Missing embedded B1/B2, handover B8, FULL-write and
-Codex-budget probes are named gaps.
+other unmeasured probes are named gaps. Codex first-hour receipts include the
+existing CLI, write, process, memory and idle probes. Historical behavior-only
+first-hour receipts remain readable and explicitly name their missing budgets.
 
 Each invocation records load averages and observed concurrent Cargo/Rust driver
 trees before and after the judge, beside its budget probes. Test commands count
