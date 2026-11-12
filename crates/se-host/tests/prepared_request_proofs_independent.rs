@@ -1,5 +1,6 @@
 //! Protects the portable verifier-to-coordinator handoff. These typed facts are
 //! adapter fixtures, not evidence of HTTP/sec1 possession or an activated C3.
+#![cfg(feature = "runtime")]
 use se_host::client::{ClientOptions, lease::Deadline};
 use se_host::{PreparedRequestProofs, VerifiedPreparedRequest};
 use se_store::{RecordId, RecordIdentity};

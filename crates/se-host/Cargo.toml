@@ -60,7 +60,7 @@ required-features = ["secode"]
 
 [dev-dependencies]
 rusqlite = { version = "0.41", features = ["hooks"] }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "io-util"] }
 
 [[test]]
 name = "atlas_cold_crash_dev"

@@ -1,7 +1,7 @@
 //! Status must survive an older process and a newer process-free session.
 //! Real store readers and FULL writer are used; process facts are typed store
 //! fixtures because the failure precedes any native process observation.
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(all(feature = "runtime", any(target_os = "linux", windows)))]
 use se_core::{
     commit::Cx,
     config_policy::ConfigFile,

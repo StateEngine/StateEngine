@@ -1,3 +1,4 @@
+#![cfg(feature = "listener")]
 use se_host::{
     client::{auth, endpoint, wire},
     *,
