@@ -52,6 +52,8 @@ impl CodexHarness {
                 .request("initialize", input::initialize(), &cx)
                 .await?;
             binding.notify("initialized", json!({}), &cx).await?;
+            #[cfg(windows)]
+            self.select_windows_sandbox(&binding, request, &cx).await?;
             let resolved = self.resolved(request)?;
             let plan = self.plan(request, &resolved, socket.as_deref());
             let (method, params) = self.thread(&plan)?;

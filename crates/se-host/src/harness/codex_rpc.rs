@@ -18,6 +18,8 @@ mod state;
 pub use state::IgnoredNotifications;
 mod transport;
 #[cfg(windows)]
+mod windows_sandbox;
+#[cfg(windows)]
 mod windows_shell;
 pub mod wire;
 use super::codex_input::{self as input, CodexLaunch};
@@ -47,6 +49,10 @@ pub struct CodexHarness {
     configuration: ConfigFile,
     atlas_helper: Option<PathBuf>,
     probed: Mutex<Option<qualification::Qualified>>,
+    /// The implementation this launch names, decided once per bound provider so
+    /// readiness is asked about the same choice the thread request carries.
+    #[cfg(windows)]
+    windows_sandbox: Mutex<Option<windows_sandbox::Selection>>,
     #[cfg(windows)]
     windows_shell: Mutex<Option<PathBuf>>,
 }
@@ -88,6 +94,8 @@ impl CodexHarness {
             atlas_helper: None,
             probed: Mutex::new(None),
             #[cfg(windows)]
+            windows_sandbox: Mutex::new(None),
+            #[cfg(windows)]
             windows_shell: Mutex::new(None),
         }
     }
@@ -99,6 +107,15 @@ impl CodexHarness {
     }
     fn thread(&self, launch: &CodexLaunch<'_>) -> Result<(&'static str, Value)> {
         let (method, mut params) = input::thread(launch)?;
+        #[cfg(windows)]
+        if let Some(selection) = *self.windows_sandbox.lock().map_err(|_| poisoned())? {
+            // The host names the implementation as one per-launch key. A value
+            // the user set in their own config still wins, because this layer is
+            // lower precedence than their file.
+            if let Some((key, value)) = selection.sandbox_key() {
+                params["config"][key] = value.into();
+            }
+        }
         if let Some(hooks) = self
             .atlas_helper
             .as_ref()
@@ -108,6 +125,81 @@ impl CodexHarness {
             params["config"]["features.hooks"] = true.into();
         }
         Ok((method, params))
+    }
+    /// Name a Windows sandbox implementation before the thread request, using
+    /// the provider's own readiness answer as the proof. A read-only launch
+    /// writes nothing, so it never changes the user's own selection.
+    #[cfg(windows)]
+    pub(crate) async fn select_windows_sandbox(
+        &self,
+        binding: &Binding,
+        request: &HarnessRequest,
+        cx: &CallContext,
+    ) -> Result<()> {
+        // The guard is never held across an await: another turn may read the
+        // same choice while this one asks the provider.
+        if self
+            .windows_sandbox
+            .lock()
+            .map_err(|_| poisoned())?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if !matches!(
+            request.policy.writes,
+            se_proc::WritePolicy::Workspace { .. }
+        ) {
+            return Ok(());
+        }
+        // A value in the user's own configuration wins: the host asks only about
+        // that value and never names a different one.
+        let configured = binding
+            .request("config/read", json!({"includeLayers": false}), cx)
+            .await
+            .ok()
+            .and_then(|reply| windows_sandbox::user_selection(reply.get("config")?));
+        let decision = match configured {
+            Some(name) => {
+                let implementation = windows_sandbox::Implementation::parse(&name)?;
+                let readiness = self
+                    .windows_sandbox_readiness(binding, implementation, cx)
+                    .await?;
+                windows_sandbox::decide(implementation, readiness, true)?
+            }
+            None => {
+                let mut attempted = Vec::new();
+                for implementation in windows_sandbox::Implementation::PREFERENCE {
+                    let readiness = self
+                        .windows_sandbox_readiness(binding, implementation, cx)
+                        .await?;
+                    attempted.push((implementation, readiness));
+                    if readiness == windows_sandbox::Readiness::Ready {
+                        break;
+                    }
+                }
+                windows_sandbox::choose(&attempted)?
+            }
+        };
+        *self.windows_sandbox.lock().map_err(|_| poisoned())? = Some(decision);
+        Ok(())
+    }
+    /// Ask the provider whether one implementation can hold workspace-write.
+    #[cfg(windows)]
+    async fn windows_sandbox_readiness(
+        &self,
+        binding: &Binding,
+        implementation: windows_sandbox::Implementation,
+        cx: &CallContext,
+    ) -> Result<windows_sandbox::Readiness> {
+        let answer = binding
+            .request(
+                "windowsSandbox/readiness",
+                windows_sandbox::readiness_request(implementation),
+                cx,
+            )
+            .await?;
+        windows_sandbox::Readiness::parse(&answer)
     }
     fn directory(&self, session: &se_types::SessionId) -> Result<PathBuf> {
         Ok(self.state_home.join("launch").join(
