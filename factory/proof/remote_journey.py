@@ -100,6 +100,11 @@ class Journey:
             "boundary": boundary, "qualification": qualification}
         self.persist()
 
+    def unavailable_timing(self, name, boundary, reason, qualification="observed"):
+        self.record["timings"][name] = {"milliseconds": None, "boundary": boundary,
+            "qualification": qualification, "reason": str(reason)}
+        self.persist()
+
     @staticmethod
     def page(value):
         return value.get("value", value)
@@ -232,18 +237,20 @@ with (p/'lock').open('a') as f:
             self.timing("live_output", estimate / 1000, "producer observation through CLI stdout flush",
                         sample["qualification"])
         except RuntimeError as error:
-            self.timing("live_output", None, "producer observation through CLI stdout flush", "unqualified")
-            self.record["timings"]["live_output"]["reason"] = str(error)
-            self.persist()
+            self.unavailable_timing("live_output", "producer observation through CLI stdout flush",
+                                    error, "unqualified")
         reply = "REMOTE_MAIL_" + self.nonce
         send = self.start([self.se, "--home", self.source, "--json", "remote", "send", "--host", "journey",
             "--target", self.target, "--session", self.session, "--key", self.nonce,
             "Reply with exactly " + reply])
         try:
-            _, received, _ = send.until(lambda pipe, _, value: pipe == "stderr" and
-                value.get("status") == "local_pending" and value.get("idempotency_key") == self.nonce, self.bound(30))
-            self.timing("pending_echo", (received - send.started) / 1e6,
-                        "send process invocation through local_pending stderr observation")
+            boundary = "send process invocation through local_pending stderr observation"
+            try:
+                _, received, _ = send.until(lambda pipe, _, value: pipe == "stderr" and
+                    value.get("status") == "local_pending" and value.get("idempotency_key") == self.nonce, self.bound(30))
+                self.timing("pending_echo", (received - send.started) / 1e6, boundary)
+            except RuntimeError as error:
+                self.unavailable_timing("pending_echo", boundary, error)
             sent = send.finish(self.bound(60))
             if sent["receipt"].get("state") not in {"committed", "replayed"}:
                 raise RuntimeError("remote send did not return a durable commit receipt")
