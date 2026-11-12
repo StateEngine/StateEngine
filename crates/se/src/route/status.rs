@@ -137,7 +137,7 @@ pub fn observe_snapshot<S: Snapshot>(
                             output.pending.push(PendingFact {
                                 what: "repository state".into(),
                                 since: None,
-                                detail: "Uncommitted state is unknown: the working-tree scan outgrew its bounded observation; the branch and commit count are still reported.".into(),
+                                detail: "Uncommitted state is unknown: the working-tree scan did not settle before its bounded deadline; the branch and commit count are still reported.".into(),
                             });
                         }
                         observed
