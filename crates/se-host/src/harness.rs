@@ -26,6 +26,8 @@ pub mod codex_capture;
 pub(crate) mod progress;
 #[cfg(feature = "secode")]
 pub(crate) mod secode;
+#[cfg(all(feature = "listener", test))]
+mod secode_image_fixture;
 #[cfg(feature = "listener")]
 pub mod secode_process;
 #[cfg(feature = "listener")]
