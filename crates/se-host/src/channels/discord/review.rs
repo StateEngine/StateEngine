@@ -174,7 +174,7 @@ fn discord_wire_review_cancellation_and_heartbeats() -> Check {
 #[test]
 fn discord_wire_review_resume_uses_durable_checkpoint() -> Check {
     let f = Fixture::new("resume")?;
-    runtime()?.block_on(async {
+    let outcome = runtime()?.block_on(async {
         let mut receiver = ready(&f).await?;
         let first = next(receiver.as_mut(), &f.token).await?;
         require(
@@ -198,7 +198,11 @@ fn discord_wire_review_resume_uses_durable_checkpoint() -> Check {
             "resume used the latest wire sequence instead of durable state",
         )?;
         f.no_fixture_errors()
-    })
+    });
+    if outcome.is_err() {
+        f.report("discord_wire_review_resume_uses_durable_checkpoint");
+    }
+    outcome
 }
 
 /// Queue overflow closes the socket visibly; replay supplies every dispatch

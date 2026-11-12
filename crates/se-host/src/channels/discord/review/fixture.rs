@@ -150,6 +150,17 @@ impl Fixture {
         }
         Ok(serde_json::from_slice(&fs::read(path)?)?)
     }
+    /// Print every event the provider recorded, so a failed assertion names the
+    /// step that refused instead of only the client-visible error.
+    pub fn report(&self, test: &str) {
+        match self.events() {
+            Ok(events) => match serde_json::to_string(&events) {
+                Ok(text) => eprintln!("{test}: provider events ({}): {text}", events.len()),
+                Err(error) => eprintln!("{test}: provider events unprintable: {error}"),
+            },
+            Err(error) => eprintln!("{test}: provider events unreadable: {error}"),
+        }
+    }
     pub fn no_fixture_errors(&self) -> Check<()> {
         require(
             !self.events()?.iter().any(|e| e["kind"] == "fixture_error"),
