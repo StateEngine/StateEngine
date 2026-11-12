@@ -276,14 +276,28 @@ pub fn interrupt(conversation: &ProviderSessionId, active_turn: &str) -> Result<
 /// first-use credentials are supplied later through the private thread RPC.
 pub fn invocation(
     launch: &CodexLaunch<'_>,
+    environment: Vec<(OsString, OsString)>,
+) -> Result<ProviderInvocation> {
+    invocation_naming(launch, environment, None)
+}
+
+/// The same invocation, naming a Windows sandbox implementation in the
+/// provider's own launch settings. The provider reports its readiness for the
+/// value it starts with, so the choice must reach it here, before it starts.
+pub fn invocation_naming(
+    launch: &CodexLaunch<'_>,
     mut environment: Vec<(OsString, OsString)>,
+    windows_sandbox: Option<&'static str>,
 ) -> Result<ProviderInvocation> {
     validate(launch)?;
     let mut arguments = Vec::new();
-    let settings = [
+    let mut settings = vec![
         ("approval_policy", json!(approval(launch.resolved))),
         ("sandbox_mode", json!(mode(launch.resolved))),
     ];
+    if let Some(name) = windows_sandbox {
+        settings.push(("windows.sandbox", json!(name)));
+    }
     // Values are TOML-compatible scalar/array literals. No string interpolation
     // into shell commands and no per-launch replacement config home.
     for (key, value) in settings {

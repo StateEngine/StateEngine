@@ -17,7 +17,6 @@ mod live;
 mod state;
 pub use state::IgnoredNotifications;
 mod transport;
-#[cfg(windows)]
 mod windows_sandbox;
 #[cfg(windows)]
 mod windows_shell;
@@ -99,19 +98,8 @@ impl CodexHarness {
         }
         self
     }
-    fn thread(
-        &self,
-        launch: &CodexLaunch<'_>,
-        #[cfg(windows)] selection: Option<windows_sandbox::Implementation>,
-    ) -> Result<(&'static str, Value)> {
+    fn thread(&self, launch: &CodexLaunch<'_>) -> Result<(&'static str, Value)> {
         let (method, mut params) = input::thread(launch)?;
-        #[cfg(windows)]
-        if let Some(selection) = selection {
-            // The host names the implementation per launch; a user's own
-            // value needs no key, so their file stands.
-            let (key, value) = windows_sandbox::launch_config(selection);
-            params["config"][key] = value;
-        }
         if let Some(hooks) = self
             .atlas_helper
             .as_ref()
@@ -122,86 +110,25 @@ impl CodexHarness {
         }
         Ok((method, params))
     }
-    /// Name a Windows sandbox implementation for this launch, using the
-    /// provider's own readiness answer as the proof. A read-only launch writes
-    /// nothing, so it never changes the user's own selection.
+    /// Ask the provider, once it is running in the sandbox this launch named,
+    /// whether that implementation is ready for workspace-write.
     #[cfg(windows)]
-    pub(crate) async fn select_windows_sandbox(
+    pub(crate) async fn confirm_windows_sandbox(
         &self,
         binding: &Binding,
-        request: &HarnessRequest,
+        selection: Option<windows_sandbox::Implementation>,
         cx: &CallContext,
-    ) -> Result<Option<windows_sandbox::Implementation>> {
-        if !matches!(
-            request.policy.writes,
-            se_proc::WritePolicy::Workspace { .. }
-        ) {
-            return Ok(None);
-        }
-        // The user's own value wins. Read it with the launch cwd so project
-        // layers count; a failed read refuses rather than meaning "unset".
-        let cwd = request.cwd.to_local()?;
-        let reply = binding
-            .request(
-                "config/read",
-                json!({"includeLayers": false, "cwd": input::path(&cwd)?}),
-                cx,
-            )
-            .await
-            .map_err(|error| {
-                incompatible(
-                    &format!("reading the user's Codex configuration failed: {error}"),
-                    "Inspect the provider's configuration; the host will not guess its sandbox.",
-                )
-            })?;
-        let config = reply.get("config").ok_or_else(|| {
-            se_core::scope::unreadable(
-                "the user's Codex configuration",
-                "the provider's effective configuration object",
-            )
-        })?;
-        match windows_sandbox::configured(config)? {
-            Some(implementation) => {
-                let readiness = self
-                    .windows_sandbox_readiness(binding, implementation, cx)
-                    .await?;
-                windows_sandbox::require_ready(implementation, readiness).map(Some)
-            }
-            None => {
-                let mut attempted = Vec::new();
-                for implementation in windows_sandbox::Implementation::PREFERENCE {
-                    let readiness = self
-                        .windows_sandbox_readiness(binding, implementation, cx)
-                        .await?;
-                    attempted.push((implementation, readiness));
-                    if readiness == windows_sandbox::Readiness::Ready {
-                        break;
-                    }
-                }
-                windows_sandbox::choose(&attempted).map(Some)
-            }
-        }
-    }
-    /// Ask the provider whether one implementation can hold workspace-write.
-    #[cfg(windows)]
-    async fn windows_sandbox_readiness(
-        &self,
-        binding: &Binding,
-        implementation: windows_sandbox::Implementation,
-        cx: &CallContext,
-    ) -> Result<windows_sandbox::Readiness> {
+    ) -> Result<()> {
+        let Some(implementation) = selection else {
+            return Ok(());
+        };
+        // A provider without this method cannot answer whether it can hold
+        // workspace-write, so the host must not claim it can.
         let answer = match binding
-            .request_classified(
-                "windowsSandbox/readiness",
-                windows_sandbox::readiness_request(implementation),
-                cx,
-            )
+            .request_classified("windowsSandbox/readiness", Value::Null, cx)
             .await
         {
             Ok(answer) => answer,
-            // A provider without this method cannot answer whether an
-            // implementation can hold workspace-write, so the host must not
-            // claim it can: refuse and name the upgrade.
             Err(failure) if failure.code == Some(-32601) => {
                 return Err(incompatible(
                     "this Codex build cannot report its Windows sandbox readiness",
@@ -210,7 +137,11 @@ impl CodexHarness {
             }
             Err(failure) => return Err(failure.error),
         };
-        windows_sandbox::Readiness::parse(&answer)
+        windows_sandbox::require_ready(
+            implementation,
+            windows_sandbox::Readiness::parse(&answer)?,
+        )?;
+        Ok(())
     }
     fn directory(&self, session: &se_types::SessionId) -> Result<PathBuf> {
         Ok(self.state_home.join("launch").join(
@@ -375,13 +306,9 @@ impl Harness for CodexHarness {
         Box::pin(async move {
             let socket = self.socket(request)?;
             let resolved = self.resolved(request)?;
-            self.thread(
-                &self.plan(request, &resolved, socket.as_deref()),
-                // A configuration preview has not asked the provider yet, so it
-                // names no implementation: the real launch chooses one.
-                #[cfg(windows)]
-                None,
-            )?;
+            // The implementation is named in the launch settings, so the
+            // request this preview builds carries no key of its own.
+            self.thread(&self.plan(request, &resolved, socket.as_deref()))?;
             let plan = json!({"session":request.identity.session,"socket":socket.as_ref().map(|path| NativePath::from_local(path.clone())).transpose()?});
             let bytes = serde_json::to_vec(&plan)
                 .map_err(|e| se_core::scope::unreadable("Codex launch plan", &e.to_string()))?;
@@ -420,9 +347,14 @@ impl Harness for CodexHarness {
                         )
                     })?,
             )?;
-            let mut invocation = input::invocation(
+            #[cfg(windows)]
+            let named = windows_sandbox::selection(request)?;
+            #[cfg(not(windows))]
+            let named: Option<windows_sandbox::Implementation> = None;
+            let mut invocation = input::invocation_naming(
                 &self.plan(request, &resolved, socket.as_deref()),
                 environment,
+                named.map(windows_sandbox::Implementation::key),
             )?;
             if self.atlas_helper.is_some() {
                 invocation.environment.entries.push((

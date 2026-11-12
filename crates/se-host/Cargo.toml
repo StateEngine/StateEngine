@@ -69,3 +69,8 @@ harness = false
 [[test]]
 name = "atlas_cold_history_dev"
 harness = false
+
+# The host reads the user's own Codex config.toml before the provider starts,
+# because readiness reports the value the provider launched with.
+[target.'cfg(windows)'.dependencies]
+toml = "0.9.11"

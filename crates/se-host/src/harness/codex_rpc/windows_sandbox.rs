@@ -1,11 +1,14 @@
 //! Windows Codex sandbox selection. A workspace-write request reaches the
 //! provider as read-only until an implementation is named, so the host names
-//! one and reads the provider's own readiness before trusting the launch.
+//! one in the provider's own launch settings and reads the provider's own
+//! readiness before trusting the launch.
 use super::incompatible;
 use se_types::Result;
-use serde_json::{Value, json};
+use serde_json::Value;
+use std::path::Path;
 
 /// One Windows sandbox implementation a Codex build can select.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Implementation {
     Mxc,
@@ -13,14 +16,12 @@ pub enum Implementation {
     Unelevated,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 impl Implementation {
-    /// Native isolation first, then the stronger legacy boundary, then the
-    /// weaker one that needs no administrator-approved setup.
-    pub const PREFERENCE: [Implementation; 3] = [
-        Implementation::Mxc,
-        Implementation::Elevated,
-        Implementation::Unelevated,
-    ];
+    /// The implementation a launch names when the user has chosen none. It
+    /// needs no administrator-approved setup, so a first launch works on a
+    /// clean Windows install.
+    pub const DEFAULT: Implementation = Implementation::Unelevated;
 
     pub fn key(self) -> &'static str {
         match self {
@@ -45,7 +46,9 @@ impl Implementation {
     }
 }
 
-/// The provider's own answer about the implementation it would use.
+/// The provider's own answer about the implementation it is configured with.
+/// Only a Windows call site asks for it; its parsing is shared and tested here.
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Readiness {
     Ready,
@@ -53,6 +56,7 @@ pub enum Readiness {
     UpdateRequired,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 impl Readiness {
     pub fn parse(value: &Value) -> Result<Self> {
         match value.get("status").and_then(Value::as_str) {
@@ -67,40 +71,68 @@ impl Readiness {
     }
 }
 
-/// The layer a host-chosen implementation adds to `thread/start`: one
-/// per-launch key, never an edit to the user's file (their own value stands).
-/// The provider decodes this request as JSON, so the value is the bare name.
-pub fn launch_config(implementation: Implementation) -> (&'static str, Value) {
-    (
-        "windows.sandbox",
-        Value::String(implementation.key().into()),
-    )
+/// The implementation this launch names: the user's own value first, otherwise
+/// the default. Only a workspace-write launch names one, because a read-only
+/// launch writes nothing and needs no sandbox.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn selection(request: &crate::HarnessRequest) -> Result<Option<Implementation>> {
+    if !matches!(
+        request.policy.writes,
+        se_proc::WritePolicy::Workspace { .. }
+    ) {
+        return Ok(None);
+    }
+    Ok(Some(
+        user_choice(&crate::codex_capture::existing_home()?)?.unwrap_or(Implementation::DEFAULT),
+    ))
 }
 
-/// The readiness request for one named implementation; the answer covers that
-/// implementation only, so each choice is asked about separately.
-pub fn readiness_request(implementation: Implementation) -> Value {
-    json!({ "config": { "windows.sandbox": json!(implementation.key()) } })
-}
-
-/// The value the user set in their own Codex configuration, if any. Only an
-/// absent `windows` table means "nothing set": a non-string value refuses
-/// rather than defaulting.
-pub fn configured(config: &Value) -> Result<Option<Implementation>> {
-    // An unconfigured home answers `"windows": null`, which is the same fact as
-    // an absent table: the user set nothing.
-    let Some(windows) = config.get("windows").filter(|value| !value.is_null()) else {
+/// The `windows.sandbox` the user set in their own Codex file, if any. The host
+/// chooses before the provider starts, so it reads the user's global file; a
+/// value set only in a project layer appears later and never changes this
+/// choice. A file that cannot be read or parsed refuses: it never means "unset".
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn user_choice(home: &Path) -> Result<Option<Implementation>> {
+    let path = home.join("config.toml");
+    let text = match std::fs::read(&path) {
+        Ok(bytes) if bytes.len() > 1 << 20 => {
+            return Err(incompatible(
+                "the user's Codex configuration is larger than 1 MiB",
+                "Move the oversized Codex configuration aside, then retry the launch.",
+            ));
+        }
+        Ok(bytes) => String::from_utf8(bytes).map_err(|_| {
+            incompatible(
+                "the user's Codex configuration is not UTF-8",
+                "Save the Codex configuration as UTF-8, then retry the launch.",
+            )
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(se_core::scope::unreadable(
+                &format!("the user's Codex configuration at {}", path.display()),
+                &error.to_string(),
+            ));
+        }
+    };
+    let parsed: toml::Value = toml::from_str(&text).map_err(|error| {
+        incompatible(
+            &format!("the user's Codex configuration does not parse: {error}"),
+            "Correct the Codex configuration, then retry the launch.",
+        )
+    })?;
+    let Some(windows) = parsed.get("windows") else {
         return Ok(None);
     };
-    if !windows.is_object() {
+    let toml::Value::Table(windows) = windows else {
         return Err(se_core::scope::unreadable(
             "the user's Windows Codex configuration",
             "an object-valued windows table",
         ));
-    }
+    };
     match windows.get("sandbox") {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(name)) => Implementation::parse(name).map(Some),
+        None => Ok(None),
+        Some(toml::Value::String(name)) => Implementation::parse(name).map(Some),
         Some(_) => Err(incompatible(
             "your Codex configuration sets windows.sandbox to a value that is not a string",
             "Set windows.sandbox to \"mxc\", \"elevated\" or \"unelevated\".",
@@ -108,50 +140,37 @@ pub fn configured(config: &Value) -> Result<Option<Implementation>> {
     }
 }
 
-/// The first host-chosen implementation the provider answers ready for.
-pub fn choose(attempted: &[(Implementation, Readiness)]) -> Result<Implementation> {
-    attempted
-        .iter()
-        .find(|(_, readiness)| *readiness == Readiness::Ready)
-        .map(|(implementation, _)| *implementation)
-        .ok_or_else(|| not_ready(attempted))
-}
-
-/// The user's own value. Their choice wins even when another implementation is
-/// ready: the host never substitutes one they did not pick.
+/// The provider's own answer for the implementation this launch named. The
+/// refusal names that answer and the provider's own repair command.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn require_ready(
     implementation: Implementation,
     readiness: Readiness,
 ) -> Result<Implementation> {
-    if readiness != Readiness::Ready {
-        return Err(incompatible(
+    match readiness {
+        Readiness::Ready => Ok(implementation),
+        Readiness::NotConfigured => Err(incompatible(
             &format!(
-                "your configured Windows sandbox `{}` is not ready ({readiness:?})",
+                "the Windows sandbox `{}` is not set up on this machine",
                 implementation.key()
             ),
-            "Install or repair that sandbox with `codex sandbox setup --elevated` from an \
-             elevated prompt, or choose another windows.sandbox in your Codex configuration.",
-        ));
+            "Run `codex sandbox setup --elevated --user <your account> --codex-home <your Codex \
+             home>` from an elevated prompt, then retry the launch.",
+        )),
+        Readiness::UpdateRequired => Err(incompatible(
+            &format!(
+                "the Windows sandbox `{}` needs a newer Codex on this machine",
+                implementation.key()
+            ),
+            "Upgrade Codex to 0.152.0 or later, then retry the launch.",
+        )),
     }
-    Ok(implementation)
-}
-
-fn not_ready(attempted: &[(Implementation, Readiness)]) -> se_types::SeError {
-    let answers = attempted
-        .iter()
-        .map(|(implementation, readiness)| format!("{}: {readiness:?}", implementation.key()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    incompatible(
-        &format!("no Windows sandbox implementation is ready to hold workspace-write ({answers})"),
-        "Install Codex's Windows sandbox with `codex sandbox setup --elevated` from an elevated \
-         prompt, or enable native isolation (mxc) on Windows 11 24H2 or later.",
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn refusal<T>(value: Result<T>) -> String {
         match value {
@@ -160,69 +179,84 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ready_implementation_wins_in_preference_order() {
-        let chosen = choose(&[
-            (Implementation::Mxc, Readiness::UpdateRequired),
-            (Implementation::Elevated, Readiness::NotConfigured),
-            (Implementation::Unelevated, Readiness::Ready),
-        ]);
-        assert_eq!(chosen.ok(), Some(Implementation::Unelevated));
+    fn home(name: &str, contents: Option<&str>) -> std::io::Result<std::path::PathBuf> {
+        let path =
+            std::env::temp_dir().join(format!("se-windows-sandbox-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path)?;
+        if let Some(contents) = contents {
+            std::fs::write(path.join("config.toml"), contents)?;
+        }
+        Ok(path)
     }
 
     #[test]
-    fn no_ready_implementation_refuses_with_every_answer() {
-        let text = refusal(choose(&[
-            (Implementation::Mxc, Readiness::NotConfigured),
-            (Implementation::Elevated, Readiness::UpdateRequired),
-        ]));
-        assert!(text.contains("mxc: NotConfigured"), "{text}");
-        assert!(text.contains("elevated: UpdateRequired"), "{text}");
-        assert!(text.contains("sandbox setup --elevated"), "{text}");
-    }
-
-    #[test]
-    fn the_user_value_is_read_or_it_refuses() {
-        assert_eq!(configured(&json!({ "model": "x" })).ok(), Some(None));
-        // An unconfigured home answers exactly this, and must not refuse.
-        let nulled = configured(&json!({ "windows": null })).ok();
-        assert_eq!(nulled, Some(None), "an absent value is not a refusal");
-        let partial = configured(&json!({ "windows": { "allow_mxc": null } })).ok();
-        assert_eq!(partial, Some(None));
-        let number = refusal(configured(&json!({ "windows": { "sandbox": 3 } })));
+    fn the_users_own_value_is_read_or_the_file_refuses() -> std::io::Result<()> {
+        assert_eq!(user_choice(&home("absent", None)?).ok(), Some(None));
+        assert_eq!(
+            user_choice(&home("value", Some("[windows]\nsandbox = \"elevated\"\n"))?)
+                .ok()
+                .flatten(),
+            Some(Implementation::Elevated)
+        );
+        // An unrelated table is not a value.
+        assert_eq!(
+            user_choice(&home("other", Some("[windows]\nallow_mxc = true\n"))?)
+                .ok()
+                .flatten(),
+            None
+        );
+        let number = refusal(user_choice(&home(
+            "number",
+            Some("[windows]\nsandbox = 3\n"),
+        )?));
         assert!(number.contains("not a string"), "{number}");
-        let scalar = refusal(configured(&json!({ "windows": "elevated" })));
+        let scalar = refusal(user_choice(&home(
+            "scalar",
+            Some("windows = \"elevated\"\n"),
+        )?));
         assert!(scalar.contains("object-valued windows table"), "{scalar}");
-        let text = refusal(configured(&json!({ "windows": { "sandbox": "legacy" } })));
-        assert!(text.contains("`legacy`"), "{text}");
+        let unknown = refusal(user_choice(&home(
+            "unknown",
+            Some("[windows]\nsandbox = \"legacy\"\n"),
+        )?));
+        assert!(unknown.contains("`legacy`"), "{unknown}");
+        let broken = refusal(user_choice(&home("broken", Some("windows = \n"))?));
+        assert!(broken.contains("does not parse"), "{broken}");
+        Ok(())
     }
 
     #[test]
-    fn a_user_set_implementation_needs_no_host_key() {
-        let chosen = configured(&json!({ "windows": { "sandbox": "elevated" } }));
-        assert_eq!(chosen.ok().flatten(), Some(Implementation::Elevated));
+    fn only_a_workspace_write_launch_names_an_implementation() {
+        // Selection reads the user's home, so the default alone is the subject.
+        assert_eq!(Implementation::DEFAULT, Implementation::Unelevated);
+        assert_eq!(Implementation::DEFAULT.key(), "unelevated");
     }
 
     #[test]
-    fn an_unready_user_value_refuses_without_substituting() {
-        let text = refusal(require_ready(
-            Implementation::Elevated,
-            Readiness::UpdateRequired,
+    fn an_unready_implementation_refuses_with_a_step_that_works() {
+        let missing = refusal(require_ready(
+            Implementation::Unelevated,
+            Readiness::NotConfigured,
         ));
         assert!(
-            text.contains("configured Windows sandbox `elevated`"),
-            "{text}"
+            missing.contains("Windows sandbox `unelevated` is not set up"),
+            "{missing}"
         );
-        assert!(text.contains("sandbox setup --elevated"), "{text}");
-    }
-
-    #[test]
-    fn the_launch_layer_names_the_bare_provider_choice() {
-        let (key, value) = launch_config(Implementation::Unelevated);
-        assert_eq!(key, "windows.sandbox");
-        // The request is JSON, so the value the provider parses is the bare
-        // name it accepts; a quoted spelling is an unknown variant.
-        assert_eq!(value, Value::String("unelevated".into()));
+        assert!(
+            missing.contains("codex sandbox setup --elevated"),
+            "{missing}"
+        );
+        let stale = refusal(require_ready(
+            Implementation::Mxc,
+            Readiness::UpdateRequired,
+        ));
+        assert!(stale.contains("needs a newer Codex"), "{stale}");
+        assert!(stale.contains("0.152.0"), "{stale}");
+        assert_eq!(
+            require_ready(Implementation::Mxc, Readiness::Ready).ok(),
+            Some(Implementation::Mxc)
+        );
     }
 
     #[test]
