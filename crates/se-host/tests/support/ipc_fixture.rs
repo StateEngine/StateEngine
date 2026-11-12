@@ -11,9 +11,7 @@ use se_types::{
 };
 use std::{
     error::Error,
-    fs,
     num::NonZeroU32,
-    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64},
@@ -32,7 +30,7 @@ pub type Check = Result<(), Box<dyn Error>>;
 static NEXT: AtomicU64 = AtomicU64::new(1);
 static FIXTURES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub struct Home(
-    pub PathBuf,
+    pub directory::PrivateDirectory,
     #[allow(
         dead_code,
         reason = "Avoids concurrent native image hashing in bounded handshake fixtures."
@@ -77,13 +75,6 @@ impl Home {
             package_version: "0.0.1".into(),
             image_sha256: observed.image_sha256(),
         })
-    }
-}
-impl Drop for Home {
-    fn drop(&mut self) {
-        if let Err(e) = fs::remove_dir_all(&self.0) {
-            eprintln!("fixture cleanup {}: {e}", self.0.display());
-        }
     }
 }
 pub fn options(timeout: Duration) -> client::ClientOptions {

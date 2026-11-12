@@ -30,6 +30,7 @@ pub fn prepare(home: &Path, init: &Path) -> Result<(), Box<dyn Error>> {
     // home and must survive both this helper and the subsequent native runtime.
     let f = std::mem::ManuallyDrop::new(fixture::Fixture {
         home: home.into(),
+        _root: None,
         options,
         store: store.clone(),
         owner: HumanId::from_str(text("/owner/human_id")?)?,

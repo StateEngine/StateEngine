@@ -23,6 +23,5 @@ fn stop_unproved_retries_use_the_current_durable_transition()
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_dir_all(root)?;
     Ok(())
 }

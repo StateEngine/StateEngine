@@ -14,7 +14,7 @@ fn structured_diagnostic_text_never_exports_credential_canaries()
             "/tests/judges/diagnostic_redaction_review.py"
         ))
         .args(["--se", env!("CARGO_BIN_EXE_se"), "--output"])
-        .arg(&root)
+        .arg(root.to_path_buf())
         .output()?;
     assert!(
         output.status.success(),
@@ -23,6 +23,5 @@ fn structured_diagnostic_text_never_exports_credential_canaries()
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_dir_all(root)?;
     Ok(())
 }

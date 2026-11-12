@@ -25,6 +25,5 @@ fn sibling_native_shutdown_preserves_final_capture_and_closes_every_scope()
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_dir_all(parent)?;
     Ok(())
 }

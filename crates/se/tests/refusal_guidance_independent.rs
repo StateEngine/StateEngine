@@ -24,6 +24,5 @@ fn refusal_advice_and_recovery_work_in_plain_and_json_output()
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_dir_all(parent)?;
     Ok(())
 }

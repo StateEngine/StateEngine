@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -38,7 +39,11 @@ else:
     checks, failures, cases = [], [], []
     for mode in ["retry", "down"]:
         f = Fixture(args.se, args.output / mode, provider_helper=helper, log_directory="calls")
-        runtime = Path(tempfile.mkdtemp(prefix="se-sretry-", dir="/tmp"))
+        # A passing case removes this runtime directory; a failing one keeps it,
+        # named in result.json, so the evidence survives the exception.
+        runtime_dir = tempfile.mkdtemp(prefix="se-sretry-", dir="/tmp")
+        runtime = Path(runtime_dir)
+        failed_before = len(failures)
         arm, hit = f.root / "deny-signal", f.root / "signal-refused"
         f.env.update(XDG_RUNTIME_DIR=str(runtime), TMPDIR=str(runtime), LD_PRELOAD=str(library),
                      SE_STOP_REVIEW_ARM=str(arm), SE_STOP_REVIEW_HIT=str(hit))
@@ -126,6 +131,10 @@ else:
             except Exception:
                 failures.append(mode + " cleanup: " + traceback.format_exc())
             record["outside"] = [{"expected": pin, "observed": native(pin["pid"])} for pin in pins]
+            if len(failures) > failed_before:
+                record["runtime_directory"] = str(runtime_dir)
+            else:
+                shutil.rmtree(runtime_dir, ignore_errors=True)
             cases.append(record)
     result = {"se_sha256": hashlib.sha256(args.se.read_bytes()).hexdigest(),
               "checks": checks, "failures": failures, "cases": cases}

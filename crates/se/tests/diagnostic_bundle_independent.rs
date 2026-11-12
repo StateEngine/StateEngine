@@ -17,6 +17,7 @@ type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 struct Fixture {
     root: PathBuf,
+    _root: directory::PrivateDirectory,
     user_home: PathBuf,
     home: PathBuf,
     temp: PathBuf,
@@ -33,7 +34,8 @@ impl Fixture {
             private_dir(path)?;
         }
         Ok(Self {
-            root,
+            root: root.to_path_buf(),
+            _root: root,
             user_home,
             home,
             temp,
@@ -201,15 +203,6 @@ impl Fixture {
                 SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + age_rank * 60),
             ))?;
         Ok(name)
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        // Only this fixture's exclusively created directory is removed.
-        if let Err(error) = fs::remove_dir_all(&self.root) {
-            eprintln!("private diagnostic fixture cleanup failed: {error}");
-        }
     }
 }
 

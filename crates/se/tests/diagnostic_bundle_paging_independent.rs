@@ -16,6 +16,7 @@ type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 struct Fixture {
     root: PathBuf,
+    _root: directory::PrivateDirectory,
     user_home: PathBuf,
     home: PathBuf,
     repos: PathBuf,
@@ -31,7 +32,8 @@ impl Fixture {
             home: root.join("state"),
             repos: root.join("repos"),
             temp: root.join("exports"),
-            root,
+            root: root.to_path_buf(),
+            _root: root,
         };
         for path in [
             &fixture.user_home,
@@ -84,15 +86,6 @@ impl Fixture {
         let mut command = self.command(env!("CARGO_BIN_EXE_se"));
         command.args(["--json", "--home"]).arg(&self.home);
         command
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        // Remove only the exclusively created test root; no runtime is launched.
-        if let Err(error) = fs::remove_dir_all(&self.root) {
-            eprintln!("private paging fixture cleanup failed: {error}");
-        }
     }
 }
 

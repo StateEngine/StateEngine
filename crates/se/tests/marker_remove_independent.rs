@@ -35,7 +35,7 @@ fn cleanup_fixture(root: &std::path::Path) -> Check {
     if !remaining.is_empty() {
         return Err(format!("fixture cleanup retained unexpected links: {remaining:?}").into());
     }
-    std::fs::remove_dir_all(root)?;
+    // The root guard removes the tree itself once this check has run.
     Ok(())
 }
 
