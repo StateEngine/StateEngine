@@ -3,10 +3,10 @@
 //! PASSIVE in WAL mode does not block the writer, and a slow checkpoint must
 //! not stall appends either. The cadence is small and frequent, so the WAL is
 //! kept far below the 64 MiB capacity cutoff instead of accumulating toward it.
+use crate::backup_context::MAX_WAL_BYTES;
 use crate::transaction::checkpoint::probe;
 use crate::{error::*, *};
 use rusqlite::Connection;
-use crate::backup_context::MAX_WAL_BYTES;
 use std::{
     path::PathBuf,
     sync::{
