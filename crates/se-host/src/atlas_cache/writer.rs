@@ -8,9 +8,11 @@
 //! releases with an explicit unlock first, which clears the lock on the shared
 //! description.
 //!
-//! Windows takes no advisory descriptor lock here: the exclusive open itself is
-//! the exclusion, and it is released when the handle closes. There is no
-//! inherited-descriptor window to fix, so the plain descriptor remains.
+//! Windows keeps the plain descriptor and the byte-range lock it already takes:
+//! its readback handle shares READ|WRITE|DELETE, so the open is not exclusive
+//! and the lock is the exclusion. Windows releases a byte-range lock when the
+//! handle closes and inherits neither into children, so judgement differs by
+//! platform: Unix needs the explicit unlock, Windows does not.
 use std::fs::File;
 
 #[cfg(unix)]

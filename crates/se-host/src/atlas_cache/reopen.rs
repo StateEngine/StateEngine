@@ -30,10 +30,8 @@ impl NativeAtlasCache {
             .readback(&path)
             .map_err(fail)?
             .ok_or_else(|| fail("writer lock absent"))?;
-        // The shared guard takes the same exclusive nonblocking lock and keeps
-        // its exact refusal distinct: a contended lease is a retryable busy.
-        // Windows excludes through the exclusive open itself, so it keeps the
-        // plain descriptor and releases by close.
+        // Whichever platform lock is used, contention is the same retryable
+        // busy refusal, never a distinct error.
         #[cfg(unix)]
         let writer = match se_proc::advisory_lock::AdvisoryLock::acquire(writer) {
             Ok(guard) => guard,
@@ -41,6 +39,17 @@ impl NativeAtlasCache {
                 return Err(busy("Atlas home writer lease", 1, 0));
             }
             Err(error) => return Err(fail(error)),
+        };
+        // The Windows readback handle shares READ|WRITE|DELETE, so the open
+        // itself grants nothing; the lease is the byte-range lock it takes.
+        // Windows releases that range when the handle closes.
+        #[cfg(not(unix))]
+        let writer = match writer.try_lock() {
+            Ok(()) => writer,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(busy("Atlas home writer lease", 1, 0));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(fail(error)),
         };
         let named = home
             .readback(&path)
