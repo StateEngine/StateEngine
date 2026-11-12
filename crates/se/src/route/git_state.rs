@@ -272,18 +272,26 @@ fn refusal(stderr: &StderrOutcome, mut read_failures: Vec<String>) -> se_types::
 /// Accept a read only when Git printed both header lines. A `Known` result with
 /// an unfinished header would let a missing branch name read as a detached HEAD,
 /// or a missing identity as an unborn branch, so it refuses as unknown instead.
+/// The refusal names only what is genuinely unknown: an entry that arrived still
+/// proved the tree dirty.
 fn known(header: HeaderRead, dirty: Option<bool>) -> Result<StatusRead> {
     if header.complete {
-        Ok(StatusRead::Known {
+        return Ok(StatusRead::Known {
             header: header.header,
             dirty,
-        })
-    } else {
-        Err(scope::unreadable(
-            "Git working tree",
-            "working tree status did not report its branch and HEAD before it stopped; the branch, HEAD and uncommitted state are unknown. Preserve the repository and retry, or remove whatever keeps the working-tree scan from finishing.",
-        ))
+        });
     }
+    let unknown = if dirty == Some(true) {
+        "the branch and HEAD are unknown"
+    } else {
+        "the branch, HEAD and uncommitted state are unknown"
+    };
+    Err(scope::unreadable(
+        "Git working tree",
+        &format!(
+            "working tree status stopped before it reported its branch and HEAD; {unknown}. Preserve the repository and retry, or remove whatever keeps the working-tree scan from finishing."
+        ),
+    ))
 }
 
 /// The single `status` read's result: the header facts with a dirty fact that
