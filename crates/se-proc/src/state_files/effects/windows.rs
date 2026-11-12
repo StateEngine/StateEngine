@@ -194,7 +194,7 @@ impl Pin {
         pin.check()?;
         Ok(pin)
     }
-    pub(in crate::state_files) fn claim_record(&self) -> Result<()> {
+    pub(in crate::state_files) fn claim_record(&mut self) -> Result<()> {
         self.check()?;
         security::verify_no_foreign_writer(&self.file, &self.path)?;
         // SAFETY: initialized synchronous OVERLAPPED with offset zero, retained

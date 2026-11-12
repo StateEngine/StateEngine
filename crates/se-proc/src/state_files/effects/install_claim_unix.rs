@@ -46,6 +46,10 @@ pub(in crate::state_files) fn inherited_installation_claim(raw: libc::c_int) -> 
     if busy.kind() != io::ErrorKind::WouldBlock {
         return Err(io_error("observe inherited claim exclusion", &path, busy));
     }
-    lock(&inherited, &path)?;
+    // The caller keeps this claim for the worker's lifetime. It is a duplicate
+    // of a description shared with the shell that owns it, so it is never
+    // unlocked here: `LOCK_UN` acts on the whole description and would release
+    // the shell's claim too. Closing this duplicate leaves the shared claim
+    // locked for as long as the shell holds its own copy.
     Ok(inherited)
 }

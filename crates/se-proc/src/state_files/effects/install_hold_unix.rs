@@ -176,8 +176,10 @@ pub(super) fn run(
     }
     let custody_raw = custody.as_ref().map(AsRawFd::as_raw_fd);
     // SAFETY: the closure uses only native parent/signal setup, fcntl and errno.
-    // A duplicated flock shares the same open file description; no explicit
-    // unlock is performed when the holder drops its own descriptors.
+    // The worker's duplicate of the claim shares this description, so the shell
+    // keeps its own copy and drops it only after the worker has exited; nothing
+    // unlocks through the duplicate, because `LOCK_UN` would release the shared
+    // claim for both holders.
     unsafe {
         command.pre_exec(move || {
             child::prepare_worker(holder)?;
