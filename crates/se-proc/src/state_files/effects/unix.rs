@@ -7,6 +7,7 @@ pub(in crate::state_files) mod permissions;
 #[cfg(target_os = "macos")]
 #[path = "permissions_macos.rs"]
 pub(in crate::state_files) mod permissions;
+use crate::advisory_lock::AdvisoryLock;
 use crate::state_files::effects::{DirectoryRemoval, absent, changed, digest, verify};
 use crate::state_files::{Result, io_error, unsafe_path};
 use std::{
@@ -70,93 +71,6 @@ fn parent(path: &Path) -> Result<(File, CString)> {
         .ok_or_else(|| unsafe_path("installation leaf missing", path))?;
     Ok((super::walk_effect_parent(parent)?, name(leaf, path)?))
 }
-/// How a guard's lock ends when the guard goes away.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ReleaseMode {
-    /// Clear the lock with `LOCK_UN` before the descriptor closes, so a
-    /// duplicate a child inherited between fork and exec cannot keep it.
-    Unlock,
-    /// Leave the lock to the last duplicate of this description closing.
-    CloseOnly,
-}
-
-/// An exclusive advisory lock that is released explicitly rather than by the
-/// descriptor closing.
-///
-/// `flock` belongs to the open file description, and a spawned child inherits
-/// duplicates of every descriptor between fork and exec. Closing this process's
-/// duplicate while such a child is alive therefore leaves the lock held by the
-/// child's copy, and a concurrent writer in this process is refused. Releasing
-/// with `LOCK_UN` first clears the lock on the shared description, so no
-/// inherited copy can outlive the release. Every holding site keeps one of
-/// these for as long as it intends to hold the lock.
-///
-/// The rule has one deliberate exception. The account-wide installation claim
-/// shares its description with the installer worker by design: the worker
-/// inherits it across exec and may still be changing files after the shell
-/// stops waiting for it. A `child::wait` error path can drop the claim while
-/// that worker lives, so `LOCK_UN` there would release a live holder's claim.
-/// That one guard ends by close only (`end_by_close`), and the lock then clears
-/// when the worker's own duplicate closes. Every other site keeps `Unlock`,
-/// because a child must never be able to keep an abandoned lock alive.
-#[must_use = "dropping the guard releases the lock when its last duplicate closes"]
-pub(in crate::state_files) struct LockGuard {
-    file: File,
-    release: ReleaseMode,
-}
-impl LockGuard {
-    pub(in crate::state_files) fn acquire(file: File, path: &Path) -> Result<Self> {
-        // SAFETY: advisory exclusive lock on a retained descriptor, nonblocking.
-        // Every effect in this module takes the parent lock, serializing
-        // cooperating writers.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } < 0 {
-            return Err(io_error(
-                "installation object is in use",
-                path,
-                io::Error::last_os_error(),
-            ));
-        }
-        Ok(Self {
-            file,
-            release: ReleaseMode::Unlock,
-        })
-    }
-    /// Release early while keeping the descriptor, for a holder that
-    /// deliberately narrows what it keeps locked. Returns the native failure
-    /// rather than swallowing it: a lock that did not release is a fact the
-    /// caller must be able to report.
-    pub(in crate::state_files) fn release(&mut self) -> std::io::Result<()> {
-        // SAFETY: release this guard's own cooperating description; the
-        // descriptor stays open and owned by the guard.
-        if unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-    /// End the lock by close only: every duplicate of this description, even
-    /// one a long-lived child inherited across exec, must close before the lock
-    /// frees. Only the account claim uses this, because its worker deliberately
-    /// inherits the description; a `LOCK_UN` there would release the claim of a
-    /// worker that is still changing files.
-    pub(in crate::state_files) fn end_by_close(&mut self) {
-        self.release = ReleaseMode::CloseOnly;
-    }
-}
-impl Drop for LockGuard {
-    fn drop(&mut self) {
-        if self.release == ReleaseMode::CloseOnly {
-            // Closing the last duplicate releases the lock. An explicit
-            // `LOCK_UN` would free it under an inherited holder still at work.
-            return;
-        }
-        // A failed unlock is not actionable during drop, but it must not vanish:
-        // the lock stays held by this description until it closes.
-        if let Err(error) = self.release() {
-            eprintln!("advisory lock release failed: {error}");
-        }
-    }
-}
-
 /// Take the exclusive lock on a descriptor this process alone opened, and
 /// return it held.
 ///
@@ -165,11 +79,12 @@ impl Drop for LockGuard {
 /// or another process: `LOCK_UN` acts on the whole shared description and would
 /// release that holder's claim too. Descriptors this module opens for its own
 /// effects qualify; an inherited claim does not.
-fn lock(file: &File, path: &Path) -> Result<LockGuard> {
+fn lock(file: &File, path: &Path) -> Result<AdvisoryLock> {
     let owned = file
         .try_clone()
         .map_err(|error| io_error("retain installation lock", path, error))?;
-    LockGuard::acquire(owned, path)
+    AdvisoryLock::acquire(owned)
+        .map_err(|error| io_error("installation object is in use", path, error))
 }
 
 #[cfg(target_os = "macos")]
@@ -317,8 +232,8 @@ pub(in crate::state_files) struct Pin {
     /// Held for the pin's lifetime unless a claim narrows it; released
     /// explicitly on drop so no inherited duplicate keeps it alive. The claim
     /// narrows only this parent lock, never the record's.
-    parent_lock: Option<LockGuard>,
-    file_lock: LockGuard,
+    parent_lock: Option<AdvisoryLock>,
+    file_lock: AdvisoryLock,
 }
 impl Pin {
     pub(in crate::state_files) fn open(path: &Path) -> Result<Option<Self>> {
