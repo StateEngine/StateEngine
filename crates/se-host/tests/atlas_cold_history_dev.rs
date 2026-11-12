@@ -476,6 +476,12 @@ mod native {
     }
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().any(|v| v == "--list") {
+        if !std::env::args().any(|v| v == "--ignored") {
+            println!("atlas_cold_history_dev: test");
+        }
+        return Ok(());
+    }
     #[cfg(all(target_os = "linux", not(debug_assertions)))]
     native::run()?;
     #[cfg(not(all(target_os = "linux", not(debug_assertions))))]

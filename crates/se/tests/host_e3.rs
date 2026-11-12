@@ -292,11 +292,23 @@ fn listener_message_working_and_hook() -> Check {
 }
 #[cfg(not(any(target_os = "linux", windows)))]
 fn main() -> Check {
+    if std::env::args().any(|v| v == "--list") {
+        if !std::env::args().any(|v| v == "--ignored") {
+            println!("host_e3: test");
+        }
+        return Ok(());
+    }
     Err("host_e3 requires Linux or Windows detached-host support; native lifecycle checks were not exercised".into())
 }
 
 #[cfg(any(target_os = "linux", windows))]
 fn main() -> Check {
+    if std::env::args().any(|v| v == "--list") {
+        if !std::env::args().any(|v| v == "--ignored") {
+            println!("host_e3: test");
+        }
+        return Ok(());
+    }
     let args: Vec<_> = std::env::args_os().collect();
     if let Some(result) = host::dispatch(&args) {
         std::process::exit(match result {
