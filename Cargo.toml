@@ -45,13 +45,10 @@ struct_excessive_bools = "warn"
 [profile.release]
 panic = "unwind"
 
-# A development build is where the native IPC proof bound actually bites: the
-# bound refuses to hash a peer executable over 512 MiB, and with full debug info
-# a development `se` image is about 625 MiB. CI already builds every test this
-# way through `CARGO_PROFILE_DEV_DEBUG=0` and `CARGO_PROFILE_TEST_DEBUG=0`; the
-# profile carries it so a local run matches CI instead of failing about two
-# dozen launch tests on an image size that no shipped binary has. Line tables
-# go, assertions stay: a failed assertion still names its source line.
+# Native IPC refuses to hash a peer executable over 512 MiB; full debug info
+# makes a development `se` about 625 MiB and fails launch tests on size alone.
+# Keep line tables and drop the rest, as CI does, so a failed assertion still
+# names its line. A full debugger needs CARGO_PROFILE_DEV_DEBUG=2.
 [profile.dev]
 debug = "line-tables-only"
 
