@@ -32,7 +32,7 @@ impl Package {
         });
         let package = Self { root, cli, server };
         for path in [&package.cli, &package.server] {
-            fs::copy(std::env::current_exe()?, path)?;
+            fs::write(path, crate::harness::secode_image_fixture::image_bytes())?;
         }
         Ok(package)
     }

@@ -19,7 +19,7 @@ pub mod atlas_git;
 pub mod atlas_worker;
 mod canonical_path;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-pub use allocator::reclaim_unused_allocator_pages;
+pub use allocator::{reclaim_unused_allocator_pages, release_read_only_mapped_pages};
 mod checkpoint;
 pub use canonical_path::canonicalize_path;
 pub use checkpoint::{
