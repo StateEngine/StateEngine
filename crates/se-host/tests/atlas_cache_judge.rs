@@ -199,16 +199,6 @@ fn published_epoch_cannot_be_discarded_and_readers_do_no_inventory() -> Check {
     assert_eq!(fs::read(unknown)?, b"preserve");
     Ok(())
 }
-/// The Atlas writer lease must end explicitly, not by close.
-///
-/// `flock` belongs to the open file description, and a child forked on another
-/// thread inherits a duplicate of it until it execs. A lease that releases only
-/// by closing this process's duplicate therefore stays held by that child's
-/// copy, and the same process's next step is refused with a spurious
-/// "Atlas home writer lease" busy. This takes and drops the real cache writer
-/// through the production adapter while a spawner thread runs, then reacquires:
-/// with the explicit release it never refuses, and on the close-only release it
-/// refused often.
 /// A second lease on the same home must be refused on every platform.
 ///
 /// This is deterministic, not timing-based: one cache holds the writer lease
@@ -236,6 +226,16 @@ fn a_second_writer_lease_on_one_home_is_refused() -> Check {
     Ok(())
 }
 
+/// The Atlas writer lease must end explicitly, not by close.
+///
+/// `flock` belongs to the open file description, and a child forked on another
+/// thread inherits a duplicate of it until it execs. A lease that releases only
+/// by closing this process's duplicate therefore stays held by that child's
+/// copy, and the same process's next step is refused with a spurious
+/// "Atlas home writer lease" busy. This takes and drops the real cache writer
+/// through the production adapter while a spawner thread runs, then reacquires:
+/// with the explicit release it never refuses, and on the close-only release it
+/// refused often (five base runs in five, about ten percent of lease cycles).
 #[test]
 #[cfg(unix)]
 fn writer_lease_ends_explicitly_while_another_thread_spawns() -> Check {
