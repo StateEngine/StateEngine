@@ -29,9 +29,7 @@ impl Implementation {
             Implementation::Unelevated => "unelevated",
         }
     }
-}
 
-impl Implementation {
     pub fn parse(name: &str) -> Result<Self> {
         match name {
             "mxc" => Ok(Implementation::Mxc),
@@ -69,25 +67,14 @@ impl Readiness {
     }
 }
 
-/// The implementation this launch asks for. `windows.sandbox` travels as one
-/// explicit per-launch key, so the user's own config file is never replaced.
-/// A value the user set needs no key at all: theirs is already in force.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Selection {
-    pub implementation: Implementation,
-    pub from_user: bool,
-}
-
-impl Selection {
-    /// `None` when the user's own configuration already supplies this value.
-    pub fn sandbox_key(self) -> Option<(&'static str, String)> {
-        (!self.from_user).then(|| {
-            (
-                "windows.sandbox",
-                json!(self.implementation.key()).to_string(),
-            )
-        })
-    }
+/// The layer a host-chosen implementation adds to `thread/start`: one
+/// per-launch key, never an edit to the user's file (a value they set already
+/// stands). The TOML string decodes to the bare implementation name.
+pub fn launch_config(implementation: Implementation) -> (&'static str, Value) {
+    (
+        "windows.sandbox",
+        Value::String(json!(implementation.key()).to_string()),
+    )
 }
 
 /// The readiness request for one named implementation. The answer covers that
@@ -96,50 +83,55 @@ pub fn readiness_request(implementation: Implementation) -> Value {
     json!({ "config": { "windows.sandbox": json!(implementation.key()) } })
 }
 
-/// A value the user set in their own Codex configuration. The host never
-/// overrides it; the selection then only reports whether it is ready.
-pub fn user_selection(config: &Value) -> Option<String> {
-    config
-        .get("windows")
-        .and_then(|windows| windows.get("sandbox"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+/// The value the user set in their own Codex configuration, if any. Only an
+/// absent `windows` table means "nothing set": a non-string value refuses
+/// rather than defaulting.
+pub fn configured(config: &Value) -> Result<Option<Implementation>> {
+    let Some(windows) = config.get("windows") else {
+        return Ok(None);
+    };
+    if !windows.is_object() {
+        return Err(se_core::scope::unreadable(
+            "the user's Windows Codex configuration",
+            "an object-valued windows table",
+        ));
+    }
+    match windows.get("sandbox") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(name)) => Implementation::parse(name).map(Some),
+        Some(_) => Err(incompatible(
+            "your Codex configuration sets windows.sandbox to a value that is not a string",
+            "Set windows.sandbox to \"mxc\", \"elevated\" or \"unelevated\".",
+        )),
+    }
 }
 
 /// The first host-chosen implementation the provider answers ready for.
-pub fn choose(attempted: &[(Implementation, Readiness)]) -> Result<Selection> {
-    for (implementation, readiness) in attempted {
-        if *readiness == Readiness::Ready {
-            return Ok(Selection {
-                implementation: *implementation,
-                from_user: false,
-            });
-        }
-    }
-    Err(not_ready(attempted))
+pub fn choose(attempted: &[(Implementation, Readiness)]) -> Result<Implementation> {
+    attempted
+        .iter()
+        .find(|(_, readiness)| *readiness == Readiness::Ready)
+        .map(|(implementation, _)| *implementation)
+        .ok_or_else(|| not_ready(attempted))
 }
 
 /// The user's own value. Their choice wins even when another implementation is
 /// ready: the host reports the state and never substitutes one they did not pick.
-pub fn decide(
+pub fn require_ready(
     implementation: Implementation,
     readiness: Readiness,
-    from_user: bool,
-) -> Result<Selection> {
-    if readiness != Readiness::Ready {
-        return Err(incompatible(
-            &format!(
-                "your configured Windows sandbox `{}` is not ready ({readiness:?})",
-                implementation.key()
-            ),
-            "Install or repair that sandbox with `codex sandbox setup --elevated` from an \
-             elevated prompt, or choose another windows.sandbox in your Codex configuration.",
-        ));
+) -> Result<Implementation> {
+    if readiness == Readiness::Ready {
+        return Ok(implementation);
     }
-    Ok(Selection {
-        implementation,
-        from_user,
-    })
+    Err(incompatible(
+        &format!(
+            "your configured Windows sandbox `{}` is not ready ({readiness:?})",
+            implementation.key()
+        ),
+        "Install or repair that sandbox with `codex sandbox setup --elevated` from an \
+         elevated prompt, or choose another windows.sandbox in your Codex configuration.",
+    ))
 }
 
 fn not_ready(attempted: &[(Implementation, Readiness)]) -> se_types::SeError {
@@ -159,34 +151,22 @@ fn not_ready(attempted: &[(Implementation, Readiness)]) -> se_types::SeError {
 mod tests {
     use super::*;
 
-    fn selection(value: Result<Selection>) -> Selection {
-        match value {
-            Ok(selection) => selection,
-            Err(error) => panic!("expected a selection, got {error:?}"),
-        }
-    }
-
-    fn refusal(value: Result<Selection>) -> String {
-        match value {
-            Ok(_) => panic!("expected a refusal"),
-            Err(error) => format!("{error:?}"),
-        }
+    fn refusal<T>(value: Result<T>) -> String {
+        format!("{:?}", value.expect_err("expected a refusal"))
     }
 
     #[test]
     fn ready_implementation_wins_in_preference_order() {
-        let chosen = selection(choose(&[
+        let chosen = choose(&[
             (Implementation::Mxc, Readiness::UpdateRequired),
             (Implementation::Elevated, Readiness::NotConfigured),
             (Implementation::Unelevated, Readiness::Ready),
-        ]));
-        assert_eq!(chosen.implementation, Implementation::Unelevated);
-        assert!(!chosen.from_user);
-        assert!(chosen.sandbox_key().is_some());
+        ]);
+        assert_eq!(chosen.ok(), Some(Implementation::Unelevated));
     }
 
     #[test]
-    fn no_ready_implementation_refuses_with_every_answer_and_a_working_step() {
+    fn no_ready_implementation_refuses_with_every_answer() {
         let text = refusal(choose(&[
             (Implementation::Mxc, Readiness::NotConfigured),
             (Implementation::Elevated, Readiness::UpdateRequired),
@@ -197,62 +177,58 @@ mod tests {
     }
 
     #[test]
-    fn a_user_set_implementation_is_reported_and_never_sent_as_an_override() {
-        let chosen = selection(decide(Implementation::Elevated, Readiness::Ready, true));
-        assert_eq!(chosen.implementation, Implementation::Elevated);
-        assert!(chosen.from_user);
-        assert!(chosen.sandbox_key().is_none());
+    fn an_absent_windows_table_means_the_user_set_nothing() {
+        assert_eq!(configured(&json!({ "model": "x" })).ok(), Some(None));
+        let nulled = configured(&json!({ "windows": { "allow_mxc": null } }));
+        assert_eq!(nulled.ok(), Some(None));
     }
 
     #[test]
-    fn an_unready_user_value_refuses_rather_than_substituting_another() {
-        let text = refusal(decide(
-            Implementation::Elevated,
-            Readiness::UpdateRequired,
-            true,
-        ));
-        assert!(
-            text.contains("your configured Windows sandbox `elevated`"),
-            "{text}"
-        );
+    fn a_non_string_user_value_refuses() {
+        let text = refusal(configured(&json!({ "windows": { "sandbox": 3 } })));
+        assert!(text.contains("not a string"), "{text}");
+        let text = refusal(configured(&json!({ "windows": "elevated" })));
+        assert!(text.contains("object-valued windows table"), "{text}");
+        let text = refusal(configured(&json!({ "windows": { "sandbox": "legacy" } })));
+        assert!(text.contains("`legacy`"), "{text}");
+    }
+
+    #[test]
+    fn a_user_set_implementation_needs_no_host_key() {
+        let chosen = configured(&json!({ "windows": { "sandbox": "elevated" } }));
+        assert_eq!(chosen.ok().flatten(), Some(Implementation::Elevated));
+    }
+
+    #[test]
+    fn an_unready_user_value_refuses_without_substituting() {
+        let unready = require_ready(Implementation::Elevated, Readiness::UpdateRequired);
+        let text = refusal(unready);
+        assert!(text.contains("configured Windows sandbox `elevated` {text}"));
         assert!(text.contains("sandbox setup --elevated"), "{text}");
     }
 
     #[test]
-    fn an_unknown_configured_value_names_what_is_accepted() {
-        let text = match Implementation::parse("legacy") {
-            Ok(_) => panic!("expected a refusal"),
-            Err(error) => format!("{error:?}"),
-        };
-        assert!(text.contains("`legacy`"), "{text}");
-        assert!(text.contains("mxc, elevated or unelevated"), "{text}");
+    fn the_launch_layer_names_the_bare_provider_choice() {
+        let (key, value) = launch_config(Implementation::Unelevated);
+        assert_eq!(key, "windows.sandbox");
+        // The provider reads this as TOML, so the quoted spelling decodes to
+        // the bare name readiness was asked about.
+        let source = value.as_str().expect("a TOML string, not a JSON scalar");
+        let decoded = serde_json::from_str::<Value>(source);
+        assert_eq!(decoded, Ok(json!("unelevated")));
     }
 
     #[test]
     fn readiness_parses_only_the_three_provider_answers() {
-        assert!(matches!(
-            Readiness::parse(&json!({"status": "ready"})),
-            Ok(Readiness::Ready)
-        ));
-        assert!(matches!(
-            Readiness::parse(&json!({"status": "notConfigured"})),
-            Ok(Readiness::NotConfigured)
-        ));
-        assert!(matches!(
-            Readiness::parse(&json!({"status": "updateRequired"})),
-            Ok(Readiness::UpdateRequired)
-        ));
-        assert!(Readiness::parse(&json!({"status": "elsewhere"})).is_err());
+        for (answer, expected) in [
+            ("ready", Readiness::Ready),
+            ("notConfigured", Readiness::NotConfigured),
+            ("updateRequired", Readiness::UpdateRequired),
+        ] {
+            let read = Readiness::parse(&json!({ "status": answer }));
+            assert_eq!(read.ok(), Some(expected), "{answer}");
+        }
+        assert!(Readiness::parse(&json!({ "status": "elsewhere" })).is_err());
         assert!(Readiness::parse(&json!({})).is_err());
-    }
-
-    #[test]
-    fn user_selection_reads_only_a_named_string() {
-        assert_eq!(
-            user_selection(&json!({"windows": {"sandbox": "elevated"}})),
-            Some("elevated".to_owned())
-        );
-        assert_eq!(user_selection(&json!({"windows": {"sandbox": 3}})), None);
-        assert_eq!(user_selection(&json!({})), None);
     }
 }

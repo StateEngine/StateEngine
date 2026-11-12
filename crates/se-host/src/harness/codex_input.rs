@@ -37,7 +37,7 @@ fn mode(policy: &ResolvedProfile) -> &'static str {
     }
 }
 
-fn path(path: &Path) -> Result<&str> {
+pub(crate) fn path(path: &Path) -> Result<&str> {
     if !path.is_absolute() {
         return Err(SeError::invalid("Codex path", "an absolute native path"));
     }

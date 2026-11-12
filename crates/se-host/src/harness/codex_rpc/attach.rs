@@ -53,10 +53,14 @@ impl CodexHarness {
                 .await?;
             binding.notify("initialized", json!({}), &cx).await?;
             #[cfg(windows)]
-            self.select_windows_sandbox(&binding, request, &cx).await?;
+            let selection = self.select_windows_sandbox(&binding, request, &cx).await?;
             let resolved = self.resolved(request)?;
             let plan = self.plan(request, &resolved, socket.as_deref());
-            let (method, params) = self.thread(&plan)?;
+            let (method, params) = self.thread(
+                &plan,
+                #[cfg(windows)]
+                selection,
+            )?;
             let response = binding.request(method, params, &cx).await?;
             let conversation = input::verify_thread(&plan, &response)?;
             binding.state.lock().map_err(|_| poisoned())?.conversation = Some(conversation.clone());
