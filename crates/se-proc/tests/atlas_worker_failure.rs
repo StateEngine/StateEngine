@@ -59,138 +59,147 @@ mod linux {
         let (mut channel, bytes) = WorkerChannel::receive()?;
         let mode: String = serde_json::from_slice(&bytes)?;
         match mode.as_str() {
-            "abort" => {
-                // Zero RLIMIT_CORE so the SIGABRT does not stall on the
-                // machine's core collector, then report the applied limit
-                // as stderr witness before aborting.
-                let no_core = libc::rlimit {
-                    rlim_cur: 0,
-                    rlim_max: 0,
-                };
-                // SAFETY: fixed native rlimit argument.
-                if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &no_core) } < 0 {
-                    return Err(io::Error::last_os_error().into());
-                }
-                let mut core = libc::rlimit {
-                    rlim_cur: 0,
-                    rlim_max: 0,
-                };
-                // SAFETY: exact writable native rlimit output.
-                if unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut core) } < 0 {
-                    return Err(io::Error::last_os_error().into());
-                }
-                io::stderr().write_all(
-                    format!("native abort marker core-limit={}\n", core.rlim_cur).as_bytes(),
-                )?;
-                std::process::abort();
-            }
-            "noisy" => {
-                // A full stderr pipe must return WouldBlock instead of
-                // stalling the completion protocol.
-                let _ = io::stderr().write_all(&[b'x'; 8192]);
-                channel.send(b"ready")?;
-            }
-            "denials" => {
-                // SAFETY: fixed syscall arguments, no borrowed output. Any
-                // unexpected successful descriptor is closed in this test child.
-                let socket = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-                let socket_error = io::Error::last_os_error().raw_os_error();
-                if socket >= 0 {
-                    // SAFETY: close only the descriptor returned by this probe.
-                    unsafe { libc::close(socket) };
-                }
-                // SAFETY: clone3 with a null buffer cannot create a child; the
-                // production filter must reject before the native EFAULT check.
-                let clone =
-                    unsafe { libc::syscall(libc::SYS_clone3, std::ptr::null::<libc::c_void>(), 0) };
-                let clone_error = io::Error::last_os_error().raw_os_error();
-                let image = c"/bin/true";
-                let args = [image.as_ptr(), std::ptr::null()];
-                let env = [std::ptr::null::<libc::c_char>()];
-                // SAFETY: retained NUL-terminated executable and pointer arrays;
-                // unexpected success exits this probe instead of reporting PASS.
-                let exec = unsafe { libc::execve(image.as_ptr(), args.as_ptr(), env.as_ptr()) };
-                let exec_error = io::Error::last_os_error().raw_os_error();
-                channel.send(&serde_json::to_vec(&(
-                    socket,
-                    socket_error,
-                    clone,
-                    clone_error,
-                    exec,
-                    exec_error,
-                ))?)?;
-            }
-            "limits" => {
-                let mut limits = Vec::new();
-                for resource in [libc::RLIMIT_AS, libc::RLIMIT_CPU, libc::RLIMIT_NOFILE] {
-                    let mut limit = libc::rlimit {
-                        rlim_cur: 0,
-                        rlim_max: 0,
-                    };
-                    // SAFETY: exact writable native rlimit output.
-                    if unsafe { libc::getrlimit(resource, &mut limit) } < 0 {
-                        return Err(io::Error::last_os_error().into());
-                    }
-                    limits.push((limit.rlim_cur, limit.rlim_max));
-                }
-                // SAFETY: anonymous allocation requests no existing address or
-                // file. An unexpectedly admitted mapping is immediately released.
-                let mapping = unsafe {
-                    libc::mmap(
-                        std::ptr::null_mut(),
-                        128_000_000,
-                        libc::PROT_READ | libc::PROT_WRITE,
-                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                        -1,
-                        0,
-                    )
-                };
-                let denied = mapping == libc::MAP_FAILED;
-                let error = io::Error::last_os_error().raw_os_error();
-                if !denied {
-                    // SAFETY: release exactly this probe's successful mapping.
-                    unsafe { libc::munmap(mapping, 128_000_000) };
-                }
-                // SAFETY: read only priority of this exact current process.
-                let priority = unsafe { libc::syscall(libc::SYS_ioprio_get, 1, 0) };
-                channel.send(&serde_json::to_vec(&(limits, denied, error, priority))?)?;
-            }
-            "resident" => {
-                let bytes = 72_000_000;
-                // SAFETY: this dedicated child owns the anonymous mapping and
-                // touches only offsets inside it. The parent must cancel it.
-                let mapping = unsafe {
-                    libc::mmap(
-                        std::ptr::null_mut(),
-                        bytes,
-                        libc::PROT_READ | libc::PROT_WRITE,
-                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                        -1,
-                        0,
-                    )
-                };
-                if mapping == libc::MAP_FAILED {
-                    return Err(io::Error::last_os_error().into());
-                }
-                for offset in (0..bytes).step_by(4096) {
-                    // SAFETY: each offset is within this child-owned mapping.
-                    unsafe { mapping.cast::<u8>().add(offset).write_volatile(1) };
-                }
-                channel.send(b"resident")?;
-            }
-            "sleep" => {
-                channel.send(b"ready")?;
-                // SAFETY: this dedicated child waits for an exact parent kill.
-                loop {
-                    // SAFETY: this dedicated child waits for its exact parent.
-                    unsafe { libc::pause() };
-                }
-            }
+            "abort" => probe_abort()?,
+            "noisy" => probe_noisy(&mut channel)?,
+            "denials" => probe_denials(&mut channel)?,
+            "limits" => probe_limits(&mut channel)?,
+            "resident" => probe_resident(&mut channel)?,
+            "sleep" => probe_sleep(&mut channel)?,
             _ => return Err("unknown probe mode".into()),
         }
         channel.await_reap()?;
         Ok(())
     }
+    fn probe_abort() -> Check {
+        // Zero RLIMIT_CORE so the SIGABRT does not stall on the
+        // machine's core collector, then report the applied limit
+        // as stderr witness before aborting.
+        let no_core = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: fixed native rlimit argument.
+        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &no_core) } < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let mut core = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: exact writable native rlimit output.
+        if unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut core) } < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        io::stderr()
+            .write_all(format!("native abort marker core-limit={}\n", core.rlim_cur).as_bytes())?;
+        std::process::abort();
+    }
+    fn probe_noisy(channel: &mut WorkerChannel) -> Check {
+        // A full stderr pipe must return WouldBlock instead of
+        // stalling the completion protocol.
+        let _ = io::stderr().write_all(&[b'x'; 8192]);
+        channel.send(b"ready")?;
+        Ok(())
+    }
+    fn probe_denials(channel: &mut WorkerChannel) -> Check {
+        // SAFETY: fixed syscall arguments, no borrowed output. Any
+        // unexpected successful descriptor is closed in this test child.
+        let socket = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        let socket_error = io::Error::last_os_error().raw_os_error();
+        if socket >= 0 {
+            // SAFETY: close only the descriptor returned by this probe.
+            unsafe { libc::close(socket) };
+        }
+        // SAFETY: clone3 with a null buffer cannot create a child; the
+        // production filter must reject before the native EFAULT check.
+        let clone = unsafe { libc::syscall(libc::SYS_clone3, std::ptr::null::<libc::c_void>(), 0) };
+        let clone_error = io::Error::last_os_error().raw_os_error();
+        let image = c"/bin/true";
+        let args = [image.as_ptr(), std::ptr::null()];
+        let env = [std::ptr::null::<libc::c_char>()];
+        // SAFETY: retained NUL-terminated executable and pointer arrays;
+        // unexpected success exits this probe instead of reporting PASS.
+        let exec = unsafe { libc::execve(image.as_ptr(), args.as_ptr(), env.as_ptr()) };
+        let exec_error = io::Error::last_os_error().raw_os_error();
+        channel.send(&serde_json::to_vec(&(
+            socket,
+            socket_error,
+            clone,
+            clone_error,
+            exec,
+            exec_error,
+        ))?)?;
+        Ok(())
+    }
+    fn probe_limits(channel: &mut WorkerChannel) -> Check {
+        let mut limits = Vec::new();
+        for resource in [libc::RLIMIT_AS, libc::RLIMIT_CPU, libc::RLIMIT_NOFILE] {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: exact writable native rlimit output.
+            if unsafe { libc::getrlimit(resource, &mut limit) } < 0 {
+                return Err(io::Error::last_os_error().into());
+            }
+            limits.push((limit.rlim_cur, limit.rlim_max));
+        }
+        // SAFETY: anonymous allocation requests no existing address or
+        // file. An unexpectedly admitted mapping is immediately released.
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                128_000_000,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        let denied = mapping == libc::MAP_FAILED;
+        let error = io::Error::last_os_error().raw_os_error();
+        if !denied {
+            // SAFETY: release exactly this probe's successful mapping.
+            unsafe { libc::munmap(mapping, 128_000_000) };
+        }
+        // SAFETY: read only priority of this exact current process.
+        let priority = unsafe { libc::syscall(libc::SYS_ioprio_get, 1, 0) };
+        channel.send(&serde_json::to_vec(&(limits, denied, error, priority))?)?;
+        Ok(())
+    }
+    fn probe_resident(channel: &mut WorkerChannel) -> Check {
+        let bytes = 72_000_000;
+        // SAFETY: this dedicated child owns the anonymous mapping and
+        // touches only offsets inside it. The parent must cancel it.
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                bytes,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        if mapping == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error().into());
+        }
+        for offset in (0..bytes).step_by(4096) {
+            // SAFETY: each offset is within this child-owned mapping.
+            unsafe { mapping.cast::<u8>().add(offset).write_volatile(1) };
+        }
+        channel.send(b"resident")?;
+        Ok(())
+    }
+    fn probe_sleep(channel: &mut WorkerChannel) -> Check {
+        channel.send(b"ready")?;
+        // SAFETY: this dedicated child waits for an exact parent kill.
+        loop {
+            // SAFETY: this dedicated child waits for its exact parent.
+            unsafe { libc::pause() };
+        }
+    }
+
     fn orphan_owner(path: &Path) -> Check {
         let mut worker = spawn("sleep", until())?;
         assert_eq!(receive(&mut worker)?, b"ready");
