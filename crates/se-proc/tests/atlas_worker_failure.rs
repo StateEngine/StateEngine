@@ -60,7 +60,23 @@ mod linux {
         let mode: String = serde_json::from_slice(&bytes)?;
         match mode.as_str() {
             "abort" => {
-                io::stderr().write_all(b"native abort marker\n")?;
+                // Zero RLIMIT_CORE so the SIGABRT does not stall on the
+                // machine's core collector, then report the applied limit
+                // as stderr witness before aborting.
+                let no_core = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+                // SAFETY: fixed native rlimit argument.
+                if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &no_core) } < 0 {
+                    return Err(io::Error::last_os_error().into());
+                }
+                let mut core = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+                // SAFETY: exact writable native rlimit output.
+                if unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut core) } < 0 {
+                    return Err(io::Error::last_os_error().into());
+                }
+                io::stderr().write_all(
+                    format!("native abort marker core-limit={}\n", core.rlim_cur)
+                        .as_bytes(),
+                )?;
                 std::process::abort();
             }
             "noisy" => {
@@ -345,9 +361,11 @@ mod linux {
         parent_death()?;
         println!("PASS parent death kills the contained child; exact adopted wait completed");
         {
-            // SIGABRT can wait for the machine's core collector under workspace
-            // load. Keep the exact signal/stderr/reap assertions, with a separate
-            // allowance for that OS exit work rather than the three-second probe clock.
+            // The aborting child zeroes RLIMIT_CORE so the SIGABRT reaps
+            // without waiting for the machine's core collector under
+            // workspace load. Keep the exact signal/stderr/reap assertions,
+            // with a separate allowance for that OS exit work rather than
+            // the three-second probe clock.
             let end = Instant::now() + Duration::from_secs(15);
             let mut worker = spawn("abort", end)?;
             loop {
@@ -355,8 +373,8 @@ mod linux {
                 if let Some(status) = worker.try_reap()? {
                     assert_eq!(status.signal(), Some(libc::SIGABRT));
                     assert!(
-                        worker.stderr_report().contains("native abort marker"),
-                        "native abort stderr was discarded"
+                        worker.stderr_report().contains("native abort marker core-limit=0"),
+                        "aborting child did not zero RLIMIT_CORE"
                     );
                     break;
                 }
