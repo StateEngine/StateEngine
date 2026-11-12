@@ -102,8 +102,10 @@ pub(super) async fn while_serving(
                         || {
                             // Demand-paged code pages stay resident until
                             // the kernel's own reclaim; the idle budget
-                            // cannot wait for that on a loaded box.
-                            se_proc::release_read_only_mapped_pages();
+                            // cannot wait for that on a loaded box. A smaps
+                            // read failure leaves the pages resident; the
+                            // next pass retries.
+                            let _ = se_proc::release_read_only_mapped_pages();
                         },
                     )
                     .await;
