@@ -11,7 +11,7 @@ use crate::client::{
 };
 use crate::{
     AuthorizedConnection, HandshakeInput, IpcConnection, IpcRequest, IpcResponse, IpcResult,
-    OperationOutput, PendingIpcHandshake,
+    OperationOutput, PendingIpcHandshake, PresentedAuthority,
 };
 use se_types::{ErrorEnvelope, RenderCx, Result, SeError};
 use std::time::Instant;
@@ -402,6 +402,73 @@ enum RouteChoice {
     Core(Box<RoutedCall>),
     Channels(Box<crate::channels::ChannelRequest>),
 }
+/// The authenticated frame fields shared by the three terminal-scoped routes.
+/// Each resolves to its own call kind and never reaches the core decoder.
+struct RouteScope<'a> {
+    context: &'a AdmissionContext,
+    connection: &'a HostedConnection,
+    authority: Option<&'a PresentedAuthority>,
+    presence: Option<&'a crate::client::presence::OwnerPresence>,
+    cli_selections: bool,
+}
+impl RouteScope<'_> {
+    /// An adopted provider frame carries no CLI selectors and no presence claim.
+    fn adopt(&self, input: crate::adoption::Input) -> Result<RouteChoice> {
+        if self.cli_selections || self.presence.is_some() {
+            return Err(SeError::invalid(
+                "adoption scope",
+                "no CLI selectors or human presence claims",
+            ));
+        }
+        let call = self.context.adoption(
+            self.connection.connection.peer(),
+            self.connection.connection.connection_authority(),
+            self.authority,
+            &self.connection.grant,
+            input,
+        )?;
+        Ok(RouteChoice::Adopt(Box::new(call)))
+    }
+    #[cfg(feature = "remote")]
+    fn owner(&self, input: crate::remote::OwnerInput) -> Result<RouteChoice> {
+        input.validate()?;
+        if self.cli_selections {
+            return Err(SeError::invalid(
+                "remote Owner scope",
+                "registry control without local project selection",
+            ));
+        }
+        let owner = self.context.remote_owner(
+            self.connection.connection.peer(),
+            self.connection.connection.connection_authority(),
+            self.authority,
+            &self.connection.grant,
+            self.presence,
+            input.requires_terminal(),
+        )?;
+        Ok(RouteChoice::Owner(Box::new(crate::remote::OwnerCall {
+            owner,
+            input,
+        })))
+    }
+    fn channels(&self, input: crate::channels::ChannelRequest) -> Result<RouteChoice> {
+        self.context.channel_owner(
+            self.connection.connection.peer(),
+            self.connection.connection.connection_authority(),
+            self.authority,
+            &self.connection.grant,
+        )?;
+        if self.cli_selections {
+            return Err(SeError::invalid(
+                "channel scope",
+                "the closed native channel input without CLI selection overrides",
+            ));
+        }
+        input.validate().map_err(|error| error.refusal())?;
+        Ok(RouteChoice::Channels(Box::new(input)))
+    }
+}
+
 fn route(
     context: &AdmissionContext,
     connection: &HostedConnection,
@@ -410,63 +477,18 @@ fn route(
     deadline: Deadline,
     admitted_at: Instant,
 ) -> Result<RouteChoice> {
+    let scoped = RouteScope {
+        context,
+        connection,
+        authority: wire.authority.as_ref(),
+        presence: wire.presence.as_ref(),
+        cli_selections: wire.cli_selections.is_some(),
+    };
     let (raw, hook) = match wire.request {
-        IpcRequest::Adopt(input) => {
-            if wire.cli_selections.is_some() || wire.presence.is_some() {
-                return Err(SeError::invalid(
-                    "adoption scope",
-                    "no CLI selectors or human presence claims",
-                ));
-            }
-            return context
-                .adoption(
-                    connection.connection.peer(),
-                    connection.connection.connection_authority(),
-                    wire.authority.as_ref(),
-                    &connection.grant,
-                    input,
-                )
-                .map(Box::new)
-                .map(RouteChoice::Adopt);
-        }
+        IpcRequest::Adopt(input) => return scoped.adopt(input),
         #[cfg(feature = "remote")]
-        IpcRequest::RemoteOwner(input) => {
-            input.validate()?;
-            if wire.cli_selections.is_some() {
-                return Err(SeError::invalid(
-                    "remote Owner scope",
-                    "registry control without local project selection",
-                ));
-            }
-            let owner = context.remote_owner(
-                connection.connection.peer(),
-                connection.connection.connection_authority(),
-                wire.authority.as_ref(),
-                &connection.grant,
-                wire.presence.as_ref(),
-                input.requires_terminal(),
-            )?;
-            return Ok(RouteChoice::Owner(Box::new(crate::remote::OwnerCall {
-                owner,
-                input: *input,
-            })));
-        }
-        IpcRequest::Channels(input) => {
-            context.channel_owner(
-                connection.connection.peer(),
-                connection.connection.connection_authority(),
-                wire.authority.as_ref(),
-                &connection.grant,
-            )?;
-            if wire.cli_selections.is_some() {
-                return Err(SeError::invalid(
-                    "channel scope",
-                    "the closed native channel input without CLI selection overrides",
-                ));
-            }
-            input.validate().map_err(|error| error.refusal())?;
-            return Ok(RouteChoice::Channels(Box::new(input)));
-        }
+        IpcRequest::RemoteOwner(input) => return scoped.owner(*input),
+        IpcRequest::Channels(input) => return scoped.channels(input),
         IpcRequest::Operation(raw) => {
             if raw.name == "hook.claude" {
                 return Err(SeError::invalid(

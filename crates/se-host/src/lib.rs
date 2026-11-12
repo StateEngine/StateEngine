@@ -21,6 +21,8 @@ pub use agent_observation::{
     AgentObservation, AgentObservationPlan, observe_agent, prepare_agent_observation,
 };
 mod harness;
+mod owner_inventory;
+pub use owner_inventory::decode_owner_inventory;
 #[cfg(feature = "runtime")]
 mod launch_proofs;
 #[cfg(feature = "runtime")]

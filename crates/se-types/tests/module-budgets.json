@@ -15,6 +15,11 @@
    "owner": "se-host maintainers",
    "reason": "Reviewed startup listener controls require private access; exact current size, no headroom.",
    "remediation": "Move startup reviewer controls beside the listener tests, or split startup into its own module, if the directory grows again."
+  },
+  "crates/se-proc/src/native_ipc": {
+   "owner": "Native process maintainers",
+   "reason": "Reviewed provider ancestry and image-hint reuse; exact current size, no headroom.",
+   "remediation": "Separate platform observation from image-cache maintenance once that seam no longer depends on private native internals."
   }
  },
  "default_crate_lines": 40000,
@@ -180,13 +185,5 @@
   "crates/se-host/src/runtime/remote": 354,
   "crates/se-host/src/atlas_hooks": 351,
   "crates/se-host/src/process/status": 339
- },
- "reviewed_exceptions": [
-  {
-   "path": "crates/se-proc/src/native_ipc",
-   "max_lines": 3300,
-   "owner": "Native process maintainers",
-   "remediation": "Separate platform observation from image-cache maintenance once that seam no longer depends on private native internals."
-  }
- ]
+ }
 }

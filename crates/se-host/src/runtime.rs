@@ -52,9 +52,6 @@ pub use route::{
     AcceptedPeer, AdmittedExchange, AuthorizedStop, HostedConnection, HostedRouter, RoutedCall,
 };
 
-mod inventory;
-pub use inventory::decode_owner_inventory;
-
 #[cfg(feature = "listener")]
 pub(crate) mod executor;
 #[cfg(feature = "listener")]
