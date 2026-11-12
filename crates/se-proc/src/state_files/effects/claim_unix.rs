@@ -6,7 +6,7 @@ mod macos;
 
 impl Pin {
     pub(in crate::state_files) fn create_claim(path: &Path) -> Result<Self> {
-        if let Some(pin) = Self::open(path).map_err(claim_error)? {
+        if let Some(mut pin) = Self::open(path).map_err(claim_error)? {
             if pin
                 .file
                 .metadata()
@@ -22,6 +22,7 @@ impl Pin {
             }
             #[cfg(target_os = "macos")]
             super::super::metadata(&pin.file, path, false)?;
+            pin.file_lock.end_by_close();
             return Ok(pin);
         }
         #[cfg(target_os = "macos")]
@@ -60,11 +61,14 @@ impl Pin {
                     .map_err(|error| io_error("sync installation claim parent", path, error))?;
             }
         }
-        let pin = Self::open(path)
+        let mut pin = Self::open(path)
             .map_err(claim_error)?
             .ok_or_else(|| changed("new installation claim disappeared", path))?;
         #[cfg(target_os = "macos")]
         super::super::metadata(&pin.file, path, false)?;
+        // The worker inherits this claim across exec, so it must end by close:
+        // the lock stays held until the worker's duplicate closes at exit.
+        pin.file_lock.end_by_close();
         Ok(pin)
     }
     pub(in crate::state_files) fn claim_record(&mut self) -> Result<()> {
@@ -88,6 +92,8 @@ impl Pin {
             parent.release().map_err(|error| {
                 io_error("release installer claim parent lock", &self.path, error)
             })?;
+            // `parent` drops here and releases a second time; unlocking an
+            // already-unlocked description is harmless and stays explicit.
         }
         // The pin's own description already holds this record's lock, and
         // `Pin::open` keeps it through the guard for the pin's lifetime, so the

@@ -89,11 +89,8 @@ fn a_held_installation_claim_refuses_a_second_holder() -> Check {
     let root = private_root()?;
     let record = root.join("claimed-record.json");
     std::fs::write(&record, b"record")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600))?;
-    }
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600))?;
 
     let mut held = OwnedFile::open(&record)?.ok_or("record missing")?;
     held.claim_installation_record()?;
