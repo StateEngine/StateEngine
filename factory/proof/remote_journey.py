@@ -75,7 +75,7 @@ class Journey:
         return ["ssh", "-T", "-o", "BatchMode=yes", self.config["destination"], *args]
 
     def remote(self, *args):
-        return self.command(self.ssh('PATH="$HOME/' + self.remote_root + '/bin:$PATH" ' +
+        return self.command(self.ssh('PATH=' + shlex.quote(self.remote_root + '/bin') + ':"$PATH" ' +
                                     shlex.join([self.remote_se, "--json", *args])))
 
     def transfer(self, source, destination):
@@ -146,10 +146,14 @@ class Journey:
         check = Path(self.config.get("account_check", Path(__file__).resolve().parents[2] /
                                      "scripts/ci/installation_account.py"))
         program = check.read_text().split('if __name__ == "__main__":')[0]
-        program += '\nrequire()\nprint(json.dumps({"registered": True, "identity": account()[0]}))\n'
+        program += ('\nrequire()\nidentity,profile=account()\n'
+                    'if Path.home()!=profile: raise RuntimeError("SSH home differs from native registered profile")\n'
+                    'print(json.dumps({"registered":True,"identity":identity,"profile":str(profile)}))\n')
         args = self.ssh("python3 -c " + shlex.quote(program))
         registered = self.command(args)
         self.record["destination_account"] = registered
+        self.remote_root = str(Path(registered["profile"]) / self.remote_root)
+        self.remote_se = self.remote_root + "/se"
         lock = '''import fcntl,json,os,stat,sys
 from pathlib import Path
 p=Path.home()/'.stateengine-remote-proof'
@@ -166,8 +170,9 @@ with (p/'lock').open('a') as f:
         self.lock.until(lambda pipe, _, value: pipe == "stdout" and value.get("locked") is True, self.bound(30))
         # Every attempt stages its own image and repository; no incumbent image
         # or user project is overwritten. The remote account is fixture-only.
-        setup = ("umask 077; mkdir " + self.remote_root + " && mkdir " + self.remote_root +
-                 "/work " + self.remote_root + "/bin && printf '{\"created\":true}\\n'")
+        setup = ("umask 077; mkdir " + shlex.quote(self.remote_root) + " && mkdir " +
+                 shlex.quote(self.remote_root + "/work") + " " + shlex.quote(self.remote_root + "/bin") +
+                 " && printf '{\"created\":true}\\n'")
         self.command(self.ssh(setup))
         self.transfer(self.se, self.remote_se)
         self.transfer(provider_binary(self.config["surface"], self.config),
