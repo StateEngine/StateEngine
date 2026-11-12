@@ -316,9 +316,10 @@ impl LaunchCoordinator {
         let output = service.output(auxiliary).clone();
         if let Some(output) = output {
             output.close(deadline).await?;
+            let save_deadline = deadline.clone();
             self.store
                 .pool
-                .run_owned(deadline, move || output.save())
+                .run_owned(deadline, move || output.save(&save_deadline))
                 .await?;
         }
         let checkpoint = service

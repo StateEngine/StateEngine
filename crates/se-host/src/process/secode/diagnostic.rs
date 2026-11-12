@@ -163,7 +163,8 @@ impl Output {
             .close(&self.transport, self.context(deadline.remaining()?))
             .await
     }
-    pub fn save(&self) -> Result<()> {
+    pub fn save(&self, deadline: &Deadline) -> Result<()> {
+        deadline.remaining()?;
         let diagnostics = self
             .diagnostics
             .lock()
@@ -176,9 +177,7 @@ impl Output {
             .ok_or_else(|| error("SE Code auxiliary diagnostics", "parent absent"))?;
         let files = se_proc::NativeStateFiles::create(parent)
             .map_err(|e| error("SE Code auxiliary diagnostics", e))?;
-        if let Some(mut existing) = se_proc::OwnedFile::open(&self.path)
-            .map_err(|e| error("SE Code auxiliary diagnostics", e))?
-        {
+        if let Some(mut existing) = self.open_file(deadline)? {
             let hash = existing
                 .sha256()
                 .map_err(|e| error("SE Code auxiliary diagnostics", e))?;
@@ -199,14 +198,12 @@ impl Output {
                 .publish_no_replace(&staged.path, &self.path)
                 .map_err(|e| error("SE Code auxiliary diagnostics", e))?;
         }
-        let mut observed = se_proc::OwnedFile::open(&self.path)
-            .map_err(|e| error("SE Code auxiliary diagnostics", e))?
-            .ok_or_else(|| {
-                error(
-                    "SE Code auxiliary diagnostics",
-                    "published diagnostics absent",
-                )
-            })?;
+        let mut observed = self.open_file(deadline)?.ok_or_else(|| {
+            error(
+                "SE Code auxiliary diagnostics",
+                "published diagnostics absent",
+            )
+        })?;
         if observed
             .read(1024 * 1024)
             .map_err(|e| error("SE Code auxiliary diagnostics", e))?
@@ -214,7 +211,26 @@ impl Output {
         {
             return Err(error("SE Code auxiliary diagnostics", "readback differs"));
         }
+        deadline.remaining()?;
         Ok(())
+    }
+    fn open_file(&self, deadline: &Deadline) -> Result<Option<se_proc::OwnedFile>> {
+        use crate::state_files::{Acquisition, AcquisitionRetry};
+        let mut retry = AcquisitionRetry::new(deadline.at());
+        loop {
+            deadline.remaining()?;
+            match retry
+                .acquire(|| se_proc::OwnedFile::open(&self.path))
+                .map_err(|failure| {
+                    failure.into_public(|native| error("SE Code auxiliary diagnostics", native))
+                })? {
+                Acquisition::Ready(file) => {
+                    deadline.remaining()?;
+                    return Ok(file);
+                }
+                Acquisition::Wait(delay) => std::thread::sleep(delay),
+            }
+        }
     }
     pub fn path(&self) -> &std::path::Path {
         &self.path

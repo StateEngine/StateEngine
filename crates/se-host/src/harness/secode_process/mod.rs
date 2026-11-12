@@ -1,12 +1,11 @@
 //! External SE Code service control. Native lifecycle effects remain with the
 //! launch coordinator; these readers never start a service or replay input.
-pub mod bundle;
+//! Image and bundle qualification live beside this module in `secode_image`.
 mod contract;
 mod control;
-mod image;
 mod managed;
 mod stream;
-pub use image::Images;
+pub use crate::harness::secode_image::Images;
 pub mod probe;
 pub(crate) mod sandbox;
 pub use contract::{
@@ -51,12 +50,4 @@ fn unreadable(subject: &str, reason: impl std::fmt::Display) -> se_types::SeErro
     se_core::scope::unreadable(subject, &reason.to_string())
 }
 
-pub(crate) fn incompatible(reason: impl Into<String>) -> se_types::SeError {
-    se_types::SeError::new(se_types::Detail::ProviderIncompatible(
-        se_types::details::ProviderIncompatible {
-            subject: "SE Code external-host contract".into(),
-            reason: reason.into(),
-            next_step: "Install a compatible native SE Code bundle and set providers.secode.command to its secode executable; retain the original service and input identities while a previous operation is uncertain.".into(),
-        },
-    ))
-}
+pub(crate) use crate::harness::secode_image::incompatible;

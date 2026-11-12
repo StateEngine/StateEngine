@@ -11,7 +11,7 @@ pub(super) fn resolve_provider(
 ) -> Result<PathBuf> {
     if provider == se_types::Provider::SeCode
         && configuration.provider(provider).command.is_none()
-        && let Some(bundled) = crate::harness::secode_process::bundle::discover()?
+        && let Some(bundled) = crate::harness::secode_image::bundle::discover()?
     {
         return Ok(bundled);
     }
