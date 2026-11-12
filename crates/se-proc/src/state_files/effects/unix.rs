@@ -74,13 +74,63 @@ fn lock(file: &File, path: &Path) -> Result<()> {
     // SAFETY: advisory exclusive lock on a retained descriptor, nonblocking. Every
     // effect in this module takes the parent lock, serializing cooperating writers.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } < 0 {
-        return Err(io_error(
-            "installation object is in use",
-            path,
-            io::Error::last_os_error(),
-        ));
+        let source = io::Error::last_os_error();
+        // Keep the native kind so this stays a measured contention refusal, and
+        // append the holder: advisory flock has no owner query, but a second
+        // descriptor for the same object inside this process is the answer that
+        // matters, because a forked child holds one until it execs.
+        let detail = lock_holder(file, path, &source);
+        let source = io::Error::new(source.kind(), format!("{source}; {detail}"));
+        return Err(io_error("installation object is in use", path, source));
     }
     Ok(())
+}
+
+/// Name the holder of a lock this process was refused, as far as the kernel can
+/// say. The refusing path is already in the surrounding message; this adds
+/// whether this same process holds another descriptor for that object, which
+/// means either a second open inside one process or the fork-to-exec window of
+/// a concurrent spawn.
+fn lock_holder(file: &File, path: &Path, source: &io::Error) -> String {
+    let mut detail = format!("refused on {}", path.display());
+    if source.kind() != io::ErrorKind::WouldBlock {
+        detail.push_str(" (not a contention refusal)");
+        return detail;
+    }
+    // The lock is taken on the retained descriptor, which may be the leaf's
+    // parent directory rather than the leaf named in the surrounding message.
+    #[cfg(unix)]
+    if let (Ok(target), Ok(entries)) = (file.metadata(), std::fs::read_dir("/proc/self/fd")) {
+        use std::os::unix::fs::MetadataExt;
+        let identity = (target.dev(), target.ino());
+        let own = file.as_raw_fd();
+        for entry in entries.flatten() {
+            let Some(fd) = entry
+                .path()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.parse::<i32>().ok())
+            else {
+                continue;
+            };
+            if fd == own {
+                continue;
+            }
+            let Ok(link) = std::fs::read_link(entry.path()) else {
+                continue;
+            };
+            let Ok(meta) = std::fs::metadata(&link) else {
+                continue;
+            };
+            if (meta.dev(), meta.ino()) == identity {
+                detail.push_str(
+                    "; this process also holds a descriptor for the same object, so the refusal may be its own forked child before exec",
+                );
+                break;
+            }
+        }
+    }
+    detail
 }
 
 #[cfg(target_os = "macos")]
