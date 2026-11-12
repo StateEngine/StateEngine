@@ -21,6 +21,13 @@ const STDERR_RETAIN: usize = 4096;
 const STDERR_TAIL: usize = 160;
 
 pub fn observe(root: &Path) -> Result<Option<GitView>> {
+    let deadline = Instant::now() + STATUS_OBSERVATION_DEADLINE;
+    observe_within(root, deadline)
+}
+
+/// The observation with its one deadline supplied, so a test can drive the
+/// bounded paths without waiting the production bound out.
+pub(crate) fn observe_within(root: &Path, deadline: Instant) -> Result<Option<GitView>> {
     if !root.is_dir() {
         return Ok(None);
     }
@@ -49,14 +56,33 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
     // whether the tree is dirty, so the observation costs two Git processes
     // instead of four. Its cost is bounded by the working tree, not the
     // history, and it is settled at the first entry rather than buffered.
-    let (header, uncommitted) = status_header(root)?;
-    // A dirty tree is only meaningful against a resolved commit; an unborn
-    // branch reports the absence of both.
-    let uncommitted = header.head.as_ref().map(|_| uncommitted);
+    let StatusRead::Known {
+        header,
+        dirty: observed_dirty,
+    } = status_header_within(root, deadline)?
+    else {
+        // Git metadata is present but this machine has no Git binary: the
+        // state is absent to this machine, not unreadable.
+        return Ok(None);
+    };
+    // A dirty fact is only meaningful against a resolved commit; an unborn
+    // branch reports no head, no count and no dirty fact. An unresolved dirty
+    // fact stays `None`, which reads as unknown rather than clean.
+    let uncommitted = if header.head.is_some() {
+        observed_dirty
+    } else {
+        None
+    };
     // The commit count shown as "Existing repo: N commits" is its own bounded
     // call; nothing else in the output depends on it.
     let commits = match header.head.as_ref() {
-        Some(_) => Some(commit_count(root)?),
+        Some(_) => match commit_count(root)? {
+            Some(count) => Some(count),
+            // Git went away between the header read and the count: the
+            // repository is absent to this machine, not present with an
+            // invented count.
+            None => return Ok(None),
+        },
         None => None,
     };
     Ok(Some(GitView {
@@ -75,18 +101,25 @@ struct StatusHeader {
     branch: Option<String>,
 }
 
-/// Count the commits reachable from HEAD.
+/// Count the commits reachable from HEAD, or report `None` when this machine
+/// has no Git binary: that state is absent to this machine, not unreadable.
 ///
 /// `rev-list --count` walks the history, so it is the one call whose cost grows
 /// with the repository. It is kept separate so the header and dirty facts never
 /// wait on it, and its output is bounded like every other metadata read.
-fn commit_count(root: &Path) -> Result<u64> {
-    let output = std::process::Command::new("git");
-    let mut output = output;
-    configured(root, &mut output).args(["rev-list", "--count", "HEAD"]);
-    let output = output.output().map_err(|error| {
-        scope::unreadable("Git HEAD", &format!("commit count lookup failed: {error}"))
-    })?;
+fn commit_count(root: &Path) -> Result<Option<u64>> {
+    let mut command = Command::new("git");
+    configured(root, &mut command).args(["rev-list", "--count", "HEAD"]);
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(scope::unreadable(
+                "Git HEAD",
+                &format!("commit count lookup failed: {error}"),
+            ));
+        }
+    };
     if !output.status.success() {
         return Err(scope::unreadable(
             "Git HEAD",
@@ -97,6 +130,7 @@ fn commit_count(root: &Path) -> Result<u64> {
         .map_err(|_| scope::unreadable("Git HEAD", "Git returned a non-UTF-8 commit count"))?;
     text.trim()
         .parse::<u64>()
+        .map(Some)
         .map_err(|_| scope::unreadable("Git HEAD", "Git returned an invalid commit count"))
 }
 
@@ -113,30 +147,26 @@ fn commit_count(root: &Path) -> Result<u64> {
 /// settled at the first entry: the child is then killed and reaped and both
 /// reader tasks are awaited to completion before the result is returned. A tree
 /// with a hundred thousand changes therefore costs the same as one with a
-/// single change, and its entries are never buffered. Clean requires the
-/// command to finish with headers only; a run that outgrows the bounded
-/// observation is reported as unknown, and a pipe read failure is preserved and
-/// reported as unreadable rather than converted to zero.
-fn status_header(root: &Path) -> Result<(StatusHeader, bool)> {
+/// single change, and its entries are never buffered. A pipe read failure is
+/// preserved, with Git's own stderr tail, and reported as unreadable rather
+/// than converted to zero. A run that cannot settle a fact before the deadline
+/// reports that fact as unknown, never as clean or as an unborn branch.
+fn status_header_within(root: &Path, deadline: Instant) -> Result<StatusRead> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
         .build()
         .map_err(|error| scope::unreadable("Git repository observation", &error.to_string()))?;
-    runtime.block_on(observe_status(root))
+    runtime.block_on(observe_status(root, deadline))
 }
 
-async fn observe_status(root: &Path) -> Result<(StatusHeader, bool)> {
-    let deadline = tokio::time::Instant::from(Instant::now() + STATUS_OBSERVATION_DEADLINE);
-    let mut command = tokio::process::Command::new("git");
-    configured(root, &mut command)
-        .args(["status", "--porcelain=v2", "--branch"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|e| scope::unreadable("Git repository observation", &e.to_string()))?;
+async fn observe_status(root: &Path, deadline: Instant) -> Result<StatusRead> {
+    let deadline = tokio::time::Instant::from(deadline);
+    let Some(mut child) = spawn_status(root)? else {
+        // Git metadata is present but this machine has no Git binary: absent
+        // to this machine, not unreadable.
+        return Ok(StatusRead::Absent);
+    };
     let stdout = child.stdout.take().ok_or_else(|| {
         scope::unreadable("Git working tree", "status output pipe was not attached")
     })?;
@@ -152,46 +182,32 @@ async fn observe_status(root: &Path) -> Result<(StatusHeader, bool)> {
             &format!("status reader failed: {error}"),
         )
     })?;
-    let unreadable = |read_failures: Vec<String>| {
-        scope::unreadable("Git working tree", &failure_detail(&[], &read_failures))
-    };
     match outcome {
-        StatusOutcome::Settled { header, dirty } => {
+        StatusOutcome::Settled { header } => {
             // The first entry already proves dirty and the header is complete.
             // Kill and reap the child, then witness the stderr reader closing.
             let _ = child.kill().await;
             let _ = bounded_exit(&mut child, deadline).await;
             let _ = stderr_task.await;
-            Ok((header, dirty))
+            known(header, Some(true))
         }
         StatusOutcome::ReadFailure(reason) => {
             let _ = child.kill().await;
             let _ = bounded_exit(&mut child, deadline).await;
-            let stderr = stderr_task.await.unwrap_or(StderrOutcome {
-                retained: Vec::new(),
-                read_failure: None,
-            });
-            let mut read_failures = vec![format!("stdout read failed: {reason}")];
-            if let Some(failure) = &stderr.read_failure {
-                read_failures.push(format!("stderr read failed: {failure}"));
-            }
-            Err(unreadable(read_failures))
+            let stderr = stderr_task.await.unwrap_or_else(|_| StderrOutcome::empty());
+            Err(refusal(
+                &stderr,
+                vec![format!("stdout read failed: {reason}")],
+            ))
         }
         StatusOutcome::Empty { header } => match bounded_exit(&mut child, deadline).await {
             Some(Ok(status)) if status.success() => {
                 let _ = stderr_task.await;
-                Ok((header, false))
+                known(header, Some(false))
             }
             Some(Ok(_status)) => {
-                let stderr = stderr_task.await.unwrap_or(StderrOutcome {
-                    retained: Vec::new(),
-                    read_failure: None,
-                });
-                let mut read_failures = Vec::new();
-                if let Some(failure) = &stderr.read_failure {
-                    read_failures.push(format!("stderr read failed: {failure}"));
-                }
-                Err(unreadable(read_failures))
+                let stderr = stderr_task.await.unwrap_or_else(|_| StderrOutcome::empty());
+                Err(refusal(&stderr, Vec::new()))
             }
             Some(Err(error)) => {
                 let _ = child.kill().await;
@@ -199,37 +215,108 @@ async fn observe_status(root: &Path) -> Result<(StatusHeader, bool)> {
                 Err(scope::unreadable("Git working tree", &error.to_string()))
             }
             None => {
-                // The deadline passed before the child exited: the working
-                // tree state is unknown, so kill and reap the child and
-                // witness the reader closing itself.
+                // The header is complete but the child outlived the deadline,
+                // so no entry arrived and no exit status followed: the tree may
+                // be clean or dirty. Report the dirty fact as unknown rather
+                // than claim the tree is clean.
                 let _ = child.kill().await;
                 let _ = bounded_exit(&mut child, deadline).await;
                 let _ = stderr_task.await;
-                Ok((header, false))
+                known(header, None)
             }
         },
-        StatusOutcome::Deadline => {
+        StatusOutcome::Deadline { header } => {
+            // The deadline passed before any entry settled the dirty fact, so
+            // the tree may be clean or dirty. A complete header still reports
+            // its facts; a header that never finished is unknown, because the
+            // fields it left empty would spell an unborn and detached,
+            // clean repository.
             let _ = child.kill().await;
             let _ = bounded_exit(&mut child, deadline).await;
             let _ = stderr_task.await;
-            Ok((
-                StatusHeader {
-                    head: None,
-                    branch: None,
-                },
-                false,
-            ))
+            known(header, None)
         }
     }
 }
 
+/// Spawn the one `status` call, or `None` when this machine has no Git binary.
+fn spawn_status(root: &Path) -> Result<Option<tokio::process::Child>> {
+    let mut command = tokio::process::Command::new("git");
+    configured(root, &mut command)
+        .args(["status", "--porcelain=v2", "--branch"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match command.spawn() {
+        Ok(child) => Ok(Some(child)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(scope::unreadable(
+            "Git repository observation",
+            &error.to_string(),
+        )),
+    }
+}
+
+/// The one refusal a failed read produces: Git's own bounded stderr tail and
+/// any reader failure, kept apart rather than collapsed into zero.
+fn refusal(stderr: &StderrOutcome, mut read_failures: Vec<String>) -> se_types::SeError {
+    if let Some(failure) = &stderr.read_failure {
+        read_failures.push(format!("stderr read failed: {failure}"));
+    }
+    scope::unreadable(
+        "Git working tree",
+        &failure_detail(&stderr.retained, &read_failures),
+    )
+}
+
+/// Accept a read only when Git printed both header lines. A `Known` result with
+/// an unfinished header would let a missing branch name read as a detached HEAD,
+/// or a missing identity as an unborn branch, so it refuses as unknown instead.
+fn known(header: HeaderRead, dirty: Option<bool>) -> Result<StatusRead> {
+    if header.complete {
+        Ok(StatusRead::Known {
+            header: header.header,
+            dirty,
+        })
+    } else {
+        Err(scope::unreadable(
+            "Git working tree",
+            "working tree status did not report its branch and HEAD before it stopped; the branch, HEAD and uncommitted state are unknown. Preserve the repository and retry, or remove whatever keeps the working-tree scan from finishing.",
+        ))
+    }
+}
+
+/// The single `status` read's result: the header facts with a dirty fact that
+/// keeps "unknown" distinct from "clean", or the absence of a Git binary on
+/// this machine.
+enum StatusRead {
+    Known {
+        header: StatusHeader,
+        /// `None` when the observation stopped before the fact settled: the
+        /// tree may be clean or dirty and the reader says so.
+        dirty: Option<bool>,
+    },
+    /// Git metadata is present but this machine has no Git binary.
+    Absent,
+}
+
+/// The header lines retained so far. Git prints `# branch.oid` and
+/// `# branch.head` before any entry, so `complete` means both were read: an
+/// unborn branch said `(initial)` and a detached HEAD said `(detached)`, and
+/// anything else is a header that never finished, which is unknown rather than
+/// either of those.
+struct HeaderRead {
+    header: StatusHeader,
+    complete: bool,
+}
+
 /// The bounded stdout read. The header is complete before the first entry, so
-/// `Settled` carries both header facts and the dirty decision together.
+/// `Settled` carries the header and proves the tree dirty together.
 enum StatusOutcome {
-    Settled { header: StatusHeader, dirty: bool },
-    Empty { header: StatusHeader },
+    Settled { header: HeaderRead },
+    Empty { header: HeaderRead },
     ReadFailure(String),
-    Deadline,
+    Deadline { header: HeaderRead },
 }
 
 /// Read only the header lines, then settle at the first entry.
@@ -242,30 +329,35 @@ async fn read_status(
     deadline: tokio::time::Instant,
 ) -> StatusOutcome {
     const HEADER_LIMIT: usize = 4096;
-    let mut header = StatusHeader {
-        head: None,
-        branch: None,
+    let mut read = HeaderRead {
+        header: StatusHeader {
+            head: None,
+            branch: None,
+        },
+        complete: false,
     };
+    let mut head_seen = false;
+    let mut branch_seen = false;
     let mut pending: Vec<u8> = Vec::new();
     let mut buffer = [0u8; 8192];
     loop {
-        let read = tokio::select! {
+        let read_bytes = tokio::select! {
             result = stdout.read(&mut buffer) => match result {
-                Ok(0) => return StatusOutcome::Empty { header },
-                Ok(read) => read,
+                Ok(0) => return StatusOutcome::Empty { header: read },
+                Ok(read_bytes) => read_bytes,
                 Err(error) => return StatusOutcome::ReadFailure(error.to_string()),
             },
-            () = tokio::time::sleep_until(deadline) => return StatusOutcome::Deadline,
+            () = tokio::time::sleep_until(deadline) => return StatusOutcome::Deadline { header: read },
         };
-        pending.extend_from_slice(&buffer[..read]);
+        pending.extend_from_slice(&buffer[..read_bytes]);
         while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = pending.drain(..=newline).collect();
             let line = &line[..line.len() - 1];
+            if line.is_empty() {
+                continue;
+            }
             if !line.starts_with(b"#") {
-                return StatusOutcome::Settled {
-                    header,
-                    dirty: !line.is_empty(),
-                };
+                return StatusOutcome::Settled { header: read };
             }
             let line = match std::str::from_utf8(line) {
                 Ok(line) => line,
@@ -274,19 +366,28 @@ async fn read_status(
                 }
             };
             if let Some(value) = line.strip_prefix("# branch.oid ") {
+                head_seen = true;
+                read.complete = head_seen && branch_seen;
                 if value == "(initial)" {
-                    header.head = None;
+                    read.header.head = None;
                 } else if matches!(value.len(), 40 | 64)
                     && value.bytes().all(|byte| byte.is_ascii_hexdigit())
                 {
-                    header.head = Some(value.to_owned());
+                    read.header.head = Some(value.to_owned());
                 } else {
                     return StatusOutcome::ReadFailure(
                         "Git returned an invalid object identity".into(),
                     );
                 }
             } else if let Some(value) = line.strip_prefix("# branch.head ") {
-                header.branch = if value == "(detached)" {
+                branch_seen = true;
+                read.complete = head_seen && branch_seen;
+                // Git spells a detached HEAD `(detached)`, and a branch may
+                // legally carry that exact name, so this header alone cannot
+                // tell the two apart: both report no branch name. The commit
+                // identity still distinguishes them for anyone who needs it.
+                // Resolving it here would cost a fourth Git process.
+                read.header.branch = if value == "(detached)" {
                     None
                 } else {
                     Some(value.to_owned())
@@ -302,12 +403,17 @@ async fn read_status(
 /// The stderr reader's single outcome: a bounded retained tail and the read
 /// failure if the pipe itself failed.
 struct StderrOutcome {
-    #[expect(
-        dead_code,
-        reason = "retained for diagnostics; only read_failure drives the decision"
-    )]
     retained: Vec<u8>,
     read_failure: Option<String>,
+}
+
+impl StderrOutcome {
+    fn empty() -> Self {
+        Self {
+            retained: Vec::new(),
+            read_failure: None,
+        }
+    }
 }
 
 /// Drain the stderr pipe until EOF, a read failure, or the observation
