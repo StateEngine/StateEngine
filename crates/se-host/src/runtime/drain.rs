@@ -93,6 +93,13 @@ impl HostedRuntime {
             pending: vec![],
         };
         if let Some(flush) = &self.flush
+            && let Some(error) = &flush.maintenance_error
+        {
+            report
+                .pending
+                .push(format!("last maintenance error: {error}"));
+        }
+        if let Some(flush) = &self.flush
             && (flush.pending_requests != 0 || !flush.indeterminate.is_empty())
         {
             report.pending.push(format!("Writer join reports {} pending requests and indeterminate original identities {:?}; resolve them before resource closure.", flush.pending_requests, flush.indeterminate));

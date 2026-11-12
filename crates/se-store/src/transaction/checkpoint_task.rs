@@ -8,7 +8,7 @@ use super::*;
 use crate::backup_context::MAX_WAL_BYTES;
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
@@ -16,26 +16,59 @@ use std::{
 };
 /// Background maintenance cadence: the former writer idle gap.
 const TICK: Duration = Duration::from_millis(250);
-/// The background connection must not queue long behind the writer's locks:
-/// on contention the checkpoint reports busy and retries on the next tick.
-const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
+/// Lock-contention backoff for the background connection. On contention the
+/// task yields the WAL write lock within this window and retries on the next
+/// tick, so a write that slips in after the idle gate waits at most this long
+/// for the checkpoint to back off, never for a checkpoint waiting on a pinned
+/// reader.
+const BACKOFF: Duration = Duration::from_millis(10);
 /// Interruptible sleep granularity so the task exits promptly on close.
 const WAKE: Duration = Duration::from_millis(25);
 /// A fully-checkpointed WAL at least this large is worth resetting the file
 /// for; below it the frames are negligible and the next real reset is closer.
 const RESET_MIN_FRAMES: i64 = 256;
-
+/// One maintenance fact, never two booleans: Clear owes nothing, Pending owes
+/// a checkpoint, and Failed retains the last error for the flush report.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum Maint {
+    #[default]
+    Clear,
+    Pending,
+    Failed(Box<StoreError>),
+}
+impl Maint {
+    fn pending(&self) -> bool {
+        !matches!(self, Self::Clear)
+    }
+    fn failed(&self) -> bool {
+        matches!(self, Self::Failed(_))
+    }
+    fn error(&self) -> Option<&StoreError> {
+        match self {
+            Self::Failed(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 #[derive(Default)]
 struct State {
-    /// The last checkpoint left frames an active reader still pins.
-    pending: AtomicBool,
-    /// The last checkpoint attempt failed and awaits its retry.
-    failed: AtomicBool,
+    cell: Mutex<Maint>,
+}
+impl State {
+    fn lock(&self) -> MutexGuard<'_, Maint> {
+        // The guard body copies or compares one small value and never panics;
+        // recovering a poisoned guard keeps the flush report honest instead
+        // of taking the maintenance path down with a sibling thread.
+        self.cell
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 /// Receipt-visible maintenance state shared between the task and the writer.
 /// The idle flag is set by the writer around its blocking receive: the task
 /// performs checkpoint I/O only while the writer has no command in flight, so
-/// a checkpoint never contends with a queued commit for the WAL write lock.
+/// a checkpoint contends with a queued commit only inside the short backoff
+/// window a straggling write can enter after the idle gate.
 #[derive(Clone)]
 pub(crate) struct Status {
     state: Arc<State>,
@@ -53,10 +86,14 @@ impl Default for Status {
 }
 impl Status {
     pub(crate) fn pending(&self) -> bool {
-        self.state.pending.load(Ordering::Acquire)
+        self.state.lock().pending()
     }
     pub(crate) fn failed(&self) -> bool {
-        self.state.failed.load(Ordering::Acquire)
+        self.state.lock().failed()
+    }
+    /// The retained last maintenance error, or None while the debt is clean.
+    pub(crate) fn last_error(&self) -> Option<Box<StoreError>> {
+        self.state.lock().error().cloned().map(Box::new)
     }
     pub(crate) fn set_idle(&self, idle: bool) {
         self.idle.store(idle, Ordering::Release);
@@ -64,9 +101,8 @@ impl Status {
     fn idle(&self) -> bool {
         self.idle.load(Ordering::Acquire)
     }
-    fn set(&self, pending: bool, failed: bool) {
-        self.state.failed.store(failed, Ordering::Release);
-        self.state.pending.store(pending, Ordering::Release);
+    fn set(&self, maint: Maint) {
+        *self.state.lock() = maint;
     }
 }
 pub(crate) struct CheckpointTask {
@@ -88,18 +124,21 @@ impl CheckpointTask {
 impl CheckpointTask {
     /// Starts the task on its own writable connection. The task lives with the
     /// writer that owns it: drain joins it, and drop signals it to exit on its
-    /// next wake, so the host is never returned with a stray connection.
+    /// next wake, so the host is never returned with a stray connection. The
+    /// writer's lease is carried so every tick re-checks the gate the writer
+    /// itself is bound by.
     pub(crate) fn spawn(
         path: PathBuf,
         timeout: Duration,
         context: BackupContext,
+        lease: Arc<dyn RuntimeLease>,
     ) -> StoreResult<Self> {
         let status = Status::default();
         let closed = Arc::new(AtomicBool::new(false));
         let (task_status, task_closed) = (status.clone(), closed.clone());
         let handle = std::thread::Builder::new()
             .name("se-store-checkpoint".into())
-            .spawn(move || run(path, timeout, context, task_closed, task_status))
+            .spawn(move || run(path, timeout, context, lease, task_closed, task_status))
             .map_err(invalid)?;
         Ok(Self {
             handle: Some(handle),
@@ -123,7 +162,8 @@ impl CheckpointTask {
 impl Drop for CheckpointTask {
     fn drop(&mut self) {
         // Detached path: the task exits on its next wake check and closes its
-        // own connection; the hard WAL cutoff keeps the store honest meanwhile.
+        // own connection; the per-tick lease gate and the hard WAL cutoff keep
+        // the store honest meanwhile.
         self.signal();
     }
 }
@@ -131,6 +171,7 @@ fn run(
     path: PathBuf,
     timeout: Duration,
     context: BackupContext,
+    lease: Arc<dyn RuntimeLease>,
     closed: Arc<AtomicBool>,
     status: Status,
 ) {
@@ -142,18 +183,18 @@ fn run(
         // one tick, not the whole maintenance lifetime.
         let db = match crate::connection::connect(&path, true, timeout) {
             Ok(db) => db,
-            Err(_) => {
-                status.set(true, true);
+            Err(error) => {
+                status.set(Maint::Failed(error));
                 sleep_wake(&closed);
                 continue;
             }
         };
-        if db.busy_timeout(BUSY_TIMEOUT).is_err() {
-            status.set(true, true);
+        if let Err(error) = db.busy_timeout(BACKOFF) {
+            status.set(Maint::Failed(sql(error)));
             sleep_wake(&closed);
             continue;
         }
-        tick(&db, &context, &status);
+        tick(&db, &context, &lease, &status);
         if closed.load(Ordering::Acquire) {
             return;
         }
@@ -167,25 +208,48 @@ fn sleep_wake(closed: &Arc<AtomicBool>) {
         slept += WAKE;
     }
 }
-fn tick(db: &Connection, context: &BackupContext, status: &Status) {
+fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>, status: &Status) {
     if !status.idle() {
         // The writer has traffic: checkpoint I/O now would fight its commits
         // for the WAL write lock and push them past the busy timeout.
         return;
     }
+    // The writer validates its lease before every operation; the task mirrors
+    // that gate before its own I/O so a tick that outlives the writer (the
+    // detached drop window) cannot touch a store that has moved on.
+    let (store, state) = match crate::connection::lease_state(db) {
+        Ok(value) => value,
+        Err(error) => {
+            status.set(Maint::Failed(error));
+            return;
+        }
+    };
+    let identity = match lease.identity() {
+        Ok(value) => value,
+        Err(error) => {
+            status.set(Maint::Failed(error));
+            return;
+        }
+    };
+    if let Err(error) =
+        crate::connection::validate_lease_state(&store, state, &identity, LeaseMode::Host)
+    {
+        status.set(Maint::Failed(error));
+        return;
+    }
     let wal = match probe(db) {
         Ok(wal) => wal,
-        Err(_) => {
-            status.set(true, true);
+        Err(error) => {
+            status.set(Maint::Failed(error));
             return;
         }
     };
     if wal.log == 0 {
-        status.set(false, false);
+        status.set(Maint::Clear);
         return;
     }
     if context.suppress_checkpoint(wal.log, wal.bytes >= MAX_WAL_BYTES) {
-        status.set(true, false);
+        status.set(Maint::Pending);
         return;
     }
     let hard = wal.bytes >= MAX_WAL_BYTES;
@@ -193,19 +257,24 @@ fn tick(db: &Connection, context: &BackupContext, status: &Status) {
         // The capacity cut, or every frame already in the main database: the
         // only remaining work is resetting the file. PASSIVE never resets a
         // WAL it copies no frames from, so without this step a stranded WAL
-        // would keep its high-water size until the next full reset.
+        // would keep its high-water size until the next full reset. The short
+        // backoff bounds how long a straggling write waits for it.
         if !status.idle() {
             return;
         }
         match checkpoint(db, "TRUNCATE") {
-            Ok((_, log, _)) => status.set(log > 0, false),
-            Err(_) => status.set(true, true),
+            Ok((_, log, _)) => status.set(if log > 0 {
+                Maint::Pending
+            } else {
+                Maint::Clear
+            }),
+            Err(error) => status.set(Maint::Failed(error)),
         }
         return;
     }
     // Fully checkpointed and small: nothing to do, and no debt left behind.
     if wal.log == wal.done {
-        status.set(false, false);
+        status.set(Maint::Clear);
         return;
     }
     if !status.idle() {
@@ -213,18 +282,25 @@ fn tick(db: &Connection, context: &BackupContext, status: &Status) {
     }
     // New frames to copy: PASSIVE is the mode that never waits on a reader in
     // the WAL, reporting busy instead.
-    let result = checkpoint(db, "PASSIVE");
-    match result {
+    match checkpoint(db, "PASSIVE") {
         Ok((busy, log, done)) if busy == 0 && done == log => {
             // The copy completed fully, so reset the file to zero now instead
             // of leaving it at its high-water size until an idle gap.
             match checkpoint(db, "TRUNCATE") {
-                Ok((_, log, _)) => status.set(log > 0, false),
-                Err(_) => status.set(true, true),
+                Ok((_, log, _)) => status.set(if log > 0 {
+                    Maint::Pending
+                } else {
+                    Maint::Clear
+                }),
+                Err(error) => status.set(Maint::Failed(error)),
             }
         }
-        Ok((busy, log, done)) => status.set(busy != 0 || log > done, false),
-        Err(_) => status.set(true, true),
+        Ok((busy, log, done)) => status.set(if busy != 0 || log > done {
+            Maint::Pending
+        } else {
+            Maint::Clear
+        }),
+        Err(error) => status.set(Maint::Failed(error)),
     }
 }
 fn checkpoint(db: &Connection, mode: &str) -> StoreResult<(i64, i64, i64)> {

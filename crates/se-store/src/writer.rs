@@ -265,6 +265,7 @@ pub(crate) fn start(
         host.reader.path.clone(),
         host.reader.timeout,
         context.clone(),
+        lease.clone(),
     )?;
     let status = checkpoint.status().clone();
     let thread = std::thread::Builder::new()
@@ -419,6 +420,11 @@ fn flush(
         maintenance_failed: host.engine.maintenance.is_some()
             || host.engine.poisoned
             || status.failed(),
+        maintenance_error: host
+            .engine
+            .maintenance
+            .clone()
+            .or_else(|| status.last_error()),
         through,
         pending_requests: 0,
         indeterminate: host.engine.indeterminate(),
