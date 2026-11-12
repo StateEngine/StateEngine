@@ -3,12 +3,14 @@ import json
 import math
 from pathlib import Path
 from native import validate as validate_native
+from remote_report import summarize as remote_summary
 
 PLATFORMS = ("linux", "win32", "darwin")
 NAMES = ("Install", "Adopt", "Come back", "Two agents", "Remove")
 FIRST_HOUR = ("Install", "Adopt", "Work", "Restart and recall", "Remove")
 SELECTIONS = {"first-hour": ("first-hour", {1, 2, 3, 4, 5}),
               "wave-2": ("rust-wave-2", {1, 2, 3, 5}),
+              "remote": ("remote", {1}),
               "4": ("selected", {4})}
 LABELS = {
     "B1": ("embedded A/B",), "B2": ("embedded A/B",),
@@ -101,6 +103,15 @@ def invocation(inv, directory, run=None):
              "receipt_complete": False, "journeys": {}, "outcome": "UNKNOWN", "problems": [],
              "judge_outcome": "FAIL" if type(inv.get("exit")) is int and inv["exit"] != 0
                               else "PASS" if type(inv.get("exit")) is int and inv["exit"] == 0 else "UNKNOWN"}
+    if inv.get("remote_probe"):
+        receipt, error = read(directory / inv["output"] / "remote.json")
+        if error:
+            entry["problems"].append("remote.json: " + error)
+            return entry
+        if inv.get("state") != "finished":
+            entry["problems"].append("remote producer exit not witnessed")
+            return entry
+        return remote_summary(entry, receipt, run or {})
     if inv.get("native_receipt"):
         try:
             native = validate_native(inv, directory, run or {})
@@ -194,7 +205,8 @@ def summarize(run, directory):
     tables = []
     for mode in sorted({entry["mode"] for entry in entries} or {"unavailable"}):
         rows = []
-        for number, name in enumerate(FIRST_HOUR if mode == "first-hour" else NAMES, 1):
+        names = ("Connect, launch, live output, message, reconnect",) if mode == "remote" else FIRST_HOUR if mode == "first-hour" else NAMES
+        for number, name in enumerate(names, 1):
             cells = {}
             for platform in PLATFORMS:
                 expected = [entry for entry in entries if entry.get("platform") == platform
@@ -217,6 +229,8 @@ def summarize(run, directory):
         tables.append({"mode": mode, "rows": rows})
     slots = {key: [] for key in LABELS}
     for entry in entries:
+        if entry.get("remote_probe"):
+            continue
         if not entry["receipt_complete"]:
             continue
         measured, error = read(directory / entry["output"] / "budgets.json")
@@ -252,7 +266,10 @@ def summarize(run, directory):
         budgets.append({"id": key, "state": state, "probes": probes})
     return {"schema": "se.nightly-proof/v2", "started_at": run["started_at"], "status": status,
             "product": run.get("product"), "judge": run.get("judge"), "tables": tables,
-            "budgets": budgets, "gaps": gaps, "invocations": entries}
+            "budgets": budgets, "gaps": gaps, "invocations": entries,
+            "remote_timings": [{"surface": entry["surface"], "platform": entry["platform"],
+                                "output": entry["output"], "timings": entry.get("remote_timings", {})}
+                               for entry in entries if entry.get("remote_probe")]}
 
 
 def grid(report):
@@ -269,6 +286,17 @@ def grid(report):
         lines += [f"Scope: {table['mode']}", "", "| Journey | Linux | Windows | macOS |", "| --- | --- | --- | --- |"]
         for row in table["rows"]:
             lines.append("| " + row["name"] + " | " + " | ".join(row["platforms"][p]["state"] for p in PLATFORMS) + " |")
+        lines.append("")
+    if report.get("remote_timings"):
+        lines += ["Remote timings (milliseconds; clock estimates retain their qualification):", "",
+                  "| Surface | Attach | Pending echo | Live output | Reconnect |", "| --- | --- | --- | --- | --- |"]
+        for row in report["remote_timings"]:
+            values = []
+            for name in ("attach", "pending_echo", "live_output", "reconnect"):
+                sample = row["timings"].get(name, {})
+                values.append(str(round(sample["milliseconds"], 3)) + " (" + sample.get("qualification", "unavailable") + ")"
+                              if sample.get("state") == "MEASURED" else "NOT MEASURED")
+            lines.append("| " + row["surface"] + " | " + " | ".join(values) + " |")
         lines.append("")
     if status.get("notes"):
         lines += ["Record corrections:", *[f"- {note}" for note in status["notes"]], ""]
@@ -290,7 +318,8 @@ def publish(directory):
     status = report["status"]
     for name, value in [("report.json", report), ("budgets.json", {"schema": "se.nightly-budgets/v2",
         "started_at": report["started_at"], "status": status, "product": report["product"],
-        "judge": report["judge"], "budgets": report["budgets"], "gaps": report["gaps"]})]:
+        "judge": report["judge"], "budgets": report["budgets"], "gaps": report["gaps"],
+        "remote_timings": report["remote_timings"]})]:
         temporary = directory / (name + ".tmp")
         temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
         temporary.replace(directory / name)

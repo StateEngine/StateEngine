@@ -388,7 +388,13 @@ host and agents continue. Run `remote add` again to reconnect. `remote forget
 remote work. Ordinary return-mail routing and independent agent revocation
 are planned separately.
 
-Attach, pending echo, live output and reconnect timings are not yet measured.
+The Linux nightly includes a separate remote journey over real SSH: connect,
+launch on the destination, observe live assistant output, exchange a message,
+and reconnect to the original session. Its reports retain attach, pending echo,
+live output and reconnect samples with their measurement boundaries. Live output
+uses an explicitly unqualified monotonic clock estimate across the connection;
+these samples do not certify a latency budget or a physical network topology.
+Windows source/destination coverage and hands-on qualification remain separate.
 
 ## Optional migration from the older Node implementation
 

@@ -129,7 +129,28 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
         checkpoint(Path(config["state"]), directory, run)
 
 
+def invoke_remote(config, run, directory, executable, env, invocation, deadline):
+    from remote_journey import Journey
+    capacity()
+    remaining(deadline, 600)
+    invocation.update(state="running", box_load={"before": box_load()})
+    checkpoint(Path(config["state"]), directory, run)
+    if not isinstance(config.get("remote", {}), dict):
+        raise RuntimeError("remote configuration must be an object naming its SSH destination")
+    settings = {**config.get("remote", {}), "auth_home": config["auth_home"],
+                "credential_sources": config.get("credential_sources", {}),
+                "account_check": str(Path(run["product"]["worktree"]) / "scripts/ci/installation_account.py")}
+    settings.setdefault("surface", "claude")
+    result = Journey(settings, executable, directory / invocation["output"], env,
+                     run["product"]["commit"], deadline).run()
+    invocation.update(state="finished", exit=0 if result["passed"] else 1)
+    invocation["box_load"]["after"] = box_load()
+    checkpoint(Path(config["state"]), directory, run)
+
+
 def run_nightly(config, prepared_build=None, native_only=False):
+    if native_only:
+        config = {**config, "native_only": True}
     state = Path(config["state"])
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (state / "nightly.lock").open("a") as lock:
@@ -191,7 +212,10 @@ def run_nightly(config, prepared_build=None, native_only=False):
             for invocation in record["invocations"]:
                 if invocation.get("native_receipt"):
                     continue
-                invoke(config, record, directory, judge, descriptor, archive, env, invocation, deadline)
+                if invocation.get("remote_probe"):
+                    invoke_remote(config, record, directory, bundle / "se", env, invocation, deadline)
+                else:
+                    invoke(config, record, directory, judge, descriptor, archive, env, invocation, deadline)
             record["state"] = "finished"
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             record["errors"].append(str(error))
@@ -229,7 +253,7 @@ def main():
     if forbidden:
         parser.error("start from an OS scheduler outside managed agent trees with no fleet/session environment")
     if args.native_receipts_only:
-        config = {**config, "probes": []}
+        config = {**config, "probes": [], "native_only": True}
     return run_nightly(config, args.prepared_build, args.native_receipts_only)
 
 

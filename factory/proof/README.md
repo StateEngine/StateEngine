@@ -5,7 +5,8 @@ its `rust-v1` command map. It adds no product assertions and does not replace th
 judge's verdicts or thresholds. Product and judge Git revisions, map and file
 hashes, native release identity, raw output and every first failure are retained.
 
-Install `nightly.py`, `lifecycle.py`, `native.py` and `report.py` together, and use the supplied user service and
+Install `nightly.py`, `lifecycle.py`, `native.py`, `report.py`, `remote_journey.py`,
+`remote_credentials.py`, `remote_process.py` and `remote_report.py` together, and use the supplied user service and
 timer. The service runs outside managed agent trees; fixture environment isolation
 does not change ancestry or bypass owner guards. The adapter refuses a fleet or
 session environment. It checks for 34 GiB available before building or starting a
@@ -33,7 +34,8 @@ The configuration names absolute `state`, `product_git`, `judge_git`, `node` and
   "node": "/opt/judge-runtime/bin/node",
   "auth_home": "/srv/proof/native-login",
   "prerequisite_paths": ["/opt/judge-runtime/bin", "/opt/native-clis/bin"],
-  "probes": [["codex", "first-hour"], ["claude", "wave-2"]]
+  "probes": [["codex", "first-hour"], ["claude", "wave-2"]],
+  "remote": {"destination": "remote-proof", "surface": "claude"}
 }
 ```
 
@@ -105,3 +107,39 @@ as drivers; child compilers do not count as additional builds. The census names
 its sequential observation and language limits and retains unreadable PIDs, so
 an incomplete census is not an assertion that the box was idle. Endpoint snapshots
 provide load context, not a claim about contention during every individual sample.
+
+Every local nightly plans a separate remote row. A missing `remote.destination`,
+an unavailable SSH account or a failed provider login fails that row; it never
+quietly removes remote coverage. Native-receipt-only attempts retain their own
+platform scope and do not plan this Linux journey.
+
+`remote.destination` is an existing SSH alias for a disposable Linux account
+registered by an administrator with `scripts/ci/installation_account.py`. The
+alias must permit batch SSH, file transfer and loopback forwarding. A loopback
+connection to a separate OS account exercises the transport without claiming a
+second physical machine. The runner checks the native account registration,
+holds a destination-wide fixture lock, stages the selected native `se` and
+provider executables, and creates a fresh project for each attempt. Its launch
+uses SSH and the public `se launch` command. It does not grant an agent remote
+launch authority. Set `remote.provider_executable` when the provider's native
+Linux executable is outside `prerequisite_paths`; script wrappers are refused.
+
+The runner copies the configured provider login from `auth_home` (or the existing
+`credential_sources` selection) over SSH, stripping refresh tokens recursively.
+It refuses unexplained incumbent credentials, checks the source inode and digest
+afterward, and removes its private destination copies after native process
+closure. The dedicated destination account must not be used for ordinary work.
+The runner retains source and destination project data and executable copies for
+inspection; the operator's existing evidence-retention policy owns their removal.
+
+`remote-journey/remote.json` and both raw command pipes retain each observation.
+The remote grid requires an actual live assistant reply, a committed message and
+assistant response, and the original session/lifecycle after reconnect. Cleanup
+checks the public stop receipt and reads the stopped PID back through a separate
+SSH process. Attach includes explicit connection setup through the first watch
+snapshot; pending echo runs from process invocation to observed provisional
+stderr; reconnect includes the resumed snapshot and original-session readback.
+Live output uses `remote watch --measure`'s producer-to-stdout-flush clock estimate,
+retaining its `unqualified` label. These are single-attempt samples, not p95 or
+budget certifications. Windows remote journeys and physical-machine qualification
+are outside this Linux scope.
