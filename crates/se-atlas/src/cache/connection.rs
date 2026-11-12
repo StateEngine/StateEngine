@@ -25,6 +25,10 @@ const WRITER_SLOT: u8 = 2;
 const PAGE_BYTES: u64 = 4096;
 const WAL_STOP: u64 = 8_000_000;
 const STATEMENT_BYTES: usize = 16_384;
+/// SQLite's Windows VFS that resolves paths beyond `MAX_PATH`. Registered
+/// under this exact name by every bundled build, and selected only on Windows.
+#[cfg(windows)]
+const LONG_PATH_VFS: &str = "win32-longpath";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConnectionRole {
     HostReader,
@@ -400,6 +404,17 @@ impl<'a> CacheConnection<'a> {
         })
     }
 }
+/// Open one cached database.
+///
+/// Windows refuses a resolved path longer than `MAX_PATH` (260 characters) in
+/// the VFS that SQLite registers as its default, and `winOpen` reports that as
+/// `SQLITE_CANTOPEN`, which a user reads as "unable to open database file".
+/// The cache path is `<home>/atlas/<project>/<root>/epochs/<epoch>/atlas.db`,
+/// so a long data home reaches that ceiling without anything being wrong with
+/// the database. SQLite also registers `win32-longpath`, which resolves the
+/// same path and raises the ceiling to 32,767 characters, so Windows opens
+/// through it and no cache location depends on the length of a profile path.
+/// Other platforms keep the default VFS, whose limit is not a `MAX_PATH`.
 fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResult<Connection> {
     if Instant::now() >= deadline {
         return Err(timeout(0));
@@ -408,15 +423,14 @@ fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResu
         OpenFlags::SQLITE_OPEN_READ_WRITE
     } else {
         OpenFlags::SQLITE_OPEN_READ_ONLY
-    };
-    let mut db = Connection::open_with_flags(
-        &pin.path,
-        flags
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_EXRESCODE,
-    )
-    .map_err(cache_error)?;
+    } | OpenFlags::SQLITE_OPEN_NOFOLLOW
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | OpenFlags::SQLITE_OPEN_EXRESCODE;
+    #[cfg(windows)]
+    let mut db = Connection::open_with_flags_and_vfs(&pin.path, flags, LONG_PATH_VFS)
+        .map_err(cache_error)?;
+    #[cfg(not(windows))]
+    let mut db = Connection::open_with_flags(&pin.path, flags).map_err(cache_error)?;
     db.busy_timeout(
         deadline
             .saturating_duration_since(Instant::now())

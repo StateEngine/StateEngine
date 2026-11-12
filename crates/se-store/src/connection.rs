@@ -19,10 +19,25 @@ pub(crate) fn connect(path: &Path, writable: bool, timeout: Duration) -> StoreRe
     configure(&c, path, writable, timeout)?;
     Ok(c)
 }
+/// Open a database through the platform's path-length-safe VFS.
+///
+/// Windows' default SQLite VFS refuses a resolved path over `MAX_PATH` (260
+/// characters) with `SQLITE_CANTOPEN`, which the user reads as "unable to open
+/// database file". The store lives under the data home, so a long profile path
+/// reaches that ceiling for a database that is perfectly valid. Windows opens
+/// through `win32-longpath`, whose ceiling is 32,767 characters; other
+/// platforms keep the default VFS, whose limit is not a `MAX_PATH`.
 pub(crate) fn open(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
-    Connection::open_with_flags(path, flags | OpenFlags::SQLITE_OPEN_EXRESCODE)
-        .map_err(|error| sqlite_context(error, path, StoreIoStage::Open))
+    let flags = flags | OpenFlags::SQLITE_OPEN_EXRESCODE;
+    #[cfg(windows)]
+    let opened = Connection::open_with_flags_and_vfs(path, flags, LONG_PATH_VFS);
+    #[cfg(not(windows))]
+    let opened = Connection::open_with_flags(path, flags);
+    opened.map_err(|error| sqlite_context(error, path, StoreIoStage::Open))
 }
+/// SQLite's Windows VFS that resolves paths beyond `MAX_PATH`.
+#[cfg(windows)]
+const LONG_PATH_VFS: &str = "win32-longpath";
 pub(crate) fn begin_snapshot(c: &Connection, path: &Path) -> StoreResult<()> {
     c.execute_batch("BEGIN")
         .map_err(|error| sqlite_context(error, path, StoreIoStage::BeginSnapshot))
