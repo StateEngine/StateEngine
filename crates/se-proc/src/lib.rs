@@ -13,6 +13,8 @@ pub use windows_directory::windows_directory;
 mod windows_package;
 #[cfg(windows)]
 pub use windows_package::process_has_package_identity;
+#[cfg(unix)]
+pub mod advisory_lock;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod allocator;
 pub mod atlas_git;

@@ -7,6 +7,7 @@ pub(in crate::state_files) mod permissions;
 #[cfg(target_os = "macos")]
 #[path = "permissions_macos.rs"]
 pub(in crate::state_files) mod permissions;
+use crate::advisory_lock::AdvisoryLock;
 use crate::state_files::effects::{DirectoryRemoval, absent, changed, digest, verify};
 use crate::state_files::{Result, io_error, unsafe_path};
 use std::{
@@ -70,17 +71,20 @@ fn parent(path: &Path) -> Result<(File, CString)> {
         .ok_or_else(|| unsafe_path("installation leaf missing", path))?;
     Ok((super::walk_effect_parent(parent)?, name(leaf, path)?))
 }
-fn lock(file: &File, path: &Path) -> Result<()> {
-    // SAFETY: advisory exclusive lock on a retained descriptor, nonblocking. Every
-    // effect in this module takes the parent lock, serializing cooperating writers.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } < 0 {
-        return Err(io_error(
-            "installation object is in use",
-            path,
-            io::Error::last_os_error(),
-        ));
-    }
-    Ok(())
+/// Take the exclusive lock on a descriptor this process alone opened, and
+/// return it held.
+///
+/// `flock` belongs to the open file description, so the guard must own a
+/// description nothing else holds. Never pass a descriptor shared with a child
+/// or another process: `LOCK_UN` acts on the whole shared description and would
+/// release that holder's claim too. Descriptors this module opens for its own
+/// effects qualify; an inherited claim does not.
+fn lock(file: &File, path: &Path) -> Result<AdvisoryLock> {
+    let owned = file
+        .try_clone()
+        .map_err(|error| io_error("retain installation lock", path, error))?;
+    AdvisoryLock::acquire(owned)
+        .map_err(|error| io_error("installation object is in use", path, error))
 }
 
 #[cfg(target_os = "macos")]
@@ -225,6 +229,11 @@ pub(in crate::state_files) struct Pin {
     file: File,
     identity: (u64, u64),
     private: bool,
+    /// Held for the pin's lifetime unless a claim narrows it; released
+    /// explicitly on drop so no inherited duplicate keeps it alive. The claim
+    /// narrows only this parent lock, never the record's.
+    parent_lock: Option<AdvisoryLock>,
+    file_lock: AdvisoryLock,
 }
 impl Pin {
     pub(in crate::state_files) fn open(path: &Path) -> Result<Option<Self>> {
@@ -233,14 +242,14 @@ impl Pin {
             Err(e) if absent(&e) => return Ok(None),
             Err(e) => return Err(e),
         };
-        lock(&parent, path)?;
+        let parent_lock = lock(&parent, path)?;
         let file = match leaf(&parent, &name, path, false) {
             Ok(v) => v,
             Err(e) if absent(&e) => return Ok(None),
             Err(e) => return Err(e),
         };
         let identity = id(&file, path, false, true)?;
-        lock(&file, path)?;
+        let file_lock = lock(&file, path)?;
         let pin = Self {
             path: path.into(),
             parent,
@@ -248,6 +257,8 @@ impl Pin {
             file,
             identity,
             private: false,
+            parent_lock: Some(parent_lock),
+            file_lock,
         };
         pin.check()?;
         Ok(Some(pin))
@@ -305,7 +316,7 @@ pub(in crate::state_files) fn remove_empty_directory(path: &Path) -> Result<Dire
         Err(e) if absent(&e) => return Ok(DirectoryRemoval::AlreadyAbsent),
         Err(e) => return Err(e),
     };
-    lock(&parent_pin, path)?;
+    let _parent_lock = lock(&parent_pin, path)?;
     let directory = match leaf(&parent_pin, &name, path, true) {
         Ok(v) => v,
         Err(e) if absent(&e) => return Ok(DirectoryRemoval::AlreadyAbsent),
@@ -425,3 +436,104 @@ mod created;
 pub(in crate::state_files) use created::{
     CreatedDirectory, prepare_created_directory, validate_creation_target,
 };
+
+#[cfg(test)]
+mod release_mode_tests {
+    use super::*;
+    use std::os::fd::FromRawFd;
+
+    type Check = std::result::Result<(), Box<dyn std::error::Error>>;
+
+    struct Case {
+        root: PathBuf,
+        record: PathBuf,
+    }
+    impl Drop for Case {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn case(label: &str) -> std::result::Result<Case, Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let unique = format!(
+            "se-claim-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&root)?;
+        let record = root.join("claim-record");
+        std::fs::write(&record, b"record")?;
+        std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600))?;
+        Ok(Case { root, record })
+    }
+
+    /// A duplicate of the same open file description, as a spawned child holds
+    /// between fork and exec.
+    fn inherited(file: &File) -> std::result::Result<File, Box<dyn std::error::Error>> {
+        // SAFETY: duplicate this retained descriptor into a new owned one.
+        let raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        if raw < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        // SAFETY: fcntl transferred this newly allocated descriptor to us.
+        Ok(unsafe { File::from_raw_fd(raw) })
+    }
+
+    /// Whether a fresh pin cannot take the record's lock, i.e. it is held.
+    fn lock_is_held(path: &Path) -> std::result::Result<bool, Box<dyn std::error::Error>> {
+        match Pin::open(path) {
+            Ok(Some(_pin)) => Ok(false),
+            Ok(None) => Err("record disappeared".into()),
+            Err(error) => {
+                let busy = error
+                    .source
+                    .as_ref()
+                    .is_some_and(|cause| cause.raw_os_error() == Some(libc::EWOULDBLOCK));
+                if !busy {
+                    return Err(format!("unexpected open failure: {error}").into());
+                }
+                Ok(true)
+            }
+        }
+    }
+
+    /// The account claim outlives the shell while a worker still holds its
+    /// inherited description, and frees once that last duplicate closes.
+    #[test]
+    fn a_claim_ends_only_when_its_last_duplicate_closes() -> Check {
+        let case = case("close-only")?;
+        let pin = Pin::create_claim(&case.record)?;
+        let worker = inherited(pin.file())?;
+        drop(pin);
+        assert!(
+            lock_is_held(&case.record)?,
+            "the claim released while an inherited worker still held its description"
+        );
+        drop(worker);
+        assert!(
+            !lock_is_held(&case.record)?,
+            "the claim stayed held after its last duplicate closed"
+        );
+        Ok(())
+    }
+
+    /// Every other guard still clears its lock explicitly, so a child's
+    /// inherited duplicate cannot keep an abandoned ordinary lock alive.
+    #[test]
+    fn an_ordinary_guard_still_clears_its_lock_explicitly() -> Check {
+        let case = case("unlock")?;
+        let pin = Pin::open(&case.record)?.ok_or("record missing")?;
+        let child = inherited(pin.file())?;
+        drop(pin);
+        assert!(
+            !lock_is_held(&case.record)?,
+            "an ordinary guard left its lock to an inherited duplicate"
+        );
+        drop(child);
+        Ok(())
+    }
+}

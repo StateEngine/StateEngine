@@ -6,7 +6,7 @@ mod macos;
 
 impl Pin {
     pub(in crate::state_files) fn create_claim(path: &Path) -> Result<Self> {
-        if let Some(pin) = Self::open(path).map_err(claim_error)? {
+        if let Some(mut pin) = Self::open(path).map_err(claim_error)? {
             if pin
                 .file
                 .metadata()
@@ -22,6 +22,7 @@ impl Pin {
             }
             #[cfg(target_os = "macos")]
             super::super::metadata(&pin.file, path, false)?;
+            pin.file_lock.end_by_close();
             return Ok(pin);
         }
         #[cfg(target_os = "macos")]
@@ -60,14 +61,17 @@ impl Pin {
                     .map_err(|error| io_error("sync installation claim parent", path, error))?;
             }
         }
-        let pin = Self::open(path)
+        let mut pin = Self::open(path)
             .map_err(claim_error)?
             .ok_or_else(|| changed("new installation claim disappeared", path))?;
         #[cfg(target_os = "macos")]
         super::super::metadata(&pin.file, path, false)?;
+        // The worker inherits this claim across exec, so it must end by close:
+        // the lock stays held until the worker's duplicate closes at exit.
+        pin.file_lock.end_by_close();
         Ok(pin)
     }
-    pub(in crate::state_files) fn claim_record(&self) -> Result<()> {
+    pub(in crate::state_files) fn claim_record(&mut self) -> Result<()> {
         self.check()?;
         let security = self.file.metadata().map_err(|error| {
             io_error("inspect installation claim protection", &self.path, error)
@@ -80,21 +84,21 @@ impl Pin {
         }
         #[cfg(target_os = "macos")]
         metadata::check_directory_acl(&self.file, &self.path)?;
-        lock(&self.file, &self.path).map_err(|mut error| {
-            error.operation =
-                "installation record is busy; retry after install or uninstall finishes";
-            error
-        })?;
         // The file claim remains held while unrelated children use the parent
         // mutation lock. Rename/digest checks still guard every later effect.
-        // SAFETY: release only this pin's own cooperating-parent flock.
-        if unsafe { libc::flock(self.parent.as_raw_fd(), libc::LOCK_UN) } < 0 {
-            return Err(io_error(
-                "release installer claim parent lock",
-                &self.path,
-                io::Error::last_os_error(),
-            ));
+        // Release the parent explicitly through the guard, so a duplicate a
+        // child inherited between fork and exec cannot keep it locked.
+        if let Some(mut parent) = self.parent_lock.take() {
+            parent.release().map_err(|error| {
+                io_error("release installer claim parent lock", &self.path, error)
+            })?;
+            // `parent` drops here and releases a second time; unlocking an
+            // already-unlocked description is harmless and stays explicit.
         }
+        // The pin's own description already holds this record's lock, and
+        // `Pin::open` keeps it through the guard for the pin's lifetime, so the
+        // claim is that lock. A second description of the same inode would be
+        // refused by flock, not granted.
         self.check()
     }
 }

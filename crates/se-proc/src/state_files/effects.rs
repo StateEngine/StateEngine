@@ -235,7 +235,7 @@ impl NativeInstallationClaim {
     }
     pub fn acquire() -> Result<Self> {
         let path = os::installation_claim_path()?;
-        let pin = os::Pin::create_claim(&path)?;
+        let mut pin = os::Pin::create_claim(&path)?;
         pin.claim_record()?;
         Ok(Self { _pin: pin })
     }
