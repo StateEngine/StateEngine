@@ -38,14 +38,19 @@ def summarize(entry, receipt, run):
         "original_digest_unchanged": True, "private_copies_absent": True, "refresh_tokens_copied": False}
     stopped = (process.get("stop_complete") is True and process.get("outside_process_absent") is True and
                isinstance(process.get("session"), str) and type(process.get("pid")) is int and process["pid"] > 0)
-    passed = (receipt["state"] == "finished" and not errors and not cleanup and closure and stopped and
-              all(sample["state"] == "MEASURED" for sample in measured.values()) and
+    behavior = (receipt["state"] == "finished" and not errors and not cleanup and closure and stopped and
               isinstance(receipt.get("steps"), list) and len(receipt["steps"]) == 4)
-    if passed != receipt["passed"] or entry.get("exit") != (0 if passed else 1):
+    coverage = all(sample["state"] == "MEASURED" for sample in measured.values())
+    passed = behavior and coverage
+    if (behavior != receipt.get("behavior_passed") or coverage != receipt.get("measurements_complete") or
+            passed != receipt["passed"] or entry.get("exit") != (0 if passed else 1)):
         entry["problems"].append("remote result disagrees with behavior, timing coverage or credential closure")
         return entry
     entry.update(receipt_complete=True, outcome="PASS" if passed else "FAIL",
-                 journeys={"1": "PASS" if passed else "FAIL"}, remote_timings=measured,
-                 results=[{"journey": 1, "result": "PASS" if passed else "FAIL", "cleanup": cleanup}])
+                 journeys={"1": "PASS" if behavior else "FAIL"}, remote_timings=measured,
+                 results=[{"journey": 1, "result": "PASS" if behavior else "FAIL", "cleanup": cleanup}])
     entry["problems"] += errors + cleanup
+    if behavior and not coverage:
+        entry["problems"].append("remote timing coverage unavailable: " + ", ".join(
+            name for name, sample in measured.items() if sample["state"] != "MEASURED"))
     return entry

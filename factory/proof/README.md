@@ -141,5 +141,7 @@ snapshot; pending echo runs from process invocation to observed provisional
 stderr; reconnect includes the resumed snapshot and original-session readback.
 Live output uses `remote watch --measure`'s producer-to-stdout-flush clock estimate,
 retaining its `unqualified` label. These are single-attempt samples, not p95 or
-budget certifications. Windows remote journeys and physical-machine qualification
+budget certifications. Missing clock evidence stays NOT MEASURED and fails the
+overall attempt without erasing otherwise witnessed remote behavior.
+Windows remote journeys and physical-machine qualification
 are outside this Linux scope.

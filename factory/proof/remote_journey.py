@@ -223,13 +223,18 @@ with (p/'lock').open('a') as f:
         # estimate is explicitly unqualified; it is never a proven budget pass.
         cursors = {r["cursor"] for r in page["records"] if r.get("type") == "provisional" and
                    r.get("item", {}).get("role") == "assistant" and marker in r["item"]["preview"]["text"]}
-        _, _, sample = self.watch.until(lambda pipe, _, value: pipe == "stderr" and
-            value.get("boundary") == "provisional_flushed" and value.get("cursor") in cursors, self.bound(10))
-        estimate = sample.get("producer_to_flush_estimate_us")
-        if type(estimate) is not int or estimate < 0:
-            raise RuntimeError("live output clock estimate unavailable")
-        self.timing("live_output", estimate / 1000, "producer observation through CLI stdout flush",
-                    sample["qualification"])
+        try:
+            _, _, sample = self.watch.until(lambda pipe, _, value: pipe == "stderr" and
+                value.get("boundary") == "provisional_flushed" and value.get("cursor") in cursors, self.bound(10))
+            estimate = sample.get("producer_to_flush_estimate_us")
+            if type(estimate) is not int or estimate < 0:
+                raise RuntimeError("live output clock estimate unavailable")
+            self.timing("live_output", estimate / 1000, "producer observation through CLI stdout flush",
+                        sample["qualification"])
+        except RuntimeError as error:
+            self.timing("live_output", None, "producer observation through CLI stdout flush", "unqualified")
+            self.record["timings"]["live_output"]["reason"] = str(error)
+            self.persist()
         reply = "REMOTE_MAIL_" + self.nonce
         send = self.start([self.se, "--home", self.source, "--json", "remote", "send", "--host", "journey",
             "--target", self.target, "--session", self.session, "--key", self.nonce,
@@ -330,6 +335,9 @@ with (p/'lock').open('a') as f:
             self.record["state"] = "failed"
         finally:
             self.cleanup()
-        self.record["passed"] = self.record["state"] == "finished" and not self.record["cleanup_errors"]
+        self.record["behavior_passed"] = self.record["state"] == "finished" and not self.record["cleanup_errors"]
+        self.record["measurements_complete"] = all(type(self.record["timings"].get(name, {}).get("milliseconds"))
+            in (int, float) for name in ("attach", "pending_echo", "live_output", "reconnect"))
+        self.record["passed"] = self.record["behavior_passed"] and self.record["measurements_complete"]
         self.persist()
         return self.record
