@@ -1,4 +1,5 @@
 //! Hold both native images across probing and launch.
+use super::bundle;
 use super::{incompatible, unreadable};
 use se_proc::native_ipc::ExecutableStamp;
 use se_types::Result;
@@ -54,7 +55,7 @@ impl Images {
             server_stamp,
         };
         images.validate()?;
-        super::bundle::verify(&images)?;
+        bundle::verify(&images)?;
         Ok(images)
     }
     pub fn validate(&mut self) -> Result<()> {
@@ -88,7 +89,7 @@ impl Images {
         }
         Ok(())
     }
-    pub(super) fn reusable(&mut self, cli: &Path) -> Result<bool> {
+    pub(crate) fn reusable(&mut self, cli: &Path) -> Result<bool> {
         if self.cli_stamp.is_none()
             || self.server_stamp.is_none()
             || se_proc::canonicalize_path(cli).map_err(|e| unreadable("SE Code native image", e))?
@@ -100,7 +101,7 @@ impl Images {
         }
         self.validate()?;
         // The manifest can change independently of either retained image.
-        super::bundle::verify(self)?;
+        bundle::verify(self)?;
         Ok(true)
     }
     pub(super) fn require_entry(&self, server: bool, value: &serde_json::Value) -> Result<()> {
