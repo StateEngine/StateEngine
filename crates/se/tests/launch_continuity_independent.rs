@@ -42,7 +42,6 @@ fn judge(case: &str) -> Result<(), Box<dyn std::error::Error>> {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_dir_all(parent)?;
     Ok(())
 }
 

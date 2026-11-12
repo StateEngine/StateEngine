@@ -23,6 +23,5 @@ fn structured_diagnostic_text_never_exports_credential_canaries()
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_dir_all(root)?;
     Ok(())
 }

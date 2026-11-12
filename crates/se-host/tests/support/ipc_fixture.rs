@@ -11,7 +11,6 @@ use se_types::{
 };
 use std::{
     error::Error,
-    fs,
     num::NonZeroU32,
     sync::{
         Arc,
@@ -76,13 +75,6 @@ impl Home {
             package_version: "0.0.1".into(),
             image_sha256: observed.image_sha256(),
         })
-    }
-}
-impl Drop for Home {
-    fn drop(&mut self) {
-        if let Err(e) = fs::remove_dir_all(&self.0) {
-            eprintln!("fixture cleanup {}: {e}", self.0.display());
-        }
     }
 }
 pub fn options(timeout: Duration) -> client::ClientOptions {

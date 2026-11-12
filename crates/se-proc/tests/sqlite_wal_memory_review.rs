@@ -139,6 +139,5 @@ fn shorter_wal_frame_cannot_disclose_seeded_page_cache_memory() -> Check {
     );
     drop(db);
     drop(cache);
-    fs::remove_dir_all(root)?;
     Ok(())
 }

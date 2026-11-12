@@ -45,7 +45,6 @@ fn judge(arguments: &[&str]) -> Check {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_dir_all(parent)?;
     Ok(())
 }
 

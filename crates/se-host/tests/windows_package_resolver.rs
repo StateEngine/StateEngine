@@ -13,7 +13,6 @@ type Check = Result<(), Box<dyn std::error::Error>>;
 fn fixture(check: impl FnOnce(&Path) -> Check) -> Check {
     let root = directory::private_directory()?;
     check(&root)?;
-    fs::remove_dir_all(root)?;
     Ok(())
 }
 

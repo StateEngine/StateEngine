@@ -68,6 +68,5 @@ fn saved_policy_and_refused_preparation_preserve_native_custody() -> Check {
     // Success includes public down and outside process/endpoint readback for
     // every fixture. Failure preserves its root for diagnosis, never a false pass.
     require_link_free(&root)?;
-    std::fs::remove_dir_all(root)?;
     Ok(())
 }

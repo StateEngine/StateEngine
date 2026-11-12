@@ -42,6 +42,5 @@ fn self_force_joins_old_scope_and_fresh_admission_replay_preserves_one_successor
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_dir_all(parent)?;
     Ok(())
 }

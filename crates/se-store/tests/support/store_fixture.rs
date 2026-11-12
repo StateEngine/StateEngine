@@ -472,17 +472,6 @@ impl Fixture {
         )
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        // `_root` removes the home on its own drop; this only reports an
-        // unexpected residue after the path is gone.
-        if let Err(e) = fs::remove_dir_all(&self.home)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            eprintln!("cleanup {}: {e}", self.home.display());
-        }
-    }
-}
 pub fn request(input: &str) -> Result<RequestIdentity, Box<dyn Error>> {
     Ok(RequestIdentity {
         key: IdempotencyKey::new(input)?,

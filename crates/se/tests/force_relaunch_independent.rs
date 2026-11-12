@@ -42,6 +42,5 @@ fn forced_relaunch_closes_original_work_and_startup_but_replay_preserves_success
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_dir_all(parent)?;
     Ok(())
 }

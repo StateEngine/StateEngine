@@ -42,6 +42,5 @@ fn mail_reads_respect_budgets_and_share_recipient_receipts()
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_dir_all(parent)?;
     Ok(())
 }

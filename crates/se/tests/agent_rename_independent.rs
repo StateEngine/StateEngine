@@ -24,6 +24,5 @@ fn direct_and_hosted_rename_preserve_identity_and_boundaries()
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::remove_dir_all(root)?;
     Ok(())
 }

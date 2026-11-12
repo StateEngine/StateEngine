@@ -94,16 +94,17 @@ pub struct Fixture {
     pub root: PathBuf,
     pub image: PathBuf,
     pub runtime: tokio::runtime::Runtime,
+    _root: directory::PrivateDirectory,
 }
 impl Fixture {
     pub fn new() -> Check<Self> {
         let root = directory::private_directory()?;
-        let root = se_proc::canonicalize_path(&root)?;
+        let canonical = se_proc::canonicalize_path(&root)?;
         #[cfg(not(windows))]
-        let image = root.join("native-provider");
+        let image = canonical.join("native-provider");
         #[cfg(windows)]
-        let image = root.join("native-provider.exe");
-        let source = root.join("provider.rs");
+        let image = canonical.join("native-provider.exe");
+        let source = canonical.join("provider.rs");
         fs::write(&source, include_str!("codex_version_native.rs"))?;
         let output =
             std::process::Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
@@ -129,9 +130,10 @@ impl Fixture {
             .max_blocking_threads(2)
             .build()?;
         Ok(Self {
-            root,
+            root: canonical,
             image,
             runtime,
+            _root: root,
         })
     }
     pub fn harness(&self) -> CodexHarness {
@@ -208,8 +210,9 @@ impl Fixture {
         Ok(())
     }
     /// These fixtures create only immediate regular files and explicit aliases.
-    /// Preserve unexpected directories rather than recursively deleting them.
-    pub fn cleanup(self) -> Check {
+    /// Preserve unexpected directories rather than recursively deleting them;
+    /// `_root` removes the directory itself, so this leaves its own tree intact.
+    pub fn cleanup(&self) -> Check {
         let entries = fs::read_dir(&self.root)?.collect::<Result<Vec<_>, _>>()?;
         for entry in &entries {
             let kind = entry.file_type()?;
@@ -222,7 +225,6 @@ impl Fixture {
         for entry in entries {
             fs::remove_file(entry.path())?;
         }
-        fs::remove_dir(&self.root)?;
         Ok(())
     }
 }

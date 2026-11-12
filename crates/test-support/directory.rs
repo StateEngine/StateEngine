@@ -3,12 +3,10 @@ use std::{error::Error, ops::Deref, path::PathBuf};
 
 /// A private fixture root that removes its whole tree when it goes away.
 ///
-/// Removal runs in `Drop`, after the test body on success or during unwinding
-/// on a panic, so a root can no longer leak into a memory-backed temp parent.
-/// A test that fails by returning `Err` still gets a normal drop, so a failing
-/// run removes its tree too; the fixture can only keep a tree when the process
-/// itself dies without unwinding. The path is printed in that case and whenever
-/// the removal fails, so a residue is always named.
+/// Removal runs in `Drop`, so a passing test and a test that fails by returning
+/// `Err` both remove their tree. Only a panic keeps it, and it is printed then,
+/// so a failing test leaves exactly one named root to read and delete. A root
+/// that cannot be removed is printed too, so a residue is always named.
 pub struct PrivateDirectory {
     path: PathBuf,
 }

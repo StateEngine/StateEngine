@@ -63,6 +63,5 @@ fn concurrent_directory_entries_reprove_authority() -> Check {
             .output()?;
         assert!(output.status.success(), "{mode}: {output:?}");
     }
-    fs::remove_dir_all(root)?;
     Ok(())
 }
