@@ -246,3 +246,46 @@ fn full_visible_backlog_cannot_starve_selected_targets_or_skip_a_cursor() -> Che
         Ok(())
     })
 }
+
+/// Protects: local live output stays well inside the 75 ms target end to end.
+///
+/// The producer stamps the observation, the publisher folds it into the ring,
+/// and a watcher page carries it back with the observation clock, so this
+/// measures emission -> fold -> page on the real path rather than a stand-in.
+/// A regression that reintroduces a poll interval or a sleep in that path
+/// shows up here as a page that misses the bound.
+#[test]
+fn local_live_output_reaches_a_watcher_page_well_inside_the_target() -> Check {
+    run(|service, f, generation| {
+        let target = RemoteTarget {
+            project: f.project.clone(),
+            agent: f.a.clone(),
+        };
+        let source = source(service, target.clone())?;
+        let mut state = state(service, f, generation, 65_536, vec![target])?;
+        let mut worst = std::time::Duration::ZERO;
+        for index in 1..=20 {
+            let started = std::time::Instant::now();
+            source.complete(
+                &format!("item-{index}"),
+                RemoteTurnRole::Assistant,
+                "streamed output",
+            );
+            let batch = checked(&mut state, service)?;
+            worst = worst.max(started.elapsed());
+            assert!(
+                batch
+                    .records
+                    .iter()
+                    .any(|record| matches!(record, RemoteWatchRecord::Provisional { .. })),
+                "the page carried no provisional item for item-{index}"
+            );
+        }
+        eprintln!("local live output: worst emission-to-page {worst:?}");
+        assert!(
+            worst < Duration::from_millis(75),
+            "emission-to-page took {worst:?}, over the 75 ms target"
+        );
+        Ok(())
+    })
+}
