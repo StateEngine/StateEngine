@@ -14,6 +14,8 @@ import tempfile
 import time
 import zipfile
 
+from native_payload import publish as publish_native_payload
+
 SCRIPTS = Path(__file__).resolve().parent
 
 
@@ -49,9 +51,16 @@ def main():
     parser.add_argument("--native-only", action="store_true",
                         help="assemble only this platform for local use, omitting remote bootstrap images")
     parser.add_argument("--out", type=Path, required=True, help="archive output directory")
+    parser.add_argument("--payload-out", type=Path,
+                        help="also publish a native runtime directory for a bundled consumer")
     args = parser.parse_args()
     if args.native_only and args.remote_build:
         parser.error("--native-only cannot include --remote-build inputs")
+    if args.payload_out and (args.payload_out.exists() or args.payload_out.is_symlink()):
+        parser.error("--payload-out must name a new directory")
+    if args.payload_out and any(args.payload_out.resolve().is_relative_to(path.resolve())
+                                for path in [args.build, *args.remote_build]):
+        parser.error("--payload-out must be outside every input build")
     build = args.build.resolve()
     metadata = json.loads((build / "build.json").read_text())
     inputs = json.loads((SCRIPTS / "inputs.json").read_text())
@@ -126,6 +135,7 @@ def main():
     symbols_root = args.out / (stem + ".symbols")
     if archive.exists() or archive.with_suffix(archive.suffix + ".sha256").exists() or symbols_root.exists():
         raise ValueError(f"archive already exists: {archive}; choose a new output directory")
+    native_payload = None
     with tempfile.TemporaryDirectory(prefix="se-assemble-") as scratch:
         root = Path(scratch) / stem
         root.mkdir()
@@ -218,6 +228,8 @@ def main():
                                 output.addfile(info, stream)
                         else:
                             output.addfile(info)
+        if args.payload_out:
+            native_payload = publish_native_payload(root, metadata, args.payload_out)
     # Diagnostic files are separate artifacts: none are installed or downloaded
     # with the ordinary package, but each stays bound to its exact native image.
     symbol_sources = [(metadata["target"], build, metadata, binary)] + [
@@ -242,7 +254,8 @@ def main():
     checksum = digest(archive)
     archive.with_suffix(archive.suffix + ".sha256").write_text(f"{checksum}  {archive.name}\n")
     print(json.dumps({"archive": str(archive.resolve()), "sha256": checksum,
-                      "source_commit": metadata["source_commit"], "trust": "unsigned", "symbols": symbols}))
+                      "source_commit": metadata["source_commit"], "trust": "unsigned", "symbols": symbols,
+                      **({"native_payload": native_payload} if native_payload is not None else {})}))
 
 
 if __name__ == "__main__":

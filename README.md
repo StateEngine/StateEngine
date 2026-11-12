@@ -515,6 +515,15 @@ executable and notices; assembly refuses missing or mismatched companion builds.
 Use the matching target from the platform table for other native builds. Building
 or cross-checking a target does not qualify its runtime behavior on that OS.
 
+To bundle the native runtime inside another application's package, add
+`--payload-out /absolute/path/new-payload` to the assembly command. This publishes
+the same verified executable, build receipt and original license and notice
+bytes, with an exact file inventory in `native-payload.json`. The assembly result
+reports the manifest digest, version and source commit for the consumer's pin.
+The directory includes remote bootstrap images when the archive does. It requires
+no Node runtime; the consumer remains responsible for exercising its installed
+launcher on each native platform.
+
 ## License and contributions
 
 The Rust workspace is licensed under the [GNU Affero General Public License, version 3 only](LICENSE).
