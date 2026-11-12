@@ -278,6 +278,9 @@ pub enum CommitState {
 pub struct FlushReport {
     pub maintenance_pending: bool,
     pub maintenance_failed: bool,
+    /// The last maintenance error retained by the writer engine or the
+    /// background checkpoint task; absent while maintenance is clean.
+    pub maintenance_error: Option<Box<StoreError>>,
     pub through: Option<StorePosition>,
     pub pending_requests: u32,
     pub indeterminate: Vec<PendingOperation>,

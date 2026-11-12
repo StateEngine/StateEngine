@@ -1,72 +1,72 @@
-//! Checkpoints are writer-idle maintenance below the live WAL size cutoff.
+//! WAL maintenance state shared by the commit path and the background task.
 //! COMMIT still establishes every receipt; maintenance never relabels its result.
 use super::*;
 
 const SOFT_FRAMES: i64 = 256;
-const IDLE: Duration = Duration::from_millis(250);
-const RETRY: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
 pub(crate) struct Schedule {
     pending: bool,
-    next: Option<Instant>,
 }
-struct Wal {
-    log: i64,
-    done: i64,
-    bytes: u64,
+#[derive(Debug)]
+pub(crate) struct Wal {
+    pub log: i64,
+    pub done: i64,
+    pub bytes: u64,
+}
+/// Frame accounting from one connection's view. The WAL index is shared, so
+/// every connection's NOOP reports the same log/done/bytes: done == log means
+/// every frame is in the main database and no reader pins an older snapshot.
+pub(crate) fn probe(db: &Connection) -> StoreResult<Wal> {
+    let (log, done) = db
+        .query_row("PRAGMA wal_checkpoint(NOOP)", [], |r| {
+            Ok((
+                crate::sql_value::value::<i64>(r, 1)?,
+                crate::sql_value::value::<i64>(r, 2)?,
+            ))
+        })
+        .map_err(sql)?;
+    if log == -1 && done == -1 {
+        return Ok(Wal {
+            log,
+            done,
+            bytes: 0,
+        });
+    }
+    if log < 0 || done < 0 || done > log {
+        return Err(fail(
+            StoreErrorCode::Unreadable,
+            "WAL accounting returned invalid frame counts",
+        ));
+    }
+    let page: u64 = db
+        .query_row("PRAGMA page_size", [], |r| crate::sql_value::value(r, 0))
+        .map_err(sql)?;
+    let bytes = (log as u64)
+        .checked_mul(
+            page.checked_add(24)
+                .ok_or_else(|| invalid("WAL page size overflow"))?,
+        )
+        .and_then(|n| n.checked_add(32))
+        .ok_or_else(|| invalid("WAL size overflow"))?;
+    Ok(Wal { log, done, bytes })
 }
 impl Engine {
     fn wal(&self) -> StoreResult<Wal> {
-        let (log, done) = self
-            .db
-            .query_row("PRAGMA wal_checkpoint(NOOP)", [], |r| {
-                Ok((
-                    crate::sql_value::value::<i64>(r, 1)?,
-                    crate::sql_value::value::<i64>(r, 2)?,
-                ))
-            })
-            .map_err(sql)?;
-        if log == -1 && done == -1 {
-            return Ok(Wal {
-                log,
-                done,
-                bytes: 0,
-            });
-        }
-        if log < 0 || done < 0 || done > log {
-            return Err(fail(
-                StoreErrorCode::Unreadable,
-                "WAL accounting returned invalid frame counts",
-            ));
-        }
-        let page: u64 = self
-            .db
-            .query_row("PRAGMA page_size", [], |r| crate::sql_value::value(r, 0))
-            .map_err(sql)?;
-        let bytes = (log as u64)
-            .checked_mul(
-                page.checked_add(24)
-                    .ok_or_else(|| invalid("WAL page size overflow"))?,
-            )
-            .and_then(|n| n.checked_add(32))
-            .ok_or_else(|| invalid("WAL size overflow"))?;
-        Ok(Wal { log, done, bytes })
+        probe(&self.db)
     }
     fn checkpoint_suppressed(&self, wal: &Wal) -> bool {
         self.backup.as_ref().is_some_and(|c| {
             c.suppress_checkpoint(wal.log, wal.bytes >= crate::backup_context::MAX_WAL_BYTES)
         })
     }
-    fn defer_checkpoint(&mut self, delay: Duration) {
+    fn defer_checkpoint(&mut self) {
+        // Name the debt on this receipt; the background task owns the retry.
         self.checkpoints.pending = true;
-        // Every foreground commit starts a fresh quiet gap. Sustained work
-        // can defer maintenance only until the hard WAL cutoff.
-        self.checkpoints.next = Some(Instant::now() + delay);
     }
     fn run_checkpoint(&mut self, wal: &Wal) -> Option<Duration> {
         if self.checkpoint_suppressed(wal) {
-            self.defer_checkpoint(RETRY);
+            self.defer_checkpoint();
             return None;
         }
         let start = Instant::now();
@@ -96,7 +96,6 @@ impl Engine {
             Err(error) => Some(sql(error)),
         };
         self.checkpoints.pending = self.maintenance.is_some();
-        self.checkpoints.next = self.checkpoints.pending.then(|| Instant::now() + RETRY);
         Some(elapsed)
     }
     pub(crate) fn require_wal_capacity(&mut self) -> StoreResult<Option<Duration>> {
@@ -120,7 +119,7 @@ impl Engine {
             Ok(wal) => wal,
             Err(error) => {
                 self.maintenance = Some(error);
-                self.defer_checkpoint(RETRY);
+                self.defer_checkpoint();
                 return None;
             }
         };
@@ -128,45 +127,23 @@ impl Engine {
             return self.run_checkpoint(&wal);
         }
         if wal.log >= SOFT_FRAMES && wal.log > wal.done {
-            // Direct/bootstrap connections have no idle worker. Their
-            // existing close path or hard-pressure check performs maintenance;
-            // starting the host transfers this debt to its sole writer.
-            self.defer_checkpoint(IDLE);
-            None
+            // Name the debt on this receipt. Direct/bootstrap connections have
+            // no idle worker, so their close path or hard-pressure check
+            // performs the maintenance; a host writer's background task owns
+            // the retry.
+            self.defer_checkpoint();
         } else {
             self.checkpoints.pending = false;
-            self.checkpoints.next = None;
             if wal.log <= wal.done {
                 self.maintenance = None;
             }
-            None
         }
-    }
-    pub(crate) fn checkpoint_wait(&self) -> Option<Duration> {
-        if self.poisoned || !self.checkpoints.pending {
-            return None;
-        }
-        self.checkpoints
-            .next
-            .map(|at| at.saturating_duration_since(Instant::now()))
-    }
-    pub(crate) fn checkpoint_idle(&mut self) {
-        self.checkpoints.next = None;
-        match self.wal() {
-            Ok(wal) => {
-                self.run_checkpoint(&wal);
-            }
-            Err(error) => {
-                self.maintenance = Some(error);
-                self.defer_checkpoint(RETRY);
-            }
-        }
+        None
     }
     pub(crate) fn checkpoint_pending(&self) -> bool {
         self.checkpoints.pending
     }
     pub(crate) fn checkpoint_finished(&mut self, complete: bool) {
         self.checkpoints.pending = !complete;
-        self.checkpoints.next = (!complete).then(|| Instant::now() + RETRY);
     }
 }

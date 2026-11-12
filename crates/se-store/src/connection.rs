@@ -89,7 +89,10 @@ pub(crate) fn configure(
     })();
     result.map_err(|error| context(error, path, StoreIoStage::PragmaReadback))
 }
-pub(crate) fn info(c: &Connection) -> StoreResult<StoreInfo> {
+/// Store header without the head scan: schema gate, id, incarnation and
+/// state. The background checkpoint task validates its lease through this
+/// instead of paying for the latest event position on every tick.
+pub(crate) fn header(c: &Connection) -> StoreResult<(u32, StoreId, u64, StoreState)> {
     let app: u32 = c
         .query_row("PRAGMA application_id", [], |r| {
             crate::sql_value::value(r, 0)
@@ -136,6 +139,10 @@ pub(crate) fn info(c: &Connection) -> StoreResult<StoreInfo> {
         "erasing" => StoreState::Erasing,
         _ => return Err(invalid("unknown store state")),
     };
+    Ok((version, id, inc, state))
+}
+pub(crate) fn info(c: &Connection) -> StoreResult<StoreInfo> {
+    let (version, id, inc, state) = header(c)?;
     let last: Option<u64> = c
         .query_row(
             "SELECT seq FROM events ORDER BY seq DESC LIMIT 1",
@@ -154,13 +161,29 @@ pub(crate) fn info(c: &Connection) -> StoreResult<StoreInfo> {
         state,
     })
 }
+/// Lease-facing header: the store identity and state, without the head scan.
+pub(crate) fn lease_state(c: &Connection) -> StoreResult<(StoreId, StoreState)> {
+    let (_version, id, _inc, state) = header(c)?;
+    Ok((id, state))
+}
 pub(crate) fn validate_lease(
     info: &StoreInfo,
     lease: &dyn RuntimeLease,
     mode: LeaseMode,
 ) -> StoreResult<LeaseIdentity> {
     let identity = lease.identity()?;
-    if identity.store.as_ref() != Some(&info.id)
+    validate_lease_state(&info.id, info.state, &identity, mode)?;
+    Ok(identity)
+}
+/// The lease gate without a full StoreInfo: for connections that must not
+/// pay for the head scan (the background checkpoint task, once per tick).
+pub(crate) fn validate_lease_state(
+    store: &StoreId,
+    state: StoreState,
+    identity: &LeaseIdentity,
+    mode: LeaseMode,
+) -> StoreResult<()> {
+    if identity.store.as_ref() != Some(store)
         || identity.mode != mode
         || identity.generation == 0
         || identity.generation > i64::MAX as u64
@@ -170,13 +193,13 @@ pub(crate) fn validate_lease(
             "store, mode or generation does not match the held runtime lease",
         ));
     }
-    if info.state != StoreState::Ready {
+    if state != StoreState::Ready {
         return Err(fail(
             StoreErrorCode::NotReady,
             "store maintenance is not ready",
         ));
     }
-    Ok(identity)
+    Ok(())
 }
 pub(crate) fn symbol(c: &Connection, value: &[u8]) -> StoreResult<i64> {
     c.execute(

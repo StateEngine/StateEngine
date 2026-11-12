@@ -7,6 +7,7 @@ pub mod atlas_resume;
 mod backup;
 mod backup_context;
 pub mod channel;
+mod checkpoint_task;
 mod codec;
 mod completion;
 mod connection;

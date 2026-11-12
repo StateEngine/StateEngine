@@ -8,12 +8,13 @@ use crate::{
 use std::{
     sync::{
         Arc, Mutex,
-        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError},
+        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
 };
 mod atlas;
+use crate::checkpoint_task;
 /// Diagnostics separate from immutable receipts. commit_sync measures SQLite's
 /// COMMIT call, not a claimed filesystem syscall duration/count.
 #[derive(Clone, Debug)]
@@ -259,9 +260,15 @@ pub(crate) fn start(
         }),
     };
     let context = host.context.clone();
+    let checkpoint = checkpoint_task::CheckpointTask::spawn(
+        host.reader.path.clone(),
+        host.reader.timeout,
+        context.clone(),
+        lease.clone(),
+    )?;
     let thread = std::thread::Builder::new()
         .name("se-store-writer".into())
-        .spawn(move || run(host, options, lease, receiver, shared))
+        .spawn(move || run(host, options, lease, receiver, shared, checkpoint))
         .map_err(invalid)?;
     Ok(SqliteWriter {
         client,
@@ -347,8 +354,9 @@ impl WriterOwner for SqliteWriter {
             )));
             return wait;
         };
-        // A transient join helper keeps thread::join off the host executor and
-        // releases the maintenance object only after the writer actually exits.
+        // A transient join helper keeps thread::join off the host executor. The
+        // writer thread joined the checkpoint task before its final checkpoint,
+        // so the returned host owns its only live connection.
         let _ = std::thread::Builder::new()
             .name("se-store-join".into())
             .spawn(move || {
@@ -367,6 +375,7 @@ fn flush(
     host: &mut SqliteHost,
     deadline: Instant,
     lease: &dyn RuntimeLease,
+    status: &checkpoint_task::Status,
 ) -> StoreResult<FlushReport> {
     if Instant::now() > deadline {
         return Err(fail(StoreErrorCode::Busy, "flush deadline exceeded"));
@@ -382,6 +391,14 @@ fn flush(
     {
         host.engine.maintenance = Some(error);
     }
+    if host.engine.maintenance.is_none() {
+        // The writer's own checkpoint completed fully: it paid the pending
+        // debt the background task may still be reporting, so the recovery
+        // clears only that pending state before the report reads it. A
+        // retained task failure is a real failure: only the task's own next
+        // successful tick clears it.
+        status.clear_pending();
+    }
     let through = host
         .reader
         .info()
@@ -396,49 +413,30 @@ fn flush(
     Ok(FlushReport {
         maintenance_pending: host.engine.maintenance.is_some()
             || host.engine.poisoned
-            || host.engine.checkpoint_pending(),
-        maintenance_failed: host.engine.maintenance.is_some() || host.engine.poisoned,
+            || host.engine.checkpoint_pending()
+            || status.pending(),
+        maintenance_failed: host.engine.maintenance.is_some()
+            || host.engine.poisoned
+            || status.failed(),
+        maintenance_error: host
+            .engine
+            .maintenance
+            .clone()
+            .or_else(|| status.last_error()),
         through,
         pending_requests: 0,
         indeterminate: host.engine.indeterminate(),
     })
 }
-// A pending checkpoint arms one idle delay. Without maintenance debt the
+// Idle checkpoint maintenance runs in the background checkpoint task; the
 // writer blocks on its ordinary channel and performs no periodic SQLite reads.
-fn receive(
-    host: &mut SqliteHost,
-    receiver: &Receiver<Command>,
-    lease: &dyn RuntimeLease,
-) -> StoreResult<Option<Command>> {
-    let closed = || {
+fn receive(receiver: &Receiver<Command>) -> StoreResult<Command> {
+    receiver.recv().map_err(|_| {
         fail(
             StoreErrorCode::WriterClosed,
             "writer channel ended without an owner drain",
         )
-    };
-    let Some(wait) = host.engine.checkpoint_wait() else {
-        return receiver.recv().map(Some).map_err(|_| closed());
-    };
-    match receiver.recv_timeout(wait) {
-        Ok(command) => Ok(Some(command)),
-        Err(RecvTimeoutError::Disconnected) => Err(closed()),
-        Err(RecvTimeoutError::Timeout) => match receiver.try_recv() {
-            Ok(command) => Ok(Some(command)),
-            Err(TryRecvError::Disconnected) => Err(closed()),
-            Err(TryRecvError::Empty) => {
-                match connection::info(&host.engine.db)
-                    .and_then(|info| connection::validate_lease(&info, lease, LeaseMode::Host))
-                {
-                    Ok(_) => host.engine.checkpoint_idle(),
-                    Err(error) => {
-                        host.engine.maintenance = Some(error);
-                        host.engine.checkpoint_finished(false);
-                    }
-                }
-                Ok(None)
-            }
-        },
-    }
+    })
 }
 #[expect(
     clippy::too_many_lines,
@@ -450,15 +448,25 @@ fn run(
     lease: Arc<dyn RuntimeLease>,
     receiver: Receiver<Command>,
     shared: Arc<Shared>,
+    checkpoint: checkpoint_task::CheckpointTask,
 ) -> StoreResult<DrainedHost<SqliteHost>> {
+    let status = checkpoint.status().clone();
     let mut deferred = None;
     loop {
         let command = match deferred.take() {
-            Some(c) => c,
-            None => match receive(&mut host, &receiver, &*lease)? {
-                Some(command) => command,
-                None => continue,
-            },
+            Some(c) => {
+                status.set_idle(false);
+                c
+            }
+            None => {
+                // Blocking receive: the channel is empty, so the checkpoint
+                // task may run its I/O on its own connection without
+                // contending for the WAL write lock.
+                status.set_idle(true);
+                let command = receive(&receiver)?;
+                status.set_idle(false);
+                command
+            }
         };
         match command {
             Command::Atlas(request) => atlas::execute(&mut host, &*lease, &shared, request)?,
@@ -573,7 +581,7 @@ fn run(
                     .recovering = !reopened;
             }
             Command::Flush(deadline, reply) => {
-                let result = flush(&mut host, deadline, &*lease);
+                let result = flush(&mut host, deadline, &*lease, &status);
                 shared
                     .admission
                     .lock()
@@ -582,7 +590,12 @@ fn run(
                 reply.send(result);
             }
             Command::Drain(deadline) => {
-                let report = flush(&mut host, deadline, &*lease)?;
+                // The report reads the task status, so the task must be dead
+                // first: no tick can then move Pending between the writer's
+                // final checkpoint and the read. With no live task, the
+                // writer's result is the whole truth.
+                checkpoint.join();
+                let report = flush(&mut host, deadline, &*lease, &status)?;
                 return Ok(DrainedHost { host, report });
             }
         }
