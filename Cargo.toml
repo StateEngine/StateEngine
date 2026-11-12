@@ -45,6 +45,16 @@ struct_excessive_bools = "warn"
 [profile.release]
 panic = "unwind"
 
+# Native IPC refuses to hash a peer executable over 512 MiB; full debug info
+# makes a development `se` about 625 MiB and fails launch tests on size alone.
+# Keep line tables and drop the rest, as CI does, so a failed assertion still
+# names its line. A full debugger needs CARGO_PROFILE_DEV_DEBUG=2.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
 # Native IPC proves a cold executable before its file-identity cache is warm.
 # Keep software SHA fast in development/tests, including CPUs without SHA instructions.
 [profile.dev.package.sha2]
