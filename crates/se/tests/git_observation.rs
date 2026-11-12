@@ -24,6 +24,8 @@ const CHILD: &str = "git_observation_child";
 const CHILD_ABSENT: &str = "absent";
 const CHILD_SILENT: &str = "silent";
 const CHILD_HEADER_ONLY: &str = "header-only";
+const CHILD_SLOW_COUNT: &str = "slow-count";
+const CHILD_SLOW_HEADER: &str = "slow-header";
 /// The environment key carrying the repository root to the spawned child, so a
 /// replaced `PATH` never has to carry it.
 const CHILD_ROOT: &str = "GIT_OBSERVATION_ROOT";
@@ -260,6 +262,85 @@ esac
 exec "$GIT_OBSERVATION_REAL_GIT" "$@"
 "#;
 
+const SLOW_REV_LIST: &str = r#"#!/bin/sh
+# The real Git for every subcommand but `rev-list`; the history walk reports
+# nothing and never exits, so the count cannot settle before the deadline.
+case "$*" in
+    *"rev-list"*)
+        trap '' TERM INT
+        exec /bin/sleep 30
+        ;;
+esac
+exec "$GIT_OBSERVATION_REAL_GIT" "$@"
+"#;
+
+#[test]
+fn a_history_walk_that_never_finishes_reports_the_count_as_unknown() -> Check {
+    // `rev-list --count` grew with the repository and blocked `se status` with
+    // nothing bounding it. A slow walk must leave the count unknown, never a
+    // zero that claims an empty history, while the header facts still report.
+    let repo = Repo::new("slow-count")?;
+    repo.commit("one")?;
+    let shim = PathOnly::new("slow-count")?;
+    shim.install_git(SLOW_REV_LIST)?;
+    let observed = in_child(
+        shim.0.to_str().ok_or("PATH is not UTF-8")?,
+        CHILD_SLOW_COUNT,
+        &repo.0,
+    )?;
+    let head = repo.git(&repo.0, &["rev-parse", "HEAD"])?.trim().to_owned();
+    assert_eq!(
+        observed,
+        format!("head={head} branch=master dirty=clean commits={CHILD_ABSENT}"),
+        "a history walk past the deadline must report the count as unknown"
+    );
+    Ok(())
+}
+
+const SLOW_AWAKE_THEN_SLOW_COUNT: &str = r#"#!/bin/sh
+# `status` prints the whole header, then stalls before its first entry; the
+# history walk then stalls too. The count shares the observation's deadline, so
+# it must not receive fresh time after the status stall spent it.
+case "$*" in
+    *status*)
+        printf '# branch.oid 0123456789012345678901234567890123456789\n# branch.head main\n'
+        exec /bin/sleep 30
+        ;;
+    *"rev-list"*)
+        trap '' TERM INT
+        exec /bin/sleep 30
+        ;;
+esac
+exec "$GIT_OBSERVATION_REAL_GIT" "$@"
+"#;
+
+#[test]
+fn a_commit_count_shares_the_observation_deadline_with_the_status_read() -> Check {
+    // Two independent ten-second bounds would let `se status` take twenty; the
+    // count runs under what remains of the one deadline, so a status that
+    // stalls first leaves the count unknown almost immediately.
+    let repo = Repo::new("slow-header")?;
+    repo.commit("one")?;
+    let shim = PathOnly::new("slow-header")?;
+    shim.install_git(SLOW_AWAKE_THEN_SLOW_COUNT)?;
+    let started = Instant::now();
+    let observed = in_child(
+        shim.0.to_str().ok_or("PATH is not UTF-8")?,
+        CHILD_SLOW_HEADER,
+        &repo.0,
+    )?;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(1500),
+        "the header and count were each given their own bound: {elapsed:?}"
+    );
+    assert!(
+        observed.ends_with(&format!("commits={CHILD_ABSENT}")),
+        "{observed}"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_status_that_never_reports_is_unreadable_not_an_unborn_repository() -> Check {
     // A Git that never wrote a header was once read as an unborn, detached,
@@ -301,7 +382,9 @@ fn a_header_without_a_settled_entry_reports_dirty_as_unknown() -> Check {
     )?;
     assert_eq!(
         observed,
-        format!("head=0123456789012345678901234567890123456789 branch=main dirty={CHILD_ABSENT}"),
+        format!(
+            "head=0123456789012345678901234567890123456789 branch=main dirty={CHILD_ABSENT} commits={CHILD_ABSENT}"
+        ),
         "an unsettled scan must report the dirty fact as unknown"
     );
     Ok(())
@@ -341,14 +424,17 @@ fn git_observation_child() -> Check {
     let observed = git_state::observe_within(&root, deadline);
     let line = match observed {
         Ok(Some(view)) => format!(
-            "head={} branch={} dirty={}",
+            "head={} branch={} dirty={} commits={}",
             view.head.as_deref().unwrap_or(CHILD_ABSENT),
             view.branch.as_deref().unwrap_or(CHILD_ABSENT),
             match view.uncommitted {
                 Some(true) => "dirty".to_owned(),
                 Some(false) => "clean".to_owned(),
                 None => CHILD_ABSENT.to_owned(),
-            }
+            },
+            view.commits
+                .map(|commits| commits.to_string())
+                .unwrap_or_else(|| CHILD_ABSENT.to_owned()),
         ),
         Ok(None) => "absent".to_owned(),
         Err(error) => format!("refused: {error}"),

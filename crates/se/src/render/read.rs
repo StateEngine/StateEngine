@@ -380,13 +380,15 @@ fn omissions<T>(page: &Page<T>, out: &mut impl Write) -> io::Result<()> {
 }
 
 pub(super) fn repo_line(git: &GitView, out: &mut impl Write) -> io::Result<()> {
-    let Some(commits) = git.commits else {
-        return Ok(());
+    let mut line = match git.commits {
+        Some(commits) => format!(
+            "Existing repo: {commits} commit{}",
+            if commits == 1 { "" } else { "s" }
+        ),
+        // A history walk that outlived its deadline says so; the facts that
+        // did settle are still reported beside it rather than withheld.
+        None => "Existing repo: commit count unknown".to_owned(),
     };
-    let mut line = format!(
-        "Existing repo: {commits} commit{}",
-        if commits == 1 { "" } else { "s" }
-    );
     if let Some(branch) = &git.branch {
         line.push_str(&format!(" on {branch}"));
     }
