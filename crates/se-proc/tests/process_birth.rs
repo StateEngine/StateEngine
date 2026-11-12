@@ -251,6 +251,12 @@ fn run() -> Result {
     Ok(())
 }
 fn main() -> Result {
+    if std::env::args().any(|v| v == "--list") {
+        if !std::env::args().any(|v| v == "--ignored") {
+            println!("process_birth: test");
+        }
+        return Ok(());
+    }
     if std::env::args().nth(1).as_deref() == Some("--birth-child") {
         println!("NATIVE-BIRTH-READY");
         std::io::stdout().flush()?;

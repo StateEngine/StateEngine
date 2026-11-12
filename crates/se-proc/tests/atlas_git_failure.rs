@@ -138,6 +138,12 @@ mod linux {
     }
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().any(|v| v == "--list") {
+        if !std::env::args().any(|v| v == "--ignored") {
+            println!("atlas_git_failure: test");
+        }
+        return Ok(());
+    }
     #[cfg(target_os = "linux")]
     linux::run()?;
     #[cfg(not(target_os = "linux"))]
