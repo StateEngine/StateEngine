@@ -97,10 +97,15 @@ impl Status {
     pub(crate) fn last_error(&self) -> Option<Box<StoreError>> {
         self.state.lock().error().cloned().map(Box::new)
     }
-    /// A writer-driven checkpoint completed fully: the debt it paid makes any
-    /// state the task retained from an earlier failure window stale.
-    pub(crate) fn clear(&self) {
-        *self.state.lock() = Maint::Clear;
+    /// A writer-driven checkpoint completed fully: the pending debt the task
+    /// observed (frames it could not copy yet) is paid on the writer's own
+    /// connection, so the report reads clean. A retained Failed is a real
+    /// task failure: only the task's own next successful tick clears it.
+    pub(crate) fn clear_pending(&self) {
+        let mut cell = self.state.lock();
+        if matches!(*cell, Maint::Pending) {
+            *cell = Maint::Clear;
+        }
     }
     pub(crate) fn set_idle(&self, idle: bool) {
         self.idle.store(idle, Ordering::Release);
@@ -266,6 +271,9 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
         // WAL it copies no frames from, so without this step a stranded WAL
         // would keep its high-water size until the next full reset. The short
         // backoff bounds how long a straggling write waits for it.
+        if !status.idle() {
+            return;
+        }
         match checkpoint(db, "TRUNCATE") {
             Ok((_, log, _)) => status.set(if log > 0 {
                 Maint::Pending
@@ -279,6 +287,9 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
     // Fully checkpointed and small: nothing to do, and no debt left behind.
     if wal.log == wal.done {
         status.set(Maint::Clear);
+        return;
+    }
+    if !status.idle() {
         return;
     }
     // New frames to copy: PASSIVE is the mode that never waits on a reader in

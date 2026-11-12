@@ -402,10 +402,12 @@ fn flush(
         host.engine.maintenance = Some(error);
     }
     if host.engine.maintenance.is_none() {
-        // The writer's own checkpoint completed fully: it paid the debt the
-        // background task may still be reporting from the failure window, so
-        // the recovery clears the shared state before the report reads it.
-        status.clear();
+        // The writer's own checkpoint completed fully: it paid the pending
+        // debt the background task may still be reporting, so the recovery
+        // clears only that pending state before the report reads it. A
+        // retained task failure is a real failure: only the task's own next
+        // successful tick clears it.
+        status.clear_pending();
     }
     let through = host
         .reader
