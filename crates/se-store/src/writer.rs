@@ -116,7 +116,6 @@ pub struct SqliteWriter {
     client: SqliteClient,
     context: BackupContext,
     thread: Option<JoinHandle<StoreResult<DrainedHost<SqliteHost>>>>,
-    checkpoint: checkpoint_task::CheckpointTask,
 }
 impl Shared {
     fn completed(&self, bytes: usize) -> StoreResult<()> {
@@ -267,16 +266,14 @@ pub(crate) fn start(
         context.clone(),
         lease.clone(),
     )?;
-    let status = checkpoint.status().clone();
     let thread = std::thread::Builder::new()
         .name("se-store-writer".into())
-        .spawn(move || run(host, options, lease, receiver, shared, status))
+        .spawn(move || run(host, options, lease, receiver, shared, checkpoint))
         .map_err(invalid)?;
     Ok(SqliteWriter {
         client,
         context,
         thread: Some(thread),
-        checkpoint,
     })
 }
 impl SqliteWriter {
@@ -294,7 +291,6 @@ impl SqliteWriter {
             ));
         }
         s.closed = true;
-        self.checkpoint.signal();
         self.client
             .sender
             .try_send(Command::Drain(Instant::now() + deadline))
@@ -358,14 +354,9 @@ impl WriterOwner for SqliteWriter {
             )));
             return wait;
         };
-        // The background checkpoint task must join before the host is handed
-        // back, so the returned host owns its only live connection.
-        let checkpoint = std::mem::replace(
-            &mut self.checkpoint,
-            checkpoint_task::CheckpointTask::detached(),
-        );
-        // A transient join helper keeps thread::join off the host executor and
-        // releases the maintenance object only after the writer actually exits.
+        // A transient join helper keeps thread::join off the host executor. The
+        // writer thread joined the checkpoint task before its final checkpoint,
+        // so the returned host owns its only live connection.
         let _ = std::thread::Builder::new()
             .name("se-store-join".into())
             .spawn(move || {
@@ -375,7 +366,6 @@ impl WriterOwner for SqliteWriter {
                         "writer panicked; resolve original operation keys",
                     ))
                 });
-                checkpoint.join();
                 reply.send(result);
             });
         wait
@@ -458,8 +448,9 @@ fn run(
     lease: Arc<dyn RuntimeLease>,
     receiver: Receiver<Command>,
     shared: Arc<Shared>,
-    status: checkpoint_task::Status,
+    checkpoint: checkpoint_task::CheckpointTask,
 ) -> StoreResult<DrainedHost<SqliteHost>> {
+    let status = checkpoint.status().clone();
     let mut deferred = None;
     loop {
         let command = match deferred.take() {
@@ -599,6 +590,11 @@ fn run(
                 reply.send(result);
             }
             Command::Drain(deadline) => {
+                // The report reads the task status, so the task must be dead
+                // first: no tick can then move Pending between the writer's
+                // final checkpoint and the read. With no live task, the
+                // writer's result is the whole truth.
+                checkpoint.join();
                 let report = flush(&mut host, deadline, &*lease, &status)?;
                 return Ok(DrainedHost { host, report });
             }

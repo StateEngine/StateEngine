@@ -123,17 +123,6 @@ pub(crate) struct CheckpointTask {
     status: Status,
 }
 impl CheckpointTask {
-    /// Already-exited placeholder for the drain's `mem::replace`; its signal
-    /// is pre-set and its join is a no-op.
-    pub(crate) fn detached() -> Self {
-        Self {
-            handle: None,
-            closed: Arc::new(AtomicBool::new(true)),
-            status: Status::default(),
-        }
-    }
-}
-impl CheckpointTask {
     /// Starts the task on its own writable connection. The task lives with the
     /// writer that owns it: drain joins it, and drop signals it to exit on its
     /// next wake, so the host is never returned with a stray connection. The
