@@ -68,8 +68,8 @@ impl Readiness {
 }
 
 /// The layer a host-chosen implementation adds to `thread/start`: one
-/// per-launch key, never an edit to the user's file (a value they set already
-/// stands). The TOML string decodes to the bare implementation name.
+/// per-launch key, never an edit to the user's file (their own value stands).
+/// The TOML string decodes to the bare implementation name.
 pub fn launch_config(implementation: Implementation) -> (&'static str, Value) {
     (
         "windows.sandbox",
@@ -77,7 +77,7 @@ pub fn launch_config(implementation: Implementation) -> (&'static str, Value) {
     )
 }
 
-/// The readiness request for one named implementation. The answer covers that
+/// The readiness request for one named implementation; the answer covers that
 /// implementation only, so each choice is asked about separately.
 pub fn readiness_request(implementation: Implementation) -> Value {
     json!({ "config": { "windows.sandbox": json!(implementation.key()) } })
@@ -116,22 +116,22 @@ pub fn choose(attempted: &[(Implementation, Readiness)]) -> Result<Implementatio
 }
 
 /// The user's own value. Their choice wins even when another implementation is
-/// ready: the host reports the state and never substitutes one they did not pick.
+/// ready: the host never substitutes one they did not pick.
 pub fn require_ready(
     implementation: Implementation,
     readiness: Readiness,
 ) -> Result<Implementation> {
-    if readiness == Readiness::Ready {
-        return Ok(implementation);
+    if readiness != Readiness::Ready {
+        return Err(incompatible(
+            &format!(
+                "your configured Windows sandbox `{}` is not ready ({readiness:?})",
+                implementation.key()
+            ),
+            "Install or repair that sandbox with `codex sandbox setup --elevated` from an \
+             elevated prompt, or choose another windows.sandbox in your Codex configuration.",
+        ));
     }
-    Err(incompatible(
-        &format!(
-            "your configured Windows sandbox `{}` is not ready ({readiness:?})",
-            implementation.key()
-        ),
-        "Install or repair that sandbox with `codex sandbox setup --elevated` from an \
-         elevated prompt, or choose another windows.sandbox in your Codex configuration.",
-    ))
+    Ok(implementation)
 }
 
 fn not_ready(attempted: &[(Implementation, Readiness)]) -> se_types::SeError {
@@ -177,18 +177,14 @@ mod tests {
     }
 
     #[test]
-    fn an_absent_windows_table_means_the_user_set_nothing() {
+    fn the_user_value_is_read_or_it_refuses() {
         assert_eq!(configured(&json!({ "model": "x" })).ok(), Some(None));
-        let nulled = configured(&json!({ "windows": { "allow_mxc": null } }));
-        assert_eq!(nulled.ok(), Some(None));
-    }
-
-    #[test]
-    fn a_non_string_user_value_refuses() {
-        let text = refusal(configured(&json!({ "windows": { "sandbox": 3 } })));
-        assert!(text.contains("not a string"), "{text}");
-        let text = refusal(configured(&json!({ "windows": "elevated" })));
-        assert!(text.contains("object-valued windows table"), "{text}");
+        let nulled = configured(&json!({ "windows": { "allow_mxc": null } })).ok();
+        assert_eq!(nulled, Some(None), "an absent value is not a refusal");
+        let number = refusal(configured(&json!({ "windows": { "sandbox": 3 } })));
+        assert!(number.contains("not a string"), "{number}");
+        let scalar = refusal(configured(&json!({ "windows": "elevated" })));
+        assert!(scalar.contains("object-valued windows table"), "{scalar}");
         let text = refusal(configured(&json!({ "windows": { "sandbox": "legacy" } })));
         assert!(text.contains("`legacy`"), "{text}");
     }
@@ -201,9 +197,14 @@ mod tests {
 
     #[test]
     fn an_unready_user_value_refuses_without_substituting() {
-        let unready = require_ready(Implementation::Elevated, Readiness::UpdateRequired);
-        let text = refusal(unready);
-        assert!(text.contains("configured Windows sandbox `elevated` {text}"));
+        let text = refusal(require_ready(
+            Implementation::Elevated,
+            Readiness::UpdateRequired,
+        ));
+        assert!(
+            text.contains("configured Windows sandbox `elevated`"),
+            "{text}"
+        );
         assert!(text.contains("sandbox setup --elevated"), "{text}");
     }
 

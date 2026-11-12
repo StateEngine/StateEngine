@@ -107,8 +107,8 @@ impl CodexHarness {
         let (method, mut params) = input::thread(launch)?;
         #[cfg(windows)]
         if let Some(selection) = selection {
-            // The host names the implementation per launch; a value the user
-            // set needs no key, so their file stands.
+            // The host names the implementation per launch; a user's own
+            // value needs no key, so their file stands.
             let (key, value) = windows_sandbox::launch_config(selection);
             params["config"][key] = value;
         }
