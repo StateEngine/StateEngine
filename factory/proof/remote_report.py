@@ -31,8 +31,11 @@ def summarize(entry, receipt, run):
         sample = timings.get(name)
         number = sample.get("milliseconds") if isinstance(sample, dict) else None
         valid = (type(number) in (int, float) and math.isfinite(number) and number >= 0 and
+                 type(sample.get("n")) is int and sample["n"] == 1 and
                  isinstance(sample.get("boundary"), str) and bool(sample["boundary"]) and
                  sample.get("qualification") == ("unqualified" if name == "live_output" else "observed"))
+        if name == "live_output":
+            valid = valid and type(sample.get("source_bracket_us")) is int and sample["source_bracket_us"] >= 0
         measured[name] = {**(sample if valid else {}), "state": "MEASURED" if valid else "NOT MEASURED"}
     closure = receipt.get("credential_closure") == {"original_inode_unchanged": True,
         "original_digest_unchanged": True, "private_copies_absent": True, "refresh_tokens_copied": False}

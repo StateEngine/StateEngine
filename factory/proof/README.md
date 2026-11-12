@@ -6,7 +6,7 @@ judge's verdicts or thresholds. Product and judge Git revisions, map and file
 hashes, native release identity, raw output and every first failure are retained.
 
 Install `nightly.py`, `lifecycle.py`, `native.py`, `report.py`, `remote_journey.py`,
-`remote_credentials.py`, `remote_process.py` and `remote_report.py` together, and use the supplied user service and
+`remote_credentials.py`, `remote_process.py`, `remote_recovery.py` and `remote_report.py` together, and use the supplied user service and
 timer. The service runs outside managed agent trees; fixture environment isolation
 does not change ancestry or bypass owner guards. The adapter refuses a fleet or
 session environment. It checks for 34 GiB available before building or starting a
@@ -123,24 +123,39 @@ provider executables, and creates a fresh project for each attempt. Its launch
 uses SSH and the public `se launch` command. It does not grant an agent remote
 launch authority. Set `remote.provider_executable` when the provider's native
 Linux executable is outside `prerequisite_paths`; script wrappers are refused.
+The destination also requires Python 3.11 or later.
 
-The runner copies the configured provider login from `auth_home` (or the existing
-`credential_sources` selection) over SSH, stripping refresh tokens recursively.
-It refuses unexplained incumbent credentials, checks the source inode and digest
-afterward, and removes its private destination copies after native process
-closure. The dedicated destination account must not be used for ordinary work.
+Remote runs require an explicit absolute `credential_sources.claude` (or `.codex`)
+file outside the login user's native home directory. Provision a dedicated automation
+credential there; the runner never falls back to the operator's login. For Claude,
+the file contains a `claudeAiOauth` object; only `accessToken`, `expiresAt`, `scopes`
+and `subscriptionType` are copied. Fixture onboarding metadata is generated without
+reading the operator's configuration. The destination copies are read back and
+scanned for any key containing `refresh`; a match fails the attempt. The scan result
+supplies the report's `refresh_tokens_copied` field.
+The runner refuses unexplained incumbent credentials, checks the source inode and
+digest afterward, and removes private copies only after native process and runtime
+closure. SIGTERM and SIGINT enter bounded cleanup. A private recovery journal in
+the source user's state directory records each attempt before copying credentials
+or starting a runtime; the next run, under the same destination lock, retries only
+that attempt's cleanup before doing new work. Set `remote.recovery_directory` to
+keep that journal elsewhere. Unproven stops retain the credentials and a leftover
+record, and fail the run. The dedicated destination account must not be used for ordinary work.
 The runner retains source and destination project data and executable copies for
 inspection; the operator's existing evidence-retention policy owns their removal.
 
 `remote-journey/remote.json` and both raw command pipes retain each observation.
-The remote grid requires an actual live assistant reply, a committed message and
-assistant response, and the original session/lifecycle after reconnect. Cleanup
+The remote grid requires an actual provisional assistant reply, a durable commit
+receipt for the sent message, a provisional assistant response to that message,
+and the original session/lifecycle after reconnect. Assistant-reply durability is
+not asserted. Cleanup
 checks the public stop receipt and reads the stopped PID back through a separate
 SSH process. Attach includes explicit connection setup through the first watch
 snapshot; pending echo runs from process invocation to observed provisional
 stderr; reconnect includes the resumed snapshot and original-session readback.
 Live output uses `remote watch --measure`'s producer-to-stdout-flush clock estimate,
-retaining its `unqualified` label. These are single-attempt samples, not p95 or
+retaining its `unqualified` label and source clock bracket. Each measured value
+carries `n=1`; unavailable values carry `n=0`. These are single-attempt samples, not p95 or
 budget certifications. Missing clock evidence stays NOT MEASURED and fails the
 overall attempt without erasing otherwise witnessed remote behavior.
 Windows remote journeys and physical-machine qualification

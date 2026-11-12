@@ -1,18 +1,20 @@
 """Observe the public SSH/CLI remote journey; never substitute a local transport.
 
-The destination must be a registered disposable Linux account. Its provider
-login is copied into the fixture without refresh tokens for each attempt.
+The destination must be a registered disposable Linux account. Dedicated access
+credentials are copied into the fixture without refresh tokens for each attempt.
 Run from an OS scheduler outside managed agent ancestry, as for nightly.py.
 """
 import hashlib
 import json
 from pathlib import Path
 import shlex
+import signal
 import time
 import uuid
 
 from remote_credentials import Credentials, provider_binary
 from remote_process import Command
+from remote_recovery import begin_recovery, finish_recovery, snapshot
 
 
 def sha256(path):
@@ -24,6 +26,12 @@ def save(path, value):
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
     temporary.replace(path)
+
+
+class Interrupted(BaseException):
+    def __init__(self, signum):
+        self.signum = signum
+        super().__init__("remote journey interrupted by signal " + str(signum))
 
 
 class Journey:
@@ -39,6 +47,8 @@ class Journey:
         self.target = self.session = None
         self.watch = self.lock = self.credentials = None
         self.remote_runtime = False
+        self.launch_attempted = False
+        self.recovery_path = None
         self.custody_safe = True
         self.deadline = deadline or time.monotonic() + 900
         self.commands = 0
@@ -49,6 +59,7 @@ class Journey:
         self.persist()
 
     def persist(self):
+        self.record["custody"] = snapshot(self)
         save(self.directory / "remote.json", self.record)
 
     def start(self, argv, data=None, hold_stdin=False):
@@ -97,12 +108,12 @@ class Journey:
 
     def timing(self, name, milliseconds, boundary, qualification="observed"):
         self.record["timings"][name] = {"milliseconds": milliseconds,
-            "boundary": boundary, "qualification": qualification}
+            "boundary": boundary, "qualification": qualification, "n": 1}
         self.persist()
 
     def unavailable_timing(self, name, boundary, reason, qualification="observed"):
         self.record["timings"][name] = {"milliseconds": None, "boundary": boundary,
-            "qualification": qualification, "reason": str(reason)}
+            "qualification": qualification, "reason": str(reason), "n": 0}
         self.persist()
 
     @staticmethod
@@ -149,8 +160,10 @@ class Journey:
             raise RuntimeError("configure a dedicated SSH destination; remote coverage cannot be skipped")
         self.verify_account()
         self.lock_account()
+        begin_recovery(self)
+        self.credentials = Credentials(self, self.config.get("credential_sources", {}))
+        self.persist()
         self.stage_executables()
-        self.credentials = Credentials(self, self.config["auth_home"], self.config.get("credential_sources", {}))
         self.credentials.stage()
         self.initialize_projects()
         self.step("dedicated account, exact native image and fresh project verified")
@@ -207,8 +220,9 @@ with (p/'lock').open('a') as f:
                                   "--provider", self.config["surface"])
         self.target_parts = {"project": initialized["project"]["id"], "agent": initialized["agent"]["id"]}
         self.target = "/".join(self.target_parts.values())
-        self.remote("up")
         self.remote_runtime = True
+        self.persist()
+        self.remote("up")
         self.local("init", "--repo", str(self.workspace), "--name", "source")
 
     def exercise(self):
@@ -233,8 +247,11 @@ with (p/'lock').open('a') as f:
         launch_args = ["--project", self.target_parts["project"], "launch",
                       self.target_parts["agent"], "--detach", "--key", self.nonce + "-launch",
                       "--task", "Reply with exactly " + marker]
+        self.launch_attempted, self.custody_safe = True, False
+        self.persist()
         launch = self.remote(*launch_args)
         self.session = launch["session_id"]
+        self.persist()
         deadline = time.monotonic() + self.bound(120)
         while launch.get("state") == "starting" and time.monotonic() < deadline:
             time.sleep(1)
@@ -260,6 +277,12 @@ with (p/'lock').open('a') as f:
                 raise RuntimeError("live output clock estimate unavailable")
             self.timing("live_output", estimate / 1000, "producer observation through CLI stdout flush",
                         sample["qualification"])
+            clock = page.get("observation_clock")
+            bracket = clock.get("source_bracket_us") if isinstance(clock, dict) else None
+            if type(bracket) is not int or bracket < 0:
+                raise RuntimeError("live output source clock bracket unavailable")
+            self.record["timings"]["live_output"]["source_bracket_us"] = bracket
+            self.persist()
         except RuntimeError as error:
             self.unavailable_timing("live_output", "producer observation through CLI stdout flush",
                                     error, "unqualified")
@@ -286,7 +309,7 @@ with (p/'lock').open('a') as f:
         self.watch.pump(0)
         cursors = next(self.page(value)["cursors"] for pipe, _, value in reversed(self.watch.rows)
                        if pipe == "stdout" and "cursors" in self.page(value))
-        self.step("remote message committed and assistant reply observed")
+        self.step("remote message committed and provisional assistant reply observed")
         return cursors
 
     def reconnect(self, cursors):
@@ -311,7 +334,7 @@ with (p/'lock').open('a') as f:
         actions = []
         if self.watch is not None:
             actions.append(self.watch.close)
-        if self.session is not None:
+        if self.launch_attempted and not self.custody_safe:
             actions.append(self.stop_session)
         if self.remote_runtime:
             actions.append(lambda: self.down(remote=True))
@@ -329,19 +352,36 @@ with (p/'lock').open('a') as f:
                 self.lock.close()
             except Exception as error:
                 self.record["cleanup_errors"].append(str(error))
+        self.record["leftover"] = bool(self.record["cleanup_errors"] or not self.custody_safe)
         self.persist()
+        finish_recovery(self)
 
     def stop_session(self):
         self.custody_safe = False
-        current = self.running()
-        if current["session"] != self.session:
+        # Read directly on the destination: the source connection may already
+        # have gone away during an interrupted attempt.
+        observed = self.remote("--project", self.target_parts["project"], "agent", "show",
+                               self.target_parts["agent"])["agent"]
+        if observed.get("state") != "present" or observed["value"]["id"] != self.target_parts["agent"]:
+            raise RuntimeError("cleanup cannot observe the exact owned destination agent")
+        current = observed["value"]["session"]
+        if self.session is not None and current["session_id"] != self.session:
             raise RuntimeError("remote session changed; cleanup refused to stop another session")
+        if self.session is None:
+            self.session = current["session_id"]
+            self.persist()
         stopped = self.remote("--project", self.target_parts["project"], "stop",
                               self.target_parts["agent"])
         if stopped.get("complete") is not True:
             raise RuntimeError("remote stop did not witness complete process closure")
         if stopped.get("target", {}).get("session_id") != self.session:
             raise RuntimeError("stop receipt names a different session")
+        if self.session is None:
+            if current["state"] != "never-launched" or stopped.get("target", {}).get("process") is not None:
+                raise RuntimeError("unobserved launch did not witness an empty never-launched target")
+            self.custody_safe = True
+            self.persist()
+            return
         pid = stopped["target"]["process"]["pid"]
         if type(pid) is not int or pid <= 0:
             raise RuntimeError("stop receipt has no exact native process identity")
@@ -353,6 +393,7 @@ with (p/'lock').open('a') as f:
         self.record["process_closure"] = {"session": self.session, "pid": pid,
                                           "stop_complete": True, "outside_process_absent": True}
         self.custody_safe = True
+        self.persist()
 
     def down(self, remote):
         if remote and not self.custody_safe:
@@ -360,20 +401,38 @@ with (p/'lock').open('a') as f:
         result = self.remote("down") if remote else self.local("down")
         if result.get("complete") is not True:
             raise RuntimeError("runtime shutdown did not witness complete closure")
+        if remote:
+            self.remote_runtime = False
+            self.persist()
 
     def run(self):
+        def interrupted(signum, _frame):
+            raise Interrupted(signum)
+        interruption = None
+        handlers = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGTERM, signal.SIGINT)}
         try:
             self.prepare()
             self.exercise()
             self.record["state"] = "finished"
-        except Exception as error:
+        except (Exception, Interrupted) as error:
             self.record["errors"].append(str(error))
             self.record["state"] = "failed"
+            if isinstance(error, Interrupted):
+                interruption = error
         finally:
-            self.cleanup()
+            # A second termination must not interrupt credential/process closure.
+            for sig in handlers:
+                signal.signal(sig, signal.SIG_IGN)
+            try:
+                self.cleanup()
+            finally:
+                for sig, handler in handlers.items():
+                    signal.signal(sig, handler)
         self.record["behavior_passed"] = self.record["state"] == "finished" and not self.record["cleanup_errors"]
         self.record["measurements_complete"] = all(type(self.record["timings"].get(name, {}).get("milliseconds"))
             in (int, float) for name in ("attach", "pending_echo", "live_output", "reconnect"))
         self.record["passed"] = self.record["behavior_passed"] and self.record["measurements_complete"]
         self.persist()
+        if interruption is not None:
+            raise SystemExit(128 + interruption.signum)
         return self.record

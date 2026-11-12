@@ -294,7 +294,10 @@ def grid(report):
             values = []
             for name in ("attach", "pending_echo", "live_output", "reconnect"):
                 sample = row["timings"].get(name, {})
-                values.append(str(round(sample["milliseconds"], 3)) + " (" + sample.get("qualification", "unavailable") + ")"
+                bracket = ("; source bracket=" + str(sample["source_bracket_us"]) + " us"
+                           if "source_bracket_us" in sample else "")
+                values.append(str(round(sample["milliseconds"], 3)) + " (n=" + str(sample["n"]) + "; " +
+                              sample.get("qualification", "unavailable") + bracket + ")"
                               if sample.get("state") == "MEASURED" else "NOT MEASURED")
             lines.append("| " + row["surface"] + " | " + " | ".join(values) + " |")
         lines.append("")

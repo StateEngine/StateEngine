@@ -22,20 +22,39 @@ class Command:
         self.process = subprocess.Popen(self.argv, env=env,
             stdin=subprocess.PIPE if data is not None or hold_stdin else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        try:
-            self.identity = identity(self.process.pid)
-        except FileNotFoundError:
-            self.identity = None
+        self.identity = None
         self.selector = selectors.DefaultSelector()
         self.buffers, self.files, self.rows = {}, {}, []
         self.count = 0
-        for name, pipe in (("stdout", self.process.stdout), ("stderr", self.process.stderr)):
-            self.selector.register(pipe, selectors.EVENT_READ, name)
-            self.buffers[name] = b""
-            self.files[name] = prefix.with_suffix("." + name).open("xb")
-        if data is not None:
-            self.process.stdin.write(data)
-            self.process.stdin.close()
+        try:
+            try:
+                self.identity = identity(self.process.pid)
+            except FileNotFoundError:
+                pass
+            for name, pipe in (("stdout", self.process.stdout), ("stderr", self.process.stderr)):
+                self.selector.register(pipe, selectors.EVENT_READ, name)
+                self.buffers[name] = b""
+                self.files[name] = prefix.with_suffix("." + name).open("xb")
+            if data is not None:
+                self.process.stdin.write(data)
+                self.process.stdin.close()
+        except BrokenPipeError as error:
+            try:
+                self.pump(0.1)
+                reason = self.diagnostic("command closed stdin before accepting the request")
+            finally:
+                self.close()
+            raise RuntimeError(reason) from error
+        except BaseException:
+            # Construction itself can be interrupted while writing SSH's stdin.
+            self.close()
+            raise
+
+    def diagnostic(self, reason):
+        # Keep raw pipes in full; quote only a bounded native error in the row.
+        self.files["stderr"].flush()
+        detail = self.prefix.with_suffix(".stderr").read_bytes()[-2048:].decode("utf-8", errors="replace").strip()
+        return reason + ("; stderr: " + repr(detail) if detail else "; stderr was empty")
 
     def pump(self, seconds):
         for key, _ in self.selector.select(max(0, seconds)):
@@ -67,7 +86,7 @@ class Command:
             if found is not None:
                 return found
             if not self.selector.get_map():
-                raise RuntimeError(f"command exited {self.process.wait()} before the expected observation")
+                raise RuntimeError(self.diagnostic(f"command exited {self.process.wait()} before the expected observation"))
             if time.monotonic() >= deadline:
                 raise RuntimeError("expected command observation timed out; inspect retained raw output")
             self.pump(min(0.25, deadline - time.monotonic()))
@@ -80,7 +99,7 @@ class Command:
             self.pump(min(0.25, deadline - time.monotonic()))
         code = self.process.wait(timeout=max(0.01, deadline - time.monotonic()))
         if code:
-            raise RuntimeError(f"command exited {code}; inspect retained stdout and stderr")
+            raise RuntimeError(self.diagnostic(f"command exited {code}"))
         values = [value for pipe, _, value in self.rows if pipe == "stdout"]
         if len(values) != 1 or not isinstance(values[0], dict):
             raise RuntimeError("expected exactly one structured command result")
@@ -104,7 +123,10 @@ class Command:
             self.process.stdout.close()
             self.process.stderr.close()
             if self.process.stdin is not None and not self.process.stdin.closed:
-                self.process.stdin.close()
+                try:
+                    self.process.stdin.close()
+                except BrokenPipeError:
+                    pass  # The child already closed its side; both raw pipes still close.
             for stream in self.files.values():
                 stream.close()
             self.prefix.with_suffix(".json").write_text(json.dumps({
@@ -112,4 +134,3 @@ class Command:
                 "native_identity_observed": self.identity is not None,
                 "elapsed_ms": (time.monotonic_ns() - self.started) / 1e6,
                 "stdin_recorded": False}, indent=2) + "\n")
-
