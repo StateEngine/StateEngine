@@ -5,7 +5,10 @@ use super::{
     start::{allocate_facts, owner_budget},
     *,
 };
-use crate::{HandshakeInput, PeerProof, PendingIpcHandshake, PresentedAuthority, RawOperation};
+use crate::{
+    HandshakeInput, PeerProof, PendingIpcHandshake, PresentedAuthority, RawOperation,
+    decode_owner_inventory,
+};
 use se_core::{
     admission::HumanTerminal,
     ops::{self, CliSelections},
@@ -19,6 +22,7 @@ use std::{
     sync::{Arc, Weak},
 };
 use zeroize::Zeroizing;
+mod adoption;
 mod channel;
 mod codex;
 mod http;
@@ -506,7 +510,7 @@ impl AdmissionContext {
                 "the same current protected store owner",
             ));
         }
-        let records = super::decode_owner_inventory(&inventory)?;
+        let records = decode_owner_inventory(&inventory)?;
         let native = peer.native();
         let start = match native.started() {
             se_types::StartIdentity::Linux { start_ticks } => se_proc::StartIdentity::Linux {

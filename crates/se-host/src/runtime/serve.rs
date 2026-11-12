@@ -501,6 +501,11 @@ async fn connection(
         let Some((mut exchange, deadline)) = next else {
             return Ok(ConnectionEnd::Closed);
         };
+        if let Some(input) = exchange.adopted.take() {
+            let output = router.execute_adoption(input, &deadline).await;
+            connection = exchange.reply_adoption(output, &deadline).await?;
+            continue;
+        }
         if let Some(input) = exchange.take_channels() {
             let output = router.execute_channels(input, &deadline).await;
             let draining = shutdown.borrow().clone();

@@ -42,6 +42,8 @@ mod drain;
 #[cfg(feature = "listener")]
 pub use drain::StorageDrainReport;
 #[cfg(feature = "listener")]
+mod adoption;
+#[cfg(feature = "listener")]
 mod channels;
 #[cfg(feature = "listener")]
 mod route;
@@ -49,9 +51,6 @@ mod route;
 pub use route::{
     AcceptedPeer, AdmittedExchange, AuthorizedStop, HostedConnection, HostedRouter, RoutedCall,
 };
-
-mod inventory;
-pub use inventory::decode_owner_inventory;
 
 #[cfg(feature = "listener")]
 pub(crate) mod executor;

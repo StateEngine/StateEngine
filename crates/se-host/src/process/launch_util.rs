@@ -4,7 +4,7 @@ use crate::{CallContext, CancellationState, client::lease::Deadline};
 use se_core::ops::agent_launch::LaunchPlan;
 use se_types::{Result, Secret};
 
-pub(super) fn resolve_provider(
+pub(crate) fn resolve_provider(
     configuration: &se_core::config_policy::ConfigFile,
     provider: se_types::Provider,
     selected_file: Option<&std::path::Path>,

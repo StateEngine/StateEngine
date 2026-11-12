@@ -124,6 +124,19 @@ not a Git repository yet, run `git init` there first. For Claude Code, use
 saved agent named `main`; it does not change your repository files or Git history.
 It ends by printing the exact first-launch command for your project and state home.
 
+On Linux and Windows with Claude Code 2.1.295 or newer, capture sessions you
+start directly by running
+`se init --adopt --provider claude` in the project before opening Claude Code.
+StateEngine merges its hooks into your user settings and leaves existing hooks,
+models and permissions intact. If Claude asks whether to trust these hooks,
+choose Allow to enable the integration; declining leaves Claude usable without
+capture or mail. Only explicitly registered project roots participate. Adopted sessions
+appear with the `observed` surface in status, and incoming mail uses Claude's
+native background wake. StateEngine observes these providers without owning or
+stopping them. Uninstall removes unchanged integration entries, preserves later
+user edits and revokes project adoption. Codex adoption is not available in this
+build.
+
 Default state homes are:
 
 | OS | Default state home |
@@ -311,6 +324,10 @@ program from a terminal you opened yourself:
 se down
 se --home "$HOME/.local/state/stateengine" uninstall
 ```
+
+For unattended removal, add `--yes` to `se uninstall`. This confirms removal
+without a terminal; OS ownership, managed-session and agent ancestry checks still
+apply. Retained history and provider login remain preserved.
 
 If you set `XDG_STATE_HOME`, use `"$XDG_STATE_HOME/stateengine"` instead. On Windows,
 run `se down`, then the old extracted archive's `uninstall.ps1` in PowerShell and

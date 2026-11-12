@@ -233,8 +233,10 @@ owned integration exposure while preserving repository files and retained histor
 integration conflicts and remaining obligations in the result.
 
 se uninstall removes this installation, not your repositories or retained history.
-Removal and uninstall require the owner's human terminal, print their affected
-scope before effects and return observed cleanup facts. A pending helper handoff
+Removal and ordinary uninstall require the owner's human terminal. For unattended
+uninstall, pass --yes explicitly; native ownership, agent ancestry and session
+checks still apply. Both print their affected scope before effects and return
+observed cleanup facts. A pending helper handoff
 is not a completed uninstall. On Windows use the matching archive's uninstall.ps1
 to wait for the final status; after an installed executable has been removed,
 recover from the archive rather than retrying that missing executable.

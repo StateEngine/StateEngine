@@ -38,7 +38,7 @@ pub(super) fn peer(
 pub(super) fn self_peer(bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     observe(std::process::id(), bound)
 }
-fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
+pub(super) fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     let (process, sid, creation_filetime) = process_identity(pid)?;
     let mut image = vec![0; 32768];
     let mut length = image.len() as u32;

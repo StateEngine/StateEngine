@@ -318,6 +318,7 @@ pub(super) fn finish<R: ReadStore>(
         return Ok(output);
     };
     let value = &mut status.value;
+    se_host::adoption::status::observe(&cx.home, value);
     if value.removal.is_none() && value.runtime.state != "running" {
         value.atlas.state = if cx.config.value.atlas.enabled {
             "unknown"

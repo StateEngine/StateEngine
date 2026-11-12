@@ -1,3 +1,4 @@
+mod adoption;
 mod atlas_hook;
 mod bootstrap;
 mod compat;
@@ -361,6 +362,9 @@ fn main() -> std::process::ExitCode {
                 &args,
             );
         }
+    }
+    if let Some(code) = adoption::entry(&args) {
+        return std::process::ExitCode::from(code);
     }
     if let Some(code) = atlas_hook::entry(&args) {
         return code;

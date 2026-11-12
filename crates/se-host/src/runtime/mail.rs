@@ -9,7 +9,6 @@ pub(crate) struct NativeSignal {
     changed: std::sync::Arc<tokio::sync::Notify>,
 }
 impl NativeSignal {
-    #[cfg(feature = "secode")]
     pub(crate) fn new(changed: std::sync::Arc<tokio::sync::Notify>) -> Self {
         Self {
             dirty: std::sync::atomic::AtomicBool::new(false),

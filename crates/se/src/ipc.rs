@@ -72,7 +72,7 @@ fn exchange(
     let output = exchange_output(endpoint, credential, call, options)?;
     decode(output, expected).map_err(|error| uncertain(keyed.as_ref(), error))
 }
-fn exchange_output(
+pub(crate) fn exchange_output(
     endpoint: &EndpointRecord,
     credential: ClientCredential,
     call: IpcEnvelope,
@@ -83,7 +83,7 @@ fn exchange_output(
             .key
             .as_ref()
             .map(|key| (operation.name.clone(), key.clone())),
-        IpcRequest::Hook(_) | IpcRequest::Channels(_) => None,
+        IpcRequest::Hook(_) | IpcRequest::Channels(_) | IpcRequest::Adopt(_) => None,
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(input) => input
             .key()
@@ -222,6 +222,7 @@ fn call_operation(call: &IpcEnvelope) -> &str {
         IpcRequest::Operation(op) => &op.name,
         IpcRequest::Hook(_) => "hook.claude",
         IpcRequest::Channels(_) => "native.channels",
+        IpcRequest::Adopt(_) => "native.adopt",
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(_) => "remote authority control",
     }

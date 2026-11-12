@@ -2,9 +2,11 @@
 //! reads configuration and before a worker or store is opened.
 #[path = "route/admit.rs"]
 mod admit;
+#[path = "route/adoption.rs"]
+pub(crate) mod adoption;
 #[cfg(any(target_os = "linux", windows))]
 #[path = "route/autostart.rs"]
-mod autostart;
+pub(crate) mod autostart;
 #[path = "route/clock.rs"]
 mod clock;
 #[path = "route/credential.rs"]

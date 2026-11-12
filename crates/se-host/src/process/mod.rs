@@ -15,7 +15,7 @@ mod files;
 mod git_workspace;
 mod integration;
 mod launch;
-mod launch_util;
+pub(crate) mod launch_util;
 mod mail;
 mod native_record;
 mod owned;

@@ -194,7 +194,6 @@ impl Waits {
         }
         Ok(())
     }
-    #[cfg(feature = "secode")]
     pub(crate) fn register_native(
         &self,
         recipient: crate::runtime::MailRecipient,

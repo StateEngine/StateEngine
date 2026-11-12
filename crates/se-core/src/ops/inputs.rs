@@ -153,6 +153,8 @@ pub struct RuntimeDown {
 #[serde(deny_unknown_fields)]
 pub struct Uninstall {
     pub idempotency_key: IdempotencyKey,
+    #[serde(default)]
+    pub yes: bool,
 }
 
 impl Validate for MetaVersion {

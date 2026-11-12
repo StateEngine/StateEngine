@@ -13,10 +13,10 @@ const REMOTE_NAME: &str = "ipc-remote-image-cache.json";
 const MAX_BYTES: usize = 4096;
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Entry {
-    schema: u16,
-    image: ImageKey,
-    digest: Sha256,
+pub(super) struct Entry {
+    pub(super) schema: u16,
+    pub(super) image: ImageKey,
+    pub(super) digest: Sha256,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImageCacheRead {
@@ -24,7 +24,7 @@ pub enum ImageCacheRead {
     Current,
     Stale,
 }
-fn read(files: &NativeStateFiles, name: &str) -> IpcNativeResult<Option<Vec<u8>>> {
+pub(super) fn read(files: &NativeStateFiles, name: &str) -> IpcNativeResult<Option<Vec<u8>>> {
     let Some(file) = files
         .readback(&files.root().join(name))
         .map_err(|e| error("read protected executable cache", std::io::Error::other(e)))?
@@ -101,13 +101,27 @@ fn publish(root: &Path, name: &str, expected: Sha256, bound: &IpcIoBound) -> Ipc
             "current executable differs from the runtime's measured image",
         ));
     }
-    let bytes = serde_json::to_vec(&Entry {
-        schema: 1,
-        image: stamp,
-        digest,
-    })
-    .map_err(|e| error("encode executable cache", std::io::Error::other(e)))?;
-    let prior = read(&files, name)?;
+    store(
+        &files,
+        name,
+        &Entry {
+            schema: 1,
+            image: stamp,
+            digest,
+        },
+        bound,
+    )
+}
+pub(super) fn store(
+    files: &NativeStateFiles,
+    name: &str,
+    entry: &Entry,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<()> {
+    let root = files.root();
+    let bytes = serde_json::to_vec(entry)
+        .map_err(|e| error("encode executable cache", std::io::Error::other(e)))?;
+    let prior = read(files, name)?;
     bound
         .remaining()
         .map_err(|e| error("publish executable cache deadline", e))?;

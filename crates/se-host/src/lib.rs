@@ -10,6 +10,7 @@ mod acp_session_independent;
 #[cfg(all(test, feature = "listener"))]
 #[path = "../tests/support/acp_transport_independent.rs"]
 mod acp_transport_independent;
+pub mod adoption;
 #[cfg(feature = "runtime")]
 mod agent_observation;
 pub mod channels;
@@ -20,6 +21,8 @@ pub use agent_observation::{
     AgentObservation, AgentObservationPlan, observe_agent, prepare_agent_observation,
 };
 mod harness;
+mod owner_inventory;
+pub use owner_inventory::decode_owner_inventory;
 #[cfg(feature = "runtime")]
 mod launch_proofs;
 #[cfg(feature = "runtime")]

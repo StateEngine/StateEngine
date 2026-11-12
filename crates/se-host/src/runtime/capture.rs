@@ -29,6 +29,7 @@ pub struct TranscriptBindings {
     maximum: usize,
     pins: Arc<Mutex<Registry>>,
     retirements: Arc<tokio::sync::Mutex<()>>,
+    observed_serial: Arc<Mutex<HashMap<SessionId, Weak<tokio::sync::Mutex<()>>>>>,
 }
 #[derive(Default)]
 struct Registry {
@@ -53,7 +54,36 @@ impl TranscriptBindings {
             maximum,
             pins: Arc::new(Mutex::new(Registry::default())),
             retirements: Arc::default(),
+            observed_serial: Arc::default(),
         }
+    }
+    pub(crate) fn identities(&self) -> Result<Vec<crate::SessionIdentity>> {
+        self.registry()?
+            .active
+            .values()
+            .map(|source| Ok(try_guard(source)?.binding.identity.clone()))
+            .collect()
+    }
+    pub(crate) fn observed_serial(
+        &self,
+        session: &SessionId,
+    ) -> Result<Arc<tokio::sync::Mutex<()>>> {
+        let mut serial = self.observed_serial.lock().map_err(|_| {
+            se_core::scope::unreadable(
+                "observed session",
+                "session scheduling registry is poisoned",
+            )
+        })?;
+        serial.retain(|_, value| value.strong_count() > 0);
+        if let Some(value) = serial.get(session).and_then(Weak::upgrade) {
+            return Ok(value);
+        }
+        if serial.len() >= self.maximum {
+            return Err(busy());
+        }
+        let value = Arc::new(tokio::sync::Mutex::new(()));
+        serial.insert(session.clone(), Arc::downgrade(&value));
+        Ok(value)
     }
     // Only bounded in-memory registry work holds this lock. Per-source scan
     // locks retain their existing nonblocking behavior for the same transcript.
@@ -328,6 +358,19 @@ pub struct CaptureHandle {
     sources: TranscriptBindings,
     lease: Weak<HostLease>,
     fenced: Arc<std::sync::atomic::AtomicBool>,
+}
+impl CaptureHandle {
+    pub(crate) fn identities(&self) -> Result<Vec<crate::SessionIdentity>> {
+        self.sources.identities()
+    }
+    pub(crate) fn from_router(router: &HostedRouter) -> Self {
+        Self {
+            execution: router.execution.clone(),
+            sources: router.sources.clone(),
+            lease: router.context.lease.clone(),
+            fenced: router.fenced.clone(),
+        }
+    }
 }
 impl CaptureHandle {
     pub(crate) fn in_background(&self) -> Self {

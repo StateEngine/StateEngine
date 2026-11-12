@@ -359,6 +359,7 @@ pub fn from_matches_with_key(
         }),
         "installation.uninstall" => AnyOp::Uninstall(Uninstall {
             idempotency_key: key()?,
+            yes: m.get_flag("yes"),
         }),
         _ => return Err(unknown(meta.name)),
     };

@@ -9,7 +9,7 @@ pub(crate) fn remove_for_reinstall(
     diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
 ) -> Result<std::fs::File> {
     let key = se_types::IdempotencyKey::new(uuid::Uuid::new_v4().to_string())?;
-    let (plan, effects, lease) = execute_inner(cx, &key, diagnostic, Some((claim, image)))?;
+    let (plan, effects, lease) = execute_inner(cx, &key, diagnostic, Some((claim, image)), false)?;
     let report = se_core::ops::installation::finish_uninstall(&plan, key, effects)?;
     if !report.complete {
         return Err(SeError::new(Detail::StateConflict(details::StateConflict {

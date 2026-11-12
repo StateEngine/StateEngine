@@ -51,7 +51,7 @@ pub(super) fn execute(
         "installation.uninstall",
         owner.os_owner(),
         cx.session.is_some(),
-        true,
+        !input.yes,
     )?;
     drop(reader);
     drop(files);
@@ -87,7 +87,7 @@ pub(super) fn execute(
     {
         // Reacquire the same persistent inode after down, then re-observe all
         // custody. A concurrent start wins or cleanup wins; no unlinkable lock.
-        match retire(cx, &mut runtime_files) {
+        match retire(cx, &mut runtime_files, input.yes) {
             Ok(()) => (),
             Err(error) => issues.push(error.body),
         }
@@ -154,7 +154,7 @@ pub(super) fn execute(
         },
     }))
 }
-fn retire(cx: &Bootstrap, effects: &mut Vec<FileEffect>) -> Result<()> {
+fn retire(cx: &Bootstrap, effects: &mut Vec<FileEffect>, confirmed: bool) -> Result<()> {
     let route::setup::Setup::Present(reader) =
         route::setup::inspect(&cx.home, receipt::timestamp(route::execute::now_us()?)?)?
     else {
@@ -180,7 +180,7 @@ fn retire(cx: &Bootstrap, effects: &mut Vec<FileEffect>) -> Result<()> {
         "installation.uninstall",
         owner.os_owner(),
         cx.session.is_some(),
-        true,
+        !confirmed,
     )?;
     if !inventory.processes.is_empty() {
         return Err(scope::unreadable(
