@@ -209,6 +209,33 @@ fn published_epoch_cannot_be_discarded_and_readers_do_no_inventory() -> Check {
 /// through the production adapter while a spawner thread runs, then reacquires:
 /// with the explicit release it never refuses, and on the close-only release it
 /// refused often.
+/// A second lease on the same home must be refused on every platform.
+///
+/// This is deterministic, not timing-based: one cache holds the writer lease
+/// while a second acquisition is attempted. On Windows the readback handle
+/// shares READ|WRITE|DELETE, so the open grants nothing and the byte-range lock
+/// is the only exclusion; if that lock were dropped, this check would pass two
+/// holders and fail here.
+#[test]
+fn a_second_writer_lease_on_one_home_is_refused() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "lock")?;
+    let f = fixture()?;
+    let held = NativeAtlasCache::create(&f.home, f.scope.clone())?;
+    let second = NativeAtlasCache::create(&f.home, f.scope.clone());
+    let refused = match second {
+        Ok(_) => false,
+        Err(error) => matches!(
+            error.body.detail(),
+            se_types::Detail::AtlasResourceBudget(detail)
+                if detail.resource == "Atlas home writer lease"
+        ),
+    };
+    assert!(refused, "a second lease was granted on a held Atlas home");
+    drop(held);
+    NativeAtlasCache::create(&f.home, f.scope.clone())?;
+    Ok(())
+}
+
 #[test]
 #[cfg(unix)]
 fn writer_lease_ends_explicitly_while_another_thread_spawns() -> Check {
