@@ -5,7 +5,7 @@ its `rust-v1` command map. It adds no product assertions and does not replace th
 judge's verdicts or thresholds. Product and judge Git revisions, map and file
 hashes, native release identity, raw output and every first failure are retained.
 
-Install `nightly.py`, `lifecycle.py`, `native.py` and `report.py` together, and use the supplied user service and
+Install `nightly.py`, `lifecycle.py`, `native.py`, `secode.py` and `report.py` together, and use the supplied user service and
 timer. The service runs outside managed agent trees; fixture environment isolation
 does not change ancestry or bypass owner guards. The adapter refuses a fleet or
 session environment. It checks for 34 GiB available before building or starting a
@@ -48,6 +48,36 @@ No native provider command uses the normal login home. Source and artifact trees
 are retained, without credentials; cleanup of old evidence is a separate operator
 operation. Native release builds use a private temporary directory on the result
 filesystem, rather than a RAM-backed system temporary directory.
+
+For a Linux SE Code harness probe, add `["secode", "secode"]` to `probes`
+and configure its separately supplied native package and local model:
+
+```json
+{
+  "secode": {
+    "package": "/srv/proof/secode-package",
+    "manifest_sha256": "REVIEWED_RELEASE_MANIFEST_SHA256",
+    "base_url": "http://127.0.0.1:18020/v1",
+    "model": "LOCAL_MODEL_ID"
+  }
+}
+```
+
+The reviewed judge must support `--surface secode --only secode --secode-input
+FILE`. The scheduler verifies the pinned package manifest and native CLI, server
+and terminal executable bytes, then retains `secode-input.json` and its SHA256 in
+`run.json`. It checks those bytes again immediately before and after the judge.
+This first scope accepts a credential-free loopback HTTP OpenAI-compatible model
+only; it passes no login home or credential source to the SE Code judge. The judge
+owns the isolated provider profile, fixtures and behavioral assertions.
+
+The independent receipt uses `scope.mode: "secode-harness"` with selected journeys
+`[1,2,3,4]`: Launch, Work, Mail and Resume. It echoes `secode_input_sha256` and a
+`secode` object containing the input's package facts except its root path, plus the
+provider facts. Ordinary required-budget and per-row cleanup checks still apply.
+A missing or mismatched input, package/model echo or post-run verification keeps
+the SE Code cells UNKNOWN. They have their own scoped grid; Windows and macOS are
+NOT RUN for this Linux-only scope.
 
 Each attempt has `run.json`, `grid.md`, `budgets.json`, a combined `report.json` and
 `report.md`, plus the judge's original receipts. `latest.json` points to one

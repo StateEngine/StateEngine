@@ -3,13 +3,16 @@ import json
 import math
 from pathlib import Path
 from native import validate as validate_native
+from secode import validate_receipt as validate_secode
 
 PLATFORMS = ("linux", "win32", "darwin")
 NAMES = ("Install", "Adopt", "Come back", "Two agents", "Remove")
 FIRST_HOUR = ("Install", "Adopt", "Work", "Restart and recall", "Remove")
+SECODE = ("Launch", "Work", "Mail", "Resume")
 SELECTIONS = {"first-hour": ("first-hour", {1, 2, 3, 4, 5}),
               "wave-2": ("rust-wave-2", {1, 2, 3, 5}),
-              "4": ("selected", {4})}
+              "4": ("selected", {4}),
+              "secode": ("secode-harness", {1, 2, 3, 4})}
 LABELS = {
     "B1": ("embedded A/B",), "B2": ("embedded A/B",),
     "B3": ("standalone persistent processes", "persistent processes after 1 seat(s)",
@@ -101,6 +104,8 @@ def invocation(inv, directory, run=None):
              "receipt_complete": False, "journeys": {}, "outcome": "UNKNOWN", "problems": [],
              "judge_outcome": "FAIL" if type(inv.get("exit")) is int and inv["exit"] != 0
                               else "PASS" if type(inv.get("exit")) is int and inv["exit"] == 0 else "UNKNOWN"}
+    if inv.get("error"):
+        entry["problems"].append(inv["error"])
     if inv.get("native_receipt"):
         try:
             native = validate_native(inv, directory, run or {})
@@ -124,6 +129,12 @@ def invocation(inv, directory, run=None):
             or len(selected) != len(expected) or set(selected) != expected):
         entry["problems"].append("identity, selection or scope mismatch")
         return entry
+    if inv.get("surface") == "secode" or inv.get("selection") == "secode":
+        try:
+            validate_secode(receipt, inv, run or {}, directory)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            entry["problems"].append(str(error))
+            return entry
     if (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
             or any(type(row.get("journey")) is not int or row.get("result") not in ("PASS", "FAIL") for row in rows)
             or {row["journey"] for row in rows} != expected or len(rows) != len(expected)):
@@ -194,7 +205,8 @@ def summarize(run, directory):
     tables = []
     for mode in sorted({entry["mode"] for entry in entries} or {"unavailable"}):
         rows = []
-        for number, name in enumerate(FIRST_HOUR if mode == "first-hour" else NAMES, 1):
+        names = FIRST_HOUR if mode == "first-hour" else SECODE if mode == "secode-harness" else NAMES
+        for number, name in enumerate(names, 1):
             cells = {}
             for platform in PLATFORMS:
                 expected = [entry for entry in entries if entry.get("platform") == platform
@@ -252,7 +264,8 @@ def summarize(run, directory):
         budgets.append({"id": key, "state": state, "probes": probes})
     return {"schema": "se.nightly-proof/v2", "started_at": run["started_at"], "status": status,
             "product": run.get("product"), "judge": run.get("judge"), "tables": tables,
-            "budgets": budgets, "gaps": gaps, "invocations": entries}
+            "budgets": budgets, "gaps": gaps, "invocations": entries,
+            **({"secode": run["secode"]} if "secode" in run else {})}
 
 
 def grid(report):

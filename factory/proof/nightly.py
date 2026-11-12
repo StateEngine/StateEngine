@@ -13,6 +13,7 @@ import time
 from report import exit_status, publish
 from lifecycle import begin, checkpoint, save, service_exit
 from native import import_receipt
+import secode
 
 GIB = 1024**3
 
@@ -108,9 +109,26 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
     checkpoint(Path(config["state"]), directory, run)
     argv = [config["node"], judge / "journeys/run.mjs", "--implementation", "rust",
             "--distribution", "standalone", "--product", descriptor,
-            "--surface", surface, "--auth-home", config["auth_home"], "--out", directory / name]
-    if surface in config.get("credential_sources", {}):
-        argv += ["--credential-source", config["credential_sources"][surface]]
+            "--surface", surface, "--out", directory / name]
+    if surface == "secode":
+        try:
+            if selection != "secode":
+                raise ValueError("SE Code probes require the secode journey selection")
+            if "secode" not in run:
+                run["secode"] = secode.prepare(config, directory)
+            secode.verify_current(run, directory)
+            invocation["secode_input_sha256"] = run["secode"]["input_sha256"]
+            argv += ["--secode-input", directory / run["secode"]["input"]]
+            checkpoint(Path(config["state"]), directory, run)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            invocation.update(state="unavailable", error="SE Code inputs: " + str(error))
+            invocation["box_load"]["after"] = box_load()
+            checkpoint(Path(config["state"]), directory, run)
+            return
+    else:
+        argv += ["--auth-home", config["auth_home"]]
+        if surface in config.get("credential_sources", {}):
+            argv += ["--credential-source", config["credential_sources"][surface]]
     if selection == "first-hour":
         argv += ["--only", selection, "--archive", archive]
     elif selection != "wave-2":
@@ -121,6 +139,12 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
                 stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                 timeout=remaining(deadline, 7200), close_fds=True).returncode
         invocation["state"] = "finished"
+        if surface == "secode":
+            try:
+                secode.verify_current(run, directory)
+                invocation["secode_inputs_verified_after"] = True
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                invocation.update(state="unavailable", error="SE Code input readback: " + str(error))
     except subprocess.TimeoutExpired:
         invocation.update(state="timed-out", error="judge deadline; inspect fixture and native custody")
         raise RuntimeError(invocation["error"]) from None
