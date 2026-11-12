@@ -13,6 +13,10 @@ struct Attempt {
     action: Action,
     observed_at: String,
     refusal: Option<String>,
+    #[serde(default)]
+    discovery: Option<[u8; 32]>,
+    #[serde(default)]
+    installation: Option<String>,
 }
 fn path(home: &Path, project: &ProjectId, action: Action, kind: Kind) -> std::path::PathBuf {
     home.join(if kind == Kind::Claude {
@@ -53,16 +57,34 @@ pub fn record_for(
         "codex-adoption-status"
     });
     let target = path(home, project, action, kind);
-    if error.is_none() && files.readback(&target).map_err(native)?.is_none() {
+    if kind == Kind::Claude && error.is_none() && files.readback(&target).map_err(native)?.is_none()
+    {
         return Ok(());
     }
     files.prepare_directory(&directory).map_err(native)?;
     let previous = acquire(&target, &mut retry)?;
+    let registration = if kind == Kind::Codex {
+        read_for(home, kind)?
+    } else {
+        None
+    };
+    let discovery = registration.as_ref().and_then(|r| r.discovery);
+    let installation = registration.as_ref().and_then(|r| r.installation.clone());
+    if kind == Kind::Codex
+        && error.is_none()
+        && read_attempt(&files, home, project, action, kind)?.is_some_and(|a| {
+            a.refusal.is_none() && a.discovery == discovery && a.installation == installation
+        })
+    {
+        return Ok(());
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| invalid(&e.to_string()))?;
     let attempt = Attempt {
         schema: 1,
+        discovery,
+        installation,
         project: project.clone(),
         action,
         observed_at: se_core::ops::receipt::timestamp(
@@ -81,7 +103,7 @@ pub fn record_for(
         return previous.replace(hash, &bytes).map_err(native);
     }
     // Successful hooks need no file until an earlier refusal exists.
-    if error.is_none() {
+    if error.is_none() && kind == Kind::Claude {
         return Ok(());
     }
     let mut staged = files.create_staging(&directory).map_err(native)?;
@@ -167,7 +189,7 @@ fn observe_for(home: &Path, output: &mut StatusOutput, kind: Kind) {
     output
         .pending
         .retain(|fact| !fact.what.starts_with(&prefix));
-    let files = match (|| {
+    let (files, registration) = match (|| {
         let Some(registration) = read_for(home, kind)? else {
             return Ok(None);
         };
@@ -175,7 +197,7 @@ fn observe_for(home: &Path, output: &mut StatusOutput, kind: Kind) {
             return Ok(None);
         }
         se_proc::NativeStateFiles::open(home)
-            .map(Some)
+            .map(|files| Some((files, registration)))
             .map_err(native)
     })() {
         Ok(Some(files)) => files,
@@ -186,6 +208,11 @@ fn observe_for(home: &Path, output: &mut StatusOutput, kind: Kind) {
             return;
         }
     };
+    if kind == Kind::Codex
+        && let Some(fact) = codex_pending(home, &registration, &project)
+    {
+        output.pending.push(fact);
+    }
     let remedy = || {
         let command = AgentCommand::home_argument(home).and_then(|home| {
             AgentCommand::from_argv(vec![
@@ -228,4 +255,55 @@ fn observe_for(home: &Path, output: &mut StatusOutput, kind: Kind) {
             }),
         }
     }
+}
+
+/// File installation is never a hook-execution witness.
+pub fn witnessed(home: &Path, kind: Kind, project: &ProjectId) -> Result<bool> {
+    let Some(registration) = read_for(home, kind)? else {
+        return Ok(false);
+    };
+    if registration.discovery.is_none()
+        || !registration
+            .projects
+            .iter()
+            .any(|p| &p.project == project && p.discovery == registration.discovery)
+        || Some(discovery_stamp(&registration)?) != registration.discovery
+    {
+        return Ok(false);
+    }
+    let files = se_proc::NativeStateFiles::open(home).map_err(native)?;
+    for action in Action::ALL {
+        if let Some(attempt) = read_attempt(&files, home, project, action, kind)?
+            && attempt.refusal.is_none()
+            && attempt.discovery == registration.discovery
+            && attempt.installation == registration.installation
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn codex_pending(
+    home: &Path,
+    registration: &Registration,
+    project: &ProjectId,
+) -> Option<PendingFact> {
+    let observed = witnessed(home, Kind::Codex, project);
+    if matches!(observed, Ok(true)) {
+        return None;
+    }
+    let detail = match observed {
+                Err(error) => format!("Hook execution observation is unavailable: {error}. Capture and mail are unconfirmed."),
+                _ => match discovery_stamp(registration) {
+                    Err(error) => format!("Provider configuration or executable could not be observed: {error}. Capture and mail are unconfirmed."),
+                    Ok(stamp) if Some(stamp) != registration.discovery || !registration.projects.iter().any(|p|&p.project == project && p.discovery == Some(stamp)) => format!("Codex has not discovered the current integration configuration or executable: {}. Repeat adoption setup; capture and mail are unconfirmed.", registration.discovery_refusal.as_deref().unwrap_or("provider discovery must be repeated")),
+                    Ok(_) => "Codex discovered and trusted the installed hooks; no authenticated hook run has been witnessed yet. Start Codex directly in this project.".into(),
+                }
+            };
+    Some(PendingFact {
+        what: "Codex adoption hook execution".into(),
+        since: None,
+        detail,
+    })
 }

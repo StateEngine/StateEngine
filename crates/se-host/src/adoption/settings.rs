@@ -3,6 +3,7 @@ use super::*;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 mod text;
+mod toml;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -10,6 +11,10 @@ pub struct Layout {
     pub created_file: bool,
     pub created_hooks: bool,
     pub created_events: Vec<String>,
+    #[serde(default)]
+    pub trust: Vec<(String, String)>,
+    #[serde(default)]
+    pub created_state: bool,
 }
 pub fn layout(path: &Path, entries: &[(String, Value)]) -> Result<Layout> {
     let (pin, _, document) = read_document(path)?;
@@ -23,6 +28,8 @@ pub fn layout(path: &Path, entries: &[(String, Value)]) -> Result<Layout> {
         created_file: pin.is_none(),
         created_hooks: document.get("hooks").is_none(),
         created_events: events,
+        trust: vec![],
+        created_state: document.get("hooks").and_then(|h| h.get("state")).is_none(),
     })
 }
 /// Exact entries already present before installation remain user-owned.
@@ -50,21 +57,22 @@ pub fn missing(path: &Path, entries: &[(String, Value)]) -> Result<Vec<(String, 
     }
     Ok(result)
 }
+pub(crate) const EVENTS: [(&str, &str, bool); 7] = [
+    ("SessionStart", "start", false),
+    ("UserPromptSubmit", "prompt", false),
+    ("PostToolUse", "capture", true),
+    ("Stop", "stop", false),
+    ("SessionEnd", "end", false),
+    ("SessionStart", "mail", true),
+    ("Stop", "mail", true),
+];
 pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
     let image = executable
         .to_str()
         .ok_or_else(|| invalid("UTF-8 executable path"))?;
     let home = home.to_str().ok_or_else(|| invalid("UTF-8 home path"))?;
     let mut result = Vec::new();
-    for (event, action, background) in [
-        ("SessionStart", "start", false),
-        ("UserPromptSubmit", "prompt", false),
-        ("PostToolUse", "capture", true),
-        ("Stop", "stop", false),
-        ("SessionEnd", "end", false),
-        ("SessionStart", "mail", true),
-        ("Stop", "mail", true),
-    ] {
+    for (event, action, background) in EVENTS {
         // Exec form bypasses both Bash and PowerShell tokenization. Provider
         // policy owns failure handling, including a missing or broken image.
         let mut hook = json!({"type":"command", "command":image,
@@ -79,12 +87,16 @@ pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
     }
     Ok(result)
 }
-fn read_document(path: &Path) -> Result<(Option<se_proc::OwnedFile>, Vec<u8>, Value)> {
+pub(super) fn read_document(path: &Path) -> Result<(Option<se_proc::OwnedFile>, Vec<u8>, Value)> {
     let Some(mut file) = se_proc::OwnedFile::open(path).map_err(native)? else {
         return Ok((None, vec![], json!({})));
     };
     let bytes = file.read(LIMIT).map_err(native)?;
-    let value: Value = crate::client::wire::decode_json(&bytes, LIMIT)?;
+    let value: Value = if is_toml(path) {
+        toml::read(&bytes)?
+    } else {
+        crate::client::wire::decode_json(&bytes, LIMIT)?
+    };
     if !value.is_object() {
         return Err(invalid(
             "a provider settings object; existing bytes were preserved",
@@ -99,7 +111,11 @@ fn write_document(
     document: &Value,
     edits: &[text::Edit],
 ) -> Result<()> {
-    let bytes = text::apply(before, document, edits)?;
+    let bytes = if is_toml(path) {
+        toml::apply(before, document, edits)?
+    } else {
+        text::apply(before, document, edits)?
+    };
     if bytes.len() > LIMIT {
         return Err(invalid("provider settings within one MiB"));
     }
@@ -182,6 +198,18 @@ pub fn uninstall_for(home: &Path, kind: Kind) -> Result<Vec<PathBuf>> {
         }
     }
     if let Some(hooks) = document.get_mut("hooks").and_then(Value::as_object_mut) {
+        if let Some(state) = hooks.get_mut("state").and_then(Value::as_object_mut) {
+            for (key, hash) in &registration.layout.trust {
+                if state.get(key) == Some(&json!({"trusted_hash":hash})) {
+                    state.remove(key);
+                    edits.push(text::Edit::RemoveTrust(key.clone()));
+                    changed = true;
+                }
+            }
+            if state.is_empty() && registration.layout.created_state {
+                hooks.remove("state");
+            }
+        }
         for event in &registration.layout.created_events {
             if hooks
                 .get(event)
@@ -212,4 +240,62 @@ pub fn uninstall_for(home: &Path, kind: Kind) -> Result<Vec<PathBuf>> {
     // in the provider, but without this registration it is an inert success.
     super::remove_for(home, kind)?;
     Ok(if changed { vec![path] } else { vec![] })
+}
+
+fn is_toml(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "toml")
+}
+/// Trust only exact newly installed entries that the provider discovered.
+pub fn trust(path: &Path, entries: &[(String, String)]) -> Result<()> {
+    let (pin, before, mut document) = read_document(path)?;
+    let mut edits = Vec::new();
+    let hooks = document
+        .as_object_mut()
+        .ok_or_else(|| invalid("settings object"))?
+        .entry("hooks")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| invalid("hooks table"))?;
+    let state = hooks
+        .entry("state")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| invalid("hook state table"))?;
+    for (key, hash) in entries {
+        let expected = json!({"trusted_hash":hash});
+        match state.get(key) {
+            Some(value) if value == &expected => (),
+            Some(_) => {
+                return Err(invalid(
+                    "unchanged owner hook trust decisions; edited state was preserved",
+                ));
+            }
+            None => {
+                state.insert(key.clone(), expected);
+                edits.push(text::Edit::Trust(key.clone(), hash.clone()));
+            }
+        }
+    }
+    if !edits.is_empty() {
+        write_document(path, pin, &before, &document, &edits)?;
+    }
+    Ok(())
+}
+
+pub fn missing_trust(path: &Path, entries: &[(String, String)]) -> Result<Vec<(String, String)>> {
+    let (_, _, document) = read_document(path)?;
+    let mut missing = Vec::new();
+    let state = document.get("hooks").and_then(|h| h.get("state"));
+    for (key, hash) in entries {
+        match state.and_then(|s| s.get(key)) {
+            None => missing.push((key.clone(), hash.clone())),
+            Some(value) if value == &json!({"trusted_hash":hash}) => (),
+            Some(_) => {
+                return Err(invalid(
+                    "unchanged owner hook trust decisions; edited state was preserved",
+                ));
+            }
+        }
+    }
+    Ok(missing)
 }

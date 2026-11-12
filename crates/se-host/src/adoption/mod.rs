@@ -11,6 +11,8 @@ pub mod diagnostic;
 #[cfg(feature = "listener")]
 pub mod codex;
 #[cfg(feature = "listener")]
+pub mod install;
+#[cfg(feature = "listener")]
 pub mod metadata;
 pub mod settings;
 pub mod status;
@@ -46,7 +48,7 @@ impl Kind {
     pub fn settings(self) -> &'static str {
         match self {
             Self::Claude => "settings.json",
-            Self::Codex => "hooks.json",
+            Self::Codex => "config.toml",
         }
     }
     pub fn provider(self) -> se_store::Provider {
@@ -67,6 +69,8 @@ impl Kind {
 pub struct Project {
     pub project: ProjectId,
     pub root: NativePath,
+    #[serde(default)]
+    pub discovery: Option<[u8; 32]>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,6 +83,12 @@ pub struct Registration {
     pub layout: settings::Layout,
     pub installed: bool,
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub discovery: Option<[u8; 32]>,
+    #[serde(default)]
+    pub discovery_refusal: Option<String>,
+    #[serde(default)]
+    pub installation: Option<String>,
 }
 impl Registration {
     pub fn project(&self, cwd: &Path) -> Result<Option<&Project>> {
@@ -235,4 +245,32 @@ pub fn resolve_provider_for(
         Kind::Codex => se_types::Provider::Codex,
     };
     crate::process::launch_util::resolve_provider(configuration, provider, file)
+}
+
+/// A discovery receipt is only a cache hint. Configuration or executable drift
+/// invalidates it; native ancestry remains the authority for every hook call.
+pub fn discovery_stamp(registration: &Registration) -> Result<[u8; 32]> {
+    let (pin, _, mut config) = settings::read_document(&registration.settings.to_local()?)?;
+    if pin.is_none() {
+        return Err(invalid(
+            "provider configuration is absent; repeat adoption setup",
+        ));
+    }
+    // Terminal preferences written during startup do not change hook discovery.
+    config.as_object_mut().map(|object| object.remove("tui"));
+    let provider = std::fs::File::open(registration.provider.to_local()?).map_err(io)?;
+    let revision = se_proc::observe_file_revision(&provider).map_err(io)?;
+    let mut hash = Sha256::new();
+    hash.update(revision.volume);
+    hash.update(revision.file);
+    hash.update(revision.size.to_le_bytes());
+    hash.update(revision.mtime_unix_nanos.to_le_bytes());
+    if let Some(ctime) = revision.ctime_unix_nanos {
+        hash.update(ctime.to_le_bytes());
+    }
+    hash.update(
+        serde_json::to_vec(&(config, &registration.hooks))
+            .map_err(|_| invalid("provider hook discovery configuration"))?,
+    );
+    Ok(hash.finalize().into())
 }

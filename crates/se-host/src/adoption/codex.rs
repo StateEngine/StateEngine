@@ -4,9 +4,12 @@ use serde_json::{Value, json};
 #[cfg(target_os = "linux")]
 mod executable;
 mod queue;
+mod rpc;
+mod trust;
 #[cfg(target_os = "linux")]
 pub use executable::resolve as native_executable;
 pub use queue::offer;
+pub use trust::install as trust;
 #[cfg(not(target_os = "linux"))]
 pub fn native_executable(command: &Path) -> Result<std::path::PathBuf> {
     Ok(command.to_owned())
@@ -64,7 +67,10 @@ pub fn current(registration: &Registration, input: &Input) -> Result<bool> {
     let mut bytes = Vec::new();
     let mut offset = 0;
     loop {
-        let chunk = pin.read_at(offset, 65536).map_err(native)?;
+        let remaining = crate::client::wire::MAX_FRAME_BYTES
+            .saturating_add(1)
+            .saturating_sub(bytes.len());
+        let chunk = pin.read_at(offset, remaining.min(65536)).map_err(native)?;
         let end = chunk.bytes.iter().position(|b| *b == b'\n');
         bytes.extend_from_slice(&chunk.bytes[..end.unwrap_or(chunk.bytes.len())]);
         if bytes.len() > crate::client::wire::MAX_FRAME_BYTES {
@@ -101,15 +107,9 @@ pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
     let quoted = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
     let windows_quoted = |text: &str| format!("'{}'", text.replace('\'', "''"));
     let mut entries = Vec::new();
-    for (event, action) in [
-        ("SessionStart", "start"),
-        ("UserPromptSubmit", "prompt"),
-        ("PostToolUse", "capture"),
-        ("Stop", "stop"),
-        ("SessionEnd", "end"),
-        ("SessionStart", "mail"),
-        ("Stop", "mail"),
-    ] {
+    // Provider hook timeouts are seconds. The mail hook waits for the session
+    // lifetime; its individual queue RPC has a separate five-second budget.
+    for (event, action, _) in super::settings::EVENTS {
         let command = format!(
             "{} __se-codex-adopt {} {action}",
             quoted(executable),

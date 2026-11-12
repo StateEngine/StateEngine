@@ -128,8 +128,10 @@ On Linux and Windows, capture sessions you start directly with
 `se init --adopt --provider claude` for Claude Code 2.1.295 or newer, or
 `se init --adopt --provider codex` for Codex 0.166.0 or newer. StateEngine adds
 its hooks to the provider's user settings and preserves existing hooks, models,
-permissions and settings text. Review and trust the new hooks in the provider's
-own prompt; declining leaves the provider usable with capture and mail inactive.
+permissions and settings text. Codex adoption installs its hooks in `config.toml`
+and trusts only those exact definitions through the provider's discovery hashes.
+Status keeps capture and mail unconfirmed until an authenticated hook runs.
+For Claude, review and trust the new hooks in the provider's own prompt.
 Only explicitly registered project roots participate. Adopted sessions appear
 with the `observed` surface in status. Incoming mail uses the provider's native
 wake or input queue; an offer is not a recipient read receipt. StateEngine does
