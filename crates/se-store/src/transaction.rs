@@ -5,8 +5,7 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
-mod checkpoint;
-pub(crate) mod checkpoint_task;
+pub(crate) mod checkpoint;
 mod first_binding;
 pub(crate) mod idempotency;
 mod input;

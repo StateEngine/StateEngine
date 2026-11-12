@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod atlas;
-use crate::transaction::checkpoint_task;
+use crate::checkpoint_task;
 /// Diagnostics separate from immutable receipts. commit_sync measures SQLite's
 /// COMMIT call, not a claimed filesystem syscall duration/count.
 #[derive(Clone, Debug)]
@@ -400,6 +400,12 @@ fn flush(
         && let Err(error) = host.checkpoint(CheckpointMode::Passive, lease)
     {
         host.engine.maintenance = Some(error);
+    }
+    if host.engine.maintenance.is_none() {
+        // The writer's own checkpoint completed fully: it paid the debt the
+        // background task may still be reporting from the failure window, so
+        // the recovery clears the shared state before the report reads it.
+        status.clear();
     }
     let through = host
         .reader

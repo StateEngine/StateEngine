@@ -3,10 +3,12 @@
 //! PASSIVE in WAL mode does not block the writer, and a slow checkpoint must
 //! not stall appends either. The cadence is small and frequent, so the WAL is
 //! kept far below the 64 MiB capacity cutoff instead of accumulating toward it.
-use super::checkpoint::probe;
-use super::*;
+use crate::transaction::checkpoint::probe;
+use crate::{error::*, *};
+use rusqlite::Connection;
 use crate::backup_context::MAX_WAL_BYTES;
 use std::{
+    path::PathBuf,
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
@@ -94,6 +96,11 @@ impl Status {
     /// The retained last maintenance error, or None while the debt is clean.
     pub(crate) fn last_error(&self) -> Option<Box<StoreError>> {
         self.state.lock().error().cloned().map(Box::new)
+    }
+    /// A writer-driven checkpoint completed fully: the debt it paid makes any
+    /// state the task retained from an earlier failure window stale.
+    pub(crate) fn clear(&self) {
+        *self.state.lock() = Maint::Clear;
     }
     pub(crate) fn set_idle(&self, idle: bool) {
         self.idle.store(idle, Ordering::Release);
@@ -259,9 +266,6 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
         // WAL it copies no frames from, so without this step a stranded WAL
         // would keep its high-water size until the next full reset. The short
         // backoff bounds how long a straggling write waits for it.
-        if !status.idle() {
-            return;
-        }
         match checkpoint(db, "TRUNCATE") {
             Ok((_, log, _)) => status.set(if log > 0 {
                 Maint::Pending
@@ -275,9 +279,6 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
     // Fully checkpointed and small: nothing to do, and no debt left behind.
     if wal.log == wal.done {
         status.set(Maint::Clear);
-        return;
-    }
-    if !status.idle() {
         return;
     }
     // New frames to copy: PASSIVE is the mode that never waits on a reader in
