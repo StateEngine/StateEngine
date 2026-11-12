@@ -24,21 +24,33 @@ impl NativeAtlasCache {
         cache.recover_reservation()?;
         Ok(Some(cache))
     }
-    pub(super) fn writer_lease(home: &NativeStateFiles) -> AtlasResult<File> {
+    pub(super) fn writer_lease(home: &NativeStateFiles) -> AtlasResult<writer::WriterLease> {
         let path = home.root().join("writer.lock");
         let writer = home
             .readback(&path)
             .map_err(fail)?
             .ok_or_else(|| fail("writer lock absent"))?;
-        writer.try_lock().map_err(|error| match error {
-            std::fs::TryLockError::WouldBlock => busy("Atlas home writer lease", 1, 0),
-            std::fs::TryLockError::Error(error) => fail(error),
-        })?;
+        // The shared guard takes the same exclusive nonblocking lock and keeps
+        // its exact refusal distinct: a contended lease is a retryable busy.
+        // Windows excludes through the exclusive open itself.
+        #[cfg(unix)]
+        let writer = match writer.try_lock() {
+            Ok(()) => se_proc::advisory_lock::AdvisoryLock::acquire(writer),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(busy("Atlas home writer lease", 1, 0));
+            }
+            Err(std::fs::TryLockError::Error(error)) => Err(error),
+        };
+        #[cfg(unix)]
+        let writer = match writer {
+            Ok(guard) => guard,
+            Err(error) => return Err(fail(error)),
+        };
         let named = home
             .readback(&path)
             .map_err(fail)?
             .ok_or_else(|| fail("writer lock replaced"))?;
-        if !same(&writer, &named)? {
+        if !same(writer::opened(&writer), &named)? {
             return Err(fail("writer lock identity changed"));
         }
         Ok(writer)
