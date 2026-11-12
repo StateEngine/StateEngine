@@ -32,18 +32,14 @@ impl NativeAtlasCache {
             .ok_or_else(|| fail("writer lock absent"))?;
         // The shared guard takes the same exclusive nonblocking lock and keeps
         // its exact refusal distinct: a contended lease is a retryable busy.
-        // Windows excludes through the exclusive open itself.
+        // Windows excludes through the exclusive open itself, so it keeps the
+        // plain descriptor and releases by close.
         #[cfg(unix)]
-        let writer = match writer.try_lock() {
-            Ok(()) => se_proc::advisory_lock::AdvisoryLock::acquire(writer),
-            Err(std::fs::TryLockError::WouldBlock) => {
+        let writer = match se_proc::advisory_lock::AdvisoryLock::acquire(writer) {
+            Ok(guard) => guard,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 return Err(busy("Atlas home writer lease", 1, 0));
             }
-            Err(std::fs::TryLockError::Error(error)) => Err(error),
-        };
-        #[cfg(unix)]
-        let writer = match writer {
-            Ok(guard) => guard,
             Err(error) => return Err(fail(error)),
         };
         let named = home
