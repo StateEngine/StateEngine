@@ -1,3 +1,4 @@
+#![cfg(feature = "listener")]
 #[path = "support/ipc_fixture.rs"]
 mod fixture;
 use fixture::*;

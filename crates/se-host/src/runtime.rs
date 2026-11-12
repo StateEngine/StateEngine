@@ -104,10 +104,10 @@ mod shutdown;
 #[cfg(feature = "listener")]
 pub use shutdown::HostShutdown;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "listener"))]
 mod failure_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "listener"))]
 mod pool_tests;
 
 #[cfg(all(feature = "listener", target_os = "linux"))]

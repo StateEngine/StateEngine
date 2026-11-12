@@ -1,5 +1,5 @@
 //! Public protected-receipt reader controls; final OS closure is a CLI concern.
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 #[path = "support/wave2_host_fixture.rs"]
 mod support;
 use se_host::{

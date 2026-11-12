@@ -1,4 +1,5 @@
 //! Public portable proof handoff only; no authentication or native effects.
+#![cfg(feature = "runtime")]
 use se_host::{
     PreparedRequestProofs, VerifiedPreparedRequest,
     client::{ClientOptions, lease::Deadline},
