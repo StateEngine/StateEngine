@@ -161,6 +161,12 @@ fn native_failure_has_no_publication() -> Check {
     home.inventory(&[])
 }
 fn main() -> Check {
+    if std::env::args().any(|v| v == "--list") {
+        if !std::env::args().any(|v| v == "--ignored") {
+            println!("credential_native: test");
+        }
+        return Ok(());
+    }
     se_proc::initialize_file_creation_owner()?;
     if std::env::args().nth(1).as_deref() == Some("--expect-native-failure") {
         native_failure_has_no_publication()?;

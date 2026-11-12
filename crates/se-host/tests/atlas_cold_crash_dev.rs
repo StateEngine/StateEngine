@@ -352,6 +352,12 @@ mod linux {
     }
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().any(|v| v == "--list") {
+        if !std::env::args().any(|v| v == "--ignored") {
+            println!("atlas_cold_crash_dev: test");
+        }
+        return Ok(());
+    }
     #[cfg(all(target_os = "linux", not(debug_assertions)))]
     linux::run()?;
     #[cfg(not(all(target_os = "linux", not(debug_assertions))))]
