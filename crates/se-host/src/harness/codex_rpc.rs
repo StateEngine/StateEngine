@@ -205,8 +205,7 @@ impl CodexHarness {
             Err(failure) if failure.code == Some(-32601) => {
                 return Err(incompatible(
                     "this Codex build cannot report its Windows sandbox readiness",
-                    "Upgrade Codex to 0.152.0 or later, or set windows.sandbox yourself and \
-                     launch without StateEngine's sandbox selection.",
+                    "Upgrade Codex to 0.152.0 or later, then retry the launch.",
                 ));
             }
             Err(failure) => return Err(failure.error),

@@ -69,11 +69,11 @@ impl Readiness {
 
 /// The layer a host-chosen implementation adds to `thread/start`: one
 /// per-launch key, never an edit to the user's file (their own value stands).
-/// The TOML string decodes to the bare implementation name.
+/// The provider decodes this request as JSON, so the value is the bare name.
 pub fn launch_config(implementation: Implementation) -> (&'static str, Value) {
     (
         "windows.sandbox",
-        Value::String(json!(implementation.key()).to_string()),
+        Value::String(implementation.key().into()),
     )
 }
 
@@ -87,7 +87,9 @@ pub fn readiness_request(implementation: Implementation) -> Value {
 /// absent `windows` table means "nothing set": a non-string value refuses
 /// rather than defaulting.
 pub fn configured(config: &Value) -> Result<Option<Implementation>> {
-    let Some(windows) = config.get("windows") else {
+    // An unconfigured home answers `"windows": null`, which is the same fact as
+    // an absent table: the user set nothing.
+    let Some(windows) = config.get("windows").filter(|value| !value.is_null()) else {
         return Ok(None);
     };
     if !windows.is_object() {
@@ -152,7 +154,10 @@ mod tests {
     use super::*;
 
     fn refusal<T>(value: Result<T>) -> String {
-        format!("{:?}", value.expect_err("expected a refusal"))
+        match value {
+            Err(error) => format!("{error:?}"),
+            Ok(_) => panic!("expected a refusal"),
+        }
     }
 
     #[test]
@@ -179,8 +184,11 @@ mod tests {
     #[test]
     fn the_user_value_is_read_or_it_refuses() {
         assert_eq!(configured(&json!({ "model": "x" })).ok(), Some(None));
-        let nulled = configured(&json!({ "windows": { "allow_mxc": null } })).ok();
+        // An unconfigured home answers exactly this, and must not refuse.
+        let nulled = configured(&json!({ "windows": null })).ok();
         assert_eq!(nulled, Some(None), "an absent value is not a refusal");
+        let partial = configured(&json!({ "windows": { "allow_mxc": null } })).ok();
+        assert_eq!(partial, Some(None));
         let number = refusal(configured(&json!({ "windows": { "sandbox": 3 } })));
         assert!(number.contains("not a string"), "{number}");
         let scalar = refusal(configured(&json!({ "windows": "elevated" })));
@@ -212,11 +220,9 @@ mod tests {
     fn the_launch_layer_names_the_bare_provider_choice() {
         let (key, value) = launch_config(Implementation::Unelevated);
         assert_eq!(key, "windows.sandbox");
-        // The provider reads this as TOML, so the quoted spelling decodes to
-        // the bare name readiness was asked about.
-        let source = value.as_str().expect("a TOML string, not a JSON scalar");
-        let decoded = serde_json::from_str::<Value>(source);
-        assert_eq!(decoded, Ok(json!("unelevated")));
+        // The request is JSON, so the value the provider parses is the bare
+        // name it accepts; a quoted spelling is an unknown variant.
+        assert_eq!(value, Value::String("unelevated".into()));
     }
 
     #[test]
