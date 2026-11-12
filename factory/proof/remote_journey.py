@@ -147,6 +147,15 @@ class Journey:
             raise RuntimeError("remote surface must be claude or codex")
         if not self.config.get("destination") or self.config["destination"].startswith("-"):
             raise RuntimeError("configure a dedicated SSH destination; remote coverage cannot be skipped")
+        self.verify_account()
+        self.lock_account()
+        self.stage_executables()
+        self.credentials = Credentials(self, self.config["auth_home"], self.config.get("credential_sources", {}))
+        self.credentials.stage()
+        self.initialize_projects()
+        self.step("dedicated account, exact native image and fresh project verified")
+
+    def verify_account(self):
         # Reuse the administrator-registration check rather than trusting HOME.
         check = Path(self.config.get("account_check", Path(__file__).resolve().parents[2] /
                                      "scripts/ci/installation_account.py"))
@@ -159,6 +168,8 @@ class Journey:
         self.record["destination_account"] = registered
         self.remote_root = str(Path(registered["profile"]) / self.remote_root)
         self.remote_se = self.remote_root + "/se"
+
+    def lock_account(self):
         lock = '''import fcntl,json,os,stat,sys
 from pathlib import Path
 p=Path.home()/'.stateengine-remote-proof'
@@ -173,6 +184,8 @@ with (p/'lock').open('a') as f:
 '''
         self.lock = self.start(self.ssh("python3 -u -c " + shlex.quote(lock)), hold_stdin=True)
         self.lock.until(lambda pipe, _, value: pipe == "stdout" and value.get("locked") is True, self.bound(30))
+
+    def stage_executables(self):
         # Every attempt stages its own image and repository; no incumbent image
         # or user project is overwritten. The remote account is fixture-only.
         setup = ("umask 077; mkdir " + shlex.quote(self.remote_root) + " && mkdir " +
@@ -182,14 +195,14 @@ with (p/'lock').open('a') as f:
         self.transfer(self.se, self.remote_se)
         self.transfer(provider_binary(self.config["surface"], self.config),
                       self.remote_root + "/bin/" + self.config["surface"])
-        self.credentials = Credentials(self, self.config["auth_home"], self.config.get("credential_sources", {}))
-        self.credentials.stage()
         # A structured native hash readback avoids interpreting a pipeline's exit.
         program = ("import hashlib,json\nfrom pathlib import Path\np=Path(" + repr(self.remote_se) +
                    ")\nwith p.open('rb') as f:\n print(json.dumps({'sha256':hashlib.file_digest(f,'sha256').hexdigest()}))")
         actual = self.command(self.ssh("python3 -c " + shlex.quote(program)))
         if actual["sha256"] != self.record["binary_sha256"]:
             raise RuntimeError("remote staged image differs from the selected product")
+
+    def initialize_projects(self):
         initialized = self.remote("init", "--repo", self.remote_root + "/work", "--name", "remote-" + self.nonce,
                                   "--provider", self.config["surface"])
         self.target_parts = {"project": initialized["project"]["id"], "agent": initialized["agent"]["id"]}
@@ -197,9 +210,15 @@ with (p/'lock').open('a') as f:
         self.remote("up")
         self.remote_runtime = True
         self.local("init", "--repo", str(self.workspace), "--name", "source")
-        self.step("dedicated account, exact native image and fresh project verified")
 
     def exercise(self):
+        self.connect()
+        marker, page = self.launch()
+        self.measure_live(marker, page)
+        cursors = self.exchange_message()
+        self.reconnect(cursors)
+
+    def connect(self):
         started = time.monotonic_ns()
         self.local("remote", "add", self.config["destination"], "--name", "journey")
         self.open_watch()
@@ -208,6 +227,8 @@ with (p/'lock').open('a') as f:
         initial = self.view()["status"]
         if initial.get("state") != "present" or initial["value"].get("state") != "stopped":
             raise RuntimeError("fresh target was not stopped before launch")
+
+    def launch(self):
         marker = "REMOTE_LIVE_" + self.nonce
         launch_args = ["--project", self.target_parts["project"], "launch",
                       self.target_parts["agent"], "--detach", "--key", self.nonce + "-launch",
@@ -224,6 +245,9 @@ with (p/'lock').open('a') as f:
             raise RuntimeError("remote list differs from the SSH launch receipt")
         page = self.observe_reply(marker)
         self.step("connected, launched over SSH, and observed live assistant output")
+        return marker, page
+
+    def measure_live(self, marker, page):
         # Native --measure observes stdout flush. Its cross-host monotonic clock
         # estimate is explicitly unqualified; it is never a proven budget pass.
         cursors = {r["cursor"] for r in page["records"] if r.get("type") == "provisional" and
@@ -239,6 +263,8 @@ with (p/'lock').open('a') as f:
         except RuntimeError as error:
             self.unavailable_timing("live_output", "producer observation through CLI stdout flush",
                                     error, "unqualified")
+
+    def exchange_message(self):
         reply = "REMOTE_MAIL_" + self.nonce
         send = self.start([self.se, "--home", self.source, "--json", "remote", "send", "--host", "journey",
             "--target", self.target, "--session", self.session, "--key", self.nonce,
@@ -261,6 +287,9 @@ with (p/'lock').open('a') as f:
         cursors = next(self.page(value)["cursors"] for pipe, _, value in reversed(self.watch.rows)
                        if pipe == "stdout" and "cursors" in self.page(value))
         self.step("remote message committed and assistant reply observed")
+        return cursors
+
+    def reconnect(self, cursors):
         before = self.running()
         self.watch.close()
         self.watch = None
