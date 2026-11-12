@@ -132,6 +132,16 @@ pub fn observe_snapshot<S: Snapshot>(
                     Ok(observed) => {
                         if let Some(view) = &observed
                             && view.head.is_some()
+                            && view.commits.is_none()
+                        {
+                            output.pending.push(PendingFact {
+                                what: "repository state".into(),
+                                since: None,
+                                detail: "Commit count is unknown: the history walk did not finish before its bounded deadline; the branch and uncommitted state are still reported.".into(),
+                            });
+                        }
+                        if let Some(view) = &observed
+                            && view.head.is_some()
                             && view.uncommitted.is_none()
                         {
                             output.pending.push(PendingFact {
