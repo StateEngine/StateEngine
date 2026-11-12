@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Assemble an explicitly unsigned archive from a native build.py output."""
 import argparse
+from contextlib import ExitStack
 import gzip
 import hashlib
 import json
@@ -43,6 +44,20 @@ def native_binary(path, windows, target=None):
             raise ValueError("Linux executable is not x86_64 ELF")
 
 
+def publish_outputs(outputs):
+    published = []
+    try:
+        for staged, destination in outputs:
+            if destination.exists() or destination.is_symlink():
+                raise ValueError("release output already exists: " + str(destination))
+            staged.rename(destination)
+            published.append((staged, destination))
+    except BaseException:
+        for staged, destination in reversed(published):
+            destination.rename(staged)
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", type=Path, required=True, help="native build-output directory")
@@ -56,6 +71,8 @@ def main():
     args = parser.parse_args()
     if args.native_only and args.remote_build:
         parser.error("--native-only cannot include --remote-build inputs")
+    if args.payload_out and not args.payload_out.is_absolute():
+        parser.error("--payload-out must name an absolute new directory")
     if args.payload_out and (args.payload_out.exists() or args.payload_out.is_symlink()):
         parser.error("--payload-out must name a new directory")
     if args.payload_out and any(args.payload_out.resolve().is_relative_to(path.resolve())
@@ -128,15 +145,23 @@ def main():
     if ("remote" in inputs["features"] and not args.native_only
             and set(companions) != set(inputs["targets"]) - {metadata["target"]}):
         raise ValueError("remote-enabled archives require same-source native builds for every other supported target")
-    args.out.mkdir(parents=True, exist_ok=True)
     flavor = "-native-only" if args.native_only else ""
     stem = f'stateengine-{metadata["version"]}-{metadata["target"]}{flavor}-unsigned'
     archive = args.out / (stem + (".zip" if windows else ".tar.gz"))
     symbols_root = args.out / (stem + ".symbols")
     if archive.exists() or archive.with_suffix(archive.suffix + ".sha256").exists() or symbols_root.exists():
         raise ValueError(f"archive already exists: {archive}; choose a new output directory")
+    if args.payload_out and (args.out.resolve().is_relative_to(args.payload_out.resolve())
+            or any(args.payload_out.resolve().is_relative_to(path.resolve()) for path in
+                   (archive, archive.with_suffix(archive.suffix + ".sha256"), symbols_root))):
+        parser.error("--payload-out must not overlap another release output")
+    args.out.mkdir(parents=True, exist_ok=True)
     native_payload = None
-    with tempfile.TemporaryDirectory(prefix="se-assemble-") as scratch:
+    with ExitStack() as cleanup:
+        scratch = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix=".se-assemble-", dir=args.out)))
+        staged_archive = scratch / archive.name
+        staged_symbols = scratch / symbols_root.name
+        outputs = []
         root = Path(scratch) / stem
         root.mkdir()
         for name in sorted(expected):
@@ -207,7 +232,7 @@ def main():
         epoch = metadata["source_timestamp"]
         paths = [root] + sorted(root.rglob("*"))
         if windows:
-            with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED) as output:
+            with zipfile.ZipFile(staged_archive, "x", compression=zipfile.ZIP_DEFLATED) as output:
                 for path in paths:
                     if path.is_file():
                         info = zipfile.ZipInfo(path.relative_to(root.parent).as_posix(), time.gmtime(epoch)[:6])
@@ -215,7 +240,7 @@ def main():
                         info.external_attr = 0o100644 << 16
                         output.writestr(info, path.read_bytes())
         else:
-            with archive.open("xb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch) as gz:
+            with staged_archive.open("xb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch) as gz:
                 with tarfile.open(fileobj=gz, mode="w") as output:
                     for path in paths:
                         info = output.gettarinfo(str(path), path.relative_to(root.parent).as_posix())
@@ -229,30 +254,40 @@ def main():
                         else:
                             output.addfile(info)
         if args.payload_out:
-            native_payload = publish_native_payload(root, metadata, args.payload_out)
-    # Diagnostic files are separate artifacts: none are installed or downloaded
-    # with the ordinary package, but each stays bound to its exact native image.
-    symbol_sources = [(metadata["target"], build, metadata, binary)] + [
-        (target, directory, companion, executable)
-        for target, (directory, companion, executable) in sorted(companions.items())]
-    symbols = {}
-    for target, directory, info, executable in symbol_sources:
-        entries = {name: checksum for name, checksum in info["files"].items() if name.startswith("symbols/")}
-        if not entries:
-            continue
-        destination = symbols_root / target
-        destination.mkdir(parents=True, exist_ok=False)
-        for name in entries:
-            output = destination / Path(name).relative_to("symbols")
-            output.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(directory / name, output)
-        record = {"source_commit": info["source_commit"], "target": target,
-                  "executable_sha256": info["files"][executable],
-                  "files": {str(PurePosixPath(name).relative_to("symbols")): checksum for name, checksum in entries.items()}}
-        (destination / "manifest.json").write_text(json.dumps(record, indent=2) + "\n")
-        symbols[target] = str(destination.resolve())
-    checksum = digest(archive)
-    archive.with_suffix(archive.suffix + ".sha256").write_text(f"{checksum}  {archive.name}\n")
+            args.payload_out.parent.mkdir(parents=True, exist_ok=True)
+            payload_stage = Path(cleanup.enter_context(tempfile.TemporaryDirectory(
+                prefix=".se-payload-", dir=args.payload_out.parent))) / "payload"
+            native_payload = publish_native_payload(root, metadata, payload_stage)
+            native_payload["directory"] = str(args.payload_out.resolve())
+            outputs.append((payload_stage, args.payload_out))
+        # Diagnostic files are separate artifacts: none are installed or downloaded
+        # with the ordinary package, but each stays bound to its exact native image.
+        symbol_sources = [(metadata["target"], build, metadata, binary)] + [
+            (target, directory, companion, executable)
+            for target, (directory, companion, executable) in sorted(companions.items())]
+        symbols = {}
+        for target, directory, info, executable in symbol_sources:
+            entries = {name: checksum for name, checksum in info["files"].items() if name.startswith("symbols/")}
+            if not entries:
+                continue
+            destination = staged_symbols / target
+            destination.mkdir(parents=True, exist_ok=False)
+            for name in entries:
+                output = destination / Path(name).relative_to("symbols")
+                output.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(directory / name, output)
+            record = {"source_commit": info["source_commit"], "target": target,
+                      "executable_sha256": info["files"][executable],
+                      "files": {str(PurePosixPath(name).relative_to("symbols")): checksum for name, checksum in entries.items()}}
+            (destination / "manifest.json").write_text(json.dumps(record, indent=2) + "\n")
+            symbols[target] = str((symbols_root / target).resolve())
+        checksum = digest(staged_archive)
+        staged_archive.with_suffix(staged_archive.suffix + ".sha256").write_text(f"{checksum}  {archive.name}\n")
+        if symbols:
+            outputs.append((staged_symbols, symbols_root))
+        outputs.extend([(staged_archive.with_suffix(staged_archive.suffix + ".sha256"),
+                         archive.with_suffix(archive.suffix + ".sha256")), (staged_archive, archive)])
+        publish_outputs(outputs)
     print(json.dumps({"archive": str(archive.resolve()), "sha256": checksum,
                       "source_commit": metadata["source_commit"], "trust": "unsigned", "symbols": symbols,
                       **({"native_payload": native_payload} if native_payload is not None else {})}))
