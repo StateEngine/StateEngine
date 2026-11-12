@@ -74,7 +74,7 @@ pub(super) fn resolve_provider_launch(
     )
 }
 
-pub(super) fn resolve_provider(
+pub(crate) fn resolve_provider(
     configuration: &se_core::config_policy::ConfigFile,
     provider: se_types::Provider,
     selected_file: Option<&std::path::Path>,
