@@ -24,7 +24,7 @@ pub fn init(value: &InitOutput, out: &mut impl Write) -> io::Result<()> {
         out,
         "Agent {} uses {}",
         value.agent.name,
-        labels::provider(value.agent.provider)
+        labels::harness(value.agent.provider, value.agent.harness.as_deref())
     )?;
     profile(&value.agent.permission_profile, out)?;
     for integration in &value.integrations {

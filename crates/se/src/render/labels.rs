@@ -23,6 +23,10 @@ pub(super) fn network(value: bool) -> &'static str {
     if value { "true" } else { "false" }
 }
 
+pub(super) fn harness(value: Provider, selected: Option<&str>) -> &str {
+    selected.unwrap_or_else(|| provider(value))
+}
+
 pub(super) fn provider(value: Provider) -> &'static str {
     match value {
         Provider::Claude => "Claude Code",
