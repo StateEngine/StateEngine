@@ -101,6 +101,7 @@ impl SqliteFactory {
                 Engine {
                     db,
                     path: reader_path,
+                    timeout: o.busy_timeout,
                     identity,
                     poisoned: false,
                     pending: Vec::new(),

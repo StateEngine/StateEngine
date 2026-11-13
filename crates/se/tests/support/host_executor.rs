@@ -56,7 +56,10 @@ pub async fn uncertain_write(
     let competing = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
     competing.execute_batch("BEGIN IMMEDIATE")?;
     let mut bounded = options();
-    bounded.timeout = Duration::from_secs(1);
+    // Strictly above the launched host's store wait: equal clocks let the
+    // caller deadline win under load, turning this clean StoreBusy into
+    // commit-outcome-unknown (PR 212's CI return).
+    bounded.timeout = se_host::HOST_STORE_BUSY_TIMEOUT + Duration::from_secs(1);
     let deadline = se_host::client::lease::Deadline::from_options(&bounded)?;
     let outcome = router.execute_call(call()?, &deadline).await;
     competing.execute_batch("ROLLBACK")?;

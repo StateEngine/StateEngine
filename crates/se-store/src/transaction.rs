@@ -19,6 +19,9 @@ use recovery::Uncertain;
 pub(crate) struct Engine {
     pub db: Connection,
     pub path: PathBuf,
+    /// This connection's configured busy timeout, stamped onto the BUSY
+    /// refusals it produces (the store's honest wait, not an ambient guess).
+    pub timeout: Duration,
     pub identity: LeaseIdentity,
     pub poisoned: bool,
     pub pending: Vec<Uncertain>,
@@ -60,8 +63,14 @@ impl Engine {
             })
             .collect();
         let mut result = self.group_inner(batches, maintenance, coupled);
+        if let Err(error) = &mut result {
+            stamp_busy_wait(error, self.timeout);
+        }
         if let Ok((results, _)) = &mut result {
             for (operation, outcome) in attempted.into_iter().zip(results) {
+                if let Err(error) = outcome {
+                    stamp_busy_wait(error, self.timeout);
+                }
                 match outcome {
                     Err(error) if error.code == StoreErrorCode::CommitOutcomeUnknown => {
                         operation.annotate(error);

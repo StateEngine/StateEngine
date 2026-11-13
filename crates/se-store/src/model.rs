@@ -449,12 +449,19 @@ pub enum StoreIoStage {
     Commit,
     Stage,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum StoreDetail {
     None,
     /// Time spent acquiring native file custody before its bounded refusal.
     NativeContention {
         waited_ms: u64,
+    },
+    /// The connection's configured busy timeout, fully consumed by SQLite's busy
+    /// handler before a bounded BUSY-family refusal (extended 5 and 261).
+    /// LOCKED refusals ran no retry loop and keep their existing detail.
+    BusyWait {
+        waited_ms: u64,
+        extended_code: i32,
     },
     PrincipalNameConflict {
         project: ProjectId,

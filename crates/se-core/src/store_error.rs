@@ -55,7 +55,8 @@ pub fn store_error(error: &StoreError) -> SeError {
         }),
         C::Busy | C::Backpressure => Detail::StoreBusy(details::StoreBusy {
             waited_ms: match error.detail {
-                se_store::StoreDetail::NativeContention { waited_ms } => waited_ms,
+                se_store::StoreDetail::NativeContention { waited_ms }
+                | se_store::StoreDetail::BusyWait { waited_ms, .. } => waited_ms,
                 _ => 0,
             },
             replay: None,
@@ -205,7 +206,10 @@ pub fn store_error(error: &StoreError) -> SeError {
         }
     })
     .with_cause(error.clone());
-    if matches!(error.detail, se_store::StoreDetail::NativeContention { .. }) {
+    if matches!(
+        error.detail,
+        se_store::StoreDetail::NativeContention { .. } | se_store::StoreDetail::BusyWait { .. }
+    ) {
         mapped.body = mapped.body.with_retry(error.retry.clone());
     }
     mapped
@@ -274,5 +278,50 @@ struct ExistingAgent<'a> {
 impl se_types::OperationCommand for ExistingAgent<'_> {
     fn cli_argv(&self) -> Vec<String> {
         crate::ops::AgentCommand::launch(self.agent, None, Some(self.project), false).argv
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use se_store::{StoreDetail, StoreErrorCode};
+    use se_types::{Remedy, Retry};
+
+    fn busy(detail: StoreDetail) -> Box<StoreError> {
+        Box::new(StoreError {
+            code: StoreErrorCode::Busy,
+            cause: "database is locked".into(),
+            detail,
+            remedy: Remedy {
+                text: "retry the original operation".into(),
+                command: None,
+            },
+            retry: Retry::AfterReread,
+        })
+    }
+    fn waited_ms(error: &StoreError) -> u64 {
+        let mapped = store_error(error);
+        let Detail::StoreBusy(detail) = mapped.body.detail() else {
+            panic!("expected StoreBusy, got {:?}", mapped.body.detail())
+        };
+        detail.waited_ms
+    }
+    #[test]
+    fn a_consumed_busy_wait_reports_the_configured_bound() {
+        let error = busy(StoreDetail::BusyWait {
+            waited_ms: 250,
+            extended_code: 5,
+        });
+        assert_eq!(waited_ms(&error), 250);
+    }
+    #[test]
+    fn an_unmeasured_busy_refusal_stays_zero() {
+        let error = busy(StoreDetail::None);
+        assert_eq!(waited_ms(&error), 0);
+    }
+    #[test]
+    fn native_contention_keeps_its_measured_wait() {
+        let error = busy(StoreDetail::NativeContention { waited_ms: 7 });
+        assert_eq!(waited_ms(&error), 7);
     }
 }
