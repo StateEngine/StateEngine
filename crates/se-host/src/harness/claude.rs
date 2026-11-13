@@ -133,6 +133,10 @@ pub fn invocation(
             permission_mode(request.profile.permission).into(),
         ]);
     }
+    if request.profile.permission == se_store::PermissionProfile::ReadOnly {
+        // Keep file inspection and MCP mail available without mutating built-ins.
+        arguments.extend(["--tools".into(), "Read,Glob,Grep,ToolSearch".into()]);
+    }
     if let Some(model) = &request.profile.model {
         arguments.extend(["--model".into(), model.into()]);
     }
@@ -162,8 +166,8 @@ pub fn invocation(
 /// the default workspace profile consults native settings before headless launch.
 fn permission_mode(profile: se_store::PermissionProfile) -> &'static str {
     match profile {
-        // Manual mode can still honor saved write grants; plan mode keeps reads only.
-        se_store::PermissionProfile::ReadOnly => "plan",
+        // The built-in tool list enforces read-only; default mode permits MCP mail.
+        se_store::PermissionProfile::ReadOnly => "default",
         se_store::PermissionProfile::WorkspaceWrite => "acceptEdits",
         se_store::PermissionProfile::NamedFullBypass => "bypassPermissions",
     }
