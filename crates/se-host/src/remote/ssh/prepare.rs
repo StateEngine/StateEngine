@@ -68,7 +68,7 @@ pub async fn prepare_image(
         se_types::hex_lower(&crate::remote::session::entropy::<16>()?)
     );
     let result = async {
-        super::upload::send(destination, &mut image, &upload, cancelled, progress).await?;
+        super::command::send_image(destination, &mut image, &upload, cancelled, progress).await?;
         if cancelled.load(Ordering::Acquire) {
             return Err(unavailable(
                 "remote image preparation was cancelled before publication",

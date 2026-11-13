@@ -8,7 +8,6 @@ mod command;
 mod image;
 mod prepare;
 mod staging;
-mod upload;
 pub use authorization::{Authorization, AuthorizationResult, Request as SshRequest, StartResult};
 pub use bootstrap::connect;
 pub use prepare::{ImageProgress, ImageStage, prepare_image};
