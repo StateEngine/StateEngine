@@ -3,7 +3,14 @@
 use super::*;
 use reqwest::{Method, header};
 use serde_json::{Value, json};
-use std::{collections::VecDeque, sync::Mutex, time::Duration};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 mod gateway;
 mod message;
 #[cfg(all(test, target_os = "linux"))]
@@ -12,9 +19,16 @@ use gateway::Receiver;
 
 type Error = ChannelError;
 const API: &str = "https://discord.com/api/v10";
+/// One gateway concurrency window, in microseconds: a fresh Identify follows
+/// the previous attempt by at least this long, the very first attempt
+/// excepted. The window is the spacing the fixed pre-Identify sleep used.
+const IDENTIFY_WINDOW_US: u64 = 5 * 1_000_000;
 pub struct Discord {
     client: reqwest::Client,
     invalid_sessions: Mutex<VecDeque<String>>,
+    /// Unix microseconds of the last fresh Identify attempt, 0 while there is
+    /// none: the attempt consumed a concurrency window even if it failed.
+    last_identify: AtomicU64,
 }
 impl Discord {
     fn client_builder() -> reqwest::ClientBuilder {
@@ -35,7 +49,20 @@ impl Discord {
         Ok(Self {
             client,
             invalid_sessions: Mutex::default(),
+            last_identify: AtomicU64::new(0),
         })
+    }
+    /// Paces a fresh Identify attempt against the previous one, which consumed
+    /// a gateway concurrency window even if it ended in a refusal; the first
+    /// attempt waits nothing.
+    async fn pace_identify(&self) {
+        if let Some(wait) = identify_wait(self.last_identify.load(Ordering::Relaxed), unix_micros())
+        {
+            tokio::time::sleep(wait).await;
+        }
+    }
+    fn note_identify(&self) {
+        self.last_identify.store(unix_micros(), Ordering::Relaxed);
     }
     fn authorization(token: &se_types::Secret) -> ChannelResult<header::HeaderValue> {
         let bytes = token.expose();
@@ -122,6 +149,27 @@ impl Discord {
         }
         Ok(())
     }
+}
+/// Unix microseconds since the epoch, saturating at both ends: a pre-epoch
+/// clock reads as the epoch, which can only make a later attempt wait the
+/// full window.
+fn unix_micros() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+/// The wait a fresh Identify attempt owes its predecessor: the first waits
+/// nothing, a later attempt waits out the remaining concurrency window, capped
+/// at one full window so a backwards clock can never wait longer.
+fn identify_wait(last_unix_us: u64, now_unix_us: u64) -> Option<Duration> {
+    if last_unix_us == 0 {
+        return None;
+    }
+    let wait = last_unix_us
+        .saturating_add(IDENTIFY_WINDOW_US)
+        .saturating_sub(now_unix_us);
+    (wait > 0).then(|| Duration::from_micros(wait.min(IDENTIFY_WINDOW_US)))
 }
 fn id(value: &Value) -> ChannelResult<ExternalId> {
     let text = value.as_str().ok_or(Error::ProviderProtocol)?;

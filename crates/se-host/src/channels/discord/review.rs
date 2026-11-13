@@ -37,6 +37,30 @@ async fn ready(f: &Fixture) -> Check<Box<dyn ChannelReceiver>> {
     Ok(receiver)
 }
 
+/// The first Identify waits nothing; a later one waits out the remaining
+/// concurrency window, and a backwards clock waits at most one full window.
+#[test]
+fn discord_identify_spacing_first_waits_nothing() -> Check {
+    let window = IDENTIFY_WINDOW_US;
+    require(
+        identify_wait(0, window * 10).is_none(),
+        "the first Identify must not wait",
+    )?;
+    require(
+        identify_wait(1_000, 1_000 + window / 2) == Some(Duration::from_micros(window / 2)),
+        "a fresh attempt inside the window waits out the remainder",
+    )?;
+    require(
+        identify_wait(1_000, 1_000 + window).is_none(),
+        "an attempt after the full window waits nothing",
+    )?;
+    require(
+        identify_wait(1_000, 500) == Some(Duration::from_micros(window)),
+        "a backwards clock waits at most one full window",
+    )?;
+    Ok(())
+}
+
 /// The actual REST client validates synthetic TLS, suppresses mentions and never
 /// retries an uncertain POST or follows a redirect carrying the credential.
 #[test]
