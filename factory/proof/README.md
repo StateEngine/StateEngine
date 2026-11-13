@@ -97,7 +97,15 @@ probe verdicts, using PASS, MISS or NOT MEASURED. A witnessed miss remains a mis
 when other probes are missing; missing coverage is named separately and prevents a
 whole-budget pass. Raw samples stay in the original judge receipts. Budget misses
 never change journey cells. Missing embedded B1/B2, handover B8, FULL-write and
-Codex-budget probes are named gaps.
+other unmeasured probes are named gaps. Codex first-hour receipts include the
+existing CLI, write, process, memory and idle probes. Historical behavior-only
+first-hour receipts remain readable and explicitly name their missing budgets.
+The reporter pins nine required first-hour probes: CLI version, contextual reads,
+running-host writes, standalone process count, no-session idle and RSS,
+one-session process count, RSS and idle. Each required probe must contain a
+passing measurement before the invocation can pass; a producer cannot shorten
+this set. Current CLI latency receipts also require the complete verb/cohort set,
+successful raw samples, and a matching nearest-rank p95 within the reported limit.
 
 Each invocation records load averages and observed concurrent Cargo/Rust driver
 trees before and after the judge, beside its budget probes. Test commands count
