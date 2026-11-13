@@ -406,15 +406,16 @@ impl<'a> CacheConnection<'a> {
 }
 /// Open one cached database.
 ///
-/// Windows refuses a resolved path longer than `MAX_PATH` (260 characters) in
-/// the VFS that SQLite registers as its default, and `winOpen` reports that as
-/// `SQLITE_CANTOPEN`, which a user reads as "unable to open database file".
-/// The cache path is `<home>/atlas/<project>/<root>/epochs/<epoch>/atlas.db`,
-/// so a long data home reaches that ceiling without anything being wrong with
-/// the database. SQLite also registers `win32-longpath`, which resolves the
-/// same path and raises the ceiling to 32,767 characters, so Windows opens
-/// through it and no cache location depends on the length of a profile path.
-/// Other platforms keep the default VFS, whose limit is not a `MAX_PATH`.
+/// Windows' default SQLite VFS hands `CreateFileW` an ordinary Unicode path:
+/// the long-path prefixing in SQLite's converter is Cygwin-only. Win32 therefore
+/// applies its own `MAX_PATH` limit, and an over-long resolved path fails at
+/// open with `SQLITE_CANTOPEN`, which a user reads as "unable to open database
+/// file". The cache path is `<home>/atlas/<project>/<root>/epochs/<epoch>/atlas.db`,
+/// so a deep data home reaches that limit with nothing wrong with the database.
+/// SQLite also registers `win32-longpath`, which resolves the same path and does
+/// prefix it, so Windows opens through it and no cache location depends on the
+/// length of a profile path. Other platforms keep the default VFS, whose limit
+/// is not a `MAX_PATH`.
 fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResult<Connection> {
     if Instant::now() >= deadline {
         return Err(timeout(0));

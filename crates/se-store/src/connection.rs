@@ -21,12 +21,13 @@ pub(crate) fn connect(path: &Path, writable: bool, timeout: Duration) -> StoreRe
 }
 /// Open a database through the platform's path-length-safe VFS.
 ///
-/// Windows' default SQLite VFS refuses a resolved path over `MAX_PATH` (260
-/// characters) with `SQLITE_CANTOPEN`, which the user reads as "unable to open
-/// database file". The store lives under the data home, so a long profile path
-/// reaches that ceiling for a database that is perfectly valid. Windows opens
-/// through `win32-longpath`, whose ceiling is 32,767 characters; other
-/// platforms keep the default VFS, whose limit is not a `MAX_PATH`.
+/// Windows' default SQLite VFS passes `CreateFileW` an ordinary Unicode path,
+/// so Win32's own `MAX_PATH` applies and an over-long resolved path fails at
+/// open with `SQLITE_CANTOPEN`, which the user reads as "unable to open database
+/// file". The store lives under the data home, so a deep path reaches that limit
+/// for a database that is perfectly valid. Windows opens through
+/// `win32-longpath`, which prefixes the path; other platforms keep the default
+/// VFS, whose limit is not a `MAX_PATH`.
 pub(crate) fn open(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
     let flags = flags | OpenFlags::SQLITE_OPEN_EXRESCODE;
     #[cfg(windows)]
