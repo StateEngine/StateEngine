@@ -1,0 +1,47 @@
+[32;1m        PASS[0m [   0.131s] (433/497) [35;1mse-store::read_pool_independent[0m [34;1mimplicit_snapshot_drop_closes_sql_and_returns_shared_capacity[0m
+[32;1m        PASS[0m [   0.125s] (434/497) [35;1mse-store::read_pool_independent[0m [34;1mquery_refusal_then_explicit_close_observes_the_next_committed_head[0m
+[32;1m        PASS[0m [   0.147s] (435/497) [35;1mse-store::reader_capacity[0m [34;1mfailed_reads_release_all_eight_slots[0m
+[32;1m        PASS[0m [   0.265s] (436/497) [35;1mse-store::reader_capacity[0m [34;1mdefault_two_and_constructor_bounds[0m
+[32;1m        PASS[0m [   0.139s] (437/497) [35;1mse-store::selector_catalog[0m [34;1mproject_pages_sort_ids_and_stale_after_registration[0m
+[32;1m        PASS[0m [   0.146s] (438/497) [35;1mse-store::selector_catalog[0m [34;1mselectors_use_id_order_and_stale_on_catalog_changes_only[0m
+[32;1m        PASS[0m [   0.179s] (439/497) [35;1mse-store::store_backup[0m [34;1mbackup_capacity_is_bound_to_its_host_reader_not_a_separate_runtime_reader[0m
+[32;1m        PASS[0m [   0.138s] (440/497) [35;1mse-store::store_capture[0m [34;1mcapture_replay_after_progress_and_rotation_does_not_rewind_or_duplicate[0m
+[32;1m        PASS[0m [   0.169s] (441/497) [35;1mse-store::store_capture[0m [34;1mlegacy_native_capture_metadata_is_readable_but_not_rewritten_on_replay[0m
+[32;1m        PASS[0m [   0.018s] (442/497) [35;1mse-store::store_diagnostics[0m [34;1mabsence_and_native_path_failure_are_distinct[0m
+[32;1m        PASS[0m [   0.143s] (443/497) [35;1mse-store::store_capture[0m [34;1msession_source_and_turn_readers_apply_principal_visibility[0m
+[32;1m        PASS[0m [   0.021s] (444/497) [35;1mse-store::store_diagnostics[0m [34;1mcorruption_preserves_early_and_sqlite_diagnostics[0m
+[32;1m        PASS[0m [   0.018s] (445/497) [35;1mse-store::store_diagnostics[0m [34;1mdangling_immediate_parent_retains_native_open_failure[0m
+[32;1m        PASS[0m [   0.129s] (446/497) [35;1mse-store::store_diagnostics[0m [34;1mmessage_page_failure_retains_read_context[0m
+[32;1m        PASS[0m [   0.133s] (447/497) [35;1mse-store::store_diagnostics[0m [34;1msnapshot_open_failure_retains_path_code_and_releases_slots[0m
+[32;1m        PASS[0m [   3.714s] (448/497) [35;1mse-store::store_failures[0m [36mnative_faults[0m[36m::[0m[34;1mdisk_full_during_commit_preserves_indeterminate_keys[0m
+[32;1m        PASS[0m [   0.137s] (449/497) [35;1mse-store::store_failures[0m [34;1munknown_capture_source_is_not_unreadable_storage[0m
+[32;1m        PASS[0m [   0.260s] (450/497) [35;1mse-store::store_process[0m [34;1mconsole_argv_handoff_preserves_native_custody_and_cannot_repeat[0m
+[32;1m        PASS[0m [   0.256s] (451/497) [35;1mse-store::store_process[0m [34;1mexec_checkpoint_precedes_readiness_without_reopening_identity[0m
+[31;1m        FAIL[0m [   7.750s] (452/497) [35;1mse-store::deferred_checkpoint_independent[0m [34;1mpressure_blocks_growth_and_retries_after_reader_releases[0m
+[31;1m [0m [31;1mstdout[0m [31;1m───[0m
+
+    running 1 test
+    test pressure_blocks_growth_and_retries_after_reader_releases ... FAILED
+
+    failures:
+
+    failures:
+        pressure_blocks_growth_and_retries_after_reader_releases
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 7.71s
+    [0m
+[31;1m [0m [31;1mstderr[0m [31;1m───[0m
+    [0m[31;1mError: StoreError { code: Busy, cause: "WAL reached its 64 MiB maintenance cutoff; release pinned readers or let the aborted backup close, then retry the original operation", detail: None, remedy: Remedy { text: "Preserve the original request key; reread the named state before retrying.", command: None }, retry: AfterReread }[0m[0m
+
+[31;1m  Cancelling[0m due to [31;1mtest failure[0m: [1m3[0m tests still running
+[32;1m        PASS[0m [   0.238s] (453/497) [35;1mse-store::store_process[0m [34;1mprocess_transition_cas_identity_and_atomic_rollback[0m
+[33;1m        SLOW[0m [> 30.000s] (───────) [35;1mse-host::channel_safety_independent[0m [34;1mread_without_reply_delayed_phone_status_names_that_state[0m
+[32;1m        PASS[0m [  21.506s] (454/497) [35;1mse-store::store_failures[0m [36mnative_faults[0m[36m::[0m[34;1mcheckpoint_failure_never_relabels_known_commits[0m
+[33;1m        SLOW[0m [> 60.000s] (───────) [35;1mse-host::channel_safety_independent[0m [34;1mread_without_reply_delayed_phone_status_names_that_state[0m
+[32;1m        PASS[0m [  64.074s] (455/497) [35;1mse-host::channel_safety_independent[0m [34;1mread_without_reply_delayed_phone_status_names_that_state[0m
+────────────
+[31;1m     Summary[0m [ 153.021s] [1m455[0m/[1m497[0m tests run: [1m454[0m [32;1mpassed[0m ([1m3[0m [33;1mslow[0m), [1m1[0m [31;1mfailed[0m, [1m537[0m [33;1mskipped[0m
+[31;1m        FAIL[0m [   7.750s] (452/497) [35;1mse-store::deferred_checkpoint_independent[0m [34;1mpressure_blocks_growth_and_retries_after_reader_releases[0m
+[33;1mwarning[0m: [1m42[0m/[1m497[0m tests were not run due to [33;1mtest failure[0m (run with [1m--no-fail-fast[0m to run all tests, or run with [1m--max-fail[0m)
+[31;1merror[0m: test run failed
++ python3 scripts/ci/custom.py run

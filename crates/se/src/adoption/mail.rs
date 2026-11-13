@@ -1,5 +1,5 @@
 //! Native inbox wait and protected offer journal for user-owned sessions.
-use super::{failure, forward_to, native};
+use super::{failure, forward_to, managed_ancestry_refusal, native};
 use crate::{bootstrap::Bootstrap, route};
 use se_host::adoption::{Input, Registration};
 use se_types::{Result, SeError};
@@ -154,7 +154,10 @@ impl MailWait {
             input.offered = self.offered.clone();
             let response = match forward_to(cx, input.clone(), &target) {
                 Ok(value) => value,
-                Err(error) => {
+                // Only the authenticated IPC owner ancestry refusal ends this
+                // managed-tree waiter. The outer entry retains its diagnostic.
+                Err(error) if managed_ancestry_refusal(&error) => return Err(error),
+                Err(_) => {
                     match se_host::route_endpoint(&cx.home, Some(&target.address))? {
                         se_host::EndpointRoute::Start { .. } => return Ok(0),
                         se_host::EndpointRoute::Live(current)
@@ -166,7 +169,6 @@ impl MailWait {
                     }
                     // Start/Prompt capture can still be preparing the first binding.
                     // Retain this generation; uncertainty never authorizes a restart.
-                    let _ = error;
                     std::thread::sleep(Duration::from_secs(2));
                     continue;
                 }

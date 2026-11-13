@@ -17,6 +17,7 @@ mod live;
 mod state;
 pub use state::IgnoredNotifications;
 mod transport;
+mod windows_sandbox;
 #[cfg(windows)]
 mod windows_shell;
 pub mod wire;
@@ -108,6 +109,39 @@ impl CodexHarness {
             params["config"]["features.hooks"] = true.into();
         }
         Ok((method, params))
+    }
+    /// Ask the provider, once it is running in the sandbox this launch named,
+    /// whether that implementation is ready for workspace-write.
+    #[cfg(windows)]
+    pub(crate) async fn confirm_windows_sandbox(
+        &self,
+        binding: &Binding,
+        selection: Option<windows_sandbox::Implementation>,
+        cx: &CallContext,
+    ) -> Result<()> {
+        let Some(implementation) = selection else {
+            return Ok(());
+        };
+        // A provider without this method cannot answer whether it can hold
+        // workspace-write, so the host must not claim it can.
+        let answer = match binding
+            .request_classified("windowsSandbox/readiness", Value::Null, cx)
+            .await
+        {
+            Ok(answer) => answer,
+            Err(failure) if failure.code == Some(-32601) => {
+                return Err(incompatible(
+                    "this Codex build cannot report its Windows sandbox readiness",
+                    "Upgrade Codex to 0.152.0 or later, then retry the launch.",
+                ));
+            }
+            Err(failure) => return Err(failure.error),
+        };
+        windows_sandbox::require_ready(
+            implementation,
+            windows_sandbox::Readiness::parse(&answer)?,
+        )?;
+        Ok(())
     }
     fn directory(&self, session: &se_types::SessionId) -> Result<PathBuf> {
         Ok(self.state_home.join("launch").join(
@@ -272,6 +306,8 @@ impl Harness for CodexHarness {
         Box::pin(async move {
             let socket = self.socket(request)?;
             let resolved = self.resolved(request)?;
+            // The implementation is named in the launch settings, so the
+            // request this preview builds carries no key of its own.
             self.thread(&self.plan(request, &resolved, socket.as_deref()))?;
             let plan = json!({"session":request.identity.session,"socket":socket.as_ref().map(|path| NativePath::from_local(path.clone())).transpose()?});
             let bytes = serde_json::to_vec(&plan)
@@ -311,9 +347,14 @@ impl Harness for CodexHarness {
                         )
                     })?,
             )?;
-            let mut invocation = input::invocation(
+            #[cfg(windows)]
+            let named = windows_sandbox::selection(request)?;
+            #[cfg(not(windows))]
+            let named: Option<windows_sandbox::Implementation> = None;
+            let mut invocation = input::invocation_naming(
                 &self.plan(request, &resolved, socket.as_deref()),
                 environment,
+                named.map(windows_sandbox::Implementation::key),
             )?;
             if self.atlas_helper.is_some() {
                 invocation.environment.entries.push((

@@ -3,7 +3,12 @@
 use super::*;
 use reqwest::{Method, header};
 use serde_json::{Value, json};
-use std::{collections::VecDeque, sync::Mutex, time::Duration};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 mod gateway;
 mod message;
 #[cfg(all(test, target_os = "linux"))]
@@ -12,9 +17,15 @@ use gateway::Receiver;
 
 type Error = ChannelError;
 const API: &str = "https://discord.com/api/v10";
+/// One gateway concurrency window: the spacing the fixed pre-Identify sleep
+/// used; a fresh Identify follows that token's previous attempt by this long.
+const IDENTIFY_WINDOW: Duration = Duration::from_millis(5_000);
 pub struct Discord {
     client: reqwest::Client,
     invalid_sessions: Mutex<VecDeque<String>>,
+    /// This token's Identify fire instants, keyed by the token's digest so the
+    /// map never holds token bytes; a reserved attempt counts even if refused.
+    identify_fire: Mutex<HashMap<[u8; 32], Instant>>,
 }
 impl Discord {
     fn client_builder() -> reqwest::ClientBuilder {
@@ -35,7 +46,28 @@ impl Discord {
         Ok(Self {
             client,
             invalid_sessions: Mutex::default(),
+            identify_fire: Mutex::default(),
         })
+    }
+    /// Reserves this token's next Identify slot under one lock and waits for
+    /// it, so simultaneous tokens get distinct slots; the first attempt waits
+    /// nothing and a refused attempt still consumed its window.
+    async fn pace_identify(&self, token: &se_types::Secret) -> ChannelResult<()> {
+        let wait = {
+            let mut fire = self
+                .identify_fire
+                .lock()
+                .map_err(|_| Error::ReceiverNotRunning)?;
+            let key: [u8; 32] = Sha256::digest(token.expose()).into();
+            let now = Instant::now();
+            let slot = next_identify_fire(fire.get(&key).copied(), now);
+            fire.insert(key, slot);
+            slot - now
+        };
+        if wait > Duration::ZERO {
+            tokio::time::sleep(wait).await;
+        }
+        Ok(())
     }
     fn authorization(token: &se_types::Secret) -> ChannelResult<header::HeaderValue> {
         let bytes = token.expose();
@@ -121,6 +153,14 @@ impl Discord {
             sessions.push_back(session);
         }
         Ok(())
+    }
+}
+/// The fire instant a fresh Identify attempt owes its predecessor: the first
+/// attempt fires now, a later one at least one full window after the previous.
+fn next_identify_fire(last_fire: Option<Instant>, now: Instant) -> Instant {
+    match last_fire {
+        Some(last) => now.max(last + IDENTIFY_WINDOW),
+        None => now,
     }
 }
 fn id(value: &Value) -> ChannelResult<ExternalId> {

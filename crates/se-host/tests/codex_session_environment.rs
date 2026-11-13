@@ -89,3 +89,85 @@ fn external_stdio_gets_only_the_new_public_session_in_both_surfaces()
     }
     Ok(())
 }
+
+/// The implementation a Windows workspace-write launch names must reach the
+/// provider's own launch settings, because readiness reports the value the
+/// provider started with. A launch that names none adds no such setting.
+#[test]
+fn a_named_windows_sandbox_reaches_the_providers_launch_settings()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::env::current_dir()?;
+    let request = HarnessRequest {
+        identity: SessionIdentity {
+            project: se_types::ProjectId::from_parts(1_700_000_000_000, [4; 10])?,
+            agent: se_types::AgentId::from_parts(1_700_000_000_000, [5; 10])?,
+            session: se_types::SessionId::from_parts(1_700_000_000_000, [6; 10])?,
+        },
+        executable: NativePath::from_local(cwd.join("codex"))?,
+        cwd: NativePath::from_local(cwd.clone())?,
+        profile: se_store::Profile {
+            provider: se_store::Provider::Codex,
+            model: None,
+            permission: se_store::PermissionProfile::WorkspaceWrite,
+            named_profile: "default".into(),
+            effort: None,
+        },
+        policy: LaunchPolicy {
+            containment: ContainmentRequirement::BestAvailable,
+            writes: WritePolicy::Workspace {
+                roots: vec![cwd.clone()],
+                scratch: cwd.join("launch"),
+            },
+            network: NetworkPolicy::Offline,
+            hardening: OptionalHardening::Off,
+        },
+        mode: LaunchMode::Headless,
+        resume: Read::Absent {
+            checked: "new launch".into(),
+        },
+        transcript_roots: Vec::new(),
+        replay: None,
+        initial_input: Body::new("Read your context.")?,
+        launch_credential: Secret::new(b"sec1.never-in-environment".to_vec())?,
+        mcp_bearer: Secret::new(b"sels-never-in-environment".to_vec())?,
+        key: IdempotencyKey::new("named-sandbox-launch")?,
+    };
+    let resolved = ResolvedProfile {
+        name: "default".into(),
+        sandbox: EffectiveSandbox::WorkspaceWrite,
+        approval: Approval::Never,
+        network: false,
+        bypass: false,
+    };
+    let launch = codex_input::CodexLaunch {
+        request: &request,
+        resolved: &resolved,
+        mcp_port: 21345,
+        socket: None,
+    };
+    let arguments = |named: Option<&'static str>| {
+        codex_input::invocation_naming(&launch, Vec::new(), named)
+            .map(|invocation| invocation.arguments)
+    };
+    let rendered = arguments(Some("unelevated"))?
+        .iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        rendered
+            .windows(2)
+            .any(|pair| pair == ["-c", "windows.sandbox=\"unelevated\""]),
+        "{rendered:?}"
+    );
+    let unnamed = arguments(None)?
+        .iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        !unnamed
+            .iter()
+            .any(|argument| argument.contains("windows.sandbox")),
+        "{unnamed:?}"
+    );
+    Ok(())
+}

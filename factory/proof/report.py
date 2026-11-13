@@ -8,6 +8,10 @@ from remote_report import summarize as remote_summary
 PLATFORMS = ("linux", "win32", "darwin")
 NAMES = ("Install", "Adopt", "Come back", "Two agents", "Remove")
 FIRST_HOUR = ("Install", "Adopt", "Work", "Restart and recall", "Remove")
+FIRST_HOUR_PROBES = frozenset((
+    "CLI --version", "CLI contextual read verbs", "CLI writes through running host",
+    "standalone persistent processes", "idle no session", "standalone RSS no session",
+    "persistent processes after 1 seat(s)", "standalone RSS one session", "idle one session"))
 SELECTIONS = {"first-hour": ("first-hour", {1, 2, 3, 4, 5}),
               "wave-2": ("rust-wave-2", {1, 2, 3, 5}),
               "remote": ("remote", {1}),
@@ -97,6 +101,66 @@ def probe_result(budget, row, limits, numeric):
     return "PASS" if within_limit and not cleanup else "MISS"
 
 
+def finite_nonnegative(value):
+    return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+
+def first_hour_probe_result(budget, row, limits):
+    """Validate current first-hour measurements without changing legacy receipts."""
+    state = row.get("state")
+    if (not isinstance(limits, dict) or state is not None and not isinstance(state, str)
+            or state in ("unavailable", "not measured", "unreadable", "absent", "not reached")):
+        return "NOT MEASURED"
+    if budget in {"B5", "B6"}:
+        return probe_result(budget, row, limits, budget_numbers(budget, row))
+    label = row.get("label")
+    if budget in {"B7", "B9"}:
+        read = budget == "B7"
+        samples = row.get("reads" if read else "writes")
+        if not isinstance(samples, list) or not samples or any(not isinstance(s, dict) for s in samples):
+            return "NOT MEASURED"
+        expected = ({"--version"} if label == "CLI --version" else
+                    {"status", "agent list", "msg inbox", "msg list"}) if read else {1, 8}
+        found = [s.get("verb" if read else "clients") for s in samples]
+        if (len(found) != len(expected) or not all(
+                isinstance(value, str) if read else type(value) is int for value in found)
+                or any(value not in expected for value in found) or len(set(found)) != len(expected)):
+            return "NOT MEASURED"
+        for sample in samples:
+            key = ("cli_status_p95_ms_exclusive" if sample.get("verb") == "status" else
+                   "cli_p95_ms_exclusive") if read else ("cli_write_eight_p95_ms_inclusive"
+                   if sample["clients"] == 8 else "cli_write_p95_ms_inclusive")
+            value, ceiling = sample.get("p95_ms"), limits.get(key)
+            raw = sample.get("samples")
+            count = 30 if read else 30 * sample["clients"]
+            if (not finite_nonnegative(value) or not finite_nonnegative(ceiling)
+                    or not isinstance(raw, list) or len(raw) != count
+                    or any(not isinstance(s, dict) or type(s.get("code")) is not int
+                           or s["code"] != 0 or s.get("error")
+                           or not finite_nonnegative(s.get("ms")) for s in raw)):
+                return "NOT MEASURED"
+            if value != sorted(s["ms"] for s in raw)[math.ceil(count * 0.95) - 1]:
+                return "NOT MEASURED"
+            if (sample.get("passed") is not True or not (value < ceiling if read else value <= ceiling)
+                    or any(s.get("routing_error") for s in raw)):
+                return "MISS"
+    else:
+        key = {"standalone persistent processes": "standalone_processes",
+               "persistent processes after 1 seat(s)": "processes_added_per_seat",
+               "standalone RSS no session": "standalone_idle_rss_bytes",
+               "standalone RSS one session": "standalone_rss_bytes"}.get(label)
+        value = row.get("count" if budget == "B3" else "rss_bytes")
+        ceiling = limits.get(key)
+        if not finite_nonnegative(value) or not finite_nonnegative(ceiling):
+            return "NOT MEASURED"
+        if not (value == ceiling if budget == "B3" else value <= ceiling):
+            return "MISS"
+    cleanup = row.get("cleanup_errors", [])
+    if not isinstance(cleanup, list):
+        return "NOT MEASURED"
+    return "PASS" if row.get("passed") is True and not cleanup else "MISS"
+
+
 def invocation(inv, directory, run=None):
     mode, expected = SELECTIONS.get(inv.get("selection"), ("unsupported", set(range(1, 6))))
     entry = {**inv, "mode": mode, "expected": sorted(expected), "results": [],
@@ -145,17 +209,21 @@ def invocation(inv, directory, run=None):
     cleanup_failed = bool(cleanup) if mode == "first-hour" else any(cleanup) if cleanup_known else False
     qualification = receipt.get("qualification")
     budget = receipt.get("budgets")
+    behavior_only = (mode == "first-hour" and isinstance(budget, dict) and (
+        budget.get("state") == "not run: first-hour behavior scope" or
+        budget.get("state") is None and isinstance(qualification, str)
+        and qualification.startswith("Five behavior checks only;")))
     qualified = (isinstance(qualification, str) and isinstance(budget, dict)
-                 and (qualification.startswith("Five behavior checks only;") if mode == "first-hour"
-                      else qualification == "see journey scope and required budgets"))
-    budget_artifact, budget_error = read(directory / inv["output"] / "budgets.json") if mode != "first-hour" else ({}, None)
-    if mode != "first-hour" and (budget_error or budget_artifact.get("profile") != "rust"
+                 and (behavior_only or qualification == "see journey scope and required budgets"
+                      and (mode != "first-hour" or budget.get("state") == "assessed")))
+    budget_artifact, budget_error = read(directory / inv["output"] / "budgets.json") if not behavior_only else ({}, None)
+    if not behavior_only and (budget_error or budget_artifact.get("profile") != "rust"
                                 or not isinstance(budget_artifact.get("measurements"), list)
                                 or any(not isinstance(row, dict) or not isinstance(row.get("label"), str)
                                        or type(row.get("passed")) is not bool for row in budget_artifact["measurements"])):
         entry["problems"].append("budget artifact unavailable or invalid: " + str(budget_error))
         budget_error = budget_error or "invalid budget artifact"
-    if mode != "first-hour" and not budget_error:
+    if not behavior_only and not budget_error:
         required = budget.get("required") if isinstance(budget, dict) else None
         labels = {row["label"] for row in budget_artifact["measurements"]}
         if (not isinstance(required, list) or not required or any(not isinstance(label, str) for label in required)
@@ -163,7 +231,19 @@ def invocation(inv, directory, run=None):
                 or budget.get("passed") is True and any(row["passed"] is not True for row in budget_artifact["measurements"])):
             budget_error = "required measurement coverage or verdict differs from the receipt"
             entry["problems"].append(budget_error)
-    entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification,
+        if mode == "first-hour":
+            if (not isinstance(required, list) or len(required) != len(FIRST_HOUR_PROBES)
+                    or any(not isinstance(label, str) for label in required)
+                    or set(required) != FIRST_HOUR_PROBES):
+                budget_error = "first-hour required probes differ from the reporter contract"
+                entry["problems"].append(budget_error)
+            if isinstance(budget, dict) and budget.get("passed") is True and any(
+                    first_hour_probe_result(key, row, budget_artifact.get("limits")) != "PASS"
+                    for row in budget_artifact["measurements"] if row["label"] in FIRST_HOUR_PROBES
+                    for key, expected_labels in LABELS.items() if row["label"] in expected_labels):
+                budget_error = "required first-hour probe is missing a passing measurement"
+                entry["problems"].append(budget_error)
+    entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification, behavior_only=behavior_only,
                  receipt_complete=budget_error is None and cleanup_known and qualified)
     code = inv.get("exit")
     # Judge exit 1 includes budget misses. Journey verdicts depend only on
@@ -180,7 +260,7 @@ def invocation(inv, directory, run=None):
                                  str([row["journey"] for row in rows if row["result"] == "FAIL"]))
     elif not cleanup_known or not qualified or budget_error:
         entry["problems"].append("cleanup or qualification unavailable")
-    elif mode != "first-hour" and budget.get("passed") is not True:
+    elif not behavior_only and budget.get("passed") is not True:
         entry["outcome"] = "FAIL"
         entry["problems"].append("required budgets did not pass")
     else:
@@ -250,11 +330,20 @@ def summarize(run, directory):
                     "label": row["label"], "numbers": numeric,
                     "box_load": entry.get("box_load"),
                     "sample_state": "observed" if numeric else row.get("state", "unavailable"),
-                    "probe_result": probe_result(budget, row, measured.get("limits"), numeric),
+                    "probe_result": first_hour_probe_result(budget, row, measured.get("limits"))
+                    if entry["mode"] == "first-hour" and not entry.get("behavior_only")
+                    else probe_result(budget, row, measured.get("limits"), numeric),
                     "invocation_outcome": entry["outcome"], "reason": row.get("reason"), "limits": measured.get("limits")})
     gaps = [f"{key}: {label}" for key, labels in LABELS.items() for label in labels
             if not any(row["label"] == label and row["numbers"] for row in slots[key])]
-    gaps += ["FULL: independent FULL-write probe unavailable", "Codex budgets: first-hour selection measures no budgets"]
+    gaps += ["FULL: independent FULL-write probe unavailable"]
+    if not any(entry.get("surface") == "codex" and entry["mode"] == "first-hour"
+               and entry["receipt_complete"] and not entry.get("behavior_only") for entry in entries):
+        gaps.append("Codex budgets: no validated first-hour budget receipt")
+    for entry in entries:
+        if entry.get("surface") == "codex" and entry["mode"] == "first-hour" and (
+                entry.get("behavior_only") or not entry["receipt_complete"]):
+            gaps.append("Codex budgets: " + entry["output"] + " has no validated first-hour budget receipt")
     budgets = []
     for key, probes in slots.items():
         missing = any(gap.startswith(key + ":") for gap in gaps)

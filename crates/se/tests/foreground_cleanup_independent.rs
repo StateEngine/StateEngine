@@ -11,10 +11,11 @@ use std::{
 };
 type Check<T = ()> = Result<T, Box<dyn Error>>;
 struct Fixture {
-    root: PathBuf,
+    root: Option<PrivateDirectory>,
     home: PathBuf,
     image: PathBuf,
     child: Option<Child>,
+    retain: bool,
 }
 impl Fixture {
     fn new() -> Check<Self> {
@@ -25,20 +26,34 @@ impl Fixture {
             SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
         ));
         drop(se_proc::NativeStateFiles::create(&root)?);
+        let root = PrivateDirectory::adopt(root);
         let image = root.join(if cfg!(windows) { "se.exe" } else { "se" });
         fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
         let f = Self {
             home: root.join("state"),
-            root,
+            root: Some(root),
             image,
             child: None,
+            retain: false,
         };
-        let repo = f.root.join("repo");
+        let repo = f.root_path()?.join("repo");
         fs::create_dir(&repo)?;
         fs::write(repo.join("user.txt"), b"preserve this work\n")?;
         let out = f.call(&["init", "--repo", repo.to_str().ok_or("fixture path")?])?;
         assert!(out.status.success(), "init failed: {out:?}");
         Ok(f)
+    }
+    fn root_path(&self) -> Check<&std::path::Path> {
+        self.root
+            .as_deref()
+            .ok_or_else(|| "missing fixture root".into())
+    }
+
+    fn root_display(&self) -> String {
+        match self.root_path() {
+            Ok(path) => path.display().to_string(),
+            Err(error) => format!("<fixture root unavailable: {error}>"),
+        }
     }
     fn command(&self) -> Command {
         let mut c = Command::new(&self.image);
@@ -52,16 +67,17 @@ impl Fixture {
                 c.env_remove(key);
             }
         }
-        c.args(["--json", "--home"])
-            .arg(&self.home)
-            .current_dir(&self.root);
+        c.args(["--json", "--home"]).arg(&self.home);
+        if let Some(root) = self.root.as_deref() {
+            c.current_dir(root);
+        }
         c
     }
     fn call(&self, args: &[&str]) -> Check<Output> {
         Ok(self.command().args(args).output_executable()?)
     }
     fn spawn(&mut self) -> Check {
-        let diagnostic = fs::File::create(self.root.join("foreground.stderr"))?;
+        let diagnostic = fs::File::create(self.root_path()?.join("foreground.stderr"))?;
         self.child = Some(
             self.command()
                 .args(["up", "--foreground"])
@@ -95,7 +111,7 @@ impl Fixture {
             .open(self.home.join("runtime.lock"))?;
         lease.try_lock()?;
         assert_eq!(
-            fs::read(self.root.join("repo/user.txt"))?,
+            fs::read(self.root_path()?.join("repo/user.txt"))?,
             b"preserve this work\n"
         );
         Ok(())
@@ -103,7 +119,6 @@ impl Fixture {
     fn finish(mut self) -> Check {
         self.closed()?;
         self.child = None;
-        fs::remove_dir_all(&self.root)?;
         Ok(())
     }
 }
@@ -112,19 +127,29 @@ impl Drop for Fixture {
         if self.home.join("endpoint.json").exists() {
             match self.call(&["down"]) {
                 Ok(out) if out.status.success() => (),
-                out => eprintln!(
-                    "retaining foreground fixture {}: down {out:?}",
-                    self.root.display()
-                ),
+                out => {
+                    self.retain = true;
+                    eprintln!(
+                        "retaining foreground fixture {}: down {out:?}",
+                        self.root_display()
+                    );
+                }
             }
         }
         if self.child.is_some()
             && let Err(error) = self.wait()
         {
+            self.retain = true;
             eprintln!(
                 "owned foreground child retained at {}: {error}",
-                self.root.display()
+                self.root_display()
             );
+        }
+        if self.retain
+            && let Some(root) = self.root.take()
+        {
+            // Retained state is diagnostic evidence; it must outlive the test.
+            std::mem::forget(root);
         }
     }
 }
@@ -183,6 +208,9 @@ fn closed_startup_output_leaves_no_host_or_held_home_lease() -> Check {
     );
     f.finish()
 }
+#[path = "../../test-support/directory.rs"]
+mod directory;
 #[path = "../../test-support/executable.rs"]
 mod executable;
+use directory::PrivateDirectory;
 use executable::ExecutableCommand;

@@ -123,13 +123,19 @@ pub fn invocation(
         "--allowedTools".into(),
         format!("mcp__{MCP_SERVER}").into(),
     ]);
-    // The harness reads Claude's native settings before selecting a headless
-    // fallback at launch. Named profiles remain explicit.
-    if request.profile.named_profile != "default" {
+    // Only the default workspace profile inherits native permission settings.
+    // A selected read-only policy and all named profiles remain explicit.
+    if request.profile.named_profile != "default"
+        || request.profile.permission == se_store::PermissionProfile::ReadOnly
+    {
         arguments.extend([
             "--permission-mode".into(),
             permission_mode(request.profile.permission).into(),
         ]);
+    }
+    if request.profile.permission == se_store::PermissionProfile::ReadOnly {
+        // Keep file inspection and MCP mail available without mutating built-ins.
+        arguments.extend(["--tools".into(), "Read,Glob,Grep,ToolSearch".into()]);
     }
     if let Some(model) = &request.profile.model {
         arguments.extend(["--model".into(), model.into()]);
@@ -156,10 +162,11 @@ pub fn invocation(
     })
 }
 
-/// Explicit named profiles opt into a per-launch Claude permission mode;
-/// the default consults Claude's native settings before headless launch.
+/// Named profiles and read-only choices select a per-launch permission mode;
+/// the default workspace profile consults native settings before headless launch.
 fn permission_mode(profile: se_store::PermissionProfile) -> &'static str {
     match profile {
+        // The built-in tool list enforces read-only; default mode permits MCP mail.
         se_store::PermissionProfile::ReadOnly => "default",
         se_store::PermissionProfile::WorkspaceWrite => "acceptEdits",
         se_store::PermissionProfile::NamedFullBypass => "bypassPermissions",

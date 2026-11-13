@@ -6,7 +6,7 @@
   "crates/se-core/src/ops": 96,
   "crates/se-host/src/process": 83,
   "crates/se-host/src/remote": 61,
-  "crates/se-host/src/harness": 57,
+  "crates/se-host/src/harness": 58,
   "crates/se/src/route": 54,
   "crates/se-proc/src/state_files": 41,
   "crates/se-host/src/channels": 33,

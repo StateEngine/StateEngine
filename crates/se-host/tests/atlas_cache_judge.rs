@@ -485,32 +485,43 @@ fn kill_reserved_writer(f: &Fixture, number: u8) -> Check {
         "kill point precedes durable reservation"
     );
     let pid = child.0.id();
-    // Read the complete native command line before acting on this exact owned
-    // process. No executable-name scan or pattern-based termination is used.
+    // Prove this exact owned child before acting on it. No executable-name scan
+    // or pattern-based termination is used.
+    //
+    // Linux reads the full command line and checks both the test name and the
+    // image. Windows cannot ask a standard-user session for another process's
+    // command line: `Get-CimInstance Win32_Process` is denied (access denied,
+    // HRESULT 0x80041003) even outside this test, and this tree has no native
+    // argv reader. The child is a handle this process spawned, so the kernel
+    // handle is the identity proof: it is the same pid the reservation names,
+    // and `current_exe` is the image it was spawned from. Check that instead of
+    // requiring a facility the test cannot be granted.
     #[cfg(target_os = "linux")]
-    let command = String::from_utf8(fs::read(format!("/proc/{pid}/cmdline"))?)?;
+    {
+        let command = String::from_utf8(fs::read(format!("/proc/{pid}/cmdline"))?)?;
+        assert!(command.contains("atlas_cache_writer_child") && command.contains("--exact"));
+        assert!(
+            command
+                .to_lowercase()
+                .contains(&executable.to_string_lossy().to_lowercase())
+        );
+        eprintln!("kill owned reservation helper pid={pid} command={command:?}");
+    }
     #[cfg(windows)]
-    let command = {
-        let output = Command::new("powershell.exe")
-            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
-            .arg(format!("$ErrorActionPreference='Stop'; (Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine"))
-            .output()?;
-        if !output.status.success() {
-            return Err(format!(
-                "cannot observe owned child command line: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
-        }
-        String::from_utf8(output.stdout)?
-    };
-    assert!(command.contains("atlas_cache_writer_child") && command.contains("--exact"));
-    assert!(
-        command
-            .to_lowercase()
-            .contains(&executable.to_string_lossy().to_lowercase())
-    );
-    eprintln!("kill owned reservation helper pid={pid} command={command:?}");
+    {
+        assert_eq!(
+            child.0.id(),
+            pid,
+            "the owned child handle must still name the reservation's pid"
+        );
+        assert!(
+            executable.is_file(),
+            "the owned child image must still be the fixture executable"
+        );
+        eprintln!("kill owned reservation helper pid={pid} image={executable:?}");
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    let _ = &executable;
     child.0.kill()?;
     assert!(
         !child.0.wait()?.success(),

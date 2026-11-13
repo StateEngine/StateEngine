@@ -19,7 +19,7 @@ from app import App
 from custody import Journal, inventory
 from dispatch_binding import Request, bind, jobs, job, live
 from workload import Canceled, Cohort, resource_limits
-from box_result import NAME, external_id, report
+from box_result import NAME, external_id, report, text
 
 STOP = threading.Event()
 
@@ -136,15 +136,16 @@ def publish(api, value):
     api.write("check-runs/" + str(check_id), {"status": "completed",
         "conclusion": {"passed": "success", "failed": "failure", "unavailable": "neutral"}[payload["status"]],
         "output": {"title": NAME + ": " + payload["status"],
-                   "summary": json.dumps(payload, separators=(",", ":"))}}, "PATCH")
+                   "summary": text(payload)}}, "PATCH")
     return True
 
 
-def finish(api, request, check_id, image, status, stages, folder, app_id):
+def finish(api, request, check_id, image, status, stages, folder, app_id, failed=None):
     terminal = folder / "terminal.json"
     if not terminal.exists():
         save(terminal, {"app_id": app_id, "request": asdict(request), "report": report(
-            request.identity, check_id, image["image"], image["policy_digest"], status, stages)})
+            request.identity, check_id, image["image"], image["policy_digest"], status, stages,
+            failed)})
     # The first durable terminal observation is immutable, even after a lost API reply.
     publish(api, json.loads(terminal.read_text()))
 
@@ -250,7 +251,8 @@ def execute(api, request, check_id, config, image, folder, journal):
         status = "failed"
     elif canceled.is_set() or reason:
         status = "unavailable"
-    finish(api, request, check_id, image, status, stages, folder, config["app_id"])
+    finish(api, request, check_id, image, status, stages, folder, config["app_id"],
+           getattr(cohort, "failed", []))
 
 
 def consider(api, candidate, config, image, journal):

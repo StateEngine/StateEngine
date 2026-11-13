@@ -1487,6 +1487,7 @@ dependencies = [
  "se-core",
  "se-host",
  "se-proc",
+ "se-remote-cli",
  "se-store",
  "se-types",
  "serde",
@@ -1574,6 +1575,20 @@ dependencies = [
  "serde_json",
  "sha2",
  "windows-sys 0.61.2",
+ "zeroize",
+]
+
+[[package]]
+name = "se-remote-cli"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "se-core",
+ "se-host",
+ "se-types",
+ "serde",
+ "serde_json",
+ "uuid",
  "zeroize",
 ]
 
