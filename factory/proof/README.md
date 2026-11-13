@@ -137,7 +137,9 @@ not a JSON credential store. For example:
 
 The runner sends the token over SSH stdin to a fixed wrapper, which places it in
 `CLAUDE_CODE_OAUTH_TOKEN` before executing `se`. The host retains this provider
-credential in memory and passes it only to Claude. The token is absent from argv,
+credential in memory. Claude and SE Code children inherit its supported login
+environment; Codex uses its own allow-list and does not receive this token.
+The token is absent from argv,
 command metadata and the recovery journal. Destination scans before and after the
 journey require `.claude/.credentials.json` and `.codex/auth.json` to be absent;
 incumbent files are refused and never replaced. Source inode and digest are checked
@@ -147,7 +149,10 @@ SIGTERM and SIGINT enter bounded cleanup. A private recovery journal in the sour
 user's state directory records ownership before starting a runtime; the next run,
 under the same destination lock, retries only that attempt's cleanup before doing
 new work. Set `remote.recovery_directory` to keep that journal elsewhere. Unproven
-stops retain a leftover record and fail the run. The dedicated destination account
+stops retain a leftover record and fail the run. Recovery records whether the old
+token source changed or disappeared, but its inode/digest comparison cannot block
+process cleanup after rotation. The destination credential-file scan still runs.
+The dedicated destination account
 must not be used for ordinary work. Codex remote automation-token coverage is not
 part of this probe.
 The runner retains source and destination project data and executable copies for

@@ -14,10 +14,16 @@ def dedicated_source(sources):
     if not selected or not Path(selected).is_absolute():
         raise RuntimeError("configure an absolute dedicated automation_tokens.claude file")
     source = Path(selected)
+    if source.is_symlink():
+        raise RuntimeError("automation token source is a symlink; select an owned plain file outside the native login home")
     home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(strict=True)
     if source.resolve(strict=True).is_relative_to(home):
         raise RuntimeError("automation token must be outside the login user's real home")
-    return source.parent.resolve(strict=True) / source.name
+    parent = source.parent.resolve(strict=True)
+    info = parent.stat()
+    if info.st_mode & 0o022:
+        raise RuntimeError("automation token parent permits group or world writes; use a protected directory (mode 700)")
+    return parent / source.name
 
 
 def plain(path):
@@ -40,6 +46,7 @@ class Credentials:
         self.journey = journey
         self.source = dedicated_source(sources)
         self.original = plain(self.source)[1]
+        self.recovered = False
         info = self.source.lstat()
         if info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise RuntimeError("automation token must be an owned private file (mode 600)")
@@ -49,9 +56,19 @@ class Credentials:
         data, identity = plain(self.source)
         if identity != self.original:
             raise RuntimeError("automation token source changed during the attempt")
-        value = data.decode("utf-8").strip()
-        if not value or len(value) > 16384 or any(c.isspace() or ord(c) < 33 for c in value):
-            raise RuntimeError("automation token must contain one bounded nonempty token")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise RuntimeError("automation token is not UTF-8; write only the generated token text") from None
+        if not text:
+            raise RuntimeError("automation token is empty; write the generated token to the dedicated source")
+        value = text.strip()
+        if not value:
+            raise RuntimeError("automation token contains only whitespace; write the generated token text")
+        if len(value) > 16384:
+            raise RuntimeError("automation token exceeds 16384 characters; the source must contain only the generated token")
+        if any(c.isspace() or ord(c) < 33 for c in value):
+            raise RuntimeError("automation token contains whitespace or control characters; write only one generated token")
         return value
 
     def snapshot(self):
@@ -62,6 +79,7 @@ class Credentials:
         result = cls.__new__(cls)
         result.journey, result.source = journey, Path(value["source"])
         result.original = tuple(value["original"])
+        result.recovered = True
         return result
 
     def scan(self, phase):
@@ -96,8 +114,21 @@ os.execv(request['argv'][0],request['argv'])
         if not self.journey.custody_safe or self.journey.remote_runtime:
             raise RuntimeError("provider-token process custody is unresolved; next run will retry owned cleanup")
         self.scan("after")
+        if self.recovered:
+            # Cleanup owns processes, not the retired token. Rotation or removal
+            # of that source must never prevent a later run from closing them.
+            try:
+                selected = dedicated_source({"claude": str(self.source)})
+                changed = plain(selected)[1] != self.original
+                integrity = "changed" if changed else "unchanged"
+            except (OSError, RuntimeError):
+                integrity = "unavailable"
+            self.journey.record["recovered_token_source"] = {"state": integrity,
+                "required_for_cleanup": False,
+                "reason": "interrupted attempt recovery permits automation token rotation or removal"}
+            return
         if plain(self.source)[1] != self.original:
-            raise RuntimeError("automation token source changed during the attempt")
+            raise RuntimeError("automation token source changed during the attempt; process cleanup finished, and the next run can recover without the retired token")
         self.journey.record["credential_closure"] = {
             "source_inode_unchanged": True, "source_digest_unchanged": True,
             "destination_credential_files_absent": True, "transport": "ssh-stdin/environment"}

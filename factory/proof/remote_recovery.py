@@ -72,10 +72,12 @@ def recover(current, path, reference):
     previous.record["cleanup_errors"] = []
     previous.cleanup()
     current.record.setdefault("recovered_attempts", []).append({"nonce": previous.nonce,
-        "closed": not previous.record["leftover"], "errors": previous.record["cleanup_errors"]})
+        "closed": not previous.record["leftover"], "errors": previous.record["cleanup_errors"],
+        "token_source": previous.record.get("recovered_token_source")})
     current.persist()
     if previous.record["leftover"]:
-        raise RuntimeError("previous owned remote attempt still has unresolved custody; see its retained record")
+        raise RuntimeError("previous owned remote attempt still has unresolved custody: " +
+                           "; ".join(previous.record["cleanup_errors"]))
 
 
 def finish_recovery(journey):
