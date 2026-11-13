@@ -276,6 +276,7 @@ pub(super) fn finish(
         },
         home: cx.home.display().to_string(),
         agent: InitialAgent {
+            harness: agent.harness.clone(),
             id: agent.id.clone(),
             name: agent.name.clone(),
             outcome: if agent_created {

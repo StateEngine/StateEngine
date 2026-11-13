@@ -70,12 +70,17 @@ impl LaunchCoordinator {
         };
         let configuration = self.options.configuration.clone();
         let configuration_file = self.configuration_file.clone();
+        let harness_name = plan.profile.harness.clone();
         let (executable, qualification) = self
             .store
             .pool
             .run_owned(deadline, move || {
-                let command =
-                    resolve_provider(&configuration, provider, configuration_file.as_deref())?;
+                let command = resolve_provider(
+                    &configuration,
+                    provider,
+                    configuration_file.as_deref(),
+                    harness_name.as_deref(),
+                )?;
                 // Reuse this existing filesystem job instead of adding queue
                 // round trips to the warm qualification path.
                 let qualification = if provider == se_types::Provider::Codex {

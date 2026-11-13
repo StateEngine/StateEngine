@@ -106,6 +106,7 @@ fn noise_accompanies_real_turns_and_a_live_noise_only_tail_waits() -> Check {
                         provider: Provider::Claude,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,
+                        harness: None,
                         named_profile: "default".into(),
                         effort: None,
                     },

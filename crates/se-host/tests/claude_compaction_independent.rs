@@ -124,6 +124,7 @@ fn exercise(broken: Option<Vec<u8>>) -> Check {
                         provider: Provider::Claude,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,
+                        harness: None,
                         named_profile: "default".into(),
                         effort: None,
                     },

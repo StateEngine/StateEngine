@@ -8,7 +8,21 @@ pub(crate) fn resolve_provider(
     configuration: &se_core::config_policy::ConfigFile,
     provider: se_types::Provider,
     selected_file: Option<&std::path::Path>,
+    harness: Option<&str>,
 ) -> Result<PathBuf> {
+    if let Some(harness) = harness {
+        if provider != se_types::Provider::Acp {
+            return Err(se_types::SeError::invalid(
+                "harness binding",
+                "a saved ACP harness must keep its original provider",
+            ));
+        }
+        return resolve_provider_command(
+            &configuration.harness(harness)?.command,
+            provider,
+            selected_file,
+        );
+    }
     if provider == se_types::Provider::SeCode
         && configuration.provider(provider).command.is_none()
         && let Some(bundled) = crate::harness::secode_image::bundle::discover()?

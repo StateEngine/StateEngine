@@ -41,28 +41,22 @@ impl AcpHarness {
             &self.configuration,
             &request.profile.named_profile,
             request.profile.model.as_deref(),
+            request.profile.harness.as_deref(),
         )
     }
     pub(crate) fn validate_launch(
         configuration: &ConfigFile,
         named_profile: &str,
         model: Option<&str>,
+        harness: Option<&str>,
     ) -> Result<ResolvedProfile> {
         let profile = configuration.resolve_profile(named_profile, Provider::Acp, true)?;
-        if !profile.bypass || !profile.network {
-            return Err(SeError::invalid(
-                "ACP permission profile",
-                "This harness provides no execution sandbox or protocol network restriction. Select an explicitly named profile with bypass = true and network = true to opt into unsandboxed execution with network access.",
-            ));
-        }
-        let configured_model = configuration
-            .acp
-            .arguments
-            .iter()
-            .any(|v| v.contains("{model}"));
+        let settings = configuration.acp_settings(harness, named_profile)?;
+        let configured_model = settings.arguments.iter().any(|v| v.contains("{model}"))
+            || settings.model_environment.is_some();
         if model.is_some() && !configured_model {
             return Err(error(
-                "The selected model requires a {model} placeholder in acp.arguments. Add that placeholder in the agent's documented model argument, then retry launch.",
+                "The selected model requires an argv {model} slot or a native model_environment binding in this harness configuration.",
             ));
         }
         if configured_model && model.is_none() {
@@ -138,7 +132,10 @@ impl Harness for AcpHarness {
     ) -> HostFuture<'a, ProviderInvocation> {
         Box::pin(async move {
             self.resolved(request)?;
-            let settings = &self.configuration.acp;
+            let settings = self.configuration.acp_settings(
+                request.profile.harness.as_deref(),
+                &request.profile.named_profile,
+            )?;
             let model = request.profile.model.as_deref();
             let arguments = settings
                 .arguments
@@ -154,6 +151,14 @@ impl Harness for AcpHarness {
                         .retain(|(name, _)| !name.to_string_lossy().eq_ignore_ascii_case(key));
                     environment.push((key.into(), value));
                 }
+            }
+            for (key, value) in &settings.values {
+                environment.retain(|(name, _)| !name.to_string_lossy().eq_ignore_ascii_case(key));
+                environment.push((key.into(), value.into()));
+            }
+            if let Some(key) = &settings.model_environment {
+                environment.retain(|(name, _)| !name.to_string_lossy().eq_ignore_ascii_case(key));
+                environment.push((key.into(), model.unwrap_or_default().into()));
             }
             environment
                 .retain(|(name, _)| !name.to_string_lossy().eq_ignore_ascii_case("SE_SESSION"));
@@ -258,7 +263,13 @@ impl Harness for AcpHarness {
                         .ok_or_else(|| error("protocol cwd is not UTF-8"))?,
                     servers,
                     replay,
-                    &self.configuration.acp.mode,
+                    &self
+                        .configuration
+                        .acp_settings(
+                            request.profile.harness.as_deref(),
+                            &request.profile.named_profile,
+                        )?
+                        .mode,
                     remaining(),
                 )
                 .await?;

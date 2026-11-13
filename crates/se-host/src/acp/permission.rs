@@ -24,10 +24,10 @@ impl PermissionPolicy {
     pub fn notice(self) -> &'static str {
         match self {
             Self::NeverAsk => {
-                "This harness provides no execution sandbox in protocol mode. The saved never-ask profile allows protocol permission requests."
+                "The selected harness owns permissions and sandboxing. The saved never-ask profile allows its protocol permission requests."
             }
             Self::Refuse => {
-                "This harness provides no execution sandbox in protocol mode. Tool permission requests are refused because this profile requires approval and no approval path is available."
+                "The selected harness owns permissions and sandboxing. It requested approval; this headless session cannot collect approval, so the tool call was refused."
             }
         }
     }

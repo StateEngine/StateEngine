@@ -42,6 +42,7 @@ fn owner_resume_refusal_lists_saved_agents_with_the_exact_home_and_project() -> 
                         provider: Provider::Claude,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,
+                        harness: None,
                         named_profile: "default".into(),
                         effort: None,
                     },

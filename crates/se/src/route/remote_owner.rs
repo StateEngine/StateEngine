@@ -36,6 +36,7 @@ pub(crate) fn execute(cx: &Bootstrap, input: Input) -> Result<se_host::Operation
         init::execute(
             cx,
             se_core::ops::ProjectInit {
+                harness: None,
                 repo: Some(
                     workspace
                         .to_str()
