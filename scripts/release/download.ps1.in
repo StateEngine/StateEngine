@@ -10,6 +10,7 @@ if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem -or
     $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { throw 'Install refused: this release requires Windows x64' }
 $work = Join-Path ([IO.Path]::GetTempPath()) ('stateengine-download-' + [Guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($work)
+$preserveInput = $false
 try {
     $download = Join-Path $work 'archive.zip'
     Invoke-WebRequest -UseBasicParsing -Uri "$base/$archive" -OutFile $download
@@ -51,6 +52,9 @@ try {
         throw 'release version or target differs from this installer'
     }
     Write-Output "Installing StateEngine $version (unsigned release, SHA-256 verified)..."
+    # Preserve the exact archive input if the child leaves a recovery journal,
+    # refuses after handoff, or is interrupted before its completion readback.
+    $preserveInput = $true
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $bundle 'install.ps1')
     if ($LASTEXITCODE -ne 0) { throw 'installation did not complete; follow the installer refusal above before retrying' }
     $installed = Join-Path $env:LOCALAPPDATA 'StateEngine/bin/se.exe'
@@ -58,9 +62,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'installed command version readback failed' }
     $expected = & (Join-Path $bundle 'se.exe') --version
     if ($LASTEXITCODE -ne 0 -or ($actual -join "`n") -cne ($expected -join "`n")) { throw 'installed version differs from the verified release' }
+    $preserveInput = $false
 } catch {
     throw "Install refused: $($_.Exception.Message)"
 } finally {
-    if ([IO.Directory]::Exists($work)) { [IO.Directory]::Delete($work, $true) }
+    if ($preserveInput) {
+        [Console]::Error.WriteLine("Verified installation input retained at $bundle; follow the installer recovery instruction above.")
+    } elseif ([IO.Directory]::Exists($work)) { [IO.Directory]::Delete($work, $true) }
 }
 Write-Output "Verified: $actual"

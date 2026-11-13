@@ -15,7 +15,15 @@ done
 if [ "$macos" = 1 ]; then hash=shasum; else hash=sha256sum; fi
 command -v "$hash" >/dev/null 2>&1 || fail "required checksum command is absent: $hash"
 work=$(mktemp -d "${TMPDIR:-/tmp}/stateengine-download.XXXXXX") || fail 'cannot create private download scratch'
-trap 'rm -rf "$work"' 0
+preserve_input=0
+cleanup() {
+    if [ "$preserve_input" = 1 ]; then
+        printf 'Verified installation input retained at %s; follow the installer recovery instruction above.\n' "$bundle" >&2
+    else
+        rm -rf "$work"
+    fi
+}
+trap cleanup 0
 trap 'exit 1' HUP INT TERM
 curl --proto '=https' --proto-redir '=https' -fsSL --retry 2 \
     -o "$work/archive" "$base/$archive" || fail 'release download failed; check your network and retry this installer'
@@ -48,11 +56,15 @@ field() { sed -n "s/^  \"$1\": \"\([^\"]*\)\",\{0,1\}$/\1/p" "$bundle/manifest.j
 [ "$(field version)" = "$version" ] && [ "$(field target)" = "$target" ] \
     || fail 'release version or target differs from this installer'
 printf 'Installing StateEngine %s (unsigned release, SHA-256 verified)...\n' "$version"
+# A child may have durably recorded a partial installation before refusing or
+# being interrupted. Its printed recovery command must keep its original input.
+preserve_input=1
 sh "$bundle/install.sh" || fail 'installation did not complete; follow the installer refusal above before retrying'
 installed=${HOME:?}/.local/bin/se
 actual=$("$installed" --version) || fail 'installed command version readback failed'
 expected=$("$bundle/se" --version) || fail 'release command version readback failed'
 [ "$actual" = "$expected" ] || fail 'installed version differs from the verified release'
+preserve_input=0
 rm -rf "$work" || fail 'installation verified, but download scratch cleanup failed'
 trap - 0
 printf 'Verified: %s\n' "$actual"

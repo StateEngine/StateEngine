@@ -25,15 +25,17 @@ version for its archive halfway through an installation.
 Once those assets have been published and qualified, users can install with:
 
 ```sh
-curl -fsSL https://github.com/StateEngine/StateEngine/releases/latest/download/install.sh | sh
+(se_installer=$(mktemp) || exit; trap 'rm -f "$se_installer"' 0; curl -fsSL https://github.com/StateEngine/StateEngine/releases/latest/download/install.sh -o "$se_installer" && sh "$se_installer")
 ```
 
 ```powershell
-irm https://github.com/StateEngine/StateEngine/releases/latest/download/install.ps1 | iex
+& { $ErrorActionPreference = 'Stop'; $se_installer = irm https://github.com/StateEngine/StateEngine/releases/latest/download/install.ps1; iex $se_installer }
 ```
 
 The project domain can redirect `/install.sh` and `/install.ps1` to those URLs.
 For a specific version, replace `latest/download` with `download/vVERSION`.
+Both commands finish the script download successfully before executing it;
+an interrupted transfer cannot become a successful empty shell invocation.
 Do not mark an incomplete or unqualified release as latest. Stage all assets on
 a draft first; expose it as a prerelease for native installation checks, then
 promote the qualified stable release. An intentional prerelease remains a
@@ -49,8 +51,10 @@ download or checksum failures and version/target mismatches before handoff. The
 standalone installer retains native file ownership, replacement and interrupted
 installation recovery. Success requires an installed absolute-path version
 readback and download scratch cleanup. A failure preserves existing user data
-and reports which step refused; follow the standalone installer's recovery
-message for any preserved partial installation.
+and reports which step refused. After installer handoff, a refusal or interruption
+preserves the verified extracted archive at the printed path, so the standalone
+installer's exact recovery command and flag remain usable. Failures before
+handoff and completed successful installations clean only their owned scratch.
 
 Installation neither starts a service nor configures a provider. Use the normal
 user account, without privilege elevation. Removal belongs to `se uninstall`.
