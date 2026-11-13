@@ -75,8 +75,11 @@ impl Backend {
             Err(error) => Err(error.body.clone().into()),
         }
     }
+    /// A fresh authenticated read on every call: the contract is liveness, so
+    /// this deliberately does not read the principal memo.
     pub fn check_session(&mut self, secret: &Secret) -> Result<()> {
-        self.principal(secret).map(|_| ())
+        self.call(secret, AnyOp::ProjectStatus(ProjectStatus::default()))
+            .map(|_| ())
     }
     /// The capability's bound project and agent, memoized per capability.
     /// Identity is the cheapest operation that authenticates the session and
