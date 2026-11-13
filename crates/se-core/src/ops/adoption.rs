@@ -16,6 +16,14 @@ pub fn bind<R: Snapshot>(
     binding: Binding,
     cx: &mut Cx<'_, R>,
 ) -> Result<Option<AtomicBatch>> {
+    bind_provider(kernel, binding, se_store::Provider::Claude, cx)
+}
+pub fn bind_provider<R: Snapshot>(
+    kernel: &Kernel,
+    binding: Binding,
+    provider: se_store::Provider,
+    cx: &mut Cx<'_, R>,
+) -> Result<Option<AtomicBatch>> {
     scope::project(cx.admission)?;
     if !matches!(cx.admission.actor, se_store::Actor::Human(_)) || cx.admission.session.is_some() {
         return Err(se_types::SeError::invalid(
@@ -60,7 +68,7 @@ pub fn bind<R: Snapshot>(
         super::session_commit::prepare(super::session_commit::SessionPreparation {
             agent: binding.agent,
             session: binding.session.clone(),
-            provider: se_store::Provider::Claude,
+            provider,
             surface: Some(se_store::SessionSurface::Observed),
             native_ref: binding.conversation.to_string(),
             consent: Consent::Capture,

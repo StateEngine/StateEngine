@@ -49,6 +49,18 @@ impl OwnedFile {
         self.0.check()?;
         Ok(value)
     }
+    /// Observe permissions on the pinned object without exposing a write handle.
+    pub fn permissions(&self) -> Result<std::fs::Permissions> {
+        self.0.check()?;
+        let permissions = self
+            .0
+            .file()
+            .metadata()
+            .map_err(|error| io_error("inspect owned file permissions", self.0.path(), error))?
+            .permissions();
+        self.0.check()?;
+        Ok(permissions)
+    }
     /// Read bounded profile bytes without silently accepting a truncated prefix.
     pub fn read(&mut self, limit: usize) -> Result<Vec<u8>> {
         self.0.check()?;

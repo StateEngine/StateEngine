@@ -1,7 +1,7 @@
 //! Native inbox wait and protected offer journal for user-owned sessions.
 use super::{failure, forward_to, managed_ancestry_refusal, native};
 use crate::{bootstrap::Bootstrap, route};
-use se_host::adoption::{Input, Registration};
+use se_host::adoption::{Input, Kind, Registration};
 use se_types::{Result, SeError};
 use sha2::{Digest, Sha256};
 use std::{
@@ -37,7 +37,7 @@ fn native_bound() -> se_proc::native_ipc::IpcIoBound {
 }
 impl MailWait {
     fn open(cx: &Bootstrap, input: &Input) -> Result<Option<Self>> {
-        let registration = se_host::adoption::read(&cx.home)?
+        let registration = se_host::adoption::read_for(&cx.home, input.kind)?
             .ok_or_else(|| SeError::invalid("native mail wait", "current adoption registration"))?;
         let peer = se_proc::native_ipc::observe_ipc_self_bounded(&native_bound())
             .map_err(|e| SeError::invalid("native mail wait", &e.to_string()))?;
@@ -51,8 +51,16 @@ impl MailWait {
         let files = se_proc::NativeStateFiles::open(&cx.home).map_err(native)?;
         files.prepare_directory(&directory).map_err(native)?;
         let mut offer_identity = Sha256::new();
-        offer_identity.update(input.conversation.as_str());
-        offer_identity.update(provider.binding());
+        if input.kind == Kind::Codex {
+            // Native queues survive a provider restart. Unknown acceptance must
+            // remain suppressed when the same conversation is resumed.
+            offer_identity.update(b"codex-conversation-mail/v1");
+            offer_identity.update(input.project.as_str());
+            offer_identity.update(input.conversation.as_str());
+        } else {
+            offer_identity.update(input.conversation.as_str());
+            offer_identity.update(provider.binding());
+        }
         let name = format!("{:x}", offer_identity.finalize());
         let lock_path = directory.join(format!("{name}.lock"));
         if files.readback(&lock_path).map_err(native)?.is_none() {
@@ -146,7 +154,7 @@ impl MailWait {
             if !se_host::adoption::metadata::current(&self.registration, &self.provider, &input)? {
                 return Ok(0);
             }
-            if se_host::adoption::read(&cx.home)?
+            if se_host::adoption::read_for(&cx.home, input.kind)?
                 .is_none_or(|r| r.project(&cx.cwd).is_ok_and(|p| p.is_none()))
             {
                 return Ok(0);
@@ -189,8 +197,8 @@ impl MailWait {
                 )
             })?;
             let Some(page) = page else { return Ok(0) };
-            if self.offer(&response, &page)? {
-                return Ok(2);
+            if self.offer(&input, &response, &page)? {
+                return Ok(if input.kind == Kind::Codex { 0 } else { 2 });
             }
             input.cursor = page.page.next().cloned();
             if input.cursor.is_none() {
@@ -200,6 +208,7 @@ impl MailWait {
     }
     fn offer(
         &mut self,
+        input: &Input,
         response: &serde_json::Value,
         page: &se_core::ops::MessagePage,
     ) -> Result<bool> {
@@ -213,7 +222,7 @@ impl MailWait {
             if self.offered.len() + messages.len() > 4096 {
                 return Err(SeError::invalid(
                     "native mail offers",
-                    "at most 4096 pending offers; read or dismiss older mail using StateEngine",
+                    "at most 4096 automatic offers; read additional mail directly from the StateEngine inbox",
                 ));
             }
             for row in &messages {
@@ -237,7 +246,11 @@ impl MailWait {
             // A native wake is an offer, never a durable recipient read or
             // completion receipt. Sender labels are outside untrusted bodies.
             let frame = serde_json::json!({"stateengine_mail":{"agent":response.get("agent"),"messages":messages,"delivery":"offered; provider acceptance and recipient read unconfirmed"}});
-            writeln!(std::io::stdout(), "{frame}").map_err(failure)?;
+            if input.kind == Kind::Codex {
+                se_host::adoption::codex::offer(&self.registration, &input.conversation, &frame)?;
+            } else {
+                writeln!(std::io::stdout(), "{frame}").map_err(failure)?;
+            }
             return Ok(true);
         }
         Ok(false)

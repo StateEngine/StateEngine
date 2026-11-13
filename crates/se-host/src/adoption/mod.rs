@@ -7,18 +7,70 @@ use std::{
     io::{Read, Write},
     path::Path,
 };
+#[cfg(feature = "listener")]
+pub mod codex;
 pub mod diagnostic;
+#[cfg(feature = "listener")]
+pub mod install;
 #[cfg(feature = "listener")]
 pub mod metadata;
 pub mod settings;
 pub mod status;
 pub const JOURNAL: &str = "claude-adoption.json";
 const LIMIT: usize = 1024 * 1024;
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    #[default]
+    Claude,
+    Codex,
+}
+impl Kind {
+    pub const ALL: [Self; 2] = [Self::Claude, Self::Codex];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude Code",
+            Self::Codex => "Codex",
+        }
+    }
+    pub fn journal(self) -> &'static str {
+        match self {
+            Self::Claude => JOURNAL,
+            Self::Codex => "codex-adoption.json",
+        }
+    }
+    pub fn settings(self) -> &'static str {
+        match self {
+            Self::Claude => "settings.json",
+            Self::Codex => "config.toml",
+        }
+    }
+    pub fn provider(self) -> se_store::Provider {
+        match self {
+            Self::Claude => se_store::Provider::Claude,
+            Self::Codex => se_store::Provider::Codex,
+        }
+    }
+    pub fn policy(self) -> se_core::config_policy::Provider {
+        match self {
+            Self::Claude => se_core::config_policy::Provider::Claude,
+            Self::Codex => se_core::config_policy::Provider::Codex,
+        }
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Project {
     pub project: ProjectId,
     pub root: NativePath,
+    #[serde(default)]
+    pub discovery: Option<[u8; 32]>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +83,12 @@ pub struct Registration {
     pub layout: settings::Layout,
     pub installed: bool,
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub discovery: Option<[u8; 32]>,
+    #[serde(default)]
+    pub discovery_refusal: Option<String>,
+    #[serde(default)]
+    pub installation: Option<String>,
 }
 impl Registration {
     pub fn project(&self, cwd: &Path) -> Result<Option<&Project>> {
@@ -46,6 +104,9 @@ impl Registration {
     }
 }
 pub fn read(home: &Path) -> Result<Option<Registration>> {
+    read_for(home, Kind::Claude)
+}
+pub fn read_for(home: &Path, kind: Kind) -> Result<Option<Registration>> {
     let files = match se_proc::NativeStateFiles::open(home) {
         Ok(files) => files,
         Err(error)
@@ -58,7 +119,7 @@ pub fn read(home: &Path) -> Result<Option<Registration>> {
         }
         Err(error) => return Err(native(error)),
     };
-    let Some(file) = files.readback(&home.join(JOURNAL)).map_err(native)? else {
+    let Some(file) = files.readback(&home.join(kind.journal())).map_err(native)? else {
         return Ok(None);
     };
     let mut bytes = Vec::new();
@@ -68,8 +129,11 @@ pub fn read(home: &Path) -> Result<Option<Registration>> {
     crate::client::wire::decode_json(&bytes, LIMIT).map(Some)
 }
 pub fn publish(home: &Path, registration: &Registration) -> Result<()> {
+    publish_for(home, Kind::Claude, registration)
+}
+pub fn publish_for(home: &Path, kind: Kind, registration: &Registration) -> Result<()> {
     let files = se_proc::NativeStateFiles::open(home).map_err(native)?;
-    let path = home.join(JOURNAL);
+    let path = home.join(kind.journal());
     let bytes = serde_json::to_vec(registration).map_err(|_| invalid("serializable journal"))?;
     if bytes.len() > LIMIT {
         return Err(invalid("journal within one MiB"));
@@ -88,7 +152,10 @@ pub fn publish(home: &Path, registration: &Registration) -> Result<()> {
     }
 }
 pub fn remove(home: &Path) -> Result<()> {
-    let path = home.join(JOURNAL);
+    remove_for(home, Kind::Claude)
+}
+pub fn remove_for(home: &Path, kind: Kind) -> Result<()> {
+    let path = home.join(kind.journal());
     if let Some(mut file) = se_proc::OwnedFile::open(&path).map_err(native)? {
         let digest = file.sha256().map_err(native)?;
         file.remove(digest).map_err(native)?;
@@ -144,6 +211,8 @@ impl Action {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Input {
+    #[serde(default)]
+    pub kind: Kind,
     pub project: ProjectId,
     pub cwd: NativePath,
     pub conversation: se_types::ProviderSessionId,
@@ -163,5 +232,45 @@ pub fn resolve_provider(
     configuration: &se_core::config_policy::ConfigFile,
     file: Option<&Path>,
 ) -> Result<std::path::PathBuf> {
-    crate::process::launch_util::resolve_provider(configuration, se_types::Provider::Claude, file)
+    resolve_provider_for(Kind::Claude, configuration, file)
+}
+#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+pub fn resolve_provider_for(
+    kind: Kind,
+    configuration: &se_core::config_policy::ConfigFile,
+    file: Option<&Path>,
+) -> Result<std::path::PathBuf> {
+    let provider = match kind {
+        Kind::Claude => se_types::Provider::Claude,
+        Kind::Codex => se_types::Provider::Codex,
+    };
+    crate::process::launch_util::resolve_provider(configuration, provider, file)
+}
+
+/// A discovery receipt is only a cache hint. Configuration or executable drift
+/// invalidates it; native ancestry remains the authority for every hook call.
+pub fn discovery_stamp(registration: &Registration) -> Result<[u8; 32]> {
+    let (pin, _, mut config) = settings::read_document(&registration.settings.to_local()?)?;
+    if pin.is_none() {
+        return Err(invalid(
+            "provider configuration is absent; repeat adoption setup",
+        ));
+    }
+    // Terminal preferences written during startup do not change hook discovery.
+    config.as_object_mut().map(|object| object.remove("tui"));
+    let provider = std::fs::File::open(registration.provider.to_local()?).map_err(io)?;
+    let revision = se_proc::observe_file_revision(&provider).map_err(io)?;
+    let mut hash = Sha256::new();
+    hash.update(revision.volume);
+    hash.update(revision.file);
+    hash.update(revision.size.to_le_bytes());
+    hash.update(revision.mtime_unix_nanos.to_le_bytes());
+    if let Some(ctime) = revision.ctime_unix_nanos {
+        hash.update(ctime.to_le_bytes());
+    }
+    hash.update(
+        serde_json::to_vec(&(config, &registration.hooks))
+            .map_err(|_| invalid("provider hook discovery configuration"))?,
+    );
+    Ok(hash.finalize().into())
 }

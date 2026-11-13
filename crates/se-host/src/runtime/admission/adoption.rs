@@ -15,7 +15,7 @@ impl AdmissionContext {
                 "at most 4096 pending native mail offers",
             ));
         }
-        let registration = crate::adoption::read(&self.state_directory)?
+        let registration = crate::adoption::read_for(&self.state_directory, input.kind)?
             .ok_or_else(|| crate::adoption::invalid("an explicitly adopted project"))?;
         let root = input.cwd.to_local()?;
         let project = registration
@@ -49,11 +49,15 @@ impl AdmissionContext {
             &provider,
             &input,
         )?;
-        let expected = crate::claude::transcript_path(
-            &registration.config_home.to_local()?,
-            &root,
-            &input.conversation,
-        );
+        let expected = if input.kind == crate::adoption::Kind::Codex {
+            crate::adoption::codex::transcript(&registration, &input)?
+        } else {
+            crate::claude::transcript_path(
+                &registration.config_home.to_local()?,
+                &root,
+                &input.conversation,
+            )
+        };
         if input.transcript.to_local()? != expected {
             return Err(crate::adoption::invalid(
                 "the native provider transcript location for this registered project and conversation",

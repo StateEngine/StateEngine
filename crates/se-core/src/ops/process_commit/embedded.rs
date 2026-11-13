@@ -20,7 +20,10 @@ pub fn embedded_session(record: &ProjectionRecord) -> Option<(&SessionId, &str)>
     if !matches!(
         (provider, surface),
         (se_store::Provider::SeCode, SessionSurface::SeCode)
-            | (se_store::Provider::Claude, SessionSurface::Observed)
+            | (
+                se_store::Provider::Claude | se_store::Provider::Codex,
+                SessionSurface::Observed
+            )
     ) {
         return None;
     }

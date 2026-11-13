@@ -26,12 +26,14 @@ reqwest = { version = "0.13.4", default-features = false, features = ["rustls", 
 serde_json.workspace = true
 serde.workspace = true
 shlex = "2.0.1"
+toml_edit = { version = "0.25.13", features = ["serde"] }
+similar = "=2.7.0"
 hmac = "0.12.1"
 subtle = { version = "2.6", optional = true }
 base64 = { version = "0.23.1", optional = true }
 sha2.workspace = true
 ignore = "=0.4.33"
-uuid.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 zeroize.workspace = true
 serde_ignored = "0.1.14"
 tokio = { workspace = true, optional = true }

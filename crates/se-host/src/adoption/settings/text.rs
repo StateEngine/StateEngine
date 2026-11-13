@@ -7,6 +7,9 @@ pub(super) enum Edit {
     Remove(String, usize),
     RemoveEvent(String),
     RemoveHooks,
+    Trust(String, String),
+    RemoveTrust(String),
+    RemoveTrustState,
 }
 struct Item {
     key: Option<String>,
@@ -187,6 +190,9 @@ pub(super) fn apply(before: &[u8], expected: &Value, edits: &[Edit]) -> Result<V
         let document = root(&bytes)?;
         let hooks = member(&bytes, document.clone(), "hooks")?;
         match edit {
+            Edit::Trust(..) | Edit::RemoveTrust(..) | Edit::RemoveTrustState => {
+                return Err(malformed());
+            }
             Edit::Append(event, entry) => {
                 if let Some(hooks) = hooks {
                     if let Some(array) = member(&bytes, hooks.clone(), event)? {
