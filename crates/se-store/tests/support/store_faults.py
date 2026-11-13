@@ -60,8 +60,18 @@ def run(mode, executable, injection=None):
                     status = Path(f"/proc/{ready['tid']}/status").read_text()
                     return f"TracerPid:\t{tracer.pid}\n" in status
                 wait_until(attached)
+                deadline = time.monotonic() + 40
                 (root / "go").write_text("tracer identity witnessed outside writer")
-                exit_code = child.wait(timeout=40)
+                if mode == "checkpoint":
+                    def checkpoint_seen():
+                        trace = (root / "syscalls.log").read_text()
+                        return (root / "returned.json").exists() and any(
+                            "walCheckpoint" in block and "state.db>" in block
+                            and (not injection or "(INJECTED)" in block)
+                            for block in blocks(trace))
+                    wait_until(checkpoint_seen)
+                    (root / "checkpoint-observed").write_text("native checkpoint write witnessed outside producer")
+                exit_code = child.wait(timeout=max(0, deadline - time.monotonic()))
                 trace_exit = tracer.wait(timeout=10)
             if exit_code != 0 or trace_exit != 0:
                 raise RuntimeError(f"native child/tracer failed: {exit_code}/{trace_exit}: " + (root / "child.log").read_text())
