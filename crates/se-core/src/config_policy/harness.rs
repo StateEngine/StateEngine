@@ -19,7 +19,7 @@ pub struct HarnessDescriptor {
     #[serde(default)]
     pub arguments: Vec<String>,
     /// Appended only when an agent has selected a model; native defaults otherwise.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub model_arguments: Vec<String>,
     /// Names only. Native provider login and credential acquisition stay with the harness.
     #[serde(default)]
