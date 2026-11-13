@@ -1,6 +1,6 @@
 //! Native settings discovery without running a task, hooks, plugins or MCP.
 //! Safe mode retains Claude's permission sources and managed policy. The final
-//! provider runs normally; only an unset headless mode gets acceptEdits at exec.
+//! provider runs normally; only an unset headless workspace mode gets acceptEdits.
 use super::completion::MAX_LINE;
 use se_types::{Result, SeError};
 use serde_json::Value;
