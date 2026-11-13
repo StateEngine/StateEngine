@@ -24,7 +24,7 @@
   "se-proc": 36806,
   "se-store": 23803,
   "se-core": 22680,
-  "se": 21709,
+  "se": 21754,
   "se-atlas": 15825,
   "se-types": 4982
  },
@@ -34,7 +34,7 @@
   "crates/se-host/src/process": 17979,
   "crates/se-host/src/harness": 11961,
   "crates/se-host/src/remote": 10989,
-  "crates/se/src/route": 10486,
+  "crates/se/src/route": 10519,
   "crates/se-proc/src/state_files": 8192,
   "crates/se-proc/src/platform": 7103,
   "crates/se-atlas/src/query": 6076,
