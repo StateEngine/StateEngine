@@ -9,6 +9,12 @@ from transport import execute, WorkloadFailure
 GIB = 1024**3
 JOBS = ("fmt", "clippy", "archive", "test-1", "test-2", "windows-clippy")
 MEMORY = 18 * GIB
+# Paired runners share the box, so each gets less than the serial profile. The
+# archive stage writes its compiled targets into the RAM-backed /work tmpfs,
+# which is charged to this same cap, and a full --all-features build writes
+# about 10.4 GiB there; at 12 GiB that left ~1 GiB of headroom and the link
+# step was killed intermittently. 16 GiB keeps cpus and workers unchanged.
+PAIRED_MEMORY = 16 * GIB
 CPUS = 8
 DEADLINE = 1800
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -18,7 +24,7 @@ def resource_limits(parallel=False):
     """Use one resource profile for the real dispatcher and its qualification."""
     if type(parallel) is not bool:
         raise ValueError("runner concurrency mode must be explicit")
-    return {"memory": 12 * GIB, "cpus": 4, "workers": 4} if parallel else {
+    return {"memory": PAIRED_MEMORY, "cpus": 4, "workers": 4} if parallel else {
         "memory": MEMORY, "cpus": CPUS, "workers": 8}
 
 
@@ -76,7 +82,7 @@ class Cohort:
         if type(all_features) is not bool:
             raise ValueError("feature coverage must be an explicit boolean")
         self.all_features = all_features
-        if (memory, cpus, workers) not in ((MEMORY, CPUS, 8), (12 * GIB, 4, 4)):
+        if (memory, cpus, workers) not in ((MEMORY, CPUS, 8), (PAIRED_MEMORY, 4, 4)):
             raise ValueError("fixed serial or paired runner limits required")
         self.memory, self.cpus, self.workers = memory, cpus, workers
         self.report, self.journal, self.source = report, journal, source

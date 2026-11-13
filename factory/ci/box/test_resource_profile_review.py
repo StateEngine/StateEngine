@@ -88,11 +88,13 @@ class ResourceProfileReview(unittest.TestCase):
         self.assertEqual(observed['containers'][0]['cpus'], cpus)
         self.assertEqual(observed['workers'], [workers])
 
-    def test_paired_self_hosted_hook_forwards_twelve_gib_to_the_actual_cohort(self):
-        self.check_profile(self.observe('hook', True), 12 * GIB, 4, 4)
+    def test_paired_self_hosted_hook_forwards_sixteen_gib_to_the_actual_cohort(self):
+        # The archive stage writes ~10.4 GiB into the RAM-backed /work tmpfs,
+        # which counts against this same cap, so 12 GiB left too little room.
+        self.check_profile(self.observe('hook', True), 16 * GIB, 4, 4)
 
-    def test_paired_app_dispatch_forwards_twelve_gib_to_container_and_worker(self):
-        self.check_profile(self.observe('app', True), 12 * GIB, 4, 4)
+    def test_paired_app_dispatch_forwards_sixteen_gib_to_container_and_worker(self):
+        self.check_profile(self.observe('app', True), 16 * GIB, 4, 4)
 
     def test_explicit_serial_entry_points_keep_their_original_profile(self):
         for entry in ('hook', 'app'):
