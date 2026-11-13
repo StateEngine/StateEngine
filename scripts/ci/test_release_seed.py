@@ -7,6 +7,9 @@ that must hold before any archive byte is written into a build target tree.
 import importlib.util
 import io
 import json
+import os
+import shutil
+import subprocess
 import tarfile
 import unittest
 from pathlib import Path
@@ -51,6 +54,24 @@ def make_seed(path, key, entries, schema=build.SEED_SCHEMA, mtimes=None):
             archive.addfile(info, io.BytesIO(content))
 
 
+def make_seed_modes(path, key, entries):
+    """Like make_seed, with an explicit mode per entry: {name: (content, mode)}."""
+    make_seed(path, key, {})
+    with tarfile.open(path, "r:gz") as archive:
+        manifest = archive.extractfile("seed.json").read()
+    with tarfile.open(path, "w:gz", compresslevel=1) as archive:
+        info = tarfile.TarInfo("seed.json")
+        info.size = len(manifest)
+        info.mtime = FIXED_MTIME
+        archive.addfile(info, io.BytesIO(manifest))
+        for name, (content, mode) in entries.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            info.mtime = FIXED_MTIME
+            info.mode = mode
+            archive.addfile(info, io.BytesIO(content))
+
+
 def make_seed_link(path, key, name, linkname, member_type):
     manifest = {"schema": build.SEED_SCHEMA, "key": key,
                 "created_from": {"source_commit": "c" * 40, "source_tree": "d" * 40,
@@ -83,6 +104,38 @@ class SeedArchiveControls(unittest.TestCase):
         manifest = build.restore_seed(self.archive, self.target, make_key())
         self.assertEqual(manifest["created_from"]["source_commit"], "c" * 40)
         self.assertEqual((self.target / "dep/deps/libfixture-abc123.rlib").read_bytes(), b"dep-bytes")
+
+    @unittest.skipIf(os.name == "nt", "execute bits are a POSIX concept")
+    def test_restore_keeps_a_cached_build_script_executable(self):
+        # Cargo reuses a cached build-script-build by running it directly, so a
+        # restore that drops 0755 makes the seeded build fail with errno 13.
+        program = Path(shutil.which("true")).read_bytes()
+        script = "target/dep/build/dep-abc123/build-script-build"
+        make_seed_modes(self.archive, make_key(), {
+            script: (program, 0o755),
+            "target/dep/deps/libfixture-abc123.rlib": (b"dep-bytes", 0o644)})
+        build.restore_seed(self.archive, self.target, make_key())
+        restored = self.target / script[len("target/"):]
+        self.assertEqual(restored.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(subprocess.run([str(restored)]).returncode, 0)
+        library = self.target / "dep/deps/libfixture-abc123.rlib"
+        self.assertEqual(library.stat().st_mode & 0o777, 0o644)
+
+    @unittest.skipIf(os.name == "nt", "mode bits differ on Windows")
+    def test_restore_never_restores_privilege_bits(self):
+        make_seed_modes(self.archive, make_key(), {
+            "target/dep/tool": (b"x", 0o4777), "target/dep/other": (b"y", 0o2755)})
+        build.restore_seed(self.archive, self.target, make_key())
+        for name in ("tool", "other"):
+            self.assertEqual((self.target / "dep" / name).stat().st_mode & 0o7000, 0)
+
+    @unittest.skipIf(os.name == "nt", "mode bits differ on Windows")
+    def test_restored_read_only_entries_can_still_be_cleaned_up(self):
+        make_seed_modes(self.archive, make_key(), {
+            "target/dep/deps/libro.rlib": (b"ro", 0o444)})
+        build.restore_seed(self.archive, self.target, make_key())
+        shutil.rmtree(self.target)
+        self.assertFalse(self.target.exists())
 
     def test_restore_refuses_rooted_absolute_and_drive_suffixes(self):
         # A leading separator after the target prefix makes Path join discard
