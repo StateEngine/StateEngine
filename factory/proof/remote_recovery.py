@@ -76,8 +76,9 @@ def recover(current, path, reference):
         "token_source": previous.record.get("recovered_token_source")})
     current.persist()
     if previous.record["leftover"]:
+        reason = "; ".join(previous.record["cleanup_errors"]) or "owned resources remain unproven; inspect the retained cleanup observations"
         raise RuntimeError("previous owned remote attempt still has unresolved custody: " +
-                           "; ".join(previous.record["cleanup_errors"]))
+                           reason)
 
 
 def finish_recovery(journey):

@@ -113,6 +113,12 @@ an unavailable SSH account or a failed provider login fails that row; it never
 quietly removes remote coverage. Native-receipt-only attempts retain their own
 platform scope and do not plan this Linux journey.
 
+This journey requires `se` built with `--features remote`. The nightly's pinned
+release builder selects that feature from `scripts/release/inputs.json` and uses
+the distribution profile. A supplied `--prepared-build` must carry the same
+feature in its release metadata. Use a release image for the native transfer;
+the larger debug image was not qualified for the SSH bootstrap deadline.
+
 `remote.destination` is an existing SSH alias for a disposable Linux account
 registered by an administrator with `scripts/ci/installation_account.py`. The
 alias must permit batch SSH, file transfer and loopback forwarding. A loopback
@@ -150,7 +156,7 @@ user's state directory records ownership before starting a runtime; the next run
 under the same destination lock, retries only that attempt's cleanup before doing
 new work. Set `remote.recovery_directory` to keep that journal elsewhere. Unproven
 stops retain a leftover record and fail the run. Recovery records whether the old
-token source changed or disappeared, but its inode/digest comparison cannot block
+token source changed or is unavailable, but its inode/digest comparison cannot block
 process cleanup after rotation. The destination credential-file scan still runs.
 The dedicated destination account
 must not be used for ordinary work. Codex remote automation-token coverage is not
