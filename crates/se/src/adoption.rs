@@ -41,6 +41,22 @@ fn run(args: &[OsString]) -> Result<u8> {
         return Ok(0);
     };
     registered(args, home.clone(), cwd, project.project.clone()).or_else(|error| {
+        // All six actions (start, prompt, capture, stop, end and mail) can run
+        // beneath managed providers. Their IPC owner ancestry refusal skips
+        // native adoption; managed hooks own capture and mail. Keep a bounded
+        // doctor diagnostic so an unexpected classification remains visible.
+        if managed_ancestry_refusal(&error) {
+            if let Some(action) = args[3].to_str().and_then(Action::parse)
+                && let Err(record_error) =
+                    se_host::adoption::diagnostic::record(&home, &project.project, action)
+            {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "StateEngine adoption diagnostic could not be saved: {record_error}"
+                );
+            }
+            return Ok(0);
+        }
         if let Some(action) = args[3].to_str().and_then(Action::parse)
             && let Err(record_error) =
                 se_host::adoption::status::record(&home, &project.project, action, Some(&error))
@@ -58,6 +74,10 @@ fn run(args: &[OsString]) -> Result<u8> {
         );
         Ok(0)
     })
+}
+#[cfg(any(target_os = "linux", windows))]
+fn managed_ancestry_refusal(error: &SeError) -> bool {
+    matches!(error.body.detail(), se_types::Detail::OwnerRequired(detail) if detail.op == "IPC owner")
 }
 #[cfg(any(target_os = "linux", windows))]
 fn registered(
@@ -215,4 +235,40 @@ fn failure(error: std::io::Error) -> SeError {
 }
 fn native(error: se_proc::StateFileError) -> SeError {
     se_core::scope::unreadable("native adoption file", &error.to_string())
+}
+#[cfg(all(test, any(target_os = "linux", windows)))]
+mod tests {
+    use super::managed_ancestry_refusal;
+    use se_types::{Detail, SeError, details};
+
+    fn owner(op: &str) -> SeError {
+        SeError::new(Detail::OwnerRequired(details::OwnerRequired {
+            op: op.into(),
+        }))
+    }
+    #[test]
+    fn only_the_ipc_owner_refusal_is_suppressed() {
+        assert!(managed_ancestry_refusal(&owner("IPC owner")));
+        assert!(!managed_ancestry_refusal(&owner("agent create")));
+        assert!(!managed_ancestry_refusal(&owner("")));
+        assert!(!managed_ancestry_refusal(&SeError::new(
+            Detail::OsUserMismatch(details::OsUserMismatch {
+                expected: "1".into(),
+                actual: "2".into(),
+            })
+        )));
+        assert!(!managed_ancestry_refusal(&SeError::invalid(
+            "native adoption hook",
+            "session_id, transcript_path and cwd strings"
+        )));
+    }
+    /// The classifier keys on the producer's literal; renaming either side
+    /// must fail here instead of silently resurfacing the refusal.
+    #[test]
+    fn classifier_matches_the_admission_producer_literal() {
+        let producer = include_str!("../../se-host/src/runtime/admission.rs");
+        assert_eq!(producer.matches("\"IPC owner\"").count(), 1);
+        assert!(producer.contains("op: \"IPC owner\".into()"));
+        assert!(managed_ancestry_refusal(&owner("IPC owner")));
+    }
 }

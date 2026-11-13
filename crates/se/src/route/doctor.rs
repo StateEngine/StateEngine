@@ -11,6 +11,7 @@ use se_store::{EventBody, ReadStore, Snapshot, SqliteFactory, StoreFactory, Stor
 use se_types::Result;
 use sha2::{Digest, Sha256};
 use std::{fs::TryLockError, io::Read, time::Duration};
+mod adoption;
 mod configuration;
 mod installation;
 mod lifecycle;
@@ -120,6 +121,7 @@ fn observe<R: se_store::ReadStore>(
     }
     checks.extend(extra.iter().cloned());
     checks.push(configuration::check(cx, &at)?);
+    checks.push(adoption::check(cx, &at));
     checks.extend(lifecycle::checks(cx, files, reader, &at)?);
     let lock = files
         .0
