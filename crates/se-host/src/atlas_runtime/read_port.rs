@@ -186,3 +186,37 @@ impl<D: RenewalDriver + Send> AtlasReadPort for ControllerReadPort<D> {
         controller.with_reader(root, |cache, source| read(cache, source, false))
     }
 }
+#[cfg(all(test, feature = "listener"))]
+mod availability_tests {
+    use super::*;
+    struct Stub(bool);
+    impl AtlasReadPort for Stub {
+        fn is_enabled(&self) -> bool {
+            self.0
+        }
+        fn summary(&self, _: &ProjectId, _: Option<&RootId>) -> Result<IndexSummary> {
+            Err(se_core::scope::unreadable("stub", "no summary"))
+        }
+        fn with_reader(
+            &self,
+            _: &ProjectId,
+            _: Option<&RootId>,
+            _: &mut AtlasReadCallback<'_>,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+    /// Bug: PR 186 — a retained disabled controller advertised Atlas tools.
+    #[test]
+    fn availability_follows_installation_and_the_controller_switch() -> Result<()> {
+        let absent = AtlasOwnerPort::default();
+        assert!(!absent.is_available(), "no controller installed");
+        let disabled = AtlasOwnerPort::default();
+        disabled.install(Arc::new(Stub(false)))?;
+        assert!(!disabled.is_available(), "disabled controller advertised");
+        let enabled = AtlasOwnerPort::default();
+        enabled.install(Arc::new(Stub(true)))?;
+        assert!(enabled.is_available(), "enabled controller hidden");
+        Ok(())
+    }
+}

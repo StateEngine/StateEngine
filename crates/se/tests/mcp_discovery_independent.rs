@@ -97,11 +97,25 @@ async fn stdio_list(home: &Path, capability: &str) -> Result<Value, Box<dyn std:
 }
 
 #[test]
+fn real_stdio_client_lists_every_available_registered_tool() -> Check {
+    discovery(se_core::config_policy::ConfigFile::default())
+}
+
+/// Bug: PR 186 — a disabled Atlas still advertised its five query tools.
+#[test]
+#[cfg(target_os = "linux")]
+fn disabled_atlas_is_not_advertised_over_http_or_stdio() -> Check {
+    let mut config = se_core::config_policy::ConfigFile::default();
+    config.atlas.enabled = false;
+    discovery(config)
+}
+
 #[expect(
     clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    reason = "one real-host scenario shared by the enabled and disabled catalogues"
 )]
-fn real_stdio_client_lists_every_available_registered_tool() -> Check {
+fn discovery(config: se_core::config_policy::ConfigFile) -> Check {
+    let atlas_enabled = config.atlas.enabled;
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
     seed(&f)?;
@@ -164,7 +178,7 @@ fn real_stdio_client_lists_every_available_registered_tool() -> Check {
         .build()?;
     runtime.block_on(async {
         let mut host = HostedRuntime::prepare(initialized, start(&f)?, runtime.handle().clone(), &bound()?).await?;
-        host.configure(se_core::config_policy::ConfigFile::default())?;
+        host.configure(config)?;
         // The Linux product installs Atlas; its complete catalogue crosses the
         // former stdio cap. Other supported targets currently expose core tools.
         #[cfg(target_os = "linux")]
@@ -192,12 +206,19 @@ fn real_stdio_client_lists_every_available_registered_tool() -> Check {
                 let stdio = stdio_list(&f.options.state_directory, &capability).await?;
                 let stdio_names = tool_names(&stdio)?;
                 require(stdio_names == http_names, "stdio and HTTP advertise different tools")?;
-                let atlas_available = cfg!(target_os = "linux");
+                let atlas_available = cfg!(target_os = "linux") && atlas_enabled;
                 let expected = se_core::ops::CATALOGUE.iter().filter_map(|meta| {
                     if !atlas_available && meta.feature == se_core::registry::Feature::Atlas { return None; }
                     match meta.mcp { se_core::registry::McpExposure::Tool { name, .. } => Some(name.to_owned()), _ => None }
                 }).collect::<BTreeSet<_>>();
                 require(stdio_names == expected, format!("incomplete registered discovery: actual={stdio_names:?}, expected={expected:?}"))?;
+                if !atlas_enabled {
+                    require(
+                        !http_names.iter().any(|name| name.starts_with("stateengine_atlas_")),
+                        format!("disabled Atlas still advertised: {http_names:?}"),
+                    )?;
+                    return Ok(());
+                }
                 let bytes = serde_json::to_vec(&stdio)?.len();
                 catalogue_cost(stdio_names.len(), bytes)?;
                 Ok(())
