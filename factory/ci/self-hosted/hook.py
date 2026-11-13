@@ -22,7 +22,7 @@ BOX = Path("/usr/local/lib/stateengine-box-ci/factory/ci/box")
 sys.path.insert(0, str(BOX))
 from custody import Journal
 from dispatch import trusted
-from engine import Container, capacity
+from engine import Container, admits
 from github_binding import policy_paths
 from transport import execute, WorkloadFailure
 from workload import Cohort, JOBS, resource_limits
@@ -166,7 +166,7 @@ def changed_policy(repository, source, token, policy):
 
 
 def prepare(request, config, report, context):
-    capacity(2*1024**3)
+    admits(2*1024**3)
     job = request["args"].get("container")
     if not job or job.get("image") != "stateengine-ci-approved":
         raise RuntimeError("the approved job container is required")
@@ -271,7 +271,7 @@ def script_step(request, config, report, directory):
         return {"exit_code": 0, "outputs": {"route": "hosted" if changed else "box"}}
     if operation == "linux":
         return linux_step(config, report, directory, all_features=binding.get("all_features", False))
-    capacity(2*1024**3)
+    admits(2*1024**3)
     with venue(config):
         journal = journal_at(config)
         journal.reconcile()
@@ -302,7 +302,7 @@ def linux_step(config, report, directory, *, all_features=False):
     signal.signal(signal.SIGINT, stop)
     try:
         limits = resource_limits(config.get("parallel", False))
-        capacity(limits["memory"])
+        admits(limits["memory"])
         with venue(config):
             journal = journal_at(config)
             journal.reconcile()

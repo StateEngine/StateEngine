@@ -61,6 +61,12 @@ The controller has no inbound port, runner registration, candidate host command 
 worker-mounted credential. It uses the same networkless rootless container engine,
 eight Cargo workers, four test threads per shard and one container
 (maximum cap 18 GiB/8 CPUs, with a 30-minute outside deadline). The nextest installation group remains serial.
+The serial profile is 18 GiB/8 CPUs. The paired profile used when both runner
+slots are configured is 16 GiB/4 CPUs/4 workers, so the pair's caps sum to
+32 GiB. A pair is only admitted on a box that can also keep the 6 GiB margin
+after both allocations; admission charges each slot's cap against the other
+slot's live reservation, so the second slot measures the first, not an empty
+box.
 Dependency archives are maintainer-approved compiled dependencies, with every
 workspace crate removed; they are streamed and unpacked only inside the container.
 The hosted polling minutes remain billable and must be included in cost comparisons.
