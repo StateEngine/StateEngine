@@ -56,3 +56,15 @@ class RealLogs(unittest.TestCase):
         report = wire.report(B, 7, IMAGE, "d"*64, "failed", values, shard + shard)
         self.assertLessEqual(len(json.dumps(report["failures"]).encode()), wire.FAIL_BYTES)
         self.assertIn("(further failures omitted)", report["failures"])
+
+
+    def test_one_long_assertion_line_still_publishes(self):
+        # details() and validate() must agree: a message cut at its own bound
+        # plus the name and location must still pass the report check.
+        log = ("        FAIL [   0.0s] (1/1) se-store::deferred_checkpoint_independent long_name\n"
+               "    thread 'long_name' (1) panicked at crates/se-store/tests/x.rs:10:5:\n"
+               "    " + "m" * 500)
+        values = stages()
+        values["test-1"]["exit"] = 1
+        report = wire.report(B, 7, IMAGE, "d"*64, "failed", values, wire.details(log))
+        self.assertEqual(len(report["failures"]), 1)
