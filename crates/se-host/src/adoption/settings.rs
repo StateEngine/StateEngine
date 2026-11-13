@@ -209,6 +209,8 @@ pub fn uninstall_for(home: &Path, kind: Kind) -> Result<Vec<PathBuf>> {
             }
             if state.is_empty() && registration.layout.created_state {
                 hooks.remove("state");
+                edits.push(text::Edit::RemoveTrustState);
+                changed = true;
             }
         }
         for event in &registration.layout.created_events {
@@ -219,11 +221,13 @@ pub fn uninstall_for(home: &Path, kind: Kind) -> Result<Vec<PathBuf>> {
             {
                 hooks.remove(event);
                 edits.push(text::Edit::RemoveEvent(event.clone()));
+                changed = true;
             }
         }
         if registration.layout.created_hooks && hooks.is_empty() {
             document.as_object_mut().map(|o| o.remove("hooks"));
             edits.push(text::Edit::RemoveHooks);
+            changed = true;
         }
     }
     if changed {

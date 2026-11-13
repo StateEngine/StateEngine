@@ -129,9 +129,9 @@ pub(super) fn apply(
                 if let Some(state) = hooks.get_mut("state").and_then(Item::as_table_like_mut) {
                     state.remove(key);
                 }
-                if expected.get("hooks").and_then(|h| h.get("state")).is_none() {
-                    hooks.remove("state");
-                }
+            }
+            text::Edit::RemoveTrustState => {
+                hooks(&mut doc)?.remove("state");
             }
         }
     }
