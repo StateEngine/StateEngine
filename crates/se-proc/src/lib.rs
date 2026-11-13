@@ -152,3 +152,8 @@ mod parent_image;
 pub use parent_image::parent_process_image;
 
 pub mod atlas_sql;
+
+#[cfg(windows)]
+mod parent_lifetime;
+#[cfg(windows)]
+pub use parent_lifetime::retain_package_parent;

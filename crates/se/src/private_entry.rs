@@ -42,3 +42,19 @@ pub fn dispatch_console_interrupt(args: &[OsString]) -> Option<Result<u8>> {
         _ => None,
     }
 }
+
+/// Remove package launch framing only after retaining the actual native creator.
+#[cfg(windows)]
+pub fn retain_package_parent(mut args: Vec<OsString>) -> std::io::Result<Vec<OsString>> {
+    if args.get(1).is_none_or(|arg| arg != "__package-parent") {
+        return Ok(args);
+    }
+    let parent = args
+        .get(2)
+        .and_then(|value| value.to_str())
+        .and_then(|value| value.parse::<u32>().ok())
+        .ok_or_else(|| std::io::Error::other("package wrapper process ID is absent or invalid"))?;
+    se_proc::retain_package_parent(parent)?;
+    args.drain(1..3);
+    Ok(args)
+}

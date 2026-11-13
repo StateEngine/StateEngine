@@ -323,6 +323,14 @@ fn finish(result: se_types::Result<u8>, args: &[OsString]) -> std::process::Exit
 
 fn main() -> std::process::ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
+    #[cfg(windows)]
+    let args = match private_entry::retain_package_parent(args) {
+        Ok(args) => args,
+        Err(error) => {
+            eprintln!("Cannot retain package wrapper: {error}. Retry through @stateengine/cli.");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     #[cfg(target_os = "macos")]
     if let Some(result) = se_proc::process_attach_entry(&args) {
         return std::process::ExitCode::from(if result.is_ok() { 0 } else { 126 });

@@ -62,7 +62,7 @@ def prepare(release_directory, output):
                           platform.startswith("win32-"), target)
             package = stage / platform
             package.mkdir()
-            pin = publish(bundle, build, package / "payload")
+            publish(bundle, build, package / "payload")
             current_license = (package / "payload/LICENSE").read_bytes()
             if license_bytes is not None and license_bytes != current_license:
                 raise ValueError("platform packages disagree on the source license")
@@ -76,8 +76,7 @@ def prepare(release_directory, output):
             if operating_system == "linux":
                 metadata["libc"] = ["glibc"]
             document(package / "package.json", metadata)
-            pins[platform] = {"package": name, "target": target,
-                              "manifest_sha256": pin["manifest_sha256"]}
+            pins[platform] = {"package": name, "target": target}
             order.append({"name": name, "directory": platform})
         wrapper = stage / "cli"
         (wrapper / "bin").mkdir(parents=True)

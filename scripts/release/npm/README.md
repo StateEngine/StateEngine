@@ -15,13 +15,16 @@ The package requires Node 18 or newer. It selects the matching optional native
 package for Linux x86_64 with glibc, Windows x64, or macOS arm64/x86_64. Keep
 optional dependencies enabled. There is no install script, compiler or runtime
 download from GitHub: the configured npm registry supplies every package, even
-with `--ignore-scripts`. The launcher verifies its pinned native manifest and
-executable checksum before forwarding the original arguments, stdio and result.
+with `--ignore-scripts`. npm verifies package integrity during installation. The launcher checks the
+platform, package version and executable presence, then forwards the original
+arguments, stdio and result without reading the entire binary on every launch.
+It forwards termination signals and waits for the native child to finish. On
+Windows the native child also stops if its wrapper disappears.
 
 The platform packages contain verified GitHub Release payloads, including remote
 images and notices. They remain unsigned. Registry integrity and the embedded
 checksums do not claim a separate publisher signature. Unsupported platforms,
-missing optional packages and changed payloads refuse with a recovery step.
+missing optional packages and absent executables refuse with a recovery step.
 
 Use `npm update -g @stateengine/cli` to update, or
 `npm uninstall -g @stateengine/cli` to remove the package. Package management does
