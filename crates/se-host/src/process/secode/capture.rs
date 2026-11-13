@@ -239,6 +239,31 @@ impl LaunchCoordinator {
             // above remains unreadable instead of becoming an empty history.
             if next.is_none_or(Value::is_null) {
                 qualified.binding(&managed.session, deadline).await?;
+                self.store
+                    .read(admission.clone(), deadline, move |cx| {
+                        let source = se_core::scope::require_present(
+                            cx.read
+                                .capture_source(source)
+                                .map_err(|e| se_core::store_error::store_error(&e))?,
+                            "SE Code captured prefix",
+                            "Preserve the original source and cursor.",
+                        )?;
+                        let saved = match &source.current.body {
+                            EventBody::CaptureSource { .. } => 0,
+                            EventBody::CaptureProgress { new_offset, .. } => *new_offset,
+                            _ => {
+                                return Err(error("SE Code captured prefix", "cursor unavailable"));
+                            }
+                        };
+                        if saved != offset {
+                            return Err(error(
+                                "SE Code captured prefix",
+                                "canonical history ended before covering the original saved cursor",
+                            ));
+                        }
+                        Ok(())
+                    })
+                    .await?;
                 return Ok(());
             }
             let next = next
