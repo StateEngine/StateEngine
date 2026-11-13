@@ -210,7 +210,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
-    value = check(configure(json.loads(args.config.read_text())))
+    config = configure(json.loads(args.config.read_text()))
+    value = check(config)
+    from scoreboard import publish
+    publish(config)
     print(json.dumps(value, allow_nan=False))
     return 0 if value["state"] == "green" else 1
 
