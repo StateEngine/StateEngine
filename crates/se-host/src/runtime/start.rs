@@ -13,8 +13,11 @@ use tokio::runtime::Handle;
 /// the WAL write lock across its whole copy-and-fsync of up to 64 MiB; at 250
 /// ms an ordinary write refused under runner load ("store-busy after 0 ms",
 /// issue #196). One second rides out that hold, stays within the store's 5000
-/// ms bound and the stop protocol's deadline.
-pub(crate) const HOST_STORE_BUSY_TIMEOUT: Duration = Duration::from_millis(1000);
+/// ms bound and the stop protocol's deadline. A caller that wants the typed
+/// StoreBusy refusal must keep its own deadline strictly above this wait:
+/// with equal clocks the caller deadline can win under load and report
+/// commit-outcome-unknown for a write that never ran.
+pub const HOST_STORE_BUSY_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Receipt of the required startup-only native initialization. Construct this
 /// before configuration/store access or worker creation in the process entry.

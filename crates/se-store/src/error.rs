@@ -4,10 +4,13 @@ use std::time::Duration;
 mod diagnostic;
 pub(crate) use diagnostic::{context, io, sqlite_context};
 /// BUSY extended codes whose failure means the busy handler spent the
-/// connection's configured timeout: busy, snapshot busy and recovery busy.
-/// LOCKED (6) and LOCKED_SHAREDCACHE (206) ran no retry loop.
+/// connection's configured timeout: BUSY (5) and BUSY_RECOVERY (261).
+/// BUSY_SNAPSHOT (517) refuses a stale snapshot without consuming the retry
+/// loop's timeout, and LOCKED (6) / LOCKED_SHAREDCACHE (262) ran no retry
+/// loop at all.
 pub(crate) fn busy_wait_extended(code: i32) -> bool {
-    matches!(code, 5 | 205 | 261)
+    use rusqlite::ffi::{SQLITE_BUSY, SQLITE_BUSY_RECOVERY};
+    matches!(code, SQLITE_BUSY | SQLITE_BUSY_RECOVERY)
 }
 /// Stamp the configured busy timeout a BUSY-family refusal fully consumed.
 /// Idempotent; LOCKED and unmeasured refusals stay untouched, so a reported

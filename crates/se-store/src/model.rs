@@ -457,7 +457,7 @@ pub enum StoreDetail {
         waited_ms: u64,
     },
     /// The connection's configured busy timeout, fully consumed by SQLite's busy
-    /// handler before a bounded BUSY-family refusal (extended 5, 205 and 261).
+    /// handler before a bounded BUSY-family refusal (extended 5 and 261).
     /// LOCKED refusals ran no retry loop and keep their existing detail.
     BusyWait {
         waited_ms: u64,
