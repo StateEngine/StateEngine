@@ -252,6 +252,21 @@ impl Turn {
             stop_reason: reason.into(),
         })
     }
+    /// Observations retained after native exit, without a protocol completion
+    /// or an input-acceptance claim. Pending tool statuses stay unchanged.
+    pub(super) fn interrupted_prefix(&self) -> Value {
+        serde_json::json!({
+            "schema": "se.acp-interrupted-prefix/v1",
+            "terminal_reply": "absent",
+            "request": self.request,
+            "input_key": self.input_key,
+            "offered_input": self.input,
+            "input_echo": self.echo,
+            "messages": self.messages,
+            "tools": self.tools,
+            "order": self.order,
+        })
+    }
 }
 pub(super) fn text(content: Option<&Value>) -> Result<&str> {
     let content = content.ok_or_else(|| failure("ACP text", "content is absent"))?;
