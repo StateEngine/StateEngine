@@ -4,6 +4,8 @@
 mod contract;
 mod control;
 mod managed;
+mod registration;
+mod reprovision;
 mod stream;
 pub use crate::harness::secode_image::Images;
 pub mod probe;
@@ -14,6 +16,8 @@ pub use contract::{
 pub use control::Control;
 pub(crate) use managed::{Binding, Managed, SecodeHarness};
 pub(crate) use managed::{input as initial_input, session as vendor_session};
+pub(crate) use registration::{registration_fields, service_registration};
+pub(crate) use reprovision::{CapabilityRepair, RepairPlan};
 
 pub(crate) fn service_key(project: &se_types::ProjectId, agent: &se_types::AgentId) -> String {
     use sha2::{Digest, Sha256};

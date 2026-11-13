@@ -49,6 +49,8 @@ pub(super) struct Journal {
     pub server_sha256: Option<se_types::Sha256>,
     pub endpoint: Option<String>,
     pub identity: Option<crate::harness::secode_process::ServiceIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_repair: Option<crate::harness::secode_process::CapabilityRepair>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -126,6 +128,9 @@ impl Journal {
             serde_json::from_slice(&bytes).map_err(|e| error("SE Code custody", e))?;
         if value.version != 1 {
             return Err(error("SE Code custody", "unsupported version"));
+        }
+        if let Some(repair) = &value.capability_repair {
+            repair.validate(&value.vendor_session)?;
         }
         for checkpoint in Auxiliary::ALL
             .into_iter()

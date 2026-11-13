@@ -35,6 +35,8 @@ mod activation;
 #[cfg(feature = "listener")]
 mod admission;
 #[cfg(feature = "listener")]
+pub(crate) use admission::AdmissionContext;
+#[cfg(feature = "listener")]
 mod admission_reads;
 
 #[cfg(feature = "listener")]

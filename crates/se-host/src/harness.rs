@@ -34,7 +34,11 @@ pub mod secode_image;
 #[cfg(all(feature = "listener", test))]
 mod secode_image_fixture;
 #[cfg(feature = "listener")]
+mod secode_policy;
+#[cfg(feature = "listener")]
 pub mod secode_process;
+#[cfg(feature = "listener")]
+pub(crate) use secode_policy::saved_session_capability;
 #[cfg(feature = "listener")]
 pub(crate) mod tool_capture;
 

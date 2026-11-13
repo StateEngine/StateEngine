@@ -86,6 +86,10 @@ impl LaunchCoordinator {
             .await?
             .ok_or_else(|| error("SE Code notice custody", "private service absent"))?;
         let mut service = lock_service(&slot, deadline).await?;
+        let control = service
+            .capability_control
+            .clone()
+            .unwrap_or_else(|| managed.control.clone());
         let (notice, offer) = if let Some(notice) = &service.journal.notice {
             if notice.input != key || notice.messages != messages {
                 return Err(error(
@@ -95,8 +99,23 @@ impl LaunchCoordinator {
             }
             (notice.clone(), false)
         } else {
-            let binding = managed.control.binding(&managed.session, deadline).await?;
-            managed.service.require_same(&binding.service)?;
+            let binding = control.binding(&managed.session, deadline).await?;
+            if let Some(repair) = service
+                .journal
+                .capability_repair
+                .as_ref()
+                .and_then(crate::harness::secode_process::CapabilityRepair::owned_binding)
+            {
+                repair.service.require_same(&binding.service)?;
+                if repair.target_id != binding.target_id || repair.binding != binding.binding {
+                    return Err(error(
+                        "SE Code notice binding",
+                        "target changed after our credential repair",
+                    ));
+                }
+            } else {
+                managed.service.require_same(&binding.service)?;
+            }
             binding.require_ready()?;
             let notice = custody::Notice {
                 input: key.clone(),
@@ -109,13 +128,11 @@ impl LaunchCoordinator {
         };
         drop(service);
         let receipt = if offer {
-            managed
-                .control
+            control
                 .offer_notice(&notice.binding, &notice.input, &notice.messages, deadline)
                 .await?
         } else {
-            managed
-                .control
+            control
                 .acceptance(
                     &notice.binding.service,
                     &notice.binding.session_id,
@@ -153,8 +170,12 @@ impl LaunchCoordinator {
         let Some(notice) = notice else {
             return Ok(());
         };
-        let receipt = managed
-            .control
+        let control = lock_service(&slot, deadline)
+            .await?
+            .capability_control
+            .clone()
+            .unwrap_or_else(|| managed.control.clone());
+        let receipt = control
             .acceptance(
                 &notice.binding.service,
                 &notice.binding.session_id,

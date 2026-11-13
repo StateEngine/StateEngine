@@ -149,7 +149,11 @@ impl LaunchCoordinator {
                 ),
             ));
         }
-        if let Some(failure) = &service.failure {
+        if let Some(failure) = service
+            .failure
+            .as_ref()
+            .or(service.capability_failure.as_ref())
+        {
             return Err(error("SE Code runtime observation", failure));
         }
         let process = service.process.clone().ok_or_else(|| {

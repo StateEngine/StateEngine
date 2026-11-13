@@ -49,6 +49,9 @@ impl LaunchCoordinator {
                     retirement_output: None,
                     control: None,
                     failure: None,
+                    capability_failure: None,
+                    capability_control: None,
+                    capability_check_at: None,
                 })),
             );
             let slot = services

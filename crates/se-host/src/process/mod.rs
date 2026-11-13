@@ -84,6 +84,7 @@ pub struct LaunchCoordinator {
     options: ProcessConfiguration,
     configuration_file: Option<PathBuf>,
     store: store::Store,
+    capability_admission: crate::runtime::AdmissionContext,
     owner: se_proc::ProcessIdentity,
     human: se_types::HumanId,
     host: se_proc::HostInstanceId,
@@ -252,6 +253,7 @@ impl LaunchCoordinator {
             secode,
             acp,
             secode_services: secode::Services::default(),
+            capability_admission: host_runtime.router()?.context,
             store: store::Store {
                 record_feed: context.atlas.records.clone(),
                 reader: context.reader.clone(),

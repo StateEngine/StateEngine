@@ -114,6 +114,10 @@ impl LaunchCoordinator {
             .as_ref()
             .is_some_and(|binding| binding.codex.is_some());
         let secode = work.secode.is_some();
+        if secode {
+            self.require_secode_capability_settled(work, deadline)
+                .await?;
+        }
         if !codex
             && work
                 .binding

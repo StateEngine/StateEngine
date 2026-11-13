@@ -100,6 +100,7 @@ impl LaunchCoordinator {
                 server_sha256: None,
                 endpoint: None,
                 identity: None,
+                capability_repair: None,
             };
             services.insert(
                 key.clone(),
@@ -117,6 +118,9 @@ impl LaunchCoordinator {
                     retirement_output: None,
                     control: None,
                     failure: None,
+                    capability_failure: None,
+                    capability_control: None,
+                    capability_check_at: None,
                 })),
             );
         }

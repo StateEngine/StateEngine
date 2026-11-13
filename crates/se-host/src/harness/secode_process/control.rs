@@ -37,6 +37,31 @@ pub struct Control {
     client: reqwest::Client,
 }
 impl Control {
+    pub(crate) async fn put_session_capability(
+        &self,
+        session: &str,
+        credential: &Secret,
+        config: &Path,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let capability = std::str::from_utf8(credential.expose())
+            .map_err(|cause| unreadable("SE Code capability", cause))?;
+        let config = config.to_str().ok_or_else(|| {
+            unreadable(
+                "SE Code policy binding",
+                "the control API requires a UTF-8 path",
+            )
+        })?;
+        self.request(
+            Method::PUT,
+            &["api", "session", session, "stateengine", "capability"],
+            Some(&serde_json::json!({"capability":capability,"configPath":config})),
+            deadline,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub fn open(profile: &Path, endpoint: &str) -> Result<Self> {
         let endpoint = Url::parse(endpoint).map_err(|e| unreadable("SE Code endpoint", e))?;
         let loopback = endpoint

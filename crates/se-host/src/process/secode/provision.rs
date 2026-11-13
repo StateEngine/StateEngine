@@ -340,22 +340,9 @@ impl LaunchCoordinator {
                 "saved project/agent instruction differs",
             ));
         }
-        let capability = std::str::from_utf8(request.launch_credential.expose())
-            .map_err(|_| error("SE Code capability", "credential encoding differs"))?;
         let config = service.journal.profile.to_local()?.join("host-policy.json");
-        let config = config.to_str().ok_or_else(|| {
-            error(
-                "SE Code policy binding",
-                "the native API requires a UTF-8 path",
-            )
-        })?;
         control
-            .request(
-                Method::PUT,
-                &["api", "session", &session, "stateengine", "capability"],
-                Some(&json!({"capability":capability,"configPath":config})),
-                deadline,
-            )
+            .put_session_capability(&session, &request.launch_credential, &config, deadline)
             .await?;
         let binding = control.binding(&session, deadline).await?;
         binding.require_ready()?;
@@ -363,6 +350,10 @@ impl LaunchCoordinator {
             original.require_same(&binding.service)?;
         }
         service.journal.identity = Some(binding.service);
+        service.journal.capability_repair = None;
+        service.capability_control = None;
+        service.capability_failure = None;
+        service.capability_check_at = None;
         service.persist(self, deadline).await?;
         Ok(actual_model)
     }
