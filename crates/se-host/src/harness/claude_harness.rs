@@ -217,6 +217,7 @@ impl Harness for ClaudeHarness {
             })??;
             let fallback = request.mode.is_headless()
                 && request.profile.named_profile == "default"
+                && request.profile.permission == se_store::PermissionProfile::WorkspaceWrite
                 && !settings::has_saved_mode(
                     &command,
                     &request.cwd.to_local()?,
