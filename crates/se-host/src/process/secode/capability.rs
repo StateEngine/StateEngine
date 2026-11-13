@@ -16,12 +16,7 @@ impl LaunchCoordinator {
             .secode_services
             .get(&work.meta.project.id, &work.meta.agent.id, deadline)
             .await?
-            .ok_or_else(|| {
-                error(
-                    "SE Code capability repair",
-                    "original service custody is absent",
-                )
-            })?;
+            .ok_or_else(|| repair_error("original service custody is absent"))?;
         let service = lock_service(&slot, deadline).await?;
         if service
             .journal
@@ -29,8 +24,7 @@ impl LaunchCoordinator {
             .as_ref()
             .is_some_and(|repair| repair.after.is_none())
         {
-            return Err(error(
-                "SE Code capability repair",
+            return Err(repair_error(
                 "the original credential PUT remains unconfirmed; waiting for its readback before offering another notice",
             ));
         }
@@ -52,64 +46,54 @@ impl LaunchCoordinator {
             return None;
         }
         let next = tokio::time::Instant::now() + CHECK_INTERVAL;
-        let bound = match deadline.stage(Duration::from_secs(2)) {
-            Ok(bound) => bound,
+        let observed: Result<Option<tokio::time::Instant>> = async {
+            let bound = deadline.stage(Duration::from_secs(2))?;
+            let Some(slot) = self
+                .secode_services
+                .get(&work.meta.project.id, &work.meta.agent.id, &bound)
+                .await?
+            else {
+                return Ok(None);
+            };
+            let mut service = lock_service(&slot, &bound).await?;
+            if service.journal.session != work.meta.session || service.journal.retired {
+                return Ok(None);
+            }
+            if let Some(scheduled) = service.capability_check_at
+                && scheduled > tokio::time::Instant::now()
+            {
+                return Ok(Some(scheduled));
+            }
+            service.capability_check_at = Some(next);
+            let result = self.repair_secode_capability(&mut service, &bound).await;
+            if result.is_ok()
+                && service
+                    .journal
+                    .capability_repair
+                    .as_ref()
+                    .and_then(CapabilityRepair::owned_binding)
+                    .is_some()
+                && let Some(binding) = work
+                    .binding
+                    .as_ref()
+                    .and_then(|binding| binding.secode.as_ref())
+            {
+                // Canonical reads remain live even when the original pipe ended.
+                binding.completion.nudge();
+            }
+            service.capability_failure = result.err().map(|failure| failure.to_string());
+            let next = tokio::time::Instant::now() + CHECK_INTERVAL;
+            service.capability_check_at = Some(next);
+            Ok(Some(next))
+        }
+        .await;
+        match observed {
+            Ok(next) => next,
             Err(failure) => {
                 crate::process::mail::diagnostic::report(work, &failure);
-                return Some(next);
+                Some(next)
             }
-        };
-        let slot = match self
-            .secode_services
-            .get(&work.meta.project.id, &work.meta.agent.id, &bound)
-            .await
-        {
-            Ok(Some(slot)) => slot,
-            Ok(None) => return None,
-            Err(failure) => {
-                crate::process::mail::diagnostic::report(work, &failure);
-                return Some(next);
-            }
-        };
-        let mut service = match lock_service(&slot, &bound).await {
-            Ok(service) => service,
-            Err(failure) => {
-                crate::process::mail::diagnostic::report(work, &failure);
-                return Some(next);
-            }
-        };
-        if service.journal.session != work.meta.session || service.journal.retired {
-            return None;
         }
-        if let Some(scheduled) = service.capability_check_at
-            && scheduled > tokio::time::Instant::now()
-        {
-            return Some(scheduled);
-        }
-        service.capability_check_at = Some(next);
-        let result = self.repair_secode_capability(&mut service, &bound).await;
-        if result.is_ok()
-            && service
-                .journal
-                .capability_repair
-                .as_ref()
-                .and_then(CapabilityRepair::owned_binding)
-                .is_some()
-            && let Some(binding) = work
-                .binding
-                .as_ref()
-                .and_then(|binding| binding.secode.as_ref())
-        {
-            // Canonical reads remain live even when the original pipe ended.
-            binding.completion.nudge();
-        }
-        let failure = result.err().map(|failure| failure.to_string());
-        if failure != service.capability_failure {
-            service.capability_failure = failure;
-        }
-        let next = tokio::time::Instant::now() + CHECK_INTERVAL;
-        service.capability_check_at = Some(next);
-        Some(next)
     }
 
     async fn repair_secode_capability(
@@ -121,18 +105,12 @@ impl LaunchCoordinator {
             self.observe_secode_control(service, deadline).await?;
         let stamp = CapabilityRepair::fingerprint(&registration, &before.service);
         let previous = service.journal.capability_repair.as_ref();
+        let original = service.journal.registration.as_deref() == Some(registration.as_slice())
+            && service.journal.identity.as_ref() == Some(&before.service);
         let known = previous
             .filter(|repair| repair.after.is_some())
-            .map(|repair| repair.registration)
-            .or_else(|| {
-                service
-                    .journal
-                    .registration
-                    .as_ref()
-                    .zip(service.journal.identity.as_ref())
-                    .map(|(bytes, identity)| CapabilityRepair::fingerprint(bytes, identity))
-            });
-        if known == Some(stamp) && previous.and_then(CapabilityRepair::owned_binding).is_none() {
+            .map_or(original, |repair| repair.registration == stamp);
+        if known && previous.and_then(CapabilityRepair::owned_binding).is_none() {
             return Ok(());
         }
         match CapabilityRepair::plan(stamp, before, previous)? {
@@ -153,17 +131,16 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<(Vec<u8>, Control, NoticeBinding)> {
         let profile = service.journal.profile.to_local()?;
-        let source_profile = profile.clone();
-        let registration = self
+        let (registration, control) = self
             .store
             .pool
             .run_owned(deadline, move || {
-                retirement::registration(&source_profile)?.ok_or_else(|| {
-                    error(
-                        "SE Code capability repair",
-                        "service registration is absent; capability state is unknown",
-                    )
-                })
+                let registration = retirement::registration(&profile)?.ok_or_else(|| {
+                    repair_error("service registration is absent; capability state is unknown")
+                })?;
+                let fields = retirement::fields(&registration)?;
+                let control = Control::open(&profile, fields["endpoint"])?;
+                Ok((registration, control))
             })
             .await?;
         let fields = retirement::fields(&registration)?;
@@ -174,13 +151,6 @@ impl LaunchCoordinator {
                 "registration PID differs from the original native birth",
             ));
         }
-        let endpoint = fields["endpoint"].to_owned();
-        let control_profile = profile.clone();
-        let control = self
-            .store
-            .pool
-            .run_owned(deadline, move || Control::open(&control_profile, &endpoint))
-            .await?;
         // Managed services run in external-host mode. This authenticated route
         // verifies credential custody after a service-generation change.
         let before = control
@@ -204,15 +174,13 @@ impl LaunchCoordinator {
             self.observe_secode_control(service, deadline).await?;
         let stamp = CapabilityRepair::fingerprint(&registration, &before.service);
         if stamp != previous.registration {
-            return Err(error(
-                "SE Code repair recovery",
+            return Err(repair_error(
                 "current service differs from the retained repair; no replacement was adopted",
             ));
         }
         let RepairPlan::Observed(repair) = CapabilityRepair::plan(stamp, before, Some(&previous))?
         else {
-            return Err(error(
-                "SE Code repair recovery",
+            return Err(repair_error(
                 "the retained unsent attempt requires active-session recovery before sending",
             ));
         };
@@ -247,13 +215,8 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<()> {
         let profile = service.journal.profile.to_local()?;
-        let policy_hash = service.journal.policy_sha256.ok_or_else(|| {
-            error(
-                "SE Code capability repair",
-                "original protected policy digest is absent",
-            )
-        })?;
-        let policy_profile = profile.clone();
+        let policy_hash = service.journal.policy_sha256;
+        let config = profile.join("host-policy.json");
         let authority = self.capability_admission.clone();
         let expected = crate::SessionIdentity {
             project: service.journal.project.clone(),
@@ -264,10 +227,7 @@ impl LaunchCoordinator {
             .store
             .pool
             .run_owned(deadline, move || {
-                let credential =
-                    crate::harness::saved_session_capability(&policy_profile, policy_hash)?;
-                authority.verify_session_capability(&credential, &expected)?;
-                Ok(credential)
+                authority.saved_session_capability(&profile, policy_hash, &expected)
             })
             .await?;
         let mut attempted = repair.clone();
@@ -282,12 +242,7 @@ impl LaunchCoordinator {
             return Err(failure);
         }
         let repaired = attempted
-            .apply(
-                &control,
-                &credential,
-                &profile.join("host-policy.json"),
-                deadline,
-            )
+            .apply(&control, &credential, &config, deadline)
             .await?;
         // The old notice and native incarnation remain unchanged. A repair
         // receipt explains our own PUT; it never grants a replay.
@@ -302,10 +257,13 @@ fn require_registration(bytes: &[u8], binding: &NoticeBinding) -> Result<()> {
         || fields["generation"].parse::<u64>().ok() != Some(binding.service.generation)
         || fields["version"] != binding.service.registration_version
     {
-        return Err(error(
-            "SE Code capability repair",
+        return Err(repair_error(
             "authenticated service and current registration differ",
         ));
     }
     Ok(())
+}
+
+fn repair_error(reason: &str) -> se_types::SeError {
+    error("SE Code capability repair", reason)
 }

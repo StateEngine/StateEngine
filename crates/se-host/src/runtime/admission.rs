@@ -66,6 +66,45 @@ pub(crate) struct OperationMetadata {
     pub presence: Option<crate::client::presence::OwnerPresence>,
 }
 impl AdmissionContext {
+    /// Load the pinned original policy proof and validate its live session together.
+    pub(crate) fn saved_session_capability(
+        &self,
+        profile: &std::path::Path,
+        expected: Option<Sha256>,
+        session: &crate::SessionIdentity,
+    ) -> Result<se_types::Secret> {
+        let expected = expected.ok_or_else(|| policy_error("original policy digest is absent"))?;
+        let files = se_proc::NativeProfileFiles::open(profile).map_err(policy_error)?;
+        let mut file = files
+            .readback(&profile.join("host-policy.json"))
+            .map_err(policy_error)?
+            .ok_or_else(|| policy_error("original policy is absent"))?;
+        let mut bytes = Zeroizing::new(Vec::new());
+        std::io::Read::by_ref(&mut file)
+            .take(1_048_577)
+            .read_to_end(&mut bytes)
+            .map_err(policy_error)?;
+        if bytes.len() > 1_048_576
+            || <[u8; 32]>::from(Hasher::digest(bytes.as_slice())) != *expected.as_bytes()
+        {
+            return Err(policy_error(
+                "original policy digest differs or exceeds its bound",
+            ));
+        }
+        let mut policy: serde_json::Value = serde_json::from_slice(&bytes).map_err(policy_error)?;
+        let proof = policy
+            .pointer_mut("/mcp/stateengine/headers/X-StateEngine-Session-Proof")
+            .map(serde_json::Value::take)
+            .ok_or_else(|| policy_error("session proof is absent"))?;
+        let serde_json::Value::String(proof) = proof else {
+            return Err(policy_error("session proof is not a string"));
+        };
+        let proof = Zeroizing::new(proof);
+        let credential = se_types::Secret::new(proof.as_bytes().to_vec())?;
+        self.verify_session_capability(&credential, session)?;
+        Ok(credential)
+    }
+
     fn lease(&self) -> Result<Arc<HostLease>> {
         self.lease.upgrade().ok_or_else(|| {
             SeError::new(se_types::Detail::RuntimeNotRunning(
@@ -668,4 +707,8 @@ fn remote_credential(
             "the exact already-admitted active credential",
         )),
     }
+}
+
+fn policy_error(cause: impl std::fmt::Display) -> SeError {
+    se_core::scope::unreadable("SE Code capability policy", &cause.to_string())
 }
