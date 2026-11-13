@@ -11,6 +11,7 @@ pub use se_types::{DEFAULT_BLOCKING_JOBS, MAX_BLOCKING_JOBS, MIN_BLOCKING_JOBS};
 
 pub use se_types::Provider;
 mod acp;
+pub mod harness;
 pub use acp::AcpConfig;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -201,6 +202,9 @@ fn default_profiles() -> BTreeMap<String, Profile> {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigFile {
+    /// Named, finite launch data for the shared protocol driver.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub harnesses: BTreeMap<String, harness::HarnessDescriptor>,
     pub version: u16,
     #[serde(default)]
     pub default_project: String,
@@ -222,6 +226,7 @@ pub struct ConfigFile {
 impl Default for ConfigFile {
     fn default() -> Self {
         Self {
+            harnesses: BTreeMap::new(),
             version: 1,
             default_project: String::new(),
             runtime: RuntimeConfig::default(),
@@ -314,6 +319,8 @@ impl ConfigFile {
             }
         }
         self.acp.validate()?;
+        harness::validate_registry(&self.harnesses)?;
+        self.selected_harness(Provider::Acp, self.acp.harness.as_deref())?;
         for (name, provider) in [
             ("claude", &self.providers.claude),
             ("codex", &self.providers.codex),

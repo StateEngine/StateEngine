@@ -15,7 +15,9 @@ impl LaunchCoordinator {
             &self.options.configuration,
             &plan.profile.named_profile,
             plan.profile.model.as_deref(),
+            plan.profile.harness.as_deref(),
         )?;
+        let harness = plan.profile.harness.clone();
         let configuration = self.options.configuration.clone();
         let selected_file = self.configuration_file.clone();
         self.store
@@ -25,6 +27,7 @@ impl LaunchCoordinator {
                     &configuration,
                     se_types::Provider::Acp,
                     selected_file.as_deref(),
+                    harness.as_deref(),
                 )
             })
             .await?;

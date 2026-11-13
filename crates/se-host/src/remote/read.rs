@@ -202,6 +202,7 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
         _ => None,
     };
     let mut row = AgentRow {
+        harness: None,
         provider_activity: None,
         id: facts.target.agent.clone(),
         name: name.clone(),

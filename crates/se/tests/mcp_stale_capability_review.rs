@@ -126,6 +126,7 @@ fn provision(f: &Fixture, life_us: i64) -> Result<String, Box<dyn std::error::Er
             profile: se_store::Profile {
                 provider: Provider::Claude,
                 model: None,
+                harness: None,
                 permission: PermissionProfile::WorkspaceWrite,
                 named_profile: "default".into(),
                 effort: None,

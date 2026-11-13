@@ -244,6 +244,7 @@ impl LaunchCoordinator {
                     &configuration,
                     se_types::Provider::SeCode,
                     selected_file.as_deref(),
+                    None,
                 )
             })
             .await?;

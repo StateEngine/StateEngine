@@ -116,6 +116,7 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
                     provider: stored,
                     model: None,
                     permission,
+                    harness: None,
                     named_profile: "default".into(),
                     effort: None,
                 })

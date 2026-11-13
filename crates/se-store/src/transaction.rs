@@ -495,15 +495,21 @@ impl Engine {
                     },
                     true,
                 )?;
+                // Descriptor-bound profiles must refuse older readers instead of
+                // losing their harness selection through an unknown JSON field.
+                let schema_version = match &e.body {
+                    EventBody::ProfileSaved { profile, .. } if profile.harness.is_some() => 2,
+                    _ => 1,
+                };
                 self.db.execute(
                     "INSERT INTO events(event_id,project_id,actor_id,session_id,origin_id,door,kind,
                      schema_version,recorded_incarnation,entity_revision,writer_mode,host_generation,
                      durability,operation_id,occurred_at_us,recorded_at_us,cause_event_id,supersedes_event_id)
-                     VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?)",
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     crate::sql_value::sql_params![
                         event, p, event_actor, session,
                         canonical(info.id.as_str()).ok_or_else(|| invalid("canonical StoreId required"))?,
-                        door(e.header.door), kind, info.incarnation, revision, mode, generation,
+                        door(e.header.door), kind, schema_version, info.incarnation, revision, mode, generation,
                         if full { "full" } else { "normal" }, op,
                         e.header.occurred_at_us, recorded, cause, supersedes
                     ],

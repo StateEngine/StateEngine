@@ -562,6 +562,7 @@ fn plain_status_labels_the_owner_unread_scope() -> Check {
                         provider: Provider::Codex,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,
+                        harness: None,
                         named_profile: "default".into(),
                         effort: None,
                     },

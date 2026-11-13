@@ -244,7 +244,7 @@ pub fn resolve_provider_for(
         Kind::Claude => se_types::Provider::Claude,
         Kind::Codex => se_types::Provider::Codex,
     };
-    crate::process::launch_util::resolve_provider(configuration, provider, file)
+    crate::process::launch_util::resolve_provider(configuration, provider, file, None)
 }
 
 /// A discovery receipt is only a cache hint. Configuration or executable drift

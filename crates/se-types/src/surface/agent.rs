@@ -19,6 +19,8 @@ pub enum AgentOutcome {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AgentReceiptValue {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
     pub id: AgentId,
     pub name: String,
     pub provider: Provider,
