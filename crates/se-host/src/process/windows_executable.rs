@@ -37,6 +37,7 @@ fn native_image(path: &Path) -> io::Result<bool> {
             format!("{} has no native Windows image header", path.display()),
         ));
     }
+    #[cfg(windows)]
     if native {
         se_proc::file_access::require_executable_access(path)?;
     }

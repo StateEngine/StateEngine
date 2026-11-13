@@ -32,13 +32,19 @@ pub fn with_readable_regular_file<T>(
 pub fn read_bounded_regular_file(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
     with_readable_regular_file(path, |file| {
         if file.revision()?.size > limit as u64 {
-            return Err(io::Error::other("installed file exceeds its read bound"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "installed file exceeds its read bound",
+            ));
         }
         let mut bytes = Vec::new();
         file.take(limit.saturating_add(1) as u64)
             .read_to_end(&mut bytes)?;
         if bytes.len() > limit {
-            return Err(io::Error::other("installed file exceeds its read bound"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "installed file exceeds its read bound",
+            ));
         }
         Ok(bytes)
     })
