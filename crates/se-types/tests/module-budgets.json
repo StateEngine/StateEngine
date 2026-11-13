@@ -20,7 +20,7 @@
  "default_crate_lines": 40000,
  "default_directory_lines": 10000,
  "crates": {
-  "se-host": 89861,
+  "se-host": 89957,
   "se-proc": 36806,
   "se-store": 23803,
   "se-core": 22680,
