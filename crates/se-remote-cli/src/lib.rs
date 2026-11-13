@@ -246,8 +246,8 @@ fn authorize<H: OwnerCommands + Presentation>(
             return Ok(0);
         }
         se_host::remote::ssh::SshRequest::LaunchPermissions(request) => {
-            let host = request.launch_permissions;
-            let result = crate::route::remote_owner::execute(
+            let destination = request.launch_permissions;
+            let result = host.execute_owner(
                 &cx,
                 Input::Ready(OwnerInput::LaunchPermissions(request)),
             )
@@ -255,7 +255,7 @@ fn authorize<H: OwnerCommands + Presentation>(
             .map_err(|error| error.body);
             serde_json::to_writer(
                 &mut *stdout,
-                &se_host::remote::ssh::PermissionsResult { host, result },
+                &se_host::remote::ssh::PermissionsResult { host: destination, result },
             )
             .map_err(io::Error::other)?;
             writeln!(stdout)?;
