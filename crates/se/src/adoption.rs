@@ -12,7 +12,7 @@ use std::{
     ffi::OsString,
     io::{Read, Write},
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 pub fn entry(args: &[OsString]) -> Option<u8> {
@@ -175,8 +175,26 @@ fn registered(
     if action == Action::Mail {
         return mail::wait(&cx, input);
     }
-    forward(&cx, input)?;
+    forward_lifecycle(&cx, input)?;
     Ok(0)
+}
+#[cfg(any(target_os = "linux", windows))]
+fn forward_lifecycle(cx: &Bootstrap, input: Input) -> Result<serde_json::Value> {
+    // A definite contention refusal keeps the original session/event keys.
+    // Reauthenticate each attempt within the provider's short end-hook window.
+    let until = Instant::now() + Duration::from_secs(1);
+    loop {
+        match forward(cx, input.clone()) {
+            Err(error) if error.code() == se_types::Code::StoreBusy && Instant::now() < until => {
+                std::thread::sleep(
+                    until
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_millis(20)),
+                );
+            }
+            outcome => return outcome,
+        }
+    }
 }
 #[cfg(not(any(target_os = "linux", windows)))]
 fn run(_args: &[OsString]) -> Result<u8> {
