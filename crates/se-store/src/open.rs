@@ -89,9 +89,23 @@ impl SqliteReader {
         self.require_identity(named)
     }
     pub(crate) fn validate_connection(&self, db: &Connection) -> StoreResult<()> {
-        let opened = se_proc::NativeFileIdentity::observe_sqlite(db)
-            .map_err(|error| io(error, &self.path, StoreIoStage::Open))?;
-        self.require_identity(opened)
+        #[cfg(unix)]
+        let matches = se_proc::NativeFileIdentity::sqlite_path_moved(db).map(|moved| !moved);
+        #[cfg(windows)]
+        let matches = se_proc::NativeFileIdentity::observe_sqlite(db)
+            .map(|opened| self.identity == Some(opened));
+        let matches = matches.map_err(|error| {
+            let unsupported = error.kind() == std::io::ErrorKind::Unsupported;
+            let mut error = io(error, &self.path, StoreIoStage::Open);
+            if unsupported {
+                error.remedy.text = "Preserve the existing store. Install a supported distribution using SQLite's native platform VFS, then reopen the store. The named native file control must be available; do not initialize over the existing store.".into();
+            }
+            error
+        })?;
+        if !matches {
+            return Err(self.identity_changed("SQLite's opened database file no longer matches"));
+        }
+        self.validate_identity()
     }
     fn identity_observation_error(&self, error: std::io::Error) -> Box<StoreError> {
         if error.kind() == std::io::ErrorKind::InvalidInput {
