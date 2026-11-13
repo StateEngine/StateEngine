@@ -253,13 +253,12 @@ in your state home's `config.toml`; StateEngine does not run a shell to interpre
 those arguments. The agent must support authenticated HTTP MCP connections. Resuming also requires
 loading saved sessions; agents without that capability can start with `--new`. Sign in and select a model using that agent's own setup.
 
-**This harness provides no execution sandbox in protocol mode.** It requires an
-explicitly named profile with `bypass = true` and `network = true`; choose it only
-for work where you accept unsandboxed execution with network access. The saved
-`approval = "never"` setting allows protocol
-permission requests. Other approval settings refuse each such tool request with
-a reason: a human approval interface is not implemented yet. A provider's own
-rules still apply; a protocol mode does not establish OS containment or sandboxing.
+The native agent owns its permissions and sandboxing. StateEngine does not add
+an execution sandbox or network restriction to the protocol. Choose the agent's
+native permission level explicitly. The saved `approval = "never"` setting allows
+protocol permission requests; other approval settings refuse them with a reason
+because a headless approval interface is not implemented yet. A protocol mode or
+saved StateEngine profile does not establish OS containment.
 
 After installing and configuring a protocol agent, add these sections to the
 existing configuration. Replace `protocol-agent` with its native executable and
@@ -300,12 +299,49 @@ se stop main
 se launch main --detach
 ```
 
-Launch and status disclose the unsandboxed policy. Status shows current activity
+Launch and status disclose that the native agent owns its policy. Status shows current activity
 and any permission refusal; streamed text is explicitly provisional until the
 completed turn appears in saved history. Resume loads the same conversation and
 compares its complete text with captured history before offering new input. A
 missing, changed, erased or oversized history refuses resume instead of silently
 starting over. If capture was disabled, use `--new` for a new conversation.
+
+### Named harness descriptors
+
+Several installed protocol agents can share the same adapter. Give each one a
+named entry in `config.toml`, with an explicit mapping for every launch profile
+it uses. This example maps `protocol-work` to the agent's announced native mode;
+replace the command and arguments with the installed agent's documented values:
+
+```toml
+[harnesses.my-agent]
+driver = "acp-stdio"
+command = "protocol-agent"
+arguments = ["--acp", "--model", "{model}"]
+environment = []
+
+[harnesses.my-agent.permissions.protocol-work]
+arguments = []
+mode = ""
+```
+
+Use `se init --harness my-agent`, or `se agent add helper --harness my-agent`.
+Selecting a harness implies the ACP provider; a conflicting explicit provider
+refuses. The `[providers.acp].profile` setting selects an existing launch
+profile, such as `protocol-work` above. Permission entries can supply additional native
+arguments, native mode environment values in `environment`, and an expected
+`mode` that the agent must report before work starts. They do not override
+capabilities reported by the running agent.
+
+Descriptor `environment` lists inherited variable names, never account secrets.
+For a model selected through a native environment variable, set
+`model_environment = "NATIVE_MODEL_VARIABLE"` instead of an argv `{model}` slot.
+The saved agent retains its harness selection across configuration default
+changes and resumes. Existing agents without a saved selection keep the legacy
+`[providers.acp]` and `[acp]` configuration. Restore a missing descriptor before
+launching its saved agents; there is no fallback to a different agent.
+Descriptor-bound profiles use event schema version 2, so older binaries refuse
+them instead of losing the saved selection.
 
 ## Help, upgrade and removal
 
