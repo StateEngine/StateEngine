@@ -2,7 +2,7 @@
 import re
 import threading
 
-from box_result import FAIL_TESTS, details
+from box_result import details
 from engine import Container, capacity
 from transport import execute, WorkloadFailure
 
@@ -135,9 +135,13 @@ class Cohort:
             with self.lock:
                 self.outcomes[name] = row
                 if row["exit"] != 0:
-                    # Only the failing test names and first assertion lines; the
-                    # stage log itself never leaves the container boundary.
-                    self.failed.extend(details((folder / "job.log").read_text(errors="replace")))
+                    # Only the failing test names and locations; the stage log
+                    # itself never leaves the container boundary. A stage that
+                    # failed without naming a test (a kill, a full disk, or a
+                    # custom harness) says exactly that, so it cannot read as
+                    # clean.
+                    named = details((folder / "job.log").read_text(errors="replace"))
+                    self.failed.extend(named or [f"{name}: failed; no test named"])
             return row["exit"] == 0
         except WorkloadFailure:
             with self.lock:

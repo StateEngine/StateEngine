@@ -12,13 +12,26 @@ DIGEST = re.compile(r"[a-f0-9]{64}")
 # container: the stage log stays private and is never published whole.
 FAIL_BYTES = 4000
 FAIL_TESTS = 20
-ASSERT_BYTES = 300
+LOCATE_BYTES = 200
+# nextest's coloured FAIL line is `\x1b[31;1m ...`, and its reset is `\x1b[0m`;
+# a strip without `;` leaves the colouring in place and no test is ever named.
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 FAIL_LINE = re.compile(r"^\s*FAIL \[[^\]]*\] \([^)]*\) (\S+) (\S+)\s*$")
 # nextest prints `FAIL [ duration ] (n/m) <binary> <test>` and, somewhere in the
 # same log, `thread '<test>' (<pid>) panicked at <location>:`. The two are not
 # always adjacent (the progress renderer repaints), so the test name, not
 # adjacency, is what pairs a message with its test.
 PANIC_LINE = re.compile(r"^\s*thread '([^']*)'(?: \([^)]*\))? panicked at ([^:]+:\d+:\d+):\s*$")
+# Published text leaves the machine, and this repository is public. A failing
+# test's own message can carry machine identity, boot ids, temp roots and
+# fixture output, so only the test name and its source location are published.
+NO_ID = [
+    (re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I), "<id>"),
+    (re.compile(r"\bboot_id: \[[^\]]*\]"), "boot_id <id>"),
+    (re.compile(r"MachineId\([^)]*\)"), "MachineId(<id>)"),
+    (re.compile(r"(?<![\w.])/(?:tmp|var/tmp|dev/shm)/\S+"), "<path>"),
+    (re.compile(r"[A-Za-z]:\\\\[^\s\"']+"), "<path>"),
+]
 
 
 def binding(repository, run, attempt, checkout, head):
@@ -45,8 +58,14 @@ def select(checks, app_id, identity):
 def report(identity, check_id, image, policy, status, stages=None, failed=None):
     value = dict(schema=SCHEMA, binding=identity, check_id=check_id, image=image,
                  policy=policy, status=status, stages=stages or {})
+    # Shards are capped one at a time and concatenated here, so the cap that
+    # counts is this one. The outcome outranks its decoration: if the detail
+    # cannot be bounded, it is dropped and the status still publishes.
     if failed:
-        value["failures"] = failed[:FAIL_TESTS]
+        try:
+            value["failures"] = bounded([scrub(str(item)) for item in failed])
+        except Exception:
+            value["failures"] = ["(failure detail unavailable)"]
     validate(value, identity, check_id)
     return value
 
@@ -82,23 +101,25 @@ def validate(value, identity, check_id):
     details = value.get("failures", [])
     if (not isinstance(details, list) or len(details) > FAIL_TESTS or
             len(json.dumps(details).encode()) > FAIL_BYTES or
-            any(not isinstance(item, str) or "\n" in item or len(item) > ASSERT_BYTES
+            any(not isinstance(item, str) or "\n" in item or len(item.encode()) > LOCATE_BYTES
                 for item in details)):
         raise ValueError("box failure detail exceeds its bound")
     return value["status"]
 
 
 def details(text):
-    """Name the failing tests and where each one panicked, bounded.
+    """Name the failing tests, where each panicked, and what it said, bounded.
 
     nextest prints one `FAIL [ duration ] (n/m) <binary> <test>` line per
     failure and, elsewhere in the same log, `thread '<test>' (<pid>) panicked
     at <file>:<line>:<col>:`. Pairing is by test name because the progress
-    renderer can separate the two. Only those identities and locations leave
-    this function; the rest of the stage log stays private, and a bound that
-    cuts failures short says so instead of dropping them silently.
+    renderer can separate the two.
+
+    The first message line is kept because it is what tells a reader what
+    broke, but it is scrubbed of machine identity and temp paths first: this
+    repository is public.
     """
-    text = re.sub(r"\x1b\[[0-9?]*[ -/]*[@-~]", "", text)
+    text = ANSI.sub("", text)
     order, seen = [], set()
     for line in text.splitlines():
         match = FAIL_LINE.match(line)
@@ -119,23 +140,49 @@ def details(text):
                 where.setdefault(name, match.group(2))
                 for follow in lines[index + 1:index + 4]:
                     if follow.strip():
-                        message.setdefault(name, follow.strip())
+                        message.setdefault(name, scrub(follow.strip()))
                         break
                 break
-    kept, size = [], 0
-    for name in order[:FAIL_TESTS]:
-        item = name
-        if name in where:
-            item += " at " + where[name]
-        if name in message:
-            item += ": " + message[name][:ASSERT_BYTES]
-        added = len(json.dumps(item).encode())
-        if size + added > FAIL_BYTES or len(kept) == FAIL_TESTS - 1 and len(order) > FAIL_TESTS:
+    return bounded([
+        name + (" at " + where[name] if name in where else "") +
+        (": " + message[name] if name in message else "")
+        for name in order
+    ])
+
+
+def bounded(items):
+    """Keep the published list inside its bounds, and say when it stopped.
+
+    A cap that silently drops the tail would report a smaller failure than the
+    one that happened, so the cut carries its own marker. Nothing here raises:
+    a report that cannot be bounded must still publish the outcome.
+    """
+    kept = []
+    for index, item in enumerate(items):
+        # One entry is one line: a newline in the source would break the shape
+        # the reader and the human both rely on.
+        item = " ".join(str(item).split())
+        if len(item.encode()) > LOCATE_BYTES:
+            item = item.encode()[:LOCATE_BYTES].decode("utf-8", "replace")
+        if len(kept) >= FAIL_TESTS - 1 or index >= FAIL_TESTS:
+            kept.append("(further failures omitted)")
+            break
+        try:
+            size = len(json.dumps(kept + [item]).encode())
+        except (TypeError, ValueError):
+            break
+        if size > FAIL_BYTES:
             kept.append("(further failures omitted)")
             break
         kept.append(item)
-        size += added
     return kept
+
+
+def scrub(item):
+    """Strip machine identity from anything about to be published."""
+    for pattern, replacement in NO_ID:
+        item = pattern.sub(replacement, item)
+    return item
 
 
 def failures(checks, app_id, identity):
