@@ -1,5 +1,6 @@
 //! Fixed commands and image streams retain and join each owned SSH child.
 use super::*;
+use crate::remote::ssh_diagnostic::read_errors;
 use se_types::SeError;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -24,15 +25,17 @@ pub(in crate::remote) async fn ssh(destination: &str, command: String) -> Result
         .ok_or_else(|| unavailable("SSH error pipe absent"))?;
     let result = timeout(Duration::from_secs(25), async {
         let mut bytes = Vec::new();
-        let mut errors = Vec::new();
         let mut stdout = stdout.take(65537);
-        let mut stderr = stderr.take(4097);
         tokio::try_join!(
-            stdout.read_to_end(&mut bytes),
-            stderr.read_to_end(&mut errors)
-        )
-        .map_err(|_| unavailable("SSH output could not be read"))?;
-        if bytes.len() > 65536 || errors.len() > 4096 {
+            async {
+                stdout
+                    .read_to_end(&mut bytes)
+                    .await
+                    .map_err(|_| unavailable("SSH output could not be read"))
+            },
+            read_errors(destination, stderr)
+        )?;
+        if bytes.len() > 65536 {
             return Err(unavailable(
                 "SSH output exceeded its bounded bootstrap response",
             ));
@@ -55,6 +58,7 @@ pub(in crate::remote) async fn ssh(destination: &str, command: String) -> Result
         }
     }
 }
+
 pub(super) fn verification_error(bytes: &[u8]) -> SeError {
     if let Some(mode) = std::str::from_utf8(bytes)
         .ok()
@@ -120,7 +124,7 @@ pub(super) async fn send_image(
             tokio::try_join!(
                 copy_image(&mut image.file, input, expected, &streamed),
                 drain(output, 65536),
-                drain(errors, 4096)
+                read_errors(destination, errors)
             )?;
             if !child
                 .wait()

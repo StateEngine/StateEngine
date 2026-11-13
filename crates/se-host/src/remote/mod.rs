@@ -17,6 +17,8 @@ mod native_image;
 #[cfg(feature = "remote")]
 pub mod ssh;
 #[cfg(feature = "remote")]
+mod ssh_diagnostic;
+#[cfg(feature = "remote")]
 pub use control::{BootstrapSession, startup_notice};
 #[cfg(feature = "remote")]
 mod cursor;
