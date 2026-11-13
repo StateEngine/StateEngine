@@ -125,6 +125,7 @@ fn stdio_caller_assertion_tracks_the_authenticated_binding() -> Check {
             profile: se_store::Profile {
                 provider: Provider::Claude,
                 model: None,
+                harness: None,
                 permission: PermissionProfile::WorkspaceWrite,
                 named_profile: "default".into(),
                 effort: None,
