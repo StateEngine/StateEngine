@@ -190,19 +190,7 @@ async fn exchange(
     match exchange {
         Ok(Ok(response)) => Ok(response),
         result => {
-            if child
-                .try_wait()
-                .map_err(|_| unavailable("SSH authorization custody is unreadable"))?
-                .is_none()
-            {
-                child
-                    .start_kill()
-                    .map_err(|_| unavailable("cannot stop owned SSH authorization"))?;
-            }
-            child
-                .wait()
-                .await
-                .map_err(|_| unavailable("cannot join SSH authorization"))?;
+            super::command::close(&mut child).await?;
             match result {
                 Ok(Err(error)) => Err(error),
                 _ => Err(unavailable(

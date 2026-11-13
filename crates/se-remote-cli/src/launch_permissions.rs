@@ -29,6 +29,7 @@ pub(super) fn review<H: OwnerCommands>(
                     after: after.clone(),
                     change: change.take(),
                 }),
+                &mut |_| Ok(()),
             )
             .map_err(io::Error::other)?;
         let targets: Vec<LaunchCandidate> = serde_json::from_value(output.value["targets"].clone())

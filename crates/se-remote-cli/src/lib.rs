@@ -248,7 +248,11 @@ fn authorize<H: OwnerCommands + Presentation>(
         se_host::remote::ssh::SshRequest::LaunchPermissions(request) => {
             let destination = request.launch_permissions;
             let result = host
-                .execute_owner(&cx, Input::Ready(OwnerInput::LaunchPermissions(request)))
+                .execute_owner(
+                    &cx,
+                    Input::Ready(OwnerInput::LaunchPermissions(request)),
+                    &mut |_| Ok(()),
+                )
                 .map(|output| output.value)
                 .map_err(|error| error.body);
             serde_json::to_writer(
