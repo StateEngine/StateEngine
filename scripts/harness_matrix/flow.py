@@ -9,6 +9,7 @@ import time
 import uuid
 
 from .io import Commands, digest, require, save
+from .inputs import home_path
 
 PHASES = ('Launch', 'Work', 'Mail', 'Resume')
 
@@ -42,9 +43,7 @@ class Smoke:
                            GIT_CONFIG_GLOBAL=str(self.home / '.gitconfig'), GIT_CONFIG_NOSYSTEM='1')
         (self.home / 'tmp').mkdir()
         for name, relative in settings.get('home_environment', {}).items():
-            path = Path(relative)
-            require(not path.is_absolute() and '..' not in path.parts, 'Native home path escapes the fixture')
-            environment[name] = str(self.home / path)
+            environment[name] = str(self.home / home_path(relative))
         self.commands = Commands(output, self.home, self.repository, environment,
                                  settings.get('terminal_prefix', []))
         self.record = dict(harness=entry['id'], driver=entry['driver'], platform=sys.platform, state='running', result='NOT RUN',

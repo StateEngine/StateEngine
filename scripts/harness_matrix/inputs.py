@@ -1,6 +1,6 @@
 """Validate native smoke inputs without converting missing prerequisites to passes."""
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import sys
@@ -41,6 +41,19 @@ def plain_file(value, label):
     return path
 
 
+def home_path(value):
+    require(isinstance(value, str) and value and '\0' not in value,
+            'Native home bindings must be nonempty relative paths')
+    path, windows = Path(value), PureWindowsPath(value)
+    # A Windows root without a drive, or a drive without a root, is not
+    # absolute but still replaces part of the private home when joined.
+    require(not path.anchor and not windows.anchor
+            and '..' not in path.parts and '..' not in windows.parts
+            and all(':' not in part and part == part.rstrip(' .') for part in windows.parts),
+            'Native home bindings must remain inside the private fixture')
+    return path
+
+
 def preflight(entry):
     if entry.get('skip'):
         require(isinstance(entry['skip'], str), 'A skip requires a reason')
@@ -63,9 +76,8 @@ def preflight(entry):
     environment_names(required)
     require(isinstance(homes, dict), 'Native private home bindings must be an object')
     environment_names(list(homes))
-    require(all(isinstance(value, str) and not Path(value).is_absolute()
-                and '..' not in Path(value).parts for value in homes.values()),
-            'Native home bindings must remain inside the private fixture')
+    for value in homes.values():
+        home_path(value)
     require(set(required).issubset(names), 'Required credentials must be explicitly inherited by name')
     missing = [key for key in required if not os.environ.get(key)]
     if missing:

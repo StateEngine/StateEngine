@@ -92,14 +92,15 @@ def native(directory, source_commit, manifest_sha256, expected, cycle):
     require(isinstance(result.get('expected'), list) and result['expected'] == expected,
             'planned matrix coverage differs')
     cells = result.get('cells')
-    require(isinstance(cells, list) and len(cells) == len(expected)
-            and [row.get('harness') for row in cells] == expected, 'incomplete or duplicate matrix rows')
+    require(isinstance(cells, list) and len(cells) == len(expected), 'incomplete matrix rows')
     verified = {}
-    for row in cells:
+    for harness, row in zip(expected, cells, strict=True):
         try:
-            verified[row['harness']] = verify_cell(directory, row, result, source_commit, manifest_sha256)
-        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
-            verified[row['harness']] = dict(result='UNREADABLE', reason=str(error),
+            require(isinstance(row, dict) and row.get('harness') == harness,
+                    'invalid, duplicate or out-of-order matrix row')
+            verified[harness] = verify_cell(directory, row, result, source_commit, manifest_sha256)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError) as error:
+            verified[harness] = dict(result='UNREADABLE', reason=str(error),
                 phases={phase: dict(result='NOT RUN') for phase in PHASES})
     return result['platform'], verified, result.get('state') == 'finished'
 
