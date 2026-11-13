@@ -45,8 +45,23 @@ impl HttpBackend<'_> {
     }
 }
 impl McpBackend for HttpBackend<'_> {
+    async fn witness_initialization(&mut self, supplied: Option<Arc<Secret>>) -> Result<()> {
+        if self.session_proof.is_none() && !self.malformed_proof {
+            return Ok(());
+        }
+        let capability = self.capability(None, supplied)?.ok_or_else(|| {
+            se_types::SeError::invalid(
+                "session first-use proof",
+                "both the HTTP bearer and session proof from the same launch",
+            )
+        })?;
+        // The existing pair verifier records both actual request witnesses only
+        // after checking their scope, purposes, generation and activation state.
+        // It admits no tool operation and does not activate either credential.
+        self.check_session(capability).await
+    }
     /// HTTP's capability is only its bearer; a malformed header never falls
-    /// back to anonymous for a tool method.
+    /// back to anonymous for a tool method or an explicit initialization pair.
     fn capability(
         &mut self,
         _metadata: Option<&serde_json::Value>,

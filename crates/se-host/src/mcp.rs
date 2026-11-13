@@ -31,6 +31,14 @@ pub struct McpPrincipal {
 }
 
 pub trait McpBackend {
+    /// An authenticated transport can witness possession during initialization.
+    /// Anonymous initialization stays read-only and grants no tool authority.
+    fn witness_initialization(
+        &mut self,
+        _capability: Option<Arc<Secret>>,
+    ) -> impl Future<Output = Result<()>> + Send {
+        async { Ok(()) }
+    }
     fn check_session(&mut self, capability: Arc<Secret>)
     -> impl Future<Output = Result<()>> + Send;
     /// Authenticate discovery and report this host's installed controller.
@@ -137,10 +145,21 @@ pub async fn dispatch(
         }
     };
     let params = message.get("params").cloned().unwrap_or(Value::Null);
-    // Lifecycle methods are anonymous and open no store; every tool method
-    // needs a capability the host validates on that same call.
+    // Ordinary lifecycle discovery stays anonymous. A transport may verify an
+    // explicit first-use pair; every tool still checks its current capability.
     match method {
-        "initialize" => return McpReply::Json(success(id, initialize(&params))),
+        "initialize" => {
+            return McpReply::Json(match backend.witness_initialization(capability).await {
+                Ok(()) => success(id, initialize(&params)),
+                Err(error) => rpc_error(
+                    id,
+                    SESSION_REQUIRED,
+                    &format!(
+                        "{error}. Use the paired headers from one current StateEngine launch; stop and relaunch the affected agent in the same project if its configuration is stale."
+                    ),
+                ),
+            });
+        }
         "ping" => return McpReply::Json(success(id, json!({}))),
         "tools/list" | "tools/call" => (),
         _ => return McpReply::Json(rpc_error(id, -32601, "method not found")),
