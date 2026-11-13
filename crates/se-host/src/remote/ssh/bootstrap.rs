@@ -23,14 +23,6 @@ pub async fn connect(
     let image = super::image::describe(destination, &distribution).await?;
     let remote = image.remote();
     let windows = image.windows;
-    let (verified, detail) = ssh(
-        destination,
-        staging::verify(&remote, &image.digest, windows, image.apple),
-    )
-    .await?;
-    if !verified {
-        return Err(super::command::verification_error(&detail));
-    }
     let invoke = |arguments: &str| {
         if windows {
             staging::powershell(&format!(
@@ -40,16 +32,26 @@ pub async fn connect(
             format!("./{remote} {arguments}")
         }
     };
-    let (success, bytes) = ssh(
-        destination,
-        invoke(&format!(
-            "remote __accept --source-host {} --json",
-            source.0.hex()
-        )),
-    )
-    .await?;
+    let acceptance = invoke(&format!(
+        "remote __accept --source-host {} --json",
+        source.0.hex()
+    ));
+    let verification = staging::verify(&remote, &image.digest, windows, image.apple);
+    let command = if windows {
+        let (verified, detail) = ssh(destination, verification).await?;
+        if !verified {
+            return Err(super::command::verification_error(&detail));
+        }
+        acceptance
+    } else {
+        image_commands::accept(&verification, &acceptance)
+    };
+    let (success, bytes) = ssh(destination, command).await?;
     let bytes = zeroize::Zeroizing::new(bytes);
     if !success {
+        if bytes.starts_with(format!("{}\n", image_commands::VERIFY_FAILED).as_bytes()) {
+            return Err(super::command::verification_error(&bytes));
+        }
         return Err(refused_setup(&bytes));
     }
     #[derive(serde::Deserialize)]

@@ -4,7 +4,7 @@ use se_types::SeError;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-pub(super) async fn ssh(destination: &str, command: String) -> Result<(bool, Vec<u8>)> {
+pub(in crate::remote) async fn ssh(destination: &str, command: String) -> Result<(bool, Vec<u8>)> {
     validate_destination(destination)?;
     let mut child = Command::new("ssh")
         .args(["-T", "-o", "BatchMode=yes", destination, &command])
@@ -58,7 +58,10 @@ pub(super) async fn ssh(destination: &str, command: String) -> Result<(bool, Vec
 pub(super) fn verification_error(bytes: &[u8]) -> SeError {
     if let Some(mode) = std::str::from_utf8(bytes)
         .ok()
-        .and_then(|text| text.trim().strip_prefix("unsafe-mode:"))
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("unsafe-mode:"))
+        })
         .and_then(|mode| u16::from_str_radix(mode, 8).ok())
         .filter(|mode| *mode <= 0o7777)
     {
