@@ -134,3 +134,46 @@ impl SqliteSnapshot {
         Page::new(items.into_iter().map(|(_, e)| e).collect(), window, None).map_err(invalid)
     }
 }
+
+impl SqliteSnapshot {
+    pub(super) fn read_resume_head(&mut self, principal: Actor) -> StoreResult<Read<ResumeHead>> {
+        if principal != self.scope.admission.actor
+            && !matches!(self.scope.visibility, Visibility::Owner)
+        {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "resume belongs to another principal",
+            ));
+        }
+        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let a = key(
+            &self.db,
+            principal.kind(),
+            principal.wire(),
+            if principal.kind() == "human" {
+                &[0]
+            } else {
+                &scope
+            },
+            false,
+        )?;
+        let p = self.project_bytes()?;
+        let row:Option<ResumeRow>=self.db.query_row("SELECT last_turn_seq,last_working_state_seq,last_cursor_seq,last_session_seq,unread_count,pending_effect_count,last_seq FROM resume_heads WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![p,a],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?,crate::sql_value::value(r,5)?,crate::sql_value::value(r,6)?))).optional().map_err(|error| self.read_sql(error))?;
+        let pos = |s| StorePosition::new_internal(self.info.id.clone(), self.info.incarnation, s);
+        match row {
+            None => Ok(self.absent("resume head")),
+            Some((t, w, c, s, unread, pending, last)) => Ok(Read::Present {
+                value: ResumeHead {
+                    principal,
+                    turn: t.map(pos).transpose()?,
+                    working_state: w.map(pos).transpose()?,
+                    cursor: c.map(pos).transpose()?,
+                    session: s.map(pos).transpose()?,
+                    unread,
+                    pending_effects: pending,
+                    through: pos(last)?,
+                },
+            }),
+        }
+    }
+}

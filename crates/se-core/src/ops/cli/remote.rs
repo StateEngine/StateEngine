@@ -9,7 +9,11 @@ pub(super) fn command(name: &str, c: Command) -> Command {
         } else {
             c
         };
-    if name == "remote.send" {
+    if name == "remote.launch" {
+        c.arg(value("target").required(true).help(
+            "Exact Owner-approved destination project-ID/agent-ID; uses its saved launch profile",
+        ))
+    } else if name == "remote.send" {
         c.arg(
             value("expected_host")
                 .long("expected-host")
@@ -150,6 +154,13 @@ pub(super) fn decode(
                 AnyOp::RemoteWatch(input)
             }
         }
+        "remote.launch" => AnyOp::RemoteLaunch(RemoteLaunchCall {
+            host,
+            request: RemoteLaunch {
+                target: parse_remote_target(&required(m, "target")?)?,
+                idempotency_key: key()?,
+            },
+        }),
         "remote.send" => AnyOp::RemoteSend(RemoteSendCall {
             expected_binding: text(m, "expected_host")
                 .map(|host| {
@@ -167,6 +178,11 @@ pub(super) fn decode(
                 idempotency_key: key()?,
             },
         }),
-        _ => return Err(SeError::invalid("remote command", "list, watch or send")),
+        _ => {
+            return Err(SeError::invalid(
+                "remote command",
+                "list, watch, send or launch",
+            ));
+        }
     })
 }

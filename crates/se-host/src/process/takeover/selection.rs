@@ -145,7 +145,7 @@ impl LaunchCoordinator {
         .unwrap_or_else(|failure| failure)
     }
 
-    pub(super) async fn preflight_relaunch(
+    pub(in crate::process) async fn preflight_relaunch(
         &self,
         plan: &mut LaunchPlan,
         admission: &Admission,

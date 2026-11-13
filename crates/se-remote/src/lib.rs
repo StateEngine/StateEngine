@@ -65,6 +65,18 @@ pub trait CredentialSource: Send + Sync {
 /// One authenticated multiplexed connection; callers never choose its identity
 /// by changing per-connection state. Every operation carries its own source fence.
 pub trait RemoteClient: Send + Sync {
+    fn launch(
+        &self,
+        _call: RemoteCallContext,
+        _request: RemoteLaunch,
+    ) -> RemoteFuture<'_, RemoteLaunchResult> {
+        Box::pin(async {
+            Err(se_types::SeError::invalid(
+                "remote launch",
+                "a destination supporting explicit Owner-approved saved-profile launches; update both installations",
+            ))
+        })
+    }
     /// Join this connector's network tasks during owning-host shutdown. A
     /// transport adapter must provide its own closure witness, never a no-op.
     fn close(&self) -> RemoteFuture<'_, ()> {

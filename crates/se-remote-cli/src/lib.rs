@@ -12,6 +12,8 @@ mod grammar;
 mod ports;
 mod progress;
 pub use ports::{OwnerCommands, Presentation};
+mod launch_permissions;
+mod permissions;
 pub enum Input {
     Ready(OwnerInput),
 }
@@ -96,6 +98,9 @@ fn run<H: OwnerCommands + Presentation>(name: &str, m: &ArgMatches, host: &H) ->
     // Saved bindings from earlier releases omit the flag, but this private
     // pipe always owes the source a structured native refusal.
     let json = m.get_flag("json") || name == "__authorize";
+    if name == "permissions" && !m.get_flag("help") {
+        return permissions::command(m, json, &mut stdout, &mut stderr, host);
+    }
     let result = (|| {
         if m.get_flag("help") {
             let mut command = grammar::command();
@@ -138,9 +143,16 @@ fn run<H: OwnerCommands + Presentation>(name: &str, m: &ArgMatches, host: &H) ->
     })();
     match result {
         Ok((Some(help), _)) => host.write_output(&help, json, false, &mut stdout),
-        Ok((_, Some(output))) => {
+        Ok((_, Some(mut output))) => {
             if name == "__authorize" {
                 return authorize(m, &output.value, &mut stdout, host);
+            }
+            if json && name == "add" {
+                output.value["permission_review"] = serde_json::json!({
+                    "state":"skipped",
+                    "reason":"Launch permission review requires a native Owner terminal.",
+                    "launch_command":["se","remote","permissions","--name",required(m,"name").map_err(io::Error::other)?,"--launch"],
+                });
             }
             if json {
                 serde_json::to_writer(
@@ -166,6 +178,9 @@ fn run<H: OwnerCommands + Presentation>(name: &str, m: &ArgMatches, host: &H) ->
                 writeln!(stdout)?;
             }
             stdout.flush()?;
+            if name == "add" && !json {
+                permissions::review(m, &mut stdout, host)?;
+            }
             Ok(0)
         }
         Ok(_) => Err(io::Error::other("remote control produced no result")),
@@ -226,6 +241,28 @@ fn authorize<H: OwnerCommands + Presentation>(
                 ));
             }
             serde_json::to_writer(&mut *stdout, &actual).map_err(io::Error::other)?;
+            writeln!(stdout)?;
+            stdout.flush()?;
+            return Ok(0);
+        }
+        se_host::remote::ssh::SshRequest::LaunchPermissions(request) => {
+            let destination = request.launch_permissions;
+            let result = host
+                .execute_owner(
+                    &cx,
+                    Input::Ready(OwnerInput::LaunchPermissions(request)),
+                    &mut |_| Ok(()),
+                )
+                .map(|output| output.value)
+                .map_err(|error| error.body);
+            serde_json::to_writer(
+                &mut *stdout,
+                &se_host::remote::ssh::PermissionsResult {
+                    host: destination,
+                    result,
+                },
+            )
+            .map_err(io::Error::other)?;
             writeln!(stdout)?;
             stdout.flush()?;
             return Ok(0);

@@ -41,7 +41,7 @@ impl ReadPhase {
         now: i64,
     ) -> StoreResult<TargetFacts> {
         ready(&self.info)?;
-        let grant = read::grant(&self.db, grant_id)?.ok_or_else(denied)?;
+        let grant = grant_at(&self.db, grant_id)?.ok_or_else(denied)?;
         if grant.store != self.info.id
             || grant.state != GrantState::Active
             || grant.expires_at_us <= now
@@ -91,7 +91,7 @@ impl ReadPhase {
         self.client_target_facts(target)
     }
 
-    fn client_target_facts(&self, target: &RemoteTarget) -> StoreResult<TargetFacts> {
+    pub(super) fn client_target_facts(&self, target: &RemoteTarget) -> StoreResult<TargetFacts> {
         let p = crate::identity::key(&self.db, "project", target.project.as_str(), &[0], false)?;
         let mut namespace = vec![1];
         namespace.extend_from_slice(&p);
@@ -172,7 +172,7 @@ impl ReadPhase {
         limit: u16,
         now: i64,
     ) -> StoreResult<Vec<RemoteTarget>> {
-        let grant = read::grant(&self.db, grant_id)?.ok_or_else(denied)?;
+        let grant = grant_at(&self.db, grant_id)?.ok_or_else(denied)?;
         if grant.store != self.info.id
             || grant.state != GrantState::Active
             || grant.authority_revision != revision

@@ -156,6 +156,8 @@ impl Validate for AgentLaunch {
 /// closes. The coordinator never substitutes a different target or profile.
 #[derive(Clone)]
 pub struct LaunchPlan {
+    /// Native authenticated origin; never supplied by a local operation DTO.
+    pub remote: Option<se_types::remote::RemoteAttribution>,
     pub input: AgentLaunch,
     pub channel_resume: Option<(se_store::channel::ChannelId, se_store::channel::ActionId)>,
     pub project: Named<ProjectId>,

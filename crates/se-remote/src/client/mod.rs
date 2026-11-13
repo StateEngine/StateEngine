@@ -98,14 +98,18 @@ impl Client {
     ) -> Result<RemoteInvocation> {
         let invocation = call.invocation(&self.device, request)?;
         let (verb, targets) = match &invocation.request {
+            RemoteRequest::Launch(r) => (RemoteVerb::Launch, std::slice::from_ref(&r.target)),
             RemoteRequest::List(r) => (RemoteVerb::List, r.targets.as_slice()),
             RemoteRequest::Watch(r) => (RemoteVerb::Watch, r.targets.as_slice()),
             RemoteRequest::Send(r) => (RemoteVerb::Send, std::slice::from_ref(&r.target)),
         };
-        if !self.device.scope.verbs.contains(&verb)
-            || targets.iter().any(|t| {
-                !self.device.scope.targets.is_empty() && !self.device.scope.targets.contains(t)
-            })
+        // Launch consent lives on the destination, separately from the legacy
+        // saved scope. Asking for consent never grants it.
+        if verb != RemoteVerb::Launch
+            && (!self.device.scope.verbs.contains(&verb)
+                || targets.iter().any(|t| {
+                    !self.device.scope.targets.is_empty() && !self.device.scope.targets.contains(t)
+                }))
         {
             return Err(unavailable(
                 "request is outside this device's exact saved scope",
@@ -115,6 +119,24 @@ impl Client {
     }
 }
 impl RemoteClient for Client {
+    fn launch(
+        &self,
+        call: RemoteCallContext,
+        request: RemoteLaunch,
+    ) -> RemoteFuture<'_, RemoteLaunchResult> {
+        Box::pin(async move {
+            let key = request.idempotency_key.to_string();
+            let invocation = self.invocation(&call, RemoteRequest::Launch(request))?;
+            let connection = self.connection().await?;
+            match connection.once(Arc::new(call), invocation).await {
+                Ok(Reply::Launch(value)) if value.schema == RemoteLaunchResult::SCHEMA => {
+                    Ok(*value)
+                }
+                Ok(_) => Err(unknown_mutation("remote.launch", key)),
+                Err(error) => Err(error),
+            }
+        })
+    }
     fn close(&self) -> RemoteFuture<'_, ()> {
         Box::pin(async move {
             self.stopped.store(true, Ordering::Release);
@@ -173,10 +195,13 @@ impl RemoteClient for Client {
     }
 }
 fn unknown_send(key: String) -> SeError {
+    unknown_mutation("remote.send", key)
+}
+fn unknown_mutation(operation: &'static str, key: String) -> SeError {
     SeError::from(
         se_types::ErrorBody::new(Detail::CommitOutcomeUnknown(
             details::CommitOutcomeUnknown {
-                operation: "remote.send".into(),
+                operation: operation.into(),
                 key: Some(key),
                 natural_events: Vec::new(),
             },

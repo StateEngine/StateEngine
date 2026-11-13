@@ -7,6 +7,7 @@ use super::*;
 pub enum EventKind {
     RemoteSecurity,
     RemoteMessageAttributed,
+    RemoteLaunchAttributed,
     ProjectRegistered,
     ProjectUpdated,
     ProjectMoved,
@@ -75,6 +76,9 @@ pub enum EventBody<T> {
     },
     RemoteMessageAttributed {
         record: crate::remote::MessageAttribution,
+    },
+    RemoteLaunchAttributed {
+        record: crate::remote::LaunchAttribution,
     },
     ProjectRegistered {
         project: ProjectId,

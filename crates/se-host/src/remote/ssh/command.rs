@@ -4,9 +4,10 @@ use se_types::SeError;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-pub(super) async fn output(program: &str, arguments: &[String]) -> Result<(bool, Vec<u8>)> {
-    let mut child = Command::new(program)
-        .args(arguments)
+pub(super) async fn ssh(destination: &str, command: String) -> Result<(bool, Vec<u8>)> {
+    validate_destination(destination)?;
+    let mut child = Command::new("ssh")
+        .args(["-T", "-o", "BatchMode=yes", destination, &command])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -46,19 +47,7 @@ pub(super) async fn output(program: &str, arguments: &[String]) -> Result<(bool,
     match result {
         Ok(Ok(value)) => Ok(value),
         other => {
-            if child
-                .try_wait()
-                .map_err(|_| unavailable("SSH custody unreadable"))?
-                .is_none()
-            {
-                child
-                    .start_kill()
-                    .map_err(|_| unavailable("cannot close owned SSH bootstrap"))?;
-            }
-            child
-                .wait()
-                .await
-                .map_err(|_| unavailable("cannot join SSH bootstrap"))?;
+            close(&mut child).await?;
             match other {
                 Ok(Err(error)) => Err(error),
                 _ => Err(unavailable("SSH bootstrap exceeded 25 seconds")),
@@ -66,21 +55,6 @@ pub(super) async fn output(program: &str, arguments: &[String]) -> Result<(bool,
         }
     }
 }
-pub(super) async fn ssh(destination: &str, command: String) -> Result<(bool, Vec<u8>)> {
-    validate_destination(destination)?;
-    output(
-        "ssh",
-        &[
-            "-T".into(),
-            "-o".into(),
-            "BatchMode=yes".into(),
-            destination.into(),
-            command,
-        ],
-    )
-    .await
-}
-
 pub(super) fn verification_error(bytes: &[u8]) -> SeError {
     if let Some(mode) = std::str::from_utf8(bytes)
         .ok()
@@ -182,19 +156,7 @@ pub(super) async fn send_image(
         }
     };
     if result.is_err() {
-        if child
-            .try_wait()
-            .map_err(|_| unavailable("SSH image custody unreadable"))?
-            .is_none()
-        {
-            child
-                .start_kill()
-                .map_err(|_| unavailable("cannot stop the owned SSH image stream"))?;
-        }
-        child
-            .wait()
-            .await
-            .map_err(|_| unavailable("cannot join the owned SSH image stream"))?;
+        close(&mut child).await?;
     }
     result
 }
@@ -244,5 +206,23 @@ async fn drain(reader: impl tokio::io::AsyncRead + Unpin, limit: usize) -> Resul
     if bytes.len() > limit {
         return Err(unavailable("SSH image response exceeded its bound"));
     }
+    Ok(())
+}
+
+/// A failed command retains custody until this specific native child is joined.
+pub(super) async fn close(child: &mut Child) -> Result<()> {
+    if child
+        .try_wait()
+        .map_err(|_| unavailable("owned SSH process custody is unreadable"))?
+        .is_none()
+    {
+        child
+            .start_kill()
+            .map_err(|_| unavailable("cannot stop the owned SSH process"))?;
+    }
+    child
+        .wait()
+        .await
+        .map_err(|_| unavailable("cannot join the owned SSH process"))?;
     Ok(())
 }

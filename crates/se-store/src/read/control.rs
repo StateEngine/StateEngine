@@ -8,6 +8,9 @@ const LIVE_LIMIT: usize = 16;
 const MOVED_LIMIT: usize = 64;
 impl SqliteSnapshot {
     pub(super) fn read_control_target(&self, target: AgentId) -> StoreResult<Read<ControlTarget>> {
+        if self.remote_launch_grant.is_some() {
+            self.require_remote_target(&target)?;
+        }
         let p = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let a = key(&self.db, "agent", target.as_str(), &scope, false)?;
@@ -24,6 +27,7 @@ impl SqliteSnapshot {
             _ => return Ok(self.absent("control target agent")),
         };
         match &self.scope.visibility {
+            Visibility::None if self.remote_launch_grant.is_some() => (),
             Visibility::None => {
                 return Err(fail(
                     StoreErrorCode::ScopeMismatch,

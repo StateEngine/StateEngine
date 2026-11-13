@@ -27,6 +27,9 @@ pub(crate) fn revision(c: &Connection, event: &NewEvent) -> StoreResult<u64> {
         SecurityTransition::Renew { grant, .. } | SecurityTransition::Revoke { grant, .. } => {
             next(c, "remote_grants", "grant_id", grant.as_str())
         }
+        SecurityTransition::LaunchPermission { change } => {
+            launch_permission::revision(c, &change.grant, &change.target)
+        }
         SecurityTransition::RevokeAll => Ok(1),
     }
 }
@@ -54,6 +57,11 @@ fn scope(c: &Connection, scope: &RemoteScope) -> StoreResult<()> {
             RemoteVerb::List => "list",
             RemoteVerb::Watch => "watch",
             RemoteVerb::Send => "send",
+            RemoteVerb::Launch => {
+                return Err(invalid(
+                    "launch consent belongs in the explicit saved-target permission, never the legacy machine verbs",
+                ));
+            }
         };
         if !seen.insert(name) {
             return Err(invalid("duplicate remote verb"));
@@ -102,23 +110,7 @@ pub(crate) fn apply(
     }
     match transition {
         SecurityTransition::Connect { grant: g } => {
-            scope(c, &g.scope)?;
-            if g.store != info.id
-                || revision != 1
-                || g.authority_revision.value.get() != 1
-                || g.lease_revision.value.get() != 1
-                || g.state != GrantState::Active
-                || !matches!(g.subject, se_types::remote::RemoteSubject::Machine { .. })
-                || g.issued_at_us > recorded
-                || g.last_use_at_us != g.issued_at_us
-                || g.expires_at_us.checked_sub(g.last_use_at_us) != Some(GRANT_INACTIVITY_US)
-                || g.expires_at_us <= recorded
-                || g.credential_sha256.0 == [0; 32]
-            {
-                return Err(invalid("remote initial machine session"));
-            }
-            let grant_key = key(g.grant.as_str())?;
-            c.execute("INSERT INTO remote_grants(grant_id,principal_id,device_id,credential_sha256,host,store_id,subject,scope,issued_at_us,authority_revision,state,last_use_at_us,expires_at_us,lease_revision,revision,last_seq) VALUES(?,?,?,?,?,?,?,?,?,1,'active',?,?,1,1,?)",rusqlite::params![grant_key,key(g.principal.as_str())?,key(g.device.as_str())?,encode(&g.credential_sha256)?,encode(&g.host)?,key(g.store.as_str())?,encode(&g.subject)?,encode(&g.scope)?,g.issued_at_us,g.last_use_at_us,g.expires_at_us,seq]).map_err(sql)?;
+            connect(c, &info, &g, seq, revision, recorded)?;
         }
         SecurityTransition::Renew {
             grant,
@@ -151,9 +143,42 @@ pub(crate) fn apply(
                 return Err(denied());
             }
         }
+        SecurityTransition::LaunchPermission { change } => {
+            launch_permission::apply(c, change, seq, revision, recorded)?
+        }
         SecurityTransition::RevokeAll => {
             c.execute("UPDATE remote_grants SET state='revoked',authority_revision=authority_revision+1,revision=revision+1,last_seq=? WHERE state='active'",[seq]).map_err(sql)?;
         }
     }
+    Ok(())
+}
+
+// Initial grant invariants belong together; later transitions retain their
+// individual compare-and-swap checks in apply.
+fn connect(
+    c: &Connection,
+    info: &StoreInfo,
+    g: &GrantRecord,
+    seq: i64,
+    revision: u64,
+    recorded: i64,
+) -> StoreResult<()> {
+    scope(c, &g.scope)?;
+    if g.store != info.id
+        || revision != 1
+        || g.authority_revision.value.get() != 1
+        || g.lease_revision.value.get() != 1
+        || g.state != GrantState::Active
+        || !matches!(g.subject, se_types::remote::RemoteSubject::Machine { .. })
+        || g.issued_at_us > recorded
+        || g.last_use_at_us != g.issued_at_us
+        || g.expires_at_us.checked_sub(g.last_use_at_us) != Some(GRANT_INACTIVITY_US)
+        || g.expires_at_us <= recorded
+        || g.credential_sha256.0 == [0; 32]
+    {
+        return Err(invalid("remote initial machine session"));
+    }
+    let grant_key = key(g.grant.as_str())?;
+    c.execute("INSERT INTO remote_grants(grant_id,principal_id,device_id,credential_sha256,host,store_id,subject,scope,issued_at_us,authority_revision,state,last_use_at_us,expires_at_us,lease_revision,revision,last_seq) VALUES(?,?,?,?,?,?,?,?,?,1,'active',?,?,1,1,?)",rusqlite::params![grant_key,key(g.principal.as_str())?,key(g.device.as_str())?,encode(&g.credential_sha256)?,encode(&g.host)?,key(g.store.as_str())?,encode(&g.subject)?,encode(&g.scope)?,g.issued_at_us,g.last_use_at_us,g.expires_at_us,seq]).map_err(sql)?;
     Ok(())
 }

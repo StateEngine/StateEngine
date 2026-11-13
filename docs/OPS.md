@@ -241,7 +241,7 @@ The CLI retains replacement hints only for commands with a supported replacement
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 50 operations (44 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). Planned: 9 operations, 3 MCP tools.
+Registered: 51 operations (45 core, 6 Atlas), 25 MCP tools (20 core, 5 Atlas). Planned: 9 operations, 3 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -255,6 +255,7 @@ Registered: 50 operations (44 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). P
 | `remote.prepare_send` | none — Internal protected source IPC prepares CLI pending output; no remote capability or public tool. | none | either | read |
 | `remote.list` | remote list | `stateengine_remote_list` | either | read |
 | `remote.watch` | remote watch | `stateengine_remote_watch` | either | read |
+| `remote.launch` | remote launch | `stateengine_remote_launch` | either | write |
 | `remote.send` | remote send | `stateengine_remote_send` | either | write |
 | `meta.version` | --version | none | either | read |
 | `meta.help` | help | none | either | read |
@@ -300,7 +301,7 @@ Planned operations (design tables, not yet registered): `credential.rotate`, `hi
 
 Planned MCP tools: `stateengine_agent_status`, `stateengine_search`, `stateengine_session_turn`
 
-Registered without a design-table row: `atlas.augment` (no CLI or MCP exposure), `remote.prepare_send` (no CLI or MCP exposure), `project.move` (CLI `project move`)
+Registered without a design-table row: `atlas.augment` (no CLI or MCP exposure), `remote.prepare_send` (no CLI or MCP exposure), `remote.launch` (CLI `remote launch`), `project.move` (CLI `project move`)
 
-Registered MCP tools not named in the design tables: `stateengine_working_state_get`
+Registered MCP tools not named in the design tables: `stateengine_remote_launch`, `stateengine_working_state_get`
 <!-- END GENERATED: ops-inventory -->

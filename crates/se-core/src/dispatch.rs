@@ -398,7 +398,8 @@ impl Kernel {
             | AnyOp::RemotePrepareSend(_)
             | AnyOp::RemoteList(_)
             | AnyOp::RemoteWatch(_)
-            | AnyOp::RemoteSend(_) => {
+            | AnyOp::RemoteSend(_)
+            | AnyOp::RemoteLaunch(_) => {
                 return Err(SeError::invalid(
                     "remote execution",
                     "the protected source host broker; no direct store or Owner fallback",

@@ -19,6 +19,9 @@ pub(crate) fn body(
         "remote.security" => RemoteSecurity {
             transition: field(&facts(c, seq)?, "transition")?,
         },
+        "remote.launch_attributed" => RemoteLaunchAttributed {
+            record: field(&facts(c, seq)?, "record")?,
+        },
         "remote.message_attributed" => RemoteMessageAttributed {
             record: field(&facts(c, seq)?, "record")?,
         },

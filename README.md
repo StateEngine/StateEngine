@@ -429,6 +429,22 @@ host and agents continue. Run `remote add` again to reconnect. `remote forget
 remote work. Ordinary return-mail routing and independent agent revocation
 are planned separately.
 
+Remote launch requires a separate Owner decision. At the end of pairing choose
+**launch**, or run `se remote permissions --name build --launch` in a terminal.
+Choose an existing destination agent and allow or revoke future launches. The
+review shows its saved provider and permission profile. Existing machine grants
+keep their list, watch and send verbs; they do not gain launch permission.
+
+A launched lead can call `stateengine_remote_launch`, and the CLI uses
+`se remote launch --host build --target PROJECT/AGENT --key start-1` with IDs
+from remote list. The destination starts that agent headlessly with its saved
+profile and conversation. It does not create an identity, override its model,
+or stop existing work. A start receipt confirms the original launch; replaying it does not claim the
+agent is still running. Use its returned session for remote send, which refuses
+a stopped or replaced session. A pending launch retains its key; repeat the same launch
+with that key to observe its result. Revoking launch consent blocks future
+reservations; already admitted launches and running agents continue.
+
 The Linux nightly includes a separate remote journey over real SSH: connect,
 launch on the destination, observe live assistant output, exchange a message,
 and reconnect to the original session. Its reports retain attach, pending echo,

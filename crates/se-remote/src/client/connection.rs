@@ -19,7 +19,7 @@ enum Pending {
     Once {
         call: Arc<RemoteCallContext>,
         tx: oneshot::Sender<Result<Reply>>,
-        key: Option<String>,
+        key: Option<(&'static str, String)>,
         _admission: Admission,
     },
     Watch {
@@ -118,7 +118,7 @@ impl Shared {
                 match item {
                     Pending::Once { tx, key, .. } => {
                         let error = key
-                            .map(super::unknown_send)
+                            .map(|(operation, key)| super::unknown_mutation(operation, key))
                             .unwrap_or_else(|| unavailable(reason));
                         let _ = tx.send(Err(error));
                     }
@@ -350,7 +350,8 @@ impl Connection {
         invocation: RemoteInvocation,
     ) -> Result<Reply> {
         let key = match &invocation.request {
-            RemoteRequest::Send(r) => Some(r.idempotency_key.to_string()),
+            RemoteRequest::Send(r) => Some(("remote.send", r.idempotency_key.to_string())),
+            RemoteRequest::Launch(r) => Some(("remote.launch", r.idempotency_key.to_string())),
             _ => None,
         };
         let mutation = key.is_some();
@@ -386,16 +387,18 @@ impl Connection {
             Ok(Ok(value)) => value?,
             Ok(Err(_)) => {
                 return Err(key
-                    .map(super::unknown_send)
+                    .map(|(operation, key)| super::unknown_mutation(operation, key))
                     .unwrap_or_else(|| unavailable("remote reply channel closed")));
             }
             Err(_) => {
-                return Err(key.map(super::unknown_send).unwrap_or_else(|| {
-                    SeError::new(Detail::DeadlineExceeded(details::DeadlineExceeded {
-                        op: "remote request".into(),
-                        deadline_ms: 30000,
-                    }))
-                }));
+                return Err(key
+                    .map(|(operation, key)| super::unknown_mutation(operation, key))
+                    .unwrap_or_else(|| {
+                        SeError::new(Detail::DeadlineExceeded(details::DeadlineExceeded {
+                            op: "remote request".into(),
+                            deadline_ms: 30000,
+                        }))
+                    }));
             }
         };
         if !mutation {

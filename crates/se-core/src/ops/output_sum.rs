@@ -91,6 +91,7 @@ RemotePrepareSend => RemotePrepareSendCall, RemoteSendPreparation;
 RemoteList => RemoteListCall, RemoteListOutput;
 RemoteWatch => RemoteWatchCall, RemoteWatchOutput;
 RemoteSend => RemoteSendCall, RemoteSendOutput;
+RemoteLaunch => RemoteLaunchCall, RemoteLaunchOutput;
 Resume => Resume, ResumeOutput;
 SessionContext => SessionContextRequest, SessionContextOutput;
 MetaVersion => MetaVersion, VersionOutput;

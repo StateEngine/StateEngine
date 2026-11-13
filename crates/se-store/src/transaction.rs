@@ -370,7 +370,7 @@ impl Engine {
                 ));
             }
         }
-        crate::remote::validate_batch(&self.db, &batch, info, recorded)?;
+        let remote_launch = crate::remote::validate_batch(&self.db, &batch, info, recorded)?;
         if let Some(retained) = idempotency::lookup(&self.db, &batch, info)? {
             return Ok(retained);
         }
@@ -531,7 +531,10 @@ impl Engine {
                     seq,
                     revision,
                     facts,
-                    &self.identity,
+                    &apply::ApplyAuthority {
+                        lease: &self.identity,
+                        remote_launch: remote_launch.as_ref(),
+                    },
                 )?;
                 seq
             };
@@ -546,6 +549,7 @@ fn security<T>(b: &EventBody<T>) -> bool {
         b,
         ChannelRecorded { .. }
             | RemoteSecurity { .. }
+            | RemoteLaunchAttributed { .. }
             | CredentialIssued { .. }
             | CredentialActivated { .. }
             | CredentialRevoked { .. }
