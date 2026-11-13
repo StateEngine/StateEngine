@@ -346,9 +346,9 @@ mod tests {
             status.failed(),
             "a dead task must read as Failed, never Clear"
         );
-        let error = status
-            .last_error()
-            .expect("a failed join retains its error");
+        let Some(error) = status.last_error() else {
+            panic!("a failed join retains its error");
+        };
         assert!(
             error.cause.contains("planted checkpoint panic"),
             "the panic message must be named, got: {}",
