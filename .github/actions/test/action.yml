@@ -27,7 +27,7 @@ runs:
           profile="$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')"
           sudo python3 scripts/ci/installation_account.py provision --identity "$identity" --profile "$profile"
         fi
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       with:
         name: tests-${{ inputs.os }}
     - name: Run shard from the existing build
@@ -50,7 +50,7 @@ runs:
       if: ${{ !cancelled() && inputs.shard == '1' && inputs.mode != 'smoke' }}
       shell: bash
       run: python scripts/ci/custom.py run
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       if: ${{ always() }}
       with:
         name: results-${{ inputs.os }}-${{ inputs.mode }}-${{ inputs.shard }}
