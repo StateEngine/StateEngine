@@ -16,6 +16,22 @@ impl CredentialSource for NoCredential {
         ))
     }
 }
+struct NoPeer;
+impl crate::channel::PeerIo for NoPeer {
+    fn open<'a>(
+        &'a self,
+        _: RemoteRoute,
+        _: &'a MachineSession,
+        _: Arc<dyn CredentialSource>,
+    ) -> RemoteFuture<'a, crate::channel::Socket> {
+        Box::pin(async {
+            Err(SeError::invalid(
+                "fixture",
+                "no reconnect or credential access",
+            ))
+        })
+    }
+}
 fn target() -> Result<RemoteTarget> {
     Ok(RemoteTarget {
         project: ProjectId::from_parts(1_700_000_000_000, [1; 10])?,
@@ -69,8 +85,7 @@ fn open(
         },
         device,
         signer: Arc::new(NoCredential),
-        blocking: crate::runtime::BlockingPool::new(tokio::runtime::Handle::current()),
-        forwards: Arc::new(ssh::Forwards::default()),
+        peer: Arc::new(NoPeer),
         connection: Arc::new(Mutex::new(Some(queue.connection.clone()))),
         stopped: Arc::new(AtomicBool::new(false)),
     };

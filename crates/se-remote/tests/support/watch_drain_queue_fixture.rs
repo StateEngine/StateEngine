@@ -1,6 +1,6 @@
 //! A decoded-wire producer using the real admission, queue and byte accounting.
 use super::*;
-pub(in crate::remote::client) struct Queue {
+pub(in crate::client) struct Queue {
     pub connection: Arc<Connection>,
     id: RequestId,
     guard: Option<Guard>,

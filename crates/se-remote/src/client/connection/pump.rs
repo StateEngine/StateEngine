@@ -4,7 +4,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 
-pub(super) fn open(socket: super::super::super::channel::Socket) -> Arc<Connection> {
+pub(super) fn open(socket: crate::channel::Socket) -> Arc<Connection> {
     let (outgoing, mut rx) = mpsc::channel::<Outgoing>(REMOTE_CLIENT_QUEUE_FRAMES);
     let shared = Arc::new(Shared {
         pending: StdMutex::new(BTreeMap::new()),
@@ -30,7 +30,7 @@ pub(super) fn open(socket: super::super::super::channel::Socket) -> Arc<Connecti
                         _ = writer_stop.notified() => return Err(unavailable("connection invalidated")),
                         control = urgent_rx.recv() => {
                             let Some(control) = control else { return Ok(()); };
-                            timeout(super::super::super::channel::WRITE_TIMEOUT,write.send(control)).await
+                            timeout(crate::channel::WRITE_TIMEOUT,write.send(control)).await
                                 .map_err(|_| unavailable("control write deadline"))?.map_err(|_| unavailable("control write failed"))?;
                         }
                         output = rx.recv() => {
@@ -39,7 +39,7 @@ pub(super) fn open(socket: super::super::super::channel::Socket) -> Arc<Connecti
                                 if let (Some(shared),Some(id)) = (writer_weak.upgrade(),output.id) { shared.fail(id,error); }
                                 continue;
                             }
-                            timeout(super::super::super::channel::WRITE_TIMEOUT,write.send(Message::text(output.text))).await
+                            timeout(crate::channel::WRITE_TIMEOUT,write.send(Message::text(output.text))).await
                                 .map_err(|_| unavailable("network write deadline; acceptance may be unknown"))?.map_err(|_| unavailable("network write failed; acceptance may be unknown"))?;
                         }
                     }

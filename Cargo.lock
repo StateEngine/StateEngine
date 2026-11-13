@@ -1548,6 +1548,7 @@ dependencies = [
  "se-atlas",
  "se-core",
  "se-proc",
+ "se-remote",
  "se-store",
  "se-types",
  "secode-stateengine-api",
@@ -1576,6 +1577,21 @@ dependencies = [
  "sha2",
  "windows-sys 0.61.2",
  "zeroize",
+]
+
+[[package]]
+name = "se-remote"
+version = "0.0.1"
+dependencies = [
+ "futures-util",
+ "se-core",
+ "se-proc",
+ "se-store",
+ "se-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
