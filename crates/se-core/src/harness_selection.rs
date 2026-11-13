@@ -120,20 +120,14 @@ pub fn resolve(
                     return Err(SeError::new(se_types::Detail::FeatureUnavailable(
                         se_types::details::FeatureUnavailable {
                             subject: format!("harness {name}"),
-                            reason:
-                                "the installed catalogue entry has not been configured in this home"
-                                    .into(),
+                            reason: "installed harness is not configured in this home".into(),
                             next_step: format!(
                                 "Run se init --harness {name} for a new agent from the project owner's terminal with the same --home, then retry this operation."
                             ),
                         },
                     )));
                 }
-                configuration.harness(name)?;
-                return Err(SeError::invalid(
-                    "harness choice",
-                    "a listed provider or descriptor",
-                ));
+                return Err(SeError::invalid("harness", "select a listed harness"));
             }
         };
         Selection::Provider { provider }
