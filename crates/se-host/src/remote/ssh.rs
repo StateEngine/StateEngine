@@ -6,6 +6,7 @@ mod authorization;
 mod bootstrap;
 mod command;
 mod image;
+mod image_commands;
 mod prepare;
 mod staging;
 pub(crate) use authorization::launch_permissions;

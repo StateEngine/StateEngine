@@ -74,7 +74,7 @@ pub(super) async fn describe(destination: &str, distribution: &Path) -> Result<I
         ));
     }
     let mut digest = Sha256::new();
-    let mut buffer = [0u8; 65536];
+    let mut buffer = vec![0u8; 1024 * 1024];
     let mut total = 0u64;
     loop {
         let n = file

@@ -58,7 +58,10 @@ pub(super) async fn ssh(destination: &str, command: String) -> Result<(bool, Vec
 pub(super) fn verification_error(bytes: &[u8]) -> SeError {
     if let Some(mode) = std::str::from_utf8(bytes)
         .ok()
-        .and_then(|text| text.trim().strip_prefix("unsafe-mode:"))
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("unsafe-mode:"))
+        })
         .and_then(|mode| u16::from_str_radix(mode, 8).ok())
         .filter(|mode| *mode <= 0o7777)
     {

@@ -41,19 +41,7 @@ pub async fn prepare_image(
     if cancelled.load(Ordering::Acquire) {
         return Err(unavailable("remote image preparation was cancelled"));
     }
-    if !ssh(
-        destination,
-        staging::prepare(&image.directory(), image.windows, image.apple),
-    )
-    .await?
-    .0
-    {
-        return Err(unavailable(
-            "remote runtime cache ownership or permissions refused; preserve unsafe paths and restore an account-owned directory without foreign write access",
-        ));
-    }
-    let verify = staging::verify(&image.remote(), &image.digest, image.windows, image.apple);
-    if ssh(destination, verify.clone()).await?.0 {
+    if cached_image(destination, &image).await? {
         progress(ImageProgress {
             stage: ImageStage::Cached,
             bytes_streamed: 0,
@@ -80,36 +68,14 @@ pub async fn prepare_image(
             total_bytes: Some(image.expected),
             elapsed_ms: 0,
         })?;
-        let (verified, detail) = ssh(
-            destination,
-            staging::verify(&upload, &image.digest, image.windows, image.apple),
-        )
-        .await?;
-        if !verified {
-            return Err(super::command::verification_error(&detail));
-        }
-        // Never overwrite an incumbent; a concurrent uploader may publish first.
-        let _published = ssh(
-            destination,
-            staging::publish(&upload, &image.remote(), image.windows),
-        )
-        .await?;
-        let (verified, detail) = ssh(destination, verify).await?;
-        if !verified {
-            return Err(super::command::verification_error(&detail));
-        }
-        Ok(())
+        publish_image(destination, &image, &upload).await
     }
     .await;
-    let cleanup = ssh(destination, staging::remove(&upload, image.windows)).await;
-    match (result, cleanup) {
-        (Err(error), _) => return Err(error),
-        (Ok(()), Ok((true, _))) => (),
-        (Ok(()), _) => {
-            return Err(unavailable(
-                "native image verified, but its owned upload cleanup is incomplete; retry setup with the original machine name",
-            ));
-        }
+    if let Err(error) = result {
+        // A lost response or cancelled stream leaves no cleanup witness. Retry
+        // removal of this invocation's nonce only; retain the original refusal.
+        let _cleanup = ssh(destination, staging::remove(&upload, image.windows)).await;
+        return Err(error);
     }
     progress(ImageProgress {
         stage: ImageStage::Ready,
@@ -118,4 +84,91 @@ pub async fn prepare_image(
         elapsed_ms: 0,
     })?;
     Ok(())
+}
+
+fn cleanup_incomplete() -> se_types::SeError {
+    unavailable(
+        "native image verified, but its owned upload cleanup is incomplete; retry setup with the original machine name",
+    )
+}
+
+async fn cached_image(destination: &str, image: &super::image::Image) -> Result<bool> {
+    // Windows retains its existing encoded commands. Nesting their encodings
+    // inside a batch can exceed the native command interpreter's length bound.
+    if image.windows {
+        if !ssh(
+            destination,
+            staging::prepare(&image.directory(), true, false),
+        )
+        .await?
+        .0
+        {
+            return Err(unsafe_cache());
+        }
+        return Ok(ssh(
+            destination,
+            staging::verify(&image.remote(), &image.digest, true, false),
+        )
+        .await?
+        .0);
+    }
+    let (cached, detail) = ssh(
+        destination,
+        image_commands::cached(
+            &image.directory(),
+            &image.remote(),
+            &image.digest,
+            image.apple,
+        ),
+    )
+    .await?;
+    if !detail.starts_with(image_commands::CACHE_PREPARED) {
+        return Err(unsafe_cache());
+    }
+    Ok(cached)
+}
+
+async fn publish_image(destination: &str, image: &super::image::Image, upload: &str) -> Result<()> {
+    if image.windows {
+        verify_image(destination, image, upload).await?;
+        let _published = ssh(destination, staging::publish(upload, &image.remote(), true)).await?;
+        verify_image(destination, image, &image.remote()).await?;
+        return match ssh(destination, staging::remove(upload, true)).await {
+            Ok((true, _)) => Ok(()),
+            _ => Err(cleanup_incomplete()),
+        };
+    }
+    let (verified, detail) = ssh(
+        destination,
+        image_commands::publish(upload, &image.remote(), &image.digest, image.apple),
+    )
+    .await?;
+    if verified {
+        return Ok(());
+    }
+    if image_commands::has_marker(&detail, image_commands::CLEANUP_FAILED)
+        && !image_commands::has_marker(&detail, image_commands::VERIFY_FAILED)
+    {
+        return Err(cleanup_incomplete());
+    }
+    Err(super::command::verification_error(&detail))
+}
+
+async fn verify_image(destination: &str, image: &super::image::Image, path: &str) -> Result<()> {
+    let (verified, detail) = ssh(
+        destination,
+        staging::verify(path, &image.digest, image.windows, image.apple),
+    )
+    .await?;
+    if verified {
+        Ok(())
+    } else {
+        Err(super::command::verification_error(&detail))
+    }
+}
+
+fn unsafe_cache() -> se_types::SeError {
+    unavailable(
+        "remote runtime cache ownership or permissions refused; preserve unsafe paths and restore an account-owned directory without foreign write access",
+    )
 }
