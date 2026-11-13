@@ -17,13 +17,17 @@ use std::{
 };
 use windows_sys::Win32::{
     Security::{Authorization::*, *},
-    System::{SystemServices::ACCESS_DENIED_ACE_TYPE, Threading::*},
+    System::{
+        SystemServices::{ACCESS_DENIED_ACE_TYPE, SE_GROUP_ENABLED, SE_GROUP_USE_FOR_DENY_ONLY},
+        Threading::*,
+    },
 };
 
 mod permission_repair;
 
 struct User {
     storage: Vec<usize>,
+    token: OwnedHandle,
 }
 impl User {
     fn current(path: &Path) -> Result<Self> {
@@ -50,11 +54,12 @@ impl User {
         }
         let mut user = Self {
             storage: vec![0; (length as usize).div_ceil(size_of::<usize>())],
+            token,
         };
         // SAFETY: aligned owned buffer has exactly the capacity reported by the token API.
         if unsafe {
             GetTokenInformation(
-                token.as_raw_handle(),
+                user.token.as_raw_handle(),
                 TokenUser,
                 user.storage.as_mut_ptr().cast(),
                 length,
@@ -74,6 +79,68 @@ impl User {
     fn text(&self, path: &Path) -> Result<String> {
         crate::windows_native::sid_text(self.sid())
             .map_err(|e| io_error(e.operation, path, e.source))
+    }
+    fn enabled_group(&self, group: PSID, path: &Path) -> Result<bool> {
+        let offset = std::mem::offset_of!(TOKEN_GROUPS, Groups);
+        let mut length = 0;
+        // SAFETY: retained process token and documented null-buffer sizing call.
+        unsafe {
+            GetTokenInformation(
+                self.token.as_raw_handle(),
+                TokenGroups,
+                ptr::null_mut(),
+                0,
+                &mut length,
+            );
+        }
+        if (length as usize) < offset {
+            return Err(last("size process token groups", path));
+        }
+        let mut storage = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
+        let capacity = length;
+        // SAFETY: aligned retained buffer has the capacity reported by the token API.
+        if unsafe {
+            GetTokenInformation(
+                self.token.as_raw_handle(),
+                TokenGroups,
+                storage.as_mut_ptr().cast(),
+                capacity,
+                &mut length,
+            )
+        } == 0
+        {
+            return Err(last("read process token groups", path));
+        }
+        if length > capacity || (length as usize) < offset {
+            return Err(unsafe_path("incomplete native process token groups", path));
+        }
+        // SAFETY: successful native output contains the TOKEN_GROUPS header.
+        let count = unsafe { (*storage.as_ptr().cast::<TOKEN_GROUPS>()).GroupCount } as usize;
+        let end = count
+            .checked_mul(size_of::<SID_AND_ATTRIBUTES>())
+            .and_then(|bytes| offset.checked_add(bytes));
+        if end.is_none_or(|end| end > length as usize) {
+            return Err(unsafe_path(
+                "process token group array exceeds native output",
+                path,
+            ));
+        }
+        // SAFETY: checked native array extent and alignment; storage retains every SID.
+        let groups = unsafe {
+            std::slice::from_raw_parts(
+                storage
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(offset)
+                    .cast::<SID_AND_ATTRIBUTES>(),
+                count,
+            )
+        };
+        Ok(groups.iter().any(|entry| {
+            entry.Attributes & SE_GROUP_ENABLED as u32 != 0
+                && entry.Attributes & SE_GROUP_USE_FOR_DENY_ONLY as u32 == 0
+                && equal(entry.Sid, group)
+        }))
     }
 }
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -205,10 +272,20 @@ pub(in crate::state_files) fn verify_owner(file: &File, path: &Path) -> Result<(
     let user = User::current(path)?;
     let descriptor = security(file, path, false)?;
     let owner = descriptor.owner;
-    if !equal(owner, user.sid()) {
-        return Err(unsafe_path("file owner differs from current OS user", path));
+    if equal(owner, user.sid()) {
+        return Ok(());
     }
-    Ok(())
+    // Elevated applications can create files owned by Administrators. Membership
+    // must be enabled in this process token; filtered/deny-only membership grants
+    // no ownership authority. Other groups and SYSTEM never qualify here.
+    let administrators = sid("S-1-5-32-544", path)?;
+    if equal(owner, administrators.0) && user.enabled_group(administrators.0, path)? {
+        return Ok(());
+    }
+    Err(unsafe_path(
+        "file owner is not current user or enabled Administrators; have a Windows administrator assign ownership to your account, then retry",
+        path,
+    ))
 }
 pub(crate) fn verify(
     file: &File,
