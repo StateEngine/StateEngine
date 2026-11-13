@@ -65,12 +65,12 @@ def read(path):
         return None, 'unreadable or invalid: ' + str(error)
 
 
-def native(directory, source_commit, manifest_sha256, expected):
+def native(directory, source_commit, manifest_sha256, expected, cycle):
     result, error = read(directory / 'results.json')
     require(error is None, 'results.json: ' + str(error))
     require(result.get('schema') == 'se.harness-matrix/v1'
             and result.get('platform') in PLATFORMS
-            and result.get('source_commit') == source_commit
+            and result.get('source_commit') == source_commit and result.get('cycle') == cycle
             and result.get('manifest_sha256') == manifest_sha256
             and result.get('runner_sha256') == runner_files(),
             'matrix receipt identity differs from the selected run')
@@ -106,7 +106,7 @@ def verify_cell(directory, row, result, source_commit, manifest_sha256):
                 'invalid native phase result')
     if row['result'] == 'PASS':
         require(receipt.get('state') == 'finished'
-                and receipt.get('source_commit') == source_commit
+                and receipt.get('source_commit') == source_commit and receipt.get('cycle') == result['cycle']
                 and receipt.get('manifest_sha256') == manifest_sha256
                 and receipt.get('build_sha256') == result.get('build_sha256')
                 and receipt.get('runner_sha256') == result['runner_sha256']
@@ -123,14 +123,14 @@ def verify_cell(directory, row, result, source_commit, manifest_sha256):
                 reason=row.get('reason', row.get('failure')))
 
 
-def summarize(inputs, source_commit, manifest_sha256, expected):
+def summarize(inputs, source_commit, manifest_sha256, expected, cycle):
     require(expected and len(set(expected)) == len(expected)
             and all(isinstance(name, str) and name and '/' not in name and '\\' not in name
                     and name not in ('.', '..') for name in expected), 'invalid expected harness ids')
     platforms, errors = {}, []
     for directory in inputs:
         try:
-            platform, values, finished = native(directory, source_commit, manifest_sha256, expected)
+            platform, values, finished = native(directory, source_commit, manifest_sha256, expected, cycle)
             require(platform not in platforms, 'duplicate native platform receipt')
             platforms[platform] = values
             if not finished:
@@ -145,7 +145,7 @@ def summarize(inputs, source_commit, manifest_sha256, expected):
     passed = not errors and all(cell['result'] == 'PASS' for row in rows for cell in row['platforms'].values())
     failed = bool(errors) or any(cell['result'] in ('FAIL', 'UNREADABLE') for row in rows for cell in row['platforms'].values())
     return dict(schema='se.harness-matrix-summary/v1', source_commit=source_commit,
-                manifest_sha256=manifest_sha256, runner_sha256=runner_files(),
+                manifest_sha256=manifest_sha256, runner_sha256=runner_files(), cycle=cycle,
                 result='PASS' if passed else 'FAIL' if failed else 'INCOMPLETE', errors=errors,
                 qualification='smoke-only; clean-machine and performance qualification unassessed', rows=rows)
 
@@ -160,6 +160,7 @@ def markdown(summary):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--cycle', required=True)
     parser.add_argument('--input', type=Path, action='append', default=[])
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--manifest-sha256', required=True)
@@ -167,7 +168,7 @@ def main():
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     args.out.mkdir(mode=0o700, parents=True, exist_ok=False)
-    summary = summarize(args.input, args.source_commit, args.manifest_sha256, args.expected)
+    summary = summarize(args.input, args.source_commit, args.manifest_sha256, args.expected, args.cycle)
     save(args.out / 'matrix.json', summary)
     (args.out / 'matrix.md').write_text(markdown(summary), encoding='utf-8')
     return 0 if summary['result'] == 'PASS' else 1

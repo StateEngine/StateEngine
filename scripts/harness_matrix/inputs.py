@@ -105,8 +105,8 @@ def preflight(entry):
         require(isinstance(seed_files, dict)
                 and set(seed_files) == {'secode.jsonc', 'provider.credential', 'account-models.json'},
                 'Exact private seed file identities are required')
-        for name, expected_digest in seed_files.items():
-            path = plain_file(str(root / name), 'Private seed input')
+        for seed_name, expected_digest in seed_files.items():
+            path = plain_file(str(root / seed_name), 'Private seed input')
             require(path.stat().st_size <= 16 * 1024**2 and digest(path) == expected_digest,
                     'Private seed input digest or size differs')
     images = settings.get('images')

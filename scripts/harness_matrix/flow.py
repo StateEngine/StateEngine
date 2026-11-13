@@ -150,8 +150,10 @@ class Smoke:
                      else ['sh', self.package / 'install.sh'])
         self.commands.run(installer, 'install')
         manifest = json.loads((self.package / 'manifest.json').read_text())
+        build = json.loads((self.package / 'build.json').read_text())
         source_binary = 'se.exe' if sys.platform == 'win32' else 'se'
-        require(digest(self.binary) == manifest['files'][source_binary]['sha256'],
+        require(digest(self.binary) == manifest['files'][source_binary]['sha256']
+                == build['files'][source_binary],
                 'Installed CLI differs from the selected package')
         configuration = Path(self.settings['configuration']['path'])
         require(digest(configuration) == self.settings['configuration']['sha256'],

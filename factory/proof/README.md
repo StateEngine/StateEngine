@@ -225,7 +225,8 @@ matrix runner.
 Coverage and the input digest are recorded before building. The scheduler copies
 those exact input bytes for execution and rejects a changed plan. Linux runs use
 tonight's exact native product bundle; imported Windows and macOS directories
-must name that same product commit, input digest, runner file inventory and ordered harness list. An
+must name that same product commit, input digest, runner file inventory, unique nightly attempt identity and ordered
+harness list. An
 older native report cannot fill a missing cell. Each harness needs launch, file
 work, mail and conversation resume evidence, followed by native process closure.
 

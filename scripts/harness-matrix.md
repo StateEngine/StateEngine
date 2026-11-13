@@ -22,6 +22,7 @@ Raw results contain conversation text and must not be published.
 
 ```sh
 python3 scripts/harness-matrix.py \
+  --cycle UNIQUE_ATTEMPT_ID \
   --package /absolute/extracted-native-distribution \
   --source-commit FULL_SOURCE_COMMIT \
   --manifest /absolute/private-matrix-input.json \
@@ -74,10 +75,12 @@ After successful file work, a failed mail exchange does not prevent an independe
 resume attempt; each phase retains its own outcome.
 
 For a combined report, provide native result directories for the same exact product
-source, input-manifest digest, exact runner files and ordered harness list:
+source, unique cycle identity, input-manifest digest, exact runner files and
+ordered harness list:
 
 ```sh
 python3 scripts/harness-matrix-report.py \
+  --cycle UNIQUE_ATTEMPT_ID \
   --input /absolute/linux-results --input /absolute/windows-results \
   --input /absolute/macos-results \
   --source-commit FULL_SOURCE_COMMIT --manifest-sha256 INPUT_MANIFEST_SHA256 \

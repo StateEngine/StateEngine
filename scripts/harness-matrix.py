@@ -23,6 +23,7 @@ PLATFORMS = {'linux': 'unknown-linux', 'darwin': 'apple-darwin', 'win32': 'pc-wi
 
 
 def execute(args):
+    require(re.fullmatch(r'[A-Za-z0-9_.:+-]{1,128}', args.cycle), 'An explicit bounded cycle identity is required')
     require(sys.platform in PLATFORMS, 'This platform has no native observer')
     require(re.fullmatch(r'[a-f0-9]{40}', args.source_commit), 'An exact source commit is required')
     forbidden = [key for key in os.environ if key == 'SE_SESSION' or key.startswith(('STATEENGINE_', 'SECODE_'))]
@@ -38,7 +39,7 @@ def execute(args):
     require(PLATFORMS[sys.platform] in metadata.get('target', ''), 'Package is for a different native platform')
     args.out.mkdir(mode=0o700, parents=True, exist_ok=False)
     record = dict(schema='se.harness-matrix/v1', source_commit=args.source_commit,
-                  platform=sys.platform, manifest_sha256=digest(args.manifest),
+                  platform=sys.platform, cycle=args.cycle, manifest_sha256=digest(args.manifest),
                   build_sha256=digest(args.package / 'build.json'), runner_sha256=runner_files(),
                   qualification='smoke-only; clean-machine and performance qualification unassessed',
                   expected=[row['id'] for row in entries], state='running', result='NOT RUN',
@@ -53,7 +54,7 @@ def execute(args):
         save(args.out / 'results.json', record)
         try:
             settings, observation = preflight(entry)
-        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+        except Exception as error:
             state = error.state if isinstance(error, Unavailable) else ('ABSENT' if isinstance(error, FileNotFoundError)
                     else 'UNREADABLE' if isinstance(error, PermissionError) else 'FAIL')
             row.update(state='finished', result=state, reason=str(error))
@@ -64,7 +65,8 @@ def execute(args):
                 smoke = Smoke(output, args.package, entry, settings, os.environ)
                 smoke.record.update(inputs=observation, source_commit=args.source_commit,
                                     manifest_sha256=record['manifest_sha256'],
-                                    build_sha256=record['build_sha256'], runner_sha256=record['runner_sha256'])
+                                    build_sha256=record['build_sha256'], runner_sha256=record['runner_sha256'],
+                                    cycle=args.cycle)
                 row.update(smoke.run())
             except (InterruptedRun, KeyboardInterrupt) as error:
                 if smoke is not None:
@@ -85,6 +87,7 @@ def execute(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--cycle', required=True, help='unique attempt identity shared by native platform receipts')
     parser.add_argument('--package', type=Path, required=True, help='extracted native distribution')
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--manifest', type=Path, required=True, help='private pinned harness inputs; no secret values')

@@ -58,7 +58,7 @@ def run(config, record, directory, source, bundle, env, deadline, checkpoint):
         raise ValueError('matrix input changed after tonight’s plan was recorded')
     copied.write_bytes(raw)
     stage.update(expected=expected, manifest_sha256=digest(copied),
-                 source_commit=record['product']['commit'])
+                 source_commit=record['product']['commit'], cycle=record['started_at'])
     checkpoint()
     matrix_env = dict(env)
     # Only names enter configuration and receipts; credential values are not retained.
@@ -78,7 +78,7 @@ def run(config, record, directory, source, bundle, env, deadline, checkpoint):
     if seconds <= 1:
         raise RuntimeError('matrix deadline reached before execution')
     argv = [sys.executable, '-B', str(source / 'scripts/harness-matrix.py'),
-            '--package', str(bundle), '--source-commit', stage['source_commit'],
+            '--cycle', stage['cycle'], '--package', str(bundle), '--source-commit', stage['source_commit'],
             '--manifest', str(copied), '--out', str(output)]
     with (directory / 'harness-matrix.log').open('xb') as log:
         child = subprocess.Popen(argv, env=matrix_env, stdin=subprocess.DEVNULL,
@@ -114,7 +114,7 @@ def run(config, record, directory, source, bundle, env, deadline, checkpoint):
     checkpoint()
     inputs = [output, *[Path(path) for path in selected.get('native_results', [])]]
     argv = [sys.executable, '-B', str(source / 'scripts/harness-matrix-report.py'),
-            '--source-commit', stage['source_commit'], '--manifest-sha256', stage['manifest_sha256'],
+            '--cycle', stage['cycle'], '--source-commit', stage['source_commit'], '--manifest-sha256', stage['manifest_sha256'],
             '--expected', *expected, '--out', str(directory / 'harness-matrix-report')]
     for path in inputs:
         argv += ['--input', str(path)]
@@ -144,6 +144,7 @@ def observation(record, directory):
         value = json.loads(path.read_text())
         if (value.get('schema') != 'se.harness-matrix-summary/v1'
                 or value.get('source_commit') != (record.get('product') or {}).get('commit')
+                or value.get('cycle') != stage.get('cycle')
                 or value.get('manifest_sha256') != stage.get('manifest_sha256')
                 or value.get('runner_sha256') != stage.get('runner_sha256')
                 or not isinstance(value.get('rows'), list)
