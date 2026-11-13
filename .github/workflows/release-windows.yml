@@ -1,0 +1,126 @@
+name: Native Windows release payload
+run-name: Native Windows payload ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character commit to build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-windows-payload-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  payload:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      RELEASE_ROOT: ${{ runner.temp }}/stateengine-windows-release
+      CARGO_TARGET_DIR: ${{ runner.temp }}/stateengine-windows-release/target
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Require an exact source commit
+        run: |
+          if ($env:SOURCE_SHA -cnotmatch '\A[0-9a-f]{40}\z') {
+            throw 'source_sha must be an exact lowercase 40-character Git commit'
+          }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Read the checked-out source and pinned toolchain
+        id: source
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import subprocess
+          import tomllib
+
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if commit != os.environ['SOURCE_SHA']:
+              raise RuntimeError('checkout differs from the requested source commit')
+          channel = tomllib.loads(Path('rust-toolchain.toml').read_text())['toolchain']['channel']
+          if not isinstance(channel, str) or not channel or '\n' in channel or '\r' in channel:
+              raise RuntimeError('source toolchain channel is invalid')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as output:
+              output.write(f'commit={commit}\ntoolchain={channel}\n')
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.source.outputs.toolchain }}
+          components: rust-docs, llvm-tools-preview
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Build the native pinned release
+        run: |
+          python -B scripts/release/build.py --target x86_64-pc-windows-msvc --out "$env:RELEASE_ROOT/build" --target-dir "$env:CARGO_TARGET_DIR"
+
+      - name: Assemble the native payload
+        run: |
+          python -B scripts/release/assemble.py --native-only --build "$env:RELEASE_ROOT/build" --out "$env:RELEASE_ROOT/archive" --payload-out "$env:RELEASE_ROOT/payload"
+
+      - name: Bind the payload and uploaded files to their checksums
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ['RELEASE_ROOT'])
+          build = json.loads((root / 'build/build.json').read_bytes())
+          manifest_path = root / 'payload/native-payload.json'
+          payload = json.loads(manifest_path.read_bytes())
+          source = os.environ['SOURCE_SHA']
+          target = 'x86_64-pc-windows-msvc'
+          if build['source_commit'] != source or payload['source_commit'] != source:
+              raise RuntimeError('release artifacts do not match the requested source')
+          if build['target'] != target or payload['target'] != target:
+              raise RuntimeError('release artifacts do not name the native Windows target')
+
+          def digest(path):
+              with path.open('rb') as stream:
+                  return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+          pin = {'manifest_sha256': digest(manifest_path), 'version': payload['version'],
+                 'source_commit': source}
+          pin_path = root / 'payload-pin.json'
+          pin_path.write_text(json.dumps(pin, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+          files = sorted(path for path in (root / 'payload').rglob('*') if path.is_file())
+          files += [root / 'build/build.json', pin_path]
+          checksums = ''.join(f'{digest(path)}  {path.relative_to(root).as_posix()}\n'
+                              for path in sorted(files))
+          (root / 'SHA256SUMS').write_text(checksums, encoding='utf-8', newline='\n')
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stateengine-native-payload-windows-${{ steps.source.outputs.commit }}
+          path: |
+            ${{ env.RELEASE_ROOT }}/payload/
+            ${{ env.RELEASE_ROOT }}/build/build.json
+            ${{ env.RELEASE_ROOT }}/payload-pin.json
+            ${{ env.RELEASE_ROOT }}/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
