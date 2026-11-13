@@ -118,6 +118,8 @@ pub(super) fn resolve_package(
     ] {
         let candidate = vendor.join(target).join("bin/codex.exe");
         if native_image(&candidate)? {
+            #[cfg(windows)]
+            let candidate = se_proc::canonicalize_path(&candidate)?;
             return Ok(Some((candidate, Some(package))));
         }
     }
