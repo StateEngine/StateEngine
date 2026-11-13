@@ -1,6 +1,8 @@
 //! Closed remote-security transitions over the existing authoritative writer.
 mod apply;
 mod changes;
+mod launch_inventory;
+mod launch_permission;
 mod model;
 mod position;
 mod receipt;
@@ -12,6 +14,7 @@ mod target;
 pub use changes::{Change, ChangeKind, ChangePage, ChangeRequest};
 mod validate;
 pub(crate) use apply::{apply, revision};
+pub use launch_inventory::{LaunchCandidate, SavedLaunchProfile};
 pub use model::*;
 pub use target::TargetFacts;
 pub(crate) use validate::{validate_batch, validate_new_batch};

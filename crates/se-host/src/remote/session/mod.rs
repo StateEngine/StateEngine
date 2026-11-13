@@ -1,5 +1,7 @@
 //! Protected machine sessions over the existing host writer.
 #[cfg(feature = "remote")]
+mod launch_permission;
+#[cfg(feature = "remote")]
 mod store;
 #[cfg(feature = "remote")]
 pub(crate) use se_remote::entropy;

@@ -103,6 +103,7 @@ impl SecurityStore {
             SecurityTransition::Renew { .. } => "remote.lease.renew",
             SecurityTransition::Revoke { .. } => "remote.grant.revoke",
             SecurityTransition::RevokeAll => "remote.grants.revoke-all",
+            SecurityTransition::LaunchPermission { .. } => "remote.launch.permission",
         };
         let original_key = key.clone();
         let batch = AtomicBatch {

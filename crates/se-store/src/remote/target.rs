@@ -91,7 +91,7 @@ impl ReadPhase {
         self.client_target_facts(target)
     }
 
-    fn client_target_facts(&self, target: &RemoteTarget) -> StoreResult<TargetFacts> {
+    pub(super) fn client_target_facts(&self, target: &RemoteTarget) -> StoreResult<TargetFacts> {
         let p = crate::identity::key(&self.db, "project", target.project.as_str(), &[0], false)?;
         let mut namespace = vec![1];
         namespace.extend_from_slice(&p);

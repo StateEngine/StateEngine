@@ -27,6 +27,9 @@ pub(crate) fn revision(c: &Connection, event: &NewEvent) -> StoreResult<u64> {
         SecurityTransition::Renew { grant, .. } | SecurityTransition::Revoke { grant, .. } => {
             next(c, "remote_grants", "grant_id", grant.as_str())
         }
+        SecurityTransition::LaunchPermission { change } => {
+            launch_permission::revision(c, &change.grant, &change.target)
+        }
         SecurityTransition::RevokeAll => Ok(1),
     }
 }
@@ -150,6 +153,9 @@ pub(crate) fn apply(
             if n != 1 {
                 return Err(denied());
             }
+        }
+        SecurityTransition::LaunchPermission { change } => {
+            launch_permission::apply(c, change, seq, revision, recorded)?
         }
         SecurityTransition::RevokeAll => {
             c.execute("UPDATE remote_grants SET state='revoked',authority_revision=authority_revision+1,revision=revision+1,last_seq=? WHERE state='active'",[seq]).map_err(sql)?;

@@ -40,7 +40,9 @@ pub struct GrantRecord {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SecurityTransition {
     /// Protected native SSH bootstrap; machine authority is not an agent identity.
-    Connect { grant: Box<GrantRecord> },
+    Connect {
+        grant: Box<GrantRecord>,
+    },
     Renew {
         grant: RemoteGrantId,
         authority_revision: Revision,
@@ -50,6 +52,9 @@ pub enum SecurityTransition {
     Revoke {
         grant: RemoteGrantId,
         expected: Revision,
+    },
+    LaunchPermission {
+        change: LaunchPermissionChange,
     },
     /// Existing Owner credential rotation/restore calls this before accepting clients.
     RevokeAll,
@@ -67,4 +72,22 @@ pub struct MessageAttribution {
     pub target: RemoteTarget,
     pub expected_session: SessionId,
     pub attribution: RemoteAttribution,
+}
+
+/// Separate consent keeps the machine grant's original verbs and targets intact.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchPermissionChange {
+    pub grant: RemoteGrantId,
+    pub target: RemoteTarget,
+    pub allowed: bool,
+    pub expected: Option<Revision>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchPermission {
+    pub grant: RemoteGrantId,
+    pub target: RemoteTarget,
+    pub allowed: bool,
+    pub revision: Revision,
 }

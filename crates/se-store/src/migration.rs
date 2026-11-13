@@ -9,7 +9,7 @@ struct Step {
     sql: &'static str,
     table_rebuild: bool,
 }
-const STEPS: [Step; 9] = [
+const STEPS: [Step; 10] = [
     Step {
         version: 2,
         sql: include_str!("../migrations/002.sql"),
@@ -53,6 +53,11 @@ const STEPS: [Step; 9] = [
     Step {
         version: 10,
         sql: include_str!("../migrations/010.sql"),
+        table_rebuild: false,
+    },
+    Step {
+        version: 12,
+        sql: include_str!("../migrations/012.sql"),
         table_rebuild: false,
     },
 ];
