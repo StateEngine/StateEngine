@@ -43,7 +43,7 @@
   "crates/se-proc/src/atlas_worker": 2392,
   "crates/se-host/src/acp": 2403,
   "crates/se-store/src/codec": 2348,
-  "crates/se-host/src/harness/secode_process": 1931,
+  "crates/se-host/src/harness/secode_process": 2248,
   "crates/se-host/src/harness/secode_image": 879,
   "crates/se-host/src/atlas_runtime": 2080,
   "crates/se-host/src/http": 2048,
