@@ -1,16 +1,16 @@
 """Charge every live container against one shared memory budget.
 
 The two paired runner slots are separate processes of the same account, so the
-budget cannot live in one process. Each holder records its reservation in a
-per-account directory, and admission sums every live record before it charges
-one more. The other entry point takes the maintenance lock exclusively while a
-slot takes it shared, so no third process can hold a reservation beside a slot;
-only the two slots are ever live together, and they share this directory.
+budget cannot live in one process. Each charge is recorded in a per-account
+directory, and admission sums every live charge before it adds one more.
 
-A holder is live only while its exact process and thread exist in this boot, so
-a crash or a dead thread stops charging without a separate delete pass. A
-holder runs one bounded container at a time, so asking again replaces that
-holder's own charge instead of adding a second one.
+A charge outlives the process that made it, because the container it stands for
+can outlive that process. A charge is live until the existing custody closure
+proof retires the exact container -- `Journal.closed` after removal, or the same
+check during restart reconciliation -- so an uncertain cleanup or a dead
+controller keeps the memory counted instead of handing it to the peer slot. A
+charge made without a container (a bare capacity probe) has nothing to outlive
+and ends with the process or thread that made it.
 """
 from contextlib import contextmanager
 import fcntl
@@ -23,7 +23,7 @@ import threading
 
 BOOT = Path("/proc/sys/kernel/random/boot_id")
 BOUND = 4096
-FIELDS = {"pid", "tid", "birth", "boot", "memory"}
+FIELDS = {"pid", "tid", "birth", "boot", "memory", "container"}
 
 
 def read(path):
@@ -46,7 +46,7 @@ def birth(pid, tid):
 
 
 def holder():
-    """The exact live execution that owns a reservation."""
+    """The exact live execution making a charge."""
     pid, tid = os.getpid(), threading.get_native_id()
     return {"pid": pid, "tid": tid, "birth": birth(pid, tid), "boot": boot()}
 
@@ -60,13 +60,19 @@ def folder():
     return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".stateengine-ci-admission"
 
 
-def live(row):
+def holder_live(row):
     if row["boot"] != boot() or not Path("/proc", str(row["pid"])).is_dir():
         return False
     try:
         return birth(row["pid"], row["tid"]) == row["birth"]
     except (OSError, IndexError, ValueError):
         return False
+
+
+def live(row):
+    # A container-backed charge is live until closure retires it, whatever
+    # became of its admitting process. Only a bare probe ends with its holder.
+    return True if row["container"] is not None else holder_live(row)
 
 
 def records(directory):
@@ -83,7 +89,8 @@ def records(directory):
             os.close(fd)
         if (not isinstance(row, dict) or set(row) != FIELDS
                 or any(type(row[name]) is not int for name in ("pid", "tid", "birth", "memory"))
-                or not isinstance(row["boot"], str) or row["memory"] <= 0):
+                or not isinstance(row["boot"], str) or row["memory"] <= 0
+                or not (row["container"] is None or isinstance(row["container"], str))):
             raise RuntimeError("CI admission record is malformed")
         rows.append((path, row))
     return rows
@@ -103,17 +110,18 @@ def locked(directory):
         os.close(fd)
 
 
-def write(directory, mine, memory):
-    temporary = directory / f"{mine['pid']}-{mine['tid']}.tmp"
+def write(directory, mine, memory, container):
+    name = f"{mine['pid']}-{mine['tid']}"
+    temporary = directory / (name + ".tmp")
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as out:
-        json.dump({**mine, "memory": memory}, out)
+        json.dump({**mine, "memory": memory, "container": container}, out)
         out.flush()
         os.fsync(out.fileno())
-    os.replace(temporary, directory / f"{mine['pid']}-{mine['tid']}.json")
+    os.replace(temporary, directory / (name + ".json"))
 
 
-def reserve(memory, available, margin):
+def reserve(memory, available, margin, container=None):
     """Charge `memory` beside every live peer, or refuse before anything starts."""
     directory = folder()
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -123,26 +131,36 @@ def reserve(memory, available, margin):
         raise RuntimeError("CI admission directory is not private to this account")
     mine = holder()
     with locked(directory):
-        peers = 0
+        peers, held = 0, []
         for path, row in records(directory):
+            if (row["pid"], row["tid"]) == (mine["pid"], mine["tid"]):
+                # This holder names one charge. It may replace its own bare
+                # probe, but never a retained charge for a container whose
+                # closure it has not proved.
+                if row["container"] is not None and row["container"] != container:
+                    raise RuntimeError(
+                        "this execution still holds a charge for an unclosed container")
+                continue
             if not live(row):
                 path.unlink()
-            elif (row["pid"], row["tid"]) != (mine["pid"], mine["tid"]):
+            else:
                 peers += row["memory"]
+                held.append(row["container"] or f"probe {row['pid']}")
         if peers + memory + margin > available:
             raise RuntimeError(
                 f"infrastructure unavailable: preserve 6 GiB after bounded allocation; "
-                f"a paired peer already reserved {peers} bytes and this job needs {memory}, "
+                f"{', '.join(held)} already hold {peers} bytes and this job needs {memory}, "
                 f"leaving under the {margin}-byte margin out of {available} available")
-        write(directory, mine, memory)
-    return mine
+        write(directory, mine, memory, container)
 
 
-def release(mine):
-    """Drop exactly the charge its holder made, once that container is gone."""
-    if not mine:
-        return
+def retire(container):
+    """Drop the charge for one container, only once its closure is proved."""
     try:
-        (folder() / f"{mine['pid']}-{mine['tid']}.json").unlink()
+        directory = folder()
+        with locked(directory):
+            for path, row in records(directory):
+                if row["container"] == container:
+                    path.unlink()
     except FileNotFoundError:
         pass

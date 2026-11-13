@@ -1,10 +1,12 @@
 """Exercise actual memory admission at the reserved allocation boundary."""
 import multiprocessing as mp
+import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
+import admission
 import engine
 
 GIB = 1024 ** 3
@@ -69,8 +71,8 @@ class MemoryAdmissionReview(unittest.TestCase):
                     engine.capacity(18 * GIB)
 
     def test_paired_slots_in_separate_processes_share_one_budget(self):
-        # The real topology is two runner processes, not two threads: a thread
-        # list is the same holder and its earlier charge is replaced.
+        # The real topology is two runner processes, each holding one container
+        # charge. Both attempt admission before either retires it.
         for available, expected in ((38, ["ADMITTED", "ADMITTED"]),
                                     (30, ["ADMITTED", "hosted"]),
                                     (24, ["ADMITTED", "hosted"]),
@@ -80,8 +82,8 @@ class MemoryAdmissionReview(unittest.TestCase):
                 directory = Path(temporary) / "ledger"
                 directory.mkdir(mode=0o700)
                 context = mp.get_context("fork")
-                results = context.Queue()
-                slots = [context.Process(target=_slot, args=(str(directory), available, results))
+                barrier, results = context.Barrier(2), context.Queue()
+                slots = [context.Process(target=_slot, args=(str(directory), available, barrier, results))
                          for _ in range(2)]
                 for slot in slots:
                     slot.start()
@@ -89,17 +91,22 @@ class MemoryAdmissionReview(unittest.TestCase):
                     slot.join(10)
                     self.assertEqual(slot.exitcode, 0)
                 self.assertEqual(sorted(results.get() for _ in slots), expected)
+                self.assertEqual(admission.records(directory), [])
 
 
-def _slot(folder, available, results):
-    """One paired runner process: one 16 GiB slot against the shared ledger."""
+def _slot(folder, available, barrier, results):
+    """One paired runner process holding one 16 GiB container charge."""
     engine.admission.folder = lambda: Path(folder)
     engine.available = lambda: available * GIB
+    name = "se-ci-" + str(os.getpid()).rjust(32, "0")
     try:
-        engine.capacity(16 * GIB)
+        engine.capacity(16 * GIB, name)
         results.put("ADMITTED")
     except RuntimeError:
         results.put("hosted")
+        name = None
+    barrier.wait(timeout=5)
+    admission.retire(name)
 
 
 if __name__ == "__main__":

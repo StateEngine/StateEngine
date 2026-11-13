@@ -65,15 +65,15 @@ def admits(memory):
     return available_bytes
 
 
-def capacity(memory):
+def capacity(memory, container=None):
     """Admit one bounded allocation beside every live peer, or refuse.
 
-    The charge is filed against the calling execution and ends with the
-    container it admitted, or with that execution when it dies.
+    A charge made for a container outlives this execution until that
+    container's closure is proved; a bare probe ends with its holder.
     """
     bounds(memory)
     available_bytes = available()
-    admission.reserve(memory, available_bytes, ADMISSION_MARGIN)
+    admission.reserve(memory, available_bytes, ADMISSION_MARGIN, container)
     return available_bytes
 
 
@@ -85,7 +85,6 @@ class Container:
                 not 16 <= pids <= 512 or not 1 <= deadline <= 1800 or
                 not 1024**2 <= work <= 12 * GIB):
             raise ValueError("job resource limits exceed the admitted bounds")
-        self.reservation = None
         policy = Path("/etc/stateengine-ci/seccomp.json")
         info = policy.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
@@ -116,9 +115,10 @@ class Container:
             self.journal.intent(self.name)
         try:
             # Charge before creating, so a peer's container is never started
-            # against headroom this one is about to take.
-            capacity(memory)
-            self.reservation = admission.holder()
+            # against headroom this one is about to take. The charge is filed
+            # under the container's controller-owned name, so it outlives this
+            # process until closure of that exact object is proved.
+            capacity(memory, self.name)
             raw = (self.journal.create(self.name, [*args, image, "hold"]) if self.journal else
                    command(*args, image, "hold").decode().strip())
             if not re.fullmatch(r"[a-f0-9]{64}", raw):
@@ -192,15 +192,14 @@ class Container:
         return proof
 
     def close(self):
-        # The charge ends with the container it was admitted for, whether
-        # creation failed, a later stage failed, or the run completed.
-        try:
-            if self.id is not None:
-                self.remove()
-        finally:
-            self.id = None
-            admission.release(self.reservation)
-            self.reservation = None
+        # Retire the charge only once removal is witnessed. An uncertain
+        # cleanup keeps it, so a peer slot cannot start against memory that a
+        # possibly-live container still holds; custody reconciliation retires
+        # it when closure is finally proved.
+        if self.id is not None:
+            self.remove()
+        admission.retire(self.name)
+        self.id = None
 
     def remove(self):
         identity = self.id
