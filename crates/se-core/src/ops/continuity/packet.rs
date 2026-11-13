@@ -232,11 +232,6 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
             continue;
         }
         if input.byte_budget <= DEFAULT_BYTES
-            && (input.since.is_some()
-                || result
-                    .omissions
-                    .iter()
-                    .any(|item| item.section == "working_state"))
             && super::compact::expanded(
                 result,
                 read::resume_command(identity, input.since.as_ref())?,
