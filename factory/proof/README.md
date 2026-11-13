@@ -1,12 +1,13 @@
 # Nightly Rust proof
 
 This Linux scheduler runs the existing independent `journeys/run.mjs` judge with
-its `rust-v1` command map. It adds no product assertions and does not replace the
-judge's verdicts or thresholds. Product and judge Git revisions, map and file
+its `rust-v1` command map. It preserves the judge's verdicts and thresholds. An optional harness matrix
+adds separate native smoke observations. Product and judge Git revisions, map and file
 hashes, native release identity, raw output and every first failure are retained.
 
 Install `nightly.py`, `lifecycle.py`, `native.py`, `report.py`, `remote_journey.py`,
-`remote_credentials.py`, `remote_process.py`, `remote_recovery.py` and `remote_report.py` together, and use the supplied user service and
+`remote_credentials.py`, `remote_process.py`, `remote_recovery.py`, `remote_report.py`
+and `matrix_adapter.py` together, and use the supplied user service and
 timer. The service runs outside managed agent trees; fixture environment isolation
 does not change ancestry or bypass owner guards. The adapter refuses a fleet or
 session environment. It checks for 34 GiB available before building or starting a
@@ -188,3 +189,50 @@ budget certifications. Missing clock evidence stays NOT MEASURED and fails the
 overall attempt without erasing otherwise witnessed remote behavior.
 Windows remote journeys and physical-machine qualification
 are outside this Linux scope.
+
+
+## Optional native harness matrix
+
+Configure `harness_matrix` to add named harness rows to each nightly report:
+
+```json
+{
+  "harness_matrix": {
+    "manifest": "/srv/proof/private/harness-matrix.json",
+    "judge_git": "/srv/proof/matrix-judge.git",
+    "judge_ref": "REVIEWED_MATRIX_JUDGE_COMMIT",
+    "native_results": ["/srv/proof/windows-matrix", "/srv/proof/macos-matrix"]
+  }
+}
+```
+
+Install `matrix_adapter.py` beside the scheduler's other Python modules. The
+matrix judge revision must contain `scripts/harness-matrix.py`,
+`scripts/harness-matrix-report.py`, `scripts/harness_matrix/` and
+`scripts/ci/installation_account.py`. Native runs require an administrator-registered
+disposable test account; changing HOME does not isolate account-wide installation.
+The scheduler pins that revision independently of the journey judge and product. Python 3.11
+or later is required when this option is enabled.
+
+The private input manifest lists every planned harness, its platform settings,
+exact native image digests, configuration digest and permission profile. See
+[`scripts/harness-matrix.md`](../../scripts/harness-matrix.md) for its format.
+Only explicitly named environment variables pass from the OS scheduler into the
+private fixtures; put credential values in the scheduler environment rather than
+configuration or receipts. No normal account credential files are copied by the
+matrix runner.
+
+Coverage and the input digest are recorded before building. The scheduler copies
+those exact input bytes for execution and rejects a changed plan. Linux runs use
+tonight's exact native product bundle; imported Windows and macOS directories
+must name that same product commit, input digest, runner file inventory, unique nightly attempt identity and ordered
+harness list. An
+older native report cannot fill a missing cell. Each harness needs launch, file
+work, mail and conversation resume evidence, followed by native process closure.
+
+The table preserves PASS, FAIL, ABSENT, SKIPPED, UNREADABLE and NOT RUN. A missing
+platform stays ABSENT, and absent prerequisites or unsupported drivers never
+count as passing coverage. Matrix failures fail the nightly; incomplete matrix
+coverage prevents an overall pass. A deadline or interrupted producer leaves the
+planned rows visible and requires inspection of retained native custody. The
+matrix is smoke evidence and does not qualify clean-machine login or performance.

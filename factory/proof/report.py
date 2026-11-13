@@ -3,6 +3,7 @@ import json
 import math
 from pathlib import Path
 from native import validate as validate_native
+from matrix_adapter import observation as matrix_observation
 from remote_report import summarize as remote_summary
 
 PLATFORMS = ("linux", "win32", "darwin")
@@ -353,7 +354,17 @@ def summarize(run, directory):
         elif not missing and probes and all(p["probe_result"] == "PASS" for p in probes):
             state = "PASS"
         budgets.append({"id": key, "state": state, "probes": probes})
+    matrix = matrix_observation(run, directory)
+    if matrix is not None:
+        status['errors'].extend('harness matrix: ' + value for value in matrix['errors'])
+        if not matrix['complete'] and not interrupted:
+            status.update(state='partial', complete=False)
+        if matrix['outcome'] == 'FAIL' and not interrupted:
+            status['outcome'] = 'FAIL'
+        elif matrix['outcome'] != 'PASS' and status['outcome'] == 'PASS':
+            status['outcome'] = 'UNKNOWN'
     return {"schema": "se.nightly-proof/v2", "started_at": run["started_at"], "status": status,
+            "harness_matrix": matrix,
             "product": run.get("product"), "judge": run.get("judge"), "tables": tables,
             "budgets": budgets, "gaps": gaps, "invocations": entries,
             "remote_timings": [{"surface": entry["surface"], "platform": entry["platform"],
@@ -390,6 +401,13 @@ def grid(report):
                               if sample.get("state") == "MEASURED" else "NOT MEASURED")
             lines.append("| " + row["surface"] + " | " + " | ".join(values) + " |")
         lines.append("")
+    matrix = report.get('harness_matrix')
+    if matrix is not None:
+        lines += ['', '| Harness smoke | Linux | Windows | macOS |', '| --- | --- | --- | --- |']
+        for row in matrix['rows']:
+            lines.append('| ' + row['harness'] + ' | ' + ' | '.join(
+                row['platforms'][platform]['result'] for platform in PLATFORMS) + ' |')
+        lines += ['', matrix.get('qualification') or 'Native matrix observation unavailable.', '']
     if status.get("notes"):
         lines += ["Record corrections:", *[f"- {note}" for note in status["notes"]], ""]
     if status["errors"]:

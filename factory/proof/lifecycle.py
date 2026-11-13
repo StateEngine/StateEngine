@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from report import exit_status, publish, read, summarize
+from matrix_adapter import plan as matrix_plan
 
 
 def save(path, value):
@@ -78,6 +79,8 @@ def begin(config, activate=True, bind_service=True):
     directory.mkdir(parents=True, mode=0o700)
     record = {"started_at": now.isoformat(), "state": "running", "invocations": plan(config), "errors": [],
               "service_invocation_id": os.environ.get("INVOCATION_ID"), "publish_latest": activate}
+    if 'harness_matrix' in config:
+        record['harness_matrix'] = matrix_plan(config)
     pointer = {"directory": str(directory), "started_at": record["started_at"],
                "service_invocation_id": record["service_invocation_id"]}
     identity = record["service_invocation_id"]

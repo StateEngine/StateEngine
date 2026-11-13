@@ -13,6 +13,7 @@ import time
 from report import exit_status, publish
 from lifecycle import begin, checkpoint, save, service_exit
 from native import import_receipt
+from matrix_adapter import run as run_matrix
 
 GIB = 1024**3
 
@@ -172,6 +173,10 @@ def run_nightly(config, prepared_build=None, native_only=False):
             for name in ("product", "judge"):
                 tree = directory / (name + "-source")
                 record[name] = pin_tree(config[name + "_git"], config[name + "_ref"], tree)
+            if record.get('harness_matrix') is not None:
+                matrix = config['harness_matrix']
+                record['matrix_judge'] = pin_tree(matrix['judge_git'], matrix['judge_ref'],
+                                                  directory / 'matrix-judge-source')
             source, judge = (Path(record[name]["worktree"]) for name in ("product", "judge"))
             record["judge"]["rust_map_sha256"] = digest(judge / "journeys/maps/rust.json")
             record["judge"]["files_sha256"] = {str(path.relative_to(judge)): digest(path)
@@ -218,6 +223,9 @@ def run_nightly(config, prepared_build=None, native_only=False):
                     invoke_remote(config, record, directory, bundle / "se", env, invocation, deadline)
                 else:
                     invoke(config, record, directory, judge, descriptor, archive, env, invocation, deadline)
+            if record.get('harness_matrix') is not None:
+                run_matrix(config, record, directory, Path(record['matrix_judge']['worktree']),
+                           bundle, env, deadline, lambda: checkpoint(state, directory, record))
             record["state"] = "finished"
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             record["errors"].append(str(error))
