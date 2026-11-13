@@ -1,0 +1,104 @@
++ cargo nextest run --target x86_64-unknown-linux-gnu --workspace --locked --profile ci --test-threads 4 --partition slice:1/2 -E not ((package(=se-proc) & binary(=process_birth)) or (package(=se-proc) & binary(=bootstrap_stderr)) or (package(=se-proc) & binary(=linux_process_facts)) or (package(=se-proc) & binary(=atlas_worker_failure)) or (package(=se-proc) & binary(=atlas_git_failure)) or (package(=se-host) & binary(=atlas_cold_crash_dev)) or (package(=se-host) & binary(=atlas_cold_history_dev)) or (package(=se) & binary(=credential_native)) or (package(=se) & binary(=host_e3)))
+[1m[92m    Finished[0m `test` profile [unoptimized] target(s) in 0.29s
+────────────
+[32;1m Nextest run[0m ID [1m00000000-0000-0000-0000-000000000000[0m with nextest profile: [1mci[0m
+[32;1m    Starting[0m [1m497[0m tests across [1m260[0m binaries ([1m537[0m tests and [1m9[0m binaries [33;1mskipped[0m)
+[32;1m        PASS[0m [   0.018s] (  1/497) [35;1mse::agent_allocation_routes[0m [36mcleanup_observations[0m[36m::[0m[34;1mcleanup_persistent_unreadability_fails_with_its_native_cause[0m
+[32;1m        PASS[0m [   0.326s] (  2/497) [35;1mse::agent_allocations[0m [34;1mcreated_agent_and_atomic_profile_have_independent_ids_and_replay_them[0m
+[32;1m        PASS[0m [   1.194s] (  3/497) [35;1mse::agent_rename_mcp_independent[0m [34;1mauthenticated_mcp_keeps_rename_owner_only[0m
+[31;1m        FAIL[0m [   2.056s] (  4/497) [35;1mse::agent_allocation_routes[0m [34;1mdirect_agent_allocations_remain_distinct_and_replay_without_new_events[0m
+[31;1m [0m [31;1mstdout[0m [31;1m───[0m
+
+    running 1 test
+    test direct_agent_allocations_remain_distinct_and_replay_without_new_events ... FAILED
+
+    failures:
+
+    failures:
+        direct_agent_allocations_remain_distinct_and_replay_without_new_events
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 2.04s
+    [0m
+[31;1m [0m [31;1mstderr[0m [31;1m───[0m
+
+    [0m[31;1mthread 'direct_agent_allocations_remain_distinct_and_replay_without_new_events' (1) panicked at crates/se/tests/agent_allocation_routes.rs:39:5:[0m
+    [31;1mactual CLI refused: {"schema":"se.error/v1","code":"source-unreadable","detail":{"subject":"runtime startup","reason":"source-unreadable: Cannot read runtime child before endpoint publication: expected live exact child ProcessIdentity { machine: MachineId(\"00000000-0000-0000-0000-000000000000\"), boot: Linux { boot_id: [0, 0] }, pid: ProcessId(1), start: Linux { start_ticks: 75768621 }, image: \"/tmp/FIXTURE/installed image/se\" }; native observation: ExitedRecord { pid: ProcessId(1), boot: Linux { boot_id: [225, 241, 204, 86, 97, 51, 71, 76, 180, 249, 160, 46, 35, 77, 185, 125] }, start: Linux { start_ticks: 75768621 }, state: ExitedAwaitingReap, status: Unavailable { reason: NotOurChild }, observed_at_unix_ns: 1794544205820680664 }; child startup stderr (complete=true, truncated=false, read_failure=None): [host preparation] usage-invalid-value: host router: a ready runtime\n  fix: correct the value\n","next_step":"Restore access and retry the original request identity; unreadable state is not absent."},"retry":{"kind":"never"},"recovery":{"text":"Restore access and retry the original request identity; unreadable state is not absent.. Last startup phase: Waiting for runtime owner PID 1 to publish endpoint.json. Read the startup log: /tmp/FIXTURE/state/runtime-startup-a6bc4af5beff0c957e357b064b356f93.log","command":null},"class":"unreadable","exit":3,"message":"Cannot read runtime startup: source-unreadable: Cannot read runtime child before endpoint publication: expected live exact child ProcessIdentity { machine: MachineId(\"00000000-0000-0000-0000-000000000000\"), boot: Linux { boot_id: [225, 241, 204, 86, 97, 51, 71, 76, 180, 249, 160, 46, 35, 77, 185, 125] }, pid: ProcessId(1), start: Linux { start_ticks: 75768621 }, image: \"/tmp/FIXTURE/installed image/se\" }; native observation: ExitedRecord { pid: ProcessId(1), boot: Linux { boot_id: [225, 241, 204, 86, 97, 51, 71, 76, 180, 249, 160, 46, 35, 77, 185, 125] }, start: Linux { start_ticks: 75768621 }, state: ExitedAwaitingReap, status: Unavailable { reason: NotOurChild }, observed_at_unix_ns: 1794544205820680664 }; child startup stderr (complete=true, truncated=false, read_failure=None): [host preparation] usage-invalid-value: host router: a ready runtime\n  fix: correct the value\n","remedy":{"text":"Restore access and retry the original request identity; unreadable state is not absent.. Last startup phase: Waiting for runtime owner PID 1 to publish endpoint.json. Read the startup log: /tmp/FIXTURE/state/runtime-startup-a6bc4af5beff0c957e357b064b356f93.log","command":null}}[0m
+    ; error[source-unreadable]: Cannot read runtime startup: source-unreadable: Cannot read runtime child before endpoint publication: expected live exact child ProcessIdentity { machine: MachineId("00000000-0000-0000-0000-000000000000"), boot: Linux { boot_id: [0, 0] }, pid: ProcessId(1), start: Linux { start_ticks: 75768621 }, image: "/tmp/FIXTURE/installed image/se" }; native observation: ExitedRecord { pid: ProcessId(1), boot: Linux { boot_id: [225, 241, 204, 86, 97, 51, 71, 76, 180, 249, 160, 46, 35, 77, 185, 125] }, start: Linux { start_ticks: 75768621 }, state: ExitedAwaitingReap, status: Unavailable { reason: NotOurChild }, observed_at_unix_ns: 1794544205820680664 }; child startup stderr (complete=true, truncated=false, read_failure=None): [host preparation] usage-invalid-value: host router: a ready runtime
+      fix: correct the value
+
+      fix: Restore access and retry the original request identity; unreadable state is not absent.. Last startup phase: Waiting for runtime owner PID 1 to publish endpoint.json. Read the startup log: /tmp/FIXTURE/state/runtime-startup-a6bc4af5beff0c957e357b064b356f93.log
+
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+    retained fixture root after failure: /tmp/FIXTURE[0m
+
+[31;1m  Cancelling[0m due to [31;1mtest failure[0m: [1m3[0m tests still running
+[31;1m        FAIL[0m [   2.000s] (  5/497) [35;1mse::claude_capture_catchup[0m [34;1mdelayed_final_reply_commit_clears_failure_before_resume[0m
+[31;1m [0m [31;1mstdout[0m [31;1m───[0m
+
+    running 1 test
+    test delayed_final_reply_commit_clears_failure_before_resume ... FAILED
+
+    failures:
+
+    failures:
+        delayed_final_reply_commit_clears_failure_before_resume
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 1.99s
+    [0m
+[31;1m [0m [31;1mstderr[0m [31;1m───[0m
+
+    [0m[31;1mthread 'delayed_final_reply_commit_clears_failure_before_resume' (1) panicked at crates/se/tests/claude_capture_catchup.rs:41:5:[0m
+    [31;1mretained capture fixture /tmp/FIXTURE:  Traceback (most recent call last):[0m
+      File "/work/source/crates/se/tests/judges/claude_first_hour_capture.py", line 213, in <module>
+        main()
+      File "/work/source/crates/se/tests/judges/claude_first_hour_capture.py", line 184, in main
+        assert foreground.poll() is None, 'foreground host exited before endpoint publication'
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+    AssertionError: foreground host exited before endpoint publication
+
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+    retained fixture root after failure: /tmp/FIXTURE[0m
+
+[31;1m        FAIL[0m [   1.826s] (  6/497) [35;1mse::claude_capture_catchup[0m [34;1munimpeded_capture_keeps_one_original_reply[0m
+[31;1m [0m [31;1mstdout[0m [31;1m───[0m
+
+    running 1 test
+    test unimpeded_capture_keeps_one_original_reply ... FAILED
+
+    failures:
+
+    failures:
+        unimpeded_capture_keeps_one_original_reply
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 2 filtered out; finished in 1.82s
+    [0m
+[31;1m [0m [31;1mstderr[0m [31;1m───[0m
+
+    [0m[31;1mthread 'unimpeded_capture_keeps_one_original_reply' (1) panicked at crates/se/tests/claude_capture_catchup.rs:41:5:[0m
+    [31;1mretained capture fixture /tmp/FIXTURE: 1..1[0m
+    not ok 1 - first reply capture must finish after temporary writer delay
+     Traceback (most recent call last):
+      File "/work/source/crates/se/tests/judges/claude_first_hour_capture.py", line 213, in <module>
+        main()
+      File "/work/source/crates/se/tests/judges/claude_first_hour_capture.py", line 198, in main
+        run(f, gate, args.delay_record)
+      File "/work/source/crates/se/tests/judges/claude_first_hour_capture.py", line 44, in run
+        value = f.ok('--project', f.project, 'launch', f.agent, '--detach', '--task', 'Capture the first reply')
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      File "/work/source/crates/se/tests/judges/mail_cli.py", line 74, in ok
+        assert result.returncode == 0, (args, result.stdout.decode(), result.stderr.decode())
+               ^^^^^^^^^^^^^^^^^^^^^^
+    AssertionError: (('--project', 'prj_00000000-0000-0000-0000-000000000000', 'launch', 'ag_00000000-0000-0000-0000-000000000000', '--detach', '--task', 'Capture the first reply'), '{"schema":"se.error/v1","code":"source-unreadable","detail":{"subject":"runtime startup","reason":"source-unreadable: Cannot read runtime child before endpoint publication: expected live exact child ProcessIdentity { machine: MachineId(\\"00000000-0000-0000-0000-000000000000\\"), boot: Linux { boot_id: [0, 0] }, pid: ProcessId(1), start: Linux { start_ticks: 75768713 }, image: \\"/work/source/target/x86_64-unknown-linux-gnu/debug/se\\" }; native observation: ExitedRecord { pid: ProcessId(1), boot: Linux { boot_id: [225, 241, 204, 86, 97, 51, 71, 76, 180, 249, 160, 46, 35, 77, 185, 125] }, start: Linux { start_ticks: 75768713 }, state: ExitedAwaitingReap, status: Unavailable { reason: NotOurChild }, observed_at_unix_ns: 1794544206713303085 }; child startup stderr (complete=true, truncated=false, read_failure=None): [host preparation] usage-invalid-value: host router: a ready runtime\\n  fix: correct the value\\n","next_step":"Restore access and retry the original request identity; unreadable state is not absent."},"retry":{"kind":"never"},"recovery":{"text":"Restore access and retry the original request identity; unreadable state is not absent.. Last startup phase: Waiting for runtime owner PID 1 to publish endpoint.json. Read the startup log: /tmp/FIXTURE/output/state/runtime-startup-705b04df673910a6f87b02dc88ae7eb3.log","command":null},"class":"unreadable","exit":3,"message":"Cannot read runtime startup: source-unreadable: Cannot read runtime child before endpoint publication: expected live exact child ProcessIdentity { machine: MachineId(\\"00000000-0000-0000-0000-000000000000\\"), boot: Linux { boot_id: [225, 241, 204, 86, 97, 51, 71, 76, 180, 249, 160, 46, 35, 77, 185, 125] }, pid: ProcessId(1), start: Linux { start_ticks: 75768713 }, image: \\"/work/source/target/x86_64-unknown-linux-gnu/debug/se\\" }; native observation: ExitedRecord { pid: ProcessId(1), boot: Linux { boot_id: [225, 241, 204, 86, 97, 51, 71, 76, 180, 249, 160, 46, 35, 77, 185, 125] }, start: Linux { start_ticks: 75768713 }, state: ExitedAwaitingReap, status: Unavailable { reason: NotOurChild }, observed_at_unix_ns: 1794544206713303085 }; child startup stderr (complete=true, truncated=false, read_failure=None): [host preparation] usage-invalid-value: host router: a ready runtime\\n  fix: correct the value\\n","remedy":{"text":"Restore access and retry the original request identity; unreadable state is not absent.. Last startup phase: Waiting for runtime owner PID 1 to publish endpoint.json. Read the startup log: /tmp/FIXTURE/output/state/runtime-startup-705b04df673910a6f87b02dc88ae7eb3.log","command":null}}\n', 'error[source-unreadable]: Cannot read runtime startup: source-unreadable: Cannot read runtime child before endpoint publication: expected live exact child ProcessIdentity { machine: MachineId("00000000-0000-0000-0000-000000000000"), boot: Linux { boot_id: [225, 241, 204, 86, 97, 51, 71, 76, 180, 249, 160, 46, 35, 77, 185, 125] }, pid: ProcessId(1), start: Linux { start_ticks: 75768713 }, image: "/work/source/target/x86_64-unknown-linux-gnu/debug/se" }; native observation: ExitedRecord { pid: ProcessId(1), boot: Linux { boot_id: [225, 241, 204, 86, 97, 51, 71, 76, 180, 249, 160, 46, 35, 77, 185, 125] }, start: Linux { start_ticks: 75768713 }, state: ExitedAwaitingReap, status: Unavailable { reason: NotOurChild }, observed_at_unix_ns: 1794544206713303085 }; child startup stderr (complete=true, truncated=false, read_failure=None): [host preparation] usage-invalid-value: host router: a ready runtime\n  fix: correct the value\n\n  fix: Restore access and retry the original request identity; unreadable state is not absent.. Last startup phase: Waiting for runtime owner PID 1 to publish endpoint.json. Read the startup log: /tmp/FIXTURE/output/state/runtime-startup-705b04df673910a6f87b02dc88ae7eb3.log\n')
+
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+    retained fixture root after failure: /tmp/FIXTURE[0m
+
+[32;1m        PASS[0m [  13.260s] (  7/497) [35;1mse::adoption_settings_review[0m [34;1mpublic_adoption_preserves_settings_bytes_and_later_user_edits[0m
+────────────
+[31;1m     Summary[0m [  13.263s] [1m7[0m/[1m497[0m tests run: [1m4[0m [32;1mpassed[0m, [1m3[0m [31;1mfailed[0m, [1m537[0m [33;1mskipped[0m
+[31;1m        FAIL[0m [   2.056s] (  4/497) [35;1mse::agent_allocation_routes[0m [34;1mdirect_agent_allocations_remain_distinct_and_replay_without_new_events[0m
+[31;1m        FAIL[0m [   2.000s] (  5/497) [35;1mse::claude_capture_catchup[0m [34;1mdelayed_final_reply_commit_clears_failure_before_resume[0m
+[31;1m        FAIL[0m [   1.826s] (  6/497) [35;1mse::claude_capture_catchup[0m [34;1munimpeded_capture_keeps_one_original_reply[0m
+[33;1mwarning[0m: [1m490[0m/[1m497[0m tests were not run due to [33;1mtest failure[0m (run with [1m--no-fail-fast[0m to run all tests, or run with [1m--max-fail[0m)
+[31;1merror[0m: test run failed
++ python3 scripts/ci/custom.py run
