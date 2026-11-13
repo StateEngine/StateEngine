@@ -18,9 +18,13 @@ def text(value):
 
 def proof(phases, provider):
     for phase in phases.values():
+        if phase['result'] != 'PASS':
+            continue
+        require(isinstance(phase.get('evidence'), dict), 'passing phase lacks evidence')
         elapsed = phase.get('elapsed_seconds')
         require(type(elapsed) in (int, float) and math.isfinite(elapsed) and elapsed >= 0,
                 'passing phase has no measured duration')
+    require(phases['Launch']['result'] == 'PASS', 'passing work requires a proven native launch')
     launch = phases['Launch']['evidence']
     require(launch.get('state') == 'running' and launch.get('surface') == 'headless'
             and launch.get('provider') == provider
@@ -29,6 +33,8 @@ def proof(phases, provider):
             'launch evidence lacks native process or conversation identity')
     captures = {}
     for name in ('Work', 'Mail', 'Resume'):
+        if phases[name]['result'] != 'PASS':
+            continue
         evidence = phases[name]['evidence']
         messages = evidence.get('replies' if name == 'Mail' else 'messages')
         capture = evidence.get('capture')
@@ -50,7 +56,8 @@ def proof(phases, provider):
         if name == 'Mail':
             require(text(evidence.get('sent')), 'mail has no committed send identity')
         captures[name] = set(capture['events'])
-    require(not captures['Resume'].intersection(captures['Work'] | captures['Mail']),
+    require(not captures.get('Resume', set()).intersection(
+                captures.get('Work', set()) | captures.get('Mail', set())),
             'resume substituted an earlier captured event')
 
 
@@ -68,11 +75,19 @@ def read(path):
 def native(directory, source_commit, manifest_sha256, expected, cycle):
     result, error = read(directory / 'results.json')
     require(error is None, 'results.json: ' + str(error))
+    observed_files = result.get('runner_sha256')
+    expected_files = runner_files()
+    require(isinstance(observed_files, dict) and set(observed_files) == set(expected_files),
+            'native producer file inventory is incomplete')
+    # The native producer does not execute either report entry point. Its
+    # captures remain usable when only the independently pinned reader changes.
+    report_files = {'harness-matrix-report.py', 'harness_matrix/report.py'}
+    require(all(observed_files[name] == digest for name, digest in expected_files.items()
+                if name not in report_files), 'native producer source identity differs')
     require(result.get('schema') == 'se.harness-matrix/v1'
             and result.get('platform') in PLATFORMS
             and result.get('source_commit') == source_commit and result.get('cycle') == cycle
-            and result.get('manifest_sha256') == manifest_sha256
-            and result.get('runner_sha256') == runner_files(),
+            and result.get('manifest_sha256') == manifest_sha256,
             'matrix receipt identity differs from the selected run')
     require(isinstance(result.get('expected'), list) and result['expected'] == expected,
             'planned matrix coverage differs')
@@ -104,21 +119,21 @@ def verify_cell(directory, row, result, source_commit, manifest_sha256):
     for phase in phases.values():
         require(isinstance(phase, dict) and phase.get('result') in ('PASS', 'FAIL', 'NOT RUN'),
                 'invalid native phase result')
-    if row['result'] == 'PASS':
+    if any(phase['result'] == 'PASS' for phase in phases.values()):
         require(receipt.get('state') == 'finished'
                 and receipt.get('source_commit') == source_commit and receipt.get('cycle') == result['cycle']
                 and receipt.get('manifest_sha256') == manifest_sha256
                 and receipt.get('build_sha256') == result.get('build_sha256')
                 and receipt.get('runner_sha256') == result['runner_sha256']
-                and isinstance(result.get('build_sha256'), str)
-                and receipt.get('cleanup') == row.get('cleanup') == []
-                and receipt.get('process_closure') == row.get('process_closure') == []
-                and not receipt.get('failure')
-                and all(phase['result'] == 'PASS' and isinstance(phase.get('evidence'), dict)
-                        for phase in phases.values()), 'passing cell lacks complete native evidence')
+                and isinstance(result.get('build_sha256'), str), 'passing phase source identity differs')
         require(row.get('driver') in DRIVERS and receipt.get('driver') == row['driver'],
-                'passing receipt has no matching adapter driver')
+                'passing phase has no matching adapter driver')
         proof(phases, DRIVERS[row['driver']])
+    if row['result'] == 'PASS':
+        require(receipt.get('cleanup') == row.get('cleanup') == []
+                and receipt.get('process_closure') == row.get('process_closure') == []
+                and not receipt.get('failure') and all(phase['result'] == 'PASS' for phase in phases.values()),
+                'passing cell lacks complete native evidence')
     return dict(result=row['result'], phases=phases,
                 reason=row.get('reason', row.get('failure')))
 

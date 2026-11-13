@@ -75,7 +75,7 @@ After successful file work, a failed mail exchange does not prevent an independe
 resume attempt; each phase retains its own outcome.
 
 For a combined report, provide native result directories for the same exact product
-source, unique cycle identity, input-manifest digest, exact runner files and
+source, unique cycle identity, input-manifest digest, exact native producer files and
 ordered harness list:
 
 ```sh
@@ -87,7 +87,9 @@ python3 scripts/harness-matrix-report.py \
   --expected harness-a harness-b --out /absolute/new-private-summary
 ```
 
-The combined report checks receipt identity, phase evidence and cleanup. A missing
+The combined report checks receipt identity, evidence for each passing phase and
+cleanup. Native producer files must match; the scheduler pins the report reader
+independently, so a reader-only correction can still examine retained captures. A missing
 platform remains ABSENT. A malformed cell becomes UNREADABLE while other
 verified cells remain visible. Exit zero requires every planned harness on all three
 platforms to pass; it still denotes smoke evidence rather than full qualification.
