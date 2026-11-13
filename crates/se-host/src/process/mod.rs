@@ -253,7 +253,8 @@ impl LaunchCoordinator {
             secode,
             acp,
             secode_services: secode::Services::default(),
-            capability_admission: host_runtime.router()?.context,
+            // Installation precedes readiness; retain admission without opening a router.
+            capability_admission: host_runtime.admission_context(),
             store: store::Store {
                 record_feed: context.atlas.records.clone(),
                 reader: context.reader.clone(),
