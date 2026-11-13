@@ -134,6 +134,29 @@ fn real_http_rechecks_committed_revocation_after_warming_the_admission_pool() ->
     })
 }
 
+#[cfg(target_os = "linux")]
+fn is_injected_missing_path(error: &se_types::SeError, state: &std::path::Path) -> bool {
+    // The writer may reopen during the deliberately observed pathname gap.
+    // Accept only that database's native Open/ENOENT refusal, not other I/O errors.
+    matches!(error.body.detail(), se_types::Detail::SourceUnreadable(detail)
+        if detail.subject == "store Unreadable")
+        && error
+            .cause
+            .as_deref()
+            .and_then(|cause| cause.downcast_ref::<StoreError>())
+            .is_some_and(|cause| {
+                cause.code == StoreErrorCode::Unreadable
+                    && matches!(&cause.detail, StoreDetail::Io {
+                        path,
+                        opened_path,
+                        stage: StoreIoStage::Open,
+                        sqlite_extended_code: None,
+                        native_os_code: Some(2), // ENOENT on Linux.
+                    } if path == "state.db"
+                        && std::path::Path::new(opened_path) == state.join("state.db"))
+            })
+}
+
 /// Unix permits replacing this private fixture's active database pathname. On
 /// Windows the separate public pool test empties SQL handles before replacement.
 #[cfg(target_os = "linux")]
@@ -227,7 +250,8 @@ fn real_http_refuses_a_replaced_inode_even_after_its_first_refusal_empties_idle(
         let expected = match &exit.failure {
             None => Ok(Vec::new()),
             Some(error)
-                if matches!(error.body.detail(), se_types::Detail::SourceUnreadable(detail)
+                if is_injected_missing_path(error, &f.options.state_directory)
+                    || matches!(error.body.detail(), se_types::Detail::SourceUnreadable(detail)
                     if detail.subject == "store SourceChanged"
                         && (detail.reason == expected_reason || detail.reason == expected_missing)) =>
             {
