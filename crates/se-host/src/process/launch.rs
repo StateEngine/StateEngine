@@ -1,6 +1,6 @@
 //! Ordered launch barriers and real provider readiness. The supervisor retains
 //! every intermediate native reference and file digest through failures.
-use super::launch_util::{call, policy, resolve_provider, token, wait};
+use super::launch_util::{call, policy, resolve_provider_launch, token, wait};
 use super::*;
 use crate::{HarnessRequest, ProbeRequest, SessionIdentity, client::lease::Deadline};
 use se_core::ops::{LaunchResult, process_commit};
@@ -71,11 +71,11 @@ impl LaunchCoordinator {
         let configuration = self.options.configuration.clone();
         let configuration_file = self.configuration_file.clone();
         let harness_name = plan.profile.harness.clone();
-        let (executable, qualification) = self
+        let (executable, qualification, package) = self
             .store
             .pool
             .run_owned(deadline, move || {
-                let command = resolve_provider(
+                let command = resolve_provider_launch(
                     &configuration,
                     provider,
                     configuration_file.as_deref(),
@@ -84,12 +84,12 @@ impl LaunchCoordinator {
                 // Reuse this existing filesystem job instead of adding queue
                 // round trips to the warm qualification path.
                 let qualification = if provider == se_types::Provider::Codex {
-                    se_proc::native_ipc::ExecutableStamp::observe(&command)
+                    se_proc::native_ipc::ExecutableStamp::observe(&command.executable)
                         .map_err(|e| error("Codex qualification image", e))?
                 } else {
                     None
                 };
-                Ok((command, qualification))
+                Ok((command.executable, qualification, command.package))
             })
             .await?;
         #[cfg(unix)]
@@ -190,6 +190,11 @@ impl LaunchCoordinator {
             .invocation(&request, call(self.store.generation, deadline)?)
             .await?;
         super::launch_util::route_temporary_files(&mut invocation.environment, &policy);
+        if let Some(package) = package {
+            package
+                .apply(&mut invocation.environment)
+                .map_err(|cause| error("Codex package environment", cause))?;
+        }
         #[cfg(unix)]
         {
             invocation = self

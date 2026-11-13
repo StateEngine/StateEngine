@@ -40,14 +40,21 @@ fn native_image(path: &Path) -> io::Result<bool> {
 }
 
 pub(super) fn resolve(path: &Path, provider: Option<Provider>) -> io::Result<Option<PathBuf>> {
+    resolve_package(path, provider).map(|value| value.map(|(image, _)| image))
+}
+
+pub(super) fn resolve_package(
+    path: &Path,
+    provider: Option<Provider>,
+) -> io::Result<Option<(PathBuf, Option<PathBuf>)>> {
     if path.extension().is_none() {
         let candidate = path.with_extension("exe");
         if native_image(&candidate)? {
-            return Ok(Some(candidate));
+            return Ok(Some((candidate, None)));
         }
     }
     if native_image(path)? {
-        return Ok(Some(path.to_path_buf()));
+        return Ok(Some((path.to_path_buf(), None)));
     }
     if provider != Some(Provider::Codex)
         || !path
@@ -111,7 +118,9 @@ pub(super) fn resolve(path: &Path, provider: Option<Provider>) -> io::Result<Opt
     ] {
         let candidate = vendor.join(target).join("bin/codex.exe");
         if native_image(&candidate)? {
-            return Ok(Some(candidate));
+            #[cfg(windows)]
+            let candidate = se_proc::canonicalize_path(&candidate)?;
+            return Ok(Some((candidate, Some(package))));
         }
     }
     Ok(None)

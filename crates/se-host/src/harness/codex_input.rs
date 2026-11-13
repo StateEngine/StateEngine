@@ -205,12 +205,31 @@ pub fn verify_thread(launch: &CodexLaunch<'_>, result: &Value) -> Result<Provide
     {
         roots.retain(|root| root.as_str() != cwd.to_str());
     }
-    if result.get("approvalPolicy") != Some(&json!(approval(launch.resolved)))
-        || result.get("sandbox") != Some(&expected)
-        || result.get("cwd") != Some(&json!(path(&launch.request.cwd.to_local()?)?))
-    {
+    // Name the exact field that differs, with both sides, so a refusal tells the
+    // reader what the provider actually accepted instead of only that it differs.
+    let mismatches = [
+        ("approvalPolicy", json!(approval(launch.resolved))),
+        ("sandbox", expected),
+        ("cwd", json!(path(&launch.request.cwd.to_local()?)?)),
+    ]
+    .into_iter()
+    .filter_map(|(field, wanted)| {
+        let actual = result.get(field);
+        (actual != Some(&wanted)).then(|| {
+            format!(
+                "{field}: expected {}, provider echoed {}",
+                wanted,
+                actual.map_or_else(|| "nothing".to_owned(), Value::to_string)
+            )
+        })
+    })
+    .collect::<Vec<_>>();
+    if !mismatches.is_empty() {
         return Err(incompatible(
-            "the provider did not echo the exact selected cwd, approval and sandbox policy",
+            &format!(
+                "the provider did not echo the selected policy — {}",
+                mismatches.join("; ")
+            ),
             "Correct the provider/profile configuration; the host will not widen policy to continue.",
         ));
     }
