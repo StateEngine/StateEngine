@@ -1,5 +1,6 @@
 //! A finite native Owner inventory; it is never exposed through agent grants.
 use super::*;
+use crate::remote::LaunchPermission;
 use se_types::{Read, remote::*};
 use serde::{Deserialize, Serialize};
 
