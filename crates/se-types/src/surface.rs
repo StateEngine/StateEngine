@@ -2,8 +2,7 @@
 use crate::{EventId, IdempotencyKey};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-pub const ACP_NO_SANDBOX_NOTICE: &str =
-    "This harness provides no execution sandbox in protocol mode.";
+pub const ACP_NO_SANDBOX_NOTICE: &str = "StateEngine adds no execution sandbox; permissions and sandboxing belong to the selected harness in protocol mode.";
 mod agent;
 pub use agent::*;
 

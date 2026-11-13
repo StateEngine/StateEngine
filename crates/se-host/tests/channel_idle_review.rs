@@ -124,6 +124,7 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
                         provider: se_store::Provider::Claude,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,
+                        harness: None,
                         named_profile: "claude".into(),
                         effort: None,
                     },

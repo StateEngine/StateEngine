@@ -28,6 +28,7 @@ fn request(f: &Fixture, sequence: u8) -> Check<HarnessRequest> {
             provider: se_store::Provider::Codex,
             model: Some("fixture-model".into()),
             permission: se_store::PermissionProfile::WorkspaceWrite,
+            harness: None,
             named_profile: "default".into(),
             effort: Some("high".into()),
         },

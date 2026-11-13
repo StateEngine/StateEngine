@@ -437,6 +437,7 @@ mod transcript_location_tests {
                 provider: se_store::Provider::Claude,
                 model: None,
                 permission: se_store::PermissionProfile::WorkspaceWrite,
+                harness: None,
                 named_profile: "default".into(),
                 effort: None,
             },

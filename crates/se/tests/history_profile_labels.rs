@@ -63,6 +63,7 @@ fn setup() -> Result<(Fixture, SqliteDirect, Arc<Lease>), Box<dyn std::error::Er
                     provider: Provider::Claude,
                     model: None,
                     permission: PermissionProfile::WorkspaceWrite,
+                    harness: None,
                     named_profile: "default".into(),
                     effort: None,
                 },

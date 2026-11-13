@@ -57,6 +57,7 @@ fn setup() -> Outcome<(Fixture, SqliteDirect, Arc<Lease>)> {
                     provider: Provider::Codex,
                     model: None,
                     permission: PermissionProfile::WorkspaceWrite,
+                    harness: None,
                     named_profile: "workspace-write".into(),
                     effort: None,
                 },
@@ -125,6 +126,7 @@ fn receipt_case(family: &str) -> Check {
     let key = IdempotencyKey::new(format!("receipt-{family}"))?;
     let op = match family {
         "agent" => AnyOp::AgentCreate(AgentCreate {
+            harness: None,
             name: "receipt-agent".into(),
             provider: None,
             model: None,

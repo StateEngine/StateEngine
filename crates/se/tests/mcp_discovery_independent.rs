@@ -117,6 +117,7 @@ fn real_stdio_client_lists_every_available_registered_tool() -> Check {
                 provider: Provider::Claude,
                 model: None,
                 permission: PermissionProfile::WorkspaceWrite,
+                harness: None,
                 named_profile: "default".into(),
                 effort: None,
             },

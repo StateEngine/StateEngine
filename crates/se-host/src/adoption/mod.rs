@@ -162,5 +162,10 @@ pub fn resolve_provider(
     configuration: &se_core::config_policy::ConfigFile,
     file: Option<&Path>,
 ) -> Result<std::path::PathBuf> {
-    crate::process::launch_util::resolve_provider(configuration, se_types::Provider::Claude, file)
+    crate::process::launch_util::resolve_provider(
+        configuration,
+        se_types::Provider::Claude,
+        file,
+        None,
+    )
 }

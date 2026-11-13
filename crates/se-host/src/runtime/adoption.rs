@@ -152,6 +152,7 @@ impl HostedRouter {
                 ops::agent::create(
                     &kernel,
                     ops::AgentCreate {
+                        harness: None,
                         name: format!(
                             "claude-{}",
                             &selected.as_str()[se_types::AgentId::PREFIX.len()..]

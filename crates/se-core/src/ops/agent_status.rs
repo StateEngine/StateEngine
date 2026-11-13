@@ -232,6 +232,7 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
     Ok(AgentStatusOutput {
         agent: Read::Present {
             value: AgentRow {
+                harness: profile.harness.clone(),
                 provider_activity: matches!(provider, se_types::Provider::Claude | se_types::Provider::Codex).then(|| Read::Unknown {
                     what: "Provider turn activity requires the owning runtime; native liveness does not prove a reply. Check provider sign-in and saved history before resubmitting input.".into(),
                 }),
