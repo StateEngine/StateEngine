@@ -23,7 +23,7 @@ use se_types::StoreId;
 
 pub(crate) fn load_event(c: &Connection, seq: i64, info: &StoreInfo) -> StoreResult<StoredEvent> {
     let (id,p,actor_id,session,origin,door,kind,version,inc,rev,mode,generation,durability,occurred,recorded,cause,supersedes):EnvelopeRow=c.prepare_cached("SELECT event_id,project_id,actor_id,session_id,origin_id,door,kind,schema_version,recorded_incarnation,entity_revision,writer_mode,host_generation,durability,occurred_at_us,recorded_at_us,cause_event_id,supersedes_event_id FROM events WHERE seq=?").map_err(sql)?.query_row([seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?,crate::sql_value::value(r,5)?,crate::sql_value::value(r,6)?,crate::sql_value::value(r,7)?,crate::sql_value::value(r,8)?,crate::sql_value::value(r,9)?,crate::sql_value::value(r,10)?,crate::sql_value::value(r,11)?,crate::sql_value::value(r,12)?,crate::sql_value::value(r,13)?,crate::sql_value::value(r,14)?,crate::sql_value::value(r,15)?,crate::sql_value::value(r,16)?))).map_err(sql)?;
-    if version != 1 {
+    if version != 1 && !(version == 2 && kind == "profile.saved") {
         return Err(fail(
             StoreErrorCode::VersionUnsupported,
             "unknown event schema version",
@@ -36,6 +36,14 @@ pub(crate) fn load_event(c: &Connection, seq: i64, info: &StoreInfo) -> StoreRes
     let s = scope_key(c, &scope, false)?;
     let parse_event =
         |k: &[u8]| wire(c, "event", k, &s).and_then(|v| v.try_into().map_err(invalid));
+    let body = super::body(c, seq, &kind, &scope)?;
+    if version == 2
+        && !matches!(&body, EventBody::ProfileSaved { profile, .. } if profile.harness.is_some())
+    {
+        return Err(invalid(
+            "descriptor-bound profile is missing its harness selection",
+        ));
+    }
     let writer = match (mode.as_str(), generation) {
         ("direct", None) => LeaseIdentity {
             store: Some(info.id.clone()),
@@ -83,7 +91,7 @@ pub(crate) fn load_event(c: &Connection, seq: i64, info: &StoreInfo) -> StoreRes
             "full" => CommitDurability::Full,
             _ => return Err(invalid("invalid persisted durability")),
         },
-        body: super::body(c, seq, &kind, &scope)?,
+        body,
         erased_fields: Vec::new(),
     })
 }
