@@ -165,10 +165,17 @@ impl CheckpointTask {
                     .copied()
                     .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                     .unwrap_or("an unnameable panic payload");
-                self.status.set(Maint::Failed(fail(
+                let mut error = fail(
                     StoreErrorCode::BackupFailed,
                     format!("checkpoint task panicked: {message}"),
-                )));
+                );
+                // Only this site is the maintenance task's death; real backup
+                // failures keep fail()'s shared remedy for their own cause.
+                error.remedy = se_types::Remedy {
+                    text: "Restart the runtime (`se down`, then `se up`) to recreate the background maintenance task; preserve the named cause and the store for diagnosis.".into(),
+                    command: None,
+                };
+                self.status.set(Maint::Failed(error));
             }
         }
     }
@@ -353,6 +360,11 @@ mod tests {
             error.cause.contains("planted checkpoint panic"),
             "the panic message must be named, got: {}",
             error.cause
+        );
+        assert!(
+            error.remedy.text.contains("recreate the background maintenance task"),
+            "the maintenance remedy must name a working step, got: {}",
+            error.remedy.text
         );
     }
 }
