@@ -273,7 +273,7 @@ async fn run(
         // attempt has nothing to follow, so it waits nothing. Spacing is per
         // token, so simultaneous bots do not pace each other. Reconnect with
         // Resume skips the spacing.
-        transport.pace_identify(token).await;
+        transport.pace_identify(token).await?;
         let value = transport
             .request(token, Method::GET, "/gateway/bot", None)
             .await?;

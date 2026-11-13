@@ -57,9 +57,12 @@ impl Discord {
     /// tokens claiming together get two different slots, never the same
     /// instant; the attempt consumed a concurrency window even if it ends in a
     /// refusal. The first attempt for a token waits nothing.
-    async fn pace_identify(&self, token: &se_types::Secret) {
+    async fn pace_identify(&self, token: &se_types::Secret) -> ChannelResult<()> {
         let wait = {
-            let mut fire = self.identify_fire.lock().unwrap();
+            let mut fire = self
+                .identify_fire
+                .lock()
+                .map_err(|_| Error::ReceiverNotRunning)?;
             let key: [u8; 32] = Sha256::digest(token.expose()).into();
             let now = Instant::now();
             let slot = next_identify_fire(fire.get(&key).copied(), now);
@@ -69,6 +72,7 @@ impl Discord {
         if wait > Duration::ZERO {
             tokio::time::sleep(wait).await;
         }
+        Ok(())
     }
     fn authorization(token: &se_types::Secret) -> ChannelResult<header::HeaderValue> {
         let bytes = token.expose();
