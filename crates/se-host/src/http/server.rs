@@ -260,8 +260,8 @@ async fn respond(
             }
         }
         Route::Mcp => {
-            // A malformed header is carried into dispatch: lifecycle methods
-            // stay anonymous, and only tool methods refuse it.
+            // Ordinary initialization stays anonymous. An explicitly supplied
+            // first-use pair is verified even before the provider lists tools.
             let (secret, malformed) = match admission::bearer(request.headers()) {
                 Ok(secret) => (secret, false),
                 Err(_) => (None, true),
