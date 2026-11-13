@@ -14,7 +14,7 @@ use se_core::{
     ops::{self, CliSelections},
     store_error::store_error,
 };
-use se_store::{Actor, Admission, RuntimeLease, Scope};
+use se_store::{Actor, Admission, RuntimeLease, Scope, Snapshot};
 use se_types::{Read, Result, SeError, Sha256};
 use sha2::{Digest, Sha256 as Hasher};
 use std::{
@@ -355,7 +355,7 @@ impl AdmissionContext {
         expected: &crate::SessionIdentity,
     ) -> Result<()> {
         let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
-        let result = (|| {
+        let admitted = match (|| -> Result<Admission> {
             self.check_generation(&phase)?;
             let admitted = self.session(&phase, secret)?;
             if admitted.scope != Scope::Project(expected.project.clone())
@@ -371,9 +371,36 @@ impl AdmissionContext {
                     },
                 )));
             }
+            Ok(admitted)
+        })() {
+            Ok(admitted) => admitted,
+            Err(error) => return super::executor::close_read(Err(error), phase.close()),
+        };
+        let mut read = phase
+            .into_snapshot(se_core::admission::read_scope(&admitted))
+            .map_err(|error| store_error(&error))?;
+        let result = (|| {
+            let current = se_core::scope::require_present(
+                read.session(expected.session.clone())
+                    .map_err(|error| store_error(&error))?,
+                "session capability owner",
+                "Reconcile the original launched session.",
+            )?;
+            if !matches!(
+                current.current.body,
+                se_store::EventBody::SessionActivated { .. }
+            ) {
+                return Err(SeError::new(se_types::Detail::CapabilityInvalid(
+                    se_types::details::CapabilityInvalid {
+                        subject: "presented".into(),
+                        reason: "launched session is no longer active".into(),
+                        next_step: RELAUNCH.into(),
+                    },
+                )));
+            }
             Ok(())
         })();
-        super::executor::close_read(result, phase.close())
+        super::executor::close_read(result, read.close())
     }
     fn kernel(&self, facts: se_core::dispatch::CallFacts) -> Result<se_core::dispatch::Kernel> {
         let kernel =

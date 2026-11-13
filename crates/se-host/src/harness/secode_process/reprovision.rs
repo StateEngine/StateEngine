@@ -1,14 +1,16 @@
 //! Capability replacement and authenticated readback, independent of native
 //! process custody. The coordinator persists the prepared record before PUT.
-use super::{Control, NoticeBinding, NoticeStatus, unreadable};
+use super::{Control, NoticeBinding, NoticeStatus, ServiceIdentity, unreadable};
 use crate::client::lease::Deadline;
 use se_types::{Result, Secret, Sha256};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256 as Hasher};
 use std::path::Path;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CapabilityRepair {
+    /// Registration joined to the authenticated application incarnation.
     pub registration: Sha256,
     pub before: NoticeBinding,
     pub after: Option<NoticeBinding>,
@@ -22,6 +24,15 @@ pub(crate) enum RepairPlan {
 }
 
 impl CapabilityRepair {
+    pub(crate) fn fingerprint(registration: &[u8], identity: &ServiceIdentity) -> Sha256 {
+        let mut hash = Hasher::new();
+        hash.update(b"secode-capability-observation-v1");
+        hash.update((registration.len() as u64).to_le_bytes());
+        hash.update(registration);
+        hash.update(identity.incarnation.as_bytes());
+        Sha256::from_bytes(hash.finalize().into())
+    }
+
     pub(crate) fn validate(&self, session: &str) -> Result<()> {
         self.before.service.validate()?;
         if self.before.session_id != session {

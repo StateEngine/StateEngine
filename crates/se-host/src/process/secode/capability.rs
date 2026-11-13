@@ -2,8 +2,6 @@
 //! not adopt a new native process, release a hold or replay uncertain input.
 use super::*;
 use crate::harness::secode_process::{CapabilityRepair, Control, NoticeBinding, RepairPlan};
-use se_store::{EventBody, Snapshot};
-use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(5);
@@ -89,9 +87,7 @@ impl LaunchCoordinator {
             return Some(scheduled);
         }
         service.capability_check_at = Some(next);
-        let result = self
-            .repair_secode_capability(&mut service, work, &bound)
-            .await;
+        let result = self.repair_secode_capability(&mut service, &bound).await;
         let failure = result.err().map(|failure| failure.to_string());
         if failure != service.capability_failure {
             service.capability_failure = failure;
@@ -104,7 +100,6 @@ impl LaunchCoordinator {
     async fn repair_secode_capability(
         &self,
         service: &mut Service,
-        work: &owned::Work,
         deadline: &Deadline,
     ) -> Result<()> {
         let profile = service.journal.profile.to_local()?;
@@ -121,43 +116,6 @@ impl LaunchCoordinator {
                 })
             })
             .await?;
-        let stamp = se_types::Sha256::from_bytes(Sha256::digest(&registration).into());
-        let previous = service.journal.capability_repair.as_ref();
-        let known = previous
-            .filter(|repair| repair.after.is_some())
-            .map(|repair| repair.registration)
-            .or_else(|| {
-                service
-                    .journal
-                    .registration
-                    .as_ref()
-                    .map(|bytes| se_types::Sha256::from_bytes(Sha256::digest(bytes).into()))
-            });
-        if known == Some(stamp)
-            && (service.capability_control.is_some()
-                || previous.and_then(CapabilityRepair::owned_binding).is_none())
-        {
-            return Ok(());
-        }
-        let session = work.meta.session.clone();
-        self.store
-            .read(work.cleanup_admission.clone(), deadline, move |cx| {
-                let current = se_core::scope::require_present(
-                    cx.read
-                        .session(session)
-                        .map_err(|error| se_core::store_error::store_error(&error))?,
-                    "SE Code capability owner",
-                    "Reconcile the original session before credential repair.",
-                )?;
-                if !matches!(current.current.body, EventBody::SessionActivated { .. }) {
-                    return Err(error(
-                        "SE Code capability repair",
-                        "the original engine session is not active",
-                    ));
-                }
-                Ok(())
-            })
-            .await?;
         let fields = retirement::fields(&registration)?;
         let endpoint = fields["endpoint"].to_owned();
         let control_profile = profile.clone();
@@ -172,6 +130,22 @@ impl LaunchCoordinator {
             .binding(&service.journal.vendor_session, deadline)
             .await?;
         require_registration(&registration, &before)?;
+        let stamp = CapabilityRepair::fingerprint(&registration, &before.service);
+        let previous = service.journal.capability_repair.as_ref();
+        let known = previous
+            .filter(|repair| repair.after.is_some())
+            .map(|repair| repair.registration)
+            .or_else(|| {
+                service
+                    .journal
+                    .registration
+                    .as_ref()
+                    .zip(service.journal.identity.as_ref())
+                    .map(|(bytes, identity)| CapabilityRepair::fingerprint(bytes, identity))
+            });
+        if known == Some(stamp) && previous.and_then(CapabilityRepair::owned_binding).is_none() {
+            return Ok(());
+        }
         match CapabilityRepair::plan(stamp, before, previous)? {
             RepairPlan::Observed(repair) => {
                 if repair.owned_binding().is_some() {
