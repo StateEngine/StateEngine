@@ -10,6 +10,7 @@ import stat
 import time
 import uuid
 
+import admission
 ACCOUNT = "stateengine-ci"
 ENGINE_DOOR = "/usr/local/libexec/stateengine-ci-engine"
 GIB = 1024 ** 3
@@ -44,12 +45,36 @@ def command(*args, input=None, timeout=90):
     return result.stdout
 
 
-def capacity(memory):
-    available = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines()
-                         if line.startswith("MemAvailable:"))) * 1024
-    if memory > 18 * GIB or memory <= 0 or available < ADMISSION_MARGIN + memory:
+def available():
+    """Bytes the kernel reports as available; a missing or unparsable value refuses."""
+    return int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines()
+                    if line.startswith("MemAvailable:"))) * 1024
+
+
+def bounds(memory):
+    if type(memory) is not int or memory > 18 * GIB or memory <= 0:
         raise RuntimeError("infrastructure unavailable: preserve 6 GiB after bounded allocation")
-    return available
+
+
+def admits(memory):
+    """Ask whether one allocation fits the margin now, without holding it."""
+    bounds(memory)
+    available_bytes = available()
+    if available_bytes < ADMISSION_MARGIN + memory:
+        raise RuntimeError("infrastructure unavailable: preserve 6 GiB after bounded allocation")
+    return available_bytes
+
+
+def capacity(memory):
+    """Admit one bounded allocation beside every live peer, or refuse.
+
+    The charge is filed against the calling execution and ends with the
+    container it admitted, or with that execution when it dies.
+    """
+    bounds(memory)
+    available_bytes = available()
+    admission.reserve(memory, available_bytes, ADMISSION_MARGIN)
+    return available_bytes
 
 
 class Container:
@@ -60,7 +85,7 @@ class Container:
                 not 16 <= pids <= 512 or not 1 <= deadline <= 1800 or
                 not 1024**2 <= work <= 12 * GIB):
             raise ValueError("job resource limits exceed the admitted bounds")
-        capacity(memory)
+        self.reservation = None
         policy = Path("/etc/stateengine-ci/seccomp.json")
         info = policy.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
@@ -90,6 +115,10 @@ class Container:
         if self.journal:
             self.journal.intent(self.name)
         try:
+            # Charge before creating, so a peer's container is never started
+            # against headroom this one is about to take.
+            capacity(memory)
+            self.reservation = admission.holder()
             raw = (self.journal.create(self.name, [*args, image, "hold"]) if self.journal else
                    command(*args, image, "hold").decode().strip())
             if not re.fullmatch(r"[a-f0-9]{64}", raw):
@@ -163,8 +192,17 @@ class Container:
         return proof
 
     def close(self):
-        if self.id is None:
-            return
+        # The charge ends with the container it was admitted for, whether
+        # creation failed, a later stage failed, or the run completed.
+        try:
+            if self.id is not None:
+                self.remove()
+        finally:
+            self.id = None
+            admission.release(self.reservation)
+            self.reservation = None
+
+    def remove(self):
         identity = self.id
         outside = self.inspect()
         if self.journal:

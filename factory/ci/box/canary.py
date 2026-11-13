@@ -14,7 +14,7 @@ import tarfile
 import time
 
 from controller import exclusive, write
-from engine import Container, command, engine_args, capacity
+from engine import Container, command, engine_args, admits
 from transport import execute, export
 
 
@@ -242,9 +242,9 @@ def check(image, output):
             if host.poll() is not None or before != (hashlib.sha256(secret.read_bytes()).hexdigest(), stat.S_IMODE(secret.stat().st_mode)):
                 raise RuntimeError("host canary changed")
             results["host_survived"] = True
-            results["reserve_bytes"] = capacity(256*1024**2)
+            results["reserve_bytes"] = admits(256*1024**2)
             try:
-                capacity(18*1024**3)
+                admits(18*1024**3)
                 results["full_job_capacity"] = True
             except RuntimeError:
                 results["full_job_capacity"] = False

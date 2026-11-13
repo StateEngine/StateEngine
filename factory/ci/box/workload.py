@@ -3,7 +3,7 @@ import re
 import threading
 
 from box_result import details
-from engine import Container, capacity
+from engine import Container, admits
 from transport import execute, WorkloadFailure
 
 GIB = 1024**3
@@ -171,7 +171,7 @@ class Cohort:
     @staticmethod
     def combined(names):
         # Retain the existing caller's admission API; stages now share one cap.
-        capacity(MEMORY)
+        admits(MEMORY)
 
     def run(self):
         passed = {}

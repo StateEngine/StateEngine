@@ -10,7 +10,7 @@ import tarfile
 import urllib.request
 import uuid
 
-from engine import account_args, capacity, command
+from engine import account_args, admits, command
 from github_binding import POLICY_FILES, policy_paths
 
 NODE = "node-v22.23.4-linux-x64.tar.xz"
@@ -36,7 +36,7 @@ def policy_files(repo, source):
 
 
 def build(args):
-    capacity(4 * 1024**3)
+    admits(4 * 1024**3)
     if not re.fullmatch("[a-f0-9]{40}", args.trusted_source):
         raise ValueError("exact trusted main commit required")
     subprocess.run(["git", "-C", str(args.repo), "merge-base", "--is-ancestor",

@@ -48,10 +48,11 @@ The legacy fixed metadata and check operation markers remain available to the
 adapter, but this workflow does not schedule them on the box.
 
 Without a slots map the full run retains its 18 GiB cap and eight CPU cores.
-With both slots configured, each run has a 9 GiB cap, four CPU cores and four
-compiler workers; both together stay below 18 GiB, leaving 6 GiB in the reserved
-24 GiB. Every container still checks actual available memory and preserves 6 GiB
-after its own allocation. The outside deadline remains 30 minutes.
+With both slots configured, each run has a 16 GiB cap, four CPU cores and four
+compiler workers; admission charges the second slot's cap against the first
+slot's live reservation, so a pair starts only when both caps, the 6 GiB
+margin and the box's actual available memory all fit. The outside deadline
+remains 30 minutes.
 Jobs take a shared maintenance lock and an exclusive lease for their fixed slot.
 Image/dependency preparation and manual shadow work keep the exclusive maintenance
 lock, so they cannot overlap either slot. Custody metadata updates are serialized;

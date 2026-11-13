@@ -62,7 +62,7 @@ class ResourceProfileReview(unittest.TestCase):
                     patch.object(real_cohort, 'run', run):
                 if entry == 'hook':
                     with patch.object(hook, 'Cohort', side_effect=cohort), \
-                            patch.object(hook, 'capacity'), \
+                            patch.object(hook, 'admits'), \
                             patch.object(hook, 'venue', side_effect=lambda _: nullcontext()), \
                             patch.object(hook, 'journal_at', return_value=journal), \
                             patch.object(hook.signal, 'signal'), patch.object(hook, 'JOBS', ('fmt',)):
