@@ -72,3 +72,9 @@ impl RemoteCallContext {
         })
     }
 }
+
+pub fn refused(reason: &str) -> se_types::SeError {
+    se_types::SeError::new(se_types::Detail::CapabilityInvalid(se_types::details::CapabilityInvalid {
+        subject:"remote client authority".into(),reason:reason.into(),next_step:"Use the saved machine connection and current authorized source session. Revoked access requires explicit authorization through the machine owner.".into(),
+    }))
+}

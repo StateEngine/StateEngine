@@ -111,7 +111,7 @@ impl Watch {
             _ => 5000,
         };
         self.retry_step = self.retry_step.saturating_add(1);
-        let jitter = u64::from(u16::from_le_bytes(session::entropy::<2>()?)) % 41 + 80;
+        let jitter = u64::from(u16::from_le_bytes(crate::entropy::<2>()?)) % 41 + 80;
         let delay = Duration::from_millis((base * jitter / 100).min(5000));
         let delay = match hint {
             se_types::Retry::After(minimum) => delay.max(*minimum),
@@ -316,5 +316,5 @@ fn retryable(error: &SeError) -> bool {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/support/watch_drain_consumer_review.rs"]
+#[path = "../../tests/support/watch_drain_consumer_review.rs"]
 mod review;

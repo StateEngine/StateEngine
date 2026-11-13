@@ -2,9 +2,11 @@
 #[cfg(feature = "remote")]
 mod store;
 #[cfg(feature = "remote")]
+pub(crate) use se_remote::entropy;
+#[cfg(feature = "remote")]
 pub use store::SecurityStore;
 #[cfg(feature = "remote")]
-pub(crate) use store::{entropy, event_id, now};
+pub(crate) use store::{event_id, now};
 #[cfg(feature = "remote")]
 pub(crate) mod control;
 #[cfg(feature = "remote")]

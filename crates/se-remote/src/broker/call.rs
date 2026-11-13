@@ -1,19 +1,19 @@
 //! Closed per-call scope checks and client dispatch.
 use super::*;
-impl RemoteBroker {
+impl<B: Budget> RemoteBroker<B> {
     /// Native admission precedes this call; human key selection also requires
     /// the verified current console/ancestry observation.
     #[expect(
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    pub(crate) async fn execute(
+    pub async fn execute(
         &self,
         operation: AnyOp,
         admission: &Admission,
         terminal: &HumanTerminal,
         source: Option<VerifiedSourceSession>,
-        deadline: &crate::client::lease::Deadline,
+        deadline: &B,
     ) -> Result<AnyOutput> {
         operation.validate()?;
         se_core::admission::authorize(operation.meta(), admission)?;

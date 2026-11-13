@@ -10,13 +10,14 @@ publish.workspace = true
 default = ["runtime", "listener"]
 import = ["se-core/import"]
 runtime = ["dep:tokio"]
-listener = ["runtime", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util"]
+listener = ["runtime", "se-remote/listener", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util"]
 secode = ["runtime", "listener", "dep:secode-stateengine-api"]
-remote = ["dep:base64", "dep:subtle", "listener", "tokio/fs", "dep:chacha20poly1305", "tokio/macros"]
+remote = ["se-remote/remote", "dep:base64", "dep:subtle", "listener", "tokio/fs", "dep:chacha20poly1305", "tokio/macros"]
 
 [dependencies]
 secode-stateengine-api = { version = "=2.0.0", optional = true }
 se-types = { path = "../se-types" }
+se-remote = { path = "../se-remote" }
 se-core = { path = "../se-core" }
 se-store = { path = "../se-store" }
 se-proc = { path = "../se-proc" }

@@ -172,11 +172,11 @@ impl Shared {
     }
     fn allocate(&self, mutation: bool) -> Result<(RequestId, Admission)> {
         let request = self.requests.clone().try_acquire_owned().map_err(|_| {
-            super::super::channel::busy("outstanding request capacity reached for this device")
+            crate::channel::busy("outstanding request capacity reached for this device")
         })?;
         let mutation = if mutation {
             Some(self.mutations.clone().try_acquire_owned().map_err(|_| {
-                super::super::channel::busy("outstanding mutation capacity reached for this device")
+                crate::channel::busy("outstanding mutation capacity reached for this device")
             })?)
         } else {
             None
@@ -309,7 +309,7 @@ impl Shared {
     }
 }
 impl Connection {
-    pub fn new(socket: super::super::channel::Socket) -> Arc<Self> {
+    pub fn new(socket: crate::channel::Socket) -> Arc<Self> {
         pump::open(socket)
     }
     pub async fn close(&self) -> Result<()> {
@@ -335,7 +335,7 @@ impl Connection {
     }
     pub fn check_retry(&self) -> Result<()> {
         let terminal = self.shared.terminal.lock().map_err(|_| {
-            auth::refused(
+            crate::authority_refused(
                 "client authority failure state is unreadable; reopen the binding after recovery",
             )
         })?;
@@ -440,5 +440,5 @@ impl Connection {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/support/watch_drain_queue_fixture.rs"]
+#[path = "../../tests/support/watch_drain_queue_fixture.rs"]
 pub(super) mod review_fixture;

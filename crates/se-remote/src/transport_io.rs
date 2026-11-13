@@ -18,7 +18,7 @@ use tokio::{
 };
 
 #[derive(Default)]
-pub(super) struct Controls {
+pub struct Controls {
     authenticated: AtomicBool,
     framing: AtomicBool,
     handshake_bytes: AtomicUsize,
@@ -46,7 +46,7 @@ impl Controls {
 fn limit_error() -> io::Error {
     io::Error::other("remote pre-authentication aggregate byte limit")
 }
-pub(super) struct BudgetIo<S> {
+pub struct BudgetIo<S> {
     inner: S,
     controls: Arc<Controls>,
 }
@@ -108,7 +108,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for BudgetIo<S> {
     }
 }
 
-pub(super) struct FramedIo<S> {
+pub struct FramedIo<S> {
     inner: S,
     controls: Arc<Controls>,
     observer: Observer,

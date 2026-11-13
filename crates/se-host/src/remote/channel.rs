@@ -5,29 +5,12 @@ use super::{
     *,
 };
 use futures_util::StreamExt;
-use se_types::{ApiVersion, Detail, Result, SeError, details};
+use se_types::{ApiVersion, Result, SeError};
 use std::{sync::Arc, time::Duration};
 use tokio::{net::TcpStream, time::timeout};
-use tokio_tungstenite::{
-    WebSocketStream,
-    tungstenite::{Message, protocol::WebSocketConfig},
-};
+use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
 
-pub(super) type Socket = WebSocketStream<FramedIo<BudgetIo<TcpStream>>>;
-pub(super) const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-pub(super) fn unavailable(reason: &str) -> SeError {
-    SeError::new(Detail::ListenerUnavailable(details::ListenerUnavailable {
-        subject: "remote machine connection".into(), reason: reason.into(),
-        next_step: "Check the saved SSH destination and machine name. Keep the original request key when retrying a send.".into(),
-    }))
-}
-/// Resource pressure refuses one operation without changing its authority.
-pub(super) fn busy(reason: &str) -> SeError {
-    SeError::new(Detail::RemoteBusy(details::RemoteBusy {
-        reason: reason.into(),
-        next_step: "Let outstanding work finish or cancel a read/watch, then retry the request; retain the SSH binding and original send idempotency key.".into(),
-    }))
-}
+pub(super) use se_remote::channel::{Socket, busy, unavailable};
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
