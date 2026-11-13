@@ -2,7 +2,11 @@
 #![cfg(any(target_os = "linux", windows))]
 use rusqlite::{Connection, OpenFlags};
 use se_store::*;
-use std::{io::Write, path::Path, time::Duration};
+use std::{
+    io::Write,
+    path::Path,
+    time::{Duration, Instant},
+};
 #[path = "support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -124,7 +128,9 @@ fn direct_receipt_defers_soft_maintenance_without_hiding_commit() -> Check {
 }
 
 /// Protects: sustained writes cannot postpone the hard cutoff; a blocked reader
-/// permits at most one committed group overshoot, then retry is refused unchanged.
+/// permits at most one committed group overshoot, then retry is refused unchanged,
+/// and after the reader releases the original operation commits again with the
+/// live WAL back under the cutoff.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -208,15 +214,31 @@ fn pressure_blocks_growth_and_retries_after_reader_releases() -> Check {
         0
     );
     pinned.execute_batch("ROLLBACK")?;
-    let retry = wait(client.submit(payload(&f, "pressure-retry")?)?)??;
-    assert_eq!(retry.state, CommitState::Committed);
-    assert!(
-        retry
-            .write_timings
-            .as_ref()
-            .is_some_and(|t| t.checkpoint.is_some()),
-        "pressure retry did not block on truncation before appending"
-    );
+    // The cutoff may be paid by the retry's own truncation or by the
+    // maintenance task's next tick, and a tick that started before the
+    // release may still hold the WAL lock when the retry arrives, so the
+    // contract is the store's own remedy for the pressure refusal: retry
+    // the original operation. A refused append recorded no rows (asserted
+    // above), so the same request key is resubmitted unchanged until it
+    // lands; a store that stays past the cutoff after the reader released
+    // is a regression, so the deadline fails loudly instead of looping on
+    // a stuck store.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut attempts = 0usize;
+    let retry = loop {
+        attempts += 1;
+        match wait(client.submit(payload(&f, "pressure-retry")?)?)? {
+            Ok(receipt) if receipt.state == CommitState::Committed => break receipt,
+            Ok(_) => return Err("pressure retry returned a non-committed state".into()),
+            Err(error) if error.code == StoreErrorCode::Busy && error.cause.contains("64 MiB") => {
+                if Instant::now() >= deadline {
+                    return Err("pressure retry still refused after the reader released".into());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
     assert!(
         wal(&outside)?.2 < HARD,
         "released pressure did not truncate live WAL"
@@ -231,7 +253,7 @@ fn pressure_blocks_growth_and_retries_after_reader_releases() -> Check {
     ));
     healthy(&outside)?;
     eprintln!(
-        "pressure controls: {} committed groups, cutoff={}, largest_group_growth={largest_group_growth}, high_water={before}, two unchanged refusals, retry committed",
+        "pressure controls: {} committed groups, cutoff={}, largest_group_growth={largest_group_growth}, high_water={before}, two unchanged refusals, retry committed in {attempts} attempt(s)",
         commits.len(),
         HARD
     );
