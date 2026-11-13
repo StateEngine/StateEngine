@@ -18,7 +18,7 @@ pub fn agent(value: &AgentReceipt, out: &mut impl Write) -> io::Result<()> {
     if let Some(previous) = &value.previous_name {
         writeln!(out, "Previous name: {previous}")?;
     }
-    let provider = super::labels::provider(value.agent.provider);
+    let provider = super::labels::harness(value.agent.provider, value.agent.harness.as_deref());
     writeln!(
         out,
         "Provider: {provider}; permission profile: {}",
@@ -107,6 +107,9 @@ pub fn agent_status(value: &AgentStatusOutput, out: &mut impl Write) -> io::Resu
     match &value.agent {
         se_types::Read::Present { value } => {
             writeln!(out, "Agent {} ({})", value.name, value.id)?;
+            if let Some(harness) = &value.harness {
+                writeln!(out, "Harness: {harness}")?;
+            }
             writeln!(out, "Permission profile: {}", value.profile)?;
             super::transcript::render(&value.session.transcript, out)?;
             if let Some(model) = &value.model {
@@ -170,7 +173,7 @@ pub(super) fn agents(
             "{} ({}) — {}; saved profile {}",
             agent.name,
             agent.id,
-            super::labels::provider(agent.provider),
+            super::labels::harness(agent.provider, agent.harness.as_deref()),
             agent.profile
         )?;
         writeln!(out, "  Session: {}", agent.session.state)?;
