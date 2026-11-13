@@ -52,7 +52,7 @@ def latest(state, directory, record, status):
         "service_invocation_id": record.get("service_invocation_id"), "status": status})
 
 
-def checkpoint(state, directory, record):
+def checkpoint(state, directory, record, config=None):
     save(directory / "run.json", record)
     interrupted = record["state"] == "interrupted"
     unavailable = {"state": "interrupted" if interrupted else "partial", "complete": False,
@@ -65,8 +65,15 @@ def checkpoint(state, directory, record):
     except Exception as error:
         unavailable["errors"] = ["report publication failed: " + str(error)]
         latest(state, directory, record, unavailable)
+        if config:
+            from night_status import record_status
+            record_status(config, directory, record, None, unavailable["errors"])
         raise
     latest(state, directory, record, report["status"])
+    if config and (record["state"] in {"finished", "interrupted"}
+                   or report["status"]["outcome"] == "FAIL"):
+        from night_status import record_status
+        record_status(config, directory, record, report)
     return report
 
 
@@ -92,7 +99,7 @@ def begin(config, activate=True, bind_service=True):
         save(services / (identity + ".json"), pointer)
     if activate:
         save(state / "current.json", pointer)
-    checkpoint(state, directory, record)
+    checkpoint(state, directory, record, config)
     return state, directory, record
 
 
@@ -142,5 +149,5 @@ def service_exit(config):
     if not completed:
         record["state"] = "interrupted"
         record["errors"].append("service=" + result + " exit=" + code + ":" + status)
-    checkpoint(state, directory, record)
+    checkpoint(state, directory, record, config)
     return 0
