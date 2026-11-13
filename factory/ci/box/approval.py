@@ -328,10 +328,14 @@ def approve(request):
                                      "merged commit may update approval")
                 report = dict(report, policy_source=tip)
                 binding = dict(binding, source=tip)
-            if LIVE.read_bytes() != original:
-                raise RuntimeError("maintainer configuration changed during preparation; no approval was published")
             snapshot = directory / "image.json"
             record(snapshot, report, controller.pw_gid)
+            # Fetching and reading the policy can outlast another merge. The
+            # last witnessed tip must still be the one whose bytes we checked.
+            if main_tip(api) != binding["source"]:
+                raise ValueError("main advanced again during policy recheck; rerun approval")
+            if LIVE.read_bytes() != original:
+                raise RuntimeError("maintainer configuration changed during preparation; no approval was published")
             updated = dict(live, image_report=str(snapshot), cache=str(cache), cache_sha256=cache_sha256)
             replace(LIVE, (json.dumps(updated, indent=2) + "\n").encode())
             result = {"status": "approved", **binding, "image": report["image"], "cache_sha256": cache_sha256,

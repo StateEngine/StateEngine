@@ -33,22 +33,40 @@ if (request.command === 'run_script_step') {
 request.context = Object.fromEntries(['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT',
   'GITHUB_EVENT_NAME', 'GITHUB_REF']
   .map(name => [name, process.env[name]]));
-// The job summary and annotations are the only place a seat can read a box
-// result from: the controller log is root-only, and a hosted fallback used to
-// look identical to a passing box. The controller cannot write these itself
-// (its env is empty under sudo), so this hook publishes what it is told, and a
-// fallback that gives no reason still says so rather than staying silent.
+// Match the public-output scrub in scripts/ci/box_result.py, including locally
+// generated diagnostics that never passed through the Python controller.
+function scrub(value) {
+  return String(value || '')
+    .replace(/(?<![\w.])\/(?:[^\s/"'<>]+\/)*[^\s/"'<>]*/g, '<path>')
+    .replace(/[A-Za-z]:\\(?:[^\s\\"'<>]+\\)*[^\s\\"'<>]*/g, '<path>')
+    .replace(/\b(?:ghs_|ghp_|gho_|ghu_|ghr_|github_pat_)[A-Za-z0-9_]+/g, '<redacted>')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer <redacted>')
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}/g, '<redacted>')
+    .replace(/\b[0-9a-f]{32,}\b/gi, '<redacted>')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '<id>')
+    .replace(/\bboot_id: \[[^\]]*\]/g, 'boot_id <id>')
+    .replace(/MachineId\([^)]*\)/g, 'MachineId(<id>)')
+    .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, '<email>');
+}
+// Reporting is decoration of the witnessed controller result. A runner-file
+// failure must not change that result or throw again while reporting an error.
 function announce(outputs, summary) {
-  const lines = String(summary || '').trim().split('\n').filter(Boolean);
+  const lines = scrub(summary).trim().split('\n').filter(Boolean);
   const detail = lines.filter(line => !line.startsWith('{'));
   const level = outputs.status === 'passed' ? 'notice' : outputs.status === 'failed' ? 'error' : 'warning';
   const title = outputs.status === 'passed' ? 'Box Linux checks passed'
     : outputs.status === 'failed' ? 'Box Linux checks failed'
-    : 'Box Linux checks unavailable; the complete hosted chain ran instead';
+    : 'Box Linux checks unavailable; hosted completion unverified';
   console.log(`::${level} title=${title}::${detail.length ? detail.join(' ').slice(0, 900) : 'no reason was reported'}`);
   for (const line of detail) console.error(line);
   const target = process.env.GITHUB_STEP_SUMMARY;
-  if (target) fs.appendFileSync(target, `### ${title}\n\n${detail.length ? detail.map(line => '- ' + line).join('\n') : 'No reason was reported.'}\n\n`);
+  if (target) {
+    try {
+      fs.appendFileSync(target, `### ${title}\n\n${detail.length ? detail.map(line => '- ' + line).join('\n') : 'No reason was reported.'}\n\n`);
+    } catch {
+      console.error('Job summary could not be written; controller outcome is unchanged.');
+    }
+  }
 }
 async function execute() {
   let child, canceled = false, overflow = false;
@@ -102,12 +120,12 @@ async function execute() {
     // A controller that dies before it can classify its own work is still a
     // box result a seat has to read, and it used to leave the summary empty.
     announce({ status: 'unavailable' }, process.env.STATEENGINE_BOX_REASON
-      || 'the box controller exited without a result; the hosted chain ran instead');
+      || 'the box controller exited without a result; box work and hosted completion are unverified');
   }
   return status.code === 0 && result.exit_code === 0 ? 0 : 1;
 }
 execute().then(code => { process.exitCode = code; }, error => {
   // Same rule on the hook's own failure path: no silent job.
-  announce({ status: 'unavailable' }, `the CI hook failed before a result: ${error.message}`);
-  console.error(error.message); process.exitCode = 1;
+  process.exitCode = 1;
+  announce({ status: 'unavailable' }, `the CI hook could not publish a result: ${error.message}`);
 });

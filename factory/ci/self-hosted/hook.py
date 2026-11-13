@@ -374,6 +374,8 @@ def linux_step(config, report, directory, *, all_features=False, disclosed=None)
         named = list(cohort.failed) if cohort else []
         disclosed.extend(named or ["a box stage failed without naming a test"])
     status = "failed" if failed else "unavailable" if unavailable else "passed"
+    if unavailable:
+        disclosed.append("completed box stages: " + (", ".join(sorted(outcomes)) or "none"))
     windows = "passed" if outcomes.get("windows-clippy") is True else "unavailable"
     if outcomes.get("windows-clippy") is False:
         windows = "failed"
@@ -390,15 +392,18 @@ def summary_text(status, disclosed):
     # token. `details()` scrubs its own entries too; this is the last boundary.
     head = scrub({"passed": "every box stage passed",
                   "failed": "a box stage failed; the complete check is red, not hosted",
-                  "unavailable": "the box did not run this job; the complete hosted chain ran instead"}[status])
-    kept, total = [], len(head)
+                  "unavailable": "box checks incomplete; hosted fallback required, completion unverified"}[status])
+    marker = "(further reasons omitted)"
+    kept, total = [], len(head.encode("utf-8"))
     for line in disclosed:
-        line = scrub(str(line))[:LOCATE_BYTES]
-        if total + len(line) + 2 > FAIL_BYTES:
-            kept.append("(further reasons omitted)")
+        line = scrub(str(line)).encode("utf-8", "replace")[:LOCATE_BYTES].decode("utf-8", "ignore")
+        added = len(line.encode("utf-8")) + 1
+        # Reserve the newline and marker before accepting another reason.
+        if total + added + len(marker.encode("utf-8")) + 1 > FAIL_BYTES:
+            kept.append(marker)
             break
         kept.append(line)
-        total += len(line) + 2
+        total += added
     return "\n".join([head, *kept])
 
 
