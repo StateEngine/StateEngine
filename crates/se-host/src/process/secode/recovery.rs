@@ -266,7 +266,7 @@ impl LaunchCoordinator {
                 .run_owned(deadline, move || Control::open(&profile, &endpoint))
                 .await?,
         );
-        if service.journal.identity.is_none() && !service.journal.initial_offered {
+        if service.journal.unprovisioned() {
             let health = control.read(&["api", "health"], deadline).await?;
             if health.is_null() {
                 return Err(error(

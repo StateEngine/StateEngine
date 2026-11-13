@@ -73,6 +73,10 @@ pub(super) struct Notice {
     pub messages: Vec<String>,
 }
 impl Journal {
+    pub(super) fn unprovisioned(&self) -> bool {
+        self.identity.is_none() && !self.initial_offered
+    }
+
     pub(super) fn require_registration(&self, current: &[u8]) -> Result<()> {
         let matches = if let Some(repair) = self
             .capability_repair
