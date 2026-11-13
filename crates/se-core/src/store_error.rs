@@ -281,3 +281,47 @@ impl se_types::OperationCommand for ExistingAgent<'_> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use se_store::{StoreDetail, StoreErrorCode};
+    use se_types::{Remedy, Retry};
+
+    fn busy(detail: StoreDetail) -> Box<StoreError> {
+        Box::new(StoreError {
+            code: StoreErrorCode::Busy,
+            cause: "database is locked".into(),
+            detail,
+            remedy: Remedy {
+                text: "retry the original operation".into(),
+                command: None,
+            },
+            retry: Retry::AfterReread,
+        })
+    }
+    fn waited_ms(error: &StoreError) -> u64 {
+        let mapped = store_error(error);
+        let Detail::StoreBusy(detail) = mapped.body.detail() else {
+            panic!("expected StoreBusy, got {:?}", mapped.body.detail())
+        };
+        detail.waited_ms
+    }
+    #[test]
+    fn a_consumed_busy_wait_reports_the_configured_bound() {
+        let error = busy(StoreDetail::BusyWait {
+            waited_ms: 250,
+            extended_code: 5,
+        });
+        assert_eq!(waited_ms(&error), 250);
+    }
+    #[test]
+    fn an_unmeasured_busy_refusal_stays_zero() {
+        let error = busy(StoreDetail::None);
+        assert_eq!(waited_ms(&error), 0);
+    }
+    #[test]
+    fn native_contention_keeps_its_measured_wait() {
+        let error = busy(StoreDetail::NativeContention { waited_ms: 7 });
+        assert_eq!(waited_ms(&error), 7);
+    }
+}

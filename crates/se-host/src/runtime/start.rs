@@ -485,3 +485,14 @@ fn acquire_runtime_lease(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::HOST_STORE_BUSY_TIMEOUT;
+    use std::time::Duration;
+
+    #[test]
+    fn the_host_store_wait_rides_out_a_checkpoint_truncate() {
+        assert_eq!(HOST_STORE_BUSY_TIMEOUT.as_millis(), 1000);
+        assert!(HOST_STORE_BUSY_TIMEOUT <= Duration::from_secs(5));
+    }
+}
