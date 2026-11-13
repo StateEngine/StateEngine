@@ -1,0 +1,70 @@
+#!/bin/sh
+# Install the exact checksummed release as the current user.
+set -eu
+umask 077
+fail() { printf 'Install refused: %s\n' "$*" >&2; exit 1; }
+version='@VERSION@'
+base='@BASE@'
+case "$(uname -s):$(uname -m)" in
+@TARGETS@
+    *) fail 'supported platforms are Linux x86_64 and macOS arm64/x86_64' ;;
+esac
+for tool in curl tar mktemp awk; do
+    command -v "$tool" >/dev/null 2>&1 || fail "required command is absent: $tool"
+done
+if [ "$macos" = 1 ]; then hash=shasum; else hash=sha256sum; fi
+command -v "$hash" >/dev/null 2>&1 || fail "required checksum command is absent: $hash"
+work=$(mktemp -d "${TMPDIR:-/tmp}/stateengine-download.XXXXXX") || fail 'cannot create private download scratch'
+preserve_input=0
+cleanup() {
+    if [ "$preserve_input" = 1 ]; then
+        printf 'Verified installation input retained at %s; follow the installer recovery instruction above.\n' "$bundle" >&2
+    else
+        rm -rf "$work"
+    fi
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+curl --proto '=https' --proto-redir '=https' -fsSL --retry 2 \
+    -o "$work/archive" "$base/$archive" || fail 'release download failed; check your network and retry this installer'
+if [ "$macos" = 1 ]; then
+    sum=$(shasum -a 256 < "$work/archive") || fail 'cannot hash the download'
+else
+    sum=$(sha256sum < "$work/archive") || fail 'cannot hash the download'
+fi
+[ "${sum%% *}" = "$checksum" ] || fail 'release checksum differs; preserve your installation and retry the published installer'
+# Validate names and entry types before extraction, including links that could
+# redirect a later archive member outside this invocation's private scratch.
+tar -tzf "$work/archive" > "$work/names" || fail 'release archive cannot be listed'
+LC_ALL=C tar -tvzf "$work/archive" > "$work/types" || fail 'release archive types are unreadable'
+awk 'substr($0,1,1)!="-" && substr($0,1,1)!="d" {exit 1}' "$work/types" \
+    || fail 'release archive contains a link or special file'
+root=${archive%.tar.gz}
+awk -v root="$root" '
+    NR>10000 {exit 1}
+    $0 !~ /^[A-Za-z0-9_.\/+\-]+$/ {exit 1}
+    $0 != root && $0 != root "/" && index($0,root "/")!=1 {exit 1}
+    $0 ~ /(^|\/)\.\.?($|\/)/ || $0 ~ /\/\// {exit 1}
+    seen[$0]++ {exit 1}
+    END {if (NR==0) exit 1}
+' "$work/names" || fail 'release archive has unsafe or duplicate paths'
+mkdir "$work/extracted"
+tar -xzf "$work/archive" -C "$work/extracted" || fail 'release extraction failed'
+bundle=$work/extracted/$root
+[ -f "$bundle/install.sh" ] && [ -f "$bundle/manifest.json" ] || fail 'release installer or manifest is absent'
+field() { sed -n "s/^  \"$1\": \"\([^\"]*\)\",\{0,1\}$/\1/p" "$bundle/manifest.json"; }
+[ "$(field version)" = "$version" ] && [ "$(field target)" = "$target" ] \
+    || fail 'release version or target differs from this installer'
+printf 'Installing StateEngine %s (unsigned release, SHA-256 verified)...\n' "$version"
+# A child may have durably recorded a partial installation before refusing or
+# being interrupted. Its printed recovery command must keep its original input.
+preserve_input=1
+sh "$bundle/install.sh" || fail 'installation did not complete; follow the installer refusal above before retrying'
+installed=${HOME:?}/.local/bin/se
+actual=$("$installed" --version) || fail 'installed command version readback failed'
+expected=$("$bundle/se" --version) || fail 'release command version readback failed'
+[ "$actual" = "$expected" ] || fail 'installed version differs from the verified release'
+preserve_input=0
+rm -rf "$work" || fail 'installation verified, but download scratch cleanup failed'
+trap - 0
+printf 'Verified: %s\n' "$actual"

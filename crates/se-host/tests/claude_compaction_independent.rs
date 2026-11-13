@@ -18,7 +18,7 @@ mod support;
 use support::*;
 
 const COMPACT: &[u8] = include_bytes!("fixtures/claude-2.1.317-compact-boundary.jsonl");
-const CONVERSATION: &str = "01a1a4cd-d140-70df-bd3c-f3f879fce410";
+const CONVERSATION: &str = "00000000-0000-4000-8000-000000000001";
 
 fn line(value: Value) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut bytes = serde_json::to_vec(&value)?;
@@ -89,7 +89,7 @@ fn exercise(broken: Option<Vec<u8>>) -> Check {
     if broken.is_none() {
         require(
             format!("{:x}", Hasher::digest(COMPACT))
-                == "c31777638f9835f4f4332aab895bbce69ab1b433606c806d48a3bcfc4819fc23",
+                == "0219f726a87e8a3783d814608f2758f69ea9aadb591e15d7321cfa7f1c0167b1",
             "retained stock compaction record changed",
         )?;
         bytes.extend_from_slice(COMPACT);

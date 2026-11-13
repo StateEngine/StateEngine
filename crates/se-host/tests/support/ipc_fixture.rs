@@ -49,7 +49,7 @@ impl Home {
         let address = IpcEndpoint::UnixSocket(NativePath::from_local(self.0.join("ipc"))?);
         #[cfg(windows)]
         let address = IpcEndpoint::WindowsPipe(format!(
-            r"\\.\pipe\otto-ipc-{}-{}",
+            r"\\.\pipe\se-test-ipc-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));

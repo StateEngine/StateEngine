@@ -1,0 +1,73 @@
+# Install the exact checksummed release as the current user, from a file or irm/iex.
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$version = '@VERSION@'
+$base = '@BASE@'
+$archive = '@ARCHIVE@'
+$checksum = '@CHECKSUM@'
+if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem -or
+    [Environment]::GetEnvironmentVariable('PROCESSOR_ARCHITEW6432') -eq 'ARM64' -or
+    $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { throw 'Install refused: this release requires Windows x64' }
+$work = Join-Path ([IO.Path]::GetTempPath()) ('stateengine-download-' + [Guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($work)
+$preserveInput = $false
+try {
+    $download = Join-Path $work 'archive.zip'
+    Invoke-WebRequest -UseBasicParsing -Uri "$base/$archive" -OutFile $download
+    if ((Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash.ToLowerInvariant() -cne $checksum) {
+        throw 'release checksum differs; preserve your installation and retry the published installer'
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($download)
+    $root = $archive.Substring(0, $archive.Length - 4)
+    $extract = Join-Path $work 'extracted'
+    [void][IO.Directory]::CreateDirectory($extract)
+    try {
+        $names = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        $total = [long]0
+        if ($zip.Entries.Count -eq 0 -or $zip.Entries.Count -gt 10000) { throw 'release entry count is invalid' }
+        foreach ($entry in $zip.Entries) {
+            $name = $entry.FullName
+            $kind = ($entry.ExternalAttributes -shr 16) -band 0xF000
+            if ($name -cnotmatch '^[A-Za-z0-9_./+\-]+$' -or
+                -not $name.StartsWith($root + '/', [StringComparison]::Ordinal) -or
+                $name -match '(^|/)\.\.?($|/)|//' -or -not $names.Add($name) -or
+                $kind -notin @(0, 0x8000, 0x4000)) { throw 'release archive contains an unsafe path or entry type' }
+            $total += $entry.Length
+            if ($entry.Length -gt 4GB -or $total -gt 8GB) { throw 'release extraction size exceeds its bound' }
+        }
+        foreach ($entry in $zip.Entries) {
+            $destination = Join-Path $extract $entry.FullName
+            if ($entry.FullName.EndsWith('/')) {
+                [void][IO.Directory]::CreateDirectory($destination)
+            } else {
+                [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination, $false)
+            }
+        }
+    } finally { $zip.Dispose() }
+    $bundle = Join-Path $extract $root
+    $manifest = [IO.File]::ReadAllText((Join-Path $bundle 'manifest.json')) | ConvertFrom-Json
+    if ($manifest.version -cne $version -or $manifest.target -cne 'x86_64-pc-windows-msvc') {
+        throw 'release version or target differs from this installer'
+    }
+    Write-Output "Installing StateEngine $version (unsigned release, SHA-256 verified)..."
+    # Preserve the exact archive input if the child leaves a recovery journal,
+    # refuses after handoff, or is interrupted before its completion readback.
+    $preserveInput = $true
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $bundle 'install.ps1')
+    if ($LASTEXITCODE -ne 0) { throw 'installation did not complete; follow the installer refusal above before retrying' }
+    $installed = Join-Path $env:LOCALAPPDATA 'StateEngine/bin/se.exe'
+    $actual = & $installed --version
+    if ($LASTEXITCODE -ne 0) { throw 'installed command version readback failed' }
+    $expected = & (Join-Path $bundle 'se.exe') --version
+    if ($LASTEXITCODE -ne 0 -or ($actual -join "`n") -cne ($expected -join "`n")) { throw 'installed version differs from the verified release' }
+    $preserveInput = $false
+} catch {
+    throw "Install refused: $($_.Exception.Message)"
+} finally {
+    if ($preserveInput) {
+        [Console]::Error.WriteLine("Verified installation input retained at $bundle; follow the installer recovery instruction above.")
+    } elseif ([IO.Directory]::Exists($work)) { [IO.Directory]::Delete($work, $true) }
+}
+Write-Output "Verified: $actual"

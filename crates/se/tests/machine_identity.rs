@@ -30,7 +30,7 @@ impl Home {
         se_proc::initialize_file_creation_owner()?;
         let root = loop {
             let candidate = std::env::temp_dir().join(format!(
-                "otto-machine-{}-{}",
+                "se-test-machine-{}-{}",
                 std::process::id(),
                 uuid::Uuid::new_v4()
             ));

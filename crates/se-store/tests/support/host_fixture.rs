@@ -111,6 +111,11 @@ pub fn host(f: &Fixture) -> Result<(SqliteHost, Arc<Lease>), Box<dyn std::error:
     let (direct, lease) = f.direct()?;
     direct.close()?;
     drop(lease);
+    host_from_existing(f)
+}
+pub fn host_from_existing(
+    f: &Fixture,
+) -> Result<(SqliteHost, Arc<Lease>), Box<dyn std::error::Error>> {
     let lease = Lease::acquire(
         &f.options.state_directory,
         LeaseMode::Host,

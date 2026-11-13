@@ -9,7 +9,7 @@ fn native_path_ingress_requires_a_complete_absolute_path_and_preserves_units()
         r"\\server\share\agent.exe",
         r"\\?\C:\agent.exe",
         r"\\?\UNC\server\share\agent.exe",
-        r"\\.\pipe\otto",
+        r"\\.\pipe\se-test",
         r"\\?\Volume{12345678-1234-1234-1234-123456789abc}\agent.exe",
     ] {
         let encoding = PathEncoding::WindowsUtf16(text.encode_utf16().collect());
