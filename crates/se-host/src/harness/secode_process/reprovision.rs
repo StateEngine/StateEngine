@@ -14,6 +14,9 @@ pub(crate) struct CapabilityRepair {
     pub registration: Sha256,
     pub before: NoticeBinding,
     pub after: Option<NoticeBinding>,
+    /// Persisted before sending. Older pending records have an unknown outcome.
+    #[serde(default = "unknown_attempt")]
+    pub put_attempted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_failure: Option<se_types::ErrorBody>,
 }
@@ -74,6 +77,12 @@ impl CapabilityRepair {
     ) -> Result<RepairPlan> {
         if let Some(previous) = previous.filter(|previous| previous.registration == registration) {
             previous.before.service.require_same(&current.service)?;
+            if !previous.put_attempted
+                && previous.after.is_none()
+                && current.status == NoticeStatus::RebindRequired
+            {
+                return Ok(RepairPlan::Put(previous.clone()));
+            }
             require_bound(&current)?;
             if let Some(after) = &previous.after
                 && (after.target_id != current.target_id || after.binding != current.binding)
@@ -91,6 +100,7 @@ impl CapabilityRepair {
             registration,
             before: current,
             after: None,
+            put_attempted: false,
             write_failure: None,
         };
         repair.validate(&repair.before.session_id)?;
@@ -106,7 +116,7 @@ impl CapabilityRepair {
     }
 
     pub(crate) fn owned_binding(&self) -> Option<&NoticeBinding> {
-        (self.before.status == NoticeStatus::RebindRequired).then_some(())?;
+        (self.put_attempted && self.before.status == NoticeStatus::RebindRequired).then_some(())?;
         self.after.as_ref()
     }
 
@@ -139,6 +149,10 @@ impl CapabilityRepair {
         });
         Ok(self)
     }
+}
+
+fn unknown_attempt() -> bool {
+    true
 }
 
 fn require_bound(binding: &NoticeBinding) -> Result<()> {

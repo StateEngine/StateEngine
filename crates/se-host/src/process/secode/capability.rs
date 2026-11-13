@@ -192,9 +192,17 @@ impl LaunchCoordinator {
                 Ok(credential)
             })
             .await?;
-        service.journal.capability_repair = Some(repair.clone());
-        service.persist(self, deadline).await?;
-        let repaired = repair
+        let mut attempted = repair.clone();
+        attempted.put_attempted = true;
+        service.journal.capability_repair = Some(attempted.clone());
+        if let Err(failure) = service.persist(self, deadline).await {
+            // No PUT was polled. Keep that fact in memory while pending_save
+            // reconciles any publication whose readback failed. A new host
+            // only sees the durable attempted marker and must remain cautious.
+            service.journal.capability_repair = Some(repair);
+            return Err(failure);
+        }
+        let repaired = attempted
             .apply(
                 &control,
                 &credential,
