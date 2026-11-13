@@ -269,10 +269,9 @@ async fn run(
         resume.gateway.clone()
     } else {
         // One active receiver per bot; a new Identify follows the same token's
-        // previous attempt by at least one concurrency window, but the first
-        // attempt has nothing to follow, so it waits nothing. Spacing is per
-        // token, so simultaneous bots do not pace each other. Reconnect with
-        // Resume skips the spacing.
+        // previous attempt by at least one concurrency window, the first
+        // attempt waiting nothing. Spacing is per token, so simultaneous bots
+        // do not pace each other. Reconnect with Resume skips it.
         transport.pace_identify(token).await?;
         let value = transport
             .request(token, Method::GET, "/gateway/bot", None)

@@ -17,17 +17,14 @@ use gateway::Receiver;
 
 type Error = ChannelError;
 const API: &str = "https://discord.com/api/v10";
-/// One gateway concurrency window: a fresh Identify for a token follows that
-/// token's previous attempt by at least this long, the very first attempt
-/// excepted. The window is the spacing the fixed pre-Identify sleep used.
+/// One gateway concurrency window: the spacing the fixed pre-Identify sleep
+/// used; a fresh Identify follows that token's previous attempt by this long.
 const IDENTIFY_WINDOW: Duration = Duration::from_millis(5_000);
 pub struct Discord {
     client: reqwest::Client,
     invalid_sessions: Mutex<VecDeque<String>>,
-    /// Fresh-Identify fire instants keyed by the token's digest, under one
-    /// lock: an entry is when that token's last or reserved attempt consumed a
-    /// gateway concurrency window, even if it failed. The digest keeps the
-    /// token bytes out of the map.
+    /// This token's Identify fire instants, keyed by the token's digest so the
+    /// map never holds token bytes; a reserved attempt counts even if refused.
     identify_fire: Mutex<HashMap<[u8; 32], Instant>>,
 }
 impl Discord {
@@ -52,11 +49,9 @@ impl Discord {
             identify_fire: Mutex::default(),
         })
     }
-    /// Reserves this token's next Identify slot and waits for it. The read of
-    /// the previous fire and the reservation happen under one lock, so two
-    /// tokens claiming together get two different slots, never the same
-    /// instant; the attempt consumed a concurrency window even if it ends in a
-    /// refusal. The first attempt for a token waits nothing.
+    /// Reserves this token's next Identify slot under one lock and waits for
+    /// it, so simultaneous tokens get distinct slots; the first attempt waits
+    /// nothing and a refused attempt still consumed its window.
     async fn pace_identify(&self, token: &se_types::Secret) -> ChannelResult<()> {
         let wait = {
             let mut fire = self
@@ -160,10 +155,8 @@ impl Discord {
         Ok(())
     }
 }
-/// The fire instant a fresh Identify attempt owes its predecessor, per
-/// token: a token's first attempt fires now, a later one follows the previous
-/// fire by at least one full window. The clock is monotonic, so a backwards
-/// wall clock cannot stretch the wait.
+/// The fire instant a fresh Identify attempt owes its predecessor: the first
+/// attempt fires now, a later one at least one full window after the previous.
 fn next_identify_fire(last_fire: Option<Instant>, now: Instant) -> Instant {
     match last_fire {
         Some(last) => now.max(last + IDENTIFY_WINDOW),
