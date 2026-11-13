@@ -1,6 +1,10 @@
 //! Real native helper boundaries; this test image stands in for the Git image.
 #[cfg(target_os = "linux")]
+#[path = "../../test-support/directory.rs"]
+mod directory;
+#[cfg(target_os = "linux")]
 mod linux {
+    use crate::directory::PrivateDirectory;
     use se_proc::atlas_git::{GitRead, read};
     use std::{
         io::{self, Write},
@@ -86,6 +90,7 @@ mod linux {
         }
         let root = std::env::temp_dir().join(format!("se-git-native-{}", std::process::id()));
         std::fs::create_dir(&root)?;
+        let root = PrivateDirectory::adopt(root);
         let outside = root.with_extension("foreign-object");
         std::fs::write(&outside, b"foreign")?;
         std::fs::write(root.join("allowed-object"), b"registered")?;

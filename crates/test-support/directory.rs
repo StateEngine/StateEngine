@@ -24,6 +24,16 @@ impl AsRef<std::path::Path> for PrivateDirectory {
     }
 }
 
+impl PrivateDirectory {
+    /// Adopt a root that this process created itself, so the same drop-time
+    /// cleanup applies. The caller owns the directory: it created it, and it
+    /// holds no links out of it.
+    #[allow(dead_code)]
+    pub fn adopt(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
 impl Drop for PrivateDirectory {
     fn drop(&mut self) {
         // Unwinding is the failure a fixture can observe: keep the tree and
@@ -53,6 +63,7 @@ impl Drop for PrivateDirectory {
     }
 }
 
+#[allow(dead_code)]
 pub fn private_directory() -> Result<PrivateDirectory, Box<dyn Error>> {
     #[cfg(target_os = "macos")]
     let parent = PathBuf::from("/private/tmp");

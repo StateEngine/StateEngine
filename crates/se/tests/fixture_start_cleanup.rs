@@ -2,10 +2,13 @@
 #![cfg(target_os = "linux")]
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 type Check = Result<(), Box<dyn std::error::Error>>;
+#[path = "../../test-support/directory.rs"]
+mod directory;
 #[path = "../../test-support/executable.rs"]
 mod executable;
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
+use directory::PrivateDirectory;
 use executable::ExecutableCommand;
 
 fn command(image: &Path, home: &Path, json: bool) -> Command {
@@ -44,6 +47,7 @@ fn failed_reply_and_panicked_observation_close_the_published_host_but_keep_its_h
     ));
     fs::create_dir(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+    let root = PrivateDirectory::adopt(root);
     let image = root.join("se");
     fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
     for corrupt_reply in [true, false] {
@@ -125,6 +129,5 @@ fn failed_reply_and_panicked_observation_close_the_published_host_but_keep_its_h
             "failed startup left a detached host without a cleanup owner"
         );
     }
-    fs::remove_dir_all(root)?;
     Ok(())
 }
