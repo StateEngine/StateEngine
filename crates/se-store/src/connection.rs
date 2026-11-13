@@ -20,7 +20,22 @@ pub(crate) fn connect(path: &Path, writable: bool, timeout: Duration) -> StoreRe
     Ok(c)
 }
 pub(crate) fn open(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
-    Connection::open_with_flags(path, flags | OpenFlags::SQLITE_OPEN_EXRESCODE)
+    // SQLite appends `-wal`/`-shm` to the name it is given and opens them with
+    // its own Win32 calls, so an ordinary drive path is capped at MAX_PATH
+    // there. The verbatim form keeps every sidecar reachable; the file opened
+    // is the one the caller named.
+    let target = se_types::sqlite_path(path);
+    // SQLite's NOFOLLOW resolves symlinks by its own walk and refuses a path it
+    // cannot resolve. Under a verbatim prefix Win32 does not follow the usual
+    // root rules, so the flag is dropped only for that form; the caller's own
+    // pin already establishes which file it laced.
+    let mut effective = flags | OpenFlags::SQLITE_OPEN_EXRESCODE;
+    if target != path {
+        // Callers pass NOFOLLOW; it cannot be honoured through the prefix, and
+        // the caller's pin already named the exact file.
+        effective.remove(OpenFlags::SQLITE_OPEN_NOFOLLOW);
+    }
+    Connection::open_with_flags(&target, effective)
         .map_err(|error| sqlite_context(error, path, StoreIoStage::Open))
 }
 pub(crate) fn begin_snapshot(c: &Connection, path: &Path) -> StoreResult<()> {
