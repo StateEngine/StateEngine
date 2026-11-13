@@ -12,3 +12,9 @@ max-threads = 1
 [[profile.default.overrides]]
 filter = 'package(=se) & ((binary(=runtime_refusals) & test(=uninstall_verifies_live_host_shutdown_before_removing_files)) | binary(=wave2_custody_cli_independent))'
 test-group = 'installation-custody'
+
+# These native success checks retain short real-time SQL budgets. Reserve the
+# runner's slots so unrelated tests cannot consume their execution allowance.
+[[profile.default.overrides]]
+filter = 'package(=se-host) & (binary(=atlas_query_reads) | binary(=atlas_quantum_retry))'
+threads-required = "num-test-threads"
