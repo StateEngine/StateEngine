@@ -88,6 +88,21 @@ impl LaunchCoordinator {
         }
         service.capability_check_at = Some(next);
         let result = self.repair_secode_capability(&mut service, &bound).await;
+        if result.is_ok()
+            && service
+                .journal
+                .capability_repair
+                .as_ref()
+                .and_then(CapabilityRepair::owned_binding)
+                .is_some()
+            && let Some(binding) = work
+                .binding
+                .as_ref()
+                .and_then(|binding| binding.secode.as_ref())
+        {
+            // Canonical reads remain live even when the original pipe ended.
+            binding.completion.nudge();
+        }
         let failure = result.err().map(|failure| failure.to_string());
         if failure != service.capability_failure {
             service.capability_failure = failure;
@@ -102,34 +117,8 @@ impl LaunchCoordinator {
         service: &mut Service,
         deadline: &Deadline,
     ) -> Result<()> {
-        let profile = service.journal.profile.to_local()?;
-        let source_profile = profile.clone();
-        let registration = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
-                retirement::registration(&source_profile)?.ok_or_else(|| {
-                    error(
-                        "SE Code capability repair",
-                        "service registration is absent; capability state is unknown",
-                    )
-                })
-            })
-            .await?;
-        let fields = retirement::fields(&registration)?;
-        let endpoint = fields["endpoint"].to_owned();
-        let control_profile = profile.clone();
-        let control = self
-            .store
-            .pool
-            .run_owned(deadline, move || Control::open(&control_profile, &endpoint))
-            .await?;
-        // Managed services run in external-host mode. This authenticated route
-        // verifies credential custody after a service-generation change.
-        let before = control
-            .binding(&service.journal.vendor_session, deadline)
-            .await?;
-        require_registration(&registration, &before)?;
+        let (registration, control, before) =
+            self.observe_secode_control(service, deadline).await?;
         let stamp = CapabilityRepair::fingerprint(&registration, &before.service);
         let previous = service.journal.capability_repair.as_ref();
         let known = previous
@@ -148,17 +137,106 @@ impl LaunchCoordinator {
         }
         match CapabilityRepair::plan(stamp, before, previous)? {
             RepairPlan::Observed(repair) => {
-                if repair.owned_binding().is_some() {
-                    service.capability_control = Some(Arc::new(control));
-                }
-                service.journal.capability_repair = Some(repair);
-                service.persist(self, deadline).await
+                self.record_secode_capability(service, repair, control, deadline)
+                    .await
             }
             RepairPlan::Put(repair) => {
                 self.represent_secode_capability(service, repair, control, deadline)
                     .await
             }
         }
+    }
+
+    async fn observe_secode_control(
+        &self,
+        service: &Service,
+        deadline: &Deadline,
+    ) -> Result<(Vec<u8>, Control, NoticeBinding)> {
+        let profile = service.journal.profile.to_local()?;
+        let source_profile = profile.clone();
+        let registration = self
+            .store
+            .pool
+            .run_owned(deadline, move || {
+                retirement::registration(&source_profile)?.ok_or_else(|| {
+                    error(
+                        "SE Code capability repair",
+                        "service registration is absent; capability state is unknown",
+                    )
+                })
+            })
+            .await?;
+        let fields = retirement::fields(&registration)?;
+        let pid = self.observe_secode_birth(service, deadline).await?;
+        if fields["pid"].parse::<u32>().ok() != Some(pid) {
+            return Err(error(
+                "SE Code capability custody",
+                "registration PID differs from the original native birth",
+            ));
+        }
+        let endpoint = fields["endpoint"].to_owned();
+        let control_profile = profile.clone();
+        let control = self
+            .store
+            .pool
+            .run_owned(deadline, move || Control::open(&control_profile, &endpoint))
+            .await?;
+        // Managed services run in external-host mode. This authenticated route
+        // verifies credential custody after a service-generation change.
+        let before = control
+            .binding(&service.journal.vendor_session, deadline)
+            .await?;
+        require_registration(&registration, &before)?;
+        Ok((registration, control, before))
+    }
+
+    pub(super) async fn restore_secode_capability(
+        &self,
+        service: &mut Service,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let previous = service
+            .journal
+            .capability_repair
+            .clone()
+            .ok_or_else(|| error("SE Code repair recovery", "retained repair is absent"))?;
+        let (registration, control, before) =
+            self.observe_secode_control(service, deadline).await?;
+        let stamp = CapabilityRepair::fingerprint(&registration, &before.service);
+        if stamp != previous.registration {
+            return Err(error(
+                "SE Code repair recovery",
+                "current service differs from the retained repair; no replacement was adopted",
+            ));
+        }
+        let RepairPlan::Observed(repair) = CapabilityRepair::plan(stamp, before, Some(&previous))?
+        else {
+            return Err(error(
+                "SE Code repair recovery",
+                "the retained unsent attempt requires active-session recovery before sending",
+            ));
+        };
+        self.record_secode_capability(service, repair, control, deadline)
+            .await
+    }
+
+    async fn record_secode_capability(
+        &self,
+        service: &mut Service,
+        repair: CapabilityRepair,
+        control: Control,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        service.journal.capability_repair = Some(repair.clone());
+        service.persist(self, deadline).await?;
+        let control = Arc::new(control);
+        if repair.owned_binding().is_some() {
+            service.live.publish(control.clone(), &repair)?;
+        } else if service.journal.identity.as_ref() != Some(&repair.before.service) {
+            service.live.invalidate()?;
+        }
+        service.control = Some(control);
+        Ok(())
     }
 
     async fn represent_secode_capability(
@@ -194,6 +272,7 @@ impl LaunchCoordinator {
             .await?;
         let mut attempted = repair.clone();
         attempted.put_attempted = true;
+        service.live.invalidate()?;
         service.journal.capability_repair = Some(attempted.clone());
         if let Err(failure) = service.persist(self, deadline).await {
             // No PUT was polled. Keep that fact in memory while pending_save
@@ -212,9 +291,8 @@ impl LaunchCoordinator {
             .await?;
         // The old notice and native incarnation remain unchanged. A repair
         // receipt explains our own PUT; it never grants a replay.
-        service.journal.capability_repair = Some(repaired);
-        service.capability_control = Some(Arc::new(control));
-        service.persist(self, deadline).await
+        self.record_secode_capability(service, repaired, control, deadline)
+            .await
     }
 }
 

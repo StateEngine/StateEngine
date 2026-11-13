@@ -70,21 +70,19 @@ impl LaunchCoordinator {
         {
             return Ok(());
         }
-        let original=service.journal.registration.clone().ok_or_else(||error("SE Code registration retirement","no original complete registration was retained; preserve the profile for reconciliation"))?;
         let check = profile.clone();
-        if self
+        let original = self
             .store
             .pool
             .run_owned(deadline, move || registration(&check))
             .await?
-            .as_ref()
-            != Some(&original)
-        {
-            return Err(error(
-                "SE Code registration retirement",
-                "current registration differs from retained bytes; preserve the current owner",
-            ));
-        }
+            .ok_or_else(|| {
+                error(
+                    "SE Code registration retirement",
+                    "current registration is absent while readiness remains",
+                )
+            })?;
+        service.journal.require_registration(&original)?;
         let server = match service.journal.service.as_ref().map(|c| &c.checkpoint) {
             Some(CheckpointKind::Exit { source, .. }) => match &**source {
                 CheckpointSource::Process(record) => record.root.image.clone(),

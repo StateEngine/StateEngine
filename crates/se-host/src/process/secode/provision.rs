@@ -351,7 +351,7 @@ impl LaunchCoordinator {
         }
         service.journal.identity = Some(binding.service);
         service.journal.capability_repair = None;
-        service.capability_control = None;
+        service.live = Default::default();
         service.capability_failure = None;
         service.capability_check_at = None;
         service.persist(self, deadline).await?;

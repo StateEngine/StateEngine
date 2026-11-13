@@ -32,8 +32,10 @@ impl LaunchCoordinator {
                 "original authenticated service binding absent",
             )
         })?;
-        let service = managed.control.binding(&managed.session, deadline).await?;
-        managed.service.require_same(&service.service)?;
+        // Transport may change; the immutable source below still verifies the
+        // original service/process and every previously captured message.
+        let qualified = managed.current()?;
+        qualified.binding(&managed.session, deadline).await?;
         let source = work
             .capture_source
             .ok_or_else(|| error("SE Code capture", "original capture source absent"))?;
@@ -53,12 +55,11 @@ impl LaunchCoordinator {
         let mut offset = 0_u64;
         let mut rows = 0_u64;
         loop {
-            let page = managed
+            let page = qualified
                 .control
                 .messages(&managed.session, cursor.as_deref(), deadline)
                 .await?;
-            let after_page = managed.control.binding(&managed.session, deadline).await?;
-            managed.service.require_same(&after_page.service)?;
+            qualified.binding(&managed.session, deadline).await?;
             let data = page["data"]
                 .as_array()
                 .ok_or_else(|| error("SE Code canonical messages", "data array absent"))?;
@@ -237,8 +238,7 @@ impl LaunchCoordinator {
             // also accept its explicit nullable form. Missing page metadata
             // above remains unreadable instead of becoming an empty history.
             if next.is_none_or(Value::is_null) {
-                let after = managed.control.binding(&managed.session, deadline).await?;
-                managed.service.require_same(&after.service)?;
+                qualified.binding(&managed.session, deadline).await?;
                 return Ok(());
             }
             let next = next

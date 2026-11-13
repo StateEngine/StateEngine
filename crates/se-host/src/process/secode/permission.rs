@@ -13,9 +13,9 @@ impl LaunchCoordinator {
         let Some(managed) = &work.secode else {
             return Ok(());
         };
-        let before = managed.control.binding(&managed.session, deadline).await?;
-        managed.service.require_same(&before.service)?;
-        let permissions = managed
+        let qualified = managed.current()?;
+        qualified.binding(&managed.session, deadline).await?;
+        let permissions = qualified
             .control
             .read(
                 &["api", "session", &managed.session, "permission"],
@@ -47,20 +47,22 @@ impl LaunchCoordinator {
                 ));
             }
             let hash = Sha256::digest(
-                format!("{}/{}/{}", managed.service.incarnation, managed.session, id).as_bytes(),
+                format!(
+                    "{}/{}/{}",
+                    qualified.service.incarnation, managed.session, id
+                )
+                .as_bytes(),
             );
             let key = se_types::hex_lower(&hash);
-            let before = managed.control.binding(&managed.session, deadline).await?;
-            managed.service.require_same(&before.service)?;
-            managed.control.request(reqwest::Method::POST,
+            qualified.binding(&managed.session, deadline).await?;
+            qualified.control.request(reqwest::Method::POST,
                 &["api", "session", &managed.session, "permission", id, "reply"],
                 Some(&json!({"reply":"reject", "requestID":format!("req-{key}"), "nonce":format!("nonce-{key}"), "message":"The saved headless profile does not permit interactive approval."})), deadline,
             ).await?;
-            let after = managed.control.binding(&managed.session, deadline).await?;
-            managed.service.require_same(&after.service)?;
+            qualified.binding(&managed.session, deadline).await?;
         }
         if !ids.is_empty() {
-            let after = managed
+            let after = qualified
                 .control
                 .read(
                     &["api", "session", &managed.session, "permission"],
@@ -77,8 +79,8 @@ impl LaunchCoordinator {
                 ));
             }
         }
-        let after = managed.control.binding(&managed.session, deadline).await?;
-        managed.service.require_same(&after.service)
+        qualified.binding(&managed.session, deadline).await?;
+        Ok(())
     }
 }
 

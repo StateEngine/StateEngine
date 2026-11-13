@@ -5,7 +5,100 @@ use crate::client::lease::Deadline;
 use se_types::{Result, Secret, Sha256};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256 as Hasher};
-use std::path::Path;
+use std::{
+    path::Path,
+    sync::{Arc, RwLock},
+};
+
+/// One qualified service for every lifecycle consumer. Original capture and
+/// input coordinates remain immutable in Managed and in their journals.
+#[derive(Clone)]
+pub(crate) struct QualifiedControl {
+    pub control: Arc<Control>,
+    pub service: ServiceIdentity,
+    repaired: Option<NoticeBinding>,
+}
+impl QualifiedControl {
+    pub(crate) async fn binding(
+        &self,
+        session: &str,
+        deadline: &Deadline,
+    ) -> Result<NoticeBinding> {
+        let current = self.control.binding(session, deadline).await?;
+        self.service.require_same(&current.service)?;
+        if let Some(repaired) = &self.repaired
+            && (repaired.session_id != current.session_id
+                || repaired.target_id != current.target_id
+                || repaired.binding != current.binding)
+        {
+            return Err(unreadable(
+                "SE Code current binding",
+                "target changed after our credential repair",
+            ));
+        }
+        Ok(current)
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct LiveBinding(Arc<RwLock<BindingState>>);
+#[derive(Default)]
+enum BindingState {
+    #[default]
+    Original,
+    Repaired(Box<QualifiedControl>),
+    Unavailable,
+}
+impl LiveBinding {
+    pub(crate) fn resolve(
+        &self,
+        control: Arc<Control>,
+        service: ServiceIdentity,
+    ) -> Result<QualifiedControl> {
+        let state = self
+            .0
+            .read()
+            .map_err(|_| unreadable("SE Code current binding", "poisoned binding custody"))?;
+        match &*state {
+            BindingState::Repaired(current) => Ok(current.as_ref().clone()),
+            BindingState::Original => Ok(QualifiedControl {
+                control,
+                service,
+                repaired: None,
+            }),
+            BindingState::Unavailable => Err(unreadable(
+                "SE Code current binding",
+                "current binding is unqualified; preserve original input while repair or native custody is reconciled",
+            )),
+        }
+    }
+    pub(crate) fn publish(&self, control: Arc<Control>, repair: &CapabilityRepair) -> Result<()> {
+        let binding = repair.owned_binding().ok_or_else(|| {
+            unreadable(
+                "SE Code current binding",
+                "confirmed owned repair is absent",
+            )
+        })?;
+        *self
+            .0
+            .write()
+            .map_err(|_| unreadable("SE Code current binding", "poisoned binding custody"))? =
+            BindingState::Repaired(Box::new(QualifiedControl {
+                control,
+                service: binding.service.clone(),
+                repaired: Some(binding.clone()),
+            }));
+        Ok(())
+    }
+    pub(crate) fn invalidate(&self) -> Result<()> {
+        *self
+            .0
+            .write()
+            .map_err(|_| unreadable("SE Code current binding", "poisoned binding custody"))? =
+            BindingState::Unavailable;
+        Ok(())
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

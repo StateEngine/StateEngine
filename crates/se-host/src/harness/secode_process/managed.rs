@@ -13,10 +13,17 @@ use std::{
 pub(crate) struct Managed {
     pub control: Arc<Control>,
     pub service: ServiceIdentity,
+    pub live: LiveBinding,
     pub profile: NativePath,
     pub process: se_types::ProcessInstance,
     pub session: String,
     pub initial_input: String,
+}
+impl Managed {
+    pub(crate) fn current(&self) -> Result<QualifiedControl> {
+        self.live
+            .resolve(self.control.clone(), self.service.clone())
+    }
 }
 pub(crate) struct SecodeHarness {
     io: Arc<dyn ProviderIoPlatform>,
@@ -419,15 +426,10 @@ impl Harness for SecodeHarness {
     ) -> crate::HostFuture<'a, crate::ProviderInterrupt> {
         Box::pin(async move {
             let binding = bound(binding)?;
+            let current = binding.managed.current()?;
             let deadline = crate::client::lease::Deadline::idle()?.stage(cx.timeout)?;
-            let current = binding
-                .managed
-                .control
-                .binding(&binding.managed.session, &deadline)
-                .await?;
-            binding.managed.service.require_same(&current.service)?;
-            binding
-                .managed
+            current.binding(&binding.managed.session, &deadline).await?;
+            current
                 .control
                 .request(
                     reqwest::Method::POST,
@@ -436,12 +438,7 @@ impl Harness for SecodeHarness {
                     &deadline,
                 )
                 .await?;
-            let held = binding
-                .managed
-                .control
-                .binding(&binding.managed.session, &deadline)
-                .await?;
-            binding.managed.service.require_same(&held.service)?;
+            let held = current.binding(&binding.managed.session, &deadline).await?;
             if held.status == NoticeStatus::Ready {
                 return Err(unreadable(
                     "SE Code stop fence",

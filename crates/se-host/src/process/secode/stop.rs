@@ -54,9 +54,9 @@ impl LaunchCoordinator {
                 "original authenticated service control is unavailable; client exit alone cannot close vendor execution or capture",
             ));
         };
-        let binding = managed.control.binding(&managed.session, deadline).await?;
-        managed.service.require_same(&binding.service)?;
-        managed
+        let qualified = managed.current()?;
+        qualified.binding(&managed.session, deadline).await?;
+        qualified
             .control
             .request(
                 reqwest::Method::POST,
@@ -65,8 +65,7 @@ impl LaunchCoordinator {
                 deadline,
             )
             .await?;
-        let held = managed.control.binding(&managed.session, deadline).await?;
-        managed.service.require_same(&held.service)?;
+        let held = qualified.binding(&managed.session, deadline).await?;
         if held.status == crate::harness::secode_process::NoticeStatus::Ready {
             return Err(error(
                 "SE Code execution settlement",
@@ -74,10 +73,10 @@ impl LaunchCoordinator {
             ));
         }
         if !matches!(witness.root, se_proc::RootWitness::NoChildCreated) {
-            let accepted = managed
+            let accepted = qualified
                 .control
                 .acceptance(
-                    &managed.service,
+                    &qualified.service,
                     &managed.session,
                     &managed.initial_input,
                     deadline,
@@ -102,7 +101,7 @@ impl LaunchCoordinator {
             )?;
         }
         loop {
-            let active = managed
+            let active = qualified
                 .control
                 .read(&["api", "session", "active"], deadline)
                 .await?;
@@ -119,7 +118,7 @@ impl LaunchCoordinator {
             )
             .await;
         }
-        managed
+        qualified
             .control
             .request(
                 reqwest::Method::POST,
@@ -128,8 +127,7 @@ impl LaunchCoordinator {
                 deadline,
             )
             .await?;
-        let after = managed.control.binding(&managed.session, deadline).await?;
-        managed.service.require_same(&after.service)?;
+        qualified.binding(&managed.session, deadline).await?;
         Ok(())
     }
     pub(in crate::process) async fn shutdown_secode(
@@ -187,12 +185,15 @@ impl LaunchCoordinator {
                         self.retire_secode_auxiliary(&mut service, Auxiliary::Service, &witness, deadline).await?;
                     }
                 }
-                if let Some(control) = service.control.as_ref().filter(|_| service.process.is_some()) {
-                    let active = control.read(&["api","session","active"], deadline).await?;
+                if service.control.is_some() && service.process.is_some() {
+                    let qualified = service.current()?;
+                    qualified.binding(&service.journal.vendor_session, deadline).await?;
+                    let active = qualified.control.read(&["api","session","active"], deadline).await?;
                     match active.get("data").and_then(Value::as_object) {
                         Some(rows) if rows.is_empty() => (),
                         _ => return Err(error("SE Code service shutdown", "active execution inventory is nonempty or unreadable; service retained")),
                     }
+                    qualified.binding(&service.journal.vendor_session, deadline).await?;
                 }
                 for auxiliary in Auxiliary::ALL {
                     let live = service.owner(auxiliary).is_some();
@@ -224,6 +225,7 @@ impl LaunchCoordinator {
                     if se_proc::NativeSourcePin::open(&profile.join("registration")).map_err(|e| error("SE Code registration retirement", e))?.is_some() { return Err(error("SE Code service retirement", "native processes exited but registration is still present; preserve the private profile for reconciliation")); }
                     Ok(())
                 }).await?;
+                service.live.invalidate()?;
                 service.journal.retired=true;
                 service.persist(self,deadline).await
         }).collect::<futures_util::stream::FuturesUnordered<_>>();

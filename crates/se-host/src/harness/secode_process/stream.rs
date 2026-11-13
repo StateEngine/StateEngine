@@ -32,7 +32,7 @@ impl Completion {
     pub(crate) fn take(&self) -> bool {
         self.changed.swap(false, Ordering::AcqRel)
     }
-    fn nudge(&self) {
+    pub(crate) fn nudge(&self) {
         self.changed.store(true, Ordering::Release);
         if let Ok(wake) = self.wake.lock()
             && let Some(wake) = wake.as_ref().and_then(Weak::upgrade)

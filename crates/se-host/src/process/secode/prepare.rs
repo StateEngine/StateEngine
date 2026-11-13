@@ -119,7 +119,7 @@ impl LaunchCoordinator {
                     control: None,
                     failure: None,
                     capability_failure: None,
-                    capability_control: None,
+                    live: Default::default(),
                     capability_check_at: None,
                 })),
             );
@@ -381,6 +381,7 @@ impl LaunchCoordinator {
         let prepared = Prepared {
             control,
             service: identity,
+            live: service.live.clone(),
             profile: service.journal.profile.clone(),
             process: native_record::instance(
                 &service_record.root,

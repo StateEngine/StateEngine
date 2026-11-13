@@ -50,7 +50,7 @@ impl LaunchCoordinator {
                     control: None,
                     failure: None,
                     capability_failure: None,
-                    capability_control: None,
+                    live: Default::default(),
                     capability_check_at: None,
                 })),
             );
@@ -207,6 +207,14 @@ impl LaunchCoordinator {
         if service.process.is_none() {
             return Ok(());
         }
+        if service
+            .journal
+            .capability_repair
+            .as_ref()
+            .is_some_and(|repair| repair.put_attempted)
+        {
+            return self.restore_secode_capability(service, deadline).await;
+        }
         let profile = service.journal.profile.to_local()?;
         let endpoint = if let Some(endpoint) = &service.journal.endpoint {
             endpoint.clone()
@@ -330,12 +338,8 @@ impl LaunchCoordinator {
                 "original engine/vendor session differs",
             ));
         }
-        let control = service.control.clone().ok_or_else(|| {
-            error(
-                "SE Code client recovery",
-                "original service is not live and authenticated; preserve pending/no-replay",
-            )
-        })?;
+        let current = service.current()?;
+        let control = current.control.clone();
         let identity = service.journal.identity.clone().ok_or_else(|| {
             error(
                 "SE Code client recovery",
@@ -359,13 +363,12 @@ impl LaunchCoordinator {
                 "service process is not live",
             ));
         };
-        let observed = control
+        current
             .binding(&service.journal.vendor_session, deadline)
             .await?;
-        identity.require_same(&observed.service)?;
         let accepted = control
             .acceptance(
-                &identity,
+                &current.service,
                 &service.journal.vendor_session,
                 &service.journal.initial_input,
                 deadline,
@@ -393,6 +396,7 @@ impl LaunchCoordinator {
         work.secode = Some(Prepared {
             control,
             service: identity,
+            live: service.live.clone(),
             profile: service.journal.profile.clone(),
             process: native_record::instance(
                 &record.root,

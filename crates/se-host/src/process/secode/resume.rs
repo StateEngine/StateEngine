@@ -11,12 +11,8 @@ impl LaunchCoordinator {
         current: NoticeBinding,
         deadline: &Deadline,
     ) -> Result<()> {
-        let control = service.control.clone().ok_or_else(|| {
-            error(
-                "SE Code resume",
-                "original authenticated service is unavailable",
-            )
-        })?;
+        let qualified = service.current()?;
+        let control = qualified.control.clone();
         let pending = service
             .journal
             .resume_release
@@ -60,7 +56,7 @@ impl LaunchCoordinator {
         } else {
             None
         };
-        let after = control
+        let after = qualified
             .binding(&original.session_id, deadline)
             .await
             .and_then(|after| after.require_released(&original));

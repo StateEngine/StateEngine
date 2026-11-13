@@ -86,10 +86,8 @@ impl LaunchCoordinator {
             .await?
             .ok_or_else(|| error("SE Code notice custody", "private service absent"))?;
         let mut service = lock_service(&slot, deadline).await?;
-        let control = service
-            .capability_control
-            .clone()
-            .unwrap_or_else(|| managed.control.clone());
+        let qualified = managed.current()?;
+        let control = qualified.control.clone();
         let (notice, offer) = if let Some(notice) = &service.journal.notice {
             if notice.input != key || notice.messages != messages {
                 return Err(error(
@@ -99,23 +97,7 @@ impl LaunchCoordinator {
             }
             (notice.clone(), false)
         } else {
-            let binding = control.binding(&managed.session, deadline).await?;
-            if let Some(repair) = service
-                .journal
-                .capability_repair
-                .as_ref()
-                .and_then(crate::harness::secode_process::CapabilityRepair::owned_binding)
-            {
-                repair.service.require_same(&binding.service)?;
-                if repair.target_id != binding.target_id || repair.binding != binding.binding {
-                    return Err(error(
-                        "SE Code notice binding",
-                        "target changed after our credential repair",
-                    ));
-                }
-            } else {
-                managed.service.require_same(&binding.service)?;
-            }
+            let binding = qualified.binding(&managed.session, deadline).await?;
             binding.require_ready()?;
             let notice = custody::Notice {
                 input: key.clone(),
@@ -170,11 +152,7 @@ impl LaunchCoordinator {
         let Some(notice) = notice else {
             return Ok(());
         };
-        let control = lock_service(&slot, deadline)
-            .await?
-            .capability_control
-            .clone()
-            .unwrap_or_else(|| managed.control.clone());
+        let control = managed.current()?.control;
         let receipt = control
             .acceptance(
                 &notice.binding.service,

@@ -73,6 +73,27 @@ pub(super) struct Notice {
     pub messages: Vec<String>,
 }
 impl Journal {
+    pub(super) fn require_registration(&self, current: &[u8]) -> Result<()> {
+        let matches = if let Some(repair) = self
+            .capability_repair
+            .as_ref()
+            .filter(|repair| repair.owned_binding().is_some())
+        {
+            crate::harness::secode_process::CapabilityRepair::fingerprint(
+                current,
+                &repair.before.service,
+            ) == repair.registration
+        } else {
+            self.registration.as_deref() == Some(current)
+        };
+        if !matches {
+            return Err(error(
+                "SE Code registration custody",
+                "current registration differs from retained qualified custody",
+            ));
+        }
+        Ok(())
+    }
     pub fn auxiliary(&self, auxiliary: Auxiliary) -> &Option<Checkpoint> {
         match auxiliary {
             Auxiliary::Bootstrap => &self.bootstrap,
