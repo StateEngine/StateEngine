@@ -2,8 +2,12 @@
 use super::*;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+mod access;
 mod text;
 mod toml;
+pub(super) fn prepare(home: &Path, path: &Path) -> Result<()> {
+    access::prepare(home, path)
+}
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -88,12 +92,12 @@ pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
     Ok(result)
 }
 pub(super) fn read_document(path: &Path) -> Result<(Option<se_proc::OwnedFile>, Vec<u8>, Value)> {
-    let Some(mut file) = se_proc::OwnedFile::open(path).map_err(native)? else {
+    let Some(mut file) = se_proc::OwnedFile::open(path).map_err(access::native)? else {
         return Ok((None, vec![], json!({})));
     };
     let bytes = file.read(LIMIT).map_err(native)?;
     let value: Value = if is_toml(path) {
-        toml::read(&bytes)?
+        toml::read(path, &bytes)?
     } else {
         crate::client::wire::decode_json(&bytes, LIMIT)?
     };
@@ -112,7 +116,7 @@ fn write_document(
     edits: &[text::Edit],
 ) -> Result<()> {
     let bytes = if is_toml(path) {
-        toml::apply(before, document, edits)?
+        toml::apply(path, before, document, edits)?
     } else {
         text::apply(before, document, edits)?
     };
@@ -120,6 +124,7 @@ fn write_document(
         return Err(invalid("provider settings within one MiB"));
     }
     if let Some(pin) = pin {
+        access::writable(path, &pin)?;
         pin.replace(digest(before), &bytes).map_err(native)?;
     } else {
         let parent = path.parent().ok_or_else(|| invalid("settings parent"))?;
@@ -226,6 +231,9 @@ pub fn uninstall_for(home: &Path, kind: Kind) -> Result<Vec<PathBuf>> {
         }
     }
     if changed {
+        if let Some(pin) = &pin {
+            access::writable(&path, pin)?;
+        }
         if registration.layout.created_file
             && document.as_object().is_some_and(serde_json::Map::is_empty)
         {

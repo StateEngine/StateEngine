@@ -105,7 +105,17 @@ pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
         .to_str()
         .ok_or_else(|| invalid("a Unicode adoption home"))?;
     let quoted = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
-    let windows_quoted = |text: &str| format!("'{}'", text.replace('\'', "''"));
+    let windows_quoted = |text: &str| {
+        let mut quoted = String::from("'");
+        for character in text.chars() {
+            if matches!(character, '\'' | '\u{2018}'..='\u{201b}') {
+                quoted.push(character);
+            }
+            quoted.push(character);
+        }
+        quoted.push('\'');
+        quoted
+    };
     let mut entries = Vec::new();
     // Provider hook timeouts are seconds. The mail hook waits for the session
     // lifetime; its individual queue RPC has a separate five-second budget.

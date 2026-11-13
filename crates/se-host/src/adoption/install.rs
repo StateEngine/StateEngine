@@ -34,8 +34,10 @@ pub fn prepare(
         }
         Kind::Codex => {
             provider = super::codex::native_executable(&provider)?;
+            let home = crate::codex_capture::existing_home()?;
+            super::settings::prepare(&home, &home.join(kind.settings()))?;
             super::codex::qualify(&provider)?;
-            crate::codex_capture::existing_home()?
+            home
         }
     };
     if !config_home.is_absolute() {
@@ -114,9 +116,10 @@ pub fn install(
         registration.discovery_refusal = refusal;
         super::publish_for(home, kind, &registration)?;
     }
-    let active = kind == Kind::Claude
-        || (discovery.is_ok() && super::status::witnessed(home, kind, project)?);
-    let integration = integration(kind, &path, changed, installed, active, discovery)?;
+    // A persisted refusal is retryable evidence, never a successful install.
+    discovery?;
+    let active = kind == Kind::Claude || super::status::witnessed(home, kind, project)?;
+    let integration = integration(kind, &path, changed, installed, active)?;
     let next = NextStep {
         text: format!("Start {} directly in this project", kind.label()),
         command: kind.name().into(),
@@ -199,7 +202,6 @@ fn integration(
     changed: bool,
     installed: bool,
     active: bool,
-    discovery: Result<()>,
 ) -> Result<IntegrationEffect> {
     Ok(IntegrationEffect {
         path: path.display().to_string(),
@@ -222,11 +224,7 @@ fn integration(
             }
             .into(),
             observed_at: receipt::timestamp(now_us()?)?,
-            detail: Some(if let Err(error) = discovery {
-                format!(
-                    "Provider did not discover and trust the integration: {error}; capture and mail remain unconfirmed"
-                )
-            } else if !installed {
+            detail: Some(if !installed {
                 "Existing integration entries were edited or removed; those edits were preserved and capture and mail are unconfirmed".into()
             } else if kind == Kind::Codex && !active {
                 "Provider discovered and trusted the installed hooks; awaiting the first authenticated hook run".into()
