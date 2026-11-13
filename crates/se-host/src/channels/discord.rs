@@ -3,7 +3,7 @@
 use super::*;
 use reqwest::{Method, header};
 use serde_json::{Value, json};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, VecDeque},
     sync::Mutex,
