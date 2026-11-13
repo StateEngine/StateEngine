@@ -93,3 +93,77 @@ class Box(unittest.TestCase):
         self.assertFalse(box.eligible(env, {"pull_request": {"head": {"repo": {"full_name": env["GITHUB_REPOSITORY"], "fork": True}}}}))
         self.assertFalse(box.eligible({**env, "GITHUB_EVENT_NAME": "workflow_dispatch"}, {}))
         self.assertFalse(box.eligible({**env, "BOX_CI_ENABLED": "false"}, {}))
+
+    def test_failing_test_names_reach_the_reader_summary(self):
+        # The exact shape nextest prints, including a progress repaint between
+        # the FAIL line and the panic line, which adjacency pairing got wrong.
+        log = "\n".join([
+            "        FAIL [   0.013s] (2/2) se-types::probe probe_one",
+            "  stdout \u2500\u2500\u2500",
+            "    test probe_one ... FAILED",
+            "  stderr \u2500\u2500\u2500",
+            "    thread 'probe_one' (1917046) panicked at crates/x/tests/p.rs:3:5:",
+            "    assertion `left == right` failed: first",
+            "      left: 1",
+            "     right: 2",
+            "        FAIL [   0.011s] (1/2) se-types::probe probe_two",
+            "    thread 'probe_two' (1917045) panicked at crates/x/tests/p.rs:7:5:",
+            "    second",
+            "     Summary [   0.014s] 2 tests run: 0 passed, 2 failed, 0 skipped",
+        ])
+        found = wire.details(log)
+        self.assertEqual(found, [
+            "se-types::probe probe_one at crates/x/tests/p.rs:3:5: "
+            "assertion `left == right` failed: first",
+            "se-types::probe probe_two at crates/x/tests/p.rs:7:5: second",
+        ])
+        values = stages()
+        values["test-1"]["exit"] = 1
+        report = wire.report(B, 7, IMAGE, "d"*64, "failed", values, found)
+        row = check("completed", "failed")
+        row["output"]["summary"] = wire.text(report)
+        summary = row["output"]["summary"]
+        self.assertTrue(summary.startswith("{"))
+        self.assertIn("Failing tests:", summary)
+        self.assertIn("se-types::probe probe_one at crates/x/tests/p.rs:3:5", summary)
+        api = Mock(); api.checks.return_value = [row]
+        self.assertEqual(box.wait(api, B, 9, seconds=0), "failed")
+
+    def test_a_stage_that_fails_without_naming_a_test_says_so(self):
+        # A kill, a full disk or a custom harness exits non-zero with no FAIL
+        # line. Silence would read as clean, so the stage names itself.
+        self.assertEqual(wire.details("error: linking with `cc` failed\n"), [])
+        line = "test-1: failed; no test named"
+        values = stages()
+        values["test-1"]["exit"] = 1
+        report = wire.report(B, 7, IMAGE, "d"*64, "failed", values, [line])
+        summary = wire.text(report)
+        self.assertIn(line, summary)
+        api = Mock(); api.checks.return_value = [dict(
+            check("completed", "failed"), output={"summary": summary})]
+        self.assertEqual(box.wait(api, B, 9, seconds=0), "failed")
+
+    def test_failure_detail_is_bounded_and_says_when_it_stops(self):
+        many = "\n".join(f"        FAIL [   0.0s] (1/1) se-x::t test_{n:02d}" for n in range(60))
+        found = wire.details(many)
+        self.assertEqual(len(found), wire.FAIL_TESTS)
+        self.assertEqual(found[-1], "(further failures omitted)")
+        self.assertLessEqual(len(json.dumps(found).encode()), wire.FAIL_BYTES)
+        # A message cut at its own bound plus name and location must still pass.
+        long = ("        FAIL [   0.0s] (1/1) se-x::t t\n"
+                "    thread 't' (1) panicked at a.rs:1:1:\n" + "x" * 5000)
+        item = wire.details(long)[0]
+        self.assertLessEqual(len(item.encode()), wire.LOCATE_BYTES)
+        failed = dict(stages(), **{"test-1": dict(exit=1, tests=1, custom=9, docs=0, checks=0)})
+        report = wire.report(B, 7, IMAGE, "d"*64, "failed", failed, wire.details(long))
+        self.assertEqual(len(report["failures"]), 1)
+        # report() bounds what it is given, so an over-long or over-count list
+        # can never raise here and lose the outcome.
+        self.assertEqual(len(wire.report(
+            B, 7, IMAGE, "d"*64, "failed", failed, ["y"] * 60)["failures"]), wire.FAIL_TESTS)
+        self.assertEqual(len(wire.report(
+            B, 7, IMAGE, "d"*64, "failed", failed, ["x" * 5000])["failures"][0].encode()),
+            wire.LOCATE_BYTES)
+        # A newline would break the one-line-per-failure shape.
+        self.assertTrue(all("\n" not in i for i in wire.report(
+            B, 7, IMAGE, "d"*64, "failed", failed, ["two\nlines"])["failures"]))
