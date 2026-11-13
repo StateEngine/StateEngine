@@ -331,13 +331,20 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
         status.set(Maint::Pending);
         return;
     }
-    let hard = wal.bytes >= MAX_WAL_BYTES;
-    if hard || (wal.log == wal.done && wal.log >= RESET_MIN_FRAMES) {
-        // The capacity cut, or every frame already in the main database: the
-        // only remaining work is resetting the file. PASSIVE never resets a
-        // WAL it copies no frames from, so without this step a stranded WAL
-        // would keep its high-water size until the next full reset. The short
-        // backoff bounds how long a straggling write waits for it.
+    if wal.log == wal.done && wal.log >= RESET_MIN_FRAMES {
+        // Every frame is already in the main database: the only remaining
+        // work is resetting the file, and a reset that copies no frames is
+        // fast. PASSIVE never resets a WAL it copies no frames from, so
+        // without this step a stranded WAL would keep its high-water size
+        // until the next full reset. The short backoff bounds how long a
+        // straggling write waits for it. A WAL at the 64 MiB capacity
+        // cutoff with uncopied frames deliberately falls through to the
+        // PASSIVE path below and pays for its copy in small yieldable
+        // steps: a full TRUNCATE here would copy and reset 64 MiB in one
+        // tick while holding the WAL lock, and under load that hold
+        // collides with the writer's own inline cutoff until one side
+        // exhausts its busy wait into a spurious refusal (#201). The
+        // write path stays the sole owner of the capacity cut.
         if !status.idle() {
             return;
         }
