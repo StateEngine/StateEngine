@@ -193,6 +193,7 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
         se_store::Provider::Acp => se_types::Provider::Acp,
     };
     let (session, conversation, mut resume) = super::agent_session::read(&agent, cx)?;
+    let never_launched = session.state == "never-launched" && session.session_id.is_none();
     if provider == se_types::Provider::SeCode {
         resume.ready = false;
         resume.mode = "compatible-service-required".into();
@@ -233,11 +234,15 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
         agent: Read::Present {
             value: AgentRow {
                 harness: profile.harness.clone(),
-                provider_activity: matches!(provider, se_types::Provider::Claude | se_types::Provider::Codex).then(|| Read::Unknown {
-                    what: "Provider turn activity requires the owning runtime; native liveness does not prove a reply. Check provider sign-in and saved history before resubmitting input.".into(),
+                provider_activity: matches!(provider, se_types::Provider::Claude | se_types::Provider::Codex).then(|| if never_launched {
+                    Read::Absent { checked: "This agent has no launched provider session".into() }
+                } else {
+                    Read::Unknown { what: "Provider turn activity requires the owning runtime; native liveness does not prove a reply. Check provider sign-in and saved history before resubmitting input.".into() }
                 }),
-                acp_runtime: (provider == se_types::Provider::Acp).then(|| Read::Unknown {
-                    what: "The native protocol connection has not been observed".into(),
+                acp_runtime: (provider == se_types::Provider::Acp).then(|| if never_launched {
+                    Read::Absent { checked: "This agent has no launched protocol session".into() }
+                } else {
+                    Read::Unknown { what: "The native protocol connection has not been observed".into() }
                 }),
                 harness_policy_notice: (provider == se_types::Provider::Acp)
                     .then(|| se_types::ACP_NO_SANDBOX_NOTICE.into()),
