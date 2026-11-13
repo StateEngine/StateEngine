@@ -25,8 +25,6 @@ jobs:
         shell: pwsh
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
-      RELEASE_ROOT: ${{ runner.temp }}/stateengine-windows-release
-      CARGO_TARGET_DIR: ${{ runner.temp }}/stateengine-windows-release/target
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - name: Require an exact source commit
@@ -34,6 +32,10 @@ jobs:
           if ($env:SOURCE_SHA -cnotmatch '\A[0-9a-f]{40}\z') {
             throw 'source_sha must be an exact lowercase 40-character Git commit'
           }
+          $releaseRoot = Join-Path $env:RUNNER_TEMP 'stateengine-windows-release'
+          $releaseTarget = Join-Path $releaseRoot 'target'
+          "RELEASE_ROOT=$releaseRoot" >> $env:GITHUB_ENV
+          "CARGO_TARGET_DIR=$releaseTarget" >> $env:GITHUB_ENV
 
       - uses: actions/checkout@v4
         with:
