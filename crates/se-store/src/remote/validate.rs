@@ -2,6 +2,9 @@
 use super::*;
 use se_types::remote::RemoteVerb;
 
+/// Produced only after this transaction validates the closed launch batch.
+pub(crate) struct LaunchAuthority(());
+
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
@@ -11,9 +14,9 @@ pub(crate) fn validate_batch(
     batch: &AtomicBatch,
     info: &StoreInfo,
     now: i64,
-) -> StoreResult<()> {
+) -> StoreResult<Option<LaunchAuthority>> {
     if super::validate_launch(c, batch, info, now)? {
-        return Ok(());
+        return Ok(Some(LaunchAuthority(())));
     }
     let Actor::Remote(principal) = &batch.admission.actor else {
         if batch
@@ -23,7 +26,7 @@ pub(crate) fn validate_batch(
         {
             return Err(denied());
         }
-        return Ok(());
+        return Ok(None);
     };
     ready(info)?;
     if batch.admission.session.is_some() || batch.request.is_none() {
@@ -45,7 +48,7 @@ pub(crate) fn validate_batch(
                 && g.authority_revision == *authority_revision
                 && g.expires_at_us > now
             {
-                return Ok(());
+                return Ok(None);
             }
         }
         return Err(denied());
@@ -120,7 +123,7 @@ pub(crate) fn validate_batch(
     if !active {
         return Err(denied());
     }
-    Ok(())
+    Ok(None)
 }
 /// Only a new send requires the target session still to be active. A retained
 /// keyed outcome remains resolvable after ordinary session completion, after

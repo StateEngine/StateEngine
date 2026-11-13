@@ -22,6 +22,7 @@ pub(crate) use apply::{apply, revision};
 pub use launch_inventory::{LaunchCandidate, SavedLaunchProfile};
 pub use model::*;
 pub use target::TargetFacts;
+pub(crate) use validate::LaunchAuthority;
 pub(crate) use validate::{validate_batch, validate_new_batch};
 
 use crate::{error::*, *};

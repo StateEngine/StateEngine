@@ -18,6 +18,11 @@ pub(crate) mod session;
 use crate::{codec, connection::*, error::*, identity::*, *};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
+/// Keep the writer lease and this transaction's closed launch validation together.
+pub(crate) struct ApplyAuthority<'a> {
+    pub lease: &'a LeaseIdentity,
+    pub remote_launch: Option<&'a crate::remote::LaunchAuthority>,
+}
 pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> {
     let scope = scope_key(c, &e.header.scope, false)?;
     let event = key(c, "event", e.header.event.as_str(), &scope, false)?;
@@ -125,9 +130,10 @@ pub(crate) fn apply(
     seq: i64,
     revision: u64,
     facts: Value,
-    lease: &LeaseIdentity,
+    authority: &ApplyAuthority<'_>,
 ) -> StoreResult<()> {
     use EventBody::*;
+    let lease = authority.lease;
     let s = scope_key(c, &header.scope, true)?;
     let pk = match &header.scope {
         Scope::Registry => None,
@@ -192,7 +198,7 @@ pub(crate) fn apply(
             codec::aux(c, seq, facts)?;
         }
         b @ (ProcessRegistered { .. } | ProcessTransition { .. }) => {
-            process::apply(c, header, b, seq, revision, lease)?
+            process::apply(c, header, b, seq, revision, authority)?
         }
         ProjectRegistered {
             project: p,
@@ -532,7 +538,7 @@ pub(crate) fn apply(
         b @ (SessionPrepared { .. }
         | SessionActivated { .. }
         | SessionEnded { .. }
-        | SessionRevoked { .. }) => session::apply(c, header, b, seq, revision, lease)?,
+        | SessionRevoked { .. }) => session::apply(c, header, b, seq, revision, authority)?,
         b @ (SessionTurn { .. }
         | CaptureSource { .. }
         | CaptureProgress { .. }

@@ -62,8 +62,9 @@ pub(super) fn apply(
     body: EventBody<InputText>,
     seq: i64,
     rev: u64,
-    lease: &LeaseIdentity,
+    authority: &ApplyAuthority<'_>,
 ) -> StoreResult<()> {
+    let lease = authority.lease;
     use EventBody::*;
     let p = project_id(c, &h.scope, true)?;
     let scope = scope_key(c, &h.scope, true)?;
@@ -118,7 +119,7 @@ pub(super) fn apply(
             let owner = owner
                 .ok_or_else(|| fail(StoreErrorCode::ReferenceMissing, "session agent absent"))?;
             let permitted = match &h.actor {
-                Actor::Remote(_) => false,
+                Actor::Remote(_) => authority.remote_launch.is_some(),
                 Actor::Agent(actor) if *actor == agent => true,
                 Actor::Agent(creator) => {
                     crate::creator::require(c, &p, &scope, creator, &a)?;
