@@ -17,6 +17,7 @@ mod error;
 mod event;
 mod identity;
 pub mod import;
+mod inventory;
 pub mod mail;
 mod migration;
 mod model;

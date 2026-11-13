@@ -1,5 +1,7 @@
 //! Preserve pending state and read back the accepted native reservation.
 use super::*;
+use se_core::store_error::store_error;
+use se_store::{CommitReceipt, remote::LaunchAttribution};
 pub(super) struct Completion {
     pub(super) input: RemoteLaunch,
     pub(super) attribution: RemoteAttribution,
@@ -87,12 +89,14 @@ pub(super) async fn started(
         natural_events: vec![],
         committed_events: vec![event],
     };
-    let (receipt, origin) =
-        receipt::read_back(store, admission, native_key, launch, &attribution, deadline)
-            .await
-            .map_err(|error| known.response_error(error))?;
-    let position =
-        receipt::seal(service, &receipt, &origin).map_err(|error| known.response_error(error))?;
+    let expected = attribution.clone();
+    let (receipt, origin) = store
+        .read(admission, deadline, move |cx| {
+            se_core::remote::read_launch_receipt(cx, native_key, launch, &expected)
+        })
+        .await
+        .map_err(|error| known.response_error(error))?;
+    let position = seal(service, &receipt, &origin).map_err(|error| known.response_error(error))?;
     let replayed = replayed || origin.attribution.source != attribution.source;
     let commit = se_types::Commit {
         event_id: receipt.primary_event,
@@ -117,4 +121,24 @@ pub(super) async fn started(
             attribution: origin.attribution,
         },
     })
+}
+
+fn seal(
+    service: &Service,
+    receipt: &CommitReceipt,
+    origin: &LaunchAttribution,
+) -> Result<se_types::Cursor> {
+    let associated = serde_json::to_vec(&serde_json::json!({
+        "schema":"stateengine.remote-launch-receipt/v1",
+        "store":origin.attribution.store,
+        "grant":origin.attribution.grant,
+        "source":origin.attribution.source.as_ref().map(|s|s.address()),
+        "target":origin.target,
+        "session":origin.session,
+        "lifecycle":origin.lifecycle,
+    }))
+    .map_err(|_| SeError::invalid("remote launch receipt", "encodable exact origin"))?;
+    let position =
+        se_store::remote::position_payload(&receipt.first).map_err(|e| store_error(&e))?;
+    service.cursors.sealed_receipt(&position, &associated)
 }

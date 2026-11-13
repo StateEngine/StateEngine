@@ -31,7 +31,7 @@ impl ReadPhase {
         if self.info.schema_version < 11 || !(1..=4).contains(&limit) {
             return Err(invalid("launch inventory schema or finite page size"));
         }
-        read::grant(&self.db, grant)?.ok_or_else(denied)?;
+        grant_at(&self.db, grant)?.ok_or_else(denied)?;
         let after = after
             .map(|target| {
                 let p = crate::identity::key(

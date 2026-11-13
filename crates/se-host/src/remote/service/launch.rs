@@ -3,7 +3,6 @@ use super::*;
 use se_core::{dispatch::Kernel, ops::LaunchReply};
 use se_store::{Actor, Admission, Scope};
 mod failure;
-mod receipt;
 mod result;
 
 impl Service {
@@ -81,16 +80,17 @@ impl Service {
             native_key: native_key.clone(),
             replayed,
         };
-        if replayed
-            && receipt::activated(
-                &store,
-                admission.clone(),
-                native_key,
-                launched.clone(),
-                &deadline,
-            )
-            .await?
-        {
+        let activated = if replayed {
+            let launch = launched.clone();
+            store
+                .read(admission.clone(), &deadline, move |cx| {
+                    se_core::remote::launch_activated(cx, native_key, launch)
+                })
+                .await?
+        } else {
+            false
+        };
+        if activated {
             return result::started(self, &store, completion, launched, seed, &deadline).await;
         }
         let reply = custody

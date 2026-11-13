@@ -1,7 +1,9 @@
 //! Closed delegated exposure. No remote grant becomes local Owner/session authority.
 use crate::scope;
 mod launch;
+mod launch_receipt;
 pub use launch::{launch_key, plan_launch};
+pub use launch_receipt::{launch_activated, read_launch_receipt};
 use se_store::{
     Actor, Admission, AtomicBatch, EventBody, EventHeader, InputText, IntentDigest, NewEvent,
     RequestIdentity, Scope, StoreInfo,

@@ -41,7 +41,7 @@ impl ReadPhase {
         now: i64,
     ) -> StoreResult<TargetFacts> {
         ready(&self.info)?;
-        let grant = read::grant(&self.db, grant_id)?.ok_or_else(denied)?;
+        let grant = grant_at(&self.db, grant_id)?.ok_or_else(denied)?;
         if grant.store != self.info.id
             || grant.state != GrantState::Active
             || grant.expires_at_us <= now
@@ -172,7 +172,7 @@ impl ReadPhase {
         limit: u16,
         now: i64,
     ) -> StoreResult<Vec<RemoteTarget>> {
-        let grant = read::grant(&self.db, grant_id)?.ok_or_else(denied)?;
+        let grant = grant_at(&self.db, grant_id)?.ok_or_else(denied)?;
         if grant.store != self.info.id
             || grant.state != GrantState::Active
             || grant.authority_revision != revision
