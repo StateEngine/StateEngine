@@ -33,6 +33,43 @@ if (request.command === 'run_script_step') {
 request.context = Object.fromEntries(['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT',
   'GITHUB_EVENT_NAME', 'GITHUB_REF']
   .map(name => [name, process.env[name]]));
+// Match the public-output scrub in scripts/ci/box_result.py, including locally
+// generated diagnostics that never passed through the Python controller.
+function scrub(value) {
+  return String(value || '')
+    .replace(/(?<![\w.])\/(?:[^\s/"'<>]+\/)*[^\s/"'<>]*/g, '<path>')
+    .replace(/[A-Za-z]:\\(?:[^\s\\"'<>]+\\)*[^\s\\"'<>]*/g, '<path>')
+    .replace(/\b(?:ghs_|ghp_|gho_|ghu_|ghr_|github_pat_)[A-Za-z0-9_]+/g, '<redacted>')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer <redacted>')
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}/g, '<redacted>')
+    .replace(/\b[0-9a-f]{32,}\b/gi, '<redacted>')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '<id>')
+    .replace(/\bboot_id: \[[^\]]*\]/g, 'boot_id <id>')
+    .replace(/MachineId\([^)]*\)/g, 'MachineId(<id>)')
+    .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, '<email>');
+}
+// Reporting is decoration of the witnessed controller result. A runner-file
+// failure must not change that result or throw again while reporting an error.
+function announce(outputs, summary) {
+  const lines = scrub(summary).trim().split('\n').filter(Boolean);
+  const detail = lines.filter(line => !line.startsWith('{'));
+  const level = outputs.status === 'passed' ? 'notice' : outputs.status === 'failed' ? 'error' : 'warning';
+  const title = outputs.status === 'passed' ? 'Box Linux checks passed'
+    : outputs.status === 'failed' ? 'Box Linux checks failed'
+    : 'Box Linux checks unavailable; hosted completion unverified';
+  const reason = detail.length ? detail.join(' ') : 'no reason was reported';
+  const preview = reason.length > 900 ? reason.slice(0, 870) + ' (further detail in job log)' : reason;
+  console.log(`::${level} title=${title}::${preview}`);
+  for (const line of detail) console.error(line);
+  const target = process.env.GITHUB_STEP_SUMMARY;
+  if (target) {
+    try {
+      fs.appendFileSync(target, `### ${title}\n\n${detail.length ? detail.map(line => '- ' + line).join('\n') : 'No reason was reported.'}\n\n`);
+    } catch {
+      console.error('Job summary could not be written; controller outcome is unchanged.');
+    }
+  }
+}
 async function execute() {
   let child, canceled = false, overflow = false;
   const forward = signal => {
@@ -44,7 +81,7 @@ async function execute() {
   };
   const interrupt = () => forward('SIGINT'), terminate = () => forward('SIGTERM');
   process.on('SIGINT', interrupt); process.on('SIGTERM', terminate);
-  let result, status, output = '', bytes = 0;
+  let result, status, output = '', bytes = 0, summary;
   try {
     child = spawn('/usr/bin/sudo', ['-n', '-u', 'stateengine-ci-controller', '/usr/local/libexec/stateengine-ci-hook', slot],
       { stdio: ['pipe', 'pipe', 'inherit'] });
@@ -69,6 +106,7 @@ async function execute() {
       return 1;
     }
     result = JSON.parse(output);
+    summary = result.summary;
   } finally {
     process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', terminate);
   }
@@ -79,7 +117,17 @@ async function execute() {
       if (!/^(rust|windows|route|status)$/.test(name) || !/^(true|false|box|hosted|passed|failed|unavailable)$/.test(value)) throw Error('invalid fixed output');
       fs.appendFileSync(target, `${name}=${value}\n`);
     }
+    announce(result.outputs, summary);
+  } else if (result.exit_code !== 0) {
+    // A controller that dies before it can classify its own work is still a
+    // box result a seat has to read, and it used to leave the summary empty.
+    announce({ status: 'unavailable' }, process.env.STATEENGINE_BOX_REASON
+      || 'the box controller exited without a result; box work and hosted completion are unverified');
   }
   return status.code === 0 && result.exit_code === 0 ? 0 : 1;
 }
-execute().then(code => { process.exitCode = code; }, error => { console.error(error.message); process.exitCode = 1; });
+execute().then(code => { process.exitCode = code; }, error => {
+  // Same rule on the hook's own failure path: no silent job.
+  process.exitCode = 1;
+  announce({ status: 'unavailable' }, `the CI hook could not publish a result: ${error.message}`);
+});
