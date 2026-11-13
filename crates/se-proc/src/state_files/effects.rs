@@ -16,6 +16,8 @@ use super::windows::effects as os;
 
 /// A single regular file owned by the current native user. The parent chain and
 /// original object are pinned; symlinks, reparse points and hard links refuse.
+/// Windows also accepts Administrators ownership when that group is enabled in
+/// the current process token. Private-file DACL requirements remain separate.
 /// It is not Clone and never exposes an unvalidated mutation handle.
 pub struct OwnedFile(os::Pin);
 
