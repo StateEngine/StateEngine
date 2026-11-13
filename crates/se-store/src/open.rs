@@ -8,6 +8,7 @@ pub struct SqliteFactory;
 #[derive(Clone)]
 pub struct SqliteReader {
     pub(crate) path: PathBuf,
+    identity: Option<se_proc::NativeFileIdentity>,
     pub(crate) timeout: Duration,
     pub(crate) slots: crate::read_slots::ReadSlots,
 }
@@ -43,7 +44,10 @@ impl SqliteReader {
     fn for_options(o: &StoreOptions) -> StoreResult<Self> {
         Self::with_slots(o, crate::read_slots::ReadSlots::default())
     }
-    fn with_slots(o: &StoreOptions, slots: crate::read_slots::ReadSlots) -> StoreResult<Self> {
+    pub(crate) fn with_slots(
+        o: &StoreOptions,
+        slots: crate::read_slots::ReadSlots,
+    ) -> StoreResult<Self> {
         if !o.state_directory.is_absolute() {
             return Err(fail(
                 StoreErrorCode::LocationUnsafe,
@@ -52,12 +56,55 @@ impl SqliteReader {
         }
         Ok(Self {
             path: o.state_directory.join("state.db"),
+            identity: None,
             timeout: o.busy_timeout,
             slots,
         })
     }
     pub(crate) fn connect(&self) -> StoreResult<Connection> {
-        connection::connect(&self.path, false, self.timeout)
+        match se_proc::NativeFileIdentity::observe(&self.path) {
+            Ok(named) => self.require_identity(named)?,
+            // Let the actual read-only SQLite open report CANTOPEN, retaining
+            // its native diagnostics. A file appearing during that open must
+            // still match the retained identity at the check below.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(self.identity_observation_error(e)),
+        }
+        let db = connection::connect(&self.path, false, self.timeout)?;
+        self.validate_identity()?;
+        Ok(db)
+    }
+    pub(crate) fn bind_identity(&mut self) -> StoreResult<()> {
+        self.identity = Some(
+            se_proc::NativeFileIdentity::observe(&self.path)
+                .map_err(|e| io(e, &self.path, StoreIoStage::Open))?,
+        );
+        Ok(())
+    }
+    pub(crate) fn validate_identity(&self) -> StoreResult<()> {
+        let named = se_proc::NativeFileIdentity::observe(&self.path)
+            .map_err(|e| self.identity_observation_error(e))?;
+        self.require_identity(named)
+    }
+    fn identity_observation_error(&self, error: std::io::Error) -> Box<StoreError> {
+        if error.kind() == std::io::ErrorKind::InvalidInput {
+            self.identity_changed(format!(
+                "database file is no longer a regular non-link file: {error}"
+            ))
+        } else {
+            io(error, &self.path, StoreIoStage::Open)
+        }
+    }
+    fn require_identity(&self, named: se_proc::NativeFileIdentity) -> StoreResult<()> {
+        if self.identity != Some(named) {
+            return Err(self.identity_changed("database file identity changed"));
+        }
+        Ok(())
+    }
+    fn identity_changed(&self, cause: impl Into<String>) -> Box<StoreError> {
+        let mut error = fail(StoreErrorCode::SourceChanged, cause);
+        error.remedy.text = "Preserve the database and its sidecars. Restore the intended state file, then reopen the store reader before retrying.".into();
+        context(error, &self.path, StoreIoStage::Open)
     }
 }
 impl SqliteFactory {
@@ -212,7 +259,9 @@ impl StoreFactory for SqliteFactory {
 impl ReadStore for SqliteReader {
     type Snapshot = SqliteSnapshot;
     fn info(&self) -> StoreResult<StoreInfo> {
-        connection::info_at(&self.connect()?, &self.path)
+        let info = connection::info_at(&self.connect()?, &self.path)?;
+        self.validate_identity()?;
+        Ok(info)
     }
     fn snapshot(&self, scope: ReadScope) -> StoreResult<Self::Snapshot> {
         SqliteSnapshot::open(self, scope)

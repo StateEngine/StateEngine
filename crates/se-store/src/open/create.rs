@@ -18,7 +18,7 @@ impl SqliteFactory {
                 "bootstrap requires measured-absent store and held runtime lease",
             ));
         }
-        let reader = SqliteReader::for_options(o)?;
+        let mut reader = SqliteReader::for_options(o)?;
         match lease.files().inspect_metadata(&reader.path)? {
             Read::Absent { .. } => {}
             Read::Present { .. } => {
@@ -90,7 +90,9 @@ impl SqliteFactory {
                     ));
                 }
             }
+            reader.bind_identity()?;
             let db = connection::connect(&reader.path, true, o.busy_timeout)?;
+            reader.validate_identity()?;
             let identity = LeaseIdentity {
                 store: Some(id),
                 ..identity

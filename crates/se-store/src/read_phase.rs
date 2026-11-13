@@ -44,6 +44,7 @@ impl SqliteReader {
     ) -> StoreResult<ReadPhase> {
         connection::begin_snapshot(&db, &self.path)?;
         let info = connection::info_at(&db, &self.path)?;
+        self.validate_identity()?;
         Ok(ReadPhase {
             db,
             info,
