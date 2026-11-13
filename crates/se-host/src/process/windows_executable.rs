@@ -20,12 +20,13 @@ fn native_image(path: &Path) -> io::Result<bool> {
         return Ok(false);
     }
     let mut header = [0; 2];
-    let mut input = fs::File::open(path)?;
-    let native = match input.read_exact(&mut header) {
-        Ok(()) => header == *b"MZ",
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => false,
-        Err(error) => return Err(error),
-    };
+    let native = se_proc::file_access::with_readable_regular_file(path, |input| {
+        match input.read_exact(&mut header) {
+            Ok(()) => Ok(header == *b"MZ"),
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(false),
+            Err(error) => Err(error),
+        }
+    })?;
     if !native
         && path
             .extension()
@@ -35,6 +36,9 @@ fn native_image(path: &Path) -> io::Result<bool> {
             io::ErrorKind::InvalidData,
             format!("{} has no native Windows image header", path.display()),
         ));
+    }
+    if native {
+        se_proc::file_access::require_executable_access(path)?;
     }
     Ok(native)
 }
@@ -80,16 +84,7 @@ pub(super) fn resolve_package(
     if !file(&manifest)? {
         return Ok(None);
     }
-    let mut bytes = Vec::new();
-    fs::File::open(&manifest)?
-        .take(65537)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 65536 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Codex package metadata exceeds 64 KiB",
-        ));
-    }
+    let bytes = se_proc::file_access::read_bounded_regular_file(&manifest, 65536)?;
     let metadata: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     if metadata.get("name").and_then(serde_json::Value::as_str) != Some("@openai/codex") {

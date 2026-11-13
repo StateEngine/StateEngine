@@ -60,9 +60,13 @@ pub(super) fn resolve_provider_launch(
                     Ok(metadata) if metadata.is_file() => {
                         match unix_executable::packaged_codex(path)? {
                             Some((image, root)) => {
+                                se_proc::file_access::require_executable_access(&image)?;
                                 ProviderExecutable::packaged(image, Some(root), path).map(Some)
                             }
-                            None => Ok(Some(ProviderExecutable::direct(path.to_path_buf()))),
+                            None => {
+                                se_proc::file_access::require_executable_access(path)?;
+                                Ok(Some(ProviderExecutable::direct(path.to_path_buf())))
+                            }
                         }
                     }
                     Ok(_) => Ok(None),
@@ -400,8 +404,10 @@ fn native_executable(
                 if provider == Some(se_types::Provider::Codex)
                     && let Some((image, _)) = unix_executable::packaged_codex(path)?
                 {
+                    se_proc::file_access::require_executable_access(&image)?;
                     return Ok(Some(image));
                 }
+                se_proc::file_access::require_executable_access(path)?;
                 Ok(Some(path.to_path_buf()))
             }
             Ok(_) => Ok(None),

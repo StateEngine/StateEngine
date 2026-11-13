@@ -3,7 +3,6 @@ use se_core::harness_selection::catalog::NodePackage;
 use se_types::{Result, SeError};
 use std::{
     collections::BTreeSet,
-    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -35,19 +34,11 @@ pub fn node_entrypoint(package: &NodePackage, executable: &Path) -> Result<PathB
                 continue;
             }
             let manifest = root.join("package.json");
-            let mut file = match std::fs::File::open(&manifest) {
-                Ok(file) => file,
+            let bytes = match se_proc::file_access::read_bounded_regular_file(&manifest, 65536) {
+                Ok(bytes) => bytes,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(unreadable(error)),
             };
-            let mut bytes = Vec::new();
-            file.by_ref()
-                .take(65537)
-                .read_to_end(&mut bytes)
-                .map_err(unreadable)?;
-            if bytes.len() > 65536 {
-                return Err(unreadable("package metadata exceeds 64 KiB"));
-            }
             let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(unreadable)?;
             if value.get("name").and_then(serde_json::Value::as_str) != Some(package.name.as_str())
             {
@@ -84,6 +75,8 @@ pub fn node_entrypoint(package: &NodePackage, executable: &Path) -> Result<PathB
                     "package bin entry escapes the installed package or is not a file",
                 ));
             }
+            se_proc::file_access::with_readable_regular_file(&selected, |_| Ok(()))
+                .map_err(unreadable)?;
             return Ok(selected);
         }
     }
