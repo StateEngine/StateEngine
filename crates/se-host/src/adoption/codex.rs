@@ -126,10 +126,13 @@ pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
             windows_quoted(executable),
             windows_quoted(home)
         );
-        entries.push((event.into(), json!({"hooks":[{
-            "type":"command", "command":command, "commandWindows":command_windows,
-            "async": action != "end", "timeout": if action == "mail" { 2_000_000 } else if action == "end" { 2 } else { 30 }
-        }]})));
+        entries.push((
+            event.into(),
+            json!({"hooks":[{
+                "type":"command", "command":command, "commandWindows":command_windows,
+                "async": action != "end", "timeout": if action == "mail" { 2_000_000 } else { 30 }
+            }]}),
+        ));
     }
     Ok(entries)
 }
