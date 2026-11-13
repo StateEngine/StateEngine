@@ -133,7 +133,7 @@ impl Session {
                 return Err(failure(
                     "ACP policy",
                     format!(
-                        "Configured acp.mode {:?}, but the agent changed to {:?}. The original input remains owned; inspect its captured outcome before stopping normally. Set or omit acp.mode for the next launch.",
+                        "Configured native mode {:?}, but the agent changed to {:?}. The original input remains owned; inspect its captured outcome before stopping normally. Update or omit the mode assertion in the selected harness configuration for the next launch.",
                         state.required_mode, mode
                     ),
                 ));
@@ -228,7 +228,7 @@ impl Session {
                     return Err(failure(
                         "ACP initialization",
                         format!(
-                            "The agent offered protocolVersion {version:?}; ACP version 1 is required. Configure providers.acp.command and acp.arguments to an ACP v1 entrypoint, then retry launch."
+                            "The agent offered protocolVersion {version:?}; ACP version 1 is required. Configure the selected harness command and arguments to an ACP v1 entrypoint, then retry launch."
                         ),
                     ));
                 }
@@ -289,7 +289,7 @@ impl Session {
                     return Err(failure(
                         "ACP policy",
                         format!(
-                            "Configured acp.mode {:?}, but the agent reported {:?}. Set acp.mode to its reported mode or omit acp.mode to use its default, then retry launch. No input was offered.",
+                            "Configured native mode {:?}, but the agent reported {:?}. Select its reported mode or omit the mode assertion in the selected harness configuration to use its default, then retry launch. No input was offered.",
                             state.required_mode, mode
                         ),
                     ));

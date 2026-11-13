@@ -192,7 +192,7 @@ impl Session {
             {
                 return Err(failure(
                     "ACP MCP",
-                    "The agent did not advertise authenticated HTTP MCP support. Configure providers.acp.command and acp.arguments to an ACP v1 agent with HTTP MCP support, then retry launch.",
+                    "The agent did not advertise authenticated HTTP MCP support. Configure the selected harness command and arguments to an ACP v1 agent with HTTP MCP support, then retry launch.",
                 ));
             }
             state.required_mode = if required_mode.is_empty() {
