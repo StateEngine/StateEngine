@@ -8,8 +8,9 @@ capture, exact task-file bytes, public shutdown and native process closure are r
 
 This is smoke evidence. It does not qualify clean-machine login, performance budgets,
 an execution sandbox, or a platform that has not run natively. Native harnesses own
-permissions and sandboxing. The runner supports descriptor-bound ACP harnesses and the native Claude and Codex
-adapters, including the native SE Code service. Unsupported drivers are SKIPPED with a reason. Missing native inputs,
+permissions and sandboxing. The runner supports descriptor-bound ACP harnesses
+and native Claude, Codex and SE Code adapters. Unsupported drivers are SKIPPED
+with a reason. Missing native inputs,
 images or required environment values are ABSENT; unreadable evidence is
 UNREADABLE. A failed command or assertion is FAIL. Later phases that could not
 run remain NOT RUN. None of these states count as PASS.
@@ -44,8 +45,9 @@ available. Otherwise its settings contain:
 - `harness`: the saved descriptor name selected by `se init --harness` for ACP.
   Built-in drivers select their provider instead.
 - `configuration`: `path` and `sha256` of a plain configuration file containing
-  the descriptor and its explicit named launch profile. Credential values belong
-  in the native environment, not this file or the manifest.
+  the descriptor and its explicit named launch profile. Account credentials belong
+  in the native environment or an explicitly provisioned private provider seed,
+  never directly in the configuration or manifest.
 - For SE Code, `seed_profile` contains the private seed `path` matching the
   selected provider configuration and a `files` map of SHA256 digests for
   `secode.jsonc`, `provider.credential` and `account-models.json`. Use a disposable
