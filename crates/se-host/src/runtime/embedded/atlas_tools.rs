@@ -24,7 +24,7 @@ impl EmbeddedHost {
     ) -> Result<api::Page<api::ToolDefinition>> {
         self.bindings.verify(session)?;
         let (router, deadline, _cancel) = self.ready(&options).await?;
-        let available = router.execution.atlas.is_installed();
+        let available = router.execution.atlas.is_available();
         if session.generation != options.generation
             || !(1..=100).contains(&page.limit)
             || !(1..=65536).contains(&page.max_bytes)

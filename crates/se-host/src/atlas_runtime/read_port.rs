@@ -31,6 +31,10 @@ pub type AtlasObservedReadCallback<'a> = dyn FnMut(
 /// Object-safe owner-loop handoff. The callback runs synchronously while the
 /// selected controller lends its one scoped reader; nothing escapes the call.
 pub trait AtlasReadPort: Send + Sync {
+    /// A retained disabled controller still serves explicit availability errors.
+    fn is_enabled(&self) -> bool {
+        true
+    }
     /// Current project roots from the caller's authoritative read snapshot.
     fn observe_project(&self, _project: &ProjectId, _roots: &[se_store::Root]) -> Result<()> {
         Ok(())
@@ -94,8 +98,8 @@ impl AtlasOwnerPort {
         Ok(())
     }
     #[cfg(feature = "listener")]
-    pub(crate) fn is_installed(&self) -> bool {
-        self.reader.get().is_some()
+    pub(crate) fn is_available(&self) -> bool {
+        self.reader.get().is_some_and(|reader| reader.is_enabled())
     }
     pub fn status(
         &self,

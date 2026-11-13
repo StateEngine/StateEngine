@@ -355,7 +355,7 @@ fn unavailable(request: &se_core::ops::AtlasRead, index: IndexSummary) -> se_cor
             state => se_types::Read::Unknown {
                 what: match state {
                     IndexState::Disabled => {
-                        "Atlas is explicitly disabled; enable atlas.enabled in configuration"
+                        "Atlas is explicitly disabled; edit [atlas] enabled = true in the selected config.toml, then run se down and se up with the same --home"
                     }
                     IndexState::NotBuilt => "Atlas is not compiled into this build",
                     IndexState::Dormant | IndexState::Absent => {
