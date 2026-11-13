@@ -4,30 +4,33 @@ use se_store::remote::LaunchCandidate;
 use se_types::Read;
 use std::io::BufRead;
 
-pub(super) fn review(
+pub(super) fn review<H: OwnerCommands>(
     m: &ArgMatches,
     stdout: &mut impl Write,
     input: &mut impl BufRead,
+    host: &H,
 ) -> io::Result<()> {
-    let cx = crate::bootstrap::Bootstrap::resolve_remote_owner(
-        text(m, "home").map(Into::into),
-        m.get_flag("no_color"),
-        false,
-    )
-    .map_err(io::Error::other)?;
+    let cx = host
+        .resolve_owner(
+            text(m, "home").map(Into::into),
+            m.get_flag("no_color"),
+            false,
+        )
+        .map_err(io::Error::other)?;
     let alias = required(m, "name").map_err(io::Error::other)?;
     let mut after = None;
     let mut change = None;
     loop {
-        let output = crate::route::remote_owner::execute(
-            &cx,
-            Input::Ready(OwnerInput::PairingLaunchPermissions {
-                alias: alias.clone(),
-                after: after.clone(),
-                change: change.take(),
-            }),
-        )
-        .map_err(io::Error::other)?;
+        let output = host
+            .execute_owner(
+                &cx,
+                Input::Ready(OwnerInput::PairingLaunchPermissions {
+                    alias: alias.clone(),
+                    after: after.clone(),
+                    change: change.take(),
+                }),
+            )
+            .map_err(io::Error::other)?;
         let targets: Vec<LaunchCandidate> = serde_json::from_value(output.value["targets"].clone())
             .map_err(|_| {
                 io::Error::other("pairing returned an incompatible destination inventory")

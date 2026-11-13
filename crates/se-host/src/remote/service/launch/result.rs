@@ -21,6 +21,7 @@ pub(super) async fn finish(
         native_key,
         replayed,
     } = completion;
+    let launched_target = input.target.clone();
     let (outcome, attribution) = match reply {
         LaunchReply::Pending(value) => {
             let outcome = RemoteLaunchOutcome::Pending {
@@ -35,47 +36,25 @@ pub(super) async fn finish(
             (outcome, attribution)
         }
         LaunchReply::Running(value) => {
-            let known = crate::runtime::CommittedWrite {
-                operation: "remote.launch".into(),
-                key: Some(input.idempotency_key.clone()),
-                natural_events: vec![],
-                committed_events: vec![value.event_id.clone()],
-            };
-            let launched = RemoteLaunchStarted {
-                target: input.target,
-                session: value.session_id,
-                lifecycle: value.lifecycle_id,
-            };
-            let (receipt, origin) = receipt::read_back(
+            return started(
+                service,
                 store,
-                admission,
-                native_key,
-                launched,
-                &attribution,
+                Completion {
+                    input,
+                    attribution,
+                    admission,
+                    native_key,
+                    replayed,
+                },
+                RemoteLaunchStarted {
+                    target: launched_target,
+                    session: value.session_id,
+                    lifecycle: value.lifecycle_id,
+                },
+                value.event_id,
                 deadline,
             )
-            .await
-            .map_err(|error| known.response_error(error))?;
-            let position = receipt::seal(service, &receipt, &origin)
-                .map_err(|error| known.response_error(error))?;
-            let replayed = replayed || origin.attribution.source != attribution.source;
-            let commit = se_types::Commit {
-                event_id: receipt.primary_event,
-                position,
-                idempotency_key: input.idempotency_key,
-                value: RemoteLaunchStarted {
-                    target: origin.target,
-                    session: origin.session,
-                    lifecycle: origin.lifecycle,
-                },
-                effects: se_types::EffectStatus::NotRequired,
-            };
-            let receipt = if replayed {
-                se_types::Receipt::Replayed { original: commit }
-            } else {
-                se_types::Receipt::Committed { commit }
-            };
-            (RemoteLaunchOutcome::Started { receipt }, origin.attribution)
+            .await;
         }
     };
     Ok(RemoteLaunchResult {
@@ -83,6 +62,59 @@ pub(super) async fn finish(
         body: RemoteLaunchBody {
             outcome,
             attribution,
+        },
+    })
+}
+
+pub(super) async fn started(
+    service: &Service,
+    store: &crate::runtime::store::Store,
+    completion: Completion,
+    launch: RemoteLaunchStarted,
+    event: se_types::EventId,
+    deadline: &crate::client::lease::Deadline,
+) -> Result<RemoteLaunchResult> {
+    let Completion {
+        input,
+        attribution,
+        admission,
+        native_key,
+        replayed,
+    } = completion;
+    let known = crate::runtime::CommittedWrite {
+        operation: "remote.launch".into(),
+        key: Some(input.idempotency_key.clone()),
+        natural_events: vec![],
+        committed_events: vec![event],
+    };
+    let (receipt, origin) =
+        receipt::read_back(store, admission, native_key, launch, &attribution, deadline)
+            .await
+            .map_err(|error| known.response_error(error))?;
+    let position =
+        receipt::seal(service, &receipt, &origin).map_err(|error| known.response_error(error))?;
+    let replayed = replayed || origin.attribution.source != attribution.source;
+    let commit = se_types::Commit {
+        event_id: receipt.primary_event,
+        position,
+        idempotency_key: input.idempotency_key,
+        value: RemoteLaunchStarted {
+            target: origin.target,
+            session: origin.session,
+            lifecycle: origin.lifecycle,
+        },
+        effects: se_types::EffectStatus::NotRequired,
+    };
+    let receipt = if replayed {
+        se_types::Receipt::Replayed { original: commit }
+    } else {
+        se_types::Receipt::Committed { commit }
+    };
+    Ok(RemoteLaunchResult {
+        schema: RemoteLaunchResult::SCHEMA.into(),
+        body: RemoteLaunchBody {
+            outcome: RemoteLaunchOutcome::Started { receipt },
+            attribution: origin.attribution,
         },
     })
 }

@@ -67,23 +67,36 @@ impl Service {
             .await?;
         let replayed = plan.replayed;
         let native_key = plan.input.idempotency_key.clone();
+        let launched = RemoteLaunchStarted {
+            target: input.target.clone(),
+            session: plan.session.clone(),
+            lifecycle: plan.lifecycle.clone(),
+        };
+        let seed = plan.seed.clone();
+        let key = input.idempotency_key.clone();
+        let completion = result::Completion {
+            input,
+            attribution,
+            admission: admission.clone(),
+            native_key: native_key.clone(),
+            replayed,
+        };
+        if replayed
+            && receipt::activated(
+                &store,
+                admission.clone(),
+                native_key,
+                launched.clone(),
+                &deadline,
+            )
+            .await?
+        {
+            return result::started(self, &store, completion, launched, seed, &deadline).await;
+        }
         let reply = custody
             .launch_remote(plan, admission.clone(), permit, &deadline)
             .await
-            .map_err(|error| failure::original_key(error, &input.idempotency_key))?;
-        result::finish(
-            self,
-            &store,
-            result::Completion {
-                input,
-                attribution,
-                admission,
-                native_key,
-                replayed,
-            },
-            reply,
-            &deadline,
-        )
-        .await
+            .map_err(|error| failure::original_key(error, &key))?;
+        result::finish(self, &store, completion, reply, &deadline).await
     }
 }

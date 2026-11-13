@@ -1,11 +1,12 @@
 //! Launch consent is available from pairing and the native Owner menu.
 use super::*;
 use std::io::{BufRead, IsTerminal};
-pub(super) fn command(
+pub(super) fn command<H: OwnerCommands + Presentation>(
     m: &ArgMatches,
     json: bool,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
+    host: &H,
 ) -> io::Result<u8> {
     if text(m, "name").is_none()
         || json
@@ -15,7 +16,7 @@ pub(super) fn command(
         || m.get_one::<String>("project").is_some()
         || text(m, "key").is_some()
     {
-        return crate::render::error::write(
+        return host.write_error(
             &invalid(
                 "launch permission review requires a native Owner terminal: run se remote permissions --name <saved-alias> --launch; omit --json, --project, --version and --key",
             ),
@@ -25,10 +26,14 @@ pub(super) fn command(
             stderr,
         );
     }
-    super::launch_permissions::review(m, stdout, &mut io::stdin().lock())?;
+    super::launch_permissions::review(m, stdout, &mut io::stdin().lock(), host)?;
     Ok(0)
 }
-pub(super) fn review(m: &ArgMatches, stdout: &mut impl Write) -> io::Result<()> {
+pub(super) fn review<H: OwnerCommands>(
+    m: &ArgMatches,
+    stdout: &mut impl Write,
+    host: &H,
+) -> io::Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         writeln!(
             stdout,
@@ -43,7 +48,7 @@ pub(super) fn review(m: &ArgMatches, stdout: &mut impl Write) -> io::Result<()> 
     stdout.flush()?;
     let mut input = io::stdin().lock();
     if line(&mut input)? == "launch" {
-        super::launch_permissions::review(m, stdout, &mut input)?;
+        super::launch_permissions::review(m, stdout, &mut input, host)?;
     }
     Ok(())
 }

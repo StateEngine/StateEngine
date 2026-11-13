@@ -99,7 +99,7 @@ fn run<H: OwnerCommands + Presentation>(name: &str, m: &ArgMatches, host: &H) ->
     // pipe always owes the source a structured native refusal.
     let json = m.get_flag("json") || name == "__authorize";
     if name == "permissions" && !m.get_flag("help") {
-        return permissions::command(m, json, &mut stdout, &mut stderr);
+        return permissions::command(m, json, &mut stdout, &mut stderr, host);
     }
     let result = (|| {
         if m.get_flag("help") {
@@ -143,7 +143,7 @@ fn run<H: OwnerCommands + Presentation>(name: &str, m: &ArgMatches, host: &H) ->
     })();
     match result {
         Ok((Some(help), _)) => host.write_output(&help, json, false, &mut stdout),
-        Ok((_, Some(output))) => {
+        Ok((_, Some(mut output))) => {
             if name == "__authorize" {
                 return authorize(m, &output.value, &mut stdout, host);
             }
@@ -179,7 +179,7 @@ fn run<H: OwnerCommands + Presentation>(name: &str, m: &ArgMatches, host: &H) ->
             }
             stdout.flush()?;
             if name == "add" && !json {
-                permissions::review(m, &mut stdout)?;
+                permissions::review(m, &mut stdout, host)?;
             }
             Ok(0)
         }

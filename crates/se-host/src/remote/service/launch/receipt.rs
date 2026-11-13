@@ -74,3 +74,51 @@ pub(super) fn seal(
         se_store::remote::position_payload(&receipt.first).map_err(|e| store_error(&e))?;
     service.cursors.sealed_receipt(&position, &associated)
 }
+
+// C1 reserves native custody; only the atomic activation phase proves that the
+// original start succeeded. Its receipt survives process stop and host restart.
+pub(super) async fn activated(
+    store: &crate::runtime::store::Store,
+    admission: Admission,
+    native_key: se_types::IdempotencyKey,
+    launch: RemoteLaunchStarted,
+    deadline: &crate::client::lease::Deadline,
+) -> Result<bool> {
+    let key = se_core::ops::process_commit::phase_key(&native_key, "activate")?;
+    store
+        .read(admission, deadline, move |cx| {
+            let read = cx.read.operation_receipt(cx.admission.actor.clone(), key)
+                .map_err(|e| store_error(&e))?;
+            if matches!(read, se_types::Read::Absent { .. }) {
+                return Ok(false);
+            }
+            let receipt = scope::require_present(
+                read, "remote launch activation receipt", scope::COMMITTED_READ_RECOVERY,
+            )?;
+            // The closed native producer writes the lifecycle transition first
+            // and session activation second. Credential facts remain private.
+            let [process, session, ..] = receipt.events.as_slice() else {
+                return Err(SeError::invalid("remote launch activation", "the complete original activation batch"));
+            };
+            let process = scope::require_present(
+                cx.read.event(process.clone()).map_err(|e| store_error(&e))?,
+                "remote launch process activation", scope::COMMITTED_READ_RECOVERY,
+            )?;
+            let session = scope::require_present(
+                cx.read.event(session.clone()).map_err(|e| store_error(&e))?,
+                "remote launch session activation", scope::COMMITTED_READ_RECOVERY,
+            )?;
+            let process_matches = matches!(process.body,
+                EventBody::ProcessTransition { process, to: se_store::ProcessState::Running, identity, .. }
+                if process == launch.lifecycle && identity.session.as_ref() == Some(&launch.session)
+                    && identity.principal == Actor::Agent(launch.target.agent.clone()));
+            let session_matches = matches!(session.body,
+                EventBody::SessionActivated { session, process: Some(process), .. }
+                if session == launch.session && process == launch.lifecycle);
+            if !process_matches || !session_matches {
+                return Err(SeError::invalid("remote launch activation", "the exact original destination, session and lifecycle"));
+            }
+            Ok(true)
+        })
+        .await
+}
