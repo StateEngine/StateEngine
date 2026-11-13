@@ -1,7 +1,6 @@
 //! Bounded local SSH diagnostics become actionable transport refusals.
 use super::channel::unavailable;
-use se_types::error::{Detail, details};
-use se_types::{Result, SeError};
+use se_types::{Detail, Result, SeError, details};
 use tokio::io::AsyncReadExt;
 
 pub(super) async fn read_errors(
