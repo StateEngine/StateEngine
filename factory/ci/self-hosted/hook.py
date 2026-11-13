@@ -396,7 +396,9 @@ def summary_text(status, disclosed):
     marker = "(further reasons omitted)"
     kept, total = [], len(head.encode("utf-8"))
     for line in disclosed:
-        line = scrub(str(line)).encode("utf-8", "replace")[:LOCATE_BYTES].decode("utf-8", "ignore")
+        encoded = scrub(str(line)).encode("utf-8", "replace")
+        suffix = " (reason truncated)" if len(encoded) > LOCATE_BYTES else ""
+        line = encoded[:LOCATE_BYTES - len(suffix)].decode("utf-8", "ignore") + suffix
         added = len(line.encode("utf-8")) + 1
         # Reserve the newline and marker before accepting another reason.
         if total + added + len(marker.encode("utf-8")) + 1 > FAIL_BYTES:

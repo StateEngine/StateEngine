@@ -57,7 +57,9 @@ function announce(outputs, summary) {
   const title = outputs.status === 'passed' ? 'Box Linux checks passed'
     : outputs.status === 'failed' ? 'Box Linux checks failed'
     : 'Box Linux checks unavailable; hosted completion unverified';
-  console.log(`::${level} title=${title}::${detail.length ? detail.join(' ').slice(0, 900) : 'no reason was reported'}`);
+  const reason = detail.length ? detail.join(' ') : 'no reason was reported';
+  const preview = reason.length > 900 ? reason.slice(0, 870) + ' (further detail in job log)' : reason;
+  console.log(`::${level} title=${title}::${preview}`);
   for (const line of detail) console.error(line);
   const target = process.env.GITHUB_STEP_SUMMARY;
   if (target) {
