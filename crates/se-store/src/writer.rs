@@ -581,6 +581,8 @@ fn run(
                     .recovering = !reopened;
             }
             Command::Flush(deadline, reply) => {
+                // No join here on purpose: Pending may be spurious while the
+                // task is alive, but a dead task can never be read clean.
                 let result = flush(&mut host, deadline, &*lease, &status);
                 shared
                     .admission
@@ -593,7 +595,9 @@ fn run(
                 // The report reads the task status, so the task must be dead
                 // first: no tick can then move Pending between the writer's
                 // final checkpoint and the read. With no live task, the
-                // writer's result is the whole truth.
+                // writer's result is the whole truth. The join itself may
+                // spend the caller's remaining drain deadline; an exhausted
+                // budget then surfaces as Busy from the final flush below.
                 checkpoint.join();
                 let report = flush(&mut host, deadline, &*lease, &status)?;
                 return Ok(DrainedHost { host, report });
