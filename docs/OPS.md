@@ -129,7 +129,7 @@ Plain `se init` (including `--repo DIR`) is managed setup and writes nothing ins
 
 Launch resumes the saved conversation by default; `--new` starts another conversation for the same durable agent. If a saved resume reference cannot be verified, refuse with its remedy instead of silently starting fresh. Launch auto-starts a standalone runtime when necessary. Provider/model overrides must be compatible with the chosen conversation; changing provider cannot pretend to resume a different provider's conversation. Capture and process facts remain separate from task completion. `--preview` never binds, launches, revokes or acknowledges a session. No polling, process-per-agent engine or legacy launch spelling is implied by these operations.
 
-Resume defaults to 32,768 UTF-8 bytes for its JSON reply and 20 rows per section; `--budget` accepts 1,024–1,048,576 and `--limit` accepts 1–100. `--since` accepts only the same admitted principal and target's resume cursor. Packet clipping or a refused source remains explicit, with a count or a named unavailable count and a legal retrieval command. Listing context never acknowledges issued packets or marks mail read.
+Resume defaults to 4,096 UTF-8 bytes for its ordinary CLI JSON or MCP reply and 20 rows per section; the linked session-context envelope retains its 32,768-byte default. `--budget` accepts 1,024–1,048,576 and `--limit` accepts 1–100. `--since` accepts only the same admitted principal and target's resume cursor. Packet clipping or a refused source remains explicit, with a count or a named unavailable count and a legal retrieval command. Listing context never acknowledges issued packets or marks mail read.
 
 ## Messages
 
