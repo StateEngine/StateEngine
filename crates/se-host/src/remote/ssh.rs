@@ -4,11 +4,9 @@ use super::RemoteReady;
 use super::channel::unavailable;
 mod authorization;
 mod bootstrap;
-mod command;
-mod image;
-mod image_commands;
+pub(super) mod command;
 mod prepare;
-mod staging;
+use super::native_image::{self as image, staging, transactions as image_commands};
 pub(crate) use authorization::launch_permissions;
 pub use authorization::{
     Authorization, AuthorizationResult, LaunchPermissionsRequest, PermissionsResult,

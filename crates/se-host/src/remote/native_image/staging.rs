@@ -1,6 +1,6 @@
 //! Fixed, account-owned runtime paths; partial uploads never become executable.
 // All substituted paths are generated from hexadecimal hashes and nonces.
-pub(super) fn receive(path: &str, windows: bool) -> String {
+pub(in crate::remote) fn receive(path: &str, windows: bool) -> String {
     if windows {
         powershell(&format!(
             "$ErrorActionPreference='Stop'; $f=$null; try {{$p=Join-Path $HOME '{path}'; $f=[IO.File]::Open($p,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); [Console]::OpenStandardInput().CopyTo($f); $f.Flush($true); $f.Dispose(); exit 0}} catch {{if ($f) {{$f.Dispose()}}; exit 1}}"
@@ -9,7 +9,7 @@ pub(super) fn receive(path: &str, windows: bool) -> String {
         format!("umask 077; set -C; cat > {path}")
     }
 }
-pub(super) fn prepare(directory: &str, windows: bool, apple: bool) -> String {
+pub(in crate::remote) fn prepare(directory: &str, windows: bool, apple: bool) -> String {
     if windows {
         let script = r#"$ErrorActionPreference='Stop'; try {
 $me=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
@@ -46,7 +46,7 @@ done"#
     }
 }
 
-pub(super) fn verify(path: &str, digest: &str, windows: bool, apple: bool) -> String {
+pub(in crate::remote) fn verify(path: &str, digest: &str, windows: bool, apple: bool) -> String {
     if windows {
         powershell(&format!(
             r#"$ErrorActionPreference='Stop'; try {{
@@ -73,7 +73,7 @@ hash=$({hash} {path}) && test "${{hash%% *}}" = {digest}"#
         )
     }
 }
-pub(super) fn publish(upload: &str, path: &str, windows: bool) -> String {
+pub(in crate::remote) fn publish(upload: &str, path: &str, windows: bool) -> String {
     if windows {
         powershell(&format!(
             r#"$ErrorActionPreference='Stop'; try {{
@@ -87,7 +87,7 @@ $s=Join-Path $HOME '{upload}'; $d=Join-Path $HOME '{path}';
         format!("chmod 700 {upload} && ln {upload} {path}")
     }
 }
-pub(super) fn remove(upload: &str, windows: bool) -> String {
+pub(in crate::remote) fn remove(upload: &str, windows: bool) -> String {
     if windows {
         powershell(&format!(
             "$ErrorActionPreference='Stop'; try {{$p=Join-Path $HOME '{upload}'; if (Test-Path -LiteralPath $p -ErrorAction Stop) {{Remove-Item -LiteralPath $p -Force -ErrorAction Stop}}; exit 0}} catch {{exit 1}}"
@@ -96,7 +96,7 @@ pub(super) fn remove(upload: &str, windows: bool) -> String {
         format!("rm -f {upload}")
     }
 }
-pub(super) fn powershell(script: &str) -> String {
+pub(in crate::remote) fn powershell(script: &str) -> String {
     use base64::Engine as _;
     // Both command-interpreter and PowerShell SSH shells must pass the script
     // unchanged. Quoted -Command text expands variables in the outer shell.

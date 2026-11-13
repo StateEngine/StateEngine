@@ -4,7 +4,7 @@ use se_types::SeError;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-pub(super) async fn ssh(destination: &str, command: String) -> Result<(bool, Vec<u8>)> {
+pub(in crate::remote) async fn ssh(destination: &str, command: String) -> Result<(bool, Vec<u8>)> {
     validate_destination(destination)?;
     let mut child = Command::new("ssh")
         .args(["-T", "-o", "BatchMode=yes", destination, &command])
