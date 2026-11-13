@@ -409,12 +409,22 @@ fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResu
     } else {
         OpenFlags::SQLITE_OPEN_READ_ONLY
     };
+    // SQLite appends `-wal`/`-shm` to this name and opens them through its own
+    // Win32 calls, so an ordinary path would be capped at MAX_PATH. The
+    // verbatim form lets the sidecars exist at any reachable length; the file
+    // opened is the one the pin names.
+    let target = se_types::sqlite_path(&pin.path);
+    // SQLite's NOFOLLOW refuses a verbatim path it cannot resolve with its own
+    // walk; the retained pin already names the exact file, so the flag is
+    // dropped only for the verbatim form.
+    let symlink_guard = if target == pin.path {
+        OpenFlags::SQLITE_OPEN_NOFOLLOW
+    } else {
+        OpenFlags::empty()
+    };
     let mut db = Connection::open_with_flags(
-        &pin.path,
-        flags
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_EXRESCODE,
+        &target,
+        flags | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_EXRESCODE | symlink_guard,
     )
     .map_err(cache_error)?;
     db.busy_timeout(
