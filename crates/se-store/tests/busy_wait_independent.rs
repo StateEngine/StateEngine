@@ -53,10 +53,15 @@ fn the_writer_absorbs_a_slow_write_lock_hold() -> Check {
     let client = writer.client();
     let path = f.options.state_directory.join("state.db");
     let holder = observer(&path)?;
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
     let release = thread::spawn(move || {
         match holder.execute_batch("BEGIN IMMEDIATE") {
             Ok(()) => {}
             Err(e) => panic!("holder takes the WAL write lock: {e}"),
+        }
+        match held_tx.send(()) {
+            Ok(()) => {}
+            Err(e) => panic!("the held-lock signal reaches the test: {e}"),
         }
         thread::sleep(Duration::from_millis(1500));
         match holder.execute_batch("ROLLBACK") {
@@ -64,9 +69,16 @@ fn the_writer_absorbs_a_slow_write_lock_hold() -> Check {
             Err(e) => panic!("holder releases the WAL write lock: {e}"),
         }
     });
-    thread::sleep(Duration::from_millis(150));
+    // A sleep cannot prove the lock is held before the write starts under
+    // load; the holder signals it.
+    match held_rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(()) => {}
+        Err(e) => panic!("holder holds the WAL write lock before the write starts: {e:?}"),
+    }
     let started = Instant::now();
-    let receipt = wait(client.submit(payload(&f, "slow-hold")?)?)??;
+    let pending = client.submit(payload(&f, "slow-hold")?)?;
+    let receipt = wait(pending)??;
+    let waited = started.elapsed();
     assert_eq!(receipt.state, CommitState::Committed);
     match release.join() {
         Ok(()) => {}
@@ -76,9 +88,8 @@ fn the_writer_absorbs_a_slow_write_lock_hold() -> Check {
     // a refusal-class path (the old 250 ms wait) would have finished sooner
     // with a refusal, and an early start would finish almost immediately.
     assert!(
-        started.elapsed() >= Duration::from_millis(1000),
-        "write did not wait out the slow lock hold: {:?}",
-        started.elapsed()
+        waited >= Duration::from_millis(1000),
+        "write did not wait out the slow lock hold: {waited:?}"
     );
     drop(wait(writer.drain(Duration::from_secs(4)))??);
     Ok(())
