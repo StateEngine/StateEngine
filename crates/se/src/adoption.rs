@@ -41,6 +41,12 @@ fn run(args: &[OsString]) -> Result<u8> {
         return Ok(0);
     };
     registered(args, home.clone(), cwd, project.project.clone()).or_else(|error| {
+        // The host checks native ancestry before admitting adoption. Managed
+        // providers inherit user hooks too, but their existing managed hooks
+        // own capture; that authenticated refusal is an expected no-op.
+        if error.code() == se_types::Code::OwnerRequired {
+            return Ok(0);
+        }
         if let Some(action) = args[3].to_str().and_then(Action::parse)
             && let Err(record_error) =
                 se_host::adoption::status::record(&home, &project.project, action, Some(&error))

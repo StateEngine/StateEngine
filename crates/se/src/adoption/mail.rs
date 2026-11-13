@@ -154,6 +154,10 @@ impl MailWait {
             input.offered = self.offered.clone();
             let response = match forward_to(cx, input.clone(), &target) {
                 Ok(value) => value,
+                // The authenticated host proved this hook belongs to a
+                // managed agent tree. Its managed transport owns mail; a
+                // native-session waiter must finish instead of retrying it.
+                Err(error) if error.code() == se_types::Code::OwnerRequired => return Ok(0),
                 Err(error) => {
                     match se_host::route_endpoint(&cx.home, Some(&target.address))? {
                         se_host::EndpointRoute::Start { .. } => return Ok(0),
