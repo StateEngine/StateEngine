@@ -118,6 +118,9 @@ pub use state_files::effects::{
     CreatedDirectoryCleanup, DirectoryRemoval, NativeDirectoryCreation, NativeInstallationClaim,
     OwnedFile, remove_empty_directory, scan_recovery, scan_temporary,
 };
+pub use state_files::executable::{
+    NativeExecutableCreation, NativeExecutableInvocation, NativeExecutablePin,
+};
 pub use state_files::source::{NativeSourcePin, SourceChunk};
 #[cfg(windows)]
 pub use state_files::user_path::{

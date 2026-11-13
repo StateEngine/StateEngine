@@ -336,6 +336,7 @@ fn launched_child_has_only_explicit_stdio_and_starts_in_its_exact_job() -> Check
     assert_ne!(unsafe { ResetEvent(excluded.as_raw_handle()) }, 0);
     fs::write(home.0.join("stdin"), b"explicit input marker")?;
     let spec = LaunchSpec {
+        executable_custody: None,
         lifecycle: lifecycle.clone(),
         generation,
         executable,

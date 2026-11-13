@@ -56,6 +56,19 @@ pub(super) fn spec(
             "absolute executable and cwd required",
         ));
     }
+    if let Some(image) = &spec.executable_custody {
+        let selected = crate::canonicalize_path(&spec.executable)
+            .map_err(|e| native(ProcErrorCode::LaunchFailed, "resolve qualified image", e))?;
+        if selected != image.original_path() || spec.window.is_some() {
+            return Err(input(
+                "qualified image",
+                "original native image and a headless launch required",
+            ));
+        }
+        image
+            .validate()
+            .map_err(|e| input("qualified image", &e.to_string()))?;
+    }
     if spec.arguments.len() > 1024 || spec.environment.entries.len() > 1024 {
         return Err(capacity("argument/environment count", 1024));
     }

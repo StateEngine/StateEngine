@@ -160,15 +160,27 @@ impl Harness for SecodeHarness {
             })
             .await
             .map_err(|e| unreadable("SE Code image probe", e))??;
-            let (server, cli) = {
-                let images = images
+            let selected = images.clone();
+            let server = tokio::task::spawn_blocking(move || {
+                selected
                     .lock()
-                    .map_err(|_| unreadable("SE Code image probe", "poisoned image custody"))?;
-                (images.server.clone(), images.cli.clone())
-            };
-            let capabilities = probe::capabilities(&server, &deadline).await?;
+                    .map_err(|_| unreadable("SE Code image probe", "poisoned image custody"))?
+                    .server_invocation()
+            })
+            .await
+            .map_err(|e| unreadable("SE Code image probe", e))??;
+            let capabilities = probe::capabilities(server, &deadline).await?;
             let resume_supported = probe::supports_resume(&capabilities);
-            let version = probe::version(&cli, &deadline).await?;
+            let selected = images.clone();
+            let cli = tokio::task::spawn_blocking(move || {
+                selected
+                    .lock()
+                    .map_err(|_| unreadable("SE Code image probe", "poisoned image custody"))?
+                    .cli_invocation()
+            })
+            .await
+            .map_err(|e| unreadable("SE Code image probe", e))??;
+            let version = probe::version(cli, &deadline).await?;
             let reported_version = version.clone();
             let command = request.command.clone();
             let images = tokio::task::spawn_blocking(move || {

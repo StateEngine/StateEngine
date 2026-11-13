@@ -293,7 +293,24 @@ impl LaunchCoordinator {
         work.committed = true;
         // Retain native custody before fallible file/service preparation. The
         // original owner must be able to prove no exec and finish its cleanup.
+        let executable_custody = if provider == se_types::Provider::SeCode {
+            let images = self.secode.images(&request.executable.to_local()?)?;
+            Some(
+                self.store
+                    .pool
+                    .run_owned(deadline, move || {
+                        images
+                            .lock()
+                            .map_err(|_| error("SE Code client image", "poisoned custody"))?
+                            .cli_invocation()
+                    })
+                    .await?,
+            )
+        } else {
+            None
+        };
         let spec = se_proc::LaunchSpec {
+            executable_custody,
             lifecycle: plan.lifecycle.clone(),
             generation: self.options.epoch.generation,
             executable: invocation.executable.to_local()?,

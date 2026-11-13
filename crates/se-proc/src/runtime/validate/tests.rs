@@ -61,6 +61,7 @@ fn verbatim_only_child_is_inside_plain_workspace_but_not_its_plain_alias()
         },
     };
     let mut launch = LaunchSpec {
+        executable_custody: None,
         lifecycle,
         generation,
         executable: std::env::current_exe()?,

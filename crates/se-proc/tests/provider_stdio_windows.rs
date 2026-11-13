@@ -199,6 +199,7 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
                 created_at_unix_ns: 1,
             },
             LaunchSpec {
+                executable_custody: None,
                 lifecycle: lifecycle.clone(),
                 generation,
                 executable: std::env::current_exe()?,

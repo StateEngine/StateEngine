@@ -2,10 +2,13 @@ use super::{incompatible, unreadable};
 use crate::client::lease::Deadline;
 use se_types::Result;
 use serde_json::Value;
-use std::{ffi::OsString, path::Path, process::Stdio};
+use std::{ffi::OsString, process::Stdio};
 use tokio::io::AsyncReadExt;
 
-pub async fn version(cli: &Path, deadline: &Deadline) -> Result<String> {
+pub async fn version(
+    cli: se_proc::NativeExecutableInvocation,
+    deadline: &Deadline,
+) -> Result<String> {
     let bytes = command(cli, &["--version".into()], deadline).await?;
     let value = std::str::from_utf8(&bytes)
         .map_err(|_| incompatible("the CLI version is not UTF-8"))?
@@ -23,7 +26,10 @@ pub async fn version(cli: &Path, deadline: &Deadline) -> Result<String> {
     Ok(value.to_owned())
 }
 
-pub async fn capabilities(server: &Path, deadline: &Deadline) -> Result<Value> {
+pub async fn capabilities(
+    server: se_proc::NativeExecutableInvocation,
+    deadline: &Deadline,
+) -> Result<Value> {
     let bytes = command(server, &["--external-host-capabilities".into()], deadline).await?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
         incompatible("the server did not return a readable external-host capability object")
@@ -134,7 +140,7 @@ pub fn supports_resume(value: &Value) -> bool {
 /// Short, finite read-only commands. Service/client creation uses the native
 /// coordinator arena instead. Output is bounded before parsing or diagnostics.
 pub async fn command(
-    executable: &Path,
+    executable: se_proc::NativeExecutableInvocation,
     arguments: &[OsString],
     deadline: &Deadline,
 ) -> Result<Vec<u8>> {
@@ -142,12 +148,17 @@ pub async fn command(
 }
 
 pub(crate) async fn command_with_environment(
-    executable: &Path,
+    executable: se_proc::NativeExecutableInvocation,
     arguments: &[OsString],
     environment: &[(OsString, OsString)],
     deadline: &Deadline,
 ) -> Result<Vec<u8>> {
-    let mut child = tokio::process::Command::new(executable)
+    deadline.remaining()?;
+    let (command, creation) = executable
+        .command()
+        .map_err(|e| unreadable("SE Code command image custody", e))?;
+    deadline.remaining()?;
+    let mut child = tokio::process::Command::from(command)
         .args(arguments)
         .env_clear()
         .envs(super::provider_environment())
@@ -158,6 +169,25 @@ pub(crate) async fn command_with_environment(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| unreadable("SE Code command", e))?;
+    // Creation has completed while custody is still held. Release Windows
+    // exclusion before waiting for the command, so provider updates can proceed.
+    let readback = executable
+        .validate()
+        .map_err(|e| unreadable("SE Code executed image readback", e));
+    drop(creation);
+    #[cfg(windows)]
+    drop(executable);
+    // Interpreters can open the retained script after their initial exec;
+    // these read-only Unix descriptors do not exclude package updates.
+    #[cfg(not(windows))]
+    let _executable = executable;
+    if let Err(cause) = readback {
+        let cleanup = child.kill().await;
+        return Err(unreadable(
+            "SE Code command image",
+            format!("{cause}; direct-child cleanup: {cleanup:?}"),
+        ));
+    }
     let stdout = child
         .stdout
         .take()
@@ -176,7 +206,13 @@ pub(crate) async fn command_with_environment(
     })
     .await;
     match result {
-        Ok(Ok((output, _, status))) if status.success() => Ok(output),
+        Ok(Ok((output, _, status))) if status.success() => {
+            #[cfg(target_os = "macos")]
+            _executable
+                .validate()
+                .map_err(|e| unreadable("SE Code executed image readback", e))?;
+            Ok(output)
+        }
         Ok(Ok((_, _, status))) => Err(incompatible(format!(
             "selected native command exited with {status}"
         ))),

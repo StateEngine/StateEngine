@@ -197,6 +197,7 @@ fn native_window_owns_provider_pty_and_viewer_until_exact_stop() -> Check {
                 created_at_unix_ns: 1,
             },
             LaunchSpec {
+                executable_custody: None,
                 lifecycle,
                 generation,
                 executable: std::env::current_exe()?,
@@ -331,6 +332,7 @@ fn native_window_backend_and_console_share_custody() -> Check {
                 created_at_unix_ns: 1,
             },
             LaunchSpec {
+                executable_custody: None,
                 lifecycle,
                 generation,
                 executable: std::env::current_exe()?,
@@ -599,6 +601,7 @@ fn native_prepared_stream_bindings_keep_custody_through_success_and_refusal() ->
                     created_at_unix_ns: 1,
                 },
                 LaunchSpec {
+                    executable_custody: None,
                     lifecycle: lifecycle.clone(),
                     generation,
                     executable: std::env::current_exe()?,

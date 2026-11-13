@@ -262,14 +262,18 @@ impl LaunchCoordinator {
             se_core::config_policy::EffectiveSandbox::WorkspaceWrite
         ) && !git_write
         {
+            let selected = self.secode.images(&executable)?;
             let server = self
-                .secode
-                .images(&executable)?
-                .lock()
-                .map_err(|_| error("SE Code sandbox capability", "poisoned selected images"))?
-                .server
-                .clone();
-            crate::harness::secode_process::sandbox::require_capability(&server, deadline).await?;
+                .store
+                .pool
+                .run_owned(deadline, move || {
+                    selected
+                        .lock()
+                        .map_err(|_| error("SE Code sandbox capability", "poisoned custody"))?
+                        .server_invocation()
+                })
+                .await?;
+            crate::harness::secode_process::sandbox::require_capability(server, deadline).await?;
         }
         if !plan.replayed
             && matches!(plan.conversation, se_types::Read::Present { .. })

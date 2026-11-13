@@ -135,17 +135,21 @@ impl LaunchCoordinator {
         service.journal.previous_policy_sha256 = None;
         service.persist(self, deadline).await?;
         if protect_git {
+            let selected = self.secode.images(&request.executable.to_local()?)?;
             let server = self
-                .secode
-                .images(&request.executable.to_local()?)?
-                .lock()
-                .map_err(|_| error("SE Code sandbox policy", "poisoned selected images"))?
-                .server
-                .clone();
+                .store
+                .pool
+                .run_owned(deadline, move || {
+                    selected
+                        .lock()
+                        .map_err(|_| error("SE Code sandbox policy", "poisoned custody"))?
+                        .server_invocation()
+                })
+                .await?;
             let profile = service.journal.profile.to_local()?;
             let directory = request.cwd.to_local()?;
             let observed = crate::harness::secode_process::sandbox::inspect(
-                &server, &profile, &directory, deadline,
+                server, &profile, &directory, deadline,
             )
             .await?;
             let mut expected = vec![directory, profile.with_extension("scratch")];

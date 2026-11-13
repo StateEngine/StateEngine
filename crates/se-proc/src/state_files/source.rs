@@ -23,6 +23,29 @@ pub struct SourceChunk {
     pub end_of_file: bool,
 }
 impl NativeSourcePin {
+    pub(super) fn try_clone_file(&self) -> Result<std::fs::File> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::{AsRawFd, FromRawFd};
+            // SAFETY: retained read-only source; duplicate above stdio so the
+            // child's stream setup cannot overwrite its execution descriptor.
+            let fd = unsafe { libc::fcntl(self.pin.file().as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+            if fd < 0 {
+                return Err(io_error(
+                    "duplicate executable source",
+                    &self.path,
+                    io::Error::last_os_error(),
+                ));
+            }
+            // SAFETY: successful fcntl transferred one new owned descriptor.
+            Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+        }
+        #[cfg(not(target_os = "linux"))]
+        self.pin
+            .file()
+            .try_clone()
+            .map_err(|error| io_error("duplicate retained source", &self.path, error))
+    }
     /// None means actual native absence. Permission, sharing, links, unsafe
     /// ownership and identity drift remain errors. No write/delete rights or
     /// mutation locks are taken on the provider's file.

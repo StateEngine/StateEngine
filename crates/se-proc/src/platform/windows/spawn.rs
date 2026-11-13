@@ -39,9 +39,27 @@ pub(super) struct Child {
     pub pid: ProcessId,
 }
 pub(super) fn create(spec: LaunchSpec, job: &Handle) -> ProcResult<Child> {
-    create_command(
+    // Keep exclusion through CreateProcess, then permit ordinary package updates.
+    let custody = spec.executable_custody;
+    let creation = custody
+        .as_ref()
+        .map(|image| image.creation_guard())
+        .transpose()
+        .map_err(|e| input("qualified image", &e.to_string()))?;
+    if std::time::Instant::now() >= spec.deadline {
+        return Err(error(
+            ProcErrorCode::LaunchTimedOut,
+            ProcErrorDetail::Input {
+                field: "deadline".into(),
+                reason: "image custody exceeded the original launch deadline".into(),
+            },
+        ));
+    }
+    let result = create_command(
         Command {
-            executable: spec.executable,
+            executable: custody
+                .as_ref()
+                .map_or(spec.executable, |image| image.path().to_owned()),
             arguments: spec.arguments,
             environment: spec.environment,
             stdio: spec.stdio,
@@ -50,7 +68,10 @@ pub(super) fn create(spec: LaunchSpec, job: &Handle) -> ProcResult<Child> {
             capabilities: Vec::new(),
         },
         job,
-    )
+    );
+    drop(creation);
+    drop(custody);
+    result
 }
 struct Command {
     executable: std::path::PathBuf,

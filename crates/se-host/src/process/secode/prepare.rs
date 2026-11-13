@@ -138,7 +138,7 @@ impl LaunchCoordinator {
         service.persist(self, deadline).await?;
         let profile = service.journal.profile.to_local()?;
         let checked_images = images.clone();
-        let (server, resume_supported, server_sha256) = self
+        let (resume_supported, server_sha256) = self
             .store
             .pool
             .run_owned(deadline, move || {
@@ -146,14 +146,21 @@ impl LaunchCoordinator {
                     .lock()
                     .map_err(|_| error("SE Code executable custody", "poisoned selected images"))?;
                 images.validate()?;
-                Ok((
-                    images.server.clone(),
-                    images.resume_supported,
-                    images.server_sha256(),
-                ))
+                Ok((images.resume_supported, images.server_sha256()))
             })
             .await?;
         if service.journal.bootstrap.is_none() {
+            let selected = images.clone();
+            let server = self
+                .store
+                .pool
+                .run_owned(deadline, move || {
+                    selected
+                        .lock()
+                        .map_err(|_| error("SE Code bootstrap image", "poisoned custody"))?
+                        .server_invocation()
+                })
+                .await?;
             let mut arguments = vec![
                 "init-profile".into(),
                 "--service".into(),
@@ -165,7 +172,7 @@ impl LaunchCoordinator {
             self.start_secode_auxiliary(
                 &mut service,
                 Auxiliary::Bootstrap,
-                server.clone(),
+                server,
                 arguments,
                 request.cwd.to_local()?,
                 request.policy.clone(),
@@ -255,6 +262,17 @@ impl LaunchCoordinator {
                 "0".into(),
                 "--external-host".into(),
             ];
+            let selected = images.clone();
+            let server = self
+                .store
+                .pool
+                .run_owned(deadline, move || {
+                    selected
+                        .lock()
+                        .map_err(|_| error("SE Code service image", "poisoned custody"))?
+                        .server_invocation()
+                })
+                .await?;
             self.start_secode_auxiliary(
                 &mut service,
                 Auxiliary::Service,

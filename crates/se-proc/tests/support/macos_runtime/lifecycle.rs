@@ -74,6 +74,7 @@ pub fn prepare(
                 created_at_unix_ns: 1,
             },
             LaunchSpec {
+                executable_custody: None,
                 lifecycle,
                 generation,
                 executable: fs::canonicalize(std::env::current_exe()?)?,

@@ -313,6 +313,7 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
                 created_at_unix_ns: 1,
             },
             LaunchSpec {
+                executable_custody: None,
                 lifecycle,
                 generation,
                 executable,

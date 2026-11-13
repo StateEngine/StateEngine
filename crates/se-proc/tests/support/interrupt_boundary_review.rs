@@ -31,6 +31,7 @@ fn interrupt_is_exact_group_sigint_and_rejects_wrong_generation() -> Check {
                     created_at_unix_ns: 1,
                 },
                 LaunchSpec {
+                    executable_custody: None,
                     lifecycle,
                     generation,
                     executable: std::env::current_exe()?,
