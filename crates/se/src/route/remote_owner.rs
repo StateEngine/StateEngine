@@ -85,6 +85,7 @@ pub(crate) fn execute(cx: &Bootstrap, input: Input) -> Result<se_host::Operation
     drop(reader);
     let options = execute::options();
     let bound = Deadline::from_options(&options)?;
+    #[cfg(any(target_os = "linux", windows))]
     let mut diagnostic = |_: &str| Ok(());
     #[cfg(any(target_os = "linux", windows))]
     let endpoint = autostart::endpoint(cx, &files, &bound, &mut diagnostic)?;
