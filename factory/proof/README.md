@@ -125,22 +125,31 @@ launch authority. Set `remote.provider_executable` when the provider's native
 Linux executable is outside `prerequisite_paths`; script wrappers are refused.
 The destination also requires Python 3.11 or later.
 
-Remote runs require an explicit absolute `credential_sources.claude` (or `.codex`)
-file outside the login user's native home directory. Provision a dedicated automation
-credential there; the runner never falls back to the operator's login. For Claude,
-the file contains a `claudeAiOauth` object; only `accessToken`, `expiresAt`, `scopes`
-and `subscriptionType` are copied. Fixture onboarding metadata is generated without
-reading the operator's configuration. The destination copies are read back and
-scanned for any key containing `refresh`; a match fails the attempt. The scan result
-supplies the report's `refresh_tokens_copied` field.
-The runner refuses unexplained incumbent credentials, checks the source inode and
-digest afterward, and removes private copies only after native process and runtime
-closure. SIGTERM and SIGINT enter bounded cleanup. A private recovery journal in
-the source user's state directory records each attempt before copying credentials
-or starting a runtime; the next run, under the same destination lock, retries only
-that attempt's cleanup before doing new work. Set `remote.recovery_directory` to
-keep that journal elsewhere. Unproven stops retain the credentials and a leftover
-record, and fail the run. The dedicated destination account must not be used for ordinary work.
+Remote runs currently use the Claude surface and require an explicit absolute
+`automation_tokens.claude` file outside the login user's native home directory.
+Provision a dedicated long-lived automation token there with mode 600; the runner
+never reads or copies the operator's login files. The file contains the raw token,
+not a JSON credential store. For example:
+
+```json
+"automation_tokens": {"claude": "/srv/proof/automation/claude-token"}
+```
+
+The runner sends the token over SSH stdin to a fixed wrapper, which places it in
+`CLAUDE_CODE_OAUTH_TOKEN` before executing `se`. The host retains this provider
+credential in memory and passes it only to Claude. The token is absent from argv,
+command metadata and the recovery journal. Destination scans before and after the
+journey require `.claude/.credentials.json` and `.codex/auth.json` to be absent;
+incumbent files are refused and never replaced. Source inode and digest are checked
+again after process and runtime closure.
+
+SIGTERM and SIGINT enter bounded cleanup. A private recovery journal in the source
+user's state directory records ownership before starting a runtime; the next run,
+under the same destination lock, retries only that attempt's cleanup before doing
+new work. Set `remote.recovery_directory` to keep that journal elsewhere. Unproven
+stops retain a leftover record and fail the run. The dedicated destination account
+must not be used for ordinary work. Codex remote automation-token coverage is not
+part of this probe.
 The runner retains source and destination project data and executable copies for
 inspection; the operator's existing evidence-retention policy owns their removal.
 

@@ -1,7 +1,7 @@
 """Observe the public SSH/CLI remote journey; never substitute a local transport.
 
-The destination must be a registered disposable Linux account. Dedicated access
-credentials are copied into the fixture without refresh tokens for each attempt.
+The destination must be a registered disposable Linux account. A dedicated
+automation token reaches the provider environment through SSH stdin only.
 Run from an OS scheduler outside managed agent ancestry, as for nightly.py.
 """
 import hashlib
@@ -85,7 +85,9 @@ class Journey:
     def ssh(self, *args):
         return ["ssh", "-T", "-o", "BatchMode=yes", self.config["destination"], *args]
 
-    def remote(self, *args):
+    def remote(self, *args, provider_token=False):
+        if provider_token:
+            return self.credentials.invoke([self.remote_se, "--json", *args])
         return self.command(self.ssh('PATH=' + shlex.quote(self.remote_root + '/bin') + ':"$PATH" ' +
                                     shlex.join([self.remote_se, "--json", *args])))
 
@@ -154,14 +156,14 @@ class Journey:
         return self.page(row[2])
 
     def prepare(self):
-        if self.config.get("surface") not in {"claude", "codex"}:
-            raise RuntimeError("remote surface must be claude or codex")
+        if self.config.get("surface") != "claude":
+            raise RuntimeError("remote automation-token journey currently requires the Claude surface")
         if not self.config.get("destination") or self.config["destination"].startswith("-"):
             raise RuntimeError("configure a dedicated SSH destination; remote coverage cannot be skipped")
         self.verify_account()
         self.lock_account()
         begin_recovery(self)
-        self.credentials = Credentials(self, self.config.get("credential_sources", {}))
+        self.credentials = Credentials(self, self.config.get("automation_tokens", {}))
         self.persist()
         self.stage_executables()
         self.credentials.stage()
@@ -216,13 +218,14 @@ with (p/'lock').open('a') as f:
             raise RuntimeError("remote staged image differs from the selected product")
 
     def initialize_projects(self):
-        initialized = self.remote("init", "--repo", self.remote_root + "/work", "--name", "remote-" + self.nonce,
-                                  "--provider", self.config["surface"])
-        self.target_parts = {"project": initialized["project"]["id"], "agent": initialized["agent"]["id"]}
-        self.target = "/".join(self.target_parts.values())
         self.remote_runtime = True
         self.persist()
-        self.remote("up")
+        initialized = self.remote("init", "--repo", self.remote_root + "/work", "--name", "remote-" + self.nonce,
+                                  "--provider", self.config["surface"], provider_token=True)
+        self.target_parts = {"project": initialized["project"]["id"], "agent": initialized["agent"]["id"]}
+        self.target = "/".join(self.target_parts.values())
+        self.persist()
+        self.remote("up", provider_token=True)
         self.local("init", "--repo", str(self.workspace), "--name", "source")
 
     def exercise(self):
@@ -249,13 +252,13 @@ with (p/'lock').open('a') as f:
                       "--task", "Reply with exactly " + marker]
         self.launch_attempted, self.custody_safe = True, False
         self.persist()
-        launch = self.remote(*launch_args)
+        launch = self.remote(*launch_args, provider_token=True)
         self.session = launch["session_id"]
         self.persist()
         deadline = time.monotonic() + self.bound(120)
         while launch.get("state") == "starting" and time.monotonic() < deadline:
             time.sleep(1)
-            launch = self.remote(*launch_args)
+            launch = self.remote(*launch_args, provider_token=True)
         if launch.get("state") in {"starting", "setup-needed"}:
             raise RuntimeError("remote launch did not activate; inspect the retained setup refusal")
         if self.running()["session"] != self.session:

@@ -35,7 +35,7 @@ def begin_recovery(journey):
         if reference.get("destination") != journey.config["destination"]:
             raise RuntimeError("remote recovery destination differs from the locked account")
         recover(journey, path, reference)
-    # Publish before any credential copy or runtime launch. A hard kill leaves
+    # Publish before any token handoff or runtime launch. A hard kill leaves
     # this pointer and the independently persisted per-attempt custody record.
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps({"destination": journey.config["destination"],

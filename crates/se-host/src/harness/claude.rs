@@ -344,6 +344,7 @@ const ENVIRONMENT: &[&str] = &[
     "XDG_STATE_HOME",
     "XDG_RUNTIME_DIR",
     "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
     "SystemRoot",

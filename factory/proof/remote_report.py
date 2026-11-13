@@ -37,8 +37,9 @@ def summarize(entry, receipt, run):
         if name == "live_output":
             valid = valid and type(sample.get("source_bracket_us")) is int and sample["source_bracket_us"] >= 0
         measured[name] = {**(sample if valid else {}), "state": "MEASURED" if valid else "NOT MEASURED"}
-    closure = receipt.get("credential_closure") == {"original_inode_unchanged": True,
-        "original_digest_unchanged": True, "private_copies_absent": True, "refresh_tokens_copied": False}
+    closure = receipt.get("credential_closure") == {"source_inode_unchanged": True,
+        "source_digest_unchanged": True, "destination_credential_files_absent": True,
+        "transport": "ssh-stdin/environment"}
     stopped = (process.get("stop_complete") is True and process.get("outside_process_absent") is True and
                isinstance(process.get("session"), str) and type(process.get("pid")) is int and process["pid"] > 0)
     behavior = (receipt["state"] == "finished" and not errors and not cleanup and closure and stopped and
