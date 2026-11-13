@@ -268,9 +268,11 @@ async fn run(
     let gateway = if let Some(resume) = &resume {
         resume.gateway.clone()
     } else {
-        // One active receiver per bot; new Identify attempts are separated by at
-        // least one concurrency window. Reconnect with Resume skips this delay.
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        // One active receiver per bot; a new Identify follows the same token's
+        // previous attempt by at least one concurrency window, the first
+        // attempt waiting nothing. Spacing is per token, so simultaneous bots
+        // do not pace each other. Reconnect with Resume skips it.
+        transport.pace_identify(token).await?;
         let value = transport
             .request(token, Method::GET, "/gateway/bot", None)
             .await?;
