@@ -84,7 +84,11 @@ pub(super) fn validate_registry(values: &BTreeMap<String, HarnessDescriptor>) ->
             environment.extend(choice.environment.keys().cloned());
             if let Some(model) = &descriptor.model_environment {
                 environment.push(model.clone());
-                if choice.environment.contains_key(model) {
+                if choice
+                    .environment
+                    .keys()
+                    .any(|name| name.eq_ignore_ascii_case(model))
+                {
                     return Err(invalid(
                         "harness model",
                         "the model environment binding also has a permission value",
