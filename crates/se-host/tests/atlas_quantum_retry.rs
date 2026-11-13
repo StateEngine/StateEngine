@@ -168,16 +168,32 @@ fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
     };
     let mut driver = NativeRenewal::new(Vec::new())?;
     armed.store(true, Ordering::Release);
-    let error = driver
-        .step(
+    // A successful incomplete quantum retains the same cycle; it need not
+    // reach the file lookup on its first slice. Advance only those successes,
+    // and stop on the first error so an unrelated expiry cannot be hidden.
+    let mut expired = None;
+    for _ in 0..16 {
+        match driver.step(
             &source,
             &mut db,
             &policy,
             &work,
             Instant::now() + Duration::from_millis(200),
-        )
-        .err()
-        .ok_or("preempted source entry completed")?;
+        ) {
+            Ok(step) => {
+                assert!(!step.complete, "source entry completed before preemption");
+                assert!(
+                    armed.load(Ordering::Acquire),
+                    "preempted file lookup returned without a deadline error"
+                );
+            }
+            Err(error) => {
+                expired = Some(error);
+                break;
+            }
+        }
+    }
+    let error = expired.ok_or("native file lookup never reached preemption")?;
     assert!(
         !armed.load(Ordering::Acquire),
         "native file lookup was not preempted"

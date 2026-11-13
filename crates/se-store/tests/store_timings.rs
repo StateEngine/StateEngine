@@ -175,11 +175,41 @@ fn group_promotion_and_replay_attempt_timings_keep_distinct_durability() -> Chec
 #[test]
 fn every_receipt_keeps_timings_past_the_former_sample_capacity() -> Check {
     let f = Fixture::new()?;
-    let (host, lease) = host(&f)?;
+    // Seed and close before timing the writer. Each measured mark still
+    // commits once, without retaining its setup writes in the writer's WAL.
+    let messages = {
+        let (mut direct, lease) = f.direct()?;
+        let mut messages = Vec::new();
+        for n in 0..1026 {
+            let id = message()?;
+            direct.append(
+                f.send(
+                    Actor::Agent(f.a.clone()),
+                    Actor::Agent(f.b.clone()),
+                    id.clone(),
+                    "timing seed",
+                    &format!("timed-{n}"),
+                )?,
+                &*lease,
+            )?;
+            messages.push(id);
+        }
+        direct.close()?;
+        messages
+    };
+    let (host, lease) = host_from_existing(&f)?;
     let owner = host.start_writer(options(256)?, lease)?;
     let client = owner.client();
-    for n in 0..1026 {
-        let receipt = wait(client.submit(recipient_mark(&f, &client, &format!("timed-{n}"))?)?)??;
+    for id in messages {
+        let receipt = wait(client.submit(f.batch(
+            f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.b.clone())),
+            None,
+            vec![EventBody::MessageRead {
+                message: id,
+                recipient: Actor::Agent(f.b.clone()),
+            }],
+        )?)?)??;
+        assert_eq!(receipt.state, CommitState::Committed);
         assert_eq!(timed(&receipt)?.request_key, receipt.request_key);
         assert!(timed(&receipt)?.group_requests >= 1);
         assert_eq!(timed(&receipt)?.durability, CommitDurability::Normal);
