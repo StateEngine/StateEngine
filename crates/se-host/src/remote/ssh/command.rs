@@ -121,7 +121,7 @@ pub(super) async fn send_image(
             tokio::try_join!(
                 copy_image(&mut image.file, input, expected, &streamed),
                 drain(output, 65536),
-                drain(errors, 4096)
+                read_errors(destination, errors)
             )?;
             if !child
                 .wait()
