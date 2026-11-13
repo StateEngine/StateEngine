@@ -8,6 +8,7 @@ pub struct SqliteFactory;
 #[derive(Clone)]
 pub struct SqliteReader {
     pub(crate) path: PathBuf,
+    identity: Option<se_proc::NativeFileIdentity>,
     pub(crate) timeout: Duration,
     pub(crate) slots: crate::read_slots::ReadSlots,
 }
@@ -43,7 +44,10 @@ impl SqliteReader {
     fn for_options(o: &StoreOptions) -> StoreResult<Self> {
         Self::with_slots(o, crate::read_slots::ReadSlots::default())
     }
-    fn with_slots(o: &StoreOptions, slots: crate::read_slots::ReadSlots) -> StoreResult<Self> {
+    pub(crate) fn with_slots(
+        o: &StoreOptions,
+        slots: crate::read_slots::ReadSlots,
+    ) -> StoreResult<Self> {
         if !o.state_directory.is_absolute() {
             return Err(fail(
                 StoreErrorCode::LocationUnsafe,
@@ -52,12 +56,76 @@ impl SqliteReader {
         }
         Ok(Self {
             path: o.state_directory.join("state.db"),
+            identity: None,
             timeout: o.busy_timeout,
             slots,
         })
     }
     pub(crate) fn connect(&self) -> StoreResult<Connection> {
-        connection::connect(&self.path, false, self.timeout)
+        match se_proc::NativeFileIdentity::observe(&self.path) {
+            Ok(named) => self.require_identity(named)?,
+            // Let the actual read-only SQLite open report CANTOPEN, retaining
+            // its native diagnostics. A file appearing during that open must
+            // still match the retained identity at the check below.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(self.identity_observation_error(e)),
+        }
+        let db = connection::connect_checked(&self.path, false, self.timeout, |db| {
+            self.validate_connection(db)
+        })?;
+        self.validate_identity()?;
+        Ok(db)
+    }
+    pub(crate) fn bind_identity(&mut self) -> StoreResult<()> {
+        self.identity = Some(
+            se_proc::NativeFileIdentity::observe(&self.path)
+                .map_err(|e| io(e, &self.path, StoreIoStage::Open))?,
+        );
+        Ok(())
+    }
+    pub(crate) fn validate_identity(&self) -> StoreResult<()> {
+        let named = se_proc::NativeFileIdentity::observe(&self.path)
+            .map_err(|e| self.identity_observation_error(e))?;
+        self.require_identity(named)
+    }
+    pub(crate) fn validate_connection(&self, db: &Connection) -> StoreResult<()> {
+        #[cfg(unix)]
+        let matches = se_proc::NativeFileIdentity::sqlite_path_moved(db).map(|moved| !moved);
+        #[cfg(windows)]
+        let matches = se_proc::NativeFileIdentity::observe_sqlite(db)
+            .map(|opened| self.identity == Some(opened));
+        let matches = matches.map_err(|error| {
+            let unsupported = error.kind() == std::io::ErrorKind::Unsupported;
+            let mut error = io(error, &self.path, StoreIoStage::Open);
+            if unsupported {
+                error.remedy.text = "Preserve the existing store. Install a supported distribution using SQLite's native platform VFS, then reopen the store. The named native file control must be available; do not initialize over the existing store.".into();
+            }
+            error
+        })?;
+        if !matches {
+            return Err(self.identity_changed("SQLite's opened database file no longer matches"));
+        }
+        self.validate_identity()
+    }
+    fn identity_observation_error(&self, error: std::io::Error) -> Box<StoreError> {
+        if error.kind() == std::io::ErrorKind::InvalidInput {
+            self.identity_changed(format!(
+                "database file is no longer a regular non-link file: {error}"
+            ))
+        } else {
+            io(error, &self.path, StoreIoStage::Open)
+        }
+    }
+    fn require_identity(&self, named: se_proc::NativeFileIdentity) -> StoreResult<()> {
+        if self.identity != Some(named) {
+            return Err(self.identity_changed("database file identity changed"));
+        }
+        Ok(())
+    }
+    fn identity_changed(&self, cause: impl Into<String>) -> Box<StoreError> {
+        let mut error = fail(StoreErrorCode::SourceChanged, cause);
+        error.remedy.text = "Preserve the database and its sidecars. Restore the intended state file, then reopen the store reader before retrying.".into();
+        context(error, &self.path, StoreIoStage::Open)
     }
 }
 impl SqliteFactory {
@@ -82,7 +150,9 @@ impl StoreFactory for SqliteFactory {
     fn open_direct(o: &StoreOptions, lease: &dyn RuntimeLease) -> StoreResult<Read<Self::Direct>> {
         match Self::existing_protected(o, lease)? {
             Read::Present { value: reader } => {
-                let db = connection::connect(&reader.path, true, o.busy_timeout)?;
+                let db = connection::connect_checked(&reader.path, true, o.busy_timeout, |db| {
+                    reader.validate_connection(db)
+                })?;
                 let info = connection::info_at(&db, &reader.path)?;
                 let identity = connection::validate_lease(&info, lease, LeaseMode::DirectClient)?;
                 let reader_path = reader.path.clone();
@@ -119,7 +189,9 @@ impl StoreFactory for SqliteFactory {
     fn open_host(o: &StoreOptions, lease: &dyn RuntimeLease) -> StoreResult<Read<Self::Host>> {
         match Self::existing_protected(o, lease)? {
             Read::Present { value: reader } => {
-                let db = connection::connect(&reader.path, true, o.busy_timeout)?;
+                let db = connection::connect_checked(&reader.path, true, o.busy_timeout, |db| {
+                    reader.validate_connection(db)
+                })?;
                 let info = connection::info_at(&db, &reader.path)?;
                 let identity = connection::validate_lease(&info, lease, LeaseMode::Host)?;
                 let context = BackupContext::bound(
@@ -214,7 +286,9 @@ impl StoreFactory for SqliteFactory {
 impl ReadStore for SqliteReader {
     type Snapshot = SqliteSnapshot;
     fn info(&self) -> StoreResult<StoreInfo> {
-        connection::info_at(&self.connect()?, &self.path)
+        let info = connection::info_at(&self.connect()?, &self.path)?;
+        self.validate_identity()?;
+        Ok(info)
     }
     fn snapshot(&self, scope: ReadScope) -> StoreResult<Self::Snapshot> {
         SqliteSnapshot::open(self, scope)

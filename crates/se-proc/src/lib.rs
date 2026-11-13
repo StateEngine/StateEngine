@@ -29,6 +29,8 @@ pub use checkpoint::{
     HistoricalCheckpoint, RootPublication, decode_checkpoint, encode_checkpoint,
 };
 mod error;
+mod file_identity;
+pub use file_identity::NativeFileIdentity;
 mod identity;
 mod launch;
 mod native_error;

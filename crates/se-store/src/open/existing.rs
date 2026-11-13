@@ -30,7 +30,7 @@ impl SqliteFactory {
         slots: crate::read_slots::ReadSlots,
         finish: impl FnOnce(SqliteReader, Connection) -> StoreResult<T>,
     ) -> StoreResult<Read<T>> {
-        let reader = SqliteReader::with_slots(o, slots)?;
+        let mut reader = SqliteReader::with_slots(o, slots)?;
         let metadata = match std::fs::symlink_metadata(&reader.path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -95,6 +95,7 @@ impl SqliteFactory {
                 StoreIoStage::Open,
             ));
         }
+        reader.bind_identity()?;
         let db = reader.connect()?;
         finish(reader, db).map(|value| Read::Present { value })
     }

@@ -7,6 +7,14 @@ pub(crate) const SCHEMA: u32 = 10;
 /// schema 1 correctly while its host migrates it.
 pub(crate) const MIN_SCHEMA: u32 = 1;
 pub(crate) fn connect(path: &Path, writable: bool, timeout: Duration) -> StoreResult<Connection> {
+    connect_checked(path, writable, timeout, |_| Ok(()))
+}
+pub(crate) fn connect_checked(
+    path: &Path,
+    writable: bool,
+    timeout: Duration,
+    check: impl FnOnce(&Connection) -> StoreResult<()>,
+) -> StoreResult<Connection> {
     let flags = if writable {
         OpenFlags::SQLITE_OPEN_READ_WRITE
     } else {
@@ -16,6 +24,7 @@ pub(crate) fn connect(path: &Path, writable: bool, timeout: Duration) -> StoreRe
         path,
         flags | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
+    check(&c)?;
     configure(&c, path, writable, timeout)?;
     Ok(c)
 }
