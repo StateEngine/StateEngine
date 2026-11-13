@@ -7,6 +7,7 @@ use std::{
     io::{Read, Write},
     path::Path,
 };
+pub mod diagnostic;
 #[cfg(feature = "listener")]
 pub mod metadata;
 pub mod settings;

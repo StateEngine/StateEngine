@@ -41,10 +41,20 @@ fn run(args: &[OsString]) -> Result<u8> {
         return Ok(0);
     };
     registered(args, home.clone(), cwd, project.project.clone()).or_else(|error| {
-        // The host checks native ancestry before admitting adoption. Managed
-        // providers inherit user hooks too, but their existing managed hooks
-        // own capture; that authenticated refusal is an expected no-op.
-        if error.code() == se_types::Code::OwnerRequired {
+        // All six actions (start, prompt, capture, stop, end and mail) can run
+        // beneath managed providers. Their IPC owner ancestry refusal skips
+        // native adoption; managed hooks own capture and mail. Keep a bounded
+        // doctor diagnostic so an unexpected classification remains visible.
+        if managed_ancestry_refusal(&error) {
+            if let Some(action) = args[3].to_str().and_then(Action::parse)
+                && let Err(record_error) =
+                    se_host::adoption::diagnostic::record(&home, &project.project, action)
+            {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "StateEngine adoption diagnostic could not be saved: {record_error}"
+                );
+            }
             return Ok(0);
         }
         if let Some(action) = args[3].to_str().and_then(Action::parse)
@@ -64,6 +74,10 @@ fn run(args: &[OsString]) -> Result<u8> {
         );
         Ok(0)
     })
+}
+#[cfg(any(target_os = "linux", windows))]
+fn managed_ancestry_refusal(error: &SeError) -> bool {
+    matches!(error.body.detail(), se_types::Detail::OwnerRequired(detail) if detail.op == "IPC owner")
 }
 #[cfg(any(target_os = "linux", windows))]
 fn registered(
