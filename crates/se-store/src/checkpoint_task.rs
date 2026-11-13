@@ -1,8 +1,9 @@
 //! Background WAL maintenance: idle checkpoints run on a dedicated connection
 //! in a dedicated thread, so checkpoint I/O never shares the writer task.
 //! PASSIVE in WAL mode does not block the writer, and a slow checkpoint must
-//! not stall appends either. The cadence is small and frequent, so the WAL is
-//! kept far below the 64 MiB capacity cutoff instead of accumulating toward it.
+//! not stall appends either. The task runs when the writer goes idle after a
+//! write, which keeps the WAL far below the 64 MiB capacity cutoff instead of
+//! accumulating toward it, and does nothing at all while the host is idle.
 use crate::backup_context::MAX_WAL_BYTES;
 use crate::transaction::checkpoint::probe;
 use crate::{error::*, *};
@@ -10,11 +11,11 @@ use rusqlite::Connection;
 use std::{
     path::PathBuf,
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 /// Background maintenance cadence: the former writer idle gap.
 const TICK: Duration = Duration::from_millis(250);
@@ -24,8 +25,6 @@ const TICK: Duration = Duration::from_millis(250);
 /// for the checkpoint to back off, never for a checkpoint waiting on a pinned
 /// reader.
 const BACKOFF: Duration = Duration::from_millis(10);
-/// Interruptible sleep granularity so the task exits promptly on close.
-const WAKE: Duration = Duration::from_millis(25);
 /// A fully-checkpointed WAL at least this large is worth resetting the file
 /// for; below it the frames are negligible and the next real reset is closer.
 const RESET_MIN_FRAMES: i64 = 256;
@@ -70,11 +69,17 @@ impl State {
 /// The idle flag is set by the writer around its blocking receive: the task
 /// performs checkpoint I/O only while the writer has no command in flight, so
 /// a checkpoint contends with a queued commit only inside the short backoff
-/// window a straggling write can enter after the idle gate.
+/// window a straggling write can enter after the idle gate. The condition
+/// pairs with that edge: the task waits on it instead of polling, and the
+/// writer notifies whenever it goes idle or the task must exit, so an idle
+/// host does no maintenance wakes at all.
 #[derive(Clone)]
 pub(crate) struct Status {
     state: Arc<State>,
     idle: Arc<AtomicBool>,
+    /// Signalled on the writer's idle edge and on shutdown. The mutex guards
+    /// nothing but the wait itself; the facts live in `state` and `idle`.
+    notify: Arc<(Mutex<bool>, Condvar)>,
 }
 impl Default for Status {
     fn default() -> Self {
@@ -83,6 +88,7 @@ impl Default for Status {
         Self {
             state: Arc::default(),
             idle: Arc::new(AtomicBool::new(false)),
+            notify: Arc::new((Mutex::new(false), Condvar::new())),
         }
     }
 }
@@ -109,9 +115,58 @@ impl Status {
     }
     pub(crate) fn set_idle(&self, idle: bool) {
         self.idle.store(idle, Ordering::Release);
+        if idle {
+            self.wake();
+        }
     }
     fn idle(&self) -> bool {
         self.idle.load(Ordering::Acquire)
+    }
+    /// Signal the maintenance task: the writer has gone idle, or the task must
+    /// stop. Cheap enough for the writer's idle edge, and lost notifications
+    /// never matter because the task re-reads the real flags after waking.
+    pub(crate) fn wake(&self) {
+        let (lock, condvar) = &*self.notify;
+        let mut seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        *seen = true;
+        condvar.notify_all();
+    }
+    /// Wait for the writer's next idle edge or for shutdown.
+    ///
+    /// `cap` is the backstop for work already owed: a checkpoint that could
+    /// not finish (a pinned reader) retries on the next tick, so it is passed
+    /// `Some(TICK)`. With nothing owed the caller passes `None` and the task
+    /// sleeps here until the writer writes and goes idle again, which is why
+    /// an idle host makes no maintenance wakes at all.
+    ///
+    /// Returns true when shutdown was requested and the task must exit.
+    fn wait(&self, closed: &AtomicBool, cap: Option<Duration>) -> bool {
+        let deadline = cap.map(|cap| Instant::now() + cap);
+        let (lock, condvar) = &*self.notify;
+        let mut seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while !*seen && !closed.load(Ordering::Acquire) {
+            match deadline {
+                None => {
+                    seen = condvar
+                        .wait(seen)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                }
+                Some(deadline) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        break;
+                    }
+                    seen = condvar
+                        .wait_timeout(seen, left)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .0;
+                }
+            }
+        }
+        // The flag is consumed either way: a stale signal must not turn the
+        // next wait into an immediate wake and a spin.
+        *seen = false;
+        closed.load(Ordering::Acquire)
     }
     fn set(&self, maint: Maint) {
         *self.state.lock() = maint;
@@ -152,6 +207,9 @@ impl CheckpointTask {
     }
     pub(crate) fn signal(&self) {
         self.closed.store(true, Ordering::Release);
+        // The task now sleeps until an edge, so shutdown must be an edge too;
+        // otherwise drop would wait out an indefinite wait.
+        self.status.wake();
     }
     pub(crate) fn join(mut self) {
         self.signal();
@@ -206,27 +264,27 @@ fn run(
             Ok(db) => db,
             Err(error) => {
                 status.set(Maint::Failed(error));
-                sleep_wake(&closed);
+                if status.wait(&closed, Some(TICK)) {
+                    return;
+                }
                 continue;
             }
         };
         if let Err(error) = db.busy_timeout(BACKOFF) {
             status.set(Maint::Failed(sql(error)));
-            sleep_wake(&closed);
+            if status.wait(&closed, Some(TICK)) {
+                return;
+            }
             continue;
         }
         tick(&db, &context, &lease, &status);
-        if closed.load(Ordering::Acquire) {
+        // Only owe work after a tick that left debt: frames a pinned reader
+        // blocked, or a failure the next tick may clear. Anything else is the
+        // no-op tick, and waiting for the next idle edge removes it.
+        let owed = status.pending() || status.failed();
+        if status.wait(&closed, owed.then_some(TICK)) {
             return;
         }
-        sleep_wake(&closed);
-    }
-}
-fn sleep_wake(closed: &Arc<AtomicBool>) {
-    let mut slept = Duration::ZERO;
-    while slept < TICK && !closed.load(Ordering::Acquire) {
-        std::thread::sleep(WAKE);
-        slept += WAKE;
     }
 }
 fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>, status: &Status) {
