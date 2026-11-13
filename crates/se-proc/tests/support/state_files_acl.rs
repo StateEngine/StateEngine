@@ -5,7 +5,7 @@ pub(super) fn acl(path: &Path, action: &str) -> Check {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let path = fs::canonicalize(path)?;
     let script = std::env::temp_dir().join(format!(
-        "otto-acl-{}-{nonce}-{}.ps1",
+        "se-test-acl-{}-{nonce}-{}.ps1",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));

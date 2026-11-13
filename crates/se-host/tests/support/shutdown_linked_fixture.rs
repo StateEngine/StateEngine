@@ -1,4 +1,4 @@
-//! Public linked-host controls shared with 5e's W3 consumer; no crate internals.
+//! Public linked-host controls shared with the embedded consumer; no crate internals.
 #![allow(dead_code, reason = "shared linked boundary helpers")]
 use secode_stateengine_api as api;
 use sha2::{Digest, Sha256};
