@@ -238,8 +238,8 @@ def restore_seed(path, target, key):
                 stream = archive.extractfile(member)
                 with stream, open(destination, "xb") as output:
                     shutil.copyfileobj(stream, output)
-                # Cached build scripts must remain executable; never restore
-                # privilege bits from the archive.
+                # Cached build scripts must remain executable; mask to
+                # permission bits from the archive.
                 destination.chmod(member.mode & 0o777)
             else:
                 raise ValueError(f"seed archive entry is not a plain file or directory: {name}")
