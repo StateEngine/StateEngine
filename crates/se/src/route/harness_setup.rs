@@ -14,6 +14,15 @@ pub(super) fn prepare(cx: &Bootstrap, input: &ProjectInit) -> Result<ConfigFile>
     let Some(preset) = catalog::presets()?.get(name) else {
         return Ok(configuration);
     };
+    if input
+        .provider
+        .is_some_and(|provider| provider != se_types::Provider::Acp)
+    {
+        return Err(SeError::invalid(
+            "harness provider",
+            "this named harness uses provider acp; select --provider acp or omit --provider",
+        ));
+    }
     let mut descriptor = preset.descriptor.clone();
     let defaults = &configuration.providers.acp;
     let native = descriptor.permissions.remove("default").ok_or_else(|| {

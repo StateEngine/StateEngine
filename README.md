@@ -351,6 +351,9 @@ capabilities reported by the running agent.
 Descriptor `environment` lists inherited variable names, never account secrets.
 For a model selected through a native environment variable, set
 `model_environment = "NATIVE_MODEL_VARIABLE"` instead of an argv `{model}` slot.
+To use the native default when no model is saved, put optional model flags in
+`model_arguments = ["--model", "{model}"]`; they are appended only for a selected
+model. Model slots in the main `arguments` remain required.
 The saved agent retains its harness selection across configuration default
 changes and resumes. Existing agents without a saved selection keep the legacy
 `[providers.acp]` and `[acp]` configuration. Restore a missing descriptor before

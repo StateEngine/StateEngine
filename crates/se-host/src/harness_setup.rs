@@ -18,7 +18,7 @@ pub fn node_entrypoint(package: &NodePackage, executable: &Path) -> Result<PathB
         .filter(|p| p.is_absolute())
         .collect();
     if let Some(parent) = executable.parent() {
-        directories.insert(0, parent.to_path_buf());
+        directories.push(parent.to_path_buf());
     }
     let mut seen = BTreeSet::new();
     for directory in directories {

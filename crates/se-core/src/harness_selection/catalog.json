@@ -14,14 +14,17 @@
         "OPENAI_MODEL",
         "QWEN_HOME"
       ],
-      "model_environment": "OPENAI_MODEL",
       "permissions": {
         "default": {
           "arguments": [],
           "environment": {},
           "mode": ""
         }
-      }
+      },
+      "model_arguments": [
+        "--model",
+        "{model}"
+      ]
     },
     "package": {
       "name": "@qwen-code/qwen-code",
@@ -35,14 +38,18 @@
       "driver": "acp-stdio",
       "command": "goose",
       "arguments": [
-        "acp"
+        "acp",
+        "--with-builtin",
+        "developer"
       ],
       "environment": [
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "GOOSE_PROVIDER",
         "GOOSE_PATH_ROOT",
-        "GOOSE_DISABLE_KEYRING"
+        "GOOSE_DISABLE_KEYRING",
+        "GOOSE_MODEL",
+        "GOOSE_MODE"
       ],
       "model_environment": "GOOSE_MODEL",
       "permissions": {
