@@ -74,7 +74,7 @@ pub(super) fn require_saved_target(c: &Connection, target: &RemoteTarget) -> Sto
     if !known {
         return Err(fail(
             StoreErrorCode::ScopeMismatch,
-            "launch requires an existing destination agent with a saved profile in an active project; its Owner must choose it in pairing permissions",
+            "launch requires an existing destination agent with a saved profile in an active project; its Owner must choose it with se remote permissions --name <saved-alias> --launch in a terminal",
         ));
     }
     Ok(())

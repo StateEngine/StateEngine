@@ -33,7 +33,7 @@ impl<B: Budget> RemoteBroker<B> {
                     idempotency_key,
                     ..
                 } if idempotency_key == &key => (&launch.target, false),
-                RemoteLaunchOutcome::Running { receipt } => {
+                RemoteLaunchOutcome::Started { receipt } => {
                     receipt.validate()?;
                     match receipt {
                         se_types::Receipt::Committed { commit }
@@ -48,7 +48,7 @@ impl<B: Budget> RemoteBroker<B> {
                         }
                         _ => {
                             return Err(refused(
-                                "remote running launch lacks its original committed reservation",
+                                "remote started launch lacks its original committed reservation",
                             ));
                         }
                     }

@@ -65,7 +65,7 @@ impl Security {
                 self.store
                     .read(|phase| phase.remote_launch_permission(&grant.grant, &input.target))?,
                 "remote launch consent",
-                "Ask the destination Owner to allow this saved agent in se remote permissions --name <saved-alias>, or in remote add's launch-permissions review.",
+                "Ask the destination Owner to allow this saved agent with se remote permissions --name <saved-alias> --launch in a terminal.",
             )?;
             se_core::remote::authorize_launch(grant, &input.target, permission, now()?)?
         } else {

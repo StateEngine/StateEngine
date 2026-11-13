@@ -68,7 +68,7 @@ pub struct RemoteLaunchBody {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RemoteLaunchOutcome {
-    Running {
+    Started {
         receipt: Receipt<RemoteLaunchStarted>,
     },
     Pending {

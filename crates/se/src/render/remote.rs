@@ -120,17 +120,17 @@ pub(super) fn launch(
 ) -> io::Result<()> {
     use se_types::{Receipt, remote::RemoteLaunchOutcome};
     match &value.outcome {
-        RemoteLaunchOutcome::Running { receipt } => match receipt {
+        RemoteLaunchOutcome::Started { receipt } => match receipt {
             Receipt::Committed { commit } | Receipt::Replayed { original: commit } => writeln!(
                 out,
-                "Remote agent {}/{} is running in session {} (key {}).",
+                "Remote launch started {}/{} in session {} (key {}).",
                 commit.value.target.project,
                 commit.value.target.agent,
                 commit.value.session,
                 commit.idempotency_key
             ),
             _ => Err(io::Error::other(
-                "remote launch returned an incompatible running receipt",
+                "remote launch returned an incompatible start receipt",
             )),
         },
         RemoteLaunchOutcome::Pending {

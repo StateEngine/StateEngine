@@ -28,7 +28,7 @@ pub(super) fn command(
     {
         return crate::render::error::write(
             &invalid(
-                "source-agent permission review requires a native Owner terminal: run se remote permissions --name <saved-alias>, or se remote permissions --local on the destination; omit --json, --project, --version and --key",
+                "agent permission review requires a native Owner terminal: run se remote permissions --name <saved-alias>, or se remote permissions --local on the destination; add --launch to review launch consent; omit --json, --project, --version and --key",
             ),
             &se_types::RenderCx::default(),
             json,
@@ -36,7 +36,11 @@ pub(super) fn command(
             stderr,
         );
     }
-    review_at(m, stdout, m.get_flag("local"))?;
+    if m.get_flag("launch") {
+        super::launch_permissions::review(m, stdout, &mut io::stdin().lock())?;
+    } else {
+        review_at(m, stdout, m.get_flag("local"))?;
+    }
     Ok(0)
 }
 
@@ -44,7 +48,7 @@ pub(super) fn review(m: &ArgMatches, stdout: &mut impl Write) -> io::Result<()> 
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         writeln!(
             stdout,
-            "Source-agent permission review was skipped because input or output is not a terminal. Run se remote permissions --name <saved-alias> in a terminal, or run se remote permissions --local on this machine."
+            "Agent permission review was skipped because input or output is not a terminal. Run se remote permissions --name <saved-alias> in a terminal; add --launch for launch consent, or use --local for this machine's incoming source access."
         )?;
         return Ok(());
     }

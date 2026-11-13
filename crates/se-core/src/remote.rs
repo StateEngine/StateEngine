@@ -84,7 +84,7 @@ pub fn authorize_launch(
     {
         return Err(scope::unreadable(
             "remote launch consent",
-            "the destination Owner has not allowed this paired machine to start this saved agent; choose the agent in remote pairing launch permissions",
+            "the destination Owner has not allowed this paired machine to start this saved agent; run se remote permissions --name <saved-alias> --launch in a terminal and choose this agent",
         ));
     }
     grant.scope.validate()?;

@@ -2,7 +2,9 @@
 use super::*;
 use se_core::{dispatch::Kernel, ops::LaunchReply};
 use se_store::{Actor, Admission, Scope};
+mod failure;
 mod receipt;
+mod result;
 
 impl Service {
     pub(super) async fn launch(
@@ -67,64 +69,21 @@ impl Service {
         let native_key = plan.input.idempotency_key.clone();
         let reply = custody
             .launch_remote(plan, admission.clone(), permit, &deadline)
-            .await?;
-        let (outcome, attribution) = match reply {
-            LaunchReply::Pending(value) => {
-                let outcome = RemoteLaunchOutcome::Pending {
-                    launch: RemoteLaunchStarted {
-                        target: input.target,
-                        session: value.session_id,
-                        lifecycle: value.lifecycle_id,
-                    },
-                    idempotency_key: input.idempotency_key,
-                    setup_needed: matches!(
-                        value.state,
-                        se_core::ops::LaunchPendingState::SetupNeeded
-                    ),
-                };
-                (outcome, attribution)
-            }
-            LaunchReply::Running(value) => {
-                let launched = RemoteLaunchStarted {
-                    target: input.target,
-                    session: value.session_id,
-                    lifecycle: value.lifecycle_id,
-                };
-                let (receipt, origin) = receipt::read_back(
-                    &store,
-                    admission,
-                    native_key,
-                    launched,
-                    &attribution,
-                    &deadline,
-                )
-                .await?;
-                let position = receipt::seal(self, &receipt, &origin)?;
-                let commit = se_types::Commit {
-                    event_id: receipt.primary_event,
-                    position,
-                    idempotency_key: input.idempotency_key,
-                    value: RemoteLaunchStarted {
-                        target: origin.target,
-                        session: origin.session,
-                        lifecycle: origin.lifecycle,
-                    },
-                    effects: se_types::EffectStatus::NotRequired,
-                };
-                let receipt = if replayed {
-                    se_types::Receipt::Replayed { original: commit }
-                } else {
-                    se_types::Receipt::Committed { commit }
-                };
-                (RemoteLaunchOutcome::Running { receipt }, origin.attribution)
-            }
-        };
-        Ok(RemoteLaunchResult {
-            schema: RemoteLaunchResult::SCHEMA.into(),
-            body: RemoteLaunchBody {
-                outcome,
+            .await
+            .map_err(|error| failure::original_key(error, &input.idempotency_key))?;
+        result::finish(
+            self,
+            &store,
+            result::Completion {
+                input,
                 attribution,
+                admission,
+                native_key,
+                replayed,
             },
-        })
+            reply,
+            &deadline,
+        )
+        .await
     }
 }

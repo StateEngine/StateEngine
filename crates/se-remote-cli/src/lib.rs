@@ -144,6 +144,15 @@ fn run<H: OwnerCommands + Presentation>(name: &str, m: &ArgMatches, host: &H) ->
             if name == "__authorize" {
                 return authorize(m, &output.value, &mut stdout, host);
             }
+            if json && name == "add" {
+                output.value["permission_review"] = serde_json::json!({
+                    "state":"skipped",
+                    "reason":"Source-agent permission review requires a native Owner terminal.",
+                    "destination_command":["se","remote","permissions","--name",required(m,"name").map_err(io::Error::other)?],
+                    "local_command":["se","remote","permissions","--local"],
+                    "launch_command":["se","remote","permissions","--name",required(m,"name").map_err(io::Error::other)?,"--launch"],
+                });
+            }
             if json {
                 serde_json::to_writer(
                     &mut stdout,

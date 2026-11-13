@@ -254,7 +254,7 @@ impl LaunchCoordinator {
             secode,
             acp,
             secode_services: secode::Services::default(),
-            store: store::Store::for_execution(context),
+            store: store::Store::for_execution(&context),
             options,
             configuration_file: host_runtime.configuration_file.clone(),
             capture: host_runtime.capture_handle(),

@@ -42,6 +42,20 @@ pub(super) fn command() -> Command {
                     .arg(Arg::new("destination").index(1).required(true))
                     .arg(value("name").required(true)),
             )
+            .subcommand(
+                leaf(
+                    "permissions",
+                    "Review source-agent or launch access as the native Owner",
+                )
+                .arg(value("name"))
+                .arg(Arg::new("launch").long("launch").action(clap::ArgAction::SetTrue).conflicts_with("local").help("Review which existing destination agents this paired machine may launch"))
+                .arg(
+                    Arg::new("local")
+                        .long("local")
+                        .action(clap::ArgAction::SetTrue)
+                        .conflicts_with("name"),
+                ),
+            )
             .subcommand(leaf(
                 "disable",
                 "Close this machine's remote listener (human only)",

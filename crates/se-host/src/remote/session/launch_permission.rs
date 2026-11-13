@@ -63,7 +63,7 @@ impl Security {
                     store
                         .read(|p| p.remote_launch_permission(&recorded.grant, &recorded.target))?,
                     "committed launch permission",
-                    "Inspect the original change key through pairing permissions.",
+                    "Inspect the original change key with se remote permissions --name <saved-alias> --launch in a terminal.",
                 )
             })
             .await
@@ -71,7 +71,7 @@ impl Security {
         if current.revision.value < value.revision.value
             || (current.revision == value.revision && current.allowed != value.allowed)
         {
-            return Err(known.response_error(refused("committed launch consent differs from its read-back; inspect its original key through pairing permissions")));
+            return Err(known.response_error(refused("committed launch consent differs from its read-back; inspect its original key with se remote permissions --name <saved-alias> --launch in a terminal")));
         }
         Ok(control::ControlReceipt {
             value,

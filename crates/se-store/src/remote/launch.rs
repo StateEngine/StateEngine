@@ -25,7 +25,13 @@ pub(crate) fn validate_launch(
     if records.is_empty() {
         return super::launch_continue::validate(c, batch);
     }
-    if records.len() != 1 || info.schema_version < 12 || batch.request.is_none() {
+    if records.len() != 1
+        || batch.request.is_none()
+        || !matches!(
+            batch.events.last().map(|event| &event.body),
+            Some(EventBody::RemoteLaunchAttributed { .. })
+        )
+    {
         return Err(denied());
     }
     let record = records[0];
@@ -65,7 +71,7 @@ pub(crate) fn validate_launch(
     if u64::try_from(profile).ok() != Some(record.expected_profile.value.get()) {
         return Err(fail(
             StoreErrorCode::RevisionConflict,
-            "the saved launch profile changed before native creation; reread pairing metadata and retry the original launch key",
+            "the saved launch profile changed before native creation; review the updated profile with se remote permissions --name <saved-alias> --launch in a terminal, then submit a new launch key",
         ));
     }
     let mut sessions = 0;
