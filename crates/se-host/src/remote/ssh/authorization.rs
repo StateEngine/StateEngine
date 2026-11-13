@@ -40,7 +40,6 @@ pub struct PermissionsResult {
     pub result: std::result::Result<serde_json::Value, ErrorBody>,
 }
 
-}
 pub(crate) async fn launch_permissions(
     config: &super::ForwardConfig,
     request: LaunchPermissionsRequest,

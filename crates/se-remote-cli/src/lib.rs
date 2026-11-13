@@ -98,6 +98,9 @@ fn run<H: OwnerCommands + Presentation>(name: &str, m: &ArgMatches, host: &H) ->
     // Saved bindings from earlier releases omit the flag, but this private
     // pipe always owes the source a structured native refusal.
     let json = m.get_flag("json") || name == "__authorize";
+    if name == "permissions" && !m.get_flag("help") {
+        return permissions::command(m, json, &mut stdout, &mut stderr);
+    }
     let result = (|| {
         if m.get_flag("help") {
             let mut command = grammar::command();
@@ -147,9 +150,7 @@ fn run<H: OwnerCommands + Presentation>(name: &str, m: &ArgMatches, host: &H) ->
             if json && name == "add" {
                 output.value["permission_review"] = serde_json::json!({
                     "state":"skipped",
-                    "reason":"Source-agent permission review requires a native Owner terminal.",
-                    "destination_command":["se","remote","permissions","--name",required(m,"name").map_err(io::Error::other)?],
-                    "local_command":["se","remote","permissions","--local"],
+                    "reason":"Launch permission review requires a native Owner terminal.",
                     "launch_command":["se","remote","permissions","--name",required(m,"name").map_err(io::Error::other)?,"--launch"],
                 });
             }
@@ -177,6 +178,9 @@ fn run<H: OwnerCommands + Presentation>(name: &str, m: &ArgMatches, host: &H) ->
                 writeln!(stdout)?;
             }
             stdout.flush()?;
+            if name == "add" && !json {
+                permissions::review(m, &mut stdout)?;
+            }
             Ok(0)
         }
         Ok(_) => Err(io::Error::other("remote control produced no result")),

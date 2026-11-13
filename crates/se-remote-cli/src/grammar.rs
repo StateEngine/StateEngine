@@ -2,6 +2,7 @@ use super::*;
 use clap::{Arg, Command};
 pub(super) const CONTROLS: &[&str] = &[
     "add",
+    "permissions",
     "disconnect",
     "forget",
     "disable",
@@ -42,20 +43,9 @@ pub(super) fn command() -> Command {
                     .arg(Arg::new("destination").index(1).required(true))
                     .arg(value("name").required(true)),
             )
-            .subcommand(
-                leaf(
-                    "permissions",
-                    "Review source-agent or launch access as the native Owner",
-                )
-                .arg(value("name"))
-                .arg(Arg::new("launch").long("launch").action(clap::ArgAction::SetTrue).conflicts_with("local").help("Review which existing destination agents this paired machine may launch"))
-                .arg(
-                    Arg::new("local")
-                        .long("local")
-                        .action(clap::ArgAction::SetTrue)
-                        .conflicts_with("name"),
-                ),
-            )
+            .subcommand(leaf("permissions", "Review launch consent as the native Owner")
+                .arg(value("name").required(true))
+                .arg(Arg::new("launch").long("launch").action(clap::ArgAction::SetTrue).help("Review which existing destination agents this paired machine may launch")))
             .subcommand(leaf(
                 "disable",
                 "Close this machine's remote listener (human only)",

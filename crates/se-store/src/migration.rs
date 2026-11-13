@@ -56,8 +56,8 @@ const STEPS: [Step; 10] = [
         table_rebuild: false,
     },
     Step {
-        version: 12,
-        sql: include_str!("../migrations/012.sql"),
+        version: 11,
+        sql: include_str!("../migrations/011.sql"),
         table_rebuild: false,
     },
 ];

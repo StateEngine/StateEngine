@@ -17,4 +17,4 @@ CREATE TABLE remote_launch_attribution(
   event_seq INTEGER NOT NULL REFERENCES events(seq)
 ) STRICT;
 CREATE INDEX remote_launch_target ON remote_launch_attribution(grant_id,project_id,agent_id);
-PRAGMA user_version=12;
+PRAGMA user_version=11;

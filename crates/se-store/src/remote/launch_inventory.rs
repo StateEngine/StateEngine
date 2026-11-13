@@ -28,7 +28,7 @@ impl ReadPhase {
         limit: u16,
     ) -> StoreResult<(Vec<LaunchCandidate>, bool)> {
         ready(&self.info)?;
-        if self.info.schema_version < 12 || !(1..=4).contains(&limit) {
+        if self.info.schema_version < 11 || !(1..=4).contains(&limit) {
             return Err(invalid("launch inventory schema or finite page size"));
         }
         read::grant(&self.db, grant)?.ok_or_else(denied)?;

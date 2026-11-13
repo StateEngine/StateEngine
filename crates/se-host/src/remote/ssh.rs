@@ -8,11 +8,11 @@ mod command;
 mod image;
 mod prepare;
 mod staging;
-pub use authorization::{
-    Authorization, AuthorizationResult, LaunchPermissionsRequest,
-    PermissionsResult, Request as SshRequest, StartResult,
-};
 pub(crate) use authorization::launch_permissions;
+pub use authorization::{
+    Authorization, AuthorizationResult, LaunchPermissionsRequest, PermissionsResult,
+    Request as SshRequest, StartResult,
+};
 pub use bootstrap::connect;
 pub use prepare::{ImageProgress, ImageStage, prepare_image};
 use se_types::Result;

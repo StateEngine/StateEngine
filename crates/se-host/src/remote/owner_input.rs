@@ -59,10 +59,7 @@ pub struct LaunchPermissionChange {
 impl OwnerInput {
     pub fn requires_terminal(&self) -> bool {
         #[cfg(feature = "remote")]
-        if matches!(
-            self,
-            Self::PairingLaunchPermissions { .. }
-        ) {
+        if matches!(self, Self::PairingLaunchPermissions { .. }) {
             return true;
         }
         matches!(

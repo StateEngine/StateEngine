@@ -48,7 +48,7 @@ pub(super) fn apply(
     revision: u64,
     now: i64,
 ) -> StoreResult<()> {
-    if crate::connection::info(c)?.schema_version < 12
+    if crate::connection::info(c)?.schema_version < 11
         || permission(c, &change.grant, &change.target)?.map(|p| p.revision) != change.expected
     {
         return Err(denied());
@@ -87,7 +87,7 @@ impl ReadPhase {
         target: &RemoteTarget,
     ) -> StoreResult<Read<LaunchPermission>> {
         ready(&self.info)?;
-        if self.info.schema_version < 12 {
+        if self.info.schema_version < 11 {
             return Ok(Read::Absent {
                 checked: "this store predates explicit remote launch consent".into(),
             });

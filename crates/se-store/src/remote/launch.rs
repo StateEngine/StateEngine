@@ -15,7 +15,7 @@ pub(crate) fn validate_launch(
             _ => None,
         })
         .collect();
-    if info.schema_version < 12 {
+    if info.schema_version < 11 {
         return if records.is_empty() {
             Ok(false)
         } else {
@@ -55,7 +55,6 @@ pub(crate) fn validate_launch(
     {
         return Err(denied());
     }
-    super::admit_source(c, stamp.source.as_ref())?;
     launch_permission::require_saved_target(c, &record.target)?;
     let project = crate::identity::key(c, "project", record.target.project.as_str(), &[0], false)?;
     let namespace =

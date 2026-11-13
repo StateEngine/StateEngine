@@ -10,7 +10,7 @@ impl ReadPhase {
         else {
             return Err(control_denied());
         };
-        if self.info.schema_version < 12
+        if self.info.schema_version < 11
             || self.info.state != StoreState::Ready
             || admission.session.is_some()
         {
