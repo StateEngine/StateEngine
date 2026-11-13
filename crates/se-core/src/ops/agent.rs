@@ -81,12 +81,10 @@ pub fn create<R: Snapshot>(
     }
     let normalized = serde_json::to_value(&input)
         .map_err(|error| scope::unreadable("agent creation intent", &error.to_string()))?;
-    let provider = input.provider.unwrap_or(if input.harness.is_some() {
-        Provider::Acp
-    } else {
-        configuration.launch.provider
-    });
-    let harness = configuration.selected_harness(provider, input.harness.as_deref())?;
+    let binding =
+        crate::harness_selection::resolve(configuration, input.provider, input.harness.as_deref())?;
+    let provider = binding.provider;
+    let harness = binding.harness;
     let defaults = match provider {
         Provider::Claude => &configuration.providers.claude,
         Provider::Codex => &configuration.providers.codex,

@@ -313,6 +313,16 @@ starting over. If capture was disabled, use `--new` for a new conversation.
 
 ### Named harness descriptors
 
+`se init --harness NAME` selects `claude`, `codex` or `secode` without a
+configuration edit. For an installed, logged-in `qwen-code` or `goose`, init
+detects the executable and package entrypoint and saves the shared protocol
+descriptor automatically. Missing or unreadable installations refuse with
+their actual cause and a native setup link. Init does not install software or
+log into a provider, and saving the descriptor does not establish a successful
+launch. The normal launch still verifies native capabilities and readiness.
+Existing named entries take precedence over catalogue names and keep their
+original command and permission choices.
+
 Several installed protocol agents can share the same adapter. Give each one a
 named entry in `config.toml`, with an explicit mapping for every launch profile
 it uses. This example maps `protocol-work` to the agent's announced native mode;

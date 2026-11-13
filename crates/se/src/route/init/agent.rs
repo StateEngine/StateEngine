@@ -5,11 +5,11 @@ use super::*;
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 pub(super) fn initial_agent(
-    cx: &Bootstrap,
     input: &ProjectInit,
     store: &mut SqliteDirect,
     lease: &DirectLease,
     admission: &Admission,
+    configuration: &se_core::config_policy::ConfigFile,
 ) -> Result<(AgentRow, bool)> {
     let mut snap = store
         .snapshot(read_scope(admission))
@@ -73,7 +73,7 @@ pub(super) fn initial_agent(
         Some(agent) => agent,
         None => {
             let kernel =
-                Kernel::new(execute::facts()?)?.with_configuration(cx.config.value.clone())?;
+                Kernel::new(execute::facts()?)?.with_configuration(configuration.clone())?;
             let op = AnyOp::AgentCreate(AgentCreate {
                 harness: input.harness.clone(),
                 name: input.agent.clone(),
@@ -128,6 +128,15 @@ pub(super) fn initial_agent(
         "initial saved agent",
         "Read the original saved agent in this data home, then retry se init with its original --key; preserve existing agent identities.",
     )?;
+    if input
+        .provider
+        .is_some_and(|provider| row.provider != provider)
+    {
+        return Err(se_types::SeError::invalid(
+            "initial provider",
+            "the existing agent keeps its saved provider; select a new --agent name to choose a different harness",
+        ));
+    }
     if input
         .harness
         .as_ref()

@@ -1,0 +1,58 @@
+{
+  "qwen-code": {
+    "title": "Qwen Code",
+    "setup_url": "https://qwenlm.github.io/qwen-code-docs/en/users/quickstart/",
+    "descriptor": {
+      "driver": "acp-stdio",
+      "command": "node",
+      "arguments": [
+        "--acp"
+      ],
+      "environment": [
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_MODEL",
+        "QWEN_HOME"
+      ],
+      "model_environment": "OPENAI_MODEL",
+      "permissions": {
+        "default": {
+          "arguments": [],
+          "environment": {},
+          "mode": ""
+        }
+      }
+    },
+    "package": {
+      "name": "@qwen-code/qwen-code",
+      "bin": "qwen"
+    }
+  },
+  "goose": {
+    "title": "Goose",
+    "setup_url": "https://github.com/aaif-goose/goose/blob/main/documentation/docs/getting-started/installation.md",
+    "descriptor": {
+      "driver": "acp-stdio",
+      "command": "goose",
+      "arguments": [
+        "acp"
+      ],
+      "environment": [
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "GOOSE_PROVIDER",
+        "GOOSE_PATH_ROOT",
+        "GOOSE_DISABLE_KEYRING"
+      ],
+      "model_environment": "GOOSE_MODEL",
+      "permissions": {
+        "default": {
+          "arguments": [],
+          "environment": {},
+          "mode": ""
+        }
+      }
+    },
+    "package": null
+  }
+}

@@ -21,6 +21,7 @@ pub use agent_observation::{
     AgentObservation, AgentObservationPlan, observe_agent, prepare_agent_observation,
 };
 mod harness;
+pub mod harness_setup;
 mod owner_inventory;
 pub use owner_inventory::decode_owner_inventory;
 #[cfg(feature = "runtime")]
@@ -41,6 +42,8 @@ mod process;
 #[path = "process/io/mod.rs"]
 mod process_io;
 mod runtime;
+#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+pub use process::launch_util::resolve_provider as resolve_provider_executable;
 #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 pub use process::{ProcessConfiguration, ProcessDrain, ProcessOptions, Reconciliation};
 #[cfg(all(unix, feature = "listener"))]
