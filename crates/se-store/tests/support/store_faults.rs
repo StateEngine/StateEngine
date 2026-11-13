@@ -129,6 +129,28 @@ fn fault_child_fixture() -> Check {
             return Err("owned writer thread did not start".into());
         }
     };
+    // The background checkpoint task's first tick drains the pre-writer WAL
+    // (PASSIVE frame copy plus TRUNCATE reset, both pwrite64) on its own
+    // schedule. When that I/O lands before the tracer attaches in one run and
+    // after it in another, the large commit's pwrite64 index differs between
+    // the baseline and fault runs and the fault lands on the wrong syscall.
+    // Wait for the drain before ready.json: from then until the commit the
+    // task only probes an empty WAL, so the traced prefix is identical in
+    // both runs.
+    let wal = f.options.state_directory.join("state.db-wal");
+    let until = Instant::now() + Duration::from_secs(15);
+    while std::fs::metadata(&wal)
+        .map(|m| m.len() != 0)
+        .unwrap_or(false)
+    {
+        if Instant::now() >= until {
+            return Err(
+                "background checkpoint did not drain the startup WAL; the traced window is not deterministic"
+                    .into(),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
     std::fs::write(
         root.join("ready.json"),
         serde_json::to_vec(
