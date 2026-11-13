@@ -21,6 +21,7 @@ pub(crate) fn resolve_provider(
             &configuration.harness(harness)?.command,
             provider,
             selected_file,
+            Some(harness),
         );
     }
     if provider == se_types::Provider::SeCode
@@ -33,6 +34,7 @@ pub(crate) fn resolve_provider(
         configuration.provider_command(provider),
         provider,
         selected_file,
+        None,
     )
 }
 
@@ -195,6 +197,7 @@ pub(super) fn resolve_provider_command(
     command: &str,
     provider: se_types::Provider,
     configuration_file: Option<&std::path::Path>,
+    harness: Option<&str>,
 ) -> Result<PathBuf> {
     let (name, title, install) = match provider {
         se_types::Provider::Codex => ("codex", "Codex", "https://developers.openai.com/codex/cli"),
@@ -217,8 +220,12 @@ pub(super) fn resolve_provider_command(
         None => "the host application's provider configuration".into(),
     };
     let text = if provider == se_types::Provider::Acp {
+        let (command_table, argument_table) = harness.map_or_else(
+            || ("providers.acp".into(), "acp".into()),
+            |name| (format!("harnesses.{name}"), format!("harnesses.{name}")),
+        );
         format!(
-            "Configured protocol command: {command:?}. In {destination}, set [providers.acp].command to the native executable's absolute path. For a script-installed agent, set command to its native interpreter's absolute path and put the agent script's absolute path first in [acp].arguments, followed by its documented protocol arguments. Script shims are not native images. Restart this home's runtime with the same configuration selection, then retry launch."
+            "Configured protocol command: {command:?}. In {destination}, set [{command_table}].command to the native executable's absolute path. For a script-installed agent, set command to its native interpreter's absolute path and put the agent script's absolute path first in [{argument_table}].arguments, followed by its documented protocol arguments. Script shims are not native images. Restart this home's runtime with the same configuration selection, then retry launch."
         )
     } else {
         format!(

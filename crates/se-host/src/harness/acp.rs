@@ -61,7 +61,7 @@ impl AcpHarness {
         }
         if configured_model && model.is_none() {
             return Err(error(
-                "acp.arguments requires a selected saved model. Select a model for this agent, or remove the {model} argument to use the protocol agent's default model.",
+                "The selected harness's model binding requires a saved model. Select a model for this agent, or remove that binding to use the native harness default.",
             ));
         }
         Ok(profile)
