@@ -139,7 +139,7 @@ impl Fixture {
             adapter: Arc::new(Discord {
                 client,
                 invalid_sessions: Mutex::default(),
-                last_identify: AtomicU64::new(0),
+                identify_fire: Mutex::default(),
             }),
             token: se_types::Secret::new(b"synthetic-discord-token-for-local-tests-only".to_vec())?,
         })

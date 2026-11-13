@@ -37,26 +37,26 @@ async fn ready(f: &Fixture) -> Check<Box<dyn ChannelReceiver>> {
     Ok(receiver)
 }
 
-/// The first Identify waits nothing; a later one waits out the remaining
-/// concurrency window, and a backwards clock waits at most one full window.
+/// The first Identify for a token fires now; a later one follows the previous
+/// fire by at least one full window, measured on a monotonic clock.
 #[test]
 fn discord_identify_spacing_first_waits_nothing() -> Check {
-    let window = IDENTIFY_WINDOW_US;
+    let now = Instant::now();
     require(
-        identify_wait(0, window * 10).is_none(),
+        next_identify_fire(None, now) == now,
         "the first Identify must not wait",
     )?;
     require(
-        identify_wait(1_000, 1_000 + window / 2) == Some(Duration::from_micros(window / 2)),
-        "a fresh attempt inside the window waits out the remainder",
+        next_identify_fire(Some(now), now) == now + IDENTIFY_WINDOW,
+        "an attempt at the previous fire waits the full window",
     )?;
     require(
-        identify_wait(1_000, 1_000 + window).is_none(),
-        "an attempt after the full window waits nothing",
+        next_identify_fire(Some(now), now + IDENTIFY_WINDOW / 2) == now + IDENTIFY_WINDOW,
+        "an attempt inside the window waits out the remainder",
     )?;
     require(
-        identify_wait(1_000, 500) == Some(Duration::from_micros(window)),
-        "a backwards clock waits at most one full window",
+        next_identify_fire(Some(now), now + IDENTIFY_WINDOW) == now + IDENTIFY_WINDOW,
+        "an attempt after the full window fires at the boundary",
     )?;
     Ok(())
 }

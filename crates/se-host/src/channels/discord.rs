@@ -3,13 +3,11 @@
 use super::*;
 use reqwest::{Method, header};
 use serde_json::{Value, json};
+use sha2::Sha256;
 use std::{
-    collections::VecDeque,
-    sync::{
-        Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
+    collections::{HashMap, VecDeque},
+    sync::Mutex,
+    time::{Duration, Instant},
 };
 mod gateway;
 mod message;
@@ -19,16 +17,18 @@ use gateway::Receiver;
 
 type Error = ChannelError;
 const API: &str = "https://discord.com/api/v10";
-/// One gateway concurrency window, in microseconds: a fresh Identify follows
-/// the previous attempt by at least this long, the very first attempt
+/// One gateway concurrency window: a fresh Identify for a token follows that
+/// token's previous attempt by at least this long, the very first attempt
 /// excepted. The window is the spacing the fixed pre-Identify sleep used.
-const IDENTIFY_WINDOW_US: u64 = 5 * 1_000_000;
+const IDENTIFY_WINDOW: Duration = Duration::from_millis(5_000);
 pub struct Discord {
     client: reqwest::Client,
     invalid_sessions: Mutex<VecDeque<String>>,
-    /// Unix microseconds of the last fresh Identify attempt, 0 while there is
-    /// none: the attempt consumed a concurrency window even if it failed.
-    last_identify: AtomicU64,
+    /// Fresh-Identify fire instants keyed by the token's digest, under one
+    /// lock: an entry is when that token's last or reserved attempt consumed a
+    /// gateway concurrency window, even if it failed. The digest keeps the
+    /// token bytes out of the map.
+    identify_fire: Mutex<HashMap<[u8; 32], Instant>>,
 }
 impl Discord {
     fn client_builder() -> reqwest::ClientBuilder {
@@ -49,20 +49,26 @@ impl Discord {
         Ok(Self {
             client,
             invalid_sessions: Mutex::default(),
-            last_identify: AtomicU64::new(0),
+            identify_fire: Mutex::default(),
         })
     }
-    /// Paces a fresh Identify attempt against the previous one, which consumed
-    /// a gateway concurrency window even if it ended in a refusal; the first
-    /// attempt waits nothing.
-    async fn pace_identify(&self) {
-        if let Some(wait) = identify_wait(self.last_identify.load(Ordering::Relaxed), unix_micros())
-        {
+    /// Reserves this token's next Identify slot and waits for it. The read of
+    /// the previous fire and the reservation happen under one lock, so two
+    /// tokens claiming together get two different slots, never the same
+    /// instant; the attempt consumed a concurrency window even if it ends in a
+    /// refusal. The first attempt for a token waits nothing.
+    async fn pace_identify(&self, token: &se_types::Secret) {
+        let wait = {
+            let mut fire = self.identify_fire.lock().unwrap();
+            let key: [u8; 32] = Sha256::digest(token.expose()).into();
+            let now = Instant::now();
+            let slot = next_identify_fire(fire.get(&key).copied(), now);
+            fire.insert(key, slot);
+            slot - now
+        };
+        if wait > Duration::ZERO {
             tokio::time::sleep(wait).await;
         }
-    }
-    fn note_identify(&self) {
-        self.last_identify.store(unix_micros(), Ordering::Relaxed);
     }
     fn authorization(token: &se_types::Secret) -> ChannelResult<header::HeaderValue> {
         let bytes = token.expose();
@@ -150,26 +156,15 @@ impl Discord {
         Ok(())
     }
 }
-/// Unix microseconds since the epoch, saturating at both ends: a pre-epoch
-/// clock reads as the epoch, which can only make a later attempt wait the
-/// full window.
-fn unix_micros() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
-}
-/// The wait a fresh Identify attempt owes its predecessor: the first waits
-/// nothing, a later attempt waits out the remaining concurrency window, capped
-/// at one full window so a backwards clock can never wait longer.
-fn identify_wait(last_unix_us: u64, now_unix_us: u64) -> Option<Duration> {
-    if last_unix_us == 0 {
-        return None;
+/// The fire instant a fresh Identify attempt owes its predecessor, per
+/// token: a token's first attempt fires now, a later one follows the previous
+/// fire by at least one full window. The clock is monotonic, so a backwards
+/// wall clock cannot stretch the wait.
+fn next_identify_fire(last_fire: Option<Instant>, now: Instant) -> Instant {
+    match last_fire {
+        Some(last) => now.max(last + IDENTIFY_WINDOW),
+        None => now,
     }
-    let wait = last_unix_us
-        .saturating_add(IDENTIFY_WINDOW_US)
-        .saturating_sub(now_unix_us);
-    (wait > 0).then(|| Duration::from_micros(wait.min(IDENTIFY_WINDOW_US)))
 }
 fn id(value: &Value) -> ChannelResult<ExternalId> {
     let text = value.as_str().ok_or(Error::ProviderProtocol)?;
