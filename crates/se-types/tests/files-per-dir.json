@@ -150,7 +150,6 @@
   "crates/se-proc/src/runtime/validate": 4,
   "crates/se-store/src/codec/capture": 4,
   "crates/se-store/src/error": 4,
-  "crates/se-store/src/event": 4,
   "crates/se-store/src/writer": 4,
   "crates/se-types/src/error": 4,
   "crates/se-types/src/surface": 4

@@ -42,5 +42,6 @@ pub use open::{SqliteDirect, SqliteFactory, SqliteHost, SqliteReader};
 pub use read::SqliteSnapshot;
 pub use read_phase::ReadPhase;
 pub use read_phase_pool::{ReadConnectionIdentity, ReadPhasePool};
+pub use se_store_contract::values::*;
 pub use transcript::*;
-pub use writer::{SqliteClient, SqliteWriter, WriteTimings};
+pub use writer::{SqliteClient, SqliteWriter};

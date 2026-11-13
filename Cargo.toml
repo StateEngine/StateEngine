@@ -4,6 +4,7 @@ exclude = ["vendor/secode-stateengine-api"]
 members = [
     "crates/se-types",
     "crates/se-store",
+    "crates/se-store-contract",
     "crates/se-core",
     "crates/se-proc",
     "crates/se-host",

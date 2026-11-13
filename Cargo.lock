@@ -1617,11 +1617,24 @@ version = "0.0.1"
 dependencies = [
  "rusqlite",
  "se-proc",
+ "se-store-contract",
  "se-types",
  "serde",
  "serde_json",
  "sha2",
  "subtle",
+ "uuid",
+]
+
+[[package]]
+name = "se-store-contract"
+version = "0.0.1"
+dependencies = [
+ "rusqlite",
+ "se-types",
+ "serde",
+ "serde_json",
+ "sha2",
  "uuid",
 ]
 
