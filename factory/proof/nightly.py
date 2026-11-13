@@ -14,6 +14,7 @@ from report import exit_status, publish
 from lifecycle import begin, checkpoint, save, service_exit
 from native import import_receipt
 from matrix_adapter import run as run_matrix
+from night_status import configure
 
 GIB = 1024**3
 
@@ -106,7 +107,7 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
     selection, surface, name = (invocation[key] for key in ("selection", "surface", "output"))
     invocation["state"] = "running"
     invocation["box_load"] = {"before": box_load()}
-    checkpoint(Path(config["state"]), directory, run)
+    checkpoint(Path(config["state"]), directory, run, config)
     argv = [config["node"], judge / "journeys/run.mjs", "--implementation", "rust",
             "--distribution", "standalone", "--product", descriptor,
             "--surface", surface, "--auth-home", config["auth_home"], "--out", directory / name]
@@ -127,7 +128,7 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
         raise RuntimeError(invocation["error"]) from None
     finally:
         invocation["box_load"]["after"] = box_load()
-        checkpoint(Path(config["state"]), directory, run)
+        checkpoint(Path(config["state"]), directory, run, config)
 
 
 def invoke_remote(config, run, directory, executable, env, invocation, deadline):
@@ -135,7 +136,7 @@ def invoke_remote(config, run, directory, executable, env, invocation, deadline)
     capacity()
     remaining(deadline, 600)
     invocation.update(state="running", box_load={"before": box_load()})
-    checkpoint(Path(config["state"]), directory, run)
+    checkpoint(Path(config["state"]), directory, run, config)
     if not isinstance(config.get("remote", {}), dict):
         raise RuntimeError("remote configuration must be an object naming its SSH destination")
     settings = {**config.get("remote", {}), "auth_home": config["auth_home"],
@@ -146,7 +147,7 @@ def invoke_remote(config, run, directory, executable, env, invocation, deadline)
                      run["product"]["commit"], deadline).run()
     invocation.update(state="finished", exit=0 if result["passed"] else 1)
     invocation["box_load"]["after"] = box_load()
-    checkpoint(Path(config["state"]), directory, run)
+    checkpoint(Path(config["state"]), directory, run, config)
 
 
 def run_nightly(config, prepared_build=None, native_only=False):
@@ -185,10 +186,10 @@ def run_nightly(config, prepared_build=None, native_only=False):
             native_invocations = [row for row in record["invocations"] if row.get("native_receipt")]
             for invocation, probe in zip(native_invocations, config.get("native_receipts", []), strict=True):
                 import_receipt(invocation, probe["path"], directory, record, state)
-                checkpoint(state, directory, record)
+                checkpoint(state, directory, record, config)
             if native_only:
                 record["state"] = "finished"
-                report = checkpoint(state, directory, record)
+                report = checkpoint(state, directory, record, config)
                 print(directory / "report.md", flush=True)
                 return exit_status(report)
             build = prepared_build or directory / "build"
@@ -225,7 +226,7 @@ def run_nightly(config, prepared_build=None, native_only=False):
                     invoke(config, record, directory, judge, descriptor, archive, env, invocation, deadline)
             if record.get('harness_matrix') is not None:
                 run_matrix(config, record, directory, Path(record['matrix_judge']['worktree']),
-                           bundle, env, deadline, lambda: checkpoint(state, directory, record))
+                           bundle, env, deadline, lambda: checkpoint(state, directory, record, config))
             record["state"] = "finished"
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             record["errors"].append(str(error))
@@ -233,7 +234,7 @@ def run_nightly(config, prepared_build=None, native_only=False):
         finally:
             # Retain pinned source trees with this attempt. They contain no test
             # credentials; no recursive cleanup can consume another worktree.
-            report = checkpoint(state, directory, record)
+            report = checkpoint(state, directory, record, config)
         # Artifacts remain available even when every prerequisite failed.
         print(directory / "report.md", flush=True)
         return exit_status(report)
@@ -252,7 +253,7 @@ def main():
         return 0
     if not args.config:
         parser.error("--config is required for execution")
-    config = json.loads(args.config.read_text())
+    config = configure(json.loads(args.config.read_text()))
     if args.service_exit:
         return service_exit(config)
     prefixes = tuple(config.get("forbidden_environment_prefixes", ["STATEENGINE_", "SECODE_"]))
