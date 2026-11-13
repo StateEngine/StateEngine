@@ -7,9 +7,9 @@ use std::{
     io::{Read, Write},
     path::Path,
 };
-pub mod diagnostic;
 #[cfg(feature = "listener")]
 pub mod codex;
+pub mod diagnostic;
 #[cfg(feature = "listener")]
 pub mod install;
 #[cfg(feature = "listener")]
