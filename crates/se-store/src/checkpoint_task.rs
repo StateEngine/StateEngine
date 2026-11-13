@@ -163,7 +163,7 @@ impl CheckpointTask {
                 let message = payload
                     .downcast_ref::<&str>()
                     .copied()
-                    .or_else(|| payload.downcast_ref::<String>().as_deref())
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                     .unwrap_or("an unnameable panic payload");
                 self.status.set(Maint::Failed(fail(
                     StoreErrorCode::BackupFailed,
@@ -342,8 +342,13 @@ mod tests {
             status: status.clone(),
         };
         task.join();
-        assert!(status.failed(), "a dead task must read as Failed, never Clear");
-        let error = status.last_error().expect("a failed join retains its error");
+        assert!(
+            status.failed(),
+            "a dead task must read as Failed, never Clear"
+        );
+        let error = status
+            .last_error()
+            .expect("a failed join retains its error");
         assert!(
             error.cause.contains("planted checkpoint panic"),
             "the panic message must be named, got: {}",
