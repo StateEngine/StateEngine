@@ -45,8 +45,8 @@ pub fn record(home: &Path, project: &ProjectId, action: Action) -> Result<()> {
         {
             Acquisition::Wait(wait) => std::thread::sleep(wait),
             Acquisition::Ready(Some(mut file)) => {
-                let hash = file.sha256().map_err(native)?;
-                return file.replace(hash, &bytes).map_err(native);
+                let previous = file.read(MAX_BYTES).map_err(native)?;
+                return file.replace(digest(&previous), &bytes).map_err(native);
             }
             Acquisition::Ready(None) => {
                 let mut staged = files.create_staging(&directory).map_err(native)?;
@@ -55,8 +55,7 @@ pub fn record(home: &Path, project: &ProjectId, action: Action) -> Result<()> {
                 drop(staged.file);
                 let published = files.publish_no_replace(&staged.path, &target);
                 if published.is_err()
-                    && let Some(mut file) =
-                        se_proc::OwnedFile::open(&staged.path).map_err(native)?
+                    && let Some(file) = se_proc::OwnedFile::open(&staged.path).map_err(native)?
                 {
                     file.remove(digest(&bytes)).map_err(native)?;
                 }
