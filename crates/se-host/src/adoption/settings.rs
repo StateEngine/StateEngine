@@ -2,12 +2,8 @@
 use super::*;
 use serde_json::{Value, json};
 use std::path::PathBuf;
-mod access;
 mod text;
 mod toml;
-pub(super) fn prepare(home: &Path, path: &Path) -> Result<()> {
-    access::prepare(home, path)
-}
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -92,7 +88,7 @@ pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
     Ok(result)
 }
 pub(super) fn read_document(path: &Path) -> Result<(Option<se_proc::OwnedFile>, Vec<u8>, Value)> {
-    let Some(mut file) = se_proc::OwnedFile::open(path).map_err(access::native)? else {
+    let Some(mut file) = se_proc::OwnedFile::open(path).map_err(access_error)? else {
         return Ok((None, vec![], json!({})));
     };
     let bytes = file.read(LIMIT).map_err(native)?;
@@ -124,7 +120,7 @@ fn write_document(
         return Err(invalid("provider settings within one MiB"));
     }
     if let Some(pin) = pin {
-        access::writable(path, &pin)?;
+        writable(path, &pin)?;
         pin.replace(digest(before), &bytes).map_err(native)?;
     } else {
         let parent = path.parent().ok_or_else(|| invalid("settings parent"))?;
@@ -232,7 +228,7 @@ pub fn uninstall_for(home: &Path, kind: Kind) -> Result<Vec<PathBuf>> {
     }
     if changed {
         if let Some(pin) = &pin {
-            access::writable(&path, pin)?;
+            writable(&path, pin)?;
         }
         if registration.layout.created_file
             && document.as_object().is_some_and(serde_json::Map::is_empty)
@@ -306,4 +302,79 @@ pub fn missing_trust(path: &Path, entries: &[(String, String)]) -> Result<Vec<(S
         }
     }
     Ok(missing)
+}
+
+fn refusal(path: &Path, reason: String, next_step: String) -> SeError {
+    SeError::new(se_types::Detail::SourceUnreadable(
+        se_types::details::SourceUnreadable {
+            subject: path.display().to_string(),
+            reason,
+            next_step,
+        },
+    ))
+}
+fn access_error(error: se_proc::StateFileError) -> SeError {
+    let path = &error.path;
+    let next = if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        "Set CODEX_HOME (Codex) or CLAUDE_CONFIG_DIR (Claude Code) to the directory containing the real configuration file, or replace the symbolic link with a regular file; then retry the original command.".into()
+    } else if error.operation == "require owner-only native regular file/directory"
+        || (error.code == se_proc::StateFileErrorCode::LocationUnsafe
+            && error.operation.contains("DACL"))
+    {
+        #[cfg(unix)]
+        {
+            format!(
+                "Make this directory private with chmod 700 -- {}; then retry the original command.",
+                quoted(path)
+            )
+        }
+        #[cfg(windows)]
+        {
+            "In this path's Advanced Security properties, disable inheritance, remove other accounts' access, and grant full control to your account and SYSTEM; then retry the original command.".into()
+        }
+    } else {
+        "Restore access to this exact provider settings path, keeping regular files and directories in place of links; then retry the original command.".into()
+    };
+    refusal(path, error.to_string(), next).with_cause(error)
+}
+fn writable(path: &Path, file: &se_proc::OwnedFile) -> Result<()> {
+    let permissions = file.permissions().map_err(access_error)?;
+    #[cfg(unix)]
+    let readonly = {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.mode() & 0o200 == 0
+    };
+    #[cfg(windows)]
+    let readonly = permissions.readonly();
+    if readonly {
+        #[cfg(unix)]
+        let next = format!(
+            "Allow owner writes with chmod u+w -- {}; then retry the original command.",
+            quoted(path)
+        );
+        #[cfg(windows)]
+        let next = format!(
+            "Clear the read-only attribute of {} in its Properties, then retry the original command.",
+            path.display()
+        );
+        return Err(refusal(
+            path,
+            "Provider configuration is read-only; its bytes were preserved.".into(),
+            next,
+        ));
+    }
+    Ok(())
+}
+#[cfg(unix)]
+fn quoted(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+pub(super) fn prepare(home: &Path, path: &Path) -> Result<()> {
+    // Check before even --version: the provider can create temporary directories.
+    if let (Some(file), _, _) = read_document(path)? {
+        writable(path, &file)?;
+    } else {
+        se_proc::NativeStateFiles::create(home).map_err(access_error)?;
+    }
+    Ok(())
 }
