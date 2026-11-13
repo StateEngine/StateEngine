@@ -24,6 +24,9 @@ pub(crate) fn fail(code: StoreErrorCode, cause: impl Into<String>) -> Box<StoreE
         StoreErrorCode::PragmaRefused => {
             "Restore the required SQLite/filesystem setting or use a compatible build before admitting writes."
         }
+        StoreErrorCode::BackupFailed => {
+            "Restart the runtime (`se down`, then `se up`) to recreate the background maintenance task; preserve the named cause and the store for diagnosis."
+        }
         _ => "Preserve the original request key; reread the named state before retrying.",
     };
     Box::new(StoreError {
