@@ -25,6 +25,7 @@ try:
         __import__(name)
     import approval
     import approval_source
+    import box_result
     from approval_source import main_source
 
     spec = importlib.util.spec_from_file_location("approval_hook_review", HERE.parent / "self-hosted/hook.py")
@@ -286,7 +287,19 @@ class PublicationReview(unittest.TestCase):
             {**self.old_report, "policy_source": SOURCE}, self.cache,
             hashlib.sha256(self.cache.read_bytes()).hexdigest()))
         self.cleanup = patched(approval, "cleanup")
-        self.current = patched(approval, "current_main")
+        # Approval now asks for main's tip rather than demanding the requested
+        # commit still be it; the default is that nothing moved during the build.
+        self.tip = patched(approval, "main_tip", return_value=SOURCE)
+        self.recheck = patched(approval, "source_policy", return_value={**self.old_report["policy"]})
+        self.fetch = patched(approval, "fetch_main")
+        # The real `prepare` consumes the token from its config, so a recheck
+        # that read it back out of `config` would fail only in production. This
+        # double pops it exactly as `prepare` does.
+        real_prepare = self.prepare.return_value
+        def prepare(config, *args, **kwargs):
+            config.pop("token", None)
+            return real_prepare
+        self.prepare.side_effect = prepare
 
     def call(self):
         return approval.approve(dict(context=context(), token=TOKEN))
@@ -300,14 +313,35 @@ class PublicationReview(unittest.TestCase):
                 self.assertEqual(self.live.read_bytes(), self.original)
                 self.assertEqual(json.loads(self.report.read_text()), self.old_report)
 
-    def test_cleanup_and_stale_main_fail_before_publication(self):
-        for dependency in [self.cleanup, self.current]:
+    def test_cleanup_and_unreadable_main_tip_fail_before_publication(self):
+        for dependency in [self.cleanup, self.tip]:
             with self.subTest(dependency=dependency):
                 dependency.side_effect = RuntimeError("synthetic failure")
                 with self.assertRaises(RuntimeError):
                     self.call()
                 self.assertEqual(self.live.read_bytes(), self.original)
                 dependency.side_effect = None
+
+    def test_stale_main_publishes_when_its_policy_inputs_are_identical(self):
+        # Another merge landed during the 8-13 minute build; the policy inputs
+        # did not change, so the reviewed bytes are still what main carries.
+        moved = "d" * 40
+        self.tip.return_value = moved
+        self.recheck.return_value = {**self.old_report["policy"]}
+        result = self.call()
+        self.assertEqual(result["status"], "approved")
+        self.assertEqual(result["source"], moved)
+        published = json.loads(Path(json.loads(self.live.read_text())["image_report"]).read_text())
+        self.assertEqual(published["policy_source"], moved)
+
+    def test_stale_main_with_different_policy_inputs_refuses_to_publish(self):
+        # The refused approval is the safe one: these bytes were never reviewed.
+        self.tip.return_value = "e" * 40
+        self.recheck.return_value = {"Cargo.lock": "f" * 64}
+        with self.assertRaisesRegex(ValueError, "different policy inputs"):
+            self.call()
+        self.assertEqual(self.live.read_bytes(), self.original)
+        self.assertEqual(json.loads(self.report.read_text()), self.old_report)
 
     def test_maintainer_configuration_change_is_not_overwritten(self):
         changed = self.original + b"\n"
@@ -352,7 +386,7 @@ class RebuildWindowReview(unittest.TestCase):
             request = dict(args={"container": {"image": "stateengine-ci-approved",
                 "environmentVariables": {"CI_SOURCE_TOKEN": TOKEN}}})
             cx = {**context(), "GITHUB_EVENT_NAME": "pull_request", "GITHUB_REF": "refs/pull/7/merge"}
-            with patch.object(hook, "capacity"), patch.object(hook, "changed_policy", return_value=["Cargo.toml"]), \
+            with patch.object(hook, "admits"), patch.object(hook, "changed_policy", return_value=["Cargo.toml"]), \
                     patch.object(hook, "fetch") as fetch, patch.object(hook.subprocess, "Popen") as spawn:
                 response = hook.prepare(request, config, report, cx)
             fetch.assert_not_called()
@@ -369,6 +403,26 @@ class RebuildWindowReview(unittest.TestCase):
             for call in values.call_args_list:
                 self.assertEqual(call.args[0]["image_report"], config["image_report"])
                 self.assertEqual(call.args[0]["cache"], str(old_cache))
+
+
+class SummaryReview(unittest.TestCase):
+    """The job summary is the only box result a seat without root can read."""
+
+    def test_a_fallback_names_its_reason_and_never_stays_silent(self):
+        for status in ("failed", "unavailable"):
+            with self.subTest(status=status):
+                text = hook.summary_text(status, [])
+                self.assertTrue(text.strip(), "a " + status + " job published no reason")
+
+    def test_published_lines_are_scrubbed_and_bounded(self):
+        published = hook.summary_text("failed", [
+            "se-store test-1 x::y: /home/someone/project/secret failed with ghp_abcdefghijklmnop"])
+        self.assertNotIn("/home/someone", published)
+        self.assertNotIn("ghp_abcdefghijklmnop", published)
+        self.assertIn("se-store test-1", published)
+        bounded = hook.summary_text("failed", ["detail " * 400] * 40)
+        self.assertLessEqual(len(bounded.encode()), box_result.FAIL_BYTES)
+        self.assertIn("further reasons omitted", bounded)
 
 
 if __name__ == "__main__":

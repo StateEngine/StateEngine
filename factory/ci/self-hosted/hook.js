@@ -33,6 +33,23 @@ if (request.command === 'run_script_step') {
 request.context = Object.fromEntries(['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT',
   'GITHUB_EVENT_NAME', 'GITHUB_REF']
   .map(name => [name, process.env[name]]));
+// The job summary and annotations are the only place a seat can read a box
+// result from: the controller log is root-only, and a hosted fallback used to
+// look identical to a passing box. The controller cannot write these itself
+// (its env is empty under sudo), so this hook publishes what it is told, and a
+// fallback that gives no reason still says so rather than staying silent.
+function announce(outputs, summary) {
+  const lines = String(summary || '').trim().split('\n').filter(Boolean);
+  const detail = lines.filter(line => !line.startsWith('{'));
+  const level = outputs.status === 'passed' ? 'notice' : outputs.status === 'failed' ? 'error' : 'warning';
+  const title = outputs.status === 'passed' ? 'Box Linux checks passed'
+    : outputs.status === 'failed' ? 'Box Linux checks failed'
+    : 'Box Linux checks unavailable; the complete hosted chain ran instead';
+  console.log(`::${level} title=${title}::${detail.length ? detail.join(' ').slice(0, 900) : 'no reason was reported'}`);
+  for (const line of detail) console.error(line);
+  const target = process.env.GITHUB_STEP_SUMMARY;
+  if (target) fs.appendFileSync(target, `### ${title}\n\n${detail.length ? detail.map(line => '- ' + line).join('\n') : 'No reason was reported.'}\n\n`);
+}
 async function execute() {
   let child, canceled = false, overflow = false;
   const forward = signal => {
@@ -44,7 +61,7 @@ async function execute() {
   };
   const interrupt = () => forward('SIGINT'), terminate = () => forward('SIGTERM');
   process.on('SIGINT', interrupt); process.on('SIGTERM', terminate);
-  let result, status, output = '', bytes = 0;
+  let result, status, output = '', bytes = 0, summary;
   try {
     child = spawn('/usr/bin/sudo', ['-n', '-u', 'stateengine-ci-controller', '/usr/local/libexec/stateengine-ci-hook', slot],
       { stdio: ['pipe', 'pipe', 'inherit'] });
@@ -69,6 +86,7 @@ async function execute() {
       return 1;
     }
     result = JSON.parse(output);
+    summary = result.summary;
   } finally {
     process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', terminate);
   }
@@ -79,7 +97,17 @@ async function execute() {
       if (!/^(rust|windows|route|status)$/.test(name) || !/^(true|false|box|hosted|passed|failed|unavailable)$/.test(value)) throw Error('invalid fixed output');
       fs.appendFileSync(target, `${name}=${value}\n`);
     }
+    announce(result.outputs, summary);
+  } else if (result.exit_code !== 0) {
+    // A controller that dies before it can classify its own work is still a
+    // box result a seat has to read, and it used to leave the summary empty.
+    announce({ status: 'unavailable' }, process.env.STATEENGINE_BOX_REASON
+      || 'the box controller exited without a result; the hosted chain ran instead');
   }
   return status.code === 0 && result.exit_code === 0 ? 0 : 1;
 }
-execute().then(code => { process.exitCode = code; }, error => { console.error(error.message); process.exitCode = 1; });
+execute().then(code => { process.exitCode = code; }, error => {
+  // Same rule on the hook's own failure path: no silent job.
+  announce({ status: 'unavailable' }, `the CI hook failed before a result: ${error.message}`);
+  console.error(error.message); process.exitCode = 1;
+});

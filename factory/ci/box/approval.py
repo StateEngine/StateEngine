@@ -17,7 +17,7 @@ import uuid
 
 BOX = Path("/usr/local/lib/stateengine-box-ci/factory/ci/box")
 sys.path.insert(0, str(BOX))
-from approval_source import current_main, fetch_main, main_source
+from approval_source import fetch_main, main_source, main_tip
 from build import build
 from dispatch import trusted
 from engine import account_args
@@ -311,7 +311,23 @@ def approve(request):
                 raise RuntimeError("approval requires 34 GiB free memory and 80 GiB free disk")
             report, cache, cache_sha256 = prepare(config, live, report, binding, directory, controller)
             cleanup(directory)
-            current_main(api, binding["source"])
+            # Another merge can land while this approval builds, and refusing
+            # then starved approval for hours: nothing ever re-approved, so
+            # every box job ran hosted. The approved question is the policy
+            # inputs, not the commit. When main's newest commit carries the
+            # same ones, publish against it; when anything differs, refuse,
+            # because those bytes were never reviewed.
+            tip = main_tip(api)
+            if tip != binding["source"]:
+                # `prepare` consumes the token from `config`, so the token the
+                # caller supplied is the one this recheck may use.
+                at_tip = source_policy(fetch_main(live["repository"], tip, request["token"],
+                                                  directory / "recheck.git", scoped=True), tip)
+                if at_tip != report["policy"]:
+                    raise ValueError("main advanced with different policy inputs; only its newest "
+                                     "merged commit may update approval")
+                report = dict(report, policy_source=tip)
+                binding = dict(binding, source=tip)
             if LIVE.read_bytes() != original:
                 raise RuntimeError("maintainer configuration changed during preparation; no approval was published")
             snapshot = directory / "image.json"
