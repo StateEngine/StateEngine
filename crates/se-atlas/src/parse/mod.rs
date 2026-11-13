@@ -13,10 +13,7 @@ use crate::{
     scope::Scope,
 };
 pub use budget::{ParserPlacement, ParserProfile};
-use std::{
-    ops::ControlFlow,
-    time::{Duration, Instant},
-};
+use std::{ops::ControlFlow, time::Duration};
 
 pub struct SemanticParser {
     scope: Scope,
@@ -156,7 +153,7 @@ impl AtlasParser for SemanticParser {
         if let Some(guard) = self.resource_guard {
             guard()?;
         }
-        let deadline = Instant::now() + budget.max_work;
+        let deadline = crate::clock::now() + budget.max_work;
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&grammar(language))
@@ -169,7 +166,7 @@ impl AtlasParser for SemanticParser {
                 resource_error = Some(error);
                 return ControlFlow::Break(());
             }
-            if Instant::now() >= deadline {
+            if crate::clock::now() >= deadline {
                 ControlFlow::Break(())
             } else {
                 ControlFlow::Continue(())

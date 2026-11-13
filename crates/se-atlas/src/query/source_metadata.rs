@@ -62,7 +62,7 @@ impl Pool {
             if !matches!(plan.kind, Kind::Symbol | Kind::File) {
                 continue;
             }
-            if Instant::now() >= end {
+            if crate::clock::now() >= end {
                 pool.truncated = true;
                 break;
             }
@@ -114,7 +114,7 @@ impl Pool {
                 if !bm25.is_finite() || bm25 > 0.0 {
                     return Err(cache_error("invalid source metadata BM25 score"));
                 }
-                if Instant::now() >= end {
+                if crate::clock::now() >= end {
                     pool.truncated = true;
                     break;
                 }

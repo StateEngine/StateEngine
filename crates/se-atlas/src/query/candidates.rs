@@ -43,7 +43,7 @@ pub(super) fn collect(
     };
     let mut resident = 0;
     for plan in super::candidate_sql::plans(query, mode)? {
-        if Instant::now() >= end {
+        if crate::clock::now() >= end {
             output.truncated = true;
             break;
         }
@@ -73,7 +73,7 @@ pub(super) fn collect(
             if !bm25.is_finite() || bm25 > 0.0 {
                 return Err(cache_error("invalid BM25 score"));
             }
-            if Instant::now() >= end {
+            if crate::clock::now() >= end {
                 output.truncated = true;
                 break;
             }

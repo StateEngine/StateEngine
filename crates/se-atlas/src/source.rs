@@ -86,7 +86,7 @@ impl<A: SourceAccess> RegisteredSource<A> {
                 "1..524288 bytes and 1..200 ms",
             ));
         }
-        let deadline = Instant::now() + budget.max_work;
+        let deadline = crate::clock::now() + budget.max_work;
         let Some(mut file) = self.open(path)? else {
             return Ok(SourceRead::Removed);
         };
@@ -144,7 +144,7 @@ impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
                 "1..524288 source bytes and 1..200 ms",
             ));
         }
-        let deadline = Instant::now() + budget.max_work;
+        let deadline = crate::clock::now() + budget.max_work;
         let Some(mut file) = self.open(path)? else {
             return Ok(SourceRead::Removed);
         };
@@ -208,7 +208,7 @@ impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
             &mut *file,
             &snapshot.path,
             identity.size,
-            Instant::now() + Duration::from_millis(200),
+            crate::clock::now() + Duration::from_millis(200),
             Duration::from_millis(200),
             |_| {},
         )?;
@@ -239,7 +239,7 @@ impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
         let count = (before.size - offset).min(u64::from(max_bytes)) as usize;
         let mut bytes = vec![0; count];
         let mut again = vec![0; count];
-        let deadline = Instant::now() + Duration::from_millis(200);
+        let deadline = crate::clock::now() + Duration::from_millis(200);
         file.seek(SeekFrom::Start(offset))
             .map_err(|e| source_error(path, e))?;
         file.read_exact(&mut bytes)
@@ -248,7 +248,7 @@ impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
             .map_err(|e| source_error(path, e))?;
         file.read_exact(&mut again)
             .map_err(|e| source_error(path, e))?;
-        if Instant::now() >= deadline {
+        if crate::clock::now() >= deadline {
             return Err(source_timeout(Duration::from_millis(200)));
         }
         if bytes != again || file.identity()? != before || !file.validate_path()? {
@@ -279,7 +279,7 @@ fn stream(
     let mut buffer = [0; 16384];
     let mut size = 0u64;
     loop {
-        if Instant::now() >= deadline {
+        if crate::clock::now() >= deadline {
             return Err(source_timeout(budget));
         }
         let count = file.read(&mut buffer).map_err(|e| source_error(path, e))?;
@@ -293,7 +293,7 @@ fn stream(
         hash.update(&buffer[..count]);
         consume(&buffer[..count]);
     }
-    if Instant::now() >= deadline {
+    if crate::clock::now() >= deadline {
         return Err(source_timeout(budget));
     }
     if size != expected {

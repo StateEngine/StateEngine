@@ -1508,6 +1508,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "rusqlite",
+ "se-atlas",
  "se-types",
  "serde",
  "serde_json",

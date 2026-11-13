@@ -141,10 +141,11 @@ fn literals(source: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
 #[test]
 fn expired_sql_is_not_started_and_live_submillisecond_budget_is_positive()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _clock = crate::clock::pause();
     let mut db = Connection::open_in_memory()?;
     let entered = Cell::new(false);
     assert!(
-        finite(&mut db, Instant::now(), |_, _| {
+        finite(&mut db, crate::clock::now(), |_, _| {
             entered.set(true);
             Ok(())
         })
@@ -156,7 +157,7 @@ fn expired_sql_is_not_started_and_live_submillisecond_budget_is_positive()
         count: Cell::new(0),
         bytes: Cell::new(0),
         readonly: true,
-        deadline: Instant::now(),
+        deadline: crate::clock::now(),
     };
     let error = view
         .prepare("THIS IS INVALID SQL")
@@ -166,23 +167,15 @@ fn expired_sql_is_not_started_and_live_submillisecond_budget_is_positive()
         matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(_)),
         "SQL was prepared after the snapshot expired: {error}"
     );
-    for _ in 0..20 {
-        let _ = finite(
-            &mut db,
-            Instant::now() + Duration::from_micros(500),
-            |_, budget| {
-                assert!(
-                    budget > 0,
-                    "live SQL work was admitted with zero milliseconds"
-                );
-                entered.set(true);
-                Ok(())
-            },
-        );
-        if entered.get() {
-            break;
-        }
-    }
+    finite(
+        &mut db,
+        crate::clock::now() + Duration::from_micros(500),
+        |_, budget| {
+            assert_eq!(budget, 1, "live submillisecond work must round up");
+            entered.set(true);
+            Ok(())
+        },
+    )?;
     assert!(
         entered.get(),
         "no live submillisecond SQL callback was observed"
@@ -193,6 +186,7 @@ fn expired_sql_is_not_started_and_live_submillisecond_budget_is_positive()
 #[test]
 fn prepared_queries_and_writes_recheck_the_snapshot_deadline()
 -> Result<(), Box<dyn std::error::Error>> {
+    let _clock = crate::clock::pause();
     let db = Connection::open_in_memory()?;
     db.execute_batch("CREATE TABLE retained(value INTEGER)")?;
     let view = SqlView {
@@ -200,7 +194,7 @@ fn prepared_queries_and_writes_recheck_the_snapshot_deadline()
         count: Cell::new(0),
         bytes: Cell::new(0),
         readonly: false,
-        deadline: Instant::now() + Duration::from_millis(100),
+        deadline: crate::clock::now() + Duration::from_millis(100),
     };
     let mut write = view.prepare("INSERT INTO retained VALUES(1)")?;
     let mut one = view.prepare("SELECT 1")?;
@@ -208,7 +202,7 @@ fn prepared_queries_and_writes_recheck_the_snapshot_deadline()
     let mut lazy = lazy_statement.query([])?;
     let mut mapped_statement = view.prepare("SELECT 1")?;
     let mut mapped = mapped_statement.query_map([], |row| row.get::<_, i64>(0))?;
-    std::thread::sleep(Duration::from_millis(110));
+    crate::clock::advance(Duration::from_millis(110));
     assert!(
         lazy.next().is_err(),
         "lazy query executed its first step after expiry"

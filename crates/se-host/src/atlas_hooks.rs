@@ -20,7 +20,7 @@ pub fn owner_augment<R: Snapshot>(
     read: &mut R,
     admission: &Admission,
 ) -> Result<AtlasHookOutput> {
-    let Some(end) = input.deadline.filter(|end| *end > Instant::now()) else {
+    let Some(end) = input.deadline.filter(|end| *end > se_atlas::clock::now()) else {
         return Ok(AtlasHookOutput::default());
     };
     let result = with_owner_reader(
@@ -44,7 +44,7 @@ pub fn owner_augment<R: Snapshot>(
         stdout: result
             .ok()
             .map(|value| value.stdout)
-            .filter(|_| Instant::now() < end)
+            .filter(|_| se_atlas::clock::now() < end)
             .unwrap_or_default(),
     })
 }
@@ -54,7 +54,7 @@ pub fn augment(
     source: &RegisteredSource<crate::atlas_source::NativeAtlasSource>,
     input: &AtlasAugment,
 ) -> Result<AtlasHookOutput> {
-    let Some(end) = input.deadline.filter(|end| *end > Instant::now()) else {
+    let Some(end) = input.deadline.filter(|end| *end > se_atlas::clock::now()) else {
         return Ok(AtlasHookOutput::default());
     };
     let text = match &input.target {
@@ -62,7 +62,9 @@ pub fn augment(
         AtlasHookTarget::File(path) => outline(reader, source, &path.to_local()?, end)?,
     };
     Ok(AtlasHookOutput {
-        stdout: text.filter(|_| Instant::now() < end).unwrap_or_default(),
+        stdout: text
+            .filter(|_| se_atlas::clock::now() < end)
+            .unwrap_or_default(),
     })
 }
 fn encode(text: &str) -> Option<String> {
@@ -109,7 +111,7 @@ fn symbol(
     for caller in context.callers {
         add(&mut text, format!("caller {}", location(&caller)));
     }
-    Ok(encode(&text).filter(|_| Instant::now() < end))
+    Ok(encode(&text).filter(|_| se_atlas::clock::now() < end))
 }
 fn outline(
     reader: &mut QueryReader<'_, '_, '_>,
@@ -143,7 +145,7 @@ fn outline(
             format!("{}:{}", symbol.name, symbol.span.start.line),
         );
     }
-    Ok(encode(&text).filter(|_| Instant::now() < end))
+    Ok(encode(&text).filter(|_| se_atlas::clock::now() < end))
 }
 
 /// Classify only simple search tools and explicit single-file reads. Shell text

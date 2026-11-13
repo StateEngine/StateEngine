@@ -32,7 +32,7 @@ use std::{
     time::{Duration, Instant},
 };
 fn end() -> Instant {
-    Instant::now() + Duration::from_secs(5)
+    se_atlas::clock::now() + Duration::from_secs(5)
 }
 fn fail(e: impl std::fmt::Display) -> se_types::SeError {
     se_types::SeError::invalid("query fixture", &e.to_string())
@@ -73,6 +73,7 @@ fn outer_reader<'a, 'c, 'x>(
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
+    let _clock = se_atlas::clock::pause();
     let f = Fixture::new()?;
     let (mut direct, lease) = f.direct()?;
     direct.append(

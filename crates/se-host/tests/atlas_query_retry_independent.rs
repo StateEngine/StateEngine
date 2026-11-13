@@ -1,5 +1,5 @@
 //! Protects: the public Atlas adapter retries one expired read, never errors or writes.
-//! Real native SQLite; injected delays model preemption, not memory qualification.
+//! Real native SQLite; explicit clock advances model preemption, not memory qualification.
 use rusqlite::hooks::{AuthAction, Authorization, TransactionOperation};
 use se_atlas::{
     cache::{connection::*, *},
@@ -26,11 +26,11 @@ static CASE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Default)]
 struct Fault {
-    pauses: AtomicUsize,
-    paused_transaction: AtomicBool,
+    expiries: AtomicUsize,
+    expired_transaction: AtomicBool,
     selects: AtomicUsize,
     writes: AtomicUsize,
-    delay_count: AtomicUsize,
+    expiry_count: AtomicUsize,
     deny: AtomicBool,
     expire_write: AtomicBool,
 }
@@ -49,22 +49,22 @@ impl CacheFiles for ControlledCache {
                     operation: TransactionOperation::Begin
                 }
             ) {
-                fault.paused_transaction.store(false, Ordering::SeqCst);
+                fault.expired_transaction.store(false, Ordering::SeqCst);
             }
             if matches!(context.action, AuthAction::Select) {
                 fault.selects.fetch_add(1, Ordering::SeqCst);
                 if fault.deny.load(Ordering::SeqCst) {
                     return Authorization::Deny;
                 }
-                if !fault.paused_transaction.load(Ordering::SeqCst)
+                if !fault.expired_transaction.load(Ordering::SeqCst)
                     && fault
-                        .delay_count
+                        .expiry_count
                         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                         .is_ok()
                 {
-                    fault.paused_transaction.store(true, Ordering::SeqCst);
-                    fault.pauses.fetch_add(1, Ordering::SeqCst);
-                    std::thread::sleep(Duration::from_millis(250));
+                    fault.expired_transaction.store(true, Ordering::SeqCst);
+                    fault.expiries.fetch_add(1, Ordering::SeqCst);
+                    se_atlas::clock::advance(Duration::from_millis(250));
                 }
             }
             if matches!(
@@ -106,8 +106,8 @@ impl CacheFiles for ControlledCache {
     fn reserve_growth(&self, bytes: u64) -> se_types::Result<Box<dyn GrowthReservation + '_>> {
         if self.fault.expire_write.load(Ordering::SeqCst) {
             // Native write admission must finish before the injected expiry.
-            // Keep it slower than the former 50 ms fixture deadline.
-            std::thread::sleep(Duration::from_millis(150));
+            // Consume more than the former 50 ms fixture deadline.
+            se_atlas::clock::advance(Duration::from_millis(150));
         }
         self.native.reserve_growth(bytes)
     }
@@ -147,7 +147,7 @@ impl RecordReader for NoRecords {
 }
 // Native fixture creation has no product-latency assertion; query slices remain unchanged.
 fn end() -> Instant {
-    Instant::now() + Duration::from_secs(60)
+    se_atlas::clock::now() + Duration::from_secs(60)
 }
 enum Case {
     Once,
@@ -208,6 +208,7 @@ fn setup(state: IndexState) -> Result<Setup, Box<dyn std::error::Error>> {
 )]
 fn exercise(case: Case) -> Check {
     let _case = CASE_LOCK.lock().map_err(|_| "fixture lock poisoned")?;
+    let _clock = se_atlas::clock::pause();
     let (f, source, native, seed) = setup(IndexState::Current)?;
     let fault = native.fault.clone();
     let mut cache = CacheConnection::create(
@@ -221,7 +222,7 @@ fn exercise(case: Case) -> Check {
     if matches!(case, Case::Write) {
         fault.expire_write.store(true, Ordering::SeqCst);
         // This is a fixture admission budget, not the public read-slice limit.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = se_atlas::clock::now() + Duration::from_secs(5);
         let error = cache
             .write(1_000_000, deadline, |sql| {
                 let changed = sql
@@ -231,8 +232,9 @@ fn exercise(case: Case) -> Check {
                 assert_eq!(changed, 1, "native UPDATE did not execute");
                 // Expire the same write deadline only after real mutation, so
                 // generation zero below proves rollback rather than non-admission.
-                std::thread::sleep(
-                    deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(25),
+                se_atlas::clock::advance(
+                    deadline.saturating_duration_since(se_atlas::clock::now())
+                        + Duration::from_millis(25),
                 );
                 Ok(())
             })
@@ -275,7 +277,7 @@ fn exercise(case: Case) -> Check {
     )?
     .ok_or("published read-only epoch absent")?;
     fault.selects.store(0, Ordering::SeqCst);
-    fault.delay_count.store(
+    fault.expiry_count.store(
         match case {
             Case::Once => 1,
             Case::Twice => 2,
@@ -314,7 +316,7 @@ fn exercise(case: Case) -> Check {
                 return Err("output family mismatch".into());
             };
             assert!(present(output.value.answer.data)?.page.items().is_empty());
-            assert_eq!(fault.pauses.load(Ordering::SeqCst), 1);
+            assert_eq!(fault.expiries.load(Ordering::SeqCst), 1);
         }
         Case::Twice => {
             let error = answer.err().ok_or("repeated timeout was hidden")?;
@@ -327,7 +329,7 @@ fn exercise(case: Case) -> Check {
                 "repeated deadline has no retry delay: {error}"
             );
             assert_eq!(
-                fault.pauses.load(Ordering::SeqCst),
+                fault.expiries.load(Ordering::SeqCst),
                 2,
                 "read was retried other than once"
             );

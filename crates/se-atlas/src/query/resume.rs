@@ -36,7 +36,7 @@ impl QueryReader<'_, '_, '_> {
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
         self.cache
-            .read(Instant::now() + Duration::from_millis(5), |sql| {
+            .read(crate::clock::now() + Duration::from_millis(5), |sql| {
                 let snapshot = snapshot(&identity, &env, sql)?;
                 let mut output = ResumeCode {
                     index: snapshot.index.clone(),

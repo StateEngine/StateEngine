@@ -118,6 +118,7 @@ fn history_feed_filters_secrets_before_all_derivations_and_retries_immutably() -
         );
     }
     use se_types::code::*;
+    let _clock = se_atlas::clock::pause();
     let mut reader = se_atlas::query::QueryReader::new(
         &mut db,
         se_atlas::query::ReaderContext {

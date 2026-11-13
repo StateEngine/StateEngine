@@ -29,8 +29,11 @@ impl Reservation {
                 .checked_add(1)
                 .ok_or_else(|| cache_error("Atlas query arena waiter count exhausted"))?;
         }
+        let wait_deadline = crate::clock::wait_deadline(deadline);
+        let mut waited = false;
         while state.held || (!reader && state.readers != 0) {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            waited = true;
+            let remaining = wait_deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 if reader {
                     state.readers -= 1;
@@ -46,7 +49,7 @@ impl Reservation {
         if reader {
             state.readers -= 1;
         }
-        if Instant::now() >= deadline {
+        if crate::clock::now() >= deadline || (waited && Instant::now() >= wait_deadline) {
             READY.notify_all();
             return Err(timeout(0));
         }

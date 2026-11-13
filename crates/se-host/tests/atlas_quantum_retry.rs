@@ -39,7 +39,7 @@ impl CacheFiles for PausedCache {
             {
                 // Like scheduler preemption, this consumes the original
                 // allowance after enumeration has consumed the source entry.
-                std::thread::sleep(Duration::from_millis(250));
+                se_atlas::clock::advance(Duration::from_millis(250));
             }
             Authorization::Allow
         }))
@@ -72,11 +72,11 @@ impl CacheFiles for PausedCache {
     }
 }
 fn deadline() -> Instant {
-    Instant::now() + Duration::from_secs(5)
+    se_atlas::clock::now() + Duration::from_secs(5)
 }
 // Epoch construction includes durable filesystem setup, outside read/work slices.
 fn setup_deadline() -> Instant {
-    Instant::now() + Duration::from_secs(60)
+    se_atlas::clock::now() + Duration::from_secs(60)
 }
 #[test]
 #[expect(
@@ -84,6 +84,7 @@ fn setup_deadline() -> Instant {
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
+    let _clock = se_atlas::clock::pause();
     se_proc::initialize_file_creation_owner()?;
     let base = std::env::temp_dir().join(format!(
         "se-quantum-entry-{}-{}",
@@ -178,7 +179,7 @@ fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
             &mut db,
             &policy,
             &work,
-            Instant::now() + Duration::from_millis(200),
+            se_atlas::clock::now() + Duration::from_millis(200),
         ) {
             Ok(step) => {
                 assert!(!step.complete, "source entry completed before preemption");
@@ -210,7 +211,7 @@ fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
                 &mut db,
                 &policy,
                 &work,
-                Instant::now() + Duration::from_millis(200),
+                se_atlas::clock::now() + Duration::from_millis(200),
             )?
             .complete
         {

@@ -53,7 +53,7 @@ fn range(
     let mut statement = sql.prepare(query)?;
     let mut rows = statement.query([key]).map_err(cache_error)?;
     while let Some(row) = rows.next().map_err(cache_error)? {
-        if output.len() == limit || Instant::now() >= end {
+        if output.len() == limit || crate::clock::now() >= end {
             return Ok(true);
         }
         output.push(Edge {

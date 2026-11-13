@@ -13,7 +13,6 @@ use std::{
 };
 struct Delayed<'a> {
     native: &'a dyn LiveSource,
-    until: Instant,
     delayed: Cell<bool>,
 }
 impl AtlasSource for Delayed<'_> {
@@ -45,7 +44,6 @@ impl LiveSource for Delayed<'_> {
         }
         Ok(Some(Box::new(DelayedFile {
             inner,
-            until: self.until,
             first: true,
             observed: &self.delayed,
         })))
@@ -53,7 +51,6 @@ impl LiveSource for Delayed<'_> {
 }
 struct DelayedFile<'a> {
     inner: Box<dyn SourceFile + 'a>,
-    until: Instant,
     first: bool,
     observed: &'a Cell<bool>,
 }
@@ -62,7 +59,9 @@ impl Read for DelayedFile<'_> {
         if self.first {
             self.first = false;
             self.observed.set(true);
-            std::thread::sleep(self.until.saturating_duration_since(Instant::now()));
+            // Cross the source-scan allowance while leaving time to finalize
+            // the same SQL snapshot and emit its continuation.
+            se_atlas::clock::advance(Duration::from_millis(960));
         }
         self.inner.read(bytes)
     }
@@ -91,7 +90,6 @@ pub(super) fn delayed_scan(
 ) -> Result<FindQuery, Box<dyn std::error::Error>> {
     let delayed = Delayed {
         native: source,
-        until: Instant::now() + Duration::from_millis(960),
         delayed: Cell::new(false),
     };
     let mut reader = QueryReader::new(

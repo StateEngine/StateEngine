@@ -392,6 +392,7 @@ mod native {
         use se_types::code::{
             AtlasValidation, FindQuery, SearchKind, SearchMode, SearchOrder, SearchScope,
         };
+        let _clock = se_atlas::clock::pause();
         let mut reader = se_atlas::query::QueryReader::new(
             &mut current.connection,
             se_atlas::query::ReaderContext {

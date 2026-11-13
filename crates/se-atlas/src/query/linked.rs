@@ -54,7 +54,7 @@ pub(super) fn for_file(
     let mut used = 0;
     let mut scanned = 0;
     while let Some(row) = rows.next().map_err(cache_error)? {
-        if scanned == 512 || Instant::now() >= end {
+        if scanned == 512 || crate::clock::now() >= end {
             output.more = true;
             break;
         }
