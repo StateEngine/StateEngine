@@ -25,6 +25,7 @@ pub enum McpReply {
 
 /// What a transport supplies. Both methods authenticate the capability
 /// themselves on every call; the consumer never caches a grant.
+#[derive(Clone)]
 pub struct McpPrincipal {
     pub project: se_types::ProjectId,
     pub agent: se_types::AgentId,
@@ -53,8 +54,8 @@ pub trait McpBackend {
         operation: se_core::ops::AnyOp,
     ) -> impl Future<Output = Result<Value>> + Send;
     /// A current authenticated principal, never selected by tool arguments.
-    /// The stdio bridge uses its existing session-only status IPC operation;
-    /// HTTP can return the principal directly from its credential admission.
+    /// The stdio bridge memoizes one authenticated identity read per
+    /// capability; HTTP returns the principal from its credential admission.
     fn bound_principal(
         &mut self,
         capability: Arc<Secret>,
