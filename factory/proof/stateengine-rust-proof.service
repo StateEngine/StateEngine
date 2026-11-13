@@ -7,5 +7,5 @@ UMask=0077
 ExecStart=/usr/bin/python3 %h/.local/lib/stateengine-rust-proof/nightly.py --config %h/.config/stateengine-rust-proof/config.json
 ExecStopPost=/usr/bin/python3 %h/.local/lib/stateengine-rust-proof/nightly.py --config %h/.config/stateengine-rust-proof/config.json --service-exit
 TimeoutStartSec=6h
-TimeoutStopSec=60
+TimeoutStopSec=240
 KillMode=control-group

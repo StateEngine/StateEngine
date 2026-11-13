@@ -37,6 +37,7 @@ pub(super) fn flushed(
     for record in &page.records {
         if let RemoteWatchRecord::Provisional {
             target,
+            cursor,
             item,
             observation,
             ..
@@ -54,7 +55,7 @@ pub(super) fn flushed(
             line(
                 &serde_json::json!({
                     "schema":"stateengine.client-flush/v1","boundary":"provisional_flushed",
-                    "target":target,"item_id":item.item_id,
+                    "target":target,"cursor":cursor,"item_id":item.item_id,
                     "producer_to_flush_estimate_us":estimate,
                     "clock_estimate_available":estimate.is_some(),
                     "clock_model":"unsynchronized_monotonic_estimate",

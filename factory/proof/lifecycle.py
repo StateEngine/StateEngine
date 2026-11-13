@@ -23,6 +23,13 @@ def plan(config):
     for index, (surface, selection) in enumerate(config["probes"]):
         rows.append({"platform": "linux", "surface": surface, "selection": selection,
                      "output": f"{index + 1}-{surface}-{selection}", "exit": None, "state": "planned"})
+    if not config.get("native_only"):
+        remote = config.get("remote", {})
+        if not isinstance(remote, dict):
+            remote = {}
+        rows.append({"platform": "linux", "surface": remote.get("surface", "claude"),
+                     "selection": "remote", "output": "remote-journey", "exit": None,
+                     "state": "planned", "remote_probe": True})
     for probe in config.get("native_receipts", []):
         if probe.get("platform") not in {"win32", "darwin"} or probe.get("surface") != "claude" or probe.get("selection") != "wave-2":
             raise ValueError("native receipts require a native platform and Claude wave-2 scope")

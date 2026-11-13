@@ -5,7 +5,8 @@ its `rust-v1` command map. It adds no product assertions and does not replace th
 judge's verdicts or thresholds. Product and judge Git revisions, map and file
 hashes, native release identity, raw output and every first failure are retained.
 
-Install `nightly.py`, `lifecycle.py`, `native.py` and `report.py` together, and use the supplied user service and
+Install `nightly.py`, `lifecycle.py`, `native.py`, `report.py`, `remote_journey.py`,
+`remote_credentials.py`, `remote_process.py`, `remote_recovery.py` and `remote_report.py` together, and use the supplied user service and
 timer. The service runs outside managed agent trees; fixture environment isolation
 does not change ancestry or bypass owner guards. The adapter refuses a fleet or
 session environment. It checks for 34 GiB available before building or starting a
@@ -33,7 +34,8 @@ The configuration names absolute `state`, `product_git`, `judge_git`, `node` and
   "node": "/opt/judge-runtime/bin/node",
   "auth_home": "/srv/proof/native-login",
   "prerequisite_paths": ["/opt/judge-runtime/bin", "/opt/native-clis/bin"],
-  "probes": [["codex", "first-hour"], ["claude", "wave-2"]]
+  "probes": [["codex", "first-hour"], ["claude", "wave-2"]],
+  "remote": {"destination": "remote-proof", "surface": "claude"}
 }
 ```
 
@@ -113,3 +115,76 @@ as drivers; child compilers do not count as additional builds. The census names
 its sequential observation and language limits and retains unreadable PIDs, so
 an incomplete census is not an assertion that the box was idle. Endpoint snapshots
 provide load context, not a claim about contention during every individual sample.
+
+Every local nightly plans a separate remote row. A missing `remote.destination`,
+an unavailable SSH account or a failed provider login fails that row; it never
+quietly removes remote coverage. Native-receipt-only attempts retain their own
+platform scope and do not plan this Linux journey.
+
+This journey requires `se` built with `--features remote`. The nightly's pinned
+release builder selects that feature from `scripts/release/inputs.json` and uses
+the distribution profile. A supplied `--prepared-build` must carry the same
+feature in its release metadata. Use a release image for the native transfer;
+the larger debug image was not qualified for the SSH bootstrap deadline.
+
+`remote.destination` is an existing SSH alias for a disposable Linux account
+registered by an administrator with `scripts/ci/installation_account.py`. The
+alias must permit batch SSH, file transfer and loopback forwarding. A loopback
+connection to a separate OS account exercises the transport without claiming a
+second physical machine. The runner checks the native account registration,
+holds a destination-wide fixture lock, stages the selected native `se` and
+provider executables, and creates a fresh project for each attempt. Its launch
+uses SSH and the public `se launch` command. It does not grant an agent remote
+launch authority. Set `remote.provider_executable` when the provider's native
+Linux executable is outside `prerequisite_paths`; script wrappers are refused.
+The destination also requires Python 3.11 or later.
+
+Remote runs currently use the Claude surface and require an explicit absolute
+`automation_tokens.claude` file outside the login user's native home directory.
+Provision a dedicated long-lived automation token there with mode 600; the runner
+never reads or copies the operator's login files. The file contains the raw token,
+not a JSON credential store. For example:
+
+```json
+"automation_tokens": {"claude": "/srv/proof/automation/claude-token"}
+```
+
+The runner sends the token over SSH stdin to a fixed wrapper, which places it in
+`CLAUDE_CODE_OAUTH_TOKEN` before executing `se`. The host retains this provider
+credential in memory. Claude and SE Code children inherit its supported login
+environment; Codex uses its own allow-list and does not receive this token.
+The token is absent from argv,
+command metadata and the recovery journal. Destination scans before and after the
+journey require `.claude/.credentials.json` and `.codex/auth.json` to be absent;
+incumbent files are refused and never replaced. Source inode and digest are checked
+again after process and runtime closure.
+
+SIGTERM and SIGINT enter bounded cleanup. A private recovery journal in the source
+user's state directory records ownership before starting a runtime; the next run,
+under the same destination lock, retries only that attempt's cleanup before doing
+new work. Set `remote.recovery_directory` to keep that journal elsewhere. Unproven
+stops retain a leftover record and fail the run. Recovery records whether the old
+token source changed or is unavailable, but its inode/digest comparison cannot block
+process cleanup after rotation. The destination credential-file scan still runs.
+The dedicated destination account
+must not be used for ordinary work. Codex remote automation-token coverage is not
+part of this probe.
+The runner retains source and destination project data and executable copies for
+inspection; the operator's existing evidence-retention policy owns their removal.
+
+`remote-journey/remote.json` and both raw command pipes retain each observation.
+The remote grid requires an actual provisional assistant reply, a durable commit
+receipt for the sent message, a provisional assistant response to that message,
+and the original session/lifecycle after reconnect. Assistant-reply durability is
+not asserted. Cleanup
+checks the public stop receipt and reads the stopped PID back through a separate
+SSH process. Attach includes explicit connection setup through the first watch
+snapshot; pending echo runs from process invocation to observed provisional
+stderr; reconnect includes the resumed snapshot and original-session readback.
+Live output uses `remote watch --measure`'s producer-to-stdout-flush clock estimate,
+retaining its `unqualified` label and source clock bracket. Each measured value
+carries `n=1`; unavailable values carry `n=0`. These are single-attempt samples, not p95 or
+budget certifications. Missing clock evidence stays NOT MEASURED and fails the
+overall attempt without erasing otherwise witnessed remote behavior.
+Windows remote journeys and physical-machine qualification
+are outside this Linux scope.
