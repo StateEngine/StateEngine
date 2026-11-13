@@ -2,6 +2,7 @@
 import re
 import threading
 
+from box_result import FAIL_TESTS, details
 from engine import Container, capacity
 from transport import execute, WorkloadFailure
 
@@ -81,6 +82,7 @@ class Cohort:
         self.report, self.journal, self.source = report, journal, source
         self.cache, self.output, self.canceled = cache, output, canceled
         self.containers, self.outcomes, self.active = [], {}, set()
+        self.failed = []
         self.lock = threading.Lock()
         self.box = None
 
@@ -132,6 +134,10 @@ class Cohort:
                          0 if result["success"] else 1)
             with self.lock:
                 self.outcomes[name] = row
+                if row["exit"] != 0:
+                    # Only the failing test names and first assertion lines; the
+                    # stage log itself never leaves the container boundary.
+                    self.failed.extend(details((folder / "job.log").read_text(errors="replace")))
             return row["exit"] == 0
         except WorkloadFailure:
             with self.lock:

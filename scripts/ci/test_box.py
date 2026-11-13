@@ -93,3 +93,55 @@ class Box(unittest.TestCase):
         self.assertFalse(box.eligible(env, {"pull_request": {"head": {"repo": {"full_name": env["GITHUB_REPOSITORY"], "fork": True}}}}))
         self.assertFalse(box.eligible({**env, "GITHUB_EVENT_NAME": "workflow_dispatch"}, {}))
         self.assertFalse(box.eligible({**env, "BOX_CI_ENABLED": "false"}, {}))
+
+    def test_failing_test_names_reach_the_reader_summary(self):
+        # The exact shape nextest prints, including a progress repaint between
+        # the FAIL line and the panic line, which adjacency pairing got wrong.
+        log = "\n".join([
+            "        FAIL [   0.013s] (2/2) se-types::probe probe_one",
+            "  stdout \u2500\u2500\u2500",
+            "    test probe_one ... FAILED",
+            "  stderr \u2500\u2500\u2500",
+            "    thread 'probe_one' (1917046) panicked at crates/x/tests/p.rs:3:5:",
+            "    assertion `left == right` failed: first",
+            "      left: 1",
+            "     right: 2",
+            "        FAIL [   0.011s] (1/2) se-types::probe probe_two",
+            "    thread 'probe_two' (1917045) panicked at crates/x/tests/p.rs:7:5:",
+            "    second",
+            "     Summary [   0.014s] 2 tests run: 0 passed, 2 failed, 0 skipped",
+        ])
+        found = wire.details(log)
+        self.assertEqual(found, [
+            "se-types::probe probe_one at crates/x/tests/p.rs:3:5: "
+            "assertion `left == right` failed: first",
+            "se-types::probe probe_two at crates/x/tests/p.rs:7:5: second",
+        ])
+        values = stages()
+        values["test-1"]["exit"] = 1
+        report = wire.report(B, 7, IMAGE, "d"*64, "failed", values, found)
+        row = check("completed", "failed")
+        row["output"]["summary"] = wire.text(report)
+        summary = row["output"]["summary"]
+        self.assertTrue(summary.startswith("{"))
+        self.assertIn("Failing tests:", summary)
+        self.assertIn("se-types::probe probe_one at crates/x/tests/p.rs:3:5", summary)
+        api = Mock(); api.checks.return_value = [row]
+        self.assertEqual(box.wait(api, B, 9, seconds=0), "failed")
+
+    def test_failure_detail_is_bounded_and_says_when_it_stops(self):
+        many = "\n".join(f"        FAIL [   0.0s] (1/1) se-x::t test_{n:02d}" for n in range(60))
+        found = wire.details(many)
+        self.assertEqual(len(found), wire.FAIL_TESTS)
+        self.assertEqual(found[-1], "(further failures omitted)")
+        self.assertLessEqual(len(json.dumps(found).encode()), wire.FAIL_BYTES)
+        long = ("        FAIL [   0.0s] (1/1) se-x::t t\n"
+                "    thread 't' (1) panicked at a.rs:1:1:\n" + "x" * 5000)
+        item = wire.details(long)[0]
+        self.assertLessEqual(len(item), wire.FAIL_BYTES)
+        with self.assertRaises(ValueError):
+            wire.report(B, 7, IMAGE, "d"*64, "failed", stages(), ["x" * 5000])
+        with self.assertRaises(ValueError):
+            wire.report(B, 7, IMAGE, "d"*64, "failed", stages(), ["y"] * 21)
+        with self.assertRaises(ValueError):
+            wire.report(B, 7, IMAGE, "d"*64, "failed", stages(), ["two\nlines"])
