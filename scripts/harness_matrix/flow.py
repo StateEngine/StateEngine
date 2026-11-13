@@ -78,8 +78,7 @@ class Smoke:
             seen.add(cursor)
         raise RuntimeError(label + ': paging bound reached')
 
-    def reply(self, token):
-        deadline = time.monotonic() + self.settings.get('task_seconds', 240)
+    def reply(self, token, deadline):
         while time.monotonic() < deadline:
             rows = self.pages(['msg', 'list', '--all', '--full', '--limit', '100'], 'messages')
             found = [row for row in rows if row.get('from', {}).get('id') == self.agent
@@ -92,7 +91,7 @@ class Smoke:
             time.sleep(.5)
         raise RuntimeError('Authenticated owner reply was not observed before the task deadline')
 
-    def captured(self, token, previous=None):
+    def captured(self, token, previous=None, deadline=None):
         shown = self.call(['agent', 'show', self.agent], 'agent-show')
         row = shown.get('agent', {}).get('value')
         require(shown.get('agent', {}).get('state') == 'present' and row
@@ -107,14 +106,21 @@ class Smoke:
             require(conversation == previous['conversation'] and session != previous['session'],
                     'Resume changed the provider conversation or reused the managed session')
         self.commands.observer.observe(row['session']['process']['pid'])
-        deadline = time.monotonic() + self.settings.get('task_seconds', 240)
+        if deadline is None:
+            deadline = time.monotonic() + self.settings.get('task_seconds', 240)
         while time.monotonic() < deadline:
             rows = self.pages(['history', '--agent', self.agent, '--kind', 'session.turn',
                                '--limit', '100'], 'history')
             matching = [event for event in rows if event.get('payload', {}).get('role') == 'assistant'
                         and event['payload'].get('provider_session') == conversation
                         and event['payload'].get('session_id') == session
-                        and token in event['payload'].get('body', {}).get('text', '')]
+                        and token in self.assistant_text(event['payload'].get('body', {}).get('text', ''))]
+            if matching and self.settings['provider'] == 'secode':
+                native = self.call(['agent', 'show', self.agent], 'completion-status')['agent']['value'].get('secode_runtime', {})
+                require(native.get('state') == 'present' and type(native.get('value', {}).get('active')) is bool,
+                        'Native execution completion is unreadable')
+                if native['value']['active']:
+                    matching = []
             if matching:
                 for event in matching:
                     body = event['payload']['body']
@@ -126,6 +132,34 @@ class Smoke:
             time.sleep(.5)
         raise RuntimeError('Complete canonical assistant capture was not observed')
 
+    def assistant_text(self, text):
+        if self.settings['provider'] != 'secode':
+            return text
+        parts = json.loads(text)
+        require(isinstance(parts, list) and all(isinstance(part, dict) for part in parts),
+                'Native assistant parts are unreadable')
+        return '\n'.join(part['text'] for part in parts
+                         if part.get('type') == 'text' and isinstance(part.get('text'), str))
+
+    def file_turn(self, token, filename, expected, previous=None):
+        deadline = time.monotonic() + self.settings.get('task_seconds', 240)
+        observation = dict(state='absent')
+        while time.monotonic() < deadline:
+            try:
+                with (self.repository / filename).open('rb') as stream:
+                    observed = stream.read(len(expected) + 1)
+                observation = dict(state='present', prefix_bytes=len(observed))
+                if observed == expected:
+                    break
+            except FileNotFoundError:
+                observation = dict(state='absent')
+            time.sleep(.5)
+        else:
+            raise RuntimeError(filename + ' did not match before deadline: ' + json.dumps(observation))
+        capture = self.captured(token, previous, deadline)
+        return dict(capture=capture, expected_sha256=hashlib.sha256(expected).hexdigest(),
+                    file_sha256=hashlib.sha256(observed).hexdigest())
+
     def phase(self, name, operation):
         started = time.monotonic()
         self.record['phases'][name] = dict(state='running', result='NOT RUN')
@@ -135,7 +169,7 @@ class Smoke:
             self.record['phases'][name] = dict(state='finished', result='PASS', evidence=value,
                                                elapsed_seconds=time.monotonic() - started)
             return value
-        except Exception as error:
+        except BaseException as error:
             self.record['phases'][name].update(state='finished', result='FAIL', reason=str(error),
                                                elapsed_seconds=time.monotonic() - started)
             raise
@@ -186,23 +220,23 @@ class Smoke:
                     'Launch permission profile differs from the explicit selection')
             self.commands.observer.observe(launched['process']['pid'])
             return launched
-        self.phase('Launch', launch)
+        launched = self.phase('Launch', launch)
 
-        def work_turn():
-            capture = self.captured(work)
-            expected = (work + '\n').encode()
-            require((self.repository / 'work.txt').read_bytes() == expected, 'Real work bytes differ')
-            return dict(capture=capture,
-                        expected_sha256=hashlib.sha256(expected).hexdigest(),
-                        file_sha256=digest(self.repository / 'work.txt'))
-        first = self.phase('Work', work_turn)['capture']
+        first = dict(conversation=launched['conversation_id'], session=launched['session_id'])
+        try:
+            self.phase('Work', lambda: self.file_turn(work, 'work.txt', (work + '\n').encode()))
+        except Exception as error:
+            self.record['failure'] = 'Work: ' + str(error)
+            self.diagnostics()
 
         def mail_turn():
+            deadline = time.monotonic() + self.settings.get('task_seconds', 240)
             sent = self.call(['msg', 'send', self.agent, 'Send a StateEngine done reply to owner '
                               f'containing exactly {mail}.', '--kind', 'question'], 'send')
             require(sent.get('state') == 'committed' and sent.get('message_id'),
                     'Mail has no witnessed committed identity')
-            return dict(sent=sent['message_id'], replies=self.reply(mail), capture=self.captured(mail))
+            return dict(sent=sent['message_id'], replies=self.reply(mail, deadline),
+                        capture=self.captured(mail, deadline=deadline))
         try:
             self.phase('Mail', mail_turn)
         except Exception as error:
@@ -229,12 +263,7 @@ class Smoke:
                       'followed by a newline to resumed.txt, read it back, and reply '
                       f'containing {recall}.')
             self.commands.run([*argv, '--task', prompt], 'public-resume', terminal=True)
-            capture = self.captured(recall, first)
-            expected = (secret + '\n').encode()
-            require((self.repository / 'resumed.txt').read_bytes() == expected, 'Conversation recall differs')
-            return dict(capture=capture,
-                        expected_sha256=hashlib.sha256(expected).hexdigest(),
-                        file_sha256=digest(self.repository / 'resumed.txt'))
+            return self.file_turn(recall, 'resumed.txt', (secret + '\n').encode(), first)
         self.phase('Resume', resume_turn)
 
     def diagnostics(self):
