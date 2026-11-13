@@ -14,7 +14,10 @@ pub(super) fn native(error: se_proc::StateFileError) -> SeError {
     let path = &error.path;
     let next = if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
         "Set CODEX_HOME (Codex) or CLAUDE_CONFIG_DIR (Claude Code) to the directory containing the real configuration file, or replace the symbolic link with a regular file; then retry the original command.".into()
-    } else if error.operation == "require owner-only native regular file/directory" {
+    } else if error.operation == "require owner-only native regular file/directory"
+        || (error.code == se_proc::StateFileErrorCode::LocationUnsafe
+            && error.operation.contains("DACL"))
+    {
         #[cfg(unix)]
         {
             format!(
@@ -24,7 +27,7 @@ pub(super) fn native(error: se_proc::StateFileError) -> SeError {
         }
         #[cfg(windows)]
         {
-            "In the directory's Security properties, disable inherited access and allow only your account; then retry the original command.".into()
+            "In this path's Advanced Security properties, disable inheritance, remove other accounts' access, and grant full control to your account and SYSTEM; then retry the original command.".into()
         }
     } else {
         "Restore access to this exact provider settings path, keeping regular files and directories in place of links; then retry the original command.".into()
