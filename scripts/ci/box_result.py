@@ -22,15 +22,25 @@ FAIL_LINE = re.compile(r"^\s*FAIL \[[^\]]*\] \([^)]*\) (\S+) (\S+)\s*$")
 # always adjacent (the progress renderer repaints), so the test name, not
 # adjacency, is what pairs a message with its test.
 PANIC_LINE = re.compile(r"^\s*thread '([^']*)'(?: \([^)]*\))? panicked at ([^:]+:\d+:\d+):\s*$")
-# Published text leaves the machine, and this repository is public. A failing
-# test's own message can carry machine identity, boot ids, temp roots and
-# fixture output, so only the test name and its source location are published.
+# Published text leaves the machine, and this repository is public: it carries
+# no absolute path, no credential-shaped token, no machine or actor identity.
+# A failing test's message is its own host's output and can hold any of them.
 NO_ID = [
+    # Any absolute POSIX path, whatever its root: /home, /mnt, /var/lib, /tmp.
+    (re.compile(r"(?<![\w.])/(?:[^\s/\"'<>]+/)*[^\s/\"'<>]*"), "<path>"),
+    # Any absolute Windows path, with one or more separators.
+    (re.compile(r"[A-Za-z]:\\(?:[^\s\\\"'<>]+\\)*[^\s\\\"'<>]*"), "<path>"),
+    # Credential-shaped tokens.
+    (re.compile(r"\b(?:ghs_|ghp_|gho_|ghu_|ghr_|github_pat_)[A-Za-z0-9_]+"), "<redacted>"),
+    (re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.I), "Bearer <redacted>"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "<redacted>"),
+    # Long hex is a digest, key or id, never a test name; test names are
+    # published verbatim, so no rule may swallow word-shaped identifiers.
+    (re.compile(r"\b[0-9a-f]{32,}\b", re.I), "<redacted>"),
     (re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I), "<id>"),
     (re.compile(r"\bboot_id: \[[^\]]*\]"), "boot_id <id>"),
     (re.compile(r"MachineId\([^)]*\)"), "MachineId(<id>)"),
-    (re.compile(r"(?<![\w.])/(?:tmp|var/tmp|dev/shm)/\S+"), "<path>"),
-    (re.compile(r"[A-Za-z]:\\\\[^\s\"']+"), "<path>"),
+    (re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b"), "<email>"),
 ]
 
 
@@ -59,11 +69,13 @@ def report(identity, check_id, image, policy, status, stages=None, failed=None):
     value = dict(schema=SCHEMA, binding=identity, check_id=check_id, image=image,
                  policy=policy, status=status, stages=stages or {})
     # Shards are capped one at a time and concatenated here, so the cap that
-    # counts is this one. The outcome outranks its decoration: if the detail
-    # cannot be bounded, it is dropped and the status still publishes.
+    # counts is this one. bounded() scrubs each entry it keeps, so nothing is
+    # scrubbed that the cap would have dropped. The outcome outranks its
+    # decoration: if the detail cannot be bounded, it is dropped and the status
+    # still publishes.
     if failed:
         try:
-            value["failures"] = bounded([scrub(str(item)) for item in failed])
+            value["failures"] = bounded(failed)
         except Exception:
             value["failures"] = ["(failure detail unavailable)"]
     validate(value, identity, check_id)
@@ -116,8 +128,8 @@ def details(text):
     renderer can separate the two.
 
     The first message line is kept because it is what tells a reader what
-    broke, but it is scrubbed of machine identity and temp paths first: this
-    repository is public.
+    broke, but it is scrubbed before it is published: this repository is
+    public.
     """
     text = ANSI.sub("", text)
     order, seen = [], set()
@@ -140,7 +152,7 @@ def details(text):
                 where.setdefault(name, match.group(2))
                 for follow in lines[index + 1:index + 4]:
                     if follow.strip():
-                        message.setdefault(name, scrub(follow.strip()))
+                        message.setdefault(name, follow.strip())
                         break
                 break
     return bounded([
@@ -154,27 +166,38 @@ def bounded(items):
     """Keep the published list inside its bounds, and say when it stopped.
 
     A cap that silently drops the tail would report a smaller failure than the
-    one that happened, so the cut carries its own marker. Nothing here raises:
-    a report that cannot be bounded must still publish the outcome.
+    one that happened, so the cut carries its own marker.
+
+    The work is bounded by the cap, not by the input: an item is cut to its
+    byte budget before it is scrubbed, and only the entries that can fit are
+    touched at all. A 1 MB stage log therefore costs the same as a small one.
+    Nothing here raises: a report that cannot be bounded must still publish its
+    outcome.
     """
-    kept = []
+    kept, size, cut = [], 2, False
     for index, item in enumerate(items):
-        # One entry is one line: a newline in the source would break the shape
-        # the reader and the human both rely on.
-        item = " ".join(str(item).split())
-        if len(item.encode()) > LOCATE_BYTES:
-            item = item.encode()[:LOCATE_BYTES].decode("utf-8", "replace")
         if len(kept) >= FAIL_TESTS - 1 or index >= FAIL_TESTS:
-            kept.append("(further failures omitted)")
+            cut = True
             break
-        try:
-            size = len(json.dumps(kept + [item]).encode())
-        except (TypeError, ValueError):
-            break
-        if size > FAIL_BYTES:
-            kept.append("(further failures omitted)")
+        # One entry is one line: a newline in the source would break the shape
+        # the reader and the human both rely on. The input is cut to a small
+        # multiple of the byte budget before any work, so a 1 MB item costs
+        # the same as a short one. A lone surrogate cannot be encoded at all,
+        # so it is replaced before it reaches the wire.
+        text = str(item)
+        if len(text) > LOCATE_BYTES * 4:
+            text = text[:LOCATE_BYTES * 4]
+        item = " ".join(text.split()).encode("utf-8", "replace")[:LOCATE_BYTES]
+        item = scrub(item.decode("utf-8", "replace"))[:LOCATE_BYTES]
+        # A separator plus the item, quoted, is the exact JSON growth.
+        added = len(json.dumps(item).encode()) + 1
+        if size + added > FAIL_BYTES:
+            cut = True
             break
         kept.append(item)
+        size += added
+    if cut:
+        kept.append("(further failures omitted)")
     return kept
 
 
