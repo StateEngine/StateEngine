@@ -167,7 +167,9 @@ pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
             .ok_or("confirmed capture natural keys")?;
         assert_eq!(keys.len(), 1);
         let natural = keys[0].as_str().ok_or("confirmed natural key string")?;
-        assert!(natural.contains(case.conversation.as_str()) && natural.contains("se-test-record-4"));
+        assert!(
+            natural.contains(case.conversation.as_str()) && natural.contains("se-test-record-4")
+        );
         verify_capture(f, case.source, 4, committed + fourth.len() as u64 + 1)?;
         let independent = ipc::forward(
             &ready.endpoint,
