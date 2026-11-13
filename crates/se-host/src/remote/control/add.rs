@@ -18,33 +18,9 @@ impl Control {
     ) -> Result<serde_json::Value> {
         self.security.owner(&owner)?;
         let _configure = self.configure.lock().await;
-        let records = self.records.clone();
-        let name = alias.clone();
-        let prior = router
-            .execution
-            .blocking
-            .run_owned(deadline, move || match records.read(&name)? {
-                Read::Absent { .. } => Ok(None),
-                read => se_core::scope::require_present(
-                    read,
-                    "saved machine",
-                    "Restore readable protected custody; unreadable setup is never replaced.",
-                )
-                .map(Some),
-            })
+        let prior = self
+            .check_add(router, &destination, &alias, deadline)
             .await?;
-        if let Some(prior) = &prior
-            && prior
-                .binding
-                .forward
-                .as_ref()
-                .is_none_or(|f| f.destination != destination)
-        {
-            return Err(SeError::invalid(
-                "saved machine",
-                "its original SSH destination; explicitly forget the old connection before choosing another",
-            ));
-        }
         // Explicit setup may renew an expired session through authorized SSH.
         // Ordinary agent calls never create or restore machine authority.
         let (session, command) =
@@ -240,5 +216,41 @@ impl Control {
         Ok(
             serde_json::json!({"state":if forget {"forgotten"} else {"disconnected"},"name":alias,"remote_host_stopped":false}),
         )
+    }
+    pub(super) async fn check_add(
+        &self,
+        router: &crate::HostedRouter,
+        destination: &str,
+        alias: &str,
+        deadline: &crate::client::lease::Deadline,
+    ) -> Result<Option<bindings::BindingRecord>> {
+        let records = self.records.clone();
+        let name = alias.to_owned();
+        let prior = router
+            .execution
+            .blocking
+            .run_owned(deadline, move || match records.read(&name)? {
+                Read::Absent { .. } => Ok(None),
+                read => se_core::scope::require_present(
+                    read,
+                    "saved machine",
+                    "Restore readable protected custody; unreadable setup is never replaced.",
+                )
+                .map(Some),
+            })
+            .await?;
+        if let Some(prior) = &prior
+            && prior
+                .binding
+                .forward
+                .as_ref()
+                .is_none_or(|f| f.destination != destination)
+        {
+            return Err(SeError::invalid(
+                "saved machine",
+                "its original SSH destination; explicitly forget the old connection before choosing another",
+            ));
+        }
+        Ok(prior)
     }
 }

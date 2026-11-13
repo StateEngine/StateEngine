@@ -5,11 +5,23 @@ use se_core::{scope, store_error::store_error};
 use se_host::client::{ClientOptions, lease::Deadline};
 use se_types::{Result, SeError};
 use std::sync::Arc;
+pub(crate) fn execute(cx: &Bootstrap, input: Input) -> Result<se_host::OperationOutput> {
+    execute_with_cancel(
+        cx,
+        input,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-pub(crate) fn execute(cx: &Bootstrap, input: Input) -> Result<se_host::OperationOutput> {
+pub(crate) fn execute_with_cancel(
+    cx: &Bootstrap,
+    input: Input,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<se_host::OperationOutput> {
     if cx.session.is_some() {
         return Err(SeError::invalid(
             "remote authority control",
@@ -84,7 +96,8 @@ pub(crate) fn execute(cx: &Bootstrap, input: Input) -> Result<se_host::Operation
     let input = input.resolve();
     input.validate()?;
     drop(reader);
-    let options = execute::options();
+    let mut options = execute::options();
+    options.cancelled = cancelled;
     let bound = Deadline::from_options(&options)?;
     #[cfg(any(target_os = "linux", windows))]
     let mut diagnostic = |_: &str| Ok(());

@@ -9,6 +9,7 @@ use std::{
     path::PathBuf,
 };
 struct Host;
+mod pair;
 
 impl se_remote_cli::OwnerCommands for Host {
     type Context = crate::bootstrap::Bootstrap;
@@ -24,8 +25,9 @@ impl se_remote_cli::OwnerCommands for Host {
         &self,
         context: &Self::Context,
         input: Input,
+        progress: &mut dyn FnMut(se_host::remote::ssh::ImageProgress) -> Result<()>,
     ) -> Result<se_host::OperationOutput> {
-        crate::route::remote_owner::execute(context, input)
+        pair::execute(context, input, progress)
     }
 }
 impl se_remote_cli::Presentation for Host {
