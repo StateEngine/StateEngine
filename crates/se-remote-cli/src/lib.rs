@@ -1,4 +1,5 @@
 //! Native human controls use a separate IPC branch, never a core/MCP data verb.
+#![cfg(feature = "remote")]
 use clap::ArgMatches;
 use se_core::ops::{AnyOp, AnyOutput, HelpOutput, Validate};
 use se_host::remote::OwnerInput;
@@ -8,25 +9,27 @@ use std::{
     io::{self, Write},
 };
 mod grammar;
-pub(crate) enum Input {
+mod ports;
+pub use ports::{OwnerCommands, Presentation};
+pub enum Input {
     Ready(OwnerInput),
 }
 impl Input {
-    pub(crate) fn is_bootstrap(&self) -> bool {
+    pub fn is_bootstrap(&self) -> bool {
         matches!(self, Self::Ready(OwnerInput::Bootstrap { .. }))
     }
-    pub(crate) fn requires_terminal(&self) -> bool {
+    pub fn requires_terminal(&self) -> bool {
         match self {
             Self::Ready(input) => input.requires_terminal(),
         }
     }
-    pub(crate) fn resolve(self) -> OwnerInput {
+    pub fn resolve(self) -> OwnerInput {
         match self {
             Self::Ready(input) => input,
         }
     }
 }
-pub(crate) fn help(operation: &AnyOp) -> Option<AnyOutput> {
+pub fn help(operation: &AnyOp) -> Option<AnyOutput> {
     let AnyOp::MetaHelp(input) = operation else {
         return None;
     };
@@ -47,19 +50,22 @@ pub(crate) fn help(operation: &AnyOp) -> Option<AnyOutput> {
         .into(),
     )
 }
-pub(crate) fn entry(args: &[OsString]) -> Option<io::Result<u8>> {
+pub fn entry<H: OwnerCommands + Presentation>(
+    args: &[OsString],
+    host: &H,
+) -> Option<io::Result<u8>> {
     // A cheap candidate filter avoids constructing optional control grammar
     // for ordinary local CLI reads. Only the full parse below selects a route.
     if !args.iter().any(|word| word == "remote") {
         return None;
     }
     let command = if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        crate::grammar::help_grammar(grammar::command())
+        host.help_grammar(grammar::command())
     } else {
         grammar::command()
     };
     match command.clone().try_get_matches_from(args) {
-        Ok(matches) => selected_control(&matches).map(|(name, selected)| run(name, selected)),
+        Ok(matches) => selected_control(&matches).map(|(name, selected)| run(name, selected, host)),
         Err(error) => {
             // Only a refused invocation needs diagnostic recognition. Parsed
             // option values cannot select a privileged control route.
@@ -68,10 +74,10 @@ pub(crate) fn entry(args: &[OsString]) -> Option<io::Result<u8>> {
                 .try_get_matches_from(args)
                 .ok()?;
             selected_control(&matches)?;
-            Some(crate::render::error::write(
-                &crate::grammar::usage_error(error, args),
+            Some(host.write_error(
+                &host.usage_error(error, args),
                 &se_types::RenderCx::default(),
-                crate::grammar::json_requested(args),
+                host.json_requested(args),
                 &mut io::stdout().lock(),
                 &mut io::stderr().lock(),
             ))
@@ -84,7 +90,7 @@ fn selected_control(matches: &ArgMatches) -> Option<(&str, &ArgMatches)> {
         .contains(&name)
         .then_some((name, selected))
 }
-fn run(name: &str, m: &ArgMatches) -> io::Result<u8> {
+fn run<H: OwnerCommands + Presentation>(name: &str, m: &ArgMatches, host: &H) -> io::Result<u8> {
     let (mut stdout, mut stderr) = (io::stdout().lock(), io::stderr().lock());
     // Saved bindings from earlier releases omit the flag, but this private
     // pipe always owes the source a structured native refusal.
@@ -119,19 +125,19 @@ fn run(name: &str, m: &ArgMatches) -> io::Result<u8> {
             ));
         }
         let input = grammar::decode(name, m)?;
-        let cx = crate::bootstrap::Bootstrap::resolve_remote_owner(
+        let cx = host.resolve_owner(
             text(m, "home").map(Into::into),
             m.get_flag("no_color"),
             json,
         )?;
-        let output = crate::route::remote_owner::execute(&cx, input)?;
+        let output = host.execute_owner(&cx, input)?;
         Ok((None, Some(output)))
     })();
     match result {
-        Ok((Some(help), _)) => crate::render::output(&help, json, false, &mut stdout),
+        Ok((Some(help), _)) => host.write_output(&help, json, false, &mut stdout),
         Ok((_, Some(output))) => {
             if name == "__authorize" {
-                return authorize(m, &output.value, &mut stdout);
+                return authorize(m, &output.value, &mut stdout, host);
             }
             if json {
                 serde_json::to_writer(
@@ -160,7 +166,7 @@ fn run(name: &str, m: &ArgMatches) -> io::Result<u8> {
             Ok(0)
         }
         Ok(_) => Err(io::Error::other("remote control produced no result")),
-        Err(error) => crate::render::error::write(
+        Err(error) => host.write_error(
             &error,
             &se_types::RenderCx::default(),
             json,
@@ -181,17 +187,19 @@ fn invalid(expected: &str) -> SeError {
 
 /// This SSH command exits after authorizing one native application channel.
 /// The shared forward and native host retain all persistent connection state.
-fn authorize(
+fn authorize<H: OwnerCommands + Presentation>(
     m: &ArgMatches,
     identity: &serde_json::Value,
     stdout: &mut impl Write,
+    host: &H,
 ) -> io::Result<u8> {
-    let cx = crate::bootstrap::Bootstrap::resolve_remote_owner(
-        text(m, "home").map(Into::into),
-        m.get_flag("no_color"),
-        true,
-    )
-    .map_err(io::Error::other)?;
+    let cx = host
+        .resolve_owner(
+            text(m, "home").map(Into::into),
+            m.get_flag("no_color"),
+            true,
+        )
+        .map_err(io::Error::other)?;
     let mut input = io::stdin().lock();
     let mut bytes = zeroize::Zeroizing::new(Vec::new());
     let mut limited = std::io::Read::take(&mut input, 32769);
@@ -221,13 +229,13 @@ fn authorize(
         }
     };
     let channel = request.channel;
-    let result =
-        crate::route::remote_owner::execute(&cx, Input::Ready(OwnerInput::Authorize(request)))
-            .and_then(|output| {
-                serde_json::from_value(output.value)
-                    .map_err(|_| invalid("native SSH authorization result"))
-            })
-            .map_err(|error| error.body);
+    let result = host
+        .execute_owner(&cx, Input::Ready(OwnerInput::Authorize(request)))
+        .and_then(|output| {
+            serde_json::from_value(output.value)
+                .map_err(|_| invalid("native SSH authorization result"))
+        })
+        .map_err(|error| error.body);
     let response = se_host::remote::ssh::AuthorizationResult { channel, result };
     serde_json::to_writer(&mut *stdout, &response).map_err(io::Error::other)?;
     writeln!(stdout)?;

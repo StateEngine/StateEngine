@@ -7,6 +7,7 @@ members = [
     "crates/se-core",
     "crates/se-proc",
     "crates/se-host",
+    "crates/se-remote-cli",
     "crates/se-atlas",
     "crates/se",
 ]
