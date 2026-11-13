@@ -10,6 +10,7 @@ use std::{
 };
 mod grammar;
 mod ports;
+mod progress;
 pub use ports::{OwnerCommands, Presentation};
 pub enum Input {
     Ready(OwnerInput),
@@ -130,7 +131,9 @@ fn run<H: OwnerCommands + Presentation>(name: &str, m: &ArgMatches, host: &H) ->
             m.get_flag("no_color"),
             json,
         )?;
-        let output = host.execute_owner(&cx, input)?;
+        let output = host.execute_owner(&cx, input, &mut |event| {
+            progress::write(event, json, &mut stderr)
+        })?;
         Ok((None, Some(output)))
     })();
     match result {
@@ -230,7 +233,11 @@ fn authorize<H: OwnerCommands + Presentation>(
     };
     let channel = request.channel;
     let result = host
-        .execute_owner(&cx, Input::Ready(OwnerInput::Authorize(request)))
+        .execute_owner(
+            &cx,
+            Input::Ready(OwnerInput::Authorize(request)),
+            &mut |_| Ok(()),
+        )
         .and_then(|output| {
             serde_json::from_value(output.value)
                 .map_err(|_| invalid("native SSH authorization result"))

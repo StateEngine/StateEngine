@@ -21,6 +21,10 @@ pub enum OwnerInput {
         alias: String,
         distribution: se_types::NativePath,
     },
+    PrepareAdd {
+        destination: String,
+        alias: String,
+    },
     Bootstrap {
         source_host: RemoteHostId,
     },
@@ -64,6 +68,14 @@ impl OwnerInput {
                         "the calling CLI's absolute executable path",
                     ));
                 }
+                #[cfg(feature = "remote")]
+                ssh::validate_destination(destination)?;
+                #[cfg(not(feature = "remote"))]
+                let _ = destination;
+                Ok(())
+            }
+            Self::PrepareAdd { destination, alias } => {
+                se_core::ops::remote::validate_alias(alias)?;
                 #[cfg(feature = "remote")]
                 ssh::validate_destination(destination)?;
                 #[cfg(not(feature = "remote"))]

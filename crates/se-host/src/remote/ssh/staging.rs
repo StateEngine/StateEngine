@@ -1,5 +1,14 @@
 //! Fixed, account-owned runtime paths; partial uploads never become executable.
 // All substituted paths are generated from hexadecimal hashes and nonces.
+pub(super) fn receive(path: &str, windows: bool) -> String {
+    if windows {
+        powershell(&format!(
+            "$ErrorActionPreference='Stop'; $f=$null; try {{$p=Join-Path $HOME '{path}'; $f=[IO.File]::Open($p,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); [Console]::OpenStandardInput().CopyTo($f); $f.Flush($true); $f.Dispose(); exit 0}} catch {{if ($f) {{$f.Dispose()}}; exit 1}}"
+        ))
+    } else {
+        format!("umask 077; set -C; cat > {path}")
+    }
+}
 pub(super) fn prepare(directory: &str, windows: bool, apple: bool) -> String {
     if windows {
         let script = r#"$ErrorActionPreference='Stop'; try {
@@ -58,7 +67,9 @@ if ((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() -ne
         let stat = if apple { "stat -f" } else { "stat -c" };
         let mode = if apple { "%Lp" } else { "%a" };
         format!(
-            r#"test ! -L {path} && test -f {path} && owner=$({stat} %u {path}) && mode=$({stat} {mode} {path}) && uid=$(id -u) && test "$owner" = "$uid" && test "$((0$mode & 022))" -eq 0 && hash=$({hash} {path}) && test "${{hash%% *}}" = {digest}"#
+            r#"test ! -L {path} && test -f {path} && owner=$({stat} %u {path}) && mode=$({stat} {mode} {path}) && uid=$(id -u) && test "$owner" = "$uid" || exit 1
+if test "$((0$mode & 022))" -ne 0; then printf 'unsafe-mode:%s\n' "$mode"; exit 1; fi
+hash=$({hash} {path}) && test "${{hash%% *}}" = {digest}"#
         )
     }
 }

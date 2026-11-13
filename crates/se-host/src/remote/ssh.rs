@@ -4,9 +4,14 @@ use super::RemoteReady;
 use super::channel::unavailable;
 mod authorization;
 mod bootstrap;
+mod command;
+mod image;
+mod prepare;
 mod staging;
+mod upload;
 pub use authorization::{Authorization, AuthorizationResult, Request as SshRequest, StartResult};
 pub use bootstrap::connect;
+pub use prepare::{ImageProgress, ImageStage, prepare_image};
 use se_types::Result;
 use std::{collections::BTreeMap, net::SocketAddr, process::Stdio, sync::Arc, time::Duration};
 use tokio::{

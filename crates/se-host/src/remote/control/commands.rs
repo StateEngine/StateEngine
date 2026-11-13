@@ -25,7 +25,7 @@ pub(crate) async fn execute(
     }
     let initialize = matches!(
         &input,
-        OwnerInput::Bootstrap { .. } | OwnerInput::Add { .. }
+        OwnerInput::Bootstrap { .. } | OwnerInput::Add { .. } | OwnerInput::PrepareAdd { .. }
     );
     let (control, owner) = Control::prepare(router, owner, initialize, deadline).await?;
     let value = match input {
@@ -46,6 +46,14 @@ pub(crate) async fn execute(
             control
                 .add(router, owner, destination, alias, distribution, deadline)
                 .await?
+        }
+        OwnerInput::PrepareAdd { destination, alias } => {
+            let _configure = control.configure.lock().await;
+            control.security.owner(&owner)?;
+            control
+                .check_add(router, &destination, &alias, deadline)
+                .await?;
+            serde_json::json!({"state":"preparing", "name":alias})
         }
         OwnerInput::Bootstrap { source_host } => {
             control
