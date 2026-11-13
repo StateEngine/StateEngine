@@ -176,7 +176,7 @@ async fn finish_diagnostics(
     mut task: tokio::task::JoinHandle<std::io::Result<Option<Vec<u8>>>>,
 ) -> String {
     match tokio::time::timeout(Duration::from_secs(1), &mut task).await {
-        Ok(Ok(Ok(Some(bytes)))) => String::from_utf8_lossy(&bytes).into_owned(),
+        Ok(Ok(Ok(Some(bytes)))) => String::from_utf8_lossy(&bytes).escape_debug().to_string(),
         Ok(Ok(Ok(None))) => {
             "Provider diagnostics exceeded the 8 KiB bound; inspect the configuration directly."
                 .into()

@@ -11,7 +11,7 @@ fn parse(path: &Path, bytes: &[u8]) -> Result<DocumentMut> {
             let line = 1 + bytes[..at].iter().filter(|b| **b == b'\n').count();
             let expected = format!(
                 "valid TOML at line {line}: {}; existing bytes were preserved",
-                error.message()
+                error.message().escape_debug()
             );
             let mut error = SeError::invalid(&path.display().to_string(), &expected);
             error.body = error.body.with_remedy(se_types::Remedy {

@@ -13,21 +13,21 @@ fn refusal(path: &Path, reason: String, next_step: String) -> SeError {
 pub(super) fn native(error: se_proc::StateFileError) -> SeError {
     let path = &error.path;
     let next = if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
-        "Point CODEX_HOME (or the provider settings home) at the directory containing the real configuration file, or replace the symbolic link with a regular file; then retry init --adopt.".into()
+        "Set CODEX_HOME (Codex) or CLAUDE_CONFIG_DIR (Claude Code) to the directory containing the real configuration file, or replace the symbolic link with a regular file; then retry the original command.".into()
     } else if error.operation == "require owner-only native regular file/directory" {
         #[cfg(unix)]
         {
             format!(
-                "Make this directory private with chmod 700 -- {}; then retry init --adopt.",
+                "Make this directory private with chmod 700 -- {}; then retry the original command.",
                 quoted(path)
             )
         }
         #[cfg(windows)]
         {
-            "In the directory's Security properties, disable inherited access and allow only your account; then retry init --adopt.".into()
+            "In the directory's Security properties, disable inherited access and allow only your account; then retry the original command.".into()
         }
     } else {
-        "Restore access to this exact provider settings path, keeping regular files and directories in place of links; then retry init --adopt.".into()
+        "Restore access to this exact provider settings path, keeping regular files and directories in place of links; then retry the original command.".into()
     };
     refusal(path, error.to_string(), next).with_cause(error)
 }
