@@ -140,7 +140,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'install-home'
           $env:SE_HOME = Join-Path $env:RUNNER_TEMP 'install-state'
-          Invoke-RestMethod "https://github.com/StateEngine/StateEngine/releases/download/$env:RELEASE_TAG/install.ps1" | Invoke-Expression
+          $installerScript = Invoke-RestMethod "https://github.com/StateEngine/StateEngine/releases/download/$env:RELEASE_TAG/install.ps1"
+          Invoke-Expression $installerScript
           & (Join-Path $env:LOCALAPPDATA 'StateEngine/bin/se.exe') --version
           if ($LASTEXITCODE -ne 0) { throw 'installed version readback failed' }
   promote:
