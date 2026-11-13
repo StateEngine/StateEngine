@@ -204,7 +204,10 @@ def main():
     assert len(passed) == 2
     # A passing run leaves no artifacts behind. A failing run raises above and
     # keeps ROOT, whose path was printed and written to result.json.
-    shutil.rmtree(ROOT, ignore_errors=True)
+    try:
+        shutil.rmtree(ROOT)
+    except OSError as error:
+        raise SystemExit(f"passing run left artifacts at {ROOT}: {error}")
 
 
 if __name__ == "__main__":

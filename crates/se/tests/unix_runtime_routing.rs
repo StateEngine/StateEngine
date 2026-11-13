@@ -9,8 +9,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 type Check = Result<(), Box<dyn std::error::Error>>;
+#[path = "../../test-support/directory.rs"]
+mod directory;
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
+use directory::PrivateDirectory;
 
 fn socket_root(home: &Path) -> PathBuf {
     // Bulk fixture data honors TMPDIR. Only the tiny private socket directory
@@ -65,10 +68,12 @@ fn repeated_up_for_a_long_home_keeps_the_same_xdg_host_and_native_socket() -> Ch
     ));
     fs::create_dir(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+    let root = PrivateDirectory::adopt(root);
     let home = root.join("long-state-home-".repeat(8));
     let runtime = socket_root(&home);
     fs::create_dir(&runtime)?;
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
+    let runtime = PrivateDirectory::adopt(runtime);
     let repository = root.join("repository");
     fs::create_dir(&repository)?;
     let image = root.join("se");
@@ -126,8 +131,6 @@ fn repeated_up_for_a_long_home_keeps_the_same_xdg_host_and_native_socket() -> Ch
     lock.try_lock()?;
     drop(lock);
     drop(host);
-    fs::remove_dir_all(runtime)?;
-    fs::remove_dir_all(root)?;
     Ok(())
 }
 
