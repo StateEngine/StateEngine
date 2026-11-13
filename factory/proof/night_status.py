@@ -7,6 +7,9 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from zoneinfo import ZoneInfo
+
+SCHEDULE_ZONE = ZoneInfo("America/New_York")
 
 
 def read(path):
@@ -44,12 +47,12 @@ def labels(config):
             for (platform, surface, selection), rows in planned(config) for _, name in rows]
 
 
-def assess(config, directory, record, report, night, now):
+def assess(config, directory, record, report, night, now, report_error=None):
     value = {"schema": "se.nightly-proof-status/v1", "night": night,
              "checked_at": now.isoformat(), "state": "red", "run_id": directory.name,
              "run_directory": str(directory), "run_started_at": record.get("started_at"),
              "service_invocation_id": record.get("service_invocation_id"),
-             "missing_journeys": [], "errors": []}
+             "missing_journeys": [], "errors": [], "cause": "incomplete"}
     try:
         # Re-read every original receipt. A cached green report cannot cover a
         # subsequently missing result or an omitted configured invocation.
@@ -74,18 +77,28 @@ def assess(config, directory, record, report, night, now):
                                       for r in matches):
                     value["missing_journeys"].append("/".join(key) + ": " + name)
         status = checked["status"]
+        if record.get("state") == "interrupted":
+            value["cause"] = "interrupted"
+        elif status["outcome"] == "FAIL":
+            value["cause"] = "failed"
         value["errors"].extend(status.get("errors", []))
         if (report is None or report.get("schema") != checked["schema"]
                 or report.get("started_at") != record.get("started_at")
                 or report.get("status") != status):
             value["errors"].append("report.json is absent, unreadable or differs from the original receipts")
+            value["cause"] = "absent" if report_error == "absent" else "unreadable"
+        if record.get("status_publication_errors"):
+            value["errors"].extend(record["status_publication_errors"])
+            value["cause"] = "publication-failed"
         if config.get("harness_matrix") and checked.get("harness_matrix") is None:
             value["errors"].append("configured harness matrix is absent")
         if (record.get("state") == "finished" and status["complete"]
                 and status["outcome"] == "PASS" and not value["errors"]
                 and not value["missing_journeys"]):
             value["state"] = "green"
+            value["cause"] = None
     except Exception as error:
+        value["cause"] = "unreadable"
         value["errors"].append("cannot verify nightly receipts: " + str(error))
         value["missing_journeys"] = labels(config)
     return value
@@ -99,6 +112,8 @@ def store(config, value, preserve_newer=False):
         fcntl.flock(lock, fcntl.LOCK_EX)
         previous, _ = read(destination)
         if preserve_newer and previous and value.get("run_started_at"):
+            # Equal start times use the latest assessment, which may replace red:
+            # every assessment independently revalidates original receipts.
             try:
                 old = datetime.fromisoformat(previous["run_started_at"])
                 new = datetime.fromisoformat(value["run_started_at"])
@@ -129,17 +144,18 @@ def store(config, value, preserve_newer=False):
 def record_status(config, directory, record, report, errors=()):
     if not config.get("night_status_directory") or config.get("native_only"):
         return
-    started = datetime.fromisoformat(record["started_at"]).astimezone()
+    started = datetime.fromisoformat(record["started_at"]).astimezone(SCHEDULE_ZONE)
     value = assess(config, directory, record, report, started.date().isoformat(),
                    datetime.now(timezone.utc))
     value["errors"].extend(errors)
     if errors:
         value["state"] = "red"
+        value["cause"] = "publication-failed"
     store(config, value, preserve_newer=True)
 
 
 def check(config, now=None):
-    now = now or datetime.now().astimezone()
+    now = (now or datetime.now(timezone.utc)).astimezone(SCHEDULE_ZONE)
     # A persistent timer catching up before today's deadline checks yesterday,
     # rather than declaring today's still-pending scheduled run missing.
     date = now.date() - timedelta(days=now.hour < 11)
@@ -148,11 +164,12 @@ def check(config, now=None):
              "checked_at": now.isoformat(), "state": "missing", "run_id": None,
              "run_directory": None, "run_started_at": None,
              "service_invocation_id": None,
-             "missing_journeys": labels(config), "errors": []}
+             "missing_journeys": labels(config), "errors": [], "cause": "unreadable"}
     try:
         state = Path(config["state"]).resolve(strict=True)
         pointer, error = read(state / "latest.json")
         if error:
+            value["cause"] = "absent" if error == "absent" else "unreadable"
             raise ValueError("latest.json: " + error)
         if not error:
             started = datetime.fromisoformat(pointer["started_at"])
@@ -165,14 +182,20 @@ def check(config, now=None):
             raise ValueError("latest attempt is outside its configured spool")
         record, error = read(directory / "run.json")
         if error:
+            value["cause"] = "absent" if error == "absent" else "unreadable"
             raise ValueError("run.json: " + error)
         started = datetime.fromisoformat(record["started_at"])
         if started.tzinfo is None or started.astimezone(now.tzinfo).date() != date:
-            raise ValueError("latest attempt is not from this local night")
+            value["cause"] = "stale" if started.tzinfo else "unreadable"
+            raise ValueError("latest attempt is not from this scheduled night")
         if started > now:
+            value["cause"] = "future"
             raise ValueError("latest attempt starts in the future")
-        report, _ = read(directory / "report.json")
-        value = assess(config, directory, record, report, night, now)
+        report, error = read(directory / "report.json")
+        value = assess(config, directory, record, report, night, now, report_error=error)
+    except FileNotFoundError as error:
+        value["cause"] = "absent"
+        value["errors"].append(str(error))
     except Exception as error:
         value["errors"].append(str(error))
     return store(config, value)

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 from report import exit_status, publish, read, summarize
@@ -52,6 +53,20 @@ def latest(state, directory, record, status):
         "service_invocation_id": record.get("service_invocation_id"), "status": status})
 
 
+def status_checkpoint(config, directory, record, report, errors=()):
+    try:
+        from night_status import record_status
+        record_status(config, directory, record, report, errors)
+    except Exception as error:
+        message = "nightly status publication failed: " + str(error)
+        record.setdefault("status_publication_errors", []).append(message)
+        try:
+            save(directory / "run.json", record)
+        except OSError as persistence_error:
+            print("cannot retain status publication error: " + str(persistence_error), file=sys.stderr)
+        print(message, file=sys.stderr, flush=True)
+
+
 def checkpoint(state, directory, record, config=None):
     save(directory / "run.json", record)
     interrupted = record["state"] == "interrupted"
@@ -66,14 +81,12 @@ def checkpoint(state, directory, record, config=None):
         unavailable["errors"] = ["report publication failed: " + str(error)]
         latest(state, directory, record, unavailable)
         if config:
-            from night_status import record_status
-            record_status(config, directory, record, None, unavailable["errors"])
+            status_checkpoint(config, directory, record, None, unavailable["errors"])
         raise
     latest(state, directory, record, report["status"])
     if config and (record["state"] in {"finished", "interrupted"}
                    or report["status"]["outcome"] == "FAIL"):
-        from night_status import record_status
-        record_status(config, directory, record, report)
+        status_checkpoint(config, directory, record, report)
     return report
 
 

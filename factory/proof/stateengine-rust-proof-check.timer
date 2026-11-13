@@ -2,7 +2,7 @@
 Description=Require nightly first-hour results after the run deadline
 
 [Timer]
-OnCalendar=*-*-* 11:00:00
+OnCalendar=*-*-* 11:00:00 America/New_York
 Persistent=true
 Unit=stateengine-rust-proof-check.service
 
