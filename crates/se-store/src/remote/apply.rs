@@ -57,6 +57,11 @@ fn scope(c: &Connection, scope: &RemoteScope) -> StoreResult<()> {
             RemoteVerb::List => "list",
             RemoteVerb::Watch => "watch",
             RemoteVerb::Send => "send",
+            RemoteVerb::Launch => {
+                return Err(invalid(
+                    "launch consent belongs in the explicit saved-target permission, never the legacy machine verbs",
+                ));
+            }
         };
         if !seen.insert(name) {
             return Err(invalid("duplicate remote verb"));

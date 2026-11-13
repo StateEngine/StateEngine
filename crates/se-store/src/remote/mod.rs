@@ -1,9 +1,14 @@
 //! Closed remote-security transitions over the existing authoritative writer.
 mod apply;
 mod changes;
+mod launch;
+mod launch_continue;
 mod launch_inventory;
 mod launch_permission;
 mod model;
+pub(crate) use launch::{
+    apply as apply_launch, target_owned as launch_target_owned, validate_launch,
+};
 mod position;
 mod receipt;
 pub use position::{position_from_payload, position_payload};

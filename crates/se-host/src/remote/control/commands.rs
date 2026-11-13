@@ -70,6 +70,20 @@ pub(crate) async fn execute(
                 .await?;
             serde_json::json!({"host":control.security.host(), "enabled":enabled})
         }
+        OwnerInput::PairingLaunchPermissions {
+            alias,
+            after,
+            change,
+        } => {
+            control
+                .pairing_launch_permissions(router, owner, alias, after, change, deadline)
+                .await?
+        }
+        OwnerInput::LaunchPermissions(request) => {
+            control
+                .launch_permissions(router, owner, request, deadline)
+                .await?
+        }
         OwnerInput::Disable => {
             let _configure = control.configure.lock().await;
             control.security.owner(&owner)?;

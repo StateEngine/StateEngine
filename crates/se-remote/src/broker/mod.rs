@@ -3,6 +3,7 @@
 //! starts no listener or provider process. Installation is explicit and optional.
 mod bindings;
 mod call;
+mod launch;
 use bindings::Connections;
 pub use bindings::SourceHost;
 pub mod watch;

@@ -12,6 +12,8 @@ mod grammar;
 mod ports;
 mod progress;
 pub use ports::{OwnerCommands, Presentation};
+mod launch_permissions;
+mod permissions;
 pub enum Input {
     Ready(OwnerInput),
 }
@@ -226,6 +228,23 @@ fn authorize<H: OwnerCommands + Presentation>(
                 ));
             }
             serde_json::to_writer(&mut *stdout, &actual).map_err(io::Error::other)?;
+            writeln!(stdout)?;
+            stdout.flush()?;
+            return Ok(0);
+        }
+        se_host::remote::ssh::SshRequest::LaunchPermissions(request) => {
+            let host = request.launch_permissions;
+            let result = crate::route::remote_owner::execute(
+                &cx,
+                Input::Ready(OwnerInput::LaunchPermissions(request)),
+            )
+            .map(|output| output.value)
+            .map_err(|error| error.body);
+            serde_json::to_writer(
+                &mut *stdout,
+                &se_host::remote::ssh::PermissionsResult { host, result },
+            )
+            .map_err(io::Error::other)?;
             writeln!(stdout)?;
             stdout.flush()?;
             return Ok(0);

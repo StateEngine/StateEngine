@@ -337,6 +337,7 @@ pub fn launch<R: Snapshot>(
         .canonical_bytes()?
         .ok_or_else(|| SeError::invalid("launch allocation", "canonical UUIDv7 event identity"))?;
     Ok(LaunchPlan {
+        remote: None,
         channel_resume: None,
         input,
         owner,

@@ -62,6 +62,10 @@ impl<B: Budget> RemoteBroker<B> {
                 }
                 .into())
             }
+            AnyOp::RemoteLaunch(input) => {
+                self.launch(input, admission, terminal, source.as_ref(), deadline)
+                    .await
+            }
             AnyOp::RemoteList(input) => {
                 let b = self
                     .resolve(&input.host, context(), admission, terminal, deadline)

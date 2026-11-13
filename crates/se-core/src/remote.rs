@@ -1,5 +1,7 @@
 //! Closed delegated exposure. No remote grant becomes local Owner/session authority.
 use crate::scope;
+mod launch;
+pub use launch::{launch_key, plan_launch};
 use se_store::{
     Actor, Admission, AtomicBatch, EventBody, EventHeader, InputText, IntentDigest, NewEvent,
     RequestIdentity, Scope, StoreInfo,
@@ -63,6 +65,33 @@ pub fn authorize(
         grant,
         verb,
         targets,
+    })
+}
+
+/// Launch is a separate Owner decision; legacy scope verbs do not imply it.
+/// The native adapter supplies the permission from the same fresh store pin.
+pub fn authorize_launch(
+    grant: GrantRecord,
+    target: &RemoteTarget,
+    permission: se_store::remote::LaunchPermission,
+    now: i64,
+) -> Result<RemoteAdmission> {
+    if grant.state != GrantState::Active
+        || grant.expires_at_us <= now
+        || permission.grant != grant.grant
+        || permission.target != *target
+        || !permission.allowed
+    {
+        return Err(scope::unreadable(
+            "remote launch consent",
+            "the destination Owner has not allowed this paired machine to start this saved agent; choose the agent in remote pairing launch permissions",
+        ));
+    }
+    grant.scope.validate()?;
+    Ok(RemoteAdmission {
+        grant,
+        verb: RemoteVerb::Launch,
+        targets: vec![target.clone()],
     })
 }
 

@@ -240,15 +240,40 @@ impl LaunchCoordinator {
             &self.options.epoch.owner.fields().boot,
         )?;
         let saved = plan.clone();
+        let reserve =
+            move |kernel: &se_core::dispatch::Kernel,
+                  cx: &mut se_core::commit::Cx<'_, se_store::SqliteSnapshot>| {
+                process_commit::reserve(kernel, &saved, stored, session_hash, http_hash, cx)
+            };
+        #[cfg(feature = "remote")]
+        let reserved = if let Some(permit) = work.remote_permit.take() {
+            self.store
+                .commit_remote(
+                    work.admission.clone(),
+                    deadline,
+                    Some(plan.seed.clone()),
+                    permit,
+                    reserve,
+                )
+                .await
+        } else {
+            self.store
+                .commit(
+                    work.admission.clone(),
+                    deadline,
+                    Some(plan.seed.clone()),
+                    reserve,
+                )
+                .await
+        };
+        #[cfg(not(feature = "remote"))]
         let reserved = self
             .store
             .commit(
                 work.admission.clone(),
                 deadline,
                 Some(plan.seed.clone()),
-                move |kernel, cx| {
-                    process_commit::reserve(kernel, &saved, stored, session_hash, http_hash, cx)
-                },
+                reserve,
             )
             .await;
         if let Err(failure) = reserved {

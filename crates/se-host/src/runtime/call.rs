@@ -91,6 +91,24 @@ pub trait CustodyExecutor: Send + Sync {
         })
     }
 
+    /// Closed remote launch plans retain their original boundary permit through
+    /// native C1 reservation; this does not admit general remote custody plans.
+    #[cfg(feature = "remote")]
+    fn launch_remote<'a>(
+        &'a self,
+        _plan: se_core::ops::agent_launch::LaunchPlan,
+        _admission: Admission,
+        _permit: crate::remote::auth::AdmissionPermit,
+        _deadline: &'a Deadline,
+    ) -> crate::HostFuture<'a, se_core::ops::LaunchReply> {
+        Box::pin(async {
+            Err(se_core::scope::unreadable(
+                "remote launch",
+                "the native process coordinator does not support explicitly permitted remote launches",
+            ))
+        })
+    }
+
     /// One finite live-work sweep, under the host's original timer budget.
     fn catch_up<'a>(&'a self, _deadline: &'a Deadline) -> crate::HostFuture<'a, ()> {
         Box::pin(async {

@@ -28,6 +28,7 @@ mod page;
 mod project;
 mod query;
 mod receipt;
+mod remote_launch;
 mod runtime;
 mod search;
 mod selector;
@@ -44,6 +45,7 @@ use std::{marker::PhantomData, rc::Rc, time::Instant};
 // close may return a connection to its host pool.
 pub struct SqliteSnapshot {
     pub(crate) db: Connection,
+    remote_launch_grant: Option<se_types::RemoteGrantId>,
     recycle: Option<crate::read_phase_pool::Recycle>,
     info: StoreInfo,
     scope: ReadScope,
@@ -69,6 +71,7 @@ impl SqliteSnapshot {
         }
         Ok(Self {
             db: phase.db,
+            remote_launch_grant: None,
             recycle: phase.recycle,
             info: phase.info,
             scope,
@@ -159,15 +162,18 @@ impl se_types::LegacyIdRegistry for LegacyRegistry<'_> {
 impl Snapshot for SqliteSnapshot {
     type LegacyRegistry<'a> = LegacyRegistry<'a>;
     fn legacy_registry(&self) -> StoreResult<Self::LegacyRegistry<'_>> {
+        self.require_local_port()?;
         Ok(LegacyRegistry { snapshot: self })
     }
     fn channel_reply_route(
         &mut self,
         message: &se_types::MessageId,
     ) -> StoreResult<Option<crate::channel::ReplyRoute>> {
+        self.require_local_port()?;
         self.read_channel_route(message)
     }
     fn channel_active(&mut self) -> StoreResult<Vec<crate::channel::Connection>> {
+        self.require_local_port()?;
         self.read_active_channels()
     }
     fn channel_update_handled(
@@ -175,21 +181,25 @@ impl Snapshot for SqliteSnapshot {
         id: &crate::channel::ChannelId,
         update: &crate::channel::ExternalId,
     ) -> StoreResult<bool> {
+        self.require_local_port()?;
         self.read_update_handled(id, update)
     }
     fn channel_version(&mut self) -> StoreResult<crate::channel::Version> {
+        self.require_local_port()?;
         self.read_channel_version()
     }
     fn channel_connection(
         &mut self,
         id: &crate::channel::ChannelId,
     ) -> StoreResult<Read<crate::channel::Connection>> {
+        self.require_local_port()?;
         self.read_channel(id)
     }
     fn channel_connections(
         &mut self,
         after: u64,
     ) -> StoreResult<crate::channel::ChannelRows<crate::channel::Connection>> {
+        self.require_local_port()?;
         self.read_channels(after)
     }
     fn channel_receipt(
@@ -197,6 +207,7 @@ impl Snapshot for SqliteSnapshot {
         id: &crate::channel::ChannelId,
         receipt: &crate::channel::ReceiptId,
     ) -> StoreResult<Read<crate::channel::SavedUpdate>> {
+        self.require_local_port()?;
         self.read_saved_receipt(id, receipt)
     }
     fn channel_saved(
@@ -204,12 +215,14 @@ impl Snapshot for SqliteSnapshot {
         id: &crate::channel::ChannelId,
         after: u64,
     ) -> StoreResult<crate::channel::ChannelRows<crate::channel::SavedUpdate>> {
+        self.require_local_port()?;
         self.read_saved(id, after)
     }
     fn channel_recent_rejections(
         &mut self,
         id: &crate::channel::ChannelId,
     ) -> StoreResult<crate::channel::RecentRejections> {
+        self.require_local_port()?;
         self.read_recent_rejections(id)
     }
     fn channel_action(
@@ -217,6 +230,7 @@ impl Snapshot for SqliteSnapshot {
         id: &crate::channel::ChannelId,
         action: &crate::channel::ActionId,
     ) -> StoreResult<Read<crate::channel::ResumeAction>> {
+        self.require_local_port()?;
         self.read_channel_action(id, action)
     }
     fn channel_message_action(
@@ -224,15 +238,18 @@ impl Snapshot for SqliteSnapshot {
         id: &crate::channel::ChannelId,
         message: &se_types::MessageId,
     ) -> StoreResult<Read<crate::channel::ResumeAction>> {
+        self.require_local_port()?;
         self.read_message_action(id, message)
     }
     fn channel_confirmed_actions(
         &mut self,
         id: &crate::channel::ChannelId,
     ) -> StoreResult<Vec<crate::channel::ResumeAction>> {
+        self.require_local_port()?;
         self.read_confirmed_actions(id)
     }
     fn channel_has_capacity(&mut self, id: &crate::channel::ChannelId) -> StoreResult<bool> {
+        self.require_local_port()?;
         self.read_channel_capacity(id)
     }
     fn channel_due_delays(
@@ -240,6 +257,7 @@ impl Snapshot for SqliteSnapshot {
         id: &crate::channel::ChannelId,
         at_us: i64,
     ) -> StoreResult<Vec<se_types::MessageId>> {
+        self.require_local_port()?;
         self.read_channel_due_delays(id, at_us)
     }
     fn channel_pending_outputs(
@@ -247,6 +265,7 @@ impl Snapshot for SqliteSnapshot {
         id: &crate::channel::ChannelId,
         at_us: i64,
     ) -> StoreResult<crate::channel::ChannelRows<crate::channel::Outbound>> {
+        self.require_local_port()?;
         self.read_outputs(id, 0, None, Some(at_us))
     }
     fn channel_replies(
@@ -254,6 +273,7 @@ impl Snapshot for SqliteSnapshot {
         id: &crate::channel::ChannelId,
         original: &se_types::MessageId,
     ) -> StoreResult<crate::channel::ChannelRows<crate::channel::Outbound>> {
+        self.require_local_port()?;
         self.read_outputs(id, 0, Some(original), None)
     }
     fn channel_outbox(
@@ -261,12 +281,14 @@ impl Snapshot for SqliteSnapshot {
         id: &crate::channel::ChannelId,
         after: u64,
     ) -> StoreResult<crate::channel::ChannelRows<crate::channel::Outbound>> {
+        self.require_local_port()?;
         self.read_outbox(id, after)
     }
     fn channel_cursor(
         &mut self,
         id: &crate::channel::ChannelId,
     ) -> StoreResult<Option<crate::channel::ReceiveCursor>> {
+        self.require_local_port()?;
         self.read_channel_cursor(id)
     }
     fn info(&self) -> StoreInfo {
@@ -277,6 +299,7 @@ impl Snapshot for SqliteSnapshot {
         position: &StorePosition,
         purpose: PositionPurpose,
     ) -> StoreResult<Cursor> {
+        self.require_local_port()?;
         let head = self
             .info
             .head
@@ -309,6 +332,7 @@ impl Snapshot for SqliteSnapshot {
         cursor: &Cursor,
         purpose: PositionPurpose,
     ) -> StoreResult<StorePosition> {
+        self.require_local_port()?;
         self.read_cursor_position(cursor, purpose)
     }
     fn event_position(&mut self, position: &StorePosition) -> StoreResult<Read<StoredEvent>> {
@@ -381,6 +405,7 @@ impl Snapshot for SqliteSnapshot {
         self.head("profiles", "project_id=? AND agent_id=?", &[&p, &a], None)
     }
     fn grant(&mut self, principal: Actor, grant: GrantKey) -> StoreResult<Read<ProjectionRecord>> {
+        self.require_local_port()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let a = key(
             &self.db,
@@ -402,6 +427,7 @@ impl Snapshot for SqliteSnapshot {
         )
     }
     fn working_state(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>> {
+        self.require_local_port()?;
         let p = self.project_bytes()?;
         let a = self.agent_bytes(&agent)?;
         self.head(
@@ -412,6 +438,7 @@ impl Snapshot for SqliteSnapshot {
         )
     }
     fn message(&mut self, id: se_types::MessageId) -> StoreResult<Read<MessageRecord>> {
+        self.require_local_port()?;
         self.mail_source()?;
         let p = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
@@ -445,6 +472,7 @@ impl Snapshot for SqliteSnapshot {
         &mut self,
         id: se_types::MessageId,
     ) -> StoreResult<Option<se_types::remote::RemoteAttribution>> {
+        self.require_local_port()?;
         self.read_remote_message_attribution(id)
     }
     fn messages(
@@ -452,9 +480,11 @@ impl Snapshot for SqliteSnapshot {
         query: MessageQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<MessageRecord>> {
+        self.require_local_port()?;
         self.read_messages(query, budget)
     }
     fn message_count(&mut self, query: MessageQuery) -> StoreResult<u64> {
+        self.require_local_port()?;
         self.count_messages(query)
     }
     fn resolve_request(&mut self, request: &RequestIdentity) -> StoreResult<Read<CommitReceipt>> {
@@ -506,44 +536,8 @@ impl Snapshot for SqliteSnapshot {
         }
     }
     fn resume_head(&mut self, principal: Actor) -> StoreResult<Read<ResumeHead>> {
-        if principal != self.scope.admission.actor
-            && !matches!(self.scope.visibility, Visibility::Owner)
-        {
-            return Err(fail(
-                StoreErrorCode::ScopeMismatch,
-                "resume belongs to another principal",
-            ));
-        }
-        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
-        let a = key(
-            &self.db,
-            principal.kind(),
-            principal.wire(),
-            if principal.kind() == "human" {
-                &[0]
-            } else {
-                &scope
-            },
-            false,
-        )?;
-        let p = self.project_bytes()?;
-        let row:Option<ResumeRow>=self.db.query_row("SELECT last_turn_seq,last_working_state_seq,last_cursor_seq,last_session_seq,unread_count,pending_effect_count,last_seq FROM resume_heads WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![p,a],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?,crate::sql_value::value(r,5)?,crate::sql_value::value(r,6)?))).optional().map_err(|error| self.read_sql(error))?;
-        let pos = |s| StorePosition::new_internal(self.info.id.clone(), self.info.incarnation, s);
-        match row {
-            None => Ok(self.absent("resume head")),
-            Some((t, w, c, s, unread, pending, last)) => Ok(Read::Present {
-                value: ResumeHead {
-                    principal,
-                    turn: t.map(pos).transpose()?,
-                    working_state: w.map(pos).transpose()?,
-                    cursor: c.map(pos).transpose()?,
-                    session: s.map(pos).transpose()?,
-                    unread,
-                    pending_effects: pending,
-                    through: pos(last)?,
-                },
-            }),
-        }
+        self.require_local_port()?;
+        self.read_resume_head(principal)
     }
     fn close(mut self) -> StoreResult<()> {
         // A deadline handler belongs to this snapshot, never the next borrower.
@@ -565,12 +559,15 @@ impl Snapshot for SqliteSnapshot {
         _query: HistoryQuery,
         _budget: ReadBudget,
     ) -> StoreResult<Page<StoredEvent>> {
+        self.require_local_port()?;
         self.read_history(_query, _budget)
     }
     fn search(&mut self, query: SearchQuery, budget: ReadBudget) -> StoreResult<SearchPage> {
+        self.require_local_port()?;
         self.read_search(query, budget)
     }
     fn projects(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.require_local_port()?;
         if !matches!(self.scope.visibility, Visibility::Owner) {
             return Err(fail(
                 StoreErrorCode::ScopeMismatch,
@@ -584,9 +581,11 @@ impl Snapshot for SqliteSnapshot {
         query: RemovedProjectQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<ProjectionRecord>> {
+        self.require_local_port()?;
         self.read_removed_projects(query, budget)
     }
     fn principals(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.require_local_port()?;
         if self.scope.admission.scope == Scope::Registry {
             if !matches!(self.scope.visibility, Visibility::Owner) {
                 return Err(fail(
@@ -619,6 +618,7 @@ impl Snapshot for SqliteSnapshot {
         )
     }
     fn sessions(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.require_local_port()?;
         let p = self.project_bytes()?;
         if let Visibility::SelfOnly(agent) = &self.scope.visibility {
             let a = self.agent_bytes(agent)?;
@@ -643,6 +643,7 @@ impl Snapshot for SqliteSnapshot {
         }
     }
     fn turn(&mut self, id: RecordId) -> StoreResult<Read<StoredEvent>> {
+        self.require_local_port()?;
         self.read_turn(id)
     }
     fn native_turn(
@@ -651,6 +652,7 @@ impl Snapshot for SqliteSnapshot {
         provider: Provider,
         vendor: &str,
     ) -> StoreResult<Read<StoredEvent>> {
+        self.require_local_port()?;
         self.read_session(session.clone())?;
         match codec::capture::native::find(
             &self.db,
@@ -671,6 +673,7 @@ impl Snapshot for SqliteSnapshot {
         since: Option<StorePosition>,
         budget: ReadBudget,
     ) -> StoreResult<Page<StoredEvent>> {
+        self.require_local_port()?;
         self.read_recent_turns(agent, since, budget)
     }
     fn transcript_events(
@@ -679,9 +682,11 @@ impl Snapshot for SqliteSnapshot {
         session: Option<SessionId>,
         budget: ReadBudget,
     ) -> StoreResult<TranscriptRecords> {
+        self.require_local_port()?;
         self.read_transcript_events(agent, session, budget)
     }
     fn turns(&mut self, _agent: AgentId, _budget: ReadBudget) -> StoreResult<Page<StoredEvent>> {
+        self.require_local_port()?;
         self.read_turns(_agent, _budget)
     }
     fn conversation_turns(
@@ -691,6 +696,7 @@ impl Snapshot for SqliteSnapshot {
         native_ref: &str,
         budget: ReadBudget,
     ) -> StoreResult<Page<StoredEvent>> {
+        self.require_local_port()?;
         self.read_conversation_turns(agent, provider, native_ref, budget)
     }
     fn capture_source(&mut self, _source: RecordId) -> StoreResult<Read<ProjectionRecord>> {
@@ -701,6 +707,7 @@ impl Snapshot for SqliteSnapshot {
         source: RecordId,
         kind: Option<EventKind>,
     ) -> StoreResult<Read<StoredEvent>> {
+        self.require_local_port()?;
         self.read_capture_outcome(source, kind)
     }
     fn control_target(&mut self, target: AgentId) -> StoreResult<Read<ControlTarget>> {
@@ -718,18 +725,23 @@ impl Snapshot for SqliteSnapshot {
         )
     }
     fn processes(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.require_local_port()?;
         self.read_processes(budget)
     }
     fn cursor(&mut self, agent: AgentId, purpose: String) -> StoreResult<Read<CursorHead>> {
+        self.require_local_port()?;
         self.read_cursor(agent, purpose)
     }
     fn pending_effects(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.require_local_port()?;
         self.read_pending_effects(budget)
     }
     fn effect(&mut self, id: RecordId) -> StoreResult<Read<ProjectionRecord>> {
+        self.require_local_port()?;
         self.read_effect(id)
     }
     fn integrations(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.require_local_port()?;
         self.read_integrations(budget)
     }
     fn import_progress(
@@ -737,6 +749,7 @@ impl Snapshot for SqliteSnapshot {
         import: RecordId,
         budget: ReadBudget,
     ) -> StoreResult<Page<ImportCheckpoint>> {
+        self.require_local_port()?;
         self.read_import_progress(import, budget)
     }
 }

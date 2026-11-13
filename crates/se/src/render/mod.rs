@@ -78,6 +78,9 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             return Ok(value.exit_code());
         }
         match (value.human_kind(), value) {
+            (HumanKind::RemoteLaunch, AnyOutput::RemoteLaunch(value)) => {
+                remote::launch(&value.value, out)?
+            }
             (HumanKind::RemoteList, AnyOutput::RemoteList(value)) => {
                 remote::list(&value.value, out)?
             }

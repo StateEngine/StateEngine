@@ -52,6 +52,36 @@ impl RemoteListResult {
     pub const SCHEMA: &str = "stateengine.remote-list/v1";
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteLaunchStarted {
+    pub target: RemoteTarget,
+    pub session: SessionId,
+    pub lifecycle: LifecycleId,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteLaunchBody {
+    pub outcome: RemoteLaunchOutcome,
+    pub attribution: RemoteAttribution,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RemoteLaunchOutcome {
+    Running {
+        receipt: Receipt<RemoteLaunchStarted>,
+    },
+    Pending {
+        launch: RemoteLaunchStarted,
+        idempotency_key: crate::IdempotencyKey,
+        setup_needed: bool,
+    },
+}
+pub type RemoteLaunchResult = RemoteResponse<RemoteLaunchBody>;
+impl RemoteLaunchResult {
+    pub const SCHEMA: &str = "stateengine.remote-launch/v1";
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteTurnRole {

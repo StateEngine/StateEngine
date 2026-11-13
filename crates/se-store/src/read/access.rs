@@ -63,7 +63,14 @@ impl SqliteSnapshot {
     }
 
     pub(super) fn visible(&self, e: &StoredEvent) -> StoreResult<bool> {
-        if matches!(e.body, EventBody::ChannelRecorded { .. }) {
+        if self.remote_launch_grant.is_some() {
+            return self.remote_launch_visible(e);
+        }
+        if matches!(
+            e.body,
+            EventBody::ChannelRecorded { .. }
+                | EventBody::RemoteLaunchAttributed { .. }
+        ) {
             return Ok(matches!(self.scope.visibility, Visibility::Owner)
                 && matches!(self.scope.admission.actor, Actor::Human(_))
                 && self.scope.admission.session.is_none());

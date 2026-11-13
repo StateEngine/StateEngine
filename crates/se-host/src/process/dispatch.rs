@@ -53,6 +53,20 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
         Box::pin(async move { self.refresh_remote_sources(deadline).await })
     }
 
+    #[cfg(feature = "remote")]
+    fn launch_remote<'a>(
+        &'a self,
+        plan: se_core::ops::agent_launch::LaunchPlan,
+        admission: Admission,
+        permit: crate::remote::auth::AdmissionPermit,
+        deadline: &'a Deadline,
+    ) -> HostFuture<'a, se_core::ops::LaunchReply> {
+        Box::pin(async move {
+            self.launch_remote_admitted(plan, admission, permit, deadline)
+                .await
+        })
+    }
+
     fn catch_up<'a>(&'a self, deadline: &'a Deadline) -> HostFuture<'a, ()> {
         Box::pin(async move { self.catch_up_live(deadline).await })
     }

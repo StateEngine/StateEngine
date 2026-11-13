@@ -94,9 +94,16 @@ impl LaunchCoordinator {
         {
             successor_admission.session = Some(next.session.clone());
         }
-        self.launch_prepared(next, successor_admission, deadline, Some(report.clone()))
-            .await
-            .map_err(|failure| successor_failure(&report, failure))
-            .map(AnyOutput::from)
+        self.launch_prepared(
+            next,
+            successor_admission,
+            deadline,
+            Some(report.clone()),
+            #[cfg(feature = "remote")]
+            None,
+        )
+        .await
+        .map_err(|failure| successor_failure(&report, failure))
+        .map(AnyOutput::from)
     }
 }

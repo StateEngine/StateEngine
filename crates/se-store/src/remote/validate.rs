@@ -12,6 +12,9 @@ pub(crate) fn validate_batch(
     info: &StoreInfo,
     now: i64,
 ) -> StoreResult<()> {
+    if super::validate_launch(c, batch, info, now)? {
+        return Ok(());
+    }
     let Actor::Remote(principal) = &batch.admission.actor else {
         if batch
             .events

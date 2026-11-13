@@ -49,6 +49,7 @@ impl Security {
             RemoteRequest::List(v) => (RemoteVerb::List, v.targets.as_slice()),
             RemoteRequest::Watch(v) => (RemoteVerb::Watch, v.targets.as_slice()),
             RemoteRequest::Send(v) => (RemoteVerb::Send, std::slice::from_ref(&v.target)),
+            RemoteRequest::Launch(v) => (RemoteVerb::Launch, std::slice::from_ref(&v.target)),
         };
         let attribution = RemoteAttribution {
             host: self.host,
@@ -59,7 +60,17 @@ impl Security {
             authority_revision: grant.authority_revision.value.get(),
             source: invocation.source,
         };
-        let admission = se_core::remote::authorize(grant, verb, targets, now()?)?;
+        let admission = if let RemoteRequest::Launch(input) = &invocation.request {
+            let permission = se_core::scope::require_present(
+                self.store
+                    .read(|phase| phase.remote_launch_permission(&grant.grant, &input.target))?,
+                "remote launch consent",
+                "Ask the destination Owner to allow this saved agent in se remote permissions --name <saved-alias>, or in remote add's launch-permissions review.",
+            )?;
+            se_core::remote::authorize_launch(grant, &input.target, permission, now()?)?
+        } else {
+            se_core::remote::authorize(grant, verb, targets, now()?)?
+        };
         if let RemoteRequest::Watch(watch) = &invocation.request
             && (watch
                 .cursors

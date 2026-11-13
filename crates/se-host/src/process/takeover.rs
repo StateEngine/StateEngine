@@ -31,7 +31,16 @@ impl LaunchCoordinator {
         {
             self.preflight_relaunch(&mut plan, &admission, deadline)
                 .await?;
-            return self.launch_prepared(plan, admission, deadline, None).await;
+            return self
+                .launch_prepared(
+                    plan,
+                    admission,
+                    deadline,
+                    None,
+                    #[cfg(feature = "remote")]
+                    None,
+                )
+                .await;
         }
         let expired_window = matches!(&plan.control.latest_session, se_types::Read::Present { value }
             if se_core::ops::agent_launch::retryable_attended_setup(value));

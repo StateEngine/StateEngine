@@ -546,6 +546,7 @@ fn security<T>(b: &EventBody<T>) -> bool {
         b,
         ChannelRecorded { .. }
             | RemoteSecurity { .. }
+            | RemoteLaunchAttributed { .. }
             | CredentialIssued { .. }
             | CredentialActivated { .. }
             | CredentialRevoked { .. }

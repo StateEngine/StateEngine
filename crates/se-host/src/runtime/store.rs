@@ -19,6 +19,19 @@ pub(crate) struct Store {
     pub fault: Arc<crate::runtime::tasks::OwnershipFault>,
 }
 impl Store {
+    pub(crate) fn for_execution(context: &crate::runtime::ExecutionContext) -> Self {
+        Self {
+            record_feed: context.atlas.records.clone(),
+            reader: context.reader.clone(),
+            reads: context.reads.clone(),
+            writer: context.writer.clone(),
+            pool: context.blocking.clone(),
+            generation: context.generation,
+            pending: context.pending_writes.clone(),
+            mail_waits: context.mail_waits.clone(),
+            fault: context.ownership_fault.clone(),
+        }
+    }
     pub async fn read<T: Send + 'static>(
         &self,
         admission: Admission,
@@ -42,9 +55,12 @@ impl Store {
                 if let Err(e) = owner {
                     return crate::runtime::executor::close_read(Err(e), phase.close());
                 }
-                let mut read = phase
-                    .into_snapshot(read_scope(&admission))
-                    .map_err(|e| store_error(&e))?;
+                let mut read = if matches!(admission.actor, se_store::Actor::Remote(_)) {
+                    phase.into_remote_launch_snapshot(admission.clone())
+                } else {
+                    phase.into_snapshot(read_scope(&admission))
+                }
+                .map_err(|e| store_error(&e))?;
                 let result = work(&mut Cx {
                     read: &mut read,
                     admission: &admission,
@@ -60,15 +76,55 @@ impl Store {
         seed: Option<se_types::EventId>,
         work: impl FnOnce(&Kernel, &mut Cx<'_, SqliteSnapshot>) -> Result<AtomicBatch> + Send + 'static,
     ) -> Result<CommitReceipt> {
-        let batch = self
-            .read(admission, deadline, move |cx| {
-                let mut facts = crate::runtime::start::allocate_facts()?;
-                if let Some(seed) = seed {
-                    facts.event = seed;
-                }
-                work(&Kernel::new(facts)?, cx)
-            })
-            .await?;
+        let batch = self.prepare_batch(admission, deadline, seed, work).await?;
+        if batch.events.iter().any(|event| {
+            matches!(
+                event.body,
+                se_store::EventBody::RemoteLaunchAttributed { .. }
+            )
+        }) {
+            return Err(error(
+                "remote launch reservation",
+                "the original boundary permit must accompany native C1 submission",
+            ));
+        }
+        self.submit_lifecycle(batch, deadline, None).await
+    }
+    #[cfg(feature = "remote")]
+    pub async fn commit_remote(
+        &self,
+        admission: Admission,
+        deadline: &Deadline,
+        seed: Option<se_types::EventId>,
+        permit: crate::remote::auth::AdmissionPermit,
+        work: impl FnOnce(&Kernel, &mut Cx<'_, SqliteSnapshot>) -> Result<AtomicBatch> + Send + 'static,
+    ) -> Result<CommitReceipt> {
+        let batch = self.prepare_batch(admission, deadline, seed, work).await?;
+        self.submit_lifecycle(batch, deadline, Some(permit)).await
+    }
+    async fn prepare_batch(
+        &self,
+        admission: Admission,
+        deadline: &Deadline,
+        seed: Option<se_types::EventId>,
+        work: impl FnOnce(&Kernel, &mut Cx<'_, SqliteSnapshot>) -> Result<AtomicBatch> + Send + 'static,
+    ) -> Result<AtomicBatch> {
+        self.read(admission, deadline, move |cx| {
+            let mut facts = crate::runtime::start::allocate_facts()?;
+            if let Some(seed) = seed {
+                facts.event = seed;
+            }
+            work(&Kernel::new(facts)?, cx)
+        })
+        .await
+    }
+    async fn submit_lifecycle(
+        &self,
+        batch: AtomicBatch,
+        deadline: &Deadline,
+        #[cfg(feature = "remote")] permit: Option<crate::remote::auth::AdmissionPermit>,
+        #[cfg(not(feature = "remote"))] _permit: Option<()>,
+    ) -> Result<CommitReceipt> {
         let request = batch.request.as_ref().ok_or_else(|| {
             se_core::scope::unreadable(
                 "lifecycle commit",
@@ -81,6 +137,19 @@ impl Store {
             key: Some(request.key.clone()),
             natural_events: Vec::new(),
         };
+        #[cfg(feature = "remote")]
+        if let Some(permit) = permit {
+            let fault = self.fault.clone();
+            let submitted = identity.clone();
+            return self
+                .submit_with(batch, identity, deadline, move |writer, batch| {
+                    permit.submit_with(writer, batch, |error| {
+                        fault.observe_writer(error);
+                        submitted.store_error(error)
+                    })
+                })
+                .await;
+        }
         self.submit(batch, identity, deadline).await
     }
     /// Capture uses the store's immutable session/provider/native-turn identity,
@@ -124,6 +193,28 @@ impl Store {
         identity: crate::runtime::WriteIdentity,
         deadline: &Deadline,
     ) -> Result<CommitReceipt> {
+        let fault = self.fault.clone();
+        let submitted = identity.clone();
+        self.submit_with(batch, identity, deadline, move |writer, batch| {
+            writer.submit(batch).map_err(|error| {
+                fault.observe_writer(&error);
+                submitted.store_error(&error)
+            })
+        })
+        .await
+    }
+    async fn submit_with(
+        &self,
+        batch: AtomicBatch,
+        identity: crate::runtime::WriteIdentity,
+        deadline: &Deadline,
+        enqueue: impl FnOnce(
+            &se_store::SqliteClient,
+            AtomicBatch,
+        ) -> Result<<se_store::SqliteClient as WriterClient>::Completion>
+        + Send
+        + 'static,
+    ) -> Result<CommitReceipt> {
         let submitted = identity.clone();
         let recipients = crate::runtime::mail::recipients(&batch);
         let revocations = crate::runtime::mail::revocations(&batch);
@@ -139,7 +230,7 @@ impl Store {
                 let record_write = record_feed.before_scoped_write(&batch.admission.scope)?;
                 pending.register(&submitted)?;
                 mail_waits.fence_remote(&revocations)?;
-                match writer.submit(batch) {
+                match enqueue(&writer, batch) {
                     Ok(completion) => Ok(runtime.spawn(async move {
                         let receipt = completion.await;
                         if receipt.as_ref().is_err_and(|e| {
@@ -172,9 +263,8 @@ impl Store {
                         (receipt, settled.and(notified))
                     })),
                     Err(error) => {
-                        fault.observe_writer(&error);
                         pending.failed_attempt(&submitted)?;
-                        Err(submitted.store_error(&error))
+                        Err(error)
                     }
                 }
             })

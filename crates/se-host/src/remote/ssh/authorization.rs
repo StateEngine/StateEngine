@@ -23,6 +23,38 @@ pub struct AuthorizationResult {
 pub enum Request {
     Authorize(Authorization),
     Start(StartRequest),
+    LaunchPermissions(LaunchPermissionsRequest),
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchPermissionsRequest {
+    pub launch_permissions: RemoteHostId,
+    pub grant: se_types::RemoteGrantId,
+    pub after: Option<se_types::remote::RemoteTarget>,
+    pub change: Option<crate::remote::owner_input::LaunchPermissionChange>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PermissionsResult {
+    pub host: RemoteHostId,
+    pub result: std::result::Result<serde_json::Value, ErrorBody>,
+}
+
+}
+pub(crate) async fn launch_permissions(
+    config: &super::ForwardConfig,
+    request: LaunchPermissionsRequest,
+) -> se_types::Result<serde_json::Value> {
+    let bytes = encoded(&Request::LaunchPermissions(request))?;
+    let response = exchange(config, bytes, std::time::Duration::from_secs(35)).await?;
+    let response: PermissionsResult = serde_json::from_slice(&response)
+        .map_err(|_| super::unavailable("SSH launch permissions response is malformed"))?;
+    if response.host != config.host {
+        return Err(super::unavailable(
+            "SSH launch permissions changed the saved destination identity",
+        ));
+    }
+    response.result.map_err(|e| e.with_far_origin().into())
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

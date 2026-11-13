@@ -91,3 +91,14 @@ pub struct LaunchPermission {
     pub allowed: bool,
     pub revision: Revision,
 }
+
+/// Native C1 proof that this actual remote caller admitted one local lifecycle.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchAttribution {
+    pub target: RemoteTarget,
+    pub expected_profile: Revision,
+    pub session: SessionId,
+    pub lifecycle: se_types::LifecycleId,
+    pub attribution: RemoteAttribution,
+}

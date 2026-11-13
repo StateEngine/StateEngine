@@ -187,6 +187,10 @@ pub(crate) fn apply(
             c.execute("INSERT INTO remote_message_attribution(event_seq,project_id,message_id,grant_id,facts) VALUES(?,?,?,?,?)",rusqlite::params![seq,p,message,grant,codec::encode(&record)?]).map_err(sql)?;
             codec::aux(c, seq, facts)?;
         }
+        RemoteLaunchAttributed { record } => {
+            crate::remote::apply_launch(c, header, record, seq)?;
+            codec::aux(c, seq, facts)?;
+        }
         b @ (ProcessRegistered { .. } | ProcessTransition { .. }) => {
             process::apply(c, header, b, seq, revision, lease)?
         }

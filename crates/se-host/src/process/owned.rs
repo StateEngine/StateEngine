@@ -44,6 +44,8 @@ pub(super) struct Work {
     pub recover_provider: bool,
     pub meta: LifecycleMetadata,
     pub admission: Admission,
+    #[cfg(feature = "remote")]
+    pub remote_permit: Option<crate::remote::auth::AdmissionPermit>,
     pub cleanup_admission: Admission,
     pub process: Option<Arc<se_proc::OwnedProcess>>,
     pub record: Option<se_proc::ProcessRecord>,
@@ -104,6 +106,8 @@ impl Work {
             plan: None,
             recover_provider: false,
             admission,
+            #[cfg(feature = "remote")]
+            remote_permit: None,
             process: None,
             record: None,
             exec_observed: false,

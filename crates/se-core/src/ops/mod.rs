@@ -9,8 +9,8 @@ pub mod client;
 pub use client::ClientWatchCall;
 pub mod remote;
 pub use remote::{
-    RemoteListCall, RemoteListOutput, RemotePrepareSendCall, RemoteSendCall, RemoteSendOutput,
-    RemoteSendPreparation, RemoteWatchCall, RemoteWatchOutput,
+    RemoteLaunchCall, RemoteLaunchOutput, RemoteListCall, RemoteListOutput, RemotePrepareSendCall,
+    RemoteSendCall, RemoteSendOutput, RemoteSendPreparation, RemoteWatchCall, RemoteWatchOutput,
 };
 pub mod continuity;
 pub use continuity::{Resume, ResumeOutput, SessionContextOutput, SessionContextRequest};
@@ -211,6 +211,7 @@ ops! {
     RemotePrepareSend => RemotePrepareSendCall, RemoteSendPreparation, ("remote.prepare_send",CliExposure::None{reason:"Internal protected source IPC prepares CLI pending output; no remote capability or public tool."},no_mcp("MCP has only a final send result, never early pending output."),Either,false,Never,Read,Home,Host,"stateengine.remote-send-preparation",RemoteSend,&[]);
     RemoteList => RemoteListCall, RemoteListOutput, ("remote.list",leaf(&["remote","list"]),tool("stateengine_remote_list","List remote agents","List allowed remote agents; empty request.targets discovers all."),Either,false,Never,Read,Home,Host,"stateengine.remote-list",RemoteList,&[]);
     RemoteWatch => RemoteWatchCall, RemoteWatchOutput, ("remote.watch",leaf(&["remote","watch"]),tool("stateengine_remote_watch","Watch remote agents","Read a retained subscription; continue with returned cursors. Live items are provisional; wait_ms <= 30000."),Either,false,Never,Read,Home,Host,"stateengine.remote-watch",RemoteWatch,&[]);
+    RemoteLaunch => RemoteLaunchCall, RemoteLaunchOutput, ("remote.launch",leaf(&["remote","launch"]),tool("stateengine_remote_launch","Launch a remote agent","Start an existing destination agent with its saved profile and explicit Owner consent. Send work through remote send after it runs. Retry pending or uncertain launches with the original key."),Either,false,Never,Write,Home,Host,"stateengine.remote-launch",RemoteLaunch,&[]);
     RemoteSend => RemoteSendCall, RemoteSendOutput, ("remote.send",leaf(&["remote","send"]),tool("stateengine_remote_send","Send remote direct mail","Send exact target/session mail. Retry uncertainty with identical key/body/target/session; commit is not delivery."),Either,false,Never,Write,Home,Host,"stateengine.remote-send",RemoteSend,&[]);
     MetaVersion => MetaVersion, VersionOutput, ("meta.version",CliExposure::RootFlag { flag:"version" },no_mcp("Installed CLI metadata is not an agent task."),Either,true,Never,Read,None,None,"se.version",Version,&["J1"]);
     MetaHelp => MetaHelp, HelpOutput, ("meta.help",leaf(&["help"]),no_mcp("MCP descriptions derive from the same catalogue."),Either,true,Never,Read,None,None,"se.help",Help,&["J1"]);
@@ -261,6 +262,7 @@ impl AnyOp {
                 | Self::RemoteList(_)
                 | Self::RemoteWatch(_)
                 | Self::RemoteSend(_)
+                | Self::RemoteLaunch(_)
         )
     }
     pub fn is_client(&self) -> bool {
@@ -294,6 +296,7 @@ impl AnyOp {
             #[cfg(feature = "import")]
             Self::ImportNode(v) => Some(&v.idempotency_key),
             Self::RemoteSend(v) => Some(&v.request.idempotency_key),
+            Self::RemoteLaunch(v) => Some(&v.request.idempotency_key),
             Self::MessageSend(v) => Some(&v.idempotency_key),
             Self::WorkingStateSet(v) => Some(&v.idempotency_key),
             Self::RuntimeUp(v) => Some(&v.idempotency_key),
@@ -334,6 +337,16 @@ impl AnyOp {
 impl AnyOutput {
     pub fn exit_code(&self) -> u8 {
         match self {
+            Self::RemoteLaunch(v) => {
+                if matches!(
+                    v.value.outcome,
+                    se_types::remote::RemoteLaunchOutcome::Pending { .. }
+                ) {
+                    2
+                } else {
+                    0
+                }
+            }
             Self::RemoteSend(v) => match v.value.receipt {
                 se_types::Receipt::Committed { .. } | se_types::Receipt::Replayed { .. } => 0,
                 se_types::Receipt::Refused { .. } => 1,

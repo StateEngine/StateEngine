@@ -29,7 +29,7 @@ pub use client::ClientConnector;
 mod owner_input;
 #[cfg(feature = "remote")]
 pub(crate) use owner_input::OwnerCall;
-pub use owner_input::OwnerInput;
+pub use owner_input::{LaunchPermissionChange, OwnerInput};
 pub mod session;
 pub use se_remote::RemoteCallContext;
 #[cfg(feature = "remote")]
