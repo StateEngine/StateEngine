@@ -415,12 +415,10 @@ pub struct CursorRecord {
     pub expected: Expected,
 }
 impl RecordId {
-    #[doc(hidden)]
-    pub fn new_internal(bytes: [u8; 16]) -> Self {
+    pub(crate) fn new_internal(bytes: [u8; 16]) -> Self {
         Self { _bytes: bytes }
     }
-    #[doc(hidden)]
-    pub fn bytes_internal(&self) -> &[u8; 16] {
+    pub(crate) fn bytes_internal(&self) -> &[u8; 16] {
         &self._bytes
     }
 }
