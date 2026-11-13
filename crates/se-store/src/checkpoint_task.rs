@@ -156,7 +156,27 @@ impl CheckpointTask {
     pub(crate) fn join(mut self) {
         self.signal();
         if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+            // A panicked task must read as Failed, never as a clean join:
+            // once it is dead the drain report is the last word on the WAL,
+            // and a swallowed panic would let that word be Clear.
+            if let Err(payload) = handle.join() {
+                let message = payload
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("an unnameable panic payload");
+                let mut error = fail(
+                    StoreErrorCode::BackupFailed,
+                    format!("checkpoint task panicked: {message}"),
+                );
+                // Only this site is the maintenance task's death; real backup
+                // failures keep fail()'s shared remedy for their own cause.
+                error.remedy = se_types::Remedy {
+                    text: "Restart the runtime (`se down`, then `se up`) to recreate the background maintenance task; preserve the named cause and the store for diagnosis.".into(),
+                    command: None,
+                };
+                self.status.set(Maint::Failed(error));
+            }
         }
     }
 }
@@ -314,4 +334,40 @@ fn checkpoint(db: &Connection, mode: &str) -> StoreResult<(i64, i64, i64)> {
         ))
     })
     .map_err(sql)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn join_records_a_panicked_task_as_failed() {
+        let status = Status::default();
+        let task = CheckpointTask {
+            handle: Some(std::thread::spawn(|| panic!("planted checkpoint panic"))),
+            closed: Arc::new(AtomicBool::new(false)),
+            status: status.clone(),
+        };
+        task.join();
+        assert!(
+            status.failed(),
+            "a dead task must read as Failed, never Clear"
+        );
+        let Some(error) = status.last_error() else {
+            panic!("a failed join retains its error");
+        };
+        assert!(
+            error.cause.contains("planted checkpoint panic"),
+            "the panic message must be named, got: {}",
+            error.cause
+        );
+        assert!(
+            error
+                .remedy
+                .text
+                .contains("recreate the background maintenance task"),
+            "the maintenance remedy must name a working step, got: {}",
+            error.remedy.text
+        );
+    }
 }
