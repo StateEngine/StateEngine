@@ -170,10 +170,10 @@ impl se_host::McpBackend for Backend {
             .pointer("/atlas/state")
             .and_then(serde_json::Value::as_str)
         {
-            Some("unavailable" | "not-built") => Ok(false),
+            Some("unavailable" | "not-built" | "disabled") => Ok(false),
             Some(
-                "unknown" | "preparing" | "unreadable" | "disabled" | "dormant" | "absent"
-                | "updating" | "current" | "partial" | "suspended" | "draining" | "closed",
+                "unknown" | "preparing" | "unreadable" | "dormant" | "absent" | "updating"
+                | "current" | "partial" | "suspended" | "draining" | "closed",
             ) => Ok(true),
             _ => Err(scope::unreadable(
                 "MCP Atlas discovery",

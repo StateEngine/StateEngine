@@ -90,7 +90,7 @@ impl McpBackend for HttpBackend<'_> {
     }
     async fn atlas_available(&mut self, capability: Arc<Secret>) -> Result<bool> {
         self.check_session(capability).await?;
-        Ok(self.router.execution.atlas.is_installed())
+        Ok(self.router.execution.atlas.is_available())
     }
     async fn bound_principal(
         &mut self,
