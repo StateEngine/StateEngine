@@ -1,4 +1,4 @@
-"""Verify a published standalone archive before repackaging its native payload."""
+"""Verify and extract a published standalone archive for package managers."""
 import hashlib
 import json
 from pathlib import PurePosixPath

@@ -13,7 +13,7 @@ import zipfile
 
 from assemble import native_binary
 from native_payload import publish
-from npm_archive import digest, extract
+from release_archive import digest, extract
 
 HERE = Path(__file__).resolve().parent
 PLATFORMS = {
