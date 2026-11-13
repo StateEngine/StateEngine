@@ -1,5 +1,6 @@
 //! File identity observations that do not disturb SQLite's process-wide locks.
 use std::{io, path::Path};
+mod sqlite;
 
 /// The native object behind a regular file name, independent of its contents.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -15,19 +16,8 @@ impl NativeFileIdentity {
     pub fn observe(path: &Path) -> io::Result<Self> {
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt;
             let metadata = std::fs::symlink_metadata(path)?;
-            if !metadata.is_file() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "regular file without symbolic links required",
-                ));
-            }
-            let mut volume = [0; 16];
-            let mut file = [0; 16];
-            volume[..8].copy_from_slice(&metadata.dev().to_be_bytes());
-            file[..8].copy_from_slice(&metadata.ino().to_be_bytes());
-            Ok(Self { volume, file })
+            Self::from_metadata(&metadata)
         }
         #[cfg(windows)]
         {
@@ -48,5 +38,20 @@ impl NativeFileIdentity {
                 file: revision.file,
             })
         }
+    }
+    #[cfg(unix)]
+    fn from_metadata(metadata: &std::fs::Metadata) -> io::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "regular file without symbolic links required",
+            ));
+        }
+        let mut volume = [0; 16];
+        let mut file = [0; 16];
+        volume[..8].copy_from_slice(&metadata.dev().to_be_bytes());
+        file[..8].copy_from_slice(&metadata.ino().to_be_bytes());
+        Ok(Self { volume, file })
     }
 }

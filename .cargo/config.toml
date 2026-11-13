@@ -1,3 +1,8 @@
+[env]
+# Expose the opened Unix database descriptor through SQLite's file control.
+# The bundled library registers the file and WAL diagnostic functions together.
+LIBSQLITE3_FLAGS = "SQLITE_ENABLE_FILESTAT SQLITE_ENABLE_WALSTAT"
+
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/Brepro", "-C", "link-arg=/DELAYLOAD:user32.dll", "-C", "link-arg=/DELAYLOAD:ktmw32.dll", "-C", "link-arg=delayimp.lib"]
 

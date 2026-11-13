@@ -91,7 +91,9 @@ impl SqliteFactory {
                 }
             }
             reader.bind_identity()?;
-            let db = connection::connect(&reader.path, true, o.busy_timeout)?;
+            let db = connection::connect_checked(&reader.path, true, o.busy_timeout, |db| {
+                reader.validate_connection(db)
+            })?;
             reader.validate_identity()?;
             let identity = LeaseIdentity {
                 store: Some(id),

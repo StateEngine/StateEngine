@@ -70,7 +70,9 @@ impl SqliteReader {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(self.identity_observation_error(e)),
         }
-        let db = connection::connect(&self.path, false, self.timeout)?;
+        let db = connection::connect_checked(&self.path, false, self.timeout, |db| {
+            self.validate_connection(db)
+        })?;
         self.validate_identity()?;
         Ok(db)
     }
@@ -85,6 +87,11 @@ impl SqliteReader {
         let named = se_proc::NativeFileIdentity::observe(&self.path)
             .map_err(|e| self.identity_observation_error(e))?;
         self.require_identity(named)
+    }
+    pub(crate) fn validate_connection(&self, db: &Connection) -> StoreResult<()> {
+        let opened = se_proc::NativeFileIdentity::observe_sqlite(db)
+            .map_err(|error| io(error, &self.path, StoreIoStage::Open))?;
+        self.require_identity(opened)
     }
     fn identity_observation_error(&self, error: std::io::Error) -> Box<StoreError> {
         if error.kind() == std::io::ErrorKind::InvalidInput {
@@ -129,7 +136,9 @@ impl StoreFactory for SqliteFactory {
     fn open_direct(o: &StoreOptions, lease: &dyn RuntimeLease) -> StoreResult<Read<Self::Direct>> {
         match Self::existing_protected(o, lease)? {
             Read::Present { value: reader } => {
-                let db = connection::connect(&reader.path, true, o.busy_timeout)?;
+                let db = connection::connect_checked(&reader.path, true, o.busy_timeout, |db| {
+                    reader.validate_connection(db)
+                })?;
                 let info = connection::info_at(&db, &reader.path)?;
                 let identity = connection::validate_lease(&info, lease, LeaseMode::DirectClient)?;
                 let reader_path = reader.path.clone();
@@ -165,7 +174,9 @@ impl StoreFactory for SqliteFactory {
     fn open_host(o: &StoreOptions, lease: &dyn RuntimeLease) -> StoreResult<Read<Self::Host>> {
         match Self::existing_protected(o, lease)? {
             Read::Present { value: reader } => {
-                let db = connection::connect(&reader.path, true, o.busy_timeout)?;
+                let db = connection::connect_checked(&reader.path, true, o.busy_timeout, |db| {
+                    reader.validate_connection(db)
+                })?;
                 let info = connection::info_at(&db, &reader.path)?;
                 let identity = connection::validate_lease(&info, lease, LeaseMode::Host)?;
                 let context = BackupContext::bound(
