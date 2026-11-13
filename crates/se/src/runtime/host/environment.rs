@@ -33,7 +33,12 @@ pub(super) fn prepare(
         configuration != files.root().join("config.toml"),
     )?;
     selected.value.validate()?;
-    for name in &selected.value.acp.environment {
+    let named = selected
+        .value
+        .harnesses
+        .values()
+        .flat_map(|descriptor| &descriptor.environment);
+    for name in selected.value.acp.environment.iter().chain(named) {
         if let Some(value) = std::env::var_os(name) {
             entries.retain(|(old, _)| !old.eq_ignore_ascii_case(std::ffi::OsStr::new(name)));
             entries.push((name.into(), value));
