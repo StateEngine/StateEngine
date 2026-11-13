@@ -8,7 +8,8 @@ import tomllib
 
 from .io import digest, require
 
-DRIVERS = {'acp-stdio': 'acp', 'claude-stream-json': 'claude', 'codex-app-server': 'codex'}
+DRIVERS = {'acp-stdio': 'acp', 'claude-stream-json': 'claude', 'codex-app-server': 'codex',
+           'secode-native': 'secode'}
 RESULTS = ('PASS', 'FAIL', 'ABSENT', 'SKIPPED', 'UNREADABLE', 'NOT RUN')
 
 
@@ -50,6 +51,9 @@ def preflight(entry):
     if settings is None:
         raise Unavailable('ABSENT', 'No native inputs for this platform')
     require(isinstance(settings, dict), 'Native settings must be an object')
+    if settings.get('absent'):
+        require(isinstance(settings['absent'], str), 'Absent native inputs require a reason')
+        raise Unavailable('ABSENT', settings['absent'])
     settings = {**settings, 'provider': DRIVERS[entry['driver']]}
     seconds = settings.get('task_seconds', 240)
     require(type(seconds) is int and 1 <= seconds <= 1800, 'Task deadline must be 1..1800 seconds')
@@ -91,6 +95,20 @@ def preflight(entry):
     if provider == 'acp':
         require(expected['name'] in descriptor.get('permissions', {}),
                 'Descriptor has no native permission mapping')
+    seed_files = None
+    if provider == 'secode':
+        seed = settings.get('seed_profile', {})
+        root = Path(seed.get('path', ''))
+        require(root.is_absolute() and not root.is_symlink() and root.is_dir()
+                and str(root) == selected.get('seed_profile'), 'Selected private seed profile differs')
+        seed_files = seed.get('files')
+        require(isinstance(seed_files, dict)
+                and set(seed_files) == {'secode.jsonc', 'provider.credential', 'account-models.json'},
+                'Exact private seed file identities are required')
+        for name, expected_digest in seed_files.items():
+            path = plain_file(str(root / name), 'Private seed input')
+            require(path.stat().st_size <= 16 * 1024**2 and digest(path) == expected_digest,
+                    'Private seed input digest or size differs')
     images = settings.get('images')
     require(isinstance(images, list) and 1 <= len(images) <= 16, 'Exact native image identities are required')
     pinned = {}
@@ -112,5 +130,6 @@ def preflight(entry):
     if sys.platform == 'win32' and not settings.get('terminal_prefix'):
         raise Unavailable('ABSENT', 'Native Windows terminal driver is absent')
     return settings, dict(configuration_sha256=configuration['sha256'], images=pinned,
+                          seed_files_sha256=seed_files,
                           environment={key: 'present-unverified' if os.environ.get(key) else 'absent'
                                        for key in names})
