@@ -544,6 +544,8 @@ fn run(
                         }
                     }
                     Err(e) => {
+                        let mut e = e;
+                        stamp_busy_wait(&mut e, host.reader.timeout);
                         for (reply, _, bytes, _) in replies {
                             shared.completed(bytes)?;
                             reply.send(Err(e.clone()));

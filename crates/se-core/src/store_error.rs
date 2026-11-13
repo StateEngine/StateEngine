@@ -55,7 +55,8 @@ pub fn store_error(error: &StoreError) -> SeError {
         }),
         C::Busy | C::Backpressure => Detail::StoreBusy(details::StoreBusy {
             waited_ms: match error.detail {
-                se_store::StoreDetail::NativeContention { waited_ms } => waited_ms,
+                se_store::StoreDetail::NativeContention { waited_ms }
+                | se_store::StoreDetail::BusyWait { waited_ms, .. } => waited_ms,
                 _ => 0,
             },
             replay: None,
@@ -205,7 +206,10 @@ pub fn store_error(error: &StoreError) -> SeError {
         }
     })
     .with_cause(error.clone());
-    if matches!(error.detail, se_store::StoreDetail::NativeContention { .. }) {
+    if matches!(
+        error.detail,
+        se_store::StoreDetail::NativeContention { .. } | se_store::StoreDetail::BusyWait { .. }
+    ) {
         mapped.body = mapped.body.with_retry(error.retry.clone());
     }
     mapped
@@ -276,3 +280,4 @@ impl se_types::OperationCommand for ExistingAgent<'_> {
         crate::ops::AgentCommand::launch(self.agent, None, Some(self.project), false).argv
     }
 }
+
