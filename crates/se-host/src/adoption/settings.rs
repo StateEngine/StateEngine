@@ -77,7 +77,7 @@ pub fn hooks(executable: &Path, home: &Path) -> Result<Vec<(String, Value)>> {
         // policy owns failure handling, including a missing or broken image.
         let mut hook = json!({"type":"command", "command":image,
             "args":["__se-claude-adopt",home,action], "onFailure":"continue",
-            "timeout":if action == "mail" { 2_000_000 } else { 30 }});
+            "timeout":if action == "mail" { 2_000_000 } else if action == "end" { 2 } else { 30 }});
         if action == "mail" {
             hook["asyncRewake"] = json!(true);
         } else if background || action != "end" {
