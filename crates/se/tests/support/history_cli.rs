@@ -85,10 +85,10 @@ pub fn captured_turn(
     }
     assert_eq!(value["payload"]["role"], "assistant");
     assert_eq!(value["payload"]["provider"], "claude");
-    assert_eq!(value["payload"]["turn_id"], "otto-record-1");
+    assert_eq!(value["payload"]["turn_id"], "se-test-record-1");
     assert_eq!(
         value["payload"]["provider_session"],
-        "otto-real-listener-conversation"
+        "se-test-real-listener-conversation"
     );
     assert!(value["payload"]["session_id"].is_string());
     assert!(matches!(

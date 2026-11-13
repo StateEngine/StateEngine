@@ -18,7 +18,7 @@ mod support;
 use support::*;
 
 const COMPACT: &[u8] = include_bytes!("fixtures/claude-2.1.317-compact-boundary.jsonl");
-const CONVERSATION: &str = "01a1a4cd-d140-70df-bd3c-f3f879fce410";
+const CONVERSATION: &str = "00000000-0000-4000-8000-000000000001";
 
 fn line(value: Value) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut bytes = serde_json::to_vec(&value)?;
