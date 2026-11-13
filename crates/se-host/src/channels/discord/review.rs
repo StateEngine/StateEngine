@@ -61,6 +61,43 @@ fn discord_identify_spacing_first_waits_nothing() -> Check {
     Ok(())
 }
 
+/// Through the real receiver loop: the first connection reaches Identify without
+/// the old fixed delay, and a fresh Identify after a refused replay is still
+/// spaced one concurrency window from the first attempt.
+#[test]
+fn discord_wire_review_identify_first_is_prompt_and_later_is_spaced() -> Check {
+    let f = Fixture::new("expired")?;
+    runtime()?.block_on(async {
+        let started = std::time::Instant::now();
+        let mut receiver = ready(&f).await?;
+        require(
+            started.elapsed() < Duration::from_secs(3),
+            "the first Identify waited out a fixed delay",
+        )?;
+        let first = next(receiver.as_mut(), &f.token).await?;
+        receiver.ack(&first.cursor)?;
+        let cursor = first.cursor;
+        drop(receiver);
+        let mut receiver = f.adapter.clone().receiver(Some(cursor.clone()))?;
+        require(
+            matches!(
+                tokio::time::timeout(Duration::from_secs(15), receiver.next(&f.token)).await?,
+                Err(Error::ReplayUnavailable)
+            ),
+            "expired replay was collapsed to absence",
+        )?;
+        drop(receiver);
+        let mut fresh = f.adapter.clone().receiver(Some(cursor))?;
+        let checkpoint = next(fresh.as_mut(), &f.token).await?;
+        fresh.ack(&checkpoint.cursor)?;
+        require(
+            started.elapsed() >= Duration::from_millis(4800),
+            "the second fresh Identify was not spaced from the first",
+        )?;
+        f.no_fixture_errors()
+    })
+}
+
 /// The actual REST client validates synthetic TLS, suppresses mentions and never
 /// retries an uncertain POST or follows a redirect carrying the credential.
 #[test]
