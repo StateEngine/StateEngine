@@ -11,7 +11,7 @@ default = ["runtime", "listener"]
 import = ["se-core/import"]
 runtime = ["dep:tokio"]
 listener = ["runtime", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util"]
-secode = ["runtime", "listener", "dep:secode-stateengine-api", "dep:toml"]
+secode = ["runtime", "listener", "dep:secode-stateengine-api"]
 remote = ["dep:base64", "dep:subtle", "listener", "tokio/fs", "dep:chacha20poly1305", "tokio/macros"]
 
 [dependencies]
@@ -41,8 +41,9 @@ hyper-util = { version = "0.1.20", default-features = false, features = ["tokio"
 http-body-util = { version = "0.1.5", optional = true }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"], optional = true }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"], optional = true }
-# The embedded host reads the owner's config.toml itself (same version as se).
-toml = { version = "0.9.11", optional = true }
+# The embedded host reads the owner's config.toml itself (same version as se),
+# and the Codex launch reads the user's own provider file before it starts.
+toml = "0.9.11"
 chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["std"], optional = true }
 
 [lints]
