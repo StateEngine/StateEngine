@@ -362,7 +362,10 @@ mod tests {
             error.cause
         );
         assert!(
-            error.remedy.text.contains("recreate the background maintenance task"),
+            error
+                .remedy
+                .text
+                .contains("recreate the background maintenance task"),
             "the maintenance remedy must name a working step, got: {}",
             error.remedy.text
         );
