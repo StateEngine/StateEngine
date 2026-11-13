@@ -2,7 +2,7 @@
 //! service retirement. A native exit alone never closes a vendor execution.
 use super::*;
 use se_proc::ProcessRuntime;
-use serde_json::{Value, json};
+use serde_json::json;
 
 impl LaunchCoordinator {
     pub(in crate::process) async fn interrupt_secode_client(
@@ -189,31 +189,11 @@ impl LaunchCoordinator {
                     self.observe_secode_birth(&service, deadline).await?;
                     // A recovered service can precede session identity publication.
                     // That permits authenticated service cleanup, never session effects.
-                    let qualified = if service.journal.unprovisioned() {
-                        None
+                    if service.journal.unprovisioned() {
+                        let control = service.control.clone().ok_or_else(|| error("SE Code service shutdown", "authenticated cleanup control is absent"))?;
+                        control.require_unprovisioned_idle(deadline).await?;
                     } else {
-                        Some(service.current()?)
-                    };
-                    let control = match &qualified {
-                        Some(current) => {
-                            current.binding(&service.journal.vendor_session, deadline).await?;
-                            current.control.clone()
-                        }
-                        None => {
-                            let control = service.control.clone().ok_or_else(|| error("SE Code service shutdown", "authenticated cleanup control is absent"))?;
-                            if control.read(&["api","health"], deadline).await?.is_null() {
-                                return Err(error("SE Code service shutdown", "authenticated health is empty; service retained"));
-                            }
-                            control
-                        }
-                    };
-                    let active = control.read(&["api","session","active"], deadline).await?;
-                    match active.get("data").and_then(Value::as_object) {
-                        Some(rows) if rows.is_empty() => (),
-                        _ => return Err(error("SE Code service shutdown", "active execution inventory is nonempty or unreadable; service retained")),
-                    }
-                    if let Some(current) = &qualified {
-                        current.binding(&service.journal.vendor_session, deadline).await?;
+                        service.current()?.require_idle(&service.journal.vendor_session, deadline).await?;
                     }
                     self.observe_secode_birth(&service, deadline).await?;
                 }

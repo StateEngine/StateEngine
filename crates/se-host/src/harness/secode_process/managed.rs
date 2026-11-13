@@ -19,6 +19,13 @@ pub(crate) struct QualifiedControl {
     repaired: Option<NoticeBinding>,
 }
 impl QualifiedControl {
+    pub(crate) async fn require_idle(&self, session: &str, deadline: &Deadline) -> Result<()> {
+        self.binding(session, deadline).await?;
+        self.control.require_idle(deadline).await?;
+        self.binding(session, deadline).await?;
+        Ok(())
+    }
+
     pub(crate) async fn binding(
         &self,
         session: &str,

@@ -39,6 +39,25 @@ pub struct Control {
     client: reqwest::Client,
 }
 impl Control {
+    pub(crate) async fn require_unprovisioned_idle(&self, deadline: &Deadline) -> Result<()> {
+        if self.read(&["api", "health"], deadline).await?.is_null() {
+            return Err(shutdown_refusal(
+                "authenticated health is empty; service retained",
+            ));
+        }
+        self.require_idle(deadline).await
+    }
+
+    pub(crate) async fn require_idle(&self, deadline: &Deadline) -> Result<()> {
+        let active = self.read(&["api", "session", "active"], deadline).await?;
+        match active.get("data").and_then(Value::as_object) {
+            Some(rows) if rows.is_empty() => Ok(()),
+            _ => Err(shutdown_refusal(
+                "active execution inventory is nonempty or unreadable; service retained",
+            )),
+        }
+    }
+
     pub(crate) async fn put_session_capability(
         &self,
         session: &str,
@@ -415,4 +434,9 @@ impl CapabilityRepair {
         });
         Ok(self)
     }
+}
+
+// Preserve the coordinator's existing shutdown diagnostic encoding.
+fn shutdown_refusal(reason: &str) -> se_types::SeError {
+    se_core::scope::unreadable("SE Code service shutdown", &format!("{reason:?}"))
 }
