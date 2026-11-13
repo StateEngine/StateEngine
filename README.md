@@ -1,5 +1,9 @@
 # StateEngine
 
+> **Experimental pre-alpha.** StateEngine is in early development and is not recommended
+> for real work yet. Commands, saved data and behaviour can change without notice or a
+> migration path, and some flows are unfinished. Try it only on projects you have backed up.
+
 Run a coding assistant in your project, save its conversation, and pick up where you
 left off. StateEngine launches **Claude Code** or **Codex**, records their work, and
 lets assistants exchange project messages. The `se` command manages those assistants.
@@ -7,7 +11,7 @@ lets assistants exchange project messages. The `se` command manages those assist
 ## Before you install
 
 The first-agent workflow below is for **Linux x86_64** and **Windows x86_64**.
-**macOS cannot run the background service or launch managed agents in this alpha**;
+**macOS cannot run the background service or launch managed agents in this pre-alpha**;
 those commands refuse. macOS packages support installation and saved-state inspection,
 but are not a working first-agent path. Native macOS qualification is still pending.
 
@@ -433,51 +437,6 @@ uses an explicitly unqualified monotonic clock estimate across the connection;
 these samples do not certify a latency budget or a physical network topology.
 Windows source/destination coverage and hands-on qualification remain separate.
 
-## Optional migration from the older Node implementation
-
-New users can skip this section. `se import` is only present in builds compiled with the opt-in `import` cargo feature (off by default); `se import --help` lists the migration options.
-For source-owner selection, read `owner_human_id` in the retained source copy's
-`.stateengine/projects.jsonl` and match it to `human_id` in
-`.stateengine/humans.jsonl`; a display name is not an identity. Target human IDs
-must already be registered in the target project. Run
-`se --json history --kind principal.registered` in that project; for a human entry,
-`payload.principal.kind` is `owner` or `human`, and `payload.principal.id` is the ID
-to use. Follow returned page cursors if needed; `se history --help` describes
-paging. Do not create or guess IDs to make an import pass.
-
-To import existing Node user history, first preserve a source copy containing its
-`.stateengine/projects.jsonl`, named project history, and saved profiles. Initialize
-a Rust data home with `se init`, then run `se import --from-node PATH` as its owner.
-The source must have a single human matching the importing owner. For a different
-source owner or multiple historical humans, pass `--source-owner <human_id>` to
-explicitly adopt that source owner; copies containing projects from other owners
-are refused. Historical humans keep their recorded IDs and display names as project
-members, without becoming owners of the Rust data home. To explicitly associate a
-source human with an existing target human, repeat `--map-human SOURCE_ID=TARGET_ID`.
-The target must already be registered in each imported project; explicit mapping onto
-the importing owner is also supported, because adoption registers that owner there.
-Missing targets are refused before adopting an import run. The source ID and name remain in history, and
-names alone never imply a correspondence. Changing a correspondence after importing
-that human is refused; use a fresh target data home for a different mapping.
-The command keeps source files intact and reports imported, duplicate, unreadable,
-excluded and deferred source rows (individual entries for profile documents). Retry the same retained copy to continue committed
-progress. A malformed final row is recorded as unreadable; preserve a repaired
-export as a separate copy rather than rewriting its consumed prefix. `--json` returns the accounted receipt. An already registered root must be
-released explicitly before its historical project ID can adopt it. `se init` only
-offers this import; it never starts one automatically. Historical humans with colliding display names keep distinct IDs. The lowest source ID keeps the plain name; other IDs receive a stable ` (historical ID-SUFFIX)` suffix derived from their exact ID. Source row order does not change these names. The original name remains in provenance with a counted import note.
-
-Imported agents without a usable saved profile adopt the current owner's safe default
-provider profile after source configuration is processed. This is current configuration,
-not a claim about their historical provider or permissions. Floor broadcasts and messages
-with floor or unmapped human senders retain their recorded sender, audience and text in history;
-replies and replacements referencing retained mail keep their recorded links without native message identities;
-they do not create a sender identity or a new native recipient-read fact.
-
-Imported conversations remain ended. Saved Claude and Codex references are retained
-in history only; launching an imported agent starts a fresh conversation. Missing
-or unsupported references are reported explicitly. Provider
-account files, credentials, running processes and factory authority are not imported.
-
 ## Optional code navigation (Atlas)
 
 Atlas is the optional code index. Its background indexer currently runs on Linux.
@@ -528,8 +487,8 @@ Python 3.11+, and rustup with the toolchain pinned in `rust-toolchain.toml`
 (currently Rust 1.97.1, including rust-docs). Use a native machine matching the target:
 Linux needs a C compiler/linker and binutils; Windows needs Visual Studio Build
 Tools with the MSVC C++ workload and Windows SDK; macOS needs Xcode Command Line
-Tools and has the runtime limits stated above. SQLite's C source is bundled;
-Node.js is not needed by the installed product. The build downloads lockfile-pinned
+Tools and has the runtime limits stated above. SQLite's C source is bundled.
+The build downloads lockfile-pinned
 Cargo inputs unless `--offline` is selected with an already populated cache.
 
 For example, on Linux x86_64, choose new output paths outside the source tree:
@@ -563,8 +522,7 @@ To bundle the native runtime inside another application's package, add
 the same verified executable, build receipt and original license and notice
 bytes, with an exact file inventory in `native-payload.json`. The assembly result
 reports the manifest digest, version and source commit for the consumer's pin.
-The directory includes remote bootstrap images when the archive does. It requires
-no Node runtime; the consumer remains responsible for exercising its installed
+The directory includes remote bootstrap images when the archive does. The consumer remains responsible for exercising its installed
 launcher on each native platform.
 The payload output path must be absolute and new. Assembly prepares the archive,
 checksum, payload and diagnostics before publishing their final paths; a refused
