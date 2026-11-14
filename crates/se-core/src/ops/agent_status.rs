@@ -1,12 +1,10 @@
-//! Saved identity readback. Native lifecycle and provider conversation facts are
-//! deliberately unknown until the runtime observation adapter supplies them.
+//! Saved identity and known session absence from the caller's store snapshot.
 use super::{AgentRow, AgentShow, AgentStatusOutput};
 use crate::{commit::Cx, scope, store_error::store_error};
 use se_store::{Actor, EventBody, Snapshot};
 use se_types::{Read, Result};
 
-/// Saved agents in this finite principal page. Native lifecycle facts remain
-/// explicitly unknown; reading this page never starts or resumes a process.
+/// Saved agents in a finite principal page; never starts or resumes a process.
 pub fn page<R: Snapshot>(
     budget: se_store::ReadBudget,
     cx: &mut Cx<'_, R>,
@@ -73,9 +71,8 @@ pub fn page<R: Snapshot>(
 )]
 pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentStatusOutput> {
     let agent = scope::working_agent(cx.admission, input.target_agent_id.as_ref(), "agent.show")?;
-    // An owner's saved profile and rename events are not session history.
-    // The target-bound control port exposes this agent's metadata without
-    // granting its session visibility into the owner's other events.
+    // Read saved identity through the target-bound control port without granting
+    // access to the owner's other session history.
     let mut controlled_profile = None;
     let principal = if matches!(&cx.admission.actor, Actor::Agent(_)) {
         match cx
