@@ -1,0 +1,138 @@
+name: C21 repeated regression checks
+'on':
+  push:
+    branches: [prime/c21-ten-rounds-r1]
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+defaults:
+  run:
+    shell: bash
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: debfcda8a28a82b70f84178c8c1b9877542d3fca
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: judge-linux-v1
+        save-if: 'false'
+    - name: Build the candidate CLI for real consumer tests
+      env:
+        ALL_FEATURES: 'true'
+      run: |
+        python3 -I - <<'PY'
+        from pathlib import Path
+        for report in ("target/nextest/ci/junit.xml", "target/nextest/input-judges.json",
+                       "target/nextest/custom-harnesses.json"):
+            Path(report).unlink(missing_ok=True)
+        PY
+        features=()
+        if [[ "$ALL_FEATURES" == true ]]; then features+=(--all-features); fi
+        target="$(rustc --print host-tuple)"
+        cargo build --target "$target" --workspace --bins "${features[@]}" --locked
+        python3 -I - "$target" <<'PY'
+        import os, sys
+        from pathlib import Path
+        image = (Path("target") / sys.argv[1] / "debug"
+                 / ("se.exe" if sys.platform == "win32" else "se")).resolve(strict=True)
+        if not image.is_file():
+            sys.exit("candidate CLI is not a regular file")
+        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+            for name in ("SE_W3_SE_BIN", "SE_SELECTOR_SE"):
+                print(f"{name}={image}", file=output)
+        PY
+    - name: Register the disposable runner account for installation tests
+      run: |
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          python scripts/ci/installation_account.py provision
+        else
+          identity="$(id -u)"
+          profile="$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')"
+          sudo python3 scripts/ci/installation_account.py provision --identity "$identity" --profile "$profile"
+        fi
+    - name: Repeat the fixed 26 tests ten times on this runner
+      shell: python
+      run: |
+        import json
+        import os
+        from pathlib import Path
+        import shutil
+        import subprocess
+        import sys
+        import xml.etree.ElementTree as ET
+
+        EXPECTED = [('se-atlas::foundation_judge', 'history::history_feed_filters_secrets_before_all_derivations_and_retries_immutably'), ('se-host::atlas_quantum_retry', 'expired_directory_entry_is_retried_without_another_source_event'), ('se-host::atlas_query_reads', 'five_native_reads_and_streaming_text_share_one_scoped_snapshot'), ('se-host::atlas_query_retry_independent', 'accepted_write_timeout_is_not_replayed'), ('se-host::atlas_query_retry_independent', 'expired_native_quantum_is_incomplete_and_resumes'), ('se-host::atlas_query_retry_independent', 'expired_native_quantum_retains_work_and_prior_file_failure'), ('se-host::atlas_query_retry_independent', 'non_timeout_failure_is_not_replayed'), ('se-host::atlas_query_retry_independent', 'one_expired_public_read_gets_one_fresh_slice'), ('se-host::atlas_query_retry_independent', 'repeated_expiry_remains_explicit_with_retry_delay'), ('se-host::checkpoint_visibility_independent', 'scheduled_work_is_quiet_and_failures_reach_cli_and_session_envelopes'), ('se-host::read_pool_host_independent', 'host_drain_joins_an_outstanding_real_pooled_phase_before_storage_close'), ('se-host::read_pool_host_independent', 'native_backup_publishes_and_reads_back_while_the_pool_has_idle_and_active_phases'), ('se-host::read_pool_host_independent', 'native_credential_removal_preserves_reads_with_the_database_pool_active'), ('se-host::read_pool_host_independent', 'real_http_rechecks_committed_revocation_after_warming_the_admission_pool'), ('se-host::read_pool_host_independent', 'real_http_refuses_a_replaced_inode_even_after_its_first_refusal_empties_idle'), ('se-store::store_failures', 'marker_for_another_recipient_is_a_scoped_reference_refusal'), ('se-store::store_failures', 'native_faults::checkpoint_failure_never_relabels_known_commits'), ('se-store::store_failures', 'native_faults::disk_full_before_commit_rolls_back_the_entire_group'), ('se-store::store_failures', 'native_faults::disk_full_during_commit_preserves_indeterminate_keys'), ('se-store::store_failures', 'native_faults::io_failure_during_commit_preserves_indeterminate_keys'), ('se-store::store_failures', 'unknown_capture_source_is_not_unreadable_storage'), ('se-store::store_failures', 'unknown_message_mark_is_not_unreadable_storage'), ('se-store::store_timings', 'concurrent_keyless_receipts_match_their_own_store_measurements'), ('se-store::store_timings', 'direct_receipts_do_not_have_host_write_timings'), ('se-store::store_timings', 'every_receipt_keeps_timings_past_the_former_sample_capacity'), ('se-store::store_timings', 'group_promotion_and_replay_attempt_timings_keep_distinct_durability')]
+        FILTER = 'binary(store_timings) | binary(store_failures) | binary(checkpoint_visibility_independent) | binary(atlas_query_retry_independent) | binary(atlas_quantum_retry) | binary(atlas_query_reads) | binary(read_pool_host_independent) | test(history_feed_filters_secrets)'
+        root = Path(os.environ['RUNNER_TEMP']) / 'c21-results'
+        root.mkdir()
+        source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+        target = subprocess.check_output(['rustc', '--print', 'host-tuple'], text=True).strip()
+        sys.path.insert(0, str(Path('scripts/ci').resolve()))
+        from custom import custom_targets
+        custom = {'schema': 'judge-custom-harnesses/v1', 'not_run': [
+            {'judge': name, 'status': 'not_run', 'reason': 'custom harness requires standalone runner; this qualification repeats the fixed 26 nextest cases'}
+            for name in sorted(custom_targets())]}
+        (root / 'custom-harnesses.json').write_text(json.dumps(custom, indent=2) + '\n')
+        report = {'source': source, 'platform': sys.platform, 'rounds_requested': 10,
+                  'test_workers': 2, 'retries': 0, 'expected_tests_per_round': 26,
+                  'expected_cases': EXPECTED, 'rounds': []}
+        for number in range(1, 11):
+            directory = root / f'round-{number:02}'
+            directory.mkdir()
+            junit = Path('target/nextest/ci/junit.xml')
+            junit.unlink(missing_ok=True)
+            row = {'round': number, 'passed': False}
+            try:
+                supported = subprocess.check_output(['python3', 'scripts/ci/custom.py', 'filter', '--all-features'], text=True).strip()
+                args = ['cargo', 'nextest', 'run', '--target', target, '--workspace', '--all-features',
+                        '--locked', '--profile', 'ci', '--no-fail-fast', '--no-tests', 'fail',
+                        '-E', f'({FILTER}) and ({supported})']
+                with (directory / 'nextest.log').open('wb') as log:
+                    completed = subprocess.run(args, stdout=log, stderr=subprocess.STDOUT)
+                row['exit'] = completed.returncode
+                if not junit.is_file():
+                    raise RuntimeError('this round did not produce JUnit; no earlier report reused')
+                shutil.copyfile(junit, directory / 'junit.xml')
+                tree = ET.parse(junit)
+                cases = [{'class': item.get('classname'), 'name': item.get('name'),
+                          'failure': item.find('failure') is not None, 'error': item.find('error') is not None,
+                          'skipped': item.find('skipped') is not None} for item in tree.iter('testcase')]
+                selected = sorted((item['class'], item['name']) for item in cases)
+                row.update(tests=len(cases), failures=sum(item['failure'] or item['error'] for item in cases),
+                           skipped=sum(item['skipped'] for item in cases), cases=cases,
+                           selection_matches=selected == EXPECTED)
+                row['passed'] = (row['exit'] == 0 and row['selection_matches']
+                                 and row['tests'] == 26 and row['failures'] == 0 and row['skipped'] == 0)
+            except Exception as error:
+                row['error'] = f'{type(error).__name__}: {error}'
+            for name in ['input-judges.json']:
+                path = Path('target/nextest') / name
+                if path.is_file():
+                    shutil.copyfile(path, directory / name)
+                else:
+                    row[name] = {'state': 'absent', 'reason': 'not produced in this round'}
+            report['rounds'].append(row)
+            (root / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
+            print(f"round {number}: passed={row['passed']} tests={row.get('tests')} failures={row.get('failures')} skipped={row.get('skipped')}", flush=True)
+        report['passed'] = len(report['rounds']) == 10 and all(row['passed'] for row in report['rounds'])
+        (root / 'summary.json').write_text(json.dumps(report, indent=2) + '\n')
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as stream:
+            stream.write(f"Source {source}: {sum(row['passed'] for row in report['rounds'])}/10 rounds; fixed 26-case selection; no retries.\n")
+        raise SystemExit(0 if report['passed'] else 1)
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: c21-ten-rounds
+        path: ${{ runner.temp }}/c21-results/
+        if-no-files-found: error
