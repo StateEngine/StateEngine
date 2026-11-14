@@ -287,7 +287,7 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
         ready.endpoint.epoch.owner.fields().pid.get(),
         ready.ready.identity.pid.0
     );
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     assert!(matches!(
         ready.ready.detachment,
         se_proc::RuntimeDetachment::SessionOnly { .. }

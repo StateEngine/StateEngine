@@ -2,6 +2,7 @@
 //! Dropping a forward closes only SSH; it never stops a remote host or agent.
 use super::RemoteReady;
 use super::channel::unavailable;
+use super::ssh_diagnostic::Diagnostics;
 mod authorization;
 mod bootstrap;
 pub(super) mod command;
@@ -27,6 +28,7 @@ pub use se_remote::ssh::{ForwardConfig, validate_destination};
 struct Forward {
     config: ForwardConfig,
     child: Option<Child>,
+    diagnostics: Option<Diagnostics>,
     enabled: bool,
 }
 impl Forward {
@@ -40,7 +42,7 @@ impl Forward {
             match child.try_wait() {
                 Ok(None) => return Ok(()),
                 Ok(Some(_)) => {
-                    self.child = None;
+                    self.close().await?;
                 }
                 Err(_) => return Err(unavailable("cannot inspect the owned SSH process")),
             }
@@ -55,14 +57,21 @@ impl Forward {
             "{}:127.0.0.1:{}",
             self.config.local, self.config.remote_port
         );
-        let child = Command::new("ssh")
-            .args(["-N", "-T", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
+        // Forwarding refusals are functional input, so ambient quiet logging
+        // must not suppress the diagnostic read by this owned process.
+        let mut child = Command::new("ssh")
+            .args(["-N", "-T", "-o", "LogLevel=INFO", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
                 "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", "-L"])
             .arg(mapping).arg(&self.config.destination)
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
             .kill_on_drop(true).spawn()
             .map_err(|_| unavailable("cannot start SSH; install the system SSH client and check the saved destination"))?;
+        self.diagnostics = child.stderr.take().map(Diagnostics::start);
         self.child = Some(child);
+        if self.diagnostics.is_none() {
+            self.close().await?;
+            return Err(unavailable("the owned SSH diagnostic pipe is absent"));
+        }
         // Readiness carries no application credential. The short-lived SSH
         // authorization below must still confirm the actual native channel;
         // a foreign listener cannot turn this TCP probe into authenticated data.
@@ -71,6 +80,9 @@ impl Forward {
                 let running = self.child.as_mut().ok_or_else(|| unavailable("owned SSH process is absent"))?
                     .try_wait().map_err(|_| unavailable("cannot inspect SSH readiness"))?.is_none();
                 if !running {
+                    if let Some(error) = self.forwarding_refusal().await {
+                        return Err(error);
+                    }
                     return Err(unavailable("SSH forwarding failed; check authentication, host-key trust and forwarding permission"));
                 }
                 if let Ok(Ok(stream)) = timeout(Duration::from_millis(100), tokio::net::TcpStream::connect(self.config.local)).await {
@@ -92,6 +104,12 @@ impl Forward {
                 }
             }
         }
+    }
+    async fn forwarding_refusal(&mut self) -> Option<se_types::SeError> {
+        self.diagnostics
+            .as_mut()?
+            .forwarding_refusal(self.config.remote_port)
+            .await
     }
     async fn authorize(&mut self, authorization: Authorization) -> Result<RemoteReady> {
         let result = authorization::run(&self.config, authorization).await;
@@ -119,6 +137,10 @@ impl Forward {
                 .await
                 .map_err(|_| unavailable("cannot join the owned SSH process"))?;
             self.child = None;
+        }
+        if let Some(diagnostics) = &mut self.diagnostics {
+            diagnostics.close().await?;
+            self.diagnostics = None;
         }
         Ok(())
     }
@@ -158,6 +180,7 @@ impl Forwards {
                     Arc::new(Mutex::new(Forward {
                         config: config.clone(),
                         child: None,
+                        diagnostics: None,
                         enabled: true,
                     }))
                 })
@@ -202,6 +225,26 @@ impl Forwards {
             }
         }
         result
+    }
+    /// Only the matching, still-owned SSH child may explain a transport failure.
+    pub(super) async fn forwarding_refusal(
+        &self,
+        config: &ForwardConfig,
+    ) -> Option<se_types::SeError> {
+        let entry = self
+            .entries
+            .lock()
+            .await
+            .get(&config.host.0.hex())
+            .cloned()?;
+        let mut forward = entry.lock().await;
+        if self.closed.load(std::sync::atomic::Ordering::Acquire)
+            || !forward.enabled
+            || forward.config != *config
+        {
+            return None;
+        }
+        forward.forwarding_refusal().await
     }
     pub async fn authorize(
         &self,
