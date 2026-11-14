@@ -15,12 +15,16 @@ try {
     $worker=Join-Path $root 'worker.ps1'
     $arguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$worker+'" -Root "'+$root+'"'
     $child=Start-Process -FilePath (Get-Command powershell.exe).Source -ArgumentList $arguments -Credential $credential -LoadUserProfile -RedirectStandardOutput (Join-Path $root 'worker.stdout') -RedirectStandardError (Join-Path $root 'worker.stderr') -PassThru
+    $retainedHandle=$child.Handle
+    if ($retainedHandle -eq [IntPtr]::Zero) {throw 'owned profile worker handle absent'}
     if (-not $child.WaitForExit(75000)) {
         $observed=Get-CimInstance Win32_Process -Filter ('ProcessId='+$child.Id)
         if (-not $observed.CommandLine.Contains($worker)) {throw 'owned profile worker identity unreadable'}
         $child.Kill(); $child.WaitForExit(); throw 'owned profile worker exceeded bound'
     }
-    if ($child.ExitCode -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $root 'result.json'))) {throw ('native profile staging did not pass: '+[IO.File]::ReadAllText((Join-Path $root 'worker.stderr')))}
+    $child.Refresh()
+    $resultExists=Test-Path -LiteralPath (Join-Path $root 'result.json')
+    if ($null -eq $child.ExitCode -or $child.ExitCode -ne 0 -or -not $resultExists) {throw ('native profile staging did not pass; exit='+$child.ExitCode+'; result_exists='+$resultExists+'; '+[IO.File]::ReadAllText((Join-Path $root 'worker.stderr')))}
 } finally {
     if ($child) {$child.Dispose()}
     if ($sid) {
