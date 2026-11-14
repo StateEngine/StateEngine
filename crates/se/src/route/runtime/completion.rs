@@ -153,26 +153,13 @@ fn exited(endpoint: &EndpointRecord, bound: &Deadline) -> Result<bool> {
     Ok(match observed {
         se_proc::ProcessRead::Absent { .. } | se_proc::ProcessRead::ExitedRecord { .. } => true,
         se_proc::ProcessRead::Present(value) => {
-            let same_start = match (&value.identity.start, &fields.started) {
-                (
-                    se_proc::StartIdentity::Linux { start_ticks: a },
-                    se_types::StartIdentity::Linux { start_ticks: b },
-                ) => a == b,
-                (
-                    se_proc::StartIdentity::Windows {
-                        creation_filetime: a,
-                    },
-                    se_types::StartIdentity::Windows {
-                        creation_filetime: b,
-                    },
-                ) => *a == b.get(),
-                _ => {
-                    return Err(scope::unreadable(
+            let same_start = process::same_start(&value.identity.start, &fields.started)
+                .ok_or_else(|| {
+                    scope::unreadable(
                         "shutdown exact native owner",
                         "unsupported native start identity",
-                    ));
-                }
-            };
+                    )
+                })?;
             !same_start
                 || matches!(
                     value.state,

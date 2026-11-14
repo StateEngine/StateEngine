@@ -35,7 +35,23 @@ pub fn observe(endpoint: &EndpointRecord, bound: &Deadline) -> Result<ProcessVie
                 ));
             }
         };
-    let matches = match (&live.identity.start, &fields.started) {
+    if same_start(&live.identity.start, &fields.started) != Some(true)
+        || live.identity.image != fields.executable.to_local()?
+    {
+        return Err(scope::unreadable(
+            "host birth identity",
+            "native start or executable changed since protected endpoint publication",
+        ));
+    }
+    from_identity(&live.identity, bound)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub(super) fn same_start(
+    native: &se_proc::StartIdentity,
+    recorded: &se_types::StartIdentity,
+) -> Option<bool> {
+    Some(match (native, recorded) {
         (
             se_proc::StartIdentity::Linux { start_ticks: a },
             se_types::StartIdentity::Linux { start_ticks: b },
@@ -48,15 +64,18 @@ pub fn observe(endpoint: &EndpointRecord, bound: &Deadline) -> Result<ProcessVie
                 creation_filetime: b,
             },
         ) => *a == b.get(),
-        _ => false,
-    };
-    if !matches || live.identity.image != fields.executable.to_local()? {
-        return Err(scope::unreadable(
-            "host birth identity",
-            "native start or executable changed since protected endpoint publication",
-        ));
-    }
-    from_identity(&live.identity, bound)
+        (
+            se_proc::StartIdentity::MacOs {
+                seconds,
+                microseconds,
+            },
+            se_types::StartIdentity::Macos {
+                start_seconds,
+                start_micros,
+            },
+        ) => seconds == start_seconds && microseconds == start_micros,
+        _ => return None,
+    })
 }
 /// A native committed startup supplies its exact retained identity directly.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -115,26 +134,13 @@ pub(super) fn witness_exit(instance: &se_types::ProcessInstance, bound: &Deadlin
                 return Ok(());
             }
             se_proc::ProcessRead::Present(live) => {
-                let same_start = match (&live.identity.start, &expected.started) {
-                    (
-                        se_proc::StartIdentity::Linux { start_ticks: a },
-                        se_types::StartIdentity::Linux { start_ticks: b },
-                    ) => a == b,
-                    (
-                        se_proc::StartIdentity::Windows {
-                            creation_filetime: a,
-                        },
-                        se_types::StartIdentity::Windows {
-                            creation_filetime: b,
-                        },
-                    ) => *a == b.get(),
-                    _ => {
-                        return Err(scope::unreadable(
+                let same_start =
+                    same_start(&live.identity.start, &expected.started).ok_or_else(|| {
+                        scope::unreadable(
                             "remove host exit",
                             "native start identity has an incompatible platform",
-                        ));
-                    }
-                };
+                        )
+                    })?;
                 if !same_start
                     || matches!(
                         live.state,
