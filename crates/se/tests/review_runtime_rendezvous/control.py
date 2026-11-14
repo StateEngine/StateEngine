@@ -11,24 +11,35 @@ import tempfile
 import time
 
 
-def pin(pid):
+def stat(pid):
     try:
         fields = Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()
     except FileNotFoundError:
         return None
-    result = {'pid': pid, 'birth': fields[19], 'state': fields[0],
-              'boot': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
-    if fields[0] != 'Z':
+    return {'pid': pid, 'birth': fields[19], 'state': fields[0],
+            'boot': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+
+
+def pin(pid):
+    for _ in range(3):
+        result = stat(pid)
+        if result is None or result['state'] == 'Z':
+            return result
         try:
             result['image'] = os.readlink(f'/proc/{pid}/exe')
             result['argv'] = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')[:-1]
             result['argv'] = [os.fsdecode(x) for x in result['argv']]
         except FileNotFoundError:
-            again = Path(f'/proc/{pid}/stat')
-            if not again.exists():
-                return None
-            raise
-    return result
+            after = stat(pid)
+            if after is None or after['state'] == 'Z':
+                return after
+            continue
+        after = stat(pid)
+        if same(result, after) and after['state'] != 'Z':
+            return result
+        if after is None or after['state'] == 'Z':
+            return after
+    raise RuntimeError(f'native process image remained unreadable or unstable: {pid}')
 
 
 def same(a, b):
@@ -46,22 +57,31 @@ def send(receipt, number, events):
         return
     assert current['image'] == receipt['image'] and current['argv'] == receipt['argv'], current
     final = pin(receipt['pid'])
-    assert same(receipt, final) and final['state'] != 'Z', final
+    if not same(receipt, final) or final['state'] == 'Z':
+        return
+    assert final['image'] == receipt['image'] and final['argv'] == receipt['argv'], final
     events.append({'signal': number, 'receipt': current})
-    os.kill(receipt['pid'], number)
+    try:
+        os.kill(receipt['pid'], number)
+    except ProcessLookupError:
+        assert not alive(receipt), 'signal failed while original process remains live'
 
 
-def lease(home, expected_held):
+def lease_held(home):
     with (home / 'runtime.lock').open('rb') as file:
         try:
             fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            assert expected_held, 'runtime lease remains held after owned runtime exit'
             return True
         else:
             fcntl.flock(file, fcntl.LOCK_UN)
-            assert not expected_held, 'runtime lease was not actually held'
             return False
+
+
+def lease(home, expected_held):
+    actual = lease_held(home)
+    assert actual == expected_held, {'expected_held': expected_held, 'held': actual}
+    return actual
 
 
 def wait(predicate, seconds=10):
@@ -115,6 +135,9 @@ def trial(args, name, held, Fixture):
             # not yet authenticated. Kill only that recorded native birth.
             send(host, signal.SIGKILL, report['signals'])
             wait(lambda: not alive(host))
+            # Native process exit and release of the kernel-held file lease are
+            # separate observations. Do not interpret one as the other.
+            wait(lambda: not lease_held(f.home))
             assert not lease(f.home, False)
         send(caller_pin, signal.SIGCONT, report['signals'])
         caller.wait(timeout=45)
