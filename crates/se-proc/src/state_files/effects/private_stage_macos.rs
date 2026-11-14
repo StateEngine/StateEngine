@@ -105,28 +105,7 @@ fn create(
     // name refuses and retains the directory rather than deleting an incumbent.
     let cleanup = (|| {
         if let Some(held) = &file {
-            match leaf(&directory, &source, &source_path, false) {
-                Ok(named) => {
-                    if id(&named, &source_path, false, true)?
-                        != id(held, &source_path, false, true)?
-                    {
-                        return Err(changed(
-                            "private file staging file changed; preserved",
-                            &source_path,
-                        ));
-                    }
-                    // SAFETY: exact private name matches the retained created file.
-                    if unsafe { libc::unlinkat(directory.as_raw_fd(), source.as_ptr(), 0) } < 0 {
-                        return Err(io_error(
-                            "remove unpublished private file loser",
-                            &source_path,
-                            io::Error::last_os_error(),
-                        ));
-                    }
-                }
-                Err(error) if absent(&error) => (),
-                Err(error) => return Err(error),
-            }
+            remove_unpublished(&directory, &source, &source_path, held)?;
         }
         for custody in created {
             match custody.cleanup()? {
@@ -143,6 +122,36 @@ fn create(
     })();
     cleanup?;
     if published? { Ok(file) } else { Ok(None) }
+}
+
+// Delete only the unpublished file whose native identity still matches custody.
+fn remove_unpublished(
+    directory: &File,
+    source: &CString,
+    source_path: &Path,
+    held: &File,
+) -> Result<()> {
+    match leaf(directory, source, source_path, false) {
+        Ok(named) => {
+            if id(&named, source_path, false, true)? != id(held, source_path, false, true)? {
+                return Err(changed(
+                    "private file staging file changed; preserved",
+                    source_path,
+                ));
+            }
+            // SAFETY: exact private name matches the retained created file.
+            if unsafe { libc::unlinkat(directory.as_raw_fd(), source.as_ptr(), 0) } < 0 {
+                return Err(io_error(
+                    "remove unpublished private file loser",
+                    source_path,
+                    io::Error::last_os_error(),
+                ));
+            }
+        }
+        Err(error) if absent(&error) => (),
+        Err(error) => return Err(error),
+    }
+    Ok(())
 }
 
 fn copy_profile_protection(source: &File, target: &File, path: &Path) -> Result<()> {
