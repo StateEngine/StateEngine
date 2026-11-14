@@ -234,6 +234,9 @@ def main():
     for i in range(3):
         reports.append(trial(args, f'window-{i}', False, Fixture))
     reports.append(trial(args, 'held-lease', True, Fixture))
+    from failures import trial as failure_trial
+    for mode in ['first-startup-failure', 'retry-startup-failure', 'deadline-after-retention']:
+        reports.append(failure_trial(args, mode, Fixture))
     (args.out / 'summary.json').write_text(json.dumps(reports, indent=2) + '\n')
     assert all(r['qualified'] for r in reports), 'one or more independent controls failed'
 
