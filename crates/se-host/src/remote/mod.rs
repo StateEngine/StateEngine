@@ -32,10 +32,10 @@ pub mod service;
 pub use client::ClientConnector;
 mod owner_input;
 #[cfg(feature = "remote")]
-pub use owner_input::LaunchPermissionChange;
-#[cfg(feature = "remote")]
 pub(crate) use owner_input::OwnerCall;
-pub use owner_input::{OwnerInput, SourcePermissionChange};
+pub use owner_input::OwnerInput;
+#[cfg(feature = "remote")]
+pub use owner_input::{LaunchPermissionChange, SourcePermissionChange};
 pub mod session;
 pub use se_remote::RemoteCallContext;
 #[cfg(feature = "remote")]

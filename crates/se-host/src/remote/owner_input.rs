@@ -61,6 +61,7 @@ pub enum OwnerInput {
         key: IdempotencyKey,
     },
 }
+#[cfg(feature = "remote")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LaunchPermissionChange {
@@ -69,6 +70,7 @@ pub struct LaunchPermissionChange {
     pub expected_revision: Option<u64>,
     pub key: IdempotencyKey,
 }
+#[cfg(feature = "remote")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourcePermissionChange {
