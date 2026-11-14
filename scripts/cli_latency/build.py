@@ -14,8 +14,8 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = {
-    'status-base': '8fbd7a24dee2582c2fbc1a1de2c641915b739ffd',
-    'status-head': '89468c389488cd2f4a47c577cb14e8d16f68ad1b',
+    'base': '19eba34fffd9ab92e79b6d9ad4b4385076669c4c',
+    'head': '9048c76edca7e53fb60fa80674af5c33d66c457e',
 }
 
 
@@ -26,6 +26,10 @@ def save(path, value):
 def main():
     if sys.platform != 'linux':
         raise RuntimeError('This measurement requires a disposable Linux runner')
+    parent = subprocess.check_output(['git', 'rev-parse', SOURCES['head'] + '^'],
+                                     cwd=ROOT, text=True).strip()
+    if parent != SOURCES['base']:
+        raise RuntimeError('The comparison base is not the frozen head parent')
     output = Path(sys.argv[1]).resolve()
     output.mkdir(parents=True, exist_ok=False)
     images = output / 'images'
