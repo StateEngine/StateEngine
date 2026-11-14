@@ -1,0 +1,84 @@
+# B7 idle measurement (sprint item B7): one host, zero or one session,
+# observed from outside the host. One-shot diagnostic: deleted after the
+# verdict, never a standing gate.
+#
+# Triggers on a push that touches this file or scripts/b7_idle (the lead
+# pushes a branch carrying it) or on manual dispatch. Builds `se` in the
+# dev profile (idle cost is wait-mechanism dominated; the build profile
+# changes no mechanism the verdict is about) and runs the probe defaults:
+# 300 s settle / 600 s measure, 2 no-session + 3 one-session trials,
+# per-platform receipts with spread.
+name: 5e-b7-idle-20261114
+
+on:
+  push:
+    paths:
+      - ".github/workflows/5e-b7-idle-20261114.yml"
+      - "scripts/b7_idle/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: 5e-b7-idle-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+
+jobs:
+  measure:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: b7-idle-${{ matrix.os }}-v1
+      - name: Build the se CLI (dev profile)
+        run: cargo build -p se --locked
+      - name: Install Claude Code (pinned)
+        run: npm i -g @anthropic-ai/claude-code@2.1.322
+      - name: Run the idle probe (2 no-session + 3 one-session trials)
+        env:
+          OUT: ${{ runner.temp }}/b7-idle
+        run: |
+          python3 scripts/b7_idle/probe.py \
+            --se target/debug/se \
+            --claude-bin "$(command -v claude)" \
+            --out "$OUT"
+          echo "### B7 receipt summary" >> "$GITHUB_STEP_SUMMARY"
+          python3 -I - "$OUT/receipt.json" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          receipt = json.load(open(sys.argv[1]))
+          lines = [f"- platform: {receipt['platform']}",
+                   f"- se sha256: {receipt['se_binary_sha256'][:16]}",
+                   f"- claude: {receipt['claude']['version']}"]
+          for row in receipt["measurements"]:
+              lines.append(f"- {row['label']}: cpu {row['cpu_percent_one_core']}% "
+                           f"one-core; wakeups {row['wakeups']['per_second']}/s "
+                           f"(spread {row['wakeups']['spread']})")
+          for row in receipt["verdicts"]:
+              lines.append(f"- verdict {row['id']}: cpu {row['cpu']}, wakeups {row['wakeups']}")
+          print("\n".join(lines))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: b7-idle-receipt-${{ matrix.os }}
+          path: ${{ runner.temp }}/b7-idle
+          if-no-files-found: error
