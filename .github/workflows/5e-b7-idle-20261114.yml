@@ -51,7 +51,14 @@ jobs:
         with:
           shared-key: b7-idle-${{ matrix.os }}-v1
       - name: Build the se CLI (dev profile)
-        run: cargo build -p se --locked
+        id: build
+        run: |
+          # Explicit native --target keeps the [target.*-apple-darwin] no_uuid
+          # link flags off host proc-macros on a cold macOS build (without it,
+          # the first proc-macro consumer fails E0463; see run 43632297559).
+          target="$(rustc --print host-tuple)"
+          cargo build -p se --locked --target "$target"
+          echo "se_bin=target/$target/debug/se" >> "$GITHUB_OUTPUT"
       - name: Install Claude Code (pinned)
         run: npm i -g @anthropic-ai/claude-code@2.1.322
       - name: Run the idle probe (2 no-session + 3 one-session trials)
@@ -59,7 +66,7 @@ jobs:
           OUT: ${{ runner.temp }}/b7-idle
         run: |
           python3 scripts/b7_idle/probe.py \
-            --se target/debug/se \
+            --se "${{ steps.build.outputs.se_bin }}" \
             --claude-bin "$(command -v claude)" \
             --out "$OUT"
           echo "### B7 receipt summary" >> "$GITHUB_STEP_SUMMARY"
