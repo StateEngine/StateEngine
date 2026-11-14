@@ -38,8 +38,13 @@ def timed(smoke, action):
                  'inbox': ['msg', 'inbox', smoke.agent]}[action]
     argv = list(map(str, [smoke.binary, *arguments, '--home', smoke.state,
                           '--project', smoke.project, '--json']))
+    return timed_command(argv, smoke.repository, smoke.commands.environment)
+
+
+def timed_command(argv, cwd, environment):
+    wall_started = time.time_ns()
     started = time.perf_counter_ns()
-    child = subprocess.Popen(argv, cwd=smoke.repository, env=smoke.commands.environment,
+    child = subprocess.Popen(argv, cwd=cwd, env=environment,
                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     error = None
     try:
@@ -51,7 +56,11 @@ def timed(smoke, action):
         child.kill()
         stdout, stderr = child.communicate(timeout=5)
     elapsed = (time.perf_counter_ns() - started) / 1e6
-    return dict(ms=elapsed, exit=child.returncode, error=error,
+    wall_ended = time.time_ns()
+    require(abs((wall_ended - wall_started) / 1e6 - elapsed) < 5,
+            'Wall clock shifted relative to the monotonic command timer')
+    return dict(ms=elapsed, wall_started_ns=wall_started, wall_ended_ns=wall_ended,
+                exit=child.returncode, error=error,
                 stdout=stdout.decode('utf-8'), stderr=stderr.decode('utf-8'))
 
 
@@ -212,6 +221,76 @@ def phase_summary(pairs, expected_pid):
                         for key, samples in sorted(values.items())})
 
 
+def cli_profile(pairs, version=False):
+    required = {'cli_main', 'cli_file_owner', 'cli_parse', 'cli_output'}
+    if not version:
+        required |= {'cli_bootstrap', 'cli_config', 'cli_registry_open', 'cli_state_files',
+                     'cli_caller_observation', 'cli_project_selection', 'cli_dispatch',
+                     'cli_repository_state', 'cli_status_snapshot', 'cli_status_finish',
+                     'cli_session_observation', 'cli_endpoint_discovery', 'cli_credential',
+                     'cli_host_forward', 'cli_ipc_forward', 'cli_output_at'}
+    values = {}
+    for pair in pairs[1:]:
+        sample = pair['samples']['head']
+        observed, events = {}, {}
+        for line in sample['stderr'].splitlines():
+            fields = line.split()
+            if fields and fields[0] == 'cli.phase':
+                require(len(fields) == 3, 'Malformed CLI duration')
+                observed.setdefault(fields[1], []).append(int(fields[2]) / 1e6)
+            if fields and fields[0] == 'cli.event':
+                require(len(fields) == 3 and fields[1] not in events, 'Malformed or duplicate CLI event')
+                events[fields[1]] = int(fields[2])
+        require(required.issubset(observed), 'Required CLI phase absent; no zero substituted')
+        require(set(events) == {'main_enter', 'main_exit'}, 'Main clock event absent')
+        require(sample['wall_started_ns'] <= events['main_enter'] <= events['main_exit']
+                <= sample['wall_ended_ns'], 'Process clocks moved outside parent bounds')
+        for name, durations in observed.items():
+            values.setdefault(name, []).append(sum(durations))
+        values.setdefault('spawn_to_main', []).append(
+            (events['main_enter'] - sample['wall_started_ns']) / 1e6)
+        values.setdefault('main_exit_to_eof_and_join', []).append(
+            (sample['wall_ended_ns'] - events['main_exit']) / 1e6)
+    return dict(scope='Inclusive CLI spans with tracing overhead; parent wall anchors are '
+                      'checked against its monotonic timer; spawn-to-main includes process creation',
+                phases={name: dict(measured_calls=len(v), p50_ms=percentile(v, .5),
+                                   p95_ms=percentile(v, .95))
+                        for name, v in sorted(values.items())})
+
+
+def version_control(output, images):
+    directory = output / 'plain-startup'
+    directory.mkdir()
+    record = dict(action='version', load_before=load(), pairs=[], exit=1)
+    try:
+        for index in range(ROUNDS + 1):
+            order = ('base', 'head') if index % 2 == 0 else ('head', 'base')
+            pair = dict(index=index, kind='first-timed' if index == 0 else 'warm',
+                        order=order, before=load(), samples={})
+            for side in order:
+                environment = dict(os.environ)
+                if side == 'head':
+                    environment['SE_CLI_PHASE_PROFILE'] = '1'
+                pair['samples'][side] = timed_command([images[side]['image'], '--version'],
+                                                       directory, environment)
+            pair['after'] = load()
+            record['pairs'].append(pair)
+        expected = record['pairs'][0]['samples']['base']['stdout']
+        require(expected.strip() and len(expected) < 4096, 'Version output missing or oversized')
+        for pair in record['pairs']:
+            for sample in pair['samples'].values():
+                require(sample['exit'] == 0 and sample['error'] is None
+                        and sample['stdout'] == expected, 'Version startup control differs')
+        record['summary'] = summaries(record['pairs'])
+        record['cli_profile'] = cli_profile(record['pairs'], version=True)
+        record['exit'] = 0
+    except Exception as error:
+        record['error'] = str(error)
+    record['load_after'] = load()
+    save(directory / 'samples.json', record)
+    return {key: value for key, value in record.items() if key != 'pairs'}
+
+
 def cohort(output, images, provider, name, action, count=1, mail_count=0, dirty=False):
     directory = output / (provider + '-' + name)
     directory.mkdir()
@@ -248,6 +327,7 @@ def cohort(output, images, provider, name, action, count=1, mail_count=0, dirty=
             require(current['runtime']['process']['pid'] == pid, 'Serving host changed during reads')
         record['summary'] = summaries(record['pairs'])
         record['phase_profile'] = phase_summary(record['pairs'], facts['head'][1])
+        record['cli_profile'] = cli_profile(record['pairs'])
         record['exit'] = 0
     except Exception as error:
         record['error'] = str(error)
@@ -303,7 +383,10 @@ def main():
             result['cohorts'].append(row)
             save(output / 'result.json', result)
             print(json.dumps(row), flush=True)
-    result['exit'] = 0 if all(row['exit'] == 0 for row in result['cohorts']) else 1
+    result['plain_startup'] = version_control(observations,
+        {'base': images['status-base'], 'head': images['status-head']})
+    result['exit'] = 0 if (result['plain_startup']['exit'] == 0
+                          and all(row['exit'] == 0 for row in result['cohorts'])) else 1
     save(output / 'result.json', result)
     raise SystemExit(result['exit'])
 
