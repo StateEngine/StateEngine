@@ -140,7 +140,8 @@ async fn observe_count(root: &Path, deadline: Instant) -> Result<CountRead> {
         .args(["rev-list", "--count", "HEAD"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(CountRead::Missing),
@@ -160,6 +161,10 @@ async fn observe_count(root: &Path, deadline: Instant) -> Result<CountRead> {
         .ok_or_else(|| scope::unreadable("Git HEAD", "commit count error pipe was not attached"))?;
     // Both pipes are drained to EOF or the deadline, so a writer that fills
     // either one cannot block the child while the exit wait is outstanding.
+    let stdout = super::git_pipe::stdout(stdout)
+        .map_err(|error| scope::unreadable("Git stdout pipe", &error.to_string()))?;
+    let stderr = super::git_pipe::stderr(stderr)
+        .map_err(|error| scope::unreadable("Git stderr pipe", &error.to_string()))?;
     let stdout_task = tokio::spawn(retain_bounded(stdout, COUNT_RETAIN, deadline));
     let stderr_task = tokio::spawn(retain_bounded(stderr, STDERR_RETAIN, deadline));
     let exited = bounded_exit(&mut child, deadline).await;
@@ -259,6 +264,10 @@ async fn observe_status(root: &Path, deadline: Instant) -> Result<StatusRead> {
     let stderr = child.stderr.take().ok_or_else(|| {
         scope::unreadable("Git working tree", "status error pipe was not attached")
     })?;
+    let stdout = super::git_pipe::stdout(stdout)
+        .map_err(|error| scope::unreadable("Git stdout pipe", &error.to_string()))?;
+    let stderr = super::git_pipe::stderr(stderr)
+        .map_err(|error| scope::unreadable("Git stderr pipe", &error.to_string()))?;
     let stdout_task = tokio::spawn(read_status(stdout, deadline));
     let stderr_task = tokio::spawn(stderr_retain(stderr, deadline));
 
@@ -332,7 +341,8 @@ fn spawn_status(root: &Path) -> Result<Option<tokio::process::Child>> {
         .args(["status", "--porcelain=v2", "--branch"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     match command.spawn() {
         Ok(child) => Ok(Some(child)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -419,7 +429,7 @@ enum StatusOutcome {
 /// header bytes are retained, and a bound far above their length refuses a
 /// hostile or malformed stream.
 async fn read_status(
-    mut stdout: tokio::process::ChildStdout,
+    mut stdout: impl tokio::io::AsyncRead + Unpin,
     deadline: tokio::time::Instant,
 ) -> StatusOutcome {
     const HEADER_LIMIT: usize = 4096;
@@ -513,7 +523,7 @@ impl StderrOutcome {
 /// Drain the stderr pipe until EOF, a read failure, or the observation
 /// deadline, retaining a bounded tail either way.
 async fn stderr_retain(
-    mut stderr: tokio::process::ChildStderr,
+    mut stderr: impl tokio::io::AsyncRead + Unpin,
     deadline: tokio::time::Instant,
 ) -> StderrOutcome {
     let mut retained: Vec<u8> = Vec::new();
