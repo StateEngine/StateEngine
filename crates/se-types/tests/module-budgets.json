@@ -15,7 +15,7 @@
  "directories": {
   "crates/se-host/src/runtime": 25027,
   "crates/se-core/src/ops": 18572,
-  "crates/se-host/src/process": 18234,
+  "crates/se-host/src/process": 18303,
   "crates/se-host/src/harness": 12549,
   "crates/se-host/src/remote": 10989,
   "crates/se/src/route": 11045,
@@ -24,7 +24,7 @@
   "crates/se-atlas/src/query": 6216,
   "crates/se-host/src/channels": 6066,
   "crates/se-host/src/runtime/embedded": 5046,
-  "crates/se-host/src/process/secode": 5033,
+  "crates/se-host/src/process/secode": 5063,
   "crates/se-store/src/read": 4841,
   "crates/se-host/src/runtime/history_import": 4713,
   "crates/se-store/src/apply": 4538,
