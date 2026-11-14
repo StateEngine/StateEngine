@@ -73,7 +73,7 @@ def run(config, record, directory, deadline, checkpoint):
     if type(timeout) is not int or not 60 <= timeout <= 14400:
         raise ValueError('Windows producer timeout must be 60..14400 seconds')
     for row in rows:
-        if deadline - time.monotonic() <= 180:
+        if deadline - time.monotonic() <= 300:
             row.update(state='unavailable', error='whole-run deadline before Windows custody admission')
             checkpoint()
             continue
@@ -88,7 +88,7 @@ def run(config, record, directory, deadline, checkpoint):
                    'producer_config': {'node': config['node'], 'auth_home': config['auth_home'],
                        'credential_sources': config.get('credential_sources', {}),
                        'admission_ref': settings.get('admission_ref')},
-                   'run_timeout_seconds': min(timeout, deadline - time.monotonic() - 180),
+                   'run_timeout_seconds': min(timeout, deadline - time.monotonic() - 300),
                    'output': str(stage / 'receipts'), 'custody_receipt': str(stage / 'custody.json')}
         request_path = stage / 'request.json'
         from lifecycle import save
@@ -99,7 +99,7 @@ def run(config, record, directory, deadline, checkpoint):
         errors = []
         try:
             code = invoke(settings['producer_command'], request_path, 'run', stage / 'run.log',
-                          min(timeout, deadline - time.monotonic() - 180))
+                          min(timeout, deadline - time.monotonic() - 300))
             if code not in (0, 1):
                 errors.append(f'Windows custody producer exited {code}')
         except Exception as error:
@@ -124,7 +124,7 @@ def finalize(config, record, directory, row, errors=()):
                 or request.get('selection') != row['selection']):
             raise RuntimeError('Windows finalizer source or scope differs from its retained plan')
         code = invoke(config['windows']['producer_command'], request_path, 'finalize',
-                      stage / 'finalize.log', 120)
+                      stage / 'finalize.log', 240)
         if code:
             raise RuntimeError(f'Windows custody finalizer exited {code}')
         custody = json.loads((stage / 'custody.json').read_text())
