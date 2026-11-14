@@ -17,6 +17,11 @@ use std::{
     path::PathBuf,
 };
 type Check = Result<(), Box<dyn std::error::Error>>;
+// A private-primary-group proof is available only with GNU account enumeration.
+#[cfg(all(unix, target_os = "linux", target_env = "gnu"))]
+const PARENT_MODE: u32 = 0o775;
+#[cfg(all(unix, not(all(target_os = "linux", target_env = "gnu"))))]
+const PARENT_MODE: u32 = 0o755;
 struct Home(cleanup_directory::PrivateDirectory);
 impl Home {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
@@ -25,7 +30,20 @@ impl Home {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&root, fs::Permissions::from_mode(0o775))?;
+            #[cfg(target_os = "macos")]
+            {
+                fs::set_permissions(&root, fs::Permissions::from_mode(0o775))?;
+                let refused = NativeStateFiles::create(&root.join("state"))
+                    .err()
+                    .ok_or("shared-group parent accepted without a private-group proof")?;
+                assert!(matches!(
+                    refused.code,
+                    se_proc::StateFileErrorCode::LocationUnsafe
+                        | se_proc::StateFileErrorCode::Unsupported
+                ));
+                assert!(!root.join("state").try_exists()?);
+            }
+            fs::set_permissions(&root, fs::Permissions::from_mode(PARENT_MODE))?;
         }
         drop(NativeStateFiles::create(&root.join("state"))?);
         Ok(Self(root.cleanup_on_drop()))
@@ -66,7 +84,7 @@ impl Home {
                 fs::metadata(self.state().join("credential"))?.mode() & 0o777,
                 0o600
             );
-            assert_eq!(fs::metadata(&self.0)?.mode() & 0o777, 0o775);
+            assert_eq!(fs::metadata(&self.0)?.mode() & 0o777, PARENT_MODE);
         }
         Ok(secret)
     }
