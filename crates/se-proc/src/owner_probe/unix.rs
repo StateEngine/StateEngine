@@ -42,8 +42,15 @@ pub(super) fn observe(
         ));
     }
     let owner = os::owner(pid)?;
+    #[cfg(target_os = "macos")]
+    let walk = os::ancestry::observe(pid, &boot, records)?;
+    #[cfg(target_os = "macos")]
+    let ancestry = &walk.verified;
+    #[cfg(target_os = "linux")]
     let mut ancestry = Vec::new();
+    #[cfg(target_os = "linux")]
     let mut next = pid;
+    #[cfg(target_os = "linux")]
     while next.0 != 0 {
         if ancestry.len() >= 4096 || ancestry.iter().any(|p: &ProcessStamp| p.pid == next) {
             return Err(refuse(
@@ -142,9 +149,9 @@ pub(super) fn observe(
             });
         }
     }
-    // Re-read the complete chain, not just its leaf, so disappearing/reused
+    // Re-read every verified ancestor, not just the leaf, so disappearing/reused
     // ancestors or reparenting cannot turn an unreadable chain into Outside.
-    for expected in &ancestry {
+    for expected in ancestry.iter() {
         if os::stamp(expected.pid, &boot)? != *expected {
             return Err(refuse(
                 "recheck owner ancestry",
@@ -152,6 +159,8 @@ pub(super) fn observe(
             ));
         }
     }
+    #[cfg(target_os = "macos")]
+    walk.recheck()?;
     if owner != os::owner(pid)? || os::stamp(pid, &boot)? != first {
         return Err(refuse(
             "recheck native owner",
@@ -163,6 +172,9 @@ pub(super) fn observe(
         pid,
         start: first.start,
         agent_trees: matches,
+        #[cfg(target_os = "linux")]
         ancestry_bound: AncestryBound::Complete,
+        #[cfg(target_os = "macos")]
+        ancestry_bound: walk.bound,
     })
 }

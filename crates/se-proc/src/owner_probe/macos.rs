@@ -1,4 +1,5 @@
 use super::*;
+pub(super) mod ancestry;
 use std::{
     mem::{size_of, zeroed},
     ptr,
