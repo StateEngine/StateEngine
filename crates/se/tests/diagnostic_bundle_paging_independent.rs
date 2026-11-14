@@ -274,7 +274,8 @@ fn a_paged_home_status_remains_observed_but_makes_the_export_incomplete() -> Che
     assert_eq!(bundle["doctor"]["state"], "observed");
     assert_eq!(
         bundle["doctor"]["complete"], true,
-        "an observed unhealthy diagnosis is still collected"
+        "an observed unhealthy diagnosis is still collected: {}",
+        bundle["doctor"]
     );
     assert!(matches!(
         bundle["doctor"]["exit_code"].as_u64(),
