@@ -1,0 +1,56 @@
+name: Linux packaged startup observation
+on:
+  push:
+    branches: [prime/linux-startup-package-r1]
+permissions:
+  contents: read
+concurrency:
+  group: linux-startup-package-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      MEASURE_SOURCE: 329efa795e4739319e612fc7818bfeac786c83d1
+    steps:
+      - name: Initialize isolated evidence paths
+        run: |
+          echo "MEASURE_ROOT=$RUNNER_TEMP/startup-package" >> "$GITHUB_ENV"
+          echo "EVIDENCE_ROOT=$RUNNER_TEMP/startup-package-evidence" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: fcd3a3c0e66e45e65dd9b979bc99bdb1653d1887
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.12'}
+      - name: Read committed compiler version
+        id: compiler
+        shell: python
+        run: |
+          import os, pathlib, subprocess, tomllib
+          source = os.environ['MEASURE_SOURCE']
+          text = subprocess.check_output(['git', 'show', source + ':rust-toolchain.toml'], text=True)
+          channel = tomllib.loads(text)['toolchain']['channel']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'channel={channel}\n')
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ steps.compiler.outputs.channel }}
+          components: rust-docs, llvm-tools-preview
+      - name: Check observer syntax
+        run: python3 -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('scripts/startup_package').glob('*.py')]"
+      - name: Build, strip, assemble and observe the exact native package
+        run: python3 -B scripts/startup_package/build.py "$MEASURE_ROOT"
+      - name: Collect evidence without private homes or compilation caches
+        if: ${{ always() }}
+        run: python3 -B scripts/startup_package/collect.py "$MEASURE_ROOT" "$EVIDENCE_ROOT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: linux-startup-package
+          path: ${{ runner.temp }}/startup-package-evidence
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
