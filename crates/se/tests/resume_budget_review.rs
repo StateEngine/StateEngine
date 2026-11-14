@@ -35,21 +35,25 @@ struct Consumer {
     working: String,
     mail: String,
     calls: usize,
+    provider: Provider,
 }
 impl Consumer {
-    fn command(&self, session: bool) -> TestResult<Command> {
+    fn raw_command(&self, session: bool) -> TestResult<Command> {
         let mut c = Command::new(env!("CARGO_BIN_EXE_se"));
         c.env_clear()
             .env("PATH", std::env::var_os("PATH").ok_or("PATH absent")?)
             .env("HOME", self.root.join("owner"))
             .env("USERPROFILE", self.root.join("owner"))
             .env("XDG_RUNTIME_DIR", self.root.join("runtime"))
-            .arg("--home")
-            .arg(&self.home)
             .current_dir(&*self.root);
         if session {
             c.env("SE_SESSION", self.session.as_str());
         }
+        Ok(c)
+    }
+    fn command(&self, session: bool) -> TestResult<Command> {
+        let mut c = self.raw_command(session)?;
+        c.arg("--home").arg(&self.home);
         Ok(c)
     }
     fn json(&self, words: &[&str], session: bool) -> TestResult<(Value, Vec<u8>)> {
@@ -92,11 +96,13 @@ impl Consumer {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/judge-diagnostics/resume-budget-review");
         fs::create_dir_all(&parent)?;
-        let label = format!("{}-{door}-{}", self.session, self.calls);
+        let label = format!("{}-{}-{door}-{}", self.agent, self.session, self.calls);
         self.calls += 1;
         fs::write(
             parent.join(format!("{label}.json")),
-            serde_json::to_vec_pretty(&json!({"bytes":bytes,"body":body}))?,
+            serde_json::to_vec_pretty(
+                &json!({"bytes":bytes,"body":body,"provider":format!("{:?}", self.provider),"saved_notes":!self.working.is_empty()}),
+            )?,
         )?;
         Ok(())
     }
@@ -106,13 +112,31 @@ impl Consumer {
         assert_eq!(body["principal"]["session_id"], self.session.as_str());
         assert_eq!(body["complete"], false);
         assert_eq!(body["resume_status"], "needs_read");
-        let state = &body["working_state"]["value"];
-        assert_eq!(state["bytes"].as_u64(), Some(self.working.len() as u64));
-        assert!(
-            state["text"]
-                .as_str()
-                .is_some_and(|s| !s.is_empty() && self.working.starts_with(s)),
-            "lost saved work: {body}"
+        if self.working.is_empty() {
+            assert_eq!(body["working_state"]["state"], "absent");
+        } else {
+            let state = &body["working_state"]["value"];
+            assert_eq!(state["bytes"].as_u64(), Some(self.working.len() as u64));
+            assert!(
+                state["text"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty() && self.working.starts_with(s)),
+                "lost saved work: {body}"
+            );
+        }
+        let turns = body["recent_turns"].as_array().ok_or("turns")?;
+        let omitted_turns: u64 = body["omissions"]
+            .as_array()
+            .ok_or("omissions")?
+            .iter()
+            .filter(|o| o["section"] == "recent_turns")
+            .map(|o| o["count"].as_u64().ok_or("turn count"))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum();
+        assert_eq!(
+            turns.len() as u64 + omitted_turns,
+            if since.is_some() { 0 } else { 8 }
         );
         let rows = body["unread"]["items"].as_array().ok_or("unread rows")?;
         assert!(!rows.is_empty(), "lost first unread: {body}");
@@ -172,7 +196,7 @@ impl Drop for Consumer {
         }
     }
 }
-fn setup(provider: Provider) -> TestResult<Consumer> {
+fn setup(provider: Provider, saved_notes: bool) -> TestResult<Consumer> {
     let root = directory::private_directory()?;
     fs::create_dir(root.join("owner"))?;
     {
@@ -193,7 +217,11 @@ fn setup(provider: Provider) -> TestResult<Consumer> {
         working: "OWED: finish verification λ \" \\ \n".repeat(80),
         mail: "READ NEXT: retained obligation λ \" \\ \n".repeat(80),
         calls: 0,
+        provider,
     };
+    if !saved_notes {
+        c.working.clear();
+    }
     let name = if provider == Provider::Claude {
         "claude"
     } else {
@@ -315,10 +343,12 @@ fn setup(provider: Provider) -> TestResult<Consumer> {
         }
         direct.append(batch, &*lease)?;
     }
-    direct.append(
-        f.working(&c.working, Expected::Absent, "resume-review-work")?,
-        &*lease,
-    )?;
+    if saved_notes {
+        direct.append(
+            f.working(&c.working, Expected::Absent, "resume-review-work")?,
+            &*lease,
+        )?;
+    }
     for n in 0..24 {
         let id = message()?;
         direct.append(
@@ -345,8 +375,8 @@ fn setup(provider: Provider) -> TestResult<Consumer> {
     assert_eq!(up["state"], "running");
     Ok(c)
 }
-fn exercise(provider: Provider) -> TestResult {
-    let mut c = setup(provider)?;
+fn exercise(provider: Provider, saved_notes: bool) -> TestResult {
+    let mut c = setup(provider, saved_notes)?;
     assert_eq!(c.unread()?, c.messages);
     let mut since: Option<Value> = None;
     for phase in 0..2 {
@@ -390,14 +420,22 @@ fn exercise(provider: Provider) -> TestResult {
             assert!(
                 argv.contains(&c.project) && argv.contains(&c.home.to_string_lossy().into_owned())
             );
-            let recovered = c.command(true)?.arg("--json").args(&argv[1..]).output()?;
+            let recovered = c
+                .raw_command(true)?
+                .arg("--json")
+                .args(&argv[1..])
+                .output()?;
             assert!(
                 matches!(recovered.status.code(), Some(0 | 2)),
                 "{}",
                 String::from_utf8_lossy(&recovered.stderr)
             );
             let full: Value = serde_json::from_slice(&recovered.stdout)?;
-            assert_eq!(full["working_state"]["value"]["text"], c.working);
+            if saved_notes {
+                assert_eq!(full["working_state"]["value"]["text"], c.working);
+            } else {
+                assert_eq!(full["working_state"]["state"], "absent");
+            }
             assert!(
                 !full["recent_turns"]
                     .as_array()
@@ -414,9 +452,15 @@ fn exercise(provider: Provider) -> TestResult {
 }
 #[test]
 fn claude_session_default_cli_and_mcp_retain_scoped_resume_answers() -> TestResult {
-    exercise(Provider::Claude)
+    for saved_notes in [false, true] {
+        exercise(Provider::Claude, saved_notes)?;
+    }
+    Ok(())
 }
 #[test]
 fn codex_session_default_cli_and_mcp_retain_scoped_resume_answers() -> TestResult {
-    exercise(Provider::Codex)
+    for saved_notes in [false, true] {
+        exercise(Provider::Codex, saved_notes)?;
+    }
+    Ok(())
 }
