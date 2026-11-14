@@ -15,7 +15,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = {
     'base': '05d85b2f078273827534b82569d19129226f0c90',
-    'head': 'fe4b03ad4b446f0764c9a2dbe00fc3e1e62663d3',
+    'head': '79eede14c7fb182a9c55f0729083cc5357d5b261',
 }
 
 
