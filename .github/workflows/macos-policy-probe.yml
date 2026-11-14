@@ -1,0 +1,30 @@
+name: macOS worker policy probe
+on:
+  push:
+    branches: [prime/macos-policy-probe-r1]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Compile and run the probe
+        shell: bash
+        run: |
+          set +e
+          mkdir -p out
+          clang -Wall -Wextra -Werror -o out/probe diag/native-policy-probe.c > out/compile.log 2>&1
+          echo "compile exit=$?" | tee -a out/summary.txt
+          ./out/probe > out/probe.stdout 2> out/probe.stderr
+          echo "probe exit=$?" | tee -a out/summary.txt
+          cat out/compile.log out/probe.stdout out/probe.stderr
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: macos-policy-probe
+          retention-days: 14
+          path: out/
