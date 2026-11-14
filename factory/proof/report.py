@@ -79,42 +79,50 @@ def budget_numbers(budget, row):
 def windows_full_write_result(row, limits):
     """B10: native Windows serial send against the Windows full-write ceiling.
 
-    This budget is a second ceiling on the same measured send-and-readback samples
-    the CLI write budget uses, not a second method. Only a row that names the
-    Windows budget and carries its own recorded ceiling can be judged, and a
-    non-Windows row never answers it: a measurement from another platform is a
-    different fact.
+    The producer reports this budget as a named relation on the existing serial
+    send row, so it reuses that row's samples rather than adding a second
+    clients=1 entry: the write consumer reads exactly one serial and one
+    eight-client cohort, and an extra entry would make both unmeasurable. Only a
+    native Windows row that carries the relation can answer, and the relation
+    must repeat the row's own p95 and describe the cohort it rides on.
     """
     if row.get("platform") not in (None, "win32"):
         return "NOT MEASURED"
     writes = row.get("writes")
     if not isinstance(writes, list):
         return "NOT MEASURED"
-    budgeted = [sample for sample in writes
-                if isinstance(sample, dict) and sample.get("budget") == "full_write_windows_p95_ms_inclusive"]
-    if not budgeted:
-        return "NOT MEASURED"
     ceiling_key = "full_write_windows_p95_ms_inclusive"
     ceiling = limits.get(ceiling_key)
     if not finite_nonnegative(ceiling):
         return "NOT MEASURED"
-    for sample in budgeted:
-        value, recorded = sample.get("p95_ms"), sample.get("ceiling_ms_inclusive")
-        raw = sample.get("samples")
+    seen = False
+    for sample in writes:
+        if not isinstance(sample, dict):
+            continue
+        relation = sample.get("full_write_windows")
+        if relation is None:
+            continue
+        seen = True
+        if not isinstance(relation, dict):
+            return "NOT MEASURED"
+        raw, value = sample.get("samples"), sample.get("p95_ms")
         count = 30 * sample.get("clients", 0) if type(sample.get("clients")) is int else 0
-        # The row must be the serial send cohort and carry its own complete samples.
+        # The relation is judged on the row it rides on, and it may not drift from it.
         if (sample.get("action") != "send" or sample.get("clients") != 1 or not count
-                or not finite_nonnegative(value) or recorded != ceiling
+                or relation.get("budget") != ceiling_key
+                or relation.get("ceiling_ms_inclusive") != ceiling
+                or not finite_nonnegative(value) or relation.get("p95_ms") != value
                 or not isinstance(raw, list) or len(raw) != count
+                or not finite_nonnegative(sample.get("ceiling_ms_inclusive"))
                 or any(not isinstance(s, dict) or type(s.get("code")) is not int
                        or s["code"] != 0 or s.get("error") or s.get("routing_error")
                        or not finite_nonnegative(s.get("ms")) for s in raw)):
             return "NOT MEASURED"
         if value != sorted(s["ms"] for s in raw)[math.ceil(count * 0.95) - 1]:
             return "NOT MEASURED"
-        if sample.get("passed") is not True or value > ceiling:
+        if relation.get("passed") is not True or sample.get("passed") is not True or value > ceiling:
             return "MISS"
-    return "PASS"
+    return "PASS" if seen else "NOT MEASURED"
 
 
 def probe_result(budget, row, limits, numeric):
