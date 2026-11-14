@@ -236,6 +236,7 @@ fn dispatch_with_cold_recovery(
                 &selections,
                 diagnostic,
             );
+            super::status::merge_resources(&mut status.value.runtime, &observed);
             status.value.atlas = match &observed {
                 Ok(AnyOutput::ProjectStatus(live)) => {
                     for pending in &live.value.pending {
