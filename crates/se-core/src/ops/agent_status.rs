@@ -1,12 +1,10 @@
-//! Saved identity readback. Native lifecycle and provider conversation facts are
-//! deliberately unknown until the runtime observation adapter supplies them.
+//! Saved identity and known session absence from the caller's store snapshot.
 use super::{AgentRow, AgentShow, AgentStatusOutput};
 use crate::{commit::Cx, scope, store_error::store_error};
 use se_store::{Actor, EventBody, Snapshot};
 use se_types::{Read, Result};
 
-/// Saved agents in this finite principal page. Native lifecycle facts remain
-/// explicitly unknown; reading this page never starts or resumes a process.
+/// Saved agents in a finite principal page; never starts or resumes a process.
 pub fn page<R: Snapshot>(
     budget: se_store::ReadBudget,
     cx: &mut Cx<'_, R>,
@@ -73,9 +71,8 @@ pub fn page<R: Snapshot>(
 )]
 pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentStatusOutput> {
     let agent = scope::working_agent(cx.admission, input.target_agent_id.as_ref(), "agent.show")?;
-    // An owner's saved profile and rename events are not session history.
-    // The target-bound control port exposes this agent's metadata without
-    // granting its session visibility into the owner's other events.
+    // Read saved identity through the target-bound control port without granting
+    // access to the owner's other session history.
     let mut controlled_profile = None;
     let principal = if matches!(&cx.admission.actor, Actor::Agent(_)) {
         match cx
@@ -193,6 +190,7 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
         se_store::Provider::Acp => se_types::Provider::Acp,
     };
     let (session, conversation, mut resume) = super::agent_session::read(&agent, cx)?;
+    let never_launched = session.state == "never-launched" && session.session_id.is_none();
     if provider == se_types::Provider::SeCode {
         resume.ready = false;
         resume.mode = "compatible-service-required".into();
@@ -233,11 +231,15 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
         agent: Read::Present {
             value: AgentRow {
                 harness: profile.harness.clone(),
-                provider_activity: matches!(provider, se_types::Provider::Claude | se_types::Provider::Codex).then(|| Read::Unknown {
-                    what: "Provider turn activity requires the owning runtime; native liveness does not prove a reply. Check provider sign-in and saved history before resubmitting input.".into(),
+                provider_activity: matches!(provider, se_types::Provider::Claude | se_types::Provider::Codex).then(|| if never_launched {
+                    Read::Absent { checked: "This agent has no launched provider session".into() }
+                } else {
+                    Read::Unknown { what: "Provider turn activity requires the owning runtime; native liveness does not prove a reply. Check provider sign-in and saved history before resubmitting input.".into() }
                 }),
-                acp_runtime: (provider == se_types::Provider::Acp).then(|| Read::Unknown {
-                    what: "The native protocol connection has not been observed".into(),
+                acp_runtime: (provider == se_types::Provider::Acp).then(|| if never_launched {
+                    Read::Absent { checked: "This agent has no launched protocol session".into() }
+                } else {
+                    Read::Unknown { what: "The native protocol connection has not been observed".into() }
                 }),
                 harness_policy_notice: (provider == se_types::Provider::Acp)
                     .then(|| se_types::ACP_NO_SANDBOX_NOTICE.into()),

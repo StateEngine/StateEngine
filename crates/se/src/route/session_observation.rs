@@ -65,11 +65,14 @@ pub(super) fn deadline() -> Result<std::time::Instant> {
         .ok_or_else(|| SeError::invalid("agent observation deadline", "a finite native deadline"))
 }
 pub(super) fn has_runtime_observation(output: &AnyOutput) -> bool {
-    rows(output).iter().any(|row| {
-        matches!(
-            row.provider,
-            se_types::Provider::Claude | se_types::Provider::Codex | se_types::Provider::Acp
-        ) || matches!(&row.secode_binding, Some(Read::Present { .. }))
+    rows(output).iter().any(|row| match row.provider {
+        se_types::Provider::Claude | se_types::Provider::Codex => {
+            !matches!(&row.provider_activity, Some(Read::Absent { .. }))
+        }
+        se_types::Provider::Acp => !matches!(&row.acp_runtime, Some(Read::Absent { .. })),
+        se_types::Provider::SeCode => {
+            matches!(&row.secode_binding, Some(Read::Present { .. }))
+        }
     })
 }
 fn rows(output: &AnyOutput) -> Vec<&AgentRow> {
