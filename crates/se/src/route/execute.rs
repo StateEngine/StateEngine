@@ -365,12 +365,8 @@ fn dispatch_with_cold_recovery(
         generation: caller.admission.generation,
         mode: LeaseMode::DirectClient,
     };
-    let lease = DirectLease::acquire(
-        &files,
-        &cx.home.join("runtime.lock"),
-        identity,
-    )
-    .map_err(|e| store_error(&e))?;
+    let lease = DirectLease::acquire(&files, &cx.home.join("runtime.lock"), identity)
+        .map_err(|e| store_error(&e))?;
     let retry = super::startup_retry::Retry::capture(cx, &caller.admission, &op);
     if let AnyOp::RuntimeUp(input) = op {
         // Activation requires the host's exclusive lease, so the direct shared
