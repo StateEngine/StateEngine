@@ -172,13 +172,13 @@ impl NativeUnixStream {
         }
         // SAFETY: successful socket allocation transfers unique FD ownership.
         let stream = unsafe { UnixStream::from_raw_fd(raw) };
-        #[cfg(target_os = "macos")]
-        macos_io::configure(&stream).map_err(|e| error("configure native IPC socket", e))?;
         // CLOEXEC is set before publication to a caller and never inherited.
         // SAFETY: this newly owned live socket FD is configured with the documented close-on-exec flag.
         if unsafe { libc::fcntl(raw, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
             return Err(last("protect IPC client descriptor"));
         }
+        #[cfg(target_os = "macos")]
+        macos_io::configure(&stream).map_err(|e| error("configure native IPC socket", e))?;
         stream
             .set_nonblocking(true)
             .map_err(|e| error("set IPC connect nonblocking", e))?;
