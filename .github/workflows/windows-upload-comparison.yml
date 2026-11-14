@@ -1,0 +1,85 @@
+name: Windows upload comparison
+
+on:
+  push:
+    branches: [prime/pr338-upload-r4]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: windows-upload-comparison-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - name: Initialize the isolated comparison path
+        run: |
+          $root=Join-Path $env:RUNNER_TEMP 'windows-upload-comparison'
+          "REVIEW_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: d36be586802aa77d15bbab9ab56b4bbf9f8ea285
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Parse fixture scripts before expensive work
+        run: |
+          $tokens=$null; $errors=$null
+          [Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/windows_upload_review/environment.ps1'),[ref]$tokens,[ref]$errors) | Out-Null
+          if ($errors.Count) { $errors | Format-List; exit 1 }
+          python -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('scripts/windows_upload_review').glob('*.py')]"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preflight both real SSH shells before compilation
+        run: |
+          python -B scripts/windows_upload_review/preflight.py "$env:REVIEW_ROOT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Fetch and verify the immutable 47 MB release image
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -B scripts/windows_upload_review/payload.py "$env:REVIEW_ROOT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build exact main and candidate upload entry points sequentially
+        run: |
+          python -B scripts/windows_upload_review/build.py "$env:REVIEW_ROOT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compare actual SSH under both default shells
+        run: |
+          python -B scripts/windows_upload_review/run.py "$env:REVIEW_ROOT"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Recover only an initialized fixture after interruption
+        if: ${{ always() }}
+        run: |
+          $roots=@($env:REVIEW_ROOT,(Join-Path $env:REVIEW_ROOT 'preflight'))
+          foreach ($root in $roots) {
+            $state=Join-Path $root 'private/environment.json'
+            if (Test-Path $state) {
+              $s=[IO.File]::ReadAllText($state)|ConvertFrom-Json
+              if (-not $s.cleanup_complete) {
+                $out=Join-Path $root 'reports/recovery.json'
+                Remove-Item Env:PSModulePath -ErrorAction SilentlyContinue
+                & "$env:SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe" -NoLogo -NoProfile -NonInteractive -File scripts/windows_upload_review/environment.ps1 -Mode cleanup -Root "$root" > $out
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              }
+            }
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: windows-upload-comparison
+          path: ${{ runner.temp }}/windows-upload-comparison/reports
+          if-no-files-found: warn
+          retention-days: 14
