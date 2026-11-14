@@ -25,8 +25,23 @@ grep-matcher = "=0.1.9"
 grep-regex = "=0.1.14"
 grep-searcher = "=0.1.17"
 
-[lints]
-workspace = true
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lints.rust]
+unsafe_code = "allow"
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+unreachable = "deny"
+# The structural guardrails the rest of the workspace inherits from the
+# workspace lints, listed here because this crate keeps its own lint table for
+# the FFI override above.
+too_many_lines = "warn"
+cognitive_complexity = "warn"
+too_many_arguments = "warn"
+struct_excessive_bools = "warn"
 
 [dev-dependencies]
 # Enable deterministic time in debug integration fixtures and default test runs.
