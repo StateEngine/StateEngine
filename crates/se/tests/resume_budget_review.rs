@@ -206,7 +206,7 @@ fn setup(provider: Provider, saved_notes: bool) -> TestResult<Consumer> {
             .create(root.join("runtime"))?;
     }
     fs::create_dir(root.join("repo"))?;
-    let home = root.join("state");
+    let home = root.join("state home with a quoted \"segment\" and retained conversation context");
     let mut c = Consumer {
         root,
         home,
@@ -408,40 +408,61 @@ fn exercise(provider: Provider, saved_notes: bool) -> TestResult {
         c.check(&mcp, since.as_ref())?;
         assert_eq!(c.unread()?, c.messages, "resume acknowledged mail");
         if phase == 0 {
-            // Every omission shares a target-preserving expanded resume when
-            // individual commands are removed. Execute that read verbatim.
-            let recovery = mcp["omissions"]
+            // Execute the actual advertised commands; recovery may be individual
+            // or shared depending on how much representation fits.
+            let recoveries: Vec<Vec<String>> = mcp["omissions"]
                 .as_array()
                 .ok_or("omissions")?
                 .iter()
-                .find(|o| o["section"] == "recovery_commands")
-                .ok_or("shared recovery absent")?;
-            let argv: Vec<String> = serde_json::from_value(recovery["argv"].clone())?;
+                .filter_map(|o| o["argv"].as_array())
+                .filter(|a| !a.is_empty())
+                .map(|a| {
+                    a.iter()
+                        .map(|v| v.as_str().map(str::to_owned).ok_or("argv word"))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<_, _>>()?;
             assert!(
-                argv.contains(&c.project) && argv.contains(&c.home.to_string_lossy().into_owned())
+                !recoveries.is_empty(),
+                "clipped reply has no executable recovery"
             );
-            let recovered = c
-                .raw_command(true)?
-                .arg("--json")
-                .args(&argv[1..])
-                .output()?;
-            assert!(
-                matches!(recovered.status.code(), Some(0 | 2)),
-                "{}",
-                String::from_utf8_lossy(&recovered.stderr)
-            );
-            let full: Value = serde_json::from_slice(&recovered.stdout)?;
-            if saved_notes {
-                assert_eq!(full["working_state"]["value"]["text"], c.working);
-            } else {
-                assert_eq!(full["working_state"]["state"], "absent");
+            for argv in recoveries {
+                assert!(
+                    argv.contains(&c.project)
+                        && argv.contains(&c.home.to_string_lossy().into_owned())
+                );
+                let recovered = c
+                    .raw_command(true)?
+                    .arg("--json")
+                    .args(&argv[1..])
+                    .output()?;
+                assert!(
+                    matches!(recovered.status.code(), Some(0 | 2)),
+                    "advertised recovery refused: {}",
+                    String::from_utf8_lossy(&recovered.stderr)
+                );
+                let full: Value = serde_json::from_slice(&recovered.stdout)?;
+                assert_ne!(full["schema"], "se.error/v1");
+                if argv.iter().any(|a| a == "resume") {
+                    if saved_notes {
+                        assert_eq!(full["working_state"]["value"]["text"], c.working);
+                    } else {
+                        assert_eq!(full["working_state"]["state"], "absent");
+                    }
+                    assert_eq!(
+                        full["recent_turns"]
+                            .as_array()
+                            .ok_or("recovered turns")?
+                            .len(),
+                        8
+                    );
+                }
+                if argv.iter().any(|a| a == "msg") {
+                    assert_eq!(full["items"][0]["body"]["text"], c.mail);
+                    assert_eq!(full["items"][0]["body"]["complete"], true);
+                }
             }
-            assert!(
-                !full["recent_turns"]
-                    .as_array()
-                    .ok_or("recovered turns")?
-                    .is_empty()
-            );
+            assert_eq!(c.unread()?, c.messages, "recovery acknowledged mail");
             since = Some(body["cursor"].clone());
         }
     }
