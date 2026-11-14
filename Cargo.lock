@@ -1508,6 +1508,7 @@ dependencies = [
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
+ "libc",
  "rusqlite",
  "se-atlas",
  "se-types",
@@ -1629,6 +1630,7 @@ dependencies = [
 name = "se-store"
 version = "0.0.1-alpha.1"
 dependencies = [
+ "libc",
  "rusqlite",
  "se-proc",
  "se-store-contract",
