@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use se_proc::NativeDirectoryCreation;
 use se_proc::{NativeStateFiles, StateFileErrorCode};
 use std::{
     error::Error,
@@ -451,6 +453,39 @@ fn user_owned_ancestor_links_are_allowed_but_final_root_links_refuse() -> Check 
     assert_eq!(
         fs::read(real.join("state/state.db"))?,
         b"under a trusted ancestor"
+    );
+    Ok(())
+}
+
+/// Bug: 272 — the directory creator's leaf probe refused trusted symlinked
+/// ancestors that the walk policy resolves; the final root link still refuses.
+#[cfg(unix)]
+#[test]
+fn directory_creation_walks_through_a_trusted_ancestor_link() -> Check {
+    let home = Home::new()?;
+    let real = home.0.join("real");
+    fs::create_dir(&real)?;
+    protect(&real)?;
+    let alias = home.0.join("system-alias");
+    std::os::unix::fs::symlink(&real, &alias)?;
+    let mut creation = NativeDirectoryCreation::begin();
+    assert_eq!(
+        creation
+            .prepare(&alias)
+            .err()
+            .ok_or("final root link admitted")?
+            .code,
+        StateFileErrorCode::LocationUnsafe
+    );
+    let root = alias.join("state");
+    let files = NativeDirectoryCreation::begin().create(&root)?;
+    let mut stage = files.create_staging(&root)?;
+    stage.file.write_all(b"installed through an alias")?;
+    drop(stage.file);
+    files.publish_no_replace(&stage.path, &root.join("installed.db"))?;
+    assert_eq!(
+        fs::read(real.join("state/installed.db"))?,
+        b"installed through an alias"
     );
     Ok(())
 }

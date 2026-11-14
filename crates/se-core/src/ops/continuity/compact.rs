@@ -1,8 +1,21 @@
-//! Remove repeated recovery metadata before spending the saved-work preview.
+//! Fit previews while preserving scoped recovery and source counts.
 use super::types::ResumeOutput;
-use se_types::{Page, Result};
 
-pub(super) fn recovery(value: &mut ResumeOutput) -> Result<bool> {
+pub(super) fn unread_preview(value: &mut ResumeOutput, excess: usize) -> bool {
+    let Some(row) = value.unread.items_mut().first_mut() else {
+        return false;
+    };
+    if row.body.complete || row.body.text.is_empty() {
+        return false;
+    }
+    // Already-partial mail keeps its byte count, required ID and recovery.
+    let limit = row.body.text.len().saturating_sub(excess.saturating_add(8));
+    let limit = super::read::clip(&row.body.text, limit).len();
+    row.body.text.truncate(limit);
+    true
+}
+
+pub(super) fn recovery(value: &mut ResumeOutput) -> bool {
     let mut changed = false;
     let shared = value
         .omissions
@@ -34,16 +47,10 @@ pub(super) fn recovery(value: &mut ResumeOutput) -> Result<bool> {
         .iter()
         .any(|item| item.section == "unread" && !item.command.is_empty() && !item.argv.is_empty())
     {
-        let mut rows = value.unread.items().to_vec();
-        for row in &mut rows {
+        for row in value.unread.items_mut() {
             changed |= row.body.command.take().is_some();
             changed |= row.body.argv.take().is_some();
         }
-        value.unread = Page::new(
-            rows,
-            value.unread.window().clone(),
-            value.unread.next().cloned(),
-        )?;
     }
     for required in &mut value.required_reads {
         if required.why.len() > 64 {
@@ -57,19 +64,16 @@ pub(super) fn recovery(value: &mut ResumeOutput) -> Result<bool> {
         "unread message(s) require reading; listing and context construction do not mark them read.",
     ));
     changed |= previous != value.attention.len();
-    Ok(changed)
+    changed
 }
 
-pub(super) fn expanded(
-    value: &mut ResumeOutput,
-    command: crate::ops::AgentCommand,
-) -> Result<bool> {
+pub(super) fn expanded(value: &mut ResumeOutput, command: crate::ops::AgentCommand) -> bool {
     if value
         .omissions
         .iter()
         .any(|item| item.section == "recovery_commands")
     {
-        return Ok(false);
+        return false;
     }
     let mut count = value
         .omissions
@@ -84,7 +88,7 @@ pub(super) fn expanded(
         + usize::from(matches!(&value.working_state,
             se_types::Read::Present { value: state } if state.command.is_some()));
     if count < 2 {
-        return Ok(false);
+        return false;
     }
     // One target-preserving expanded read recovers all per-section commands.
     // Keep each section's count, unit, reason and tool in this small result.
@@ -102,16 +106,10 @@ pub(super) fn expanded(
     }
     // Long message IDs can make per-message commands dominate the brief.
     // Required IDs remain; the expanded read restores their full commands.
-    let mut rows = value.unread.items().to_vec();
-    for row in &mut rows {
+    for row in value.unread.items_mut() {
         count += usize::from(row.body.command.take().is_some());
         row.body.argv = None;
     }
-    value.unread = Page::new(
-        rows,
-        value.unread.window().clone(),
-        value.unread.next().cloned(),
-    )?;
     let mut omitted = super::read::omission(
         "recovery_commands",
         Some(count as u64),
@@ -121,5 +119,5 @@ pub(super) fn expanded(
     );
     omitted.unit = Some("commands".into());
     value.omissions.push(omitted);
-    Ok(true)
+    true
 }
