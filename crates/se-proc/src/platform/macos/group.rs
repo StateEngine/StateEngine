@@ -97,6 +97,42 @@ pub(super) fn in_group(expected: &ProcessIdentity, group: ProcessId) -> ProcResu
     )
 }
 
+/// Keep observed population distinct from continuity and escaped obligations.
+fn observation(
+    scope: ScopeIdentity,
+    live: Vec<ProcessIdentity>,
+    anchored: bool,
+    escaped: bool,
+) -> ProcResult<ScopeObservation> {
+    let population = if live.is_empty() {
+        Population::Empty
+    } else if anchored {
+        Population::Populated
+    } else {
+        Population::Unknown
+    };
+    let complete = !escaped && (anchored || live.is_empty());
+    Ok(ScopeObservation {
+        scope,
+        remaining: RemainingScope {
+            population,
+            known_live: live,
+            extent: if complete {
+                EnumerationExtent::Complete
+            } else {
+                EnumerationExtent::Partial {
+                    reason: "group continuity or an escaped tracked obligation is unproved; unobserved descendants may remain".into(), omitted: None }
+            },
+            observed_at_unix_ns: now()?,
+        },
+        exit_basis: if population == Population::Empty && complete {
+            Some(ScopeExitBasis::ObservedEmpty)
+        } else {
+            None
+        },
+    })
+}
+
 impl Scope {
     pub fn observe(&mut self) -> ProcResult<ScopeObservation> {
         self.refresh_exec()?;
@@ -179,33 +215,7 @@ impl Scope {
         {
             registration.rearm();
         }
-        let population = if live.is_empty() {
-            Population::Empty
-        } else if anchored {
-            Population::Populated
-        } else {
-            Population::Unknown
-        };
-        let complete = !self.escaped && (anchored || live.is_empty());
-        Ok(ScopeObservation {
-            scope: self.scope.clone(),
-            remaining: RemainingScope {
-                population,
-                known_live: live,
-                extent: if complete {
-                    EnumerationExtent::Complete
-                } else {
-                    EnumerationExtent::Partial {
-                    reason: "group continuity or an escaped tracked obligation is unproved; unobserved descendants may remain".into(), omitted: None }
-                },
-                observed_at_unix_ns: now()?,
-            },
-            exit_basis: if population == Population::Empty && complete {
-                Some(ScopeExitBasis::ObservedEmpty)
-            } else {
-                None
-            },
-        })
+        observation(self.scope.clone(), live, anchored, self.escaped)
     }
     pub fn stop(&mut self, deadline: Instant) -> ProcResult<StopDispatch> {
         self.signal(deadline, libc::SIGKILL)
