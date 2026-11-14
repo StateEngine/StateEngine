@@ -1,0 +1,47 @@
+name: Linux startup digest comparison
+
+on:
+  push:
+    branches: [prime/linux-startup-digest-r1]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-startup-digest-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - name: Initialize isolated evidence paths
+        run: |
+          echo "MEASURE_ROOT=$RUNNER_TEMP/startup-digest" >> "$GITHUB_ENV"
+          echo "EVIDENCE_ROOT=$RUNNER_TEMP/startup-digest-evidence" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: eef10cfaabba9311a89dfc5d9952dfe25afd03e2
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Check measurement syntax before compilation
+        run: |
+          python3 -B -c "import ast,pathlib; [ast.parse(p.read_text()) for p in pathlib.Path('scripts/startup_digest').glob('*.py')]"
+          cargo fmt --all -- --check
+      - name: Build exact distribution pair and measure full public startup
+        run: python3 -B scripts/startup_digest/build.py "$MEASURE_ROOT"
+      - name: Collect evidence without private homes or build caches
+        if: ${{ always() }}
+        run: python3 -B scripts/startup_digest/collect.py "$MEASURE_ROOT" "$EVIDENCE_ROOT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: linux-startup-digest
+          path: ${{ runner.temp }}/startup-digest-evidence
+          if-no-files-found: error
+          retention-days: 14
