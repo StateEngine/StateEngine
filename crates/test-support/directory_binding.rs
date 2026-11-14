@@ -20,7 +20,7 @@ impl Binding {
         // NativeSourceRoot rejects a final symbolic link or reparse point.
         let original = se_proc::NativeSourceRoot::open(path)?;
         let identity = original.physical_identity()?;
-        let path = std::fs::canonicalize(path)?;
+        let path = se_proc::canonicalize_path(path)?;
         let mut roots = Vec::new();
         for ancestor in path.ancestors() {
             roots.push(se_proc::NativeSourceRoot::open(ancestor)?);
