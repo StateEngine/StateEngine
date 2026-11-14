@@ -65,7 +65,7 @@ fn spec(
         ]
         .map(Into::into)
         .to_vec(),
-        cwd: home.0.clone(),
+        cwd: home.0.to_path_buf(),
         environment: Environment {
             entries: vec![(
                 "EXECUTION_CONTROL_ROOT".into(),
@@ -82,8 +82,8 @@ fn spec(
         policy: LaunchPolicy {
             containment: ContainmentRequirement::KernelScope,
             writes: WritePolicy::Workspace {
-                roots: vec![home.0.clone()],
-                scratch: home.0.clone(),
+                roots: vec![home.0.to_path_buf()],
+                scratch: home.0.to_path_buf(),
             },
             network: NetworkPolicy::Allow,
             hardening: OptionalHardening::Off,
