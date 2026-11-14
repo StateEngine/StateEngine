@@ -1,5 +1,6 @@
 //! Production registry publication: slow durable I/O cannot hold other sessions' map lock.
 use super::*;
+use crate::test_directory as cleanup_directory;
 use se_store::RecordIdentity;
 use std::{
     sync::{
@@ -13,8 +14,8 @@ use std::{
 type Check = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 static NEXT: AtomicU64 = AtomicU64::new(1);
 struct Source {
-    path: std::path::PathBuf,
     pin: Option<BoundTranscript>,
+    _root_owner: cleanup_directory::PrivateDirectory,
 }
 impl Source {
     fn new() -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
@@ -31,6 +32,7 @@ impl Source {
             builder.mode(0o700);
         }
         builder.create(&directory)?;
+        let root_owner = cleanup_directory::PrivateDirectory::for_case(directory.clone());
         let path = directory.join("source.jsonl");
         std::fs::write(&path, b"source\n")?;
         let pin = se_proc::NativeSourcePin::open(&path)?.ok_or("native source absent")?;
@@ -45,7 +47,6 @@ impl Source {
             file_identity: se_types::Sha256::from_bytes(pin.identity()),
         };
         Ok(Self {
-            path,
             pin: Some(BoundTranscript {
                 binding,
                 source: se_store::RecordId::from_parts(1_700_000_000_000 + n, [4; 10])?,
@@ -53,6 +54,7 @@ impl Source {
                 queue: Default::default(),
                 tools: Default::default(),
             }),
+            _root_owner: root_owner,
         })
     }
     fn take(
@@ -63,24 +65,21 @@ impl Source {
             .ok_or_else(|| "source already consumed".into())
     }
 }
-impl Drop for Source {
-    fn drop(&mut self) {
-        self.pin.take();
-        if let Err(error) = std::fs::remove_file(&self.path) {
-            eprintln!(
-                "registry fixture cleanup failed at {}: {error}",
-                self.path.display()
-            );
-        }
-        if let Some(directory) = self.path.parent()
-            && let Err(error) = std::fs::remove_dir(directory)
-        {
-            eprintln!(
-                "registry directory cleanup failed at {}: {error}",
-                directory.display()
-            );
-        }
+
+fn wait_for_publication_release(
+    entered: &mpsc::Sender<()>,
+    release: &(Mutex<bool>, Condvar),
+) -> se_types::Result<()> {
+    entered.send(()).map_err(|_| busy())?;
+    let (lock, wake) = release;
+    let released = lock.lock().map_err(|_| busy())?;
+    let (released, timeout) = wake
+        .wait_timeout_while(released, std::time::Duration::from_secs(5), |value| !*value)
+        .map_err(|_| busy())?;
+    if timeout.timed_out() && !*released {
+        return Err(busy());
     }
+    Ok(())
 }
 
 #[test]
@@ -94,6 +93,7 @@ fn publishing_distinct_sessions_releases_registry_and_reserves_capacity() -> Che
     let a_session = a.binding.identity.session.clone();
     let b = second.take()?;
     let b_session = b.binding.identity.session.clone();
+    let mut extra_roots = Vec::new();
     thread::scope(|scope| -> Check {
         let jobs = [a, b]
             .into_iter()
@@ -103,20 +103,7 @@ fn publishing_distinct_sessions_releases_registry_and_reserves_capacity() -> Che
                 let release = release.clone();
                 scope.spawn(move || {
                     registry.insert_published(source, |_| {
-                        entered.send(()).map_err(|_| busy())?;
-                        let (lock, wake) = &*release;
-                        let released = lock.lock().map_err(|_| busy())?;
-                        let (released, timeout) = wake
-                            .wait_timeout_while(
-                                released,
-                                std::time::Duration::from_secs(5),
-                                |value| !*value,
-                            )
-                            .map_err(|_| busy())?;
-                        if timeout.timed_out() && !*released {
-                            return Err(busy());
-                        }
-                        Ok(())
+                        wait_for_publication_release(&entered, &release)
                     })
                 })
             })
@@ -146,8 +133,8 @@ fn publishing_distinct_sessions_releases_registry_and_reserves_capacity() -> Che
                     .detail(),
                 se_types::Detail::StoreBusy(_)
             ));
-            let mut duplicate = Source::new()?;
-            let mut duplicate = duplicate.take()?;
+            let mut duplicate_source = Source::new()?;
+            let mut duplicate = duplicate_source.take()?;
             duplicate.binding.identity.session = a_session.clone();
             assert!(matches!(
                 registry
@@ -170,6 +157,8 @@ fn publishing_distinct_sessions_releases_registry_and_reserves_capacity() -> Che
                     .is_err(),
                 "in-flight source was replaced"
             );
+            extra_roots.push(third._root_owner);
+            extra_roots.push(duplicate_source._root_owner);
             Ok(())
         })();
         {
@@ -187,7 +176,10 @@ fn publishing_distinct_sessions_releases_registry_and_reserves_capacity() -> Che
     assert!(registry.registry()?.publishing.is_empty());
     // Drop native pins before fixture paths are removed on Windows.
     drop(registry);
-    Ok(())
+    for owner in &extra_roots {
+        owner.finish(Ok::<(), Box<dyn std::error::Error + Send + Sync>>(()))?;
+    }
+    first._root_owner.finish(second._root_owner.finish(Ok(())))
 }
 
 #[test]
@@ -222,7 +214,9 @@ fn publication_failure_returns_capacity_preserves_quarantine_and_permits_exact_s
     assert!(registry.get(&session).is_ok());
     assert!(registry.registry()?.failed.is_empty());
     drop(registry);
-    Ok(())
+    first
+        ._root_owner
+        .finish(replacement._root_owner.finish(Ok(())))
 }
 
 #[test]
@@ -240,5 +234,5 @@ fn failed_new_publication_does_not_consume_another_sessions_slot() -> Check {
     registry.insert_published(source, |_| Ok(()))?;
     assert!(registry.get(&session).is_ok());
     drop(registry);
-    Ok(())
+    failed._root_owner.finish(next._root_owner.finish(Ok(())))
 }

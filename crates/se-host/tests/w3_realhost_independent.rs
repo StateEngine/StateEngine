@@ -36,7 +36,7 @@ fn open_refuses_an_uninitialized_home_by_name() {
         Ok(path) => path,
         Err(()) => missing_helper(),
     };
-    let root = judge_root("open");
+    let root = judge_root("open").required();
     let empty = root.join("home");
     std::fs::create_dir_all(&empty).required();
     #[cfg(unix)]

@@ -10,21 +10,21 @@
 use se_proc::{NativeStateFiles, OwnedFile};
 use std::{
     error::Error,
-    path::PathBuf,
     process::Command,
     sync::Arc,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
+
 type Check = Result<(), Box<dyn Error>>;
 
-fn private_root() -> Result<PathBuf, Box<dyn Error>> {
-    let mut nonce = [0u8; 8];
-    se_proc::fill_entropy(&mut nonce)?;
-    let path = std::env::temp_dir().join(format!("lock-release-{}", se_types::hex_lower(&nonce)));
-    NativeStateFiles::create(&path)?;
-    Ok(path)
+fn private_root() -> Result<cleanup_directory::PrivateDirectory, Box<dyn Error>> {
+    let root = cleanup_directory::private_case_directory()?;
+    NativeStateFiles::create(&root)?;
+    Ok(root)
 }
 
 #[test]
@@ -76,8 +76,7 @@ fn a_released_lock_is_available_while_another_thread_spawns() -> Check {
         "a released lock was refused {refusals} times in {reads} reads while {spawned} children were spawned"
     );
 
-    std::fs::remove_dir_all(&root)?;
-    Ok(())
+    root.finish(Ok(()))
 }
 
 /// The installer claim is the pin's own held lock, and a second holder must be
@@ -104,6 +103,5 @@ fn a_held_installation_claim_refuses_a_second_holder() -> Check {
     drop(held);
     let mut after = OwnedFile::open(&record)?.ok_or("record absent after release")?;
     after.claim_installation_record()?;
-    std::fs::remove_dir_all(&root)?;
-    Ok(())
+    root.finish(Ok(()))
 }

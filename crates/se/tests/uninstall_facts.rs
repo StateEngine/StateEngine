@@ -4,6 +4,8 @@
 )]
 #[path = "../src/render/acp.rs"]
 mod acp;
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 #[path = "../src/render/labels.rs"]
 mod labels;
 #[path = "../src/render/read.rs"]
@@ -48,16 +50,13 @@ struct Facts {
     directory: PathBuf,
     plan: ValidatedUninstallPlan,
     effects: UninstallEffects,
+    _root_owner: cleanup_directory::PrivateDirectory,
 }
 impl Facts {
     fn new() -> Check<Self> {
         se_proc::initialize_file_creation_owner()?;
-        let entropy = se_proc::random_secret()?;
-        let suffix: String = entropy.expose()[..16]
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        let root = std::env::temp_dir().join(format!("se-test-uninstall-facts-{suffix}"));
+        let root_owner = cleanup_directory::private_case_directory()?;
+        let root = root_owner.to_path_buf();
         let files = NativeStateFiles::create(&root)?;
         let removed = root.join("removed-asset");
         let image = root.join("retry-image");
@@ -150,6 +149,7 @@ impl Facts {
             directory,
             plan,
             effects,
+            _root_owner: root_owner.cleanup_on_drop(),
         })
     }
     fn recovery(&mut self) -> Check {
@@ -242,14 +242,6 @@ impl Facts {
         Ok(())
     }
 }
-impl Drop for Facts {
-    fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_dir_all(&self.root) {
-            eprintln!("retaining owned fixture {}: {error}", self.root.display());
-        }
-    }
-}
-
 /// Protects: achieved native file and PATH changes survive a missing recovery readback; absent evidence is reported as unknown, never empty or complete.
 #[test]
 fn missing_recovery_keeps_native_effects_in_json_and_human_receipts() -> Check {

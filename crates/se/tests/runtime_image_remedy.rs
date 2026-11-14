@@ -1,11 +1,13 @@
 //! Actual Windows image pinning and the two public diagnostic renderers.
 #![cfg(windows)]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use std::{
     error::Error,
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 type Check<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -121,11 +123,8 @@ impl Drop for Host {
 )]
 fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts() -> Check {
     se_proc::initialize_file_creation_owner()?;
-    let fixture = std::env::temp_dir().join(format!(
-        "se-image-remedy-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
+    let root_owner = cleanup_directory::private_case_directory()?;
+    let fixture = root_owner.to_path_buf();
     drop(se_proc::NativeStateFiles::create(&fixture)?);
     let image = fixture.join("multi link runtime.exe");
     let alias = fixture.join("runtime alias.exe");
@@ -223,8 +222,7 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
     );
     host.stop()?;
     drop(host);
-    fs::remove_dir_all(fixture)?;
-    Ok(())
+    root_owner.finish(Ok(()))
 }
 
 #[path = "../../test-support/executable.rs"]

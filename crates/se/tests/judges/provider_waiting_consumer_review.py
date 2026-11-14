@@ -149,6 +149,7 @@ def codex(f, binary, mode):
         # Native Unix listener aliases need a short runtime directory even
         # when retained evidence lives under a long caller-selected path.
         f.review_short = Path(tempfile.mkdtemp(prefix='se-wait-', dir='/tmp' if sys.platform == 'linux' else None))
+        print("fixture root (retained on failed or interrupted closure):", f.review_short, flush=True)
         f.env.update(CODEX_HOME=str(home),OPENAI_API_KEY='sk-synthetic-loopback-review-only',
                      XDG_RUNTIME_DIR=str(f.review_short),TMPDIR=str(f.review_short))
         (home/'config.toml').write_text('model_provider="review-loopback"\n'

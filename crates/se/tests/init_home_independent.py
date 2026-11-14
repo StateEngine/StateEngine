@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from judges.directory_owner import DirectoryOwner
 
 
 def main():
@@ -28,6 +29,8 @@ def main():
     image = args.se.resolve(strict=True)
     args.out.mkdir(mode=0o700)
     root = Path(tempfile.mkdtemp(prefix='se-init-homes-', dir=Path.home()))
+    print("fixture root (retained on failed or interrupted closure):", root, flush=True)
+    root_owner = DirectoryOwner(root)
     binary = root / 'se'
     shutil.copy2(image, binary)
     digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -124,6 +127,11 @@ def main():
                 failures.append(name + ' retained a runtime lease')
     if len(set(ids)) != 3:
         failures.append('three independent homes did not retain distinct agents')
+    if not failures:
+        try:
+            root_owner.remove()
+        except OSError as error:
+            failures.append('fixture removal: ' + str(error))
     report = {'passed': not failures, 'binary_sha256': digest(image), 'fixture_root': str(root),
               'held_before': before, 'held_after_refusal': after, 'calls': calls, 'failures': failures,
               'bounds': 'Three private homes; every CLI child waited; no runtime/provider/installer started.'}
