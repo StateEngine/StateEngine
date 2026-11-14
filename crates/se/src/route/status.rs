@@ -317,6 +317,47 @@ pub fn endpoint_name(endpoint: &se_host::EndpointRecord) -> Result<String> {
     })
 }
 
+/// Carry host self-accounting alongside the CLI's independent native status.
+/// A changed process or generation cannot lend its counters to the earlier view.
+pub(super) fn merge_resources(runtime: &mut RuntimeView, observed: &Result<AnyOutput>) {
+    let hosted = match observed {
+        Ok(AnyOutput::ProjectStatus(status)) => Ok(&status.value.runtime),
+        Ok(_) => {
+            Err("The host returned a different operation family for resource observation.".into())
+        }
+        Err(error) => Err(format!("Host resource observation failed: {error}")),
+    };
+    let hosted = hosted.and_then(|live| {
+        let same_process = matches!((&runtime.process, &live.process), (Some(direct), Some(served))
+            if direct.pid == served.pid && direct.started_at == served.started_at
+                && direct.machine_id == served.machine_id && direct.exe == served.exe);
+        if runtime.state == "running"
+            && live.state == "running"
+            && same_process
+            && runtime.generation.is_some()
+            && runtime.generation == live.generation
+        {
+            Ok(live)
+        } else {
+            Err("Host resource observation belongs to a different process or generation; retry status.".into())
+        }
+    });
+    match hosted {
+        Ok(live) => {
+            runtime.resources = live.resources.clone();
+            runtime.resources_unavailable = live.resources_unavailable.clone().or_else(|| {
+                live.resources
+                    .is_none()
+                    .then(|| "The authenticated host did not report resource counters.".into())
+            });
+        }
+        Err(reason) => {
+            runtime.resources = None;
+            runtime.resources_unavailable = Some(reason);
+        }
+    }
+}
+
 /// Complete cross-project reads after the selected project's read pin closes.
 pub(super) fn finish<R: ReadStore>(
     cx: &Bootstrap,
