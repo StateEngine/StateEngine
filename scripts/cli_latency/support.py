@@ -34,6 +34,7 @@ def percentile(values, quantile):
 def timed(smoke, arguments):
     argv = list(map(str, [smoke.binary, *arguments, '--home', smoke.state,
                           '--project', smoke.project, '--json']))
+    wall_started = time.time_ns()
     started = time.perf_counter_ns()
     child = subprocess.Popen(argv, cwd=smoke.repository, env=smoke.commands.environment,
                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -47,7 +48,11 @@ def timed(smoke, arguments):
         child.kill()
         stdout, stderr = child.communicate(timeout=5)
     elapsed = (time.perf_counter_ns() - started) / 1e6
-    return dict(ms=elapsed, exit=child.returncode, error=error, argv=argv,
+    wall_ended = time.time_ns()
+    require(abs((wall_ended - wall_started) / 1e6 - elapsed) < 5,
+            'Wall clock shifted relative to the monotonic command timer')
+    return dict(ms=elapsed, wall_started_ns=wall_started, wall_ended_ns=wall_ended,
+                exit=child.returncode, error=error, argv=argv,
                 stdout=stdout.decode('utf-8'), stderr=stderr.decode('utf-8'))
 
 def prepare(directory, image, provider, dirty, smokes, side):

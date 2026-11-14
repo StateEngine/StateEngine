@@ -1,7 +1,7 @@
-"""Interleave four common CLI commands on exact frozen base/head images.
+"""Trace fresh recipient message reads on exact frozen base/head images.
 
-Six configured-provider/repository cohorts run four independent populations.
-Providers are never launched; resume is explicitly owner context inspection.
+Six configured-provider/repository cohorts compare plain and instrumented images.
+Providers are never launched; diagnostic spans include observer overhead.
 """
 import hashlib
 import json
@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 from support import ROUNDS, load, prepare, require, save, summaries, timed
+from phases import profile
 from workloads import ACTIONS, arguments, readback, setup, validate
 
 
@@ -87,6 +88,7 @@ def condition(output, images, provider, dirty, action):
             state = setup(smoke, action)
             facts[side] = dict(state=state, pid=pid,
                                identity=status(smoke, pid, dirty, 'host-before'))
+        smokes['head'].commands.environment['SE_CLI_PHASE_PROFILE'] = '1'
         record['fixtures'] = facts
         save(directory / 'samples.json', record)
         for index in range(ROUNDS + 1):
@@ -109,6 +111,7 @@ def condition(output, images, provider, dirty, action):
             after = status(smoke, fact['pid'], dirty, 'host-after')
             require(after == fact['identity'], 'Native serving identity changed during timing')
         record['summary'] = summaries(record['pairs'])
+        record['phase_profile'] = profile(record['pairs'])
         record['exit'] = 0
     except Exception as error:
         record['error'] = str(error)
@@ -126,7 +129,7 @@ def main():
     observations = output / 'observations'
     observations.mkdir()
     result = dict(scope='Author hosted Linux measurements; configured providers never launched; '
-                        'resume-preview is owner inspection, not bound session resume or restart; '
+                        'instrumented times include tracing overhead; not an optimization; '
                         'no independent, native Windows/macOS or cross-machine qualification',
                   method='spawn through pipe EOF and child exit; alternating image pairs; first '
                          'timed call separate; 200 warm calls per image; nearest-rank p95; '
@@ -141,7 +144,7 @@ def main():
                 print(json.dumps(observed), flush=True)
                 if any(value != [] for value in observed['process_closure'].values()):
                     raise RuntimeError('Process closure failed; later fixtures were not started')
-    result['exit'] = 0 if len(result['cohorts']) == 24 and all(
+    result['exit'] = 0 if len(result['cohorts']) == 6 and all(
         item['exit'] == 0 for item in result['cohorts']) else 1
     save(output / 'result.json', result)
     raise SystemExit(result['exit'])
