@@ -3,7 +3,7 @@
 #![cfg(target_os = "linux")]
 use std::{path::PathBuf, process::Command};
 
-fn judge(scenario: &str) {
+fn judge(scenario: &str) -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::temp_dir().join(format!(
         "provider-recovery-{}-{scenario}",
         std::process::id()
@@ -15,17 +15,15 @@ fn judge(scenario: &str) {
         .args(["--se", env!("CARGO_BIN_EXE_se"), "--output"])
         .arg(&root)
         .args(["--scenario", scenario])
-        .output()
-        .expect("start the independent public CLI recovery control");
+        .output()?;
     let diagnostics = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/judge-diagnostics")
         .join(format!("provider-recovery-{scenario}"));
-    std::fs::create_dir_all(&diagnostics).expect("create diagnostic directory");
-    std::fs::write(diagnostics.join("stdout.txt"), &output.stdout).expect("retain driver stdout");
-    std::fs::write(diagnostics.join("stderr.txt"), &output.stderr).expect("retain driver stderr");
+    std::fs::create_dir_all(&diagnostics)?;
+    std::fs::write(diagnostics.join("stdout.txt"), &output.stdout)?;
+    std::fs::write(diagnostics.join("stderr.txt"), &output.stderr)?;
     if root.join("result.json").exists() {
-        std::fs::copy(root.join("result.json"), diagnostics.join("result.json"))
-            .expect("retain outside process observations");
+        std::fs::copy(root.join("result.json"), diagnostics.join("result.json"))?;
     }
     assert!(
         output.status.success(),
@@ -33,14 +31,16 @@ fn judge(scenario: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    Ok(())
 }
 
 #[test]
-fn runtime_crash_preserves_orphan_until_explicit_forced_relaunch() {
-    judge("crash");
+fn runtime_crash_preserves_orphan_until_explicit_forced_relaunch()
+-> Result<(), Box<dyn std::error::Error>> {
+    judge("crash")
 }
 
 #[test]
-fn runtime_crash_never_reaps_a_slow_live_provider() {
-    judge("slow");
+fn runtime_crash_never_reaps_a_slow_live_provider() -> Result<(), Box<dyn std::error::Error>> {
+    judge("slow")
 }

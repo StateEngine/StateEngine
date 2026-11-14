@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 import uuid
 
@@ -105,11 +106,19 @@ def check(se, root, hosted):
                    for row in call(*prefix, 'agent', 'list')['items'])
         print('ok - a foreign project cannot rename the stable identity', flush=True)
     finally:
-        stopped = call('down')
-        assert stopped['complete'] and stopped['witness']['state'] == 'witnessed'
-        assert not (home / 'endpoint.json').exists()
-        if foreground is not None:
-            assert foreground.wait(timeout=60) == 0, 'foreground host did not close cleanly'
+        try:
+            stopped = call('down')
+            assert stopped['complete'] and stopped['witness']['state'] == 'witnessed'
+            assert not (home / 'endpoint.json').exists()
+        finally:
+            if foreground is not None:
+                failure = sys.exception()
+                try:
+                    assert foreground.wait(timeout=60) == 0, 'foreground host did not close cleanly'
+                except BaseException as error:
+                    if failure is None:
+                        raise
+                    failure.add_note(f'foreground host join also failed: {error!r}')
         print('ok - normal shutdown is witnessed and endpoint absent', flush=True)
 
 
