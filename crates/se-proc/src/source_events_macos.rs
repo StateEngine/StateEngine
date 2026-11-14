@@ -64,12 +64,12 @@ unsafe extern "C" {
     );
     fn dispatch_release(object: *mut c_void);
 }
-pub(super) struct Signal {
+pub(crate) struct Signal {
     pub socket: UnixDatagram,
     pub pending: Arc<AtomicBool>,
     pub lost: Arc<AtomicBool>,
 }
-pub(super) struct Stream {
+pub(crate) struct Stream {
     stream: Ref,
     queue: *mut c_void,
     path: Ref,
@@ -109,7 +109,7 @@ unsafe extern "C" fn notified(
 }
 unsafe extern "C" fn drained(_: *mut c_void) {}
 impl Stream {
-    pub(super) fn new(path: &Path, signal: Signal) -> io::Result<Self> {
+    pub(crate) fn new(path: &Path, signal: Signal) -> io::Result<Self> {
         let bytes = path.as_os_str().as_bytes();
         if bytes.len() > 4096 || bytes.contains(&0) {
             return Err(io::Error::new(

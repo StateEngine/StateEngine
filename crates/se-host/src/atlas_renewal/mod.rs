@@ -1,4 +1,4 @@
-//! Event-driven Linux renewal. The runtime lends its one connection for each
+//! Native event-driven renewal. The runtime lends its one connection for each
 //! operation; this driver owns no SQLite executor, thread or timer.
 mod glob;
 mod ignore;

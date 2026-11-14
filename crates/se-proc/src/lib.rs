@@ -56,6 +56,8 @@ mod process_descendants;
 #[cfg(target_os = "linux")]
 pub use process_descendants::read_process_descendants;
 pub mod file_access;
+#[cfg(target_os = "macos")]
+mod source_events_macos;
 mod source_root;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use source_root::{

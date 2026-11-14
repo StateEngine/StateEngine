@@ -1,6 +1,6 @@
 //! Recursive native streams share one nonblocking descriptor with the host reactor.
-mod stream;
 use super::*;
+use crate::source_events_macos as stream;
 use std::{
     cell::RefCell,
     collections::BTreeMap,
@@ -121,19 +121,13 @@ impl NativeSourceWatch {
         };
         Ok(1)
     }
-    /// The process descriptor allowance bounds logical directory subscriptions;
-    /// native streams are shared by each retained physical root, never each file.
+    /// Recursive streams have no observed per-directory OS allowance. Logical
+    /// mappings retain the host's own finite bound; no descriptor is held per map.
     pub fn observed_limit() -> io::Result<u64> {
-        // SAFETY: initialized native output and immutable process-limit query.
-        let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
-        // SAFETY: exact writable native resource-limit output.
-        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if limit.rlim_cur == 0 {
-            return Err(invalid("native descriptor allowance is zero"));
-        }
-        Ok(limit.rlim_cur)
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "recursive source watch has no observed per-directory OS limit",
+        ))
     }
 }
 impl AsFd for NativeSourceWatch {
