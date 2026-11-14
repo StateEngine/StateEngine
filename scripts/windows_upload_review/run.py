@@ -138,6 +138,9 @@ $partial=@();$dir=Split-Path $p;if(Test-Path -LiteralPath $dir){$partial=@(Get-C
         assert payload.stat().st_size == SIZE
         assert hashlib.sha256(payload.read_bytes()).hexdigest() == IMAGE
         self.report.update(images=images, payload_sha256=IMAGE, payload_bytes=SIZE)
+        os.environ['PATH'] = str(SSH_DIR) + os.pathsep + os.environ['PATH']
+        self.report['product_ssh_client'] = shutil.which('ssh')
+        assert Path(self.report['product_ssh_client']).samefile(SSH)
         self.report['environment'] = self.environment('setup', 'setup')
         pwsh = shutil.which('pwsh.exe')
         if not pwsh:

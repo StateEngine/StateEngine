@@ -36,9 +36,6 @@ function Census([string]$Sid) {
 }
 
 if ($Mode -eq 'setup') {
-    if ((Get-Service sshd -ErrorAction SilentlyContinue).Status -eq 'Running') {
-        throw 'Refusing to take over an already running SSH service'
-    }
     if ((Test-Path $clientConfig) -and (Get-Item $clientConfig).Length -gt 0) {
         throw 'Refusing to replace an existing client SSH configuration'
     }
@@ -50,9 +47,15 @@ if ($Mode -eq 'setup') {
     $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     Protect $private @($me,'S-1-5-18','S-1-5-32-544') $me
     $user = 'upl' + [Guid]::NewGuid().ToString('N').Substring(0,10)
+    $service = Get-CimInstance Win32_Service -Filter "Name='sshd'"
+    $initialProcess = if ($service.ProcessId) {
+        Get-CimInstance Win32_Process -Filter "ProcessId=$($service.ProcessId)" |
+            Select-Object ProcessId,CreationDate,CommandLine
+    } else { $null }
     $state = [ordered]@{user=$user; sid=$null; me=$me; client_existed=(Test-Path $clientConfig);
         server_existed=(Test-Path $sshdConfig); shell_existed=$false; shell_value=$null;
-        shell_kind=$null; setup_complete=$false; cleanup_complete=$false}
+        shell_kind=$null; setup_complete=$false; cleanup_complete=$false;
+        initial_service_running=($service.State -eq 'Running'); initial_service_process=$initialProcess}
     if ($state.server_existed) { [IO.File]::Copy($sshdConfig,(Join-Path $private 'sshd_config.original')) }
     if ($state.client_existed) { [IO.File]::Copy($clientConfig,(Join-Path $private 'client_config.original')) }
     $key = Get-Item $reg -ErrorAction SilentlyContinue
@@ -113,7 +116,7 @@ Host upload-review
     if ($LASTEXITCODE -ne 0) { throw 'Invalid SSH server configuration' }
     $state.setup_complete = $true
     Save $state
-    [ordered]@{user=$user;sid=$state.sid;client='native OpenSSH';port=22222} | ConvertTo-Json -Compress
+    [ordered]@{user=$user;sid=$state.sid;client='native OpenSSH';port=22222;initial_service=$initialProcess} | ConvertTo-Json -Depth 6 -Compress
     exit
 }
 
@@ -188,5 +191,9 @@ if ($state.sid) {
     if ($profile) { $profile | Remove-CimInstance }
 }
 $state.cleanup_complete=$true
+if ($state.initial_service_running) {
+    Start-Service sshd
+    (Get-Service sshd).WaitForStatus('Running',[TimeSpan]::FromSeconds(20))
+}
 Save $state
 [ordered]@{before=$before;after=$after;stopped_service=$serviceProcess;service_status=(Get-Service sshd).Status.ToString();restored=$true} | ConvertTo-Json -Depth 8 -Compress
