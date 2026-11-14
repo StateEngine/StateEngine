@@ -1,0 +1,64 @@
+# TEMPORARY 5e diagnostic, 2026-11-14: classify the 16 host-never-live base
+# failures on hosted Windows (judge 43610699626) as venue containment versus a
+# product host-launch defect. Collects retained fixtures, a post-run process
+# snapshot and image link counts. Delete this workflow once the evidence is judged.
+name: win-host-diag-5e
+on:
+  push:
+    branches: [prime/win-host-diag-r1]
+jobs:
+  diag:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: judge-windows-2025-v1
+          save-if: $false
+      - name: Run the host-never-live family exactly as the judge does
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo nextest run --package se --all-features --locked --profile ci \
+            -E 'binary(hook_session_independent) or binary(agent_allocation_routes) or binary(runtime_refusals) or binary(http_admission) or binary(runtime_image_remedy) or binary(breakaway_refusal) or binary(diagnostic_redaction_review)' \
+            --no-fail-fast 2>&1 | tee diag-run.log
+          rc=$?
+          set +o pipefail
+          echo "nextest exit=$rc (failure is expected; the retained evidence is the point)"
+      - name: Collect retained fixtures, process snapshot and image link counts
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force collect | Out-Null
+          $paths = Select-String -Path diag-run.log -Pattern 'retained-on-failure=(\S+)' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value } | Sort-Object -Unique
+          $i = 0
+          foreach ($p in $paths) {
+            $i++
+            if (Test-Path $p) { Copy-Item -Recurse $p ("collect\fixture-{0}" -f $i) }
+            else { "absent: $p" | Out-File -Append collect\collect-errors.txt }
+          }
+          $paths | Out-File retained-paths.txt -Encoding utf8
+          Get-CimInstance Win32_Process |
+            Where-Object { $_.Name -eq 'se.exe' -or $_.Name -like '*-se.exe' } |
+            Select-Object ProcessId, Name, CreationDate, CommandLine |
+            ConvertTo-Json -Depth 3 | Out-File process-snapshot.json -Encoding utf8
+          $t = (rustc --print host-tuple).Trim()
+          $bin = Join-Path "target\$t\debug" 'se.exe'
+          python -c "import json,os,sys; p=sys.argv[1]; print(json.dumps({'se_exe': p, 'nlink': os.stat(p).st_nlink if os.path.exists(p) else None}))" "$bin" | Out-File image-nlinks.json -Encoding utf8
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: win-host-diag-5e
+          path: |
+            diag-run.log
+            retained-paths.txt
+            process-snapshot.json
+            image-nlinks.json
+            collect/
