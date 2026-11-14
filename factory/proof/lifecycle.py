@@ -8,6 +8,7 @@ from pathlib import Path
 
 from report import exit_status, publish, read, summarize
 from matrix_adapter import plan as matrix_plan
+from windows_adapter import plan as windows_plan
 
 
 def save(path, value):
@@ -38,6 +39,7 @@ def plan(config):
         rows.append({key: probe[key] for key in ("platform", "surface", "selection")})
         rows[-1].update(output=f"{len(rows)}-native-{probe['platform']}-claude-wave-2", exit=None,
                         state="planned", native_receipt=True)
+    rows.extend(windows_plan(config))
     return rows
 
 
@@ -166,4 +168,11 @@ def service_exit(config):
         record["state"] = "interrupted"
         record["errors"].append("service=" + result + " exit=" + code + ":" + status)
     checkpoint(state, directory, record, config)
+    if any(row.get('windows_probe') for row in record['invocations']):
+        from windows_continuation import queue
+        try:
+            queue(config, directory, record)
+        except Exception as error:
+            record['errors'].append('Windows service queue: ' + str(error))
+            checkpoint(state, directory, record, config)
     return 0
