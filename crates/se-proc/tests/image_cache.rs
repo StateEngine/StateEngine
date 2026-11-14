@@ -122,7 +122,7 @@ fn protected_cache_contract() -> Result<()> {
     drop(files);
     fs::remove_file(path)?;
     // Refuse unexpected leftovers rather than deleting outside the known fixture.
-
+    fs::remove_dir(root)?;
     Ok(())
 }
 
