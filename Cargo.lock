@@ -1484,6 +1484,7 @@ dependencies = [
  "regex",
  "rusqlite",
  "se-atlas",
+ "se-config",
  "se-core",
  "se-host",
  "se-proc",
@@ -1520,11 +1521,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-config"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "schemars",
+ "se-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "se-core"
 version = "0.0.1-alpha.1"
 dependencies = [
  "clap",
  "schemars",
+ "se-config",
  "se-store",
  "se-types",
  "serde",
@@ -1547,6 +1559,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "se-atlas",
+ "se-config",
  "se-core",
  "se-proc",
  "se-remote",

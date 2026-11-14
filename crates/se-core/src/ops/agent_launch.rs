@@ -4,8 +4,8 @@ use super::{
     ProcessView, ResumeCommand,
     inputs::{Validate, bounded},
 };
-use crate::config_policy::{Provider, ResolvedProfile};
 use schemars::JsonSchema;
+use se_config::config_policy::{Provider, ResolvedProfile};
 use se_types::{
     AgentId, EventId, IdempotencyKey, LaunchId, LifecycleId, Named, NativePath, ProjectId,
     ProviderSessionId, Read, Result, SessionId,

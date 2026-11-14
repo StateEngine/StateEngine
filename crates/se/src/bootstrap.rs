@@ -26,7 +26,7 @@ pub struct Bootstrap {
     pub cwd: PathBuf,
     pub project: Option<String>,
     pub selections: se_core::ops::CliSelections,
-    pub config: crate::config::Loaded<se_core::config_policy::ConfigFile>,
+    pub config: crate::config::Loaded<se_config::config_policy::ConfigFile>,
     pub session: Option<Secret>,
     pub log: Option<String>,
     pub no_color: bool,
@@ -109,12 +109,12 @@ impl Bootstrap {
             // In particular, root recovery must not read config through the
             // loose directory before its metadata-only tightening.
             crate::config::Loaded {
-                value: se_core::config_policy::ConfigFile::default(),
+                value: se_config::config_policy::ConfigFile::default(),
                 origin: crate::config::Origin::BuiltIn,
             }
         } else {
             let (path, explicit) = configuration_path(&home)?;
-            crate::config::load::<se_core::config_policy::ConfigFile>(&path, explicit)?
+            crate::config::load::<se_config::config_policy::ConfigFile>(&path, explicit)?
         };
         let session = session_input(&home)?;
         let project = match project {

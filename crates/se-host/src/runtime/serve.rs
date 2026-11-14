@@ -688,7 +688,7 @@ impl HostedRuntime {
     pub fn transcript_bindings(&self) -> super::TranscriptBindings {
         self.sources.clone()
     }
-    pub fn configuration(&self) -> Option<&se_core::config_policy::ConfigFile> {
+    pub fn configuration(&self) -> Option<&se_config::config_policy::ConfigFile> {
         self.configuration.as_ref()
     }
 }

@@ -185,7 +185,7 @@ fn check(image: Option<std::path::PathBuf>) -> Check {
     protected(&f, "credential", &[29; 32])?;
     // ConfigFile defaults are product defaults; the test does not opt into
     // launching a provider, capture services or a substitute query controller.
-    let mut config = se_core::config_policy::ConfigFile::default();
+    let mut config = se_config::config_policy::ConfigFile::default();
     let listener = (20000..30000)
         .find_map(|port| std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).ok())
         .ok_or("no available configured listener port")?;

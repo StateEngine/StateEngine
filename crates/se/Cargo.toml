@@ -11,6 +11,7 @@ remote = ["se-host/remote", "dep:se-remote-cli", "se-remote-cli/remote"]
 import = ["se-host/import", "se-core/import"]
 
 [dependencies]
+se-config = { path = "../se-config" }
 se-remote-cli = { path = "../se-remote-cli", optional = true }
 se-host = { path = "../se-host" }
 se-store = { path = "../se-store" }

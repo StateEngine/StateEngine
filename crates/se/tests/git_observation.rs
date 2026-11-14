@@ -8,8 +8,10 @@
 //! all, and a Git that never finishes reporting — and run in a child process so
 //! the stand-in `PATH` never reaches another case's Git.
 #![cfg(unix)]
-#[path = "../src/route/git_state.rs"]
+#[path = "../src/repository/state.rs"]
 mod git_state;
+#[path = "../src/repository/pipe.rs"]
+mod pipe;
 use std::{
     error::Error,
     os::unix::fs::PermissionsExt,

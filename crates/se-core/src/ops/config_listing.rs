@@ -1,10 +1,8 @@
 //! The effective user configuration read is a static file-policy window:
 //! bounded static pages over the closed config.toml key set.
 use super::{ConfigList, inputs::Validate};
-use crate::{
-    config_policy::{Approval, ConfigFile, Provider, Sandbox},
-    scope,
-};
+use crate::scope;
+use se_config::config_policy::{Approval, ConfigFile, Provider, Sandbox};
 use se_types::{
     Cursor, Omission, OmissionReason, Page, Read, Result, SeError, Sequence, Source, StopReason,
     WindowFields,
@@ -293,7 +291,7 @@ fn approval_wire(approval: Approval) -> &'static str {
 )]
 mod list_tests {
     use super::*;
-    use crate::config_policy::Profile;
+    use se_config::config_policy::Profile;
 
     const EXPECTED_KEYS: &[&str] = &[
         "default_project",

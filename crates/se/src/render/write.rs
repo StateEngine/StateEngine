@@ -2,7 +2,8 @@ use super::{
     labels,
     read::{notification, repo_line},
 };
-use se_core::{config_policy::ResolvedProfile, ops::outputs::*};
+use se_config::config_policy::ResolvedProfile;
+use se_core::ops::outputs::*;
 use std::io::{self, Write};
 
 pub fn init(value: &InitOutput, out: &mut impl Write) -> io::Result<()> {
