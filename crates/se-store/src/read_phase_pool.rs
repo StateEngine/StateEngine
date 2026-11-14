@@ -84,10 +84,15 @@ impl ReadPhasePool {
         };
         identity.validate(&reader.path)?;
         let db = match idle {
+            // No native open occurs on a hit; the preceding validation still
+            // brackets checkout with the fresh-snapshot validation below.
             Some(db) => db,
-            None => reader.connect()?,
+            None => {
+                let db = reader.connect()?;
+                identity.validate(&reader.path)?;
+                db
+            }
         };
-        identity.validate(&reader.path)?;
         let mut phase = reader.read_phase_on(slot, db)?;
         // Recheck after SQLite established its fresh snapshot as well.
         identity.validate(&reader.path)?;
