@@ -111,6 +111,11 @@ pub fn host_case(home: &Home, mode: &str, library: Option<&Path>) -> Check {
         fs::write(home.0.join("continue"), b"continue")?;
     }
     joined(&mut child)?;
+    if mode == "replacement" {
+        // The injected replacement retires the runtime's original group anchor.
+        // Only the unaffected outside observer retains this real fixture birth.
+        native::cleanup(&native::read_pin(&home.0, "provider")?)?;
+    }
     closed(&home.0, "provider")?;
     if home.0.join("pin-child.json").exists() {
         closed(&home.0, "child")?;
@@ -439,6 +444,11 @@ fn detached_host() -> Check {
         )?;
         wait(|| Ok(root.join("continue").exists()))?;
         fs::remove_file(root.join("fault"))?;
+        if mode == "replacement" {
+            // Clearing a synthetic birth change must not restore stop authority.
+            // The parent performs exact-owned cleanup outside the faulted runtime.
+            return Ok(());
+        }
     }
     if mode == "launch" {
         let wrong = GenerationId::new(2)?;
