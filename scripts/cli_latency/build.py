@@ -52,6 +52,12 @@ def main():
                            CARGO_PROFILE_DEV_DEBUG='0', CARGO_TERM_COLOR='never')
         command = ['cargo', 'build', '-p', 'se', '--bin', 'se', '--locked',
                    '--no-default-features', '--features', 'remote', '--jobs', '2']
+        if sys.platform == 'darwin':
+            # The macos-15 toolchain loses the proc-macro crate (E0463,
+            # zerofrom_derive) unless the host target tuple is stated.
+            host = subprocess.check_output(['rustc', '--print', 'host-tuple'],
+                                           cwd=ROOT, text=True).strip()
+            command += ['--target', host]
         started = time.monotonic()
         with (output / (name + '-build.log')).open('xb') as log:
             built = subprocess.run(command, cwd=tree, env=environment,
@@ -63,7 +69,10 @@ def main():
         if built.returncode != 0:
             raise RuntimeError(name + ': build failed; original log retained')
         image = images / name
-        shutil.copyfile(target / 'debug' / binary, image)
+        if sys.platform == 'darwin':
+            shutil.copyfile(target / host / 'debug' / binary, image)
+        else:
+            shutil.copyfile(target / 'debug' / binary, image)
         image.chmod(0o500)
         record.update(image=str(image), sha256=hashlib.sha256(image.read_bytes()).hexdigest())
         save(output / 'images.json', manifest)
