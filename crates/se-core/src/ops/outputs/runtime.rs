@@ -1,8 +1,8 @@
 use super::{
     DirectoryEffect, FileEffect, IntegrationEffect, Named, ProcessView, ResumeCommand, Witness,
 };
-use crate::config_policy::{Provider, ResolvedProfile};
 use schemars::JsonSchema;
+use se_config::config_policy::{Provider, ResolvedProfile};
 use se_types::{AgentId, IdempotencyKey, Read, SessionId};
 use serde::{Deserialize, Serialize};
 

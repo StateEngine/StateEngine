@@ -15,6 +15,7 @@ secode = ["runtime", "listener", "dep:secode-stateengine-api"]
 remote = ["se-remote/remote", "dep:base64", "dep:subtle", "listener", "tokio/fs", "dep:chacha20poly1305", "tokio/macros"]
 
 [dependencies]
+se-config = { path = "../se-config" }
 secode-stateengine-api = { version = "=2.0.0", optional = true }
 se-types = { path = "../se-types" }
 se-remote = { path = "../se-remote" }

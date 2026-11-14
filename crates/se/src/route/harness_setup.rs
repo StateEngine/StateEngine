@@ -1,6 +1,7 @@
 //! Prepare a catalogue choice from an existing installation before setup writes.
 use crate::bootstrap::Bootstrap;
-use se_core::{config_policy::ConfigFile, harness_selection::catalog, ops::ProjectInit};
+use se_config::config_policy::ConfigFile;
+use se_core::{harness_selection::catalog, ops::ProjectInit};
 use se_types::{Result, SeError};
 
 pub(super) fn prepare(cx: &Bootstrap, input: &ProjectInit) -> Result<ConfigFile> {

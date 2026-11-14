@@ -5,6 +5,7 @@ members = [
     "crates/se-types",
     "crates/se-store",
     "crates/se-store-contract",
+    "crates/se-config",
     "crates/se-core",
     "crates/se-proc",
     "crates/se-host",

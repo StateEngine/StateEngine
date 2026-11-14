@@ -161,7 +161,7 @@
   "crates/se-core/src/ops/doctor": 381,
   "crates/se/src/render/event": 371,
   "crates/se-host/src/process/capture": 368,
-  "crates/se-core/src/config_policy": 365,
+  "crates/se-config/src/config_policy": 365,
   "crates/se-host/src/runtime/remote": 354,
   "crates/se-host/src/atlas_hooks": 351,
   "crates/se-host/src/process/status": 339

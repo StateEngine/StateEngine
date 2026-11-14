@@ -10,7 +10,8 @@ pub mod ports;
 pub mod scope;
 pub mod store_error;
 
-pub mod config_policy;
+/// TODO: Remove this compatibility export after pending callers migrate to se-config.
+pub use se_config::config_policy;
 pub mod harness_selection;
 pub mod registry;
 pub mod remote;
