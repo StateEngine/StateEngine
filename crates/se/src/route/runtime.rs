@@ -56,12 +56,64 @@ pub fn up(
     }
     .into())
 }
-/// A published endpoint outlives the host that wrote it. A runtime killed while a
-/// request is in flight leaves a record this request may already have routed to,
-/// so authentication fails against a host that is gone while the lease is free
-/// again. The lease decides what happens next and nothing else does: re-route, and
-/// only a released lease starts the replacement host. A still-held lease keeps the
-/// original refusal, and a second failure is reported as itself.
+/// One request's routing result and the retention receipt that goes with it.
+///
+/// `autostart` retains a stale endpoint and reports that retention by writing the
+/// receipt into a caller slot at the moment it happens — including on an attempt
+/// that then fails while preparing the machine, starting a child or reporting the
+/// start. If the caller keeps the receipt in a local and wraps errors with a
+/// different value, any fallible exit can report the older route's receipt or
+/// none at all, and the name of the retained copy is lost. So the receipt is
+/// owned here, merged the instant `autostart` reports it, and every exit — success
+/// or error — is rendered from this one value.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+struct Rendezvous {
+    recovery: Option<se_core::ops::EndpointRecovery>,
+}
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+impl Rendezvous {
+    fn new() -> Self {
+        Self { recovery: None }
+    }
+    /// Route and authenticate, absorbing a receipt before any error is wrapped.
+    fn attempt(
+        &mut self,
+        cx: &Bootstrap,
+        files: &Files,
+        options: &mut se_host::client::ClientOptions,
+        bound: &Deadline,
+        diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+    ) -> Result<(se_host::EndpointRecord, ProcessView)> {
+        let mut routed = None;
+        let endpoint = super::autostart::endpoint_with_origin(
+            cx,
+            files,
+            bound,
+            diagnostic,
+            crate::runtime::host::StartupOrigin::Explicit,
+            &mut routed,
+        );
+        // Merged before the error is read: the failed attempt may be the one that
+        // retained the record.
+        if routed.is_some() {
+            self.recovery = routed;
+        }
+        let endpoint = endpoint.map_err(|error| self.report(cx, error))?;
+        options.timeout = bound.remaining().map_err(|error| self.report(cx, error))?;
+        let process = discovery::authenticate(cx, files, &endpoint, options, bound)
+            .map_err(|error| self.report(cx, error))?;
+        Ok((endpoint, process))
+    }
+    fn report(&self, cx: &Bootstrap, error: SeError) -> SeError {
+        discovery::after_recovery(cx, self.recovery.as_ref(), error)
+    }
+}
+/// Recover after a published record outlived its host.
+///
+/// A runtime killed while a request is in flight leaves `endpoint.json` behind
+/// while the exclusive lease is free again. The lease is the only authority, so
+/// one released lease re-routes and starts the replacement host; a still-held
+/// lease keeps the original refusal and is never retried.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn rendezvous(
     cx: &Bootstrap,
@@ -74,64 +126,29 @@ fn rendezvous(
     Option<se_core::ops::EndpointRecovery>,
     ProcessView,
 )> {
-    let mut recovery = None;
-    let mut retried = false;
-    loop {
-        // Every fallible exit after retention reports the latest receipt this
-        // request holds, including one retained by the guard route below: a
-        // receipt that names a renamed endpoint is the only pointer back to it,
-        // so losing it turns a recoverable refusal into a lost record.
-        let mut routed = None;
-        let endpoint = super::autostart::endpoint_with_origin(
-            cx,
-            files,
-            bound,
-            diagnostic,
-            crate::runtime::host::StartupOrigin::Explicit,
-            &mut routed,
-        )
-        .map_err(|error| discovery::after_recovery(cx, recovery.as_ref(), error))?;
-        // This route may retain the stale endpoint itself, so it is the latest.
-        if routed.is_some() {
-            recovery = routed;
-        }
-        options.timeout = bound
-            .remaining()
-            .map_err(|error| discovery::after_recovery(cx, recovery.as_ref(), error))?;
-        let refusal = match discovery::authenticate(cx, files, &endpoint, options, bound) {
-            Ok(process) => return Ok((endpoint, recovery, process)),
-            Err(error) => error,
-        };
-        // Only one retry, and only on a released lease. The route receipt is a
-        // fact about this attempt: a released lease renamed the stale endpoint and
-        // kept the record that names it, so it must be carried into the retry and
-        // reported, exactly as the first route's receipt is. A route error is the
-        // newer and more specific fault; it must not be replaced by the older
-        // authentication error that sent us here.
-        if retried || refusal.code() != se_types::Code::StateConflict {
-            return Err(discovery::after_recovery(cx, recovery.as_ref(), refusal));
-        }
-        match discovery::route(cx) {
-            Ok(se_host::EndpointRoute::Start { recovery: routed }) => {
-                // This route already renamed the stale endpoint and holds the
-                // record naming it. Carry that receipt into the retry: it is the
-                // one the retry's own route will no longer produce, and dropping
-                // it would both hide the recovery in a success and lose the
-                // retained path if the retry failed.
-                if routed.is_some() {
-                    recovery = routed;
+    let mut rendezvous = Rendezvous::new();
+    let (endpoint, process) = match rendezvous.attempt(cx, files, options, bound, diagnostic) {
+        Ok(value) => value,
+        Err(refusal) if refusal.code() == se_types::Code::StateConflict => {
+            match discovery::route(cx) {
+                // A held lease is a live host that answered nothing: the original
+                // refusal names what to do, and retrying would report a second
+                // failure as if it were the first.
+                Ok(se_host::EndpointRoute::Live(_)) => {
+                    return Err(rendezvous.report(cx, refusal));
                 }
-                retried = true;
+                Ok(se_host::EndpointRoute::Start { recovery }) => {
+                    if recovery.is_some() {
+                        rendezvous.recovery = recovery;
+                    }
+                }
+                Err(error) => return Err(rendezvous.report(cx, error)),
             }
-            // A held lease is a live host that answered nothing: the original
-            // refusal already names what to do, and retrying would report a
-            // second failure as if it were the first.
-            Ok(se_host::EndpointRoute::Live(_)) => {
-                return Err(discovery::after_recovery(cx, recovery.as_ref(), refusal));
-            }
-            Err(error) => return Err(discovery::after_recovery(cx, recovery.as_ref(), error)),
+            rendezvous.attempt(cx, files, options, bound, diagnostic)?
         }
-    }
+        Err(refusal) => return Err(rendezvous.report(cx, refusal)),
+    };
+    Ok((endpoint, rendezvous.recovery, process))
 }
 /// The public CLI keeps its original process as the sole standalone host.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
