@@ -465,6 +465,11 @@ live output and reconnect samples with their measurement boundaries. Live output
 uses an explicitly unqualified monotonic clock estimate across the connection;
 these samples do not certify a latency budget or a physical network topology.
 Windows source/destination coverage and hands-on qualification remain separate.
+The nightly uses an administrator-registered OS account reserved for scheduled
+journeys; development and review runs use separate accounts. Its remote config
+requires `destination_account.identity` (the native UID as a string) and
+`destination_account.profile` (the absolute native profile). The SSH destination
+must match both before any image, token or project is staged.
 
 ## Optional code navigation (Atlas)
 
