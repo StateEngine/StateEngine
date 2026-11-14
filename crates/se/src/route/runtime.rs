@@ -59,9 +59,9 @@ pub fn up(
 /// A published endpoint outlives the host that wrote it. A runtime killed while a
 /// request is in flight leaves a record this request may already have routed to,
 /// so authentication fails against a host that is gone while the lease is free
-/// again. The lease decides what happens next and nothing else does: route once
-/// more, and only a released lease starts the replacement host. A still-held lease
-/// keeps the original refusal, and a second failure is reported as itself.
+/// again. The lease decides what happens next and nothing else does: re-route, and
+/// only a released lease starts the replacement host. A still-held lease keeps the
+/// original refusal, and a second failure is reported as itself.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn rendezvous(
     cx: &Bootstrap,
@@ -75,7 +75,7 @@ fn rendezvous(
     ProcessView,
 )> {
     let mut recovery = None;
-    let mut attempt = 0u8;
+    let mut retried = false;
     loop {
         let mut routed = None;
         let endpoint = super::autostart::endpoint_with_origin(
@@ -91,20 +91,36 @@ fn rendezvous(
             recovery = routed;
         }
         options.timeout = bound.remaining()?;
-        match discovery::authenticate(cx, files, &endpoint, options, bound) {
+        let refusal = match discovery::authenticate(cx, files, &endpoint, options, bound) {
             Ok(process) => return Ok((endpoint, recovery, process)),
-            // Only a released lease retries, and only once. A held lease is a live
-            // host that answered nothing: the original refusal already names what
-            // to do, and retrying it would report a second failure as the first.
-            Err(error)
-                if attempt == 0
-                    && error.code() == se_types::Code::StateConflict
-                    && matches!(
-                        discovery::route(cx),
-                        Ok(se_host::EndpointRoute::Start { .. })
-                    ) =>
-            {
-                attempt += 1;
+            Err(error) => error,
+        };
+        // Only one retry, and only on a released lease. The route receipt is a
+        // fact about this attempt: a released lease renamed the stale endpoint and
+        // kept the record that names it, so it must be carried into the retry and
+        // reported, exactly as the first route's receipt is. A route error is the
+        // newer and more specific fault; it must not be replaced by the older
+        // authentication error that sent us here.
+        if retried || refusal.code() != se_types::Code::StateConflict {
+            return Err(discovery::after_recovery(cx, recovery.as_ref(), refusal));
+        }
+        match discovery::route(cx) {
+            Ok(se_host::EndpointRoute::Start { recovery: routed }) => {
+                // This route already renamed the stale endpoint and holds the
+                // record naming it. Carry that receipt into the retry: it is the
+                // one the retry's own route will no longer produce, and dropping
+                // it would both hide the recovery in a success and lose the
+                // retained path if the retry failed.
+                if routed.is_some() {
+                    recovery = routed;
+                }
+                retried = true;
+            }
+            // A held lease is a live host that answered nothing: the original
+            // refusal already names what to do, and retrying would report a
+            // second failure as if it were the first.
+            Ok(se_host::EndpointRoute::Live(_)) => {
+                return Err(discovery::after_recovery(cx, recovery.as_ref(), refusal));
             }
             Err(error) => return Err(discovery::after_recovery(cx, recovery.as_ref(), error)),
         }
