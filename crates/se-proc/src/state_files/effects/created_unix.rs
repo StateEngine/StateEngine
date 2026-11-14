@@ -91,6 +91,28 @@ pub(in crate::state_files) fn prepare_created_directory(
     created: &mut Vec<CreatedDirectory>,
 ) -> Result<()> {
     let (parent, target) = creation_parent(path)?;
+    // Inspect the actual named entry first: a trusted system-ancestor symlink
+    // is the owning walk's to resolve under the same ownership rule, and it
+    // must not be mistaken for an owned child. A foreign link refuses here with
+    // the walk's own verdict instead of the leaf's.
+    // SAFETY: initialized no-follow stat output, retained parent, literal name.
+    let mut entry: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            target.as_ptr(),
+            &mut entry,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } == 0
+        && entry.st_mode & libc::S_IFMT == libc::S_IFLNK
+    {
+        // SAFETY: geteuid has no pointers or process-wide mutation.
+        if entry.st_uid != 0 && entry.st_uid != unsafe { libc::geteuid() } {
+            return Err(unsafe_path("untrusted or private-directory symlink", path));
+        }
+        return Ok(());
+    }
     match leaf(&parent, &target, path, true) {
         Ok(file) => return trusted_directory(&file, path, false),
         Err(error) if absent(&error) => (),
