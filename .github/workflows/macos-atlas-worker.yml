@@ -1,0 +1,43 @@
+name: macOS Atlas worker pair
+on:
+  push:
+    branches: [prime/macos-atlas-worker-r1]
+permissions:
+  contents: read
+jobs:
+  run:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - side: base
+            sha: 52c76e2f88398933543effe659df26409c305039
+          - side: head
+            sha: 1341dd0c431ae34f64635860428526a331f62f28
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Run the two real worker consumers
+        shell: bash
+        run: |
+          set +e
+          ulimit -c 0
+          T="$(rustc --print host-tuple)"
+          mkdir -p logs
+          fail=0
+          cargo test --locked --target "$T" -p se-proc --test atlas_worker_failure > logs/atlas_worker_failure.log 2>&1
+          c=$?; echo "atlas_worker_failure exit=$c" | tee -a logs/summary.txt; [ $c = 0 ] || fail=1
+          cargo test --locked --target "$T" --release -p se-host --test atlas_cold_crash_dev > logs/atlas_cold_crash_dev.log 2>&1
+          c=$?; echo "atlas_cold_crash_dev exit=$c" | tee -a logs/summary.txt; [ $c = 0 ] || fail=1
+          exit $fail
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: macos-atlas-worker-${{ matrix.side }}
+          retention-days: 14
+          path: logs/
