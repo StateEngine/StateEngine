@@ -24,11 +24,11 @@ fn forward_once<R: se_store::ReadStore>(
     let bound = Deadline::from_options(&options)?;
     let automatic = operation.meta().runtime == RuntimeNeed::HostAutoStart;
     let target = if automatic {
-        #[cfg(any(target_os = "linux", windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         {
             super::autostart::endpoint(cx, files, &bound, diagnostic)?
         }
-        #[cfg(not(any(target_os = "linux", windows)))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         {
             let _ = diagnostic;
             return Err(SeError::new(se_types::Detail::RuntimeNotRunning(

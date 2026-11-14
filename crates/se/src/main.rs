@@ -3,7 +3,7 @@ mod atlas_hook;
 mod bootstrap;
 mod compat;
 mod config;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod foreground;
 mod grammar;
 mod hook;
@@ -176,7 +176,7 @@ pub fn run(
     if let AnyOp::MessageSend(input) = &operation {
         remote::pending_native(&context, input, common.json, &mut stderr)?;
     }
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if matches!(&operation, AnyOp::RuntimeUp(input) if input.foreground) {
         // The Windows host loop uses its own bounded stack. Do not hold a
         // main-thread stream lock while that loop prints startup or shutdown.

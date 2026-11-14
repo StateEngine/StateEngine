@@ -25,9 +25,9 @@ pub(super) struct OwnerInputs {
     pub(super) owner: std::sync::Weak<super::Generation>,
     pub(super) runtime: Handle,
     pub(super) home: PathBuf,
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(super) helper_executable: PathBuf,
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(super) linux_delegation: api::LinuxDelegation,
     pub(super) limits: api::Limits,
     pub(super) generation: api::Generation,
@@ -292,7 +292,7 @@ async fn take_ownership(
     }
     host.restore_transcripts(&deadline).await?;
     host.configure(config)?;
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         let linux_delegation = match inputs.linux_delegation {
             api::LinuxDelegation::AutoUserManager => se_proc::LinuxDelegation::AutoUserManager,
@@ -332,11 +332,11 @@ async fn take_ownership(
 // Refuse before acquiring a lease, opening a writer or publishing an endpoint.
 // Compiling the linked API does not provide native process supervision.
 fn require_process_supervision() -> core::Result<()> {
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         Ok(())
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     Err(core::SeError::new(core::Detail::FeatureUnavailable(
         core::details::FeatureUnavailable {
             subject: "embedded host process supervision on macOS".into(),

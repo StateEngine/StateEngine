@@ -259,7 +259,7 @@ pub fn observe_snapshot<S: Snapshot>(
                     output.runtime.version = Some(endpoint.package_version.clone());
                     output.runtime.observed_at = Some(generated);
                     output.runtime.process = Some(process);
-                    #[cfg(any(target_os = "linux", windows))]
+                    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                     {
                         let bound = se_host::client::lease::Deadline::from_options(&options)?;
                         match crate::runtime::host::read_detachment(files, &endpoint, &bound) {

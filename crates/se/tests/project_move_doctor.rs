@@ -81,6 +81,9 @@ fn moved_project_is_diagnosed_and_reattached_with_the_recorded_git_identity() ->
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    // Init consumes the caller's original spelling. Compare later reports with
+    // the registered canonical spelling, including expanded Windows aliases.
+    let registered = se_proc::canonicalize_path(&original)?;
     let row = doctor_check(
         &command(home, &original, true, None)
             .arg("doctor")
@@ -99,7 +102,7 @@ fn moved_project_is_diagnosed_and_reattached_with_the_recorded_git_identity() ->
     let observed = failed["observed"]
         .as_str()
         .ok_or("failed check has no observed text")?;
-    let original_text = original.to_str().ok_or("original root is not UTF-8")?;
+    let original_text = registered.to_str().ok_or("original root is not UTF-8")?;
     assert!(observed.contains(original_text), "{failed}");
     assert_eq!(
         failed["fix"]["argv"],
@@ -129,7 +132,10 @@ fn moved_project_is_diagnosed_and_reattached_with_the_recorded_git_identity() ->
     );
     let stdout = String::from_utf8(output.stdout)?;
     assert!(
-        stdout.contains(&format!("Project Mover moved from {}", original.display())),
+        stdout.contains(&format!(
+            "Project Mover moved from {}",
+            registered.display()
+        )),
         "{stdout}"
     );
     assert!(
