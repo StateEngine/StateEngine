@@ -7,10 +7,15 @@
 //! invocation passes a top-precedence `core.fsmonitor=false` command
 //! parameter and bounded output, matching the init repository observation.
 use se_types::{Result, SeError, details};
+#[cfg(test)]
+use std::process::Command;
 use std::{
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::Output,
 };
+#[path = "git_identity/command.rs"]
+mod command;
+use command::run;
 
 const STDOUT_BOUND: usize = 4096;
 
@@ -217,27 +222,6 @@ enum Spawn {
     Output(Output),
     Missing,
     Unreadable(SeError),
-}
-fn run(root: &Path, args: &[&str]) -> Spawn {
-    match Command::new("git")
-        .arg("-c")
-        .arg("core.fsmonitor=false")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
-    {
-        Ok(output) => Spawn::Output(output),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Spawn::Missing,
-        Err(error) => Spawn::Unreadable(se_core::scope::unreadable(
-            "Git repository observation",
-            &error.to_string(),
-        )),
-    }
 }
 fn missing_refusal() -> SeError {
     refusal(
