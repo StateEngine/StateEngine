@@ -1,4 +1,4 @@
-"""macOS public history refusal and source coverage through real CLI/MCP."""
+"""macOS public defaults remain explicitly unavailable through real CLI/MCP."""
 import argparse
 import fcntl
 import json
@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 
 from control import observe, same
 
@@ -51,21 +50,20 @@ def run(args):
         host = observe(started['process']['pid'])
         assert host is not None and host['status'] != 5, started
         pins.append(host)
-        until = time.monotonic() + 90
-        while True:
-            status = fixture.ok('--project', fixture.project, 'status')
-            atlas = status['atlas']
-            report['observations'].append(atlas)
-            coverage = (atlas.get('summary') or {}).get('coverage') or {}
-            if coverage.get('indexed_files', 0) >= 1:
-                break
-            assert time.monotonic() < until, atlas
-            time.sleep(.2)
+        status = fixture.ok('--project', fixture.project, 'status')
+        atlas = status['atlas']
+        report['observations'].append(atlas)
         assert atlas['history'] == 'unavailable', atlas
-        assert coverage.get('history_unavailable'), coverage
-        assert 'HistoryUnavailable' in coverage['reasons'], coverage
-        assert 'measured host SQL overhead' in json.dumps(coverage['history_unavailable']), coverage
+        assert atlas['state'] == 'unavailable', atlas
+        assert atlas['reason'] == 'No Atlas controller is installed in this host.', atlas
+        assert atlas.get('summary') is None, atlas
         report['CLI'] = status
+        refused = fixture.call('--project', fixture.project, 'atlas', 'find', 'source_index_visible')
+        assert refused.returncode != 0, 'uninstalled source query reported success'
+        assert len(refused.stdout) + len(refused.stderr) <= 65536, 'refusal exceeds evidence bound'
+        report['CLI_source_query_refusal'] = {
+            'exit': refused.returncode, 'stdout': refused.stdout.decode(),
+            'stderr': refused.stderr.decode()}
         fixture.launch()
         ready = json.loads((fixture.repo / 'provider-ready.json').read_text())
         for key in ['native_root_pid', 'helper_pid']:
@@ -76,16 +74,20 @@ def run(args):
         assert not reply.get('isError'), reply
         status = present(reply['structuredContent'])
         atlas = status['atlas']
-        coverage = atlas['summary']['coverage']
         report['MCP'] = status
+        assert atlas == report['CLI']['atlas'], (atlas, report['CLI']['atlas'])
         assert atlas['history'] == 'unavailable', atlas
-        assert coverage['indexed_files'] >= 1, coverage
-        assert coverage.get('history_unavailable'), coverage
-        assert 'HistoryUnavailable' in coverage['reasons'], coverage
-        assert 'measured host SQL overhead' in json.dumps(coverage['history_unavailable']), coverage
-        # Status is the ordinary reader of the published source coverage. Do not
-        # inject a SQL profile or claim that this qualifies public source queries.
+        assert atlas['state'] == 'unavailable', atlas
+        assert atlas.get('summary') is None, atlas
+        assert not (fixture.home / 'atlas').exists(), 'uninstalled controller created a cache'
+        report['controller_absent'] = True
+        report['cache_absent'] = True
+        report['source_index_qualified'] = False
+        report['source_index_limitation'] = (
+            'Public macOS defaults install no Atlas controller; indexed source '
+            'coverage and source queries cannot be qualified by this check.')
         report['source_bytes'] = path.read_text()
+        report['unchanged_public_unavailability_qualified'] = True
         report['qualified'] = True
     except Exception as failure:
         error = repr(failure)
