@@ -20,7 +20,9 @@ impl LaunchCoordinator {
                         scope::COMMITTED_READ_RECOVERY,
                     )?;
                     let from = se_core::ops::receipt::mail_sender_ref(cx.read, &message)?;
-                    let channel_reply = se_core::ops::channel_reply_instruction(cx.read, &id)?;
+                    let channel_reply = se_core::ops::channel_reply_instruction(
+                        cx, &id, &message.recipient,
+                    )?;
                     let remote_reply=se_core::ops::remote_reply_from(&from,&id).map(|route| route.instruction);
                     let mut label=serde_json::json!({
                         "message_id":id,"from":from,"channel_reply":channel_reply,
