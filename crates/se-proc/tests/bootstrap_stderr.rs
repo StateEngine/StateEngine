@@ -1,5 +1,5 @@
 //! Cold real bootstrap consumers; no host, endpoint or public stdio substitute.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod judge {
     use se_proc::*;
     use std::time::{Duration, Instant};
@@ -447,7 +447,7 @@ mod judge {
         Ok(())
     }
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn main() {
     if std::env::args().any(|v| v == "--list") {
         if !std::env::args().any(|v| v == "--ignored") {
@@ -460,7 +460,7 @@ fn main() {
         std::process::exit(1);
     }
 }
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn main() {
     if std::env::args().any(|v| v == "--list") {
         if !std::env::args().any(|v| v == "--ignored") {
