@@ -14,6 +14,7 @@ mod progress;
 pub use ports::{OwnerCommands, Presentation};
 mod launch_permissions;
 mod permissions;
+mod source_permissions;
 pub enum Input {
     Ready(OwnerInput),
 }
@@ -241,6 +242,28 @@ fn authorize<H: OwnerCommands + Presentation>(
                 ));
             }
             serde_json::to_writer(&mut *stdout, &actual).map_err(io::Error::other)?;
+            writeln!(stdout)?;
+            stdout.flush()?;
+            return Ok(0);
+        }
+        se_host::remote::ssh::SshRequest::Permissions(request) => {
+            let destination = request.permissions;
+            let result = host
+                .execute_owner(
+                    &cx,
+                    Input::Ready(OwnerInput::SourcePermissions(request)),
+                    &mut |_| Ok(()),
+                )
+                .map(|output| output.value)
+                .map_err(|error| error.body);
+            serde_json::to_writer(
+                &mut *stdout,
+                &se_host::remote::ssh::PermissionsResult {
+                    host: destination,
+                    result,
+                },
+            )
+            .map_err(io::Error::other)?;
             writeln!(stdout)?;
             stdout.flush()?;
             return Ok(0);

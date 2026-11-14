@@ -7,11 +7,11 @@ mod bootstrap;
 pub(super) mod command;
 mod prepare;
 use super::native_image::{self as image, staging, transactions as image_commands};
-pub(crate) use authorization::launch_permissions;
 pub use authorization::{
-    Authorization, AuthorizationResult, LaunchPermissionsRequest, PermissionsResult,
-    Request as SshRequest, StartResult,
+    Authorization, AuthorizationResult, LaunchPermissionsRequest, PermissionsRequest,
+    PermissionsResult, Request as SshRequest, StartResult,
 };
+pub(crate) use authorization::{launch_permissions, permissions};
 pub use bootstrap::connect;
 pub use prepare::{ImageProgress, ImageStage, prepare_image};
 use se_types::Result;

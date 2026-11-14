@@ -126,13 +126,8 @@ pub(super) fn init_project(
     let home = root.join("home");
     let repo = root.join("repo");
     for path in [home.clone(), repo.clone()] {
-        std::fs::create_dir_all(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
-                .map_err(|e| format!("chmod {}: {e}", path.display()))?;
-        }
+        se_proc::NativeStateFiles::create(&path)
+            .map_err(|e| format!("create private {}: {e}", path.display()))?;
     }
     let stdout = run_se_ok(
         helper,

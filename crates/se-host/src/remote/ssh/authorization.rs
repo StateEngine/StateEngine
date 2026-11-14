@@ -18,12 +18,20 @@ pub struct AuthorizationResult {
 
 /// Both requests use the saved native command over the authenticated SSH pipe.
 /// A start restores the existing listener policy; it never creates a grant.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PermissionsRequest {
+    pub permissions: RemoteHostId,
+    pub after: Option<se_types::remote::RemoteAgentAddress>,
+    pub change: Option<crate::remote::owner_input::SourcePermissionChange>,
+}
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Request {
     Authorize(Authorization),
     Start(StartRequest),
     LaunchPermissions(LaunchPermissionsRequest),
+    Permissions(PermissionsRequest),
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +48,23 @@ pub struct PermissionsResult {
     pub result: std::result::Result<serde_json::Value, ErrorBody>,
 }
 
+pub(crate) async fn permissions(
+    config: &super::ForwardConfig,
+    request: PermissionsRequest,
+) -> se_types::Result<serde_json::Value> {
+    let bytes = encoded(&Request::Permissions(request))?;
+    let response = exchange(config, bytes, std::time::Duration::from_secs(35)).await?;
+    let response: PermissionsResult = serde_json::from_slice(&response)
+        .map_err(|_| super::unavailable("SSH pairing permissions response is malformed"))?;
+    if response.host != config.host {
+        return Err(super::unavailable(
+            "SSH pairing permissions changed the saved destination identity",
+        ));
+    }
+    response
+        .result
+        .map_err(|error| error.with_far_origin().into())
+}
 pub(crate) async fn launch_permissions(
     config: &super::ForwardConfig,
     request: LaunchPermissionsRequest,

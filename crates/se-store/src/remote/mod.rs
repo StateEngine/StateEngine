@@ -13,8 +13,16 @@ mod receipt;
 pub use position::{position_from_payload, position_payload};
 pub use receipt::RemoteMessageReceipt;
 mod read;
+mod source;
+pub use crate::return_mail::{
+    ContactReceiptQuery, MailContact, MailRoute, MailboxChange, OutgoingReply, PendingContact,
+    ReplyPage, ReplyQuery, ReturnAttribution,
+};
+pub(crate) use crate::return_mail::{apply_mailbox, enqueue_reply, reply_route};
 pub use changes::{Change, ChangeKind, ChangePage, ChangeRequest};
 pub(crate) use read::grant as grant_at;
+pub(crate) use source::{admit_address, admit_source, remember_source};
+pub(crate) use source::{pending as source_pending, permission as source_permission};
 mod validate;
 pub use crate::inventory::{LaunchCandidate, SavedLaunchProfile, TargetFacts};
 pub(crate) use apply::{apply, revision};
@@ -26,14 +34,14 @@ use crate::{error::*, *};
 use rusqlite::{Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 
-fn key(value: &str) -> StoreResult<Vec<u8>> {
+pub(crate) fn key(value: &str) -> StoreResult<Vec<u8>> {
     crate::identity::canonical(value)
         .ok_or_else(|| invalid("remote identities require canonical UUIDv7"))
 }
-fn decode<T: DeserializeOwned>(value: String) -> StoreResult<T> {
+pub(crate) fn decode<T: DeserializeOwned>(value: String) -> StoreResult<T> {
     serde_json::from_str(&value).map_err(invalid)
 }
-fn encode<T: serde::Serialize>(value: &T) -> StoreResult<String> {
+pub(crate) fn encode<T: serde::Serialize>(value: &T) -> StoreResult<String> {
     crate::codec::encode(value)
 }
 pub(crate) fn ready(info: &StoreInfo) -> StoreResult<()> {

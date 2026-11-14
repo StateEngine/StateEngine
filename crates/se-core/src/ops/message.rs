@@ -207,6 +207,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
         };
         items.push(MessageRow {
             channel_reply: channel_reply(cx.read, &record.message)?,
+            remote_reply: remote_reply_from(&from, &record.message),
             id: record.message,
             event_id: record.event,
             from,
@@ -336,9 +337,22 @@ pub(super) fn channel_reply<R: se_store::Snapshot>(
 fn se_core_store_error(error: &se_store::StoreError) -> se_types::SeError {
     crate::store_error::store_error(error)
 }
+pub fn remote_reply_from(
+    from: &super::outputs::ActorRef,
+    id: &se_types::MessageId,
+) -> Option<super::outputs::RemoteReply> {
+    (from.kind == "remote_agent").then(|| {
+        let to = from.id.clone();
+        super::outputs::RemoteReply {
+            instruction: format!("Reply with stateengine_msg_send to {to} and set reply_to to {id}. The reply is saved durably and reaches this source agent when its connection resumes."),
+            to, reply_to:id.clone(),
+        }
+    })
+}
+
 pub fn channel_reply_instruction<R: se_store::Snapshot>(
     read: &mut R,
     id: &se_types::MessageId,
 ) -> se_types::Result<Option<String>> {
-    Ok(channel_reply(read, id)?.map(|r| r.instruction))
+    Ok(channel_reply(read, id)?.map(|route| route.instruction))
 }

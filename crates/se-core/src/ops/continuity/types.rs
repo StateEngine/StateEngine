@@ -18,6 +18,10 @@ pub fn default_context_bytes() -> u32 {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Resume {
+    /// Native observations participate in packet fitting; callers cannot supply them.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub source_failure: Option<se_types::ErrorBody>,
     #[serde(default = "default_limit")]
     pub limit: u16,
     #[serde(default)]
@@ -31,6 +35,10 @@ pub struct Resume {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SessionContextRequest {
+    /// Native observations participate in packet fitting; callers cannot supply them.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub source_failure: Option<se_types::ErrorBody>,
     #[serde(default = "default_limit")]
     pub limit: u16,
     #[serde(default)]

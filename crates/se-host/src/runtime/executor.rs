@@ -37,10 +37,26 @@ pub fn execute(
 ) -> impl Future<Output = Result<ExecutedCall>> + Send {
     async move {
         let ExecutionCall { admitted, deadline } = call;
+        #[cfg(feature = "remote")]
+        let mut admitted = admitted;
         if let HostedInput::Operation(operation) = &admitted.input
             && operation.is_remote()
         {
             return super::remote::execute(&context, admitted, &deadline).await;
+        }
+        #[cfg(feature = "remote")]
+        if let Err(error) = super::remote::resume_mail(&context, &admitted, &deadline).await
+            && let HostedInput::Operation(operation) = &mut admitted.input
+        {
+            match operation {
+                se_core::ops::AnyOp::Resume(input) => {
+                    input.source_failure = Some(error.into_body())
+                }
+                se_core::ops::AnyOp::SessionContext(input) => {
+                    input.source_failure = Some(error.into_body())
+                }
+                _ => (),
+            }
         }
         let reader = context.reads.clone();
         let generation = context.generation;
@@ -375,7 +391,7 @@ pub(super) fn checked_phase(
     let phase = reader.read_phase().map_err(|error| store_error(&error))?;
     generation_phase(phase, expected)
 }
-pub(super) fn checked_pooled_phase(
+pub(crate) fn checked_pooled_phase(
     reader: &se_store::ReadPhasePool,
     expected: se_types::Generation,
 ) -> Result<se_store::ReadPhase> {

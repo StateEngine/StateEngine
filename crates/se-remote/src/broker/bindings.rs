@@ -45,7 +45,7 @@ pub trait SourceHost<B: Budget>: Send + Sync {
     ) -> RemoteFuture<'_, BrokerBinding>;
 }
 impl<B: Budget> RemoteBroker<B> {
-    pub(super) async fn resolve(
+    pub async fn resolve(
         &self,
         alias: &str,
         call: RemoteCallContext,
