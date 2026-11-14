@@ -130,7 +130,7 @@ pub(super) fn dependencies(file: &File, expiry: Expiry) -> io::Result<Vec<PathBu
             .ok_or_else(|| invalid("Git load-command offset overflow"))?;
         let kind = number(tail, 0, 4, false)? as u32;
         let size = number(tail, 4, 4, false)? as usize;
-        if size < 8 || size % 8 != 0 {
+        if size < 8 || !size.is_multiple_of(8) {
             return Err(invalid("Git load-command size is invalid"));
         }
         let command = tail

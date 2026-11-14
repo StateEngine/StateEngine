@@ -211,9 +211,10 @@ impl Intent {
         let (schema, nonce, host, identity): (u8, [u8; 32], ProcessPin, [u8; 32]) =
             serde_json::from_slice(&bytes).map_err(io::Error::other)?;
         // SAFETY: read-only native effective-user query.
+        let uid = unsafe { libc::geteuid() };
         if schema != 1
             || nonce == [0; 32]
-            || host.uid != unsafe { libc::geteuid() }
+            || host.uid != uid
             || host.pid == 0
             || host.pid > i32::MAX as u32
             || !matches!(host.birth, se_types::StartIdentity::Macos { .. })
