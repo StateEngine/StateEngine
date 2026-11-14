@@ -17,6 +17,7 @@ mod integration;
 mod launch;
 pub(crate) mod launch_util;
 mod mail;
+mod monitor;
 mod native_record;
 mod owned;
 mod provider_status;
