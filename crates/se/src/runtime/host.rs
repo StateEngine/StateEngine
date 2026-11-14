@@ -1,43 +1,43 @@
 //! Installed detached host entry. The inherited native bootstrap authenticates
 //! private inputs; publication stays fenced until the parent commits this owner.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "host/detachment.rs"]
 mod detachment;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use detachment::{DetachmentObservation, read_detachment, retire_detachment};
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "host/child.rs"]
 mod child;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "host/environment.rs"]
 mod environment;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "host/interrupt.rs"]
 mod interrupt;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "host/launch.rs"]
 mod launch;
 #[cfg(windows)]
 #[path = "host/stack.rs"]
 mod stack;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "host/startup_log.rs"]
 pub(crate) mod startup_log;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) use child::foreground;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use launch::{StartedHost, StartupFailure, start, start_with_origin};
 
 use se_types::{Result, SeError};
 use std::ffi::OsString;
 /// Authenticated private-frame policy, never selected from an environment flag.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StartupOrigin {
     Explicit,
     Automatic,
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl StartupOrigin {
     fn frame(self) -> &'static str {
         match self {
@@ -46,7 +46,7 @@ impl StartupOrigin {
         }
     }
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
@@ -59,7 +59,7 @@ pub fn dispatch(args: &[OsString]) -> Option<Result<u8>> {
     {
         return None;
     }
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         let result = se_proc::RuntimeBootstrap::from_process_entry()
             .map_err(native_error)
@@ -75,7 +75,7 @@ pub fn dispatch(args: &[OsString]) -> Option<Result<u8>> {
         );
         Some(result)
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         Some(Err(invalid(
             "a supported Linux or Windows detached runtime bootstrap",
@@ -85,7 +85,7 @@ pub fn dispatch(args: &[OsString]) -> Option<Result<u8>> {
 fn invalid(expected: &str) -> SeError {
     SeError::invalid("private runtime entry", expected)
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn native_error(error: se_proc::ProcError) -> SeError {
     if error.code == se_proc::ProcErrorCode::BreakawayDenied {
         // The runtime must outlive its caller. Keep the native refusal instead
@@ -113,7 +113,7 @@ fn native_error(error: se_proc::ProcError) -> SeError {
     }
     se_core::scope::unreadable("native runtime bootstrap", &format!("{error:?}"))
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn deadline(timeout: Duration) -> Result<se_host::client::lease::Deadline> {
     se_host::client::lease::Deadline::from_options(&se_host::client::ClientOptions {
         expected_generation: None,
@@ -121,7 +121,7 @@ fn deadline(timeout: Duration) -> Result<se_host::client::lease::Deadline> {
         cancelled: Arc::new(AtomicBool::new(false)),
     })
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn decode_instance(value: &std::ffi::OsStr) -> Result<se_proc::HostInstanceId> {
     let text = value
         .to_str()
@@ -140,7 +140,7 @@ fn decode_instance(value: &std::ffi::OsStr) -> Result<se_proc::HostInstanceId> {
     Ok(se_proc::HostInstanceId(id))
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn machine(home: &std::path::Path) -> Result<se_types::MachineId> {
     let files = crate::route::files::Files::open(home)
         .map_err(|error| se_core::store_error::store_error(&error))?;

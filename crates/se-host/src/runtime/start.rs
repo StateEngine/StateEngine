@@ -332,12 +332,24 @@ fn prepare(
     // A commit group's limit is smaller than total admitted outstanding work.
     let pending_writes =
         super::failure::PendingWrites::new(options.writer.queue_requests.get() as usize);
+    let mail_waits = crate::http::mail::Waits::new(options.limits.sessions.get() as usize);
+    #[cfg(feature = "remote")]
+    {
+        let phase = reader.read_phase().map_err(|e| store_error(&e))?;
+        let known = phase
+            .has_remote_mail_contacts()
+            .map_err(|e| store_error(&e));
+        let known = super::executor::close_read(known, phase.close())?;
+        if known {
+            mail_waits.enable_return_mail();
+        }
+    }
     let writer = host
         .start_writer(options.writer, lease.clone())
         .map_err(|e| store_error(&e))?;
     let execution = ExecutionContext {
         atlas: Arc::default(),
-        mail_waits: crate::http::mail::Waits::new(options.limits.sessions.get() as usize),
+        mail_waits,
         http_proofs: Arc::default(),
         state_directory: options.state_directory.clone(),
         reader: Arc::new(reader),

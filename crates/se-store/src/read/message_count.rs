@@ -30,6 +30,7 @@ impl SqliteSnapshot {
         // The common inbox count is a maintained projection, so it remains O(1).
         // Filtered counts traverse matching index entries, never mail bodies/events.
         if query.unread_only
+            && !matches!(query.recipient, Some(Actor::Remote(_)))
             && query.kind.is_none()
             && from.is_none()
             && let Some(recipient) = to.as_ref()

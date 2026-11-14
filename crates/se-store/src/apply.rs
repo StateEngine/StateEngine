@@ -187,6 +187,7 @@ pub(crate) fn apply(
             codec::aux(c, seq, facts)?;
         }
         RemoteMessageAttributed { record } => {
+            crate::remote::remember_source(c, &record, seq)?;
             let p = project_id(c, &header.scope, false)?;
             let message = key(c, "message", record.message.as_str(), &s, false)?;
             let grant = key(c, "remote-grant", record.grant.as_str(), &[0], false)?;
@@ -195,6 +196,10 @@ pub(crate) fn apply(
         }
         RemoteLaunchAttributed { record } => {
             crate::remote::apply_launch(c, header, record, seq)?;
+            codec::aux(c, seq, facts)?;
+        }
+        RemoteMailboxRecorded { change } => {
+            crate::remote::apply_mailbox(c, header, change, seq)?;
             codec::aux(c, seq, facts)?;
         }
         b @ (ProcessRegistered { .. } | ProcessTransition { .. }) => {
@@ -370,6 +375,14 @@ pub(crate) fn apply(
                 return Err(invalid("message refs/kind bounds"));
             }
             let m = key(c, "message", message.as_str(), &s, true)?;
+            let remote_reply =
+                crate::remote::reply_route(c, header, &recipient, reply_to.as_ref())?;
+            if remote_reply.is_some() && codec::encode(&body.as_materialized()?)?.len() > 40 * 1024
+            {
+                return Err(invalid(
+                    "encoded remote reply exceeds its delivery frame; send a shorter reply",
+                ));
+            }
             let recipient = actor_key(&recipient)?;
             let sender = actor_key(&header.actor)?;
             let exists: bool = c
@@ -379,7 +392,7 @@ pub(crate) fn apply(
                     |r| crate::sql_value::value(r, 0),
                 )
                 .map_err(sql)?;
-            if !exists {
+            if !exists && remote_reply.is_none() {
                 return Err(fail(
                     StoreErrorCode::ReferenceMissing,
                     "message recipient is not registered in this project",
@@ -442,8 +455,12 @@ pub(crate) fn apply(
                 c.execute("INSERT INTO message_deliveries(project_id,message_id,sent_seq,sender_id,recipient_id,message_kind,is_floor,revision) VALUES(?,?,?,?,?,?,0,?)",crate::sql_value::sql_params![project()?,m,seq,sender,recipient,kind,revision]).map_err(sql)?;
             }
             channel::enqueue_reply(c, header, &m, reply.as_deref(), seq)?;
+            let is_remote_reply = remote_reply.is_some();
+            crate::remote::enqueue_reply(c, remote_reply, project()?, &m, seq)?;
             notification::sent(c, seq, &recipient, quiet)?;
-            count(c, project()?, &recipient, 1, seq)?;
+            if !is_remote_reply {
+                count(c, project()?, &recipient, 1, seq)?;
+            }
         }
         body @ MessageSuperseded { .. } => {
             message::supersede(c, header, body, seq, revision, facts)?

@@ -81,6 +81,7 @@ pub fn from_matches_with_key(
     let op = match meta.name {
         name if name.starts_with("atlas.") => atlas::decode(name, m, common.json)?,
         "continuity.resume" => AnyOp::Resume(Resume {
+            source_failure: None,
             limit: required(m, "limit")?
                 .parse()
                 .map_err(|_| SeError::invalid("limit", "1..100"))?,
@@ -93,6 +94,7 @@ pub fn from_matches_with_key(
             preview_agent: None,
         }),
         "session.context" => AnyOp::SessionContext(SessionContextRequest {
+            source_failure: None,
             limit: required(m, "limit")?
                 .parse()
                 .map_err(|_| SeError::invalid("limit", "1..100"))?,

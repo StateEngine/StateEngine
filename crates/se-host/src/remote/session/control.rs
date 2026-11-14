@@ -135,7 +135,7 @@ pub(crate) fn deadline() -> Result<crate::client::lease::Deadline> {
     })
 }
 
-pub(super) fn committed(
+pub(crate) fn committed(
     operation: &str,
     receipt: &CommitReceipt,
 ) -> crate::runtime::CommittedWrite {
@@ -146,7 +146,7 @@ pub(super) fn committed(
         committed_events: receipt.events.clone(),
     }
 }
-async fn outputs_closed(
+pub(crate) async fn outputs_closed(
     fences: &[std::sync::Arc<crate::remote::auth::GrantFence>],
 ) -> Result<bool> {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(1);

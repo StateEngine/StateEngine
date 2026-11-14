@@ -87,6 +87,19 @@ impl SecurityStore {
     ) -> Result<(Vec<GrantRecord>, bool)> {
         self.read(|phase| phase.remote_grants(after, limit))
     }
+    pub(crate) fn security_outcome(
+        &self,
+        key: &IdempotencyKey,
+    ) -> Result<Option<(se_store::CommitReceipt, SecurityTransition)>> {
+        match self.read(|phase| phase.remote_security_receipt(&self.owner, key))? {
+            Read::Present { value } => Ok(Some(value)),
+            Read::Absent { .. } => Ok(None),
+            _ => Err(scope::unreadable(
+                "native security receipt",
+                "the original transition is unreadable; inspect its original key using se remote permissions --local in a terminal on the destination",
+            )),
+        }
+    }
     pub(crate) async fn commit(
         &self,
         actor: Actor,
@@ -104,6 +117,8 @@ impl SecurityStore {
             SecurityTransition::Revoke { .. } => "remote.grant.revoke",
             SecurityTransition::RevokeAll => "remote.grants.revoke-all",
             SecurityTransition::LaunchPermission { .. } => "remote.launch.permission",
+            SecurityTransition::SourcePermission { .. } => "remote.source.permission",
+            SecurityTransition::SourceRevokeIntent { .. } => "remote.source.revoke-intent",
         };
         let original_key = key.clone();
         let batch = AtomicBatch {

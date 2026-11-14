@@ -68,7 +68,7 @@ fn observe<R: se_store::ReadStore>(
     // admit::observe completes the owner inventory, then dispatch opens and
     // closes its snapshot before calling execute here. Permission recovery
     // and uninitialized diagnosis take their separate, unmeasured paths.
-    let home = if cfg!(any(target_os = "linux", windows)) {
+    let home = if cfg!(any(target_os = "linux", target_os = "macos", windows)) {
         check(
             "home.permissions",
             "Protected state home",
@@ -90,7 +90,7 @@ fn observe<R: se_store::ReadStore>(
             &at,
         ),
     ];
-    if !cfg!(any(target_os = "linux", windows)) {
+    if !cfg!(any(target_os = "linux", target_os = "macos", windows)) {
         checks.push(permissions::unsupported(
             "store.permissions",
             "Protected database",
