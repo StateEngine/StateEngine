@@ -228,6 +228,8 @@ impl LaunchCoordinator {
             scope_nonce: nonce,
             parent: if cfg!(windows) {
                 se_proc::ReservationParent::Windows
+            } else if cfg!(target_os = "macos") {
+                se_proc::ReservationParent::MacOs
             } else {
                 se_proc::ReservationParent::LinuxTracked
             },

@@ -23,13 +23,41 @@ fn sessions(plan: &LaunchPlan) -> Vec<se_types::SessionId> {
         .collect()
 }
 
-fn confirmation(plan: &LaunchPlan, reason: String) -> Result<SeError> {
-    Ok(SeError::new(Detail::LaunchConfirmationRequired(details::LaunchConfirmationRequired {
-        subject: plan.agent.name.clone(), reason,
-        lifecycles: plan.control.processes.iter().map(|head| process_identity(head).map(|identity| identity.record.clone())).collect::<Result<Vec<_>>>()?,
-        sessions: sessions(plan),
-        next_step: "Run this launch with --force to stop the listed sessions and all their managed jobs before relaunching. An interactive owner terminal asks for confirmation; scripts and agents must supply --force.".into(),
-    })))
+fn confirmation(plan: &LaunchPlan, home: &std::path::Path, reason: String) -> Result<SeError> {
+    // The remedy must be runnable as written: name the exact replacement command
+    // with --force for this project, agent and state home, so a script or agent
+    // never has to reconstruct it from the inventory above. The home is explicit
+    // because an unqualified command would resolve SE_HOME or the default store,
+    // which can be a different home and address another copy of the project.
+    // launch_in_home returns None when the home is not UTF-8 or contains a line
+    // break. Never fall back to an unqualified command there: that would name
+    // the default store and silently address a different home, which is the
+    // same missing-scope defect the explicit home exists to prevent.
+    let force =
+        se_core::ops::AgentCommand::launch_in_home(&plan.agent.id, home, &plan.project.id, false);
+    Ok(SeError::new(Detail::LaunchConfirmationRequired(
+        details::LaunchConfirmationRequired {
+            subject: plan.agent.name.clone(),
+            reason,
+            lifecycles: plan
+                .control
+                .processes
+                .iter()
+                .map(|head| process_identity(head).map(|identity| identity.record.clone()))
+                .collect::<Result<Vec<_>>>()?,
+            sessions: sessions(plan),
+            next_step: match force {
+                Some(force) => format!(
+                    "Rerun this launch with --force to stop the listed sessions and their managed jobs before starting the replacement: {} --force. An interactive owner terminal asks for confirmation; scripts and agents must supply --force.",
+                    force.command
+                ),
+                None => format!(
+                    "Rerun this launch with --force from the owner terminal to stop the listed sessions and their managed jobs before starting the replacement. {}",
+                    se_core::ops::AgentCommand::HOME_UNAVAILABLE
+                ),
+            },
+        },
+    )))
 }
 
 impl LaunchCoordinator {
@@ -51,7 +79,7 @@ impl LaunchCoordinator {
         expected_sessions.sort();
         current_sessions.sort();
         if expected != current || expected_sessions != current_sessions {
-            return Err(confirmation(plan, "The sessions or managed lifecycles changed after the displayed inventory. No process was stopped; inspect the current selection and confirm again.".into())?);
+            return Err(confirmation(plan, &self.options.home, "The sessions or managed lifecycles changed after the displayed inventory. No process was stopped; inspect the current selection and confirm again.".into())?);
         }
         Ok(())
     }
@@ -135,6 +163,7 @@ impl LaunchCoordinator {
         }
         confirmation(
             plan,
+            &self.options.home,
             format!(
                 "{} active session bindings; {} managed lifecycles. {} No process was stopped.",
                 plan.control.sessions.len(),
