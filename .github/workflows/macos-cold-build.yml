@@ -1,0 +1,120 @@
+name: Cold macOS binary link comparison
+
+on: [push, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  cold-build:
+    name: ${{ matrix.side }} / ${{ matrix.mode }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [base, head]
+        mode: [implicit, explicit]
+        include:
+          - side: base
+            source: 0f47ddb7ef5c30fa39de9b77cbb60d7021737c35
+          - side: head
+            source: 0d525ab50a4774e7819eddc4309666d74b8fb52c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ matrix.source }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Read the pinned compiler
+        id: compiler
+        shell: python
+        run: |
+          import os, tomllib
+          from pathlib import Path
+          channel = tomllib.loads(Path('rust-toolchain.toml').read_text())['toolchain']['channel']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('channel=' + channel, file=output)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ steps.compiler.outputs.channel }}
+      - name: Build from an empty Cargo home and target directory
+        shell: python
+        env:
+          SIDE: ${{ matrix.side }}
+          MODE: ${{ matrix.mode }}
+          SOURCE: ${{ matrix.source }}
+        run: |
+          import hashlib, json, os, subprocess, time
+          from pathlib import Path
+
+          root = Path.cwd()
+          temp = Path(os.environ['RUNNER_TEMP'])
+          out = temp / 'cold-build-evidence'
+          out.mkdir()
+          target = temp / 'cold-build-target'
+          cargo_home = temp / 'cold-build-cargo-home'
+          assert not target.exists() and not cargo_home.exists()
+          target.mkdir()
+          cargo_home.mkdir()
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert actual == os.environ['SOURCE'], actual
+          compiler = subprocess.check_output(['rustc', '-vV'], text=True)
+          host = next(line.removeprefix('host: ') for line in compiler.splitlines() if line.startswith('host: '))
+          assert host.endswith('-apple-darwin'), host
+          env = os.environ.copy()
+          for key in list(env):
+              if key.startswith(('CARGO_PROFILE_', 'CARGO_TARGET_')) or key in (
+                  'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'RUSTC_WRAPPER',
+                  'RUSTC_WORKSPACE_WRAPPER', 'CARGO_BUILD_RUSTFLAGS',
+                  'CARGO_BUILD_TARGET', 'CARGO_BUILD_RUSTC_WRAPPER',
+                  'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER'):
+                  del env[key]
+          env.update(CARGO_HOME=str(cargo_home), CARGO_TARGET_DIR=str(target),
+                     CARGO_INCREMENTAL='0', CARGO_TERM_COLOR='never', CARGO_BUILD_JOBS='2')
+          command = ['cargo', 'build', '-p', 'se', '--locked', '-vv']
+          if os.environ['MODE'] == 'explicit':
+              command += ['--target', host]
+          started = time.monotonic()
+          with (out / 'build.log').open('w') as log:
+              build = subprocess.run(command, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=2100)
+          result = {'side': os.environ['SIDE'], 'mode': os.environ['MODE'],
+                    'source': actual, 'compiler': compiler, 'command': command,
+                    'empty_cargo_home': True, 'empty_target': True,
+                    'exit': build.returncode, 'seconds': time.monotonic() - started}
+          result['dylibs'] = []
+          for library in sorted(target.rglob('*.dylib')):
+              inspection = subprocess.run(['otool', '-l', str(library)], text=True, capture_output=True)
+              result['dylibs'].append({'path': str(library.relative_to(target)),
+                                       'inspection_exit': inspection.returncode,
+                                       'has_lc_uuid': 'cmd LC_UUID' in inspection.stdout})
+          if build.returncode == 0:
+              binary = target / (host if os.environ['MODE'] == 'explicit' else '') / 'debug' / 'se'
+              inspection = subprocess.run(['otool', '-l', str(binary)], text=True, capture_output=True)
+              version = subprocess.run([str(binary), '--version'], text=True, capture_output=True)
+              result['binary'] = {'bytes': binary.stat().st_size,
+                                  'sha256': hashlib.file_digest(binary.open('rb'), 'sha256').hexdigest(),
+                                  'inspection_exit': inspection.returncode,
+                                  'has_lc_uuid': 'cmd LC_UUID' in inspection.stdout,
+                                  'version_exit': version.returncode,
+                                  'version_stdout': version.stdout, 'version_stderr': version.stderr}
+              (out / 'binary-load-commands.txt').write_text(inspection.stdout)
+          (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
+          if os.environ['SIDE'] == 'base' and os.environ['MODE'] == 'implicit':
+              assert build.returncode != 0, 'the cold base unexpectedly compiled'
+              failure = (out / 'build.log').read_text()
+              assert 'E0463' in failure or 'LC_UUID' in failure, 'the base failed for a different reason'
+          else:
+              assert build.returncode == 0, result
+              assert result['dylibs'], 'no host proc-macro library was inspected'
+              assert all(row['inspection_exit'] == 0 and row['has_lc_uuid'] for row in result['dylibs']), result['dylibs']
+              assert result['binary']['inspection_exit'] == 0 and not result['binary']['has_lc_uuid'], result['binary']
+              assert result['binary']['version_exit'] == 0, result['binary']
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: macos-cold-build-${{ matrix.side }}-${{ matrix.mode }}
+          path: ${{ runner.temp }}/cold-build-evidence/
+          if-no-files-found: error
