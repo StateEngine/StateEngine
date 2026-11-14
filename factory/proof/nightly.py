@@ -16,6 +16,7 @@ from native import import_receipt
 from matrix_adapter import run as run_matrix
 from night_status import configure
 from remote_credentials import AutomationToken
+from credential_output import redacted_command, require_token_absent
 
 GIB = 1024**3
 
@@ -125,13 +126,20 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
         argv += ["--only", selection]
     try:
         with (directory / (name + ".log")).open("xb") as output:
-            invocation["exit"] = subprocess.run([str(arg) for arg in argv], env=env,
-                stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
-                timeout=remaining(deadline, 7200), close_fds=True).returncode
+            args, timeout = [str(arg) for arg in argv], remaining(deadline, 7200)
+            if automation is not None:
+                invocation["exit"] = redacted_command(args, env, output, timeout, automation.token())
+            else:
+                invocation["exit"] = subprocess.run(args, env=env, stdin=subprocess.DEVNULL,
+                    stdout=output, stderr=subprocess.STDOUT, timeout=timeout, close_fds=True).returncode
         if automation is not None:
-            automation.token()
+            token = automation.token()
+            try:
+                require_token_absent([directory / name, directory / (name + ".log")], token)
+            except OSError:
+                raise RuntimeError("automation output scan unavailable; preserve the private fixture and restore readable outputs before retrying") from None
             invocation["credential_closure"] = {"source_inode_unchanged": True,
-                "source_digest_unchanged": True, "transport": "environment"}
+                "source_digest_unchanged": True, "output_token_absent": True, "transport": "environment"}
         invocation["state"] = "finished"
     except subprocess.TimeoutExpired:
         invocation.update(state="timed-out", error="judge deadline; inspect fixture and native custody")
