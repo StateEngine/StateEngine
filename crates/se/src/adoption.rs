@@ -1,15 +1,21 @@
 //! Fail-open native hook entry. Ambient session/config selections never supply
 //! authority: this home and project come only from explicit installation.
+#[cfg(any(target_os = "linux", windows))]
 use crate::{bootstrap::Bootstrap, route};
 #[cfg(any(target_os = "linux", windows))]
 mod mail;
+use se_host::adoption::Kind;
+#[cfg(any(target_os = "linux", windows))]
 use se_host::{
-    adoption::{Action, Input, Kind},
+    adoption::{Action, Input},
     client::{ClientOptions, lease::Deadline},
 };
-use se_types::{NativePath, Result, SeError};
+use se_types::Result;
+#[cfg(any(target_os = "linux", windows))]
+use se_types::{NativePath, SeError};
+use std::ffi::OsString;
+#[cfg(any(target_os = "linux", windows))]
 use std::{
-    ffi::OsString,
     io::{Read, Write},
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -264,9 +270,11 @@ fn forward_to(
     se_host::adoption::status::record_for(&cx.home, kind, &project, action, None)?;
     Ok(output.value)
 }
+#[cfg(any(target_os = "linux", windows))]
 fn failure(error: std::io::Error) -> SeError {
     se_core::scope::unreadable("native adoption hook", &error.to_string())
 }
+#[cfg(any(target_os = "linux", windows))]
 fn native(error: se_proc::StateFileError) -> SeError {
     se_core::scope::unreadable("native adoption file", &error.to_string())
 }

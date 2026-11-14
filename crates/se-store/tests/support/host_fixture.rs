@@ -1,7 +1,9 @@
 use super::*;
+#[cfg(any(target_os = "linux", windows))]
+use se_types::StartIdentity;
 use se_types::{
     BootId, Generation, HostEpoch, HostGeneration, MachineId, NativePath, ProcessFields,
-    ProcessInstance, Sha256, StartIdentity,
+    ProcessInstance, Sha256,
 };
 use std::{
     future::Future,
