@@ -46,7 +46,7 @@ pub struct AgentTreeMatch {
     pub record_index: usize,
     pub basis: AgentTreeBasis,
 }
-/// The Windows live ancestry walk can stop at a protected SYSTEM creator.
+/// A native ancestry walk can reach an ancestor whose birth is protected.
 /// This explicit read bound grants no agent match or owner authority by itself.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AncestryBound {
