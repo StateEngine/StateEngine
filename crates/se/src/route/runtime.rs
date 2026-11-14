@@ -185,10 +185,17 @@ pub fn down<R: se_store::ReadStore>(
                     // A failed launch can leave exact cleanup debt after its
                     // host exits. Reuse startup's native reconciliation, then
                     // the authenticated stop protocol within this one clock.
-                    let (endpoint, _) = start(cx, files, &bound, &mut |message| {
-                        use std::io::Write;
-                        writeln!(std::io::stderr().lock(), "{message}")
-                    })?;
+                    let endpoint = super::autostart::endpoint_with_origin(
+                        cx,
+                        files,
+                        &bound,
+                        &mut |message| {
+                            use std::io::Write;
+                            writeln!(std::io::stderr().lock(), "{message}")
+                        },
+                        crate::runtime::host::StartupOrigin::Explicit,
+                        &mut None,
+                    )?;
                     let mut options = options;
                     options.timeout = bound.remaining()?;
                     down_live(files, reader, &endpoint, input, options)
