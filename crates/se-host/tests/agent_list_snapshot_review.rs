@@ -30,7 +30,7 @@ fn seed(f: &Fixture, store: &mut SqliteDirect, lease: &Lease) -> Check {
     store.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request("review-seed-profiles")?),
             vec![
                 profile(&f.a, "first", Expected::Absent),
                 profile(&f.b, "other", Expected::Absent),
@@ -96,7 +96,7 @@ fn owner_pin_is_stable_and_new_snapshots_refresh_each_saved_fact() -> Check {
     store.append(
         f.batch(
             admission.clone(),
-            None,
+            Some(request("review-refresh-row")?),
             vec![
                 EventBody::PrincipalRenamed {
                     principal: Actor::Agent(f.a.clone()),
@@ -152,7 +152,7 @@ fn owner_pin_is_stable_and_new_snapshots_refresh_each_saved_fact() -> Check {
     store.append(
         f.batch(
             admission.clone(),
-            None,
+            Some(request("review-refresh-session")?),
             vec![
                 EventBody::SessionRevoked {
                     session,
@@ -269,7 +269,7 @@ fn absent_profile_refuses_without_borrowing_another_agents_profile() -> Check {
     store.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request("review-missing-profile")?),
             vec![profile(&f.a, "only-first-agent", Expected::Absent)],
         )?,
         &*lease,
