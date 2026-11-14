@@ -1,6 +1,8 @@
 //! Public-consumer checks for the shared Windows security and launch mechanics.
 //! Native Windows execution is required; a cross-check supplies no runtime grade.
 #![cfg(windows)]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_proc::{native_ipc::*, *};
 use std::{
     ffi::OsStr,
@@ -12,10 +14,7 @@ use std::{
     },
     path::{Path, PathBuf},
     ptr,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
@@ -65,26 +64,13 @@ impl Drop for Descriptor {
         }
     }
 }
-struct Home(PathBuf);
+struct Home(cleanup_directory::PrivateDirectory);
 impl Home {
     fn new() -> Check<Self> {
         se_proc::initialize_file_creation_owner()?;
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let suffix = se_types::hex_lower(&se_proc::random_secret()?.expose()[..8]);
-        let path = std::env::temp_dir().join(format!(
-            "se-windows-native-{}-{}-{suffix}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let path = cleanup_directory::private_case_directory()?;
         drop(NativeStateFiles::create(&path)?);
-        Ok(Self(path))
-    }
-}
-impl Drop for Home {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_dir_all(&self.0) {
-            eprintln!("owned Windows native judge cleanup: {error}");
-        }
+        Ok(Self(path.cleanup_on_drop()))
     }
 }
 fn sid() -> Check<String> {
@@ -347,7 +333,7 @@ fn launched_child_has_only_explicit_stdio_and_starts_in_its_exact_job() -> Check
             "--nocapture".into(),
             "--test-threads=1".into(),
         ],
-        cwd: home.0.clone(),
+        cwd: home.0.to_path_buf(),
         environment: Environment {
             entries: vec![
                 (
@@ -370,8 +356,8 @@ fn launched_child_has_only_explicit_stdio_and_starts_in_its_exact_job() -> Check
         policy: LaunchPolicy {
             containment: ContainmentRequirement::KernelScope,
             writes: WritePolicy::Workspace {
-                roots: vec![home.0.clone()],
-                scratch: home.0.clone(),
+                roots: vec![home.0.to_path_buf()],
+                scratch: home.0.to_path_buf(),
             },
             network: NetworkPolicy::Allow,
             hardening: OptionalHardening::Off,

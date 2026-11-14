@@ -281,7 +281,7 @@ impl AnyOp {
             HumanPolicy::Never => Ok(false),
             HumanPolicy::ConfigKey => match self {
                 Self::ConfigSet(input) => {
-                    Ok(crate::config_policy::key_metadata(&input.key)?.human_only)
+                    Ok(se_config::config_policy::key_metadata(&input.key)?.human_only)
                 }
                 _ => Err(crate::scope::unreadable(
                     "human-presence policy",

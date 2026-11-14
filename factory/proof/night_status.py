@@ -40,6 +40,8 @@ def planned(config):
         probes.append(("linux", remote.get("surface", "claude"), "remote"))
     probes += [(p["platform"], p["surface"], p["selection"])
                for p in config.get("native_receipts", [])]
+    from windows_adapter import plan as windows_plan
+    probes += [(p["platform"], p["surface"], p["selection"]) for p in windows_plan(config)]
     return [(key, scopes[key[2]]) for key in probes]
 
 

@@ -1,6 +1,6 @@
 //! Installed-harness setup data; these recipes never install or acquire credentials.
-use crate::config_policy::harness::HarnessDescriptor;
 use schemars::JsonSchema;
+use se_config::config_policy::harness::HarnessDescriptor;
 use se_types::{Result, SeError};
 use serde::Deserialize;
 use std::{collections::BTreeMap, sync::OnceLock};

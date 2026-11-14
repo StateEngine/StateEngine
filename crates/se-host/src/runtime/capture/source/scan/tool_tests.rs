@@ -1,5 +1,6 @@
 //! Exercise the production native-pin scanner, including retries and cold joins.
 use super::*;
+use crate::test_directory as cleanup_directory;
 use se_core::ops::transcript::tool::{Outcome, Phase, Target};
 use se_store::RecordIdentity;
 use serde_json::{Value, json};
@@ -7,12 +8,20 @@ type Check = std::result::Result<(), Box<dyn std::error::Error>>;
 
 fn source(
     rows: &[Value],
-) -> std::result::Result<(BoundTranscript, Vec<u8>), Box<dyn std::error::Error>> {
+) -> std::result::Result<
+    (
+        cleanup_directory::PrivateDirectory,
+        BoundTranscript,
+        Vec<u8>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos();
     let directory = std::env::temp_dir().join(format!("se-tools-{}-{nonce}", std::process::id()));
     std::fs::create_dir(&directory)?;
+    let root_owner = cleanup_directory::PrivateDirectory::for_case(directory.clone());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -26,25 +35,23 @@ fn source(
     }
     std::fs::write(&path, &bytes)?;
     let pin = se_proc::NativeSourcePin::open(&path)?.ok_or("missing source")?;
-    Ok((
-        BoundTranscript {
-            binding: crate::TranscriptPin {
-                identity: crate::SessionIdentity {
-                    project: se_types::ProjectId::from_parts(1, [3; 10])?,
-                    agent: se_types::AgentId::from_parts(1, [4; 10])?,
-                    session: se_types::SessionId::from_parts(1, [1; 10])?,
-                },
-                conversation: "tools-native".parse()?,
-                path: se_types::NativePath::from_local(path)?,
-                file_identity: se_types::Sha256::from_bytes(pin.identity()),
+    let source = BoundTranscript {
+        binding: crate::TranscriptPin {
+            identity: crate::SessionIdentity {
+                project: se_types::ProjectId::from_parts(1, [3; 10])?,
+                agent: se_types::AgentId::from_parts(1, [4; 10])?,
+                session: se_types::SessionId::from_parts(1, [1; 10])?,
             },
-            queue: Default::default(),
-            tools: Default::default(),
-            source: se_store::RecordId::from_parts(1, [2; 10])?,
-            pin,
+            conversation: "tools-native".parse()?,
+            path: se_types::NativePath::from_local(path)?,
+            file_identity: se_types::Sha256::from_bytes(pin.identity()),
         },
-        bytes,
-    ))
+        queue: Default::default(),
+        tools: Default::default(),
+        source: se_store::RecordId::from_parts(1, [2; 10])?,
+        pin,
+    };
+    Ok((root_owner, source, bytes))
 }
 fn scan(
     source: &mut BoundTranscript,
@@ -62,13 +69,11 @@ fn scan(
         true,
     )
 }
-fn cleanup(source: BoundTranscript) -> Check {
-    let path = source.pin.path().to_path_buf();
+fn cleanup(owner: cleanup_directory::PrivateDirectory, source: BoundTranscript) -> Check {
     drop(source);
-    std::fs::remove_file(&path)?;
-    std::fs::remove_dir(path.parent().ok_or("parent")?)?;
-    Ok(())
+    owner.finish(Ok(()))
 }
+
 fn call(n: usize) -> Value {
     json!({"type":"tool_use","id":format!("call-{n}"),"name":"Edit","input":{"file_path":format!("{n}.rs")}})
 }
@@ -84,7 +89,7 @@ fn tool_only_progress_keeps_exact_ranges_and_cold_call_result_identity() -> Chec
         "sessionId":"tools-native","message":{"role":"user","content":[{
             "type":"tool_result","tool_use_id":"call-0","is_error":false,"content":"PRIVATE_OUTPUT"}]}}),
     ];
-    let (mut source, bytes) = source(&rows)?;
+    let (_root_owner, mut source, bytes) = source(&rows)?;
     let first = scan(&mut source, 0, se_store::Provider::Claude)?.ok_or("called fact missing")?;
     assert_eq!(first.request.role, se_store::Role::System);
     let record = Record::decode(first.request.text.as_str())?;
@@ -116,12 +121,13 @@ fn tool_only_progress_keeps_exact_ranges_and_cold_call_result_identity() -> Chec
     assert_eq!(result.position.offset, end);
     assert_eq!(second.request.new_offset, bytes.len() as u64);
     assert!(!second.request.text.as_str().contains("PRIVATE_OUTPUT"));
-    cleanup(source)
+    cleanup(_root_owner, source)
 }
 #[test]
 fn metadata_bound_flushes_prior_noise_and_never_skips_an_overfull_native_record() -> Check {
     let noise = json!({"type":"file-history-snapshot","snapshot":{}});
-    let (mut source, bytes) = source(&[noise.clone(), assistant((0..32).map(call).collect())])?;
+    let (_root_owner, mut source, bytes) =
+        source(&[noise.clone(), assistant((0..32).map(call).collect())])?;
     let first = scan(&mut source, 0, se_store::Provider::Claude)?.ok_or("noise prefix missing")?;
     let boundary = serde_json::to_vec(&noise)?.len() as u64 + 1;
     assert_eq!(first.request.new_offset, boundary);
@@ -136,15 +142,16 @@ fn metadata_bound_flushes_prior_noise_and_never_skips_an_overfull_native_record(
             .iter()
             .all(|m| m.record.captured_tool.is_some())
     );
-    cleanup(source)?;
-    let (mut overfull, _) = self::source(&[assistant((0..33).map(call).collect())])?;
+    drop(source);
+    let (_overfull_owner, mut overfull, _) =
+        self::source(&[assistant((0..33).map(call).collect())])?;
     assert!(scan(&mut overfull, 0, se_store::Provider::Claude).is_err());
     assert!(
         overfull.tools.is_empty(),
         "refused record retained speculative progress"
     );
     assert!(scan(&mut overfull, 0, se_store::Provider::Claude).is_err());
-    cleanup(overfull)
+    _root_owner.finish(cleanup(_overfull_owner, overfull))
 }
 #[test]
 fn codex_pin_retains_file_and_mcp_facts_without_turn_text_or_patch_content() -> Check {
@@ -162,7 +169,7 @@ fn codex_pin_retains_file_and_mcp_facts_without_turn_text_or_patch_content() -> 
             "arguments":{"query":"actual query"}}),
         ),
     ];
-    let (mut source, bytes) = source(&rows)?;
+    let (_root_owner, mut source, bytes) = source(&rows)?;
     let first = scan(&mut source, 0, se_store::Provider::Codex)?.ok_or("file fact")?;
     let file = Record::decode(first.request.text.as_str())?
         .captured_tool
@@ -186,5 +193,5 @@ fn codex_pin_retains_file_and_mcp_facts_without_turn_text_or_patch_content() -> 
         second.request.evidence.sha256,
         Some(Sha256::digest(&bytes[first.request.new_offset as usize..]).into())
     );
-    cleanup(source)
+    cleanup(_root_owner, source)
 }

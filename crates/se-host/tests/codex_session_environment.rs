@@ -1,5 +1,5 @@
 #![cfg(feature = "listener")]
-use se_core::config_policy::{Approval, EffectiveSandbox, ResolvedProfile};
+use se_config::config_policy::{Approval, EffectiveSandbox, ResolvedProfile};
 use se_host::{HarnessRequest, SessionIdentity, codex_input};
 use se_proc::{
     ContainmentRequirement, LaunchMode, LaunchPolicy, NetworkPolicy, OptionalHardening, WritePolicy,

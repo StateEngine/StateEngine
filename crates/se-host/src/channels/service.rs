@@ -17,7 +17,7 @@ use std::sync::{
 
 pub struct Channels {
     pub(super) context: ExecutionContext,
-    pub(super) configuration: Option<se_core::config_policy::ConfigFile>,
+    pub(super) configuration: Option<se_config::config_policy::ConfigFile>,
     pub(super) store: crate::runtime::store::Store,
     pub(super) owner: HumanId,
     pub(super) store_id: se_types::StoreId,
@@ -37,7 +37,7 @@ impl Channels {
     pub(crate) fn new(
         context: ExecutionContext,
         transports: Vec<Arc<dyn ChannelTransport>>,
-        configuration: Option<se_core::config_policy::ConfigFile>,
+        configuration: Option<se_config::config_policy::ConfigFile>,
         owner: HumanId,
         credentials: Arc<NativeChannelCredentials>,
         pairing_key: Secret,

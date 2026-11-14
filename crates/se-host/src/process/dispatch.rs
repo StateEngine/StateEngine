@@ -91,7 +91,7 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
     }
 
     fn import_profiles(&self) -> se_types::Result<Vec<se_store::Profile>> {
-        use se_core::config_policy::{EffectiveSandbox, Provider};
+        use se_config::config_policy::{EffectiveSandbox, Provider};
         let providers = match self.options.configuration.launch.provider {
             Provider::Claude => [Provider::Claude, Provider::Codex, Provider::SeCode],
             Provider::Codex => [Provider::Codex, Provider::Claude, Provider::SeCode],

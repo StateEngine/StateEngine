@@ -1,6 +1,8 @@
 //! Real linked host + external lock observer. Run only with the exact native
 //! CLI supplied through SE_SHUTDOWN_JUDGE_SE, inside the admitted install slot.
 #![cfg(all(feature = "secode", target_os = "linux"))]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 #[path = "support/shutdown_linked_fixture.rs"]
 mod support;
 use secode_stateengine_api as api;
@@ -135,6 +137,7 @@ fn failed_linked_drain_refuses_close_and_retains_lease_until_application_exit() 
         se_types::hex_lower(&entropy.expose()[..8])
     ));
     fs::create_dir(&root)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     let mut child = Command::new(std::env::current_exe()?)
@@ -216,11 +219,8 @@ fn failed_linked_drain_refuses_close_and_retains_lease_until_application_exit() 
     lock.try_lock()
         .map_err(|e| format!("exact application exited but lease remains: {e}"))?;
     drop(lock);
-    eprintln!(
-        "embedded negative control passed; readbacks retained at {}",
-        root.display()
-    );
-    Ok(())
+    eprintln!("embedded negative control passed at {}", root.display());
+    _root_owner.finish(Ok(()))
 }
 
 /// Protects: public CLI down proves resource closure and releases the lease
@@ -244,6 +244,7 @@ fn public_down_closes_an_embedded_host_without_claiming_application_exit() -> Ch
         se_types::hex_lower(&entropy.expose()[..8])
     ));
     fs::create_dir(&root)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     let mut child = Command::new(std::env::current_exe()?)
@@ -354,9 +355,6 @@ fn public_down_closes_an_embedded_host_without_claiming_application_exit() -> Ch
             && api["health"] == "Closed",
         "positive API completion/replay differs from the outside closure",
     )?;
-    eprintln!(
-        "positive embedded closure passed; readbacks retained at {}",
-        root.display()
-    );
-    Ok(())
+    eprintln!("positive embedded closure passed at {}", root.display());
+    _root_owner.finish(Ok(()))
 }

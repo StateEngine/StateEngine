@@ -28,10 +28,10 @@ impl BlockingPool {
         self.runtime.clone()
     }
     pub fn new(runtime: Handle) -> Self {
-        Self::configured(runtime, se_core::config_policy::DEFAULT_BLOCKING_JOBS)
+        Self::configured(runtime, se_config::config_policy::DEFAULT_BLOCKING_JOBS)
     }
     pub fn with_jobs(runtime: Handle, jobs: std::num::NonZeroU32) -> Result<Self> {
-        if jobs.get() > se_core::config_policy::MAX_BLOCKING_JOBS {
+        if jobs.get() > se_config::config_policy::MAX_BLOCKING_JOBS {
             return Err(SeError::invalid(
                 "host blocking jobs",
                 "an effective cap in 1..=8; one selects the legacy foreground/maintenance split",

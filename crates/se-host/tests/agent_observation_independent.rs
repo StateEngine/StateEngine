@@ -2,9 +2,9 @@
 //! Real store readers and FULL writer are used; process facts are typed store
 //! fixtures because the failure precedes any native process observation.
 #![cfg(all(feature = "runtime", any(target_os = "linux", windows)))]
+use se_config::config_policy::ConfigFile;
 use se_core::{
     commit::Cx,
-    config_policy::ConfigFile,
     dispatch::{CallFacts, Kernel},
     ops::{
         AgentShow,

@@ -3,8 +3,8 @@ use super::{
     ProcessView,
     inputs::{Validate, bounded},
 };
-use crate::config_policy::Provider;
 use schemars::JsonSchema;
+use se_config::config_policy::Provider;
 use se_types::{
     AgentId, EventId, IdempotencyKey, LaunchId, LifecycleId, Named, ProjectId, Result, SeError,
     SessionId,

@@ -1,6 +1,6 @@
 use super::{IntegrationEffect, LaunchOutput, NextStep};
-use crate::config_policy::{Provider, ResolvedProfile};
 use schemars::JsonSchema;
+use se_config::config_policy::{Provider, ResolvedProfile};
 use se_types::{AgentId, HumanId, IdempotencyKey, ProjectId};
 use serde::{Deserialize, Serialize};
 

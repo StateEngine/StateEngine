@@ -16,6 +16,7 @@ import time
 NAME = re.compile(r"runtime-startup-[0-9a-f]{32}\.log")
 SE = str(Path(sys.argv[1]).resolve(strict=True))
 ROOT = Path(tempfile.mkdtemp(prefix="se-startup-retention-"))
+print("fixture root (retained on failed or interrupted closure):", ROOT, flush=True)
 ENV = {k: v for k, v in os.environ.items()
        if not k.startswith(("SE_", "STATEENGINE_", "SECODE_", "CLAUDE_", "CODEX_", "GIT_"))
        and k != "CLAUDECODE"}

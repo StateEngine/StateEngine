@@ -5,6 +5,10 @@
 //! Windows system uninstall carrier have concrete native implementations. Native
 //! resource layouts are intentionally opaque; no handle is Clone or Default.
 
+// Shared native fixture helpers use the same crate path in unit and integration tests.
+#[cfg(test)]
+extern crate self as se_proc;
+
 #[cfg(windows)]
 mod windows_directory;
 #[cfg(windows)]

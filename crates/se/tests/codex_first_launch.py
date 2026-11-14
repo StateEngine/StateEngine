@@ -112,6 +112,7 @@ def run(options):
         f = Fixture(options.se, directory)
         model = Model(directory, f.repo)
         short = Path(tempfile.mkdtemp(prefix='se5b-first-', dir='/tmp'))
+        print("fixture root (retained on failed or interrupted closure):", short, flush=True)
         try:
             for name, suffix in [('XDG_CONFIG_HOME', 'config'), ('XDG_CACHE_HOME', 'cache'), ('XDG_DATA_HOME', 'data'), ('XDG_STATE_HOME', 'state')]:
                 location = directory / ('xdg-' + suffix)

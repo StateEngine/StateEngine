@@ -1,5 +1,5 @@
 //! Plain profile terms shared by typed receipts and stored history values.
-use se_core::config_policy::{Approval, EffectiveSandbox};
+use se_config::config_policy::{Approval, EffectiveSandbox};
 use se_types::Provider;
 use serde::de::DeserializeOwned;
 

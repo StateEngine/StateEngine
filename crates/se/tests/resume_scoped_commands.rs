@@ -214,9 +214,7 @@ fn preview_succeeds_when_only_turns_are_omitted_for_packet_budget() -> Check {
 fn every_resume_recovery_argv_reaches_the_selected_home_without_writing() -> Check {
     let mut f = Fixture::new()?;
     let renamed = f.home.with_extension("selected home ' 日本語");
-    fs::rename(&f.home, &renamed)?;
-    f.home = renamed;
-    f.options.state_directory = f.home.join("state");
+    f.move_home(renamed)?;
     fs::create_dir(f.home.join("unrelated default"))?;
     let (mut store, lease) = f.direct()?;
     let session = capture::session()?;

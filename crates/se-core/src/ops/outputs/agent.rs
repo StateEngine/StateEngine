@@ -1,6 +1,6 @@
 use super::ProcessView;
-use crate::config_policy::Provider;
 use schemars::JsonSchema;
+use se_config::config_policy::Provider;
 use se_types::{AgentId, Read, SessionId};
 use serde::{Deserialize, Serialize};
 

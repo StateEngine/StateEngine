@@ -12,13 +12,13 @@ pub struct Plan {
 #[cfg(any(target_os = "linux", windows))]
 pub fn prepare(
     home: &Path,
-    configuration: &se_core::config_policy::ConfigFile,
+    configuration: &se_config::config_policy::ConfigFile,
     file: Option<&Path>,
-    selected: Option<se_core::config_policy::Provider>,
+    selected: Option<se_config::config_policy::Provider>,
 ) -> Result<Plan> {
-    let kind = match selected.unwrap_or(se_core::config_policy::Provider::Claude) {
-        se_core::config_policy::Provider::Claude => Kind::Claude,
-        se_core::config_policy::Provider::Codex => Kind::Codex,
+    let kind = match selected.unwrap_or(se_config::config_policy::Provider::Claude) {
+        se_config::config_policy::Provider::Claude => Kind::Claude,
+        se_config::config_policy::Provider::Codex => Kind::Codex,
         _ => {
             return Err(SeError::invalid(
                 "init --adopt provider",
@@ -61,9 +61,9 @@ pub fn prepare(
 #[cfg(not(any(target_os = "linux", windows)))]
 pub fn prepare(
     _home: &Path,
-    _configuration: &se_core::config_policy::ConfigFile,
+    _configuration: &se_config::config_policy::ConfigFile,
     _file: Option<&Path>,
-    _selected: Option<se_core::config_policy::Provider>,
+    _selected: Option<se_config::config_policy::Provider>,
 ) -> Result<Plan> {
     Err(SeError::invalid(
         "provider adoption",

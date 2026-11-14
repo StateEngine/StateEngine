@@ -108,7 +108,9 @@ impl Home {
         let suffix = se_types::hex_lower(&random_secret()?.expose()[..16]);
         let path = std::env::temp_dir().join(format!("se-stdio-binding-{suffix}"));
         fs::create_dir(&path)?;
-        Ok(Self(fs::canonicalize(path)?))
+        let mut home = Self(path);
+        home.0 = fs::canonicalize(&home.0)?;
+        Ok(home)
     }
     fn endpoints(&self, suffix: &str) -> Check<StandardIo> {
         fs::write(

@@ -2,6 +2,9 @@
 //! Component profile values come from the measured Linux owner profile; this
 //! development consumer does not certify the joined production owner's memory.
 #[cfg(all(target_os = "linux", not(debug_assertions)))]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
+#[cfg(all(target_os = "linux", not(debug_assertions)))]
 #[path = "../../test-support/atlas_clock.rs"]
 mod test_clock;
 #[cfg(all(target_os = "linux", not(debug_assertions)))]
@@ -147,6 +150,7 @@ mod native {
         let source = base.join("source");
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new().mode(0o700).create(&base)?;
+        let _root_owner = super::cleanup_directory::PrivateDirectory::for_case(base.clone());
         fs::create_dir(&source)?;
         git(&source, &["init", "--initial-branch=main"])?;
         for index in 0..5 {
@@ -472,11 +476,11 @@ mod native {
             "private Git control remained"
         );
         controller.close(root, CloseReason::HostDrain, Duration::from_secs(2))?;
-        fs::remove_dir_all(&base)?;
+
         println!(
             "PASS {case:?}: real parser reaped, source epoch/query usable, optional history limitation and diagnostic retained"
         );
-        Ok(())
+        _root_owner.finish(Ok(()))
     }
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
