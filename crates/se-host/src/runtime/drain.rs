@@ -92,12 +92,15 @@ impl HostedRuntime {
             },
             pending: vec![],
         };
-        if let Some(flush) = &self.flush
-            && let Some(error) = &flush.maintenance_error
-        {
-            report
-                .pending
-                .push(format!("last maintenance error: {error}"));
+        if let Some(flush) = &self.flush {
+            if let Some(error) = &flush.maintenance_error {
+                report.pending.push(format!(
+                    "Background store maintenance failed: {}. Next: {}",
+                    error.cause, error.remedy.text
+                ));
+            } else if flush.maintenance_failed {
+                report.pending.push("Background store maintenance failed, but its recorded cause is unavailable. Preserve the data home and restart the runtime process to recreate the maintenance task; for an embedded runtime, restart its owning application.".into());
+            }
         }
         if let Some(flush) = &self.flush
             && (flush.pending_requests != 0 || !flush.indeterminate.is_empty())
