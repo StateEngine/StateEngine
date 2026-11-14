@@ -9,9 +9,9 @@ mod watch;
 #[derive(Clone)]
 pub struct Service {
     router: crate::runtime::HostedRouter,
-    store: Arc<session::SecurityStore>,
+    pub(crate) store: Arc<session::SecurityStore>,
     live: Arc<publish::LivePublisher>,
-    cursors: cursor::Cursors,
+    pub(crate) cursors: cursor::Cursors,
 }
 impl Service {
     pub fn new(
@@ -38,7 +38,7 @@ impl Service {
         let request = view_request::ViewRequest::local(admission, input)?;
         Ok(Box::new(watch::Watch::from_request(self, request)?))
     }
-    async fn blocking<T: Send + 'static>(
+    pub(crate) async fn blocking<T: Send + 'static>(
         &self,
         work: impl FnOnce() -> Result<T> + Send + 'static,
     ) -> Result<T> {
@@ -73,10 +73,18 @@ impl listener::RemoteService for Service {
                     .launch(request)
                     .await
                     .map(|value| wire::Reply::Launch(Box::new(value))),
-                RemoteRequest::Send(_) => self
+                RemoteRequest::Send(_) | RemoteRequest::Reply(_) => self
                     .send(request)
                     .await
                     .map(|value| wire::Reply::Send(Box::new(value))),
+                RemoteRequest::Replies(_) => self
+                    .replies(request)
+                    .await
+                    .map(|value| wire::Reply::Replies(Box::new(value))),
+                RemoteRequest::ResolveContact(_) => self
+                    .contact(request)
+                    .await
+                    .map(|value| wire::Reply::Contact(Box::new(value))),
                 RemoteRequest::Watch(_) => Err(SeError::invalid(
                     "watch request",
                     "the retained bounded subscription path",

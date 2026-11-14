@@ -118,6 +118,13 @@ pub struct RemoteAgentAddress {
     pub project: ProjectId,
     pub agent: AgentId,
 }
+impl RemoteAgentAddress {
+    /// Public selector used by ordinary mail; authority still comes from the
+    /// exact received message and its authenticated source attribution.
+    pub fn selector(&self) -> String {
+        format!("{}/{}/{}", self.host.0.hex(), self.project, self.agent)
+    }
+}
 impl RemoteSourceSession {
     pub fn address(&self) -> RemoteAgentAddress {
         RemoteAgentAddress {

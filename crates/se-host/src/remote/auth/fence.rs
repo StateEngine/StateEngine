@@ -63,6 +63,14 @@ impl GrantFence {
         guard
             .outputs
             .retain(|v| v.upgrade().is_some_and(|output| !output.closed()));
+        if guard
+            .outputs
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|old| Arc::ptr_eq(&old, output))
+        {
+            return Ok(());
+        }
         if guard.outputs.len() >= MAX_CONNECTIONS_PER_GRANT {
             return Err(super::super::channel::busy(
                 "bounded grant connection capacity reached; close an existing connection",

@@ -273,6 +273,9 @@ pub fn messages(value: &MessagePage, out: &mut impl Write) -> io::Result<()> {
             if let Some(route) = &message.channel_reply {
                 writeln!(out, "{}", route.instruction)?;
             }
+            if let Some(route) = &message.remote_reply {
+                writeln!(out, "{}", route.instruction)?;
+            }
         }
         if !message.body.complete {
             if let Some(command) = &message.body.command {

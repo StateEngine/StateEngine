@@ -16,6 +16,8 @@ mod agent_observation;
 pub mod channels;
 pub mod client;
 pub mod remote;
+#[cfg(feature = "remote")]
+mod return_mail;
 #[cfg(feature = "runtime")]
 pub use agent_observation::{
     AgentObservation, AgentObservationPlan, observe_agent, prepare_agent_observation,

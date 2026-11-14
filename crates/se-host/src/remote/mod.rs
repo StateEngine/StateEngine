@@ -31,10 +31,12 @@ pub mod service;
 #[cfg(feature = "remote")]
 pub use client::ClientConnector;
 mod owner_input;
+#[cfg(feature = "remote")]
+mod source_control;
 pub use owner_input::LaunchPermissionChange;
 #[cfg(feature = "remote")]
 pub(crate) use owner_input::OwnerCall;
-pub use owner_input::OwnerInput;
+pub use owner_input::{OwnerInput, SourcePermissionChange};
 pub mod session;
 pub use se_remote::RemoteCallContext;
 #[cfg(feature = "remote")]
@@ -61,4 +63,4 @@ pub mod bindings;
 pub mod broker;
 
 #[cfg(feature = "remote")]
-mod view_request;
+pub(crate) mod view_request;

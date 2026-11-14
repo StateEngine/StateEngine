@@ -84,6 +84,34 @@ pub(crate) async fn execute(
                 .launch_permissions(router, owner, request, deadline)
                 .await?
         }
+        OwnerInput::PairingPermissions {
+            alias,
+            after,
+            change,
+        } => {
+            control
+                .pairing_permissions(router, owner, alias, after, change, deadline)
+                .await?
+        }
+        OwnerInput::SourcePermissions(request) => {
+            control
+                .source_permissions(router, owner, request, deadline)
+                .await?
+        }
+        OwnerInput::LocalPairingPermissions { after, change } => {
+            control
+                .source_permissions(
+                    router,
+                    owner,
+                    ssh::PermissionsRequest {
+                        permissions: control.security.host(),
+                        after,
+                        change,
+                    },
+                    deadline,
+                )
+                .await?
+        }
         OwnerInput::Disable => {
             let _configure = control.configure.lock().await;
             control.security.owner(&owner)?;

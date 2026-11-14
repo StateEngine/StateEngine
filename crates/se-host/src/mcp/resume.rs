@@ -191,6 +191,7 @@ mod tests {
     }
     fn input() -> Resume {
         Resume {
+            source_failure: None,
             limit: 20,
             since: None,
             byte_budget: 4096,

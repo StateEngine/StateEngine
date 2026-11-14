@@ -31,6 +31,16 @@ pub(crate) fn revision(c: &Connection, event: &NewEvent) -> StoreResult<u64> {
             launch_permission::revision(c, &change.grant, &change.target)
         }
         SecurityTransition::RevokeAll => Ok(1),
+        SecurityTransition::SourceRevokeIntent { .. } => Ok(1),
+        SecurityTransition::SourcePermission { address, .. } => source::permission(c, address)?
+            .map_or(Ok(1), |p| {
+                p.revision
+                    .value
+                    .get()
+                    .checked_add(1)
+                    .filter(|n| *n <= i64::MAX as u64)
+                    .ok_or_else(|| invalid("source revision exhausted"))
+            }),
     }
 }
 fn scope(c: &Connection, scope: &RemoteScope) -> StoreResult<()> {
@@ -148,6 +158,37 @@ pub(crate) fn apply(
         }
         SecurityTransition::RevokeAll => {
             c.execute("UPDATE remote_grants SET state='revoked',authority_revision=authority_revision+1,revision=revision+1,last_seq=? WHERE state='active'",[seq]).map_err(sql)?;
+        }
+        SecurityTransition::SourceRevokeIntent {
+            address,
+            expected,
+            key: request_key,
+        } => {
+            if info.schema_version < 12
+                || source::permission(c, &address)?.map(|p| p.revision) != expected
+            {
+                return Err(denied());
+            }
+            c.execute("INSERT INTO remote_source_revocations(address,request_key,event_seq) VALUES(?,?,?) ON CONFLICT(address) DO NOTHING",
+                rusqlite::params![encode(&address)?,request_key.as_str(),seq]).map_err(sql)?;
+        }
+        SecurityTransition::SourcePermission {
+            address,
+            allowed,
+            expected,
+        } => {
+            if info.schema_version < 12
+                || source::permission(c, &address)?.map(|p| p.revision) != expected
+            {
+                return Err(denied());
+            }
+            c.execute("INSERT INTO remote_source_permissions(address,allowed,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(address) DO UPDATE SET allowed=excluded.allowed,revision=excluded.revision,last_seq=excluded.last_seq",
+                rusqlite::params![encode(&address)?, allowed, i64::try_from(revision).map_err(invalid)?, seq]).map_err(sql)?;
+            c.execute(
+                "DELETE FROM remote_source_revocations WHERE address=?",
+                [encode(&address)?],
+            )
+            .map_err(sql)?;
         }
     }
     Ok(())
