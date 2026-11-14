@@ -97,6 +97,15 @@ impl RemoteWatch {
     }
 }
 
+/// Start an existing Owner-approved identity with its saved profile.
+/// Work arrives through ordinary remote send after the returned session starts.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteLaunch {
+    pub target: RemoteTarget,
+    pub idempotency_key: IdempotencyKey,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteSend {
@@ -132,6 +141,7 @@ pub enum RemoteRequest {
     List(RemoteList),
     Watch(RemoteWatch),
     Send(RemoteSend),
+    Launch(RemoteLaunch),
 }
 impl RemoteRequest {
     pub fn validate(&self) -> Result<()> {
@@ -139,6 +149,7 @@ impl RemoteRequest {
             Self::List(v) => v.validate(),
             Self::Watch(v) => v.validate(),
             Self::Send(v) => v.validate(),
+            Self::Launch(_) => Ok(()),
         }
     }
 }

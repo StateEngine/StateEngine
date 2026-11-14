@@ -1,4 +1,6 @@
 //! Public native host migration consumer; no private migration implementation.
+#[path = "../../se-store/tests/support/historical_schema.rs"]
+mod historical_schema;
 #[path = "../../se-host/tests/support/wave2_host_fixture.rs"]
 mod support;
 use se_host::{HostedRuntime, initialize_host_process};
@@ -6,36 +8,18 @@ use se_store::*;
 use std::fs;
 use support::*;
 
-fn remove_remote_schema(db: &rusqlite::Connection) -> Check {
-    db.execute_batch(
-        "DROP TABLE remote_message_attribution;
-         DROP TABLE remote_grants; DROP TABLE channel_receive; DROP INDEX session_data_agent_seq;
-         DROP INDEX mark_data_message_seq; DROP INDEX work_mark_recipient_seq",
-    )?;
-    Ok(())
-}
-
 fn schema_one(f: &Fixture, obstruct: bool) -> Result<u32, Box<dyn std::error::Error>> {
     seed(f)?;
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
     let current_schema = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    remove_remote_schema(&db)?;
-    for name in [
-        "cursor_data_cursor",
-        "process_data_principal",
-        "effect_offer_attempt",
-        "sessions_cleanup",
-        "process_data_session",
-    ] {
-        if !(obstruct && name == "cursor_data_cursor") {
-            db.execute_batch(&format!("DROP INDEX {name}"))?;
-        }
-    }
-    db.execute_batch(
-        "DROP TABLE channel_actions; DROP TABLE channel_outbox; DROP TABLE channel_updates; DROP TABLE channel_connections; DROP TABLE atlas_resume_deliveries; DROP TABLE atlas_resume_cursors;
-         DROP TABLE atlas_resume_roots; DROP TABLE work_mark_data;
-         DROP TABLE message_deliveries; ALTER TABLE message_data DROP COLUMN quiet; PRAGMA user_version=1",
-    )?;
+    let historical = historical_schema::through(1)?;
+    let retained: &[&str] = if obstruct {
+        &["cursor_data_cursor"]
+    } else {
+        &[]
+    };
+    historical_schema::remove_later_objects(&db, &historical, retained)?;
+    db.execute_batch("ALTER TABLE message_data DROP COLUMN quiet; PRAGMA user_version=1")?;
     Ok(current_schema)
 }
 fn schema_four(f: &Fixture) -> Result<u32, Box<dyn std::error::Error>> {
@@ -57,11 +41,9 @@ fn schema_four(f: &Fixture) -> Result<u32, Box<dyn std::error::Error>> {
     writer.close()?;
     drop(lease);
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
-    remove_remote_schema(&db)?;
-    db.execute_batch(
-        "DROP TABLE channel_actions; DROP TABLE channel_outbox; DROP TABLE channel_updates; DROP TABLE channel_connections; DROP TABLE atlas_resume_deliveries; DROP TABLE atlas_resume_cursors;
-        DROP TABLE atlas_resume_roots; PRAGMA user_version=4",
-    )?;
+    let historical = historical_schema::through(4)?;
+    historical_schema::remove_later_objects(&db, &historical, &[])?;
+    db.execute_batch("PRAGMA user_version=4")?;
     Ok(current_schema)
 }
 fn backup_is_original(f: &Fixture, expected_schema: u32, expected_head: u64) -> Check {
@@ -261,8 +243,9 @@ fn channel_schema_upgrade_preserves_schema_five_mail_and_original_backup() -> Ch
     writer.close()?;
     drop(lease);
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
-    remove_remote_schema(&db)?;
-    db.execute_batch("DROP TABLE channel_actions; DROP TABLE channel_outbox; DROP TABLE channel_updates; DROP TABLE channel_connections; PRAGMA user_version=5")?;
+    let historical = historical_schema::through(5)?;
+    historical_schema::remove_later_objects(&db, &historical, &[])?;
+    db.execute_batch("PRAGMA user_version=5")?;
     db.execute("INSERT INTO atlas_resume_roots(project_id,root,epoch,active) SELECT project_id,'original-root','original-epoch',1 FROM projects LIMIT 1", [])?;
     let head: i64 = db.query_row("SELECT MAX(seq) FROM events", [], |row| row.get(0))?;
     drop(db);

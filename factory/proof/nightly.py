@@ -13,6 +13,10 @@ import time
 from report import exit_status, publish
 from lifecycle import begin, checkpoint, save, service_exit
 from native import import_receipt
+from matrix_adapter import run as run_matrix
+from night_status import configure
+from remote_credentials import AutomationToken
+from credential_output import redacted_command, require_token_absent
 
 GIB = 1024**3
 
@@ -105,11 +109,16 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
     selection, surface, name = (invocation[key] for key in ("selection", "surface", "output"))
     invocation["state"] = "running"
     invocation["box_load"] = {"before": box_load()}
-    checkpoint(Path(config["state"]), directory, run)
+    checkpoint(Path(config["state"]), directory, run, config)
     argv = [config["node"], judge / "journeys/run.mjs", "--implementation", "rust",
             "--distribution", "standalone", "--product", descriptor,
             "--surface", surface, "--auth-home", config["auth_home"], "--out", directory / name]
-    if surface in config.get("credential_sources", {}):
+    automation = None
+    if surface == "claude":
+        automation = AutomationToken(config.get("automation_tokens", {}))
+        env = {**env, "CLAUDE_CODE_OAUTH_TOKEN": automation.token()}
+        argv += ["--automation-token-env", "CLAUDE_CODE_OAUTH_TOKEN"]
+    elif surface in config.get("credential_sources", {}):
         argv += ["--credential-source", config["credential_sources"][surface]]
     if selection == "first-hour":
         argv += ["--only", selection, "--archive", archive]
@@ -117,19 +126,51 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
         argv += ["--only", selection]
     try:
         with (directory / (name + ".log")).open("xb") as output:
-            invocation["exit"] = subprocess.run([str(arg) for arg in argv], env=env,
-                stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
-                timeout=remaining(deadline, 7200), close_fds=True).returncode
+            args, timeout = [str(arg) for arg in argv], remaining(deadline, 7200)
+            if automation is not None:
+                invocation["exit"] = redacted_command(args, env, output, timeout, automation.token())
+            else:
+                invocation["exit"] = subprocess.run(args, env=env, stdin=subprocess.DEVNULL,
+                    stdout=output, stderr=subprocess.STDOUT, timeout=timeout, close_fds=True).returncode
+        if automation is not None:
+            token = automation.token()
+            try:
+                require_token_absent([directory / name, directory / (name + ".log")], token)
+            except OSError:
+                raise RuntimeError("automation output scan unavailable; preserve the private fixture and restore readable outputs before retrying") from None
+            invocation["credential_closure"] = {"source_inode_unchanged": True,
+                "source_digest_unchanged": True, "output_token_absent": True, "transport": "environment"}
         invocation["state"] = "finished"
     except subprocess.TimeoutExpired:
         invocation.update(state="timed-out", error="judge deadline; inspect fixture and native custody")
         raise RuntimeError(invocation["error"]) from None
     finally:
         invocation["box_load"]["after"] = box_load()
-        checkpoint(Path(config["state"]), directory, run)
+        checkpoint(Path(config["state"]), directory, run, config)
+
+
+def invoke_remote(config, run, directory, executable, env, invocation, deadline):
+    from remote_journey import Journey
+    capacity()
+    remaining(deadline, 600)
+    invocation.update(state="running", box_load={"before": box_load()})
+    checkpoint(Path(config["state"]), directory, run, config)
+    if not isinstance(config.get("remote", {}), dict):
+        raise RuntimeError("remote configuration must be an object naming its SSH destination")
+    settings = {**config.get("remote", {}), "auth_home": config["auth_home"],
+                "automation_tokens": config.get("automation_tokens", {}),
+                "account_check": str(Path(run["product"]["worktree"]) / "scripts/ci/installation_account.py")}
+    settings.setdefault("surface", "claude")
+    result = Journey(settings, executable, directory / invocation["output"], env,
+                     run["product"]["commit"], deadline).run()
+    invocation.update(state="finished", exit=0 if result["passed"] else 1)
+    invocation["box_load"]["after"] = box_load()
+    checkpoint(Path(config["state"]), directory, run, config)
 
 
 def run_nightly(config, prepared_build=None, native_only=False):
+    if native_only:
+        config = {**config, "native_only": True}
     state = Path(config["state"])
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (state / "nightly.lock").open("a") as lock:
@@ -151,6 +192,10 @@ def run_nightly(config, prepared_build=None, native_only=False):
             for name in ("product", "judge"):
                 tree = directory / (name + "-source")
                 record[name] = pin_tree(config[name + "_git"], config[name + "_ref"], tree)
+            if record.get('harness_matrix') is not None:
+                matrix = config['harness_matrix']
+                record['matrix_judge'] = pin_tree(matrix['judge_git'], matrix['judge_ref'],
+                                                  directory / 'matrix-judge-source')
             source, judge = (Path(record[name]["worktree"]) for name in ("product", "judge"))
             record["judge"]["rust_map_sha256"] = digest(judge / "journeys/maps/rust.json")
             record["judge"]["files_sha256"] = {str(path.relative_to(judge)): digest(path)
@@ -159,10 +204,10 @@ def run_nightly(config, prepared_build=None, native_only=False):
             native_invocations = [row for row in record["invocations"] if row.get("native_receipt")]
             for invocation, probe in zip(native_invocations, config.get("native_receipts", []), strict=True):
                 import_receipt(invocation, probe["path"], directory, record, state)
-                checkpoint(state, directory, record)
+                checkpoint(state, directory, record, config)
             if native_only:
                 record["state"] = "finished"
-                report = checkpoint(state, directory, record)
+                report = checkpoint(state, directory, record, config)
                 print(directory / "report.md", flush=True)
                 return exit_status(report)
             build = prepared_build or directory / "build"
@@ -172,6 +217,8 @@ def run_nightly(config, prepared_build=None, native_only=False):
             metadata = json.loads((build / "build.json").read_text())
             if metadata.get("source_commit") != record["product"]["commit"]:
                 raise RuntimeError("prepared release does not match tonight's pinned product source")
+            if "remote" not in metadata.get("features", []):
+                raise RuntimeError("the remote journey requires a release built with --features remote")
             command([sys.executable, source / "scripts/release/assemble.py", "--native-only", "--build", build,
                      "--out", directory / "archive"], directory / "assemble.log", env, remaining(deadline, 300))
             archive, = (directory / "archive").glob("*.tar.gz")
@@ -191,7 +238,13 @@ def run_nightly(config, prepared_build=None, native_only=False):
             for invocation in record["invocations"]:
                 if invocation.get("native_receipt"):
                     continue
-                invoke(config, record, directory, judge, descriptor, archive, env, invocation, deadline)
+                if invocation.get("remote_probe"):
+                    invoke_remote(config, record, directory, bundle / "se", env, invocation, deadline)
+                else:
+                    invoke(config, record, directory, judge, descriptor, archive, env, invocation, deadline)
+            if record.get('harness_matrix') is not None:
+                run_matrix(config, record, directory, Path(record['matrix_judge']['worktree']),
+                           bundle, env, deadline, lambda: checkpoint(state, directory, record, config))
             record["state"] = "finished"
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
             record["errors"].append(str(error))
@@ -199,7 +252,7 @@ def run_nightly(config, prepared_build=None, native_only=False):
         finally:
             # Retain pinned source trees with this attempt. They contain no test
             # credentials; no recursive cleanup can consume another worktree.
-            report = checkpoint(state, directory, record)
+            report = checkpoint(state, directory, record, config)
         # Artifacts remain available even when every prerequisite failed.
         print(directory / "report.md", flush=True)
         return exit_status(report)
@@ -218,7 +271,7 @@ def main():
         return 0
     if not args.config:
         parser.error("--config is required for execution")
-    config = json.loads(args.config.read_text())
+    config = configure(json.loads(args.config.read_text()))
     if args.service_exit:
         return service_exit(config)
     prefixes = tuple(config.get("forbidden_environment_prefixes", ["STATEENGINE_", "SECODE_"]))
@@ -229,7 +282,7 @@ def main():
     if forbidden:
         parser.error("start from an OS scheduler outside managed agent trees with no fleet/session environment")
     if args.native_receipts_only:
-        config = {**config, "probes": []}
+        config = {**config, "probes": [], "native_only": True}
     return run_nightly(config, args.prepared_build, args.native_receipts_only)
 
 

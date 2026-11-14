@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct AcpConfig {
+    /// Default descriptor for newly created ACP agents; existing agents keep their saved choice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
     /// Native argv, without a shell. `{model}` expands the selected saved model.
     pub arguments: Vec<String>,
     /// Additional owner environment names explicitly selected for the protocol agent.
@@ -16,7 +19,10 @@ pub struct AcpConfig {
 }
 impl AcpConfig {
     pub fn is_default(&self) -> bool {
-        self.arguments.is_empty() && self.environment.is_empty() && self.mode.is_empty()
+        self.harness.is_none()
+            && self.arguments.is_empty()
+            && self.environment.is_empty()
+            && self.mode.is_empty()
     }
     pub(super) fn validate(&self) -> Result<()> {
         if self.arguments.len() > 128

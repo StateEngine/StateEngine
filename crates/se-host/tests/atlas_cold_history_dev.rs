@@ -2,6 +2,9 @@
 //! Component profile values come from the measured Linux owner profile; this
 //! development consumer does not certify the joined production owner's memory.
 #[cfg(all(target_os = "linux", not(debug_assertions)))]
+#[path = "../../test-support/atlas_clock.rs"]
+mod test_clock;
+#[cfg(all(target_os = "linux", not(debug_assertions)))]
 mod native {
     use se_atlas::{
         cache::{connection::*, *},
@@ -392,6 +395,7 @@ mod native {
         use se_types::code::{
             AtlasValidation, FindQuery, SearchKind, SearchMode, SearchOrder, SearchScope,
         };
+        let _clock = super::test_clock::control();
         let mut reader = se_atlas::query::QueryReader::new(
             &mut current.connection,
             se_atlas::query::ReaderContext {

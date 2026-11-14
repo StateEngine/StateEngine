@@ -7,7 +7,7 @@ use se_core::{
     ops::{AnyOp, AnyOutput},
 };
 use se_store::*;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -181,6 +181,27 @@ fn visible(receipt: &CommitReceipt, output: &AnyOutput, failed: bool) -> Check {
     );
     Ok(())
 }
+// A flush reports the current facts; it does not join the background task.
+// Observe recovery within one deadline, including the task clearing its own
+// retained failure. Every flush error remains a failure of this fixture.
+fn recovered(writer: &mut se_store::SqliteWriter) -> Check {
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or("checkpoint recovery did not become visible before its deadline")?;
+        let report = wait(writer.flush(remaining)?)??;
+        if !report.maintenance_pending && !report.maintenance_failed {
+            return Ok(());
+        }
+        // Let the independent task run while the writer is idle. The interval
+        // is only an observation cadence, never evidence of completion.
+        std::thread::park_timeout(
+            Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+}
+
 /// Protects: scheduled, actually failed and recovered checkpoints remain
 /// distinct through real native SQLite, typed receipts and public envelopes.
 #[test]
@@ -235,8 +256,7 @@ fn scheduled_work_is_quiet_and_failures_reach_cli_and_session_envelopes() -> Che
         let (receipt, output) = write(&f, &reader, &client, door, session.as_ref(), 1)?;
         visible(&receipt, &output, true)?;
         pin.execute_batch("ROLLBACK")?;
-        let recovered = wait(writer.flush(Duration::from_secs(4))?)??;
-        assert!(!recovered.maintenance_pending && !recovered.maintenance_failed);
+        recovered(&mut writer)?;
         let (receipt, output) = write(&f, &reader, &client, door, session.as_ref(), 2)?;
         visible(&receipt, &output, false)?;
         drop(wait(writer.drain(Duration::from_secs(4)))??);

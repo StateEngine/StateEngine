@@ -13,6 +13,7 @@ remote = ["se-host/remote"]
 se-host = { path = "../se-host", default-features = false }
 se-core = { path = "../se-core" }
 se-types = { path = "../se-types" }
+se-store = { path = "../se-store" }
 serde.workspace = true
 serde_json.workspace = true
 zeroize.workspace = true

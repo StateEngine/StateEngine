@@ -21,6 +21,7 @@ pub trait OwnerCommands {
         &self,
         context: &Self::Context,
         input: Input,
+        progress: &mut dyn FnMut(se_host::remote::ssh::ImageProgress) -> Result<()>,
     ) -> Result<se_host::OperationOutput>;
 }
 

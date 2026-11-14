@@ -74,7 +74,7 @@ pub fn from_matches_with_key(
     };
     if matches!(
         meta.name,
-        "remote.list" | "remote.watch" | "remote.send" | "client.watch"
+        "remote.list" | "remote.watch" | "remote.send" | "remote.launch" | "client.watch"
     ) {
         return super::remote::decode(meta.name, m, key);
     }
@@ -175,6 +175,7 @@ pub fn from_matches_with_key(
         }),
 
         "project.init" => AnyOp::ProjectInit(ProjectInit {
+            harness: text(m, "harness"),
             repo: text(m, "repo"),
             name: text(m, "name"),
             agent: required(m, "agent")?,
@@ -318,6 +319,7 @@ pub fn from_matches_with_key(
             idempotency_key: key()?,
         }),
         "agent.create" => AnyOp::AgentCreate(AgentCreate {
+            harness: text(m, "harness"),
             name: required(m, "name")?,
             provider: text(m, "provider")
                 .map(|value| {

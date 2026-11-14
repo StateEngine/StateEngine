@@ -94,6 +94,7 @@ impl LaunchCoordinator {
         admission: Admission,
         deadline: &Deadline,
         takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
+        #[cfg(feature = "remote")] permit: Option<crate::remote::auth::AdmissionPermit>,
     ) -> Result<LaunchReply> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(se_core::scope::unreadable(
@@ -185,6 +186,10 @@ impl LaunchCoordinator {
                 let plan = Arc::new(plan);
                 let mut work = Work::new(plan.clone(), admission);
                 work.takeover = takeover.clone();
+                #[cfg(feature = "remote")]
+                {
+                    work.remote_permit = permit;
+                }
                 let wake = work.wake.clone();
                 let job = Arc::new(Job {
                     intent,

@@ -5,11 +5,11 @@ use super::*;
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 pub(super) fn initial_agent(
-    cx: &Bootstrap,
     input: &ProjectInit,
     store: &mut SqliteDirect,
     lease: &DirectLease,
     admission: &Admission,
+    configuration: &se_core::config_policy::ConfigFile,
 ) -> Result<(AgentRow, bool)> {
     let mut snap = store
         .snapshot(read_scope(admission))
@@ -73,8 +73,9 @@ pub(super) fn initial_agent(
         Some(agent) => agent,
         None => {
             let kernel =
-                Kernel::new(execute::facts()?)?.with_configuration(cx.config.value.clone())?;
+                Kernel::new(execute::facts()?)?.with_configuration(configuration.clone())?;
             let op = AnyOp::AgentCreate(AgentCreate {
+                harness: input.harness.clone(),
                 name: input.agent.clone(),
                 provider: input.provider,
                 model: input.model.clone(),
@@ -122,12 +123,29 @@ pub(super) fn initial_agent(
         },
     );
     snap.close().map_err(|e| store_error(&e))?;
-    Ok((
-        scope::require_present(
-            output?.agent,
-            "initial saved agent",
-            "Read the original saved agent in this data home, then retry se init with its original --key; preserve existing agent identities.",
-        )?,
-        created,
-    ))
+    let row = scope::require_present(
+        output?.agent,
+        "initial saved agent",
+        "Read the original saved agent in this data home, then retry se init with its original --key; preserve existing agent identities.",
+    )?;
+    if input
+        .provider
+        .is_some_and(|provider| row.provider != provider)
+    {
+        return Err(se_types::SeError::invalid(
+            "initial provider",
+            "the existing agent keeps its saved provider; select a new --agent name to choose a different harness",
+        ));
+    }
+    if input
+        .harness
+        .as_ref()
+        .is_some_and(|selected| row.harness.as_ref() != Some(selected))
+    {
+        return Err(se_types::SeError::invalid(
+            "initial harness",
+            "the existing agent keeps its saved harness; create another agent with --harness to select a different one",
+        ));
+    }
+    Ok((row, created))
 }

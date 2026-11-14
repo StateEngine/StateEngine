@@ -62,6 +62,7 @@ impl LaunchCoordinator {
         loop {
             let agent = plan.agent.id.clone();
             let wanted = conversation.clone();
+            let saved_session = previous_session.clone();
             let cursor = after.clone();
             let budget = deadline.remaining()?.min(std::time::Duration::from_secs(5));
             let (page, selected) = self
@@ -72,6 +73,14 @@ impl LaunchCoordinator {
                         let original=prior.original.as_deref().unwrap_or(&prior.current);
                         if !matches!(&original.body,EventBody::CaptureSource { consent:se_store::Consent::Capture,native_ref,.. } if native_ref==&wanted) {
                             return Err(error("ACP replay","The previous session did not consent to canonical capture. Start a new conversation with --new; no saved input was offered again."));
+                        }
+                        match cx.read.capture_outcome(previous_source, None).map_err(|e|se_core::store_error::store_error(&e))? {
+                            Read::Present { value } if matches!(&value.body,EventBody::CaptureFailed { .. }) => {
+                                return Err(error("ACP replay","The previous protocol capture is incomplete. Preserve its observed partial history and use --new for a separate conversation; interrupted input will not be replayed."));
+                            }
+                            Read::Present { value } if matches!(&value.body,EventBody::CaptureVerified { source,session,.. } if *source==previous_source && session==&saved_session) => (),
+                            Read::Absent { .. } => (),
+                            _ => return Err(error("ACP replay","The original capture outcome is unavailable; no input was offered.")),
                         }
                     }
                     let page = cx

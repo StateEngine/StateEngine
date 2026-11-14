@@ -103,7 +103,6 @@
   "crates/se-atlas/src/text": 805,
   "crates/se-core/src/ops/mail": 793,
   "crates/se-host/src/mcp": 780,
-  "crates/se-store/src/event": 768,
   "crates/se/src/route/runtime": 765,
   "crates/se-proc/src/state_files/windows": 751,
   "crates/se-proc/src/birth_time": 739,

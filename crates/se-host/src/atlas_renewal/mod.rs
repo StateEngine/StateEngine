@@ -373,7 +373,7 @@ fn limit(resource: &str, requested: u64, available: u64) -> SeError {
     }))
 }
 fn timely(deadline: Instant) -> AtlasResult<()> {
-    if Instant::now() >= deadline {
+    if se_atlas::clock::now() >= deadline {
         Err(limit("renewal work deadline", 1, 0))
     } else {
         Ok(())

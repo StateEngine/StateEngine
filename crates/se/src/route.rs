@@ -26,6 +26,7 @@ pub mod files;
 mod git_identity;
 #[path = "route/git_state.rs"]
 mod git_state;
+mod harness_setup;
 #[path = "route/hook.rs"]
 mod hook;
 #[path = "route/hosted.rs"]

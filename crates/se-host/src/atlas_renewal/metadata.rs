@@ -80,7 +80,7 @@ impl Watches {
         let mut start = 0;
         let length = result.reference.len();
         while start < length {
-            if Instant::now() >= deadline {
+            if se_atlas::clock::now() >= deadline {
                 result.failed("registered metadata subscription deadline exhausted");
                 break;
             }

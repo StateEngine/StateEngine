@@ -203,7 +203,7 @@ impl NativeRenewal {
         let mut hints = Vec::new();
         for event in NativeWatchEvents::new(&buffer[..count]) {
             // A bounded reconcile replaces the consumed tail, never silent loss.
-            if Instant::now() >= deadline || hints.len() >= 4 {
+            if se_atlas::clock::now() >= deadline || hints.len() >= 4 {
                 reason(&mut self.roots[index], CoverageReason::WatchLoss);
                 return Ok(vec![SourceHint::Reconcile(ReconcileReason::WatchOverflow)]);
             }

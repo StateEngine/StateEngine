@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from functools import wraps
 import threading
 
+import admission
 import engine
 from engine import command, engine_args
 from journal_lock import locked
@@ -253,6 +254,9 @@ class Journal:
             raise RuntimeError("CI native closure has not joined")
         if any(row["name"] in x.get("Names", []) or row["id"] == x.get("Id") for x in inventory()):
             raise RuntimeError("CI object still present after cleanup")
+        # Closure of this exact object is now proved: retire its memory charge
+        # before the custody record that names it disappears.
+        admission.retire(name)
         path.unlink()
         fd = os.open(self.directory, os.O_DIRECTORY)
         try:

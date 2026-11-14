@@ -22,7 +22,8 @@ BOX = Path("/usr/local/lib/stateengine-box-ci/factory/ci/box")
 sys.path.insert(0, str(BOX))
 from custody import Journal
 from dispatch import trusted
-from engine import Container, capacity
+from box_result import FAIL_BYTES, LOCATE_BYTES, scrub
+from engine import Container, admits
 from github_binding import policy_paths
 from transport import execute, WorkloadFailure
 from workload import Cohort, JOBS, resource_limits
@@ -97,7 +98,7 @@ def config_values(config):
     return config, report
 
 
-def approve_main(config, report, context, token):
+def approve_main(config, report, context, token, disclosed):
     helper = config.get("main_approval_helper")
     if (not helper or context.get("GITHUB_REF") != "refs/heads/main"
             or context.get("GITHUB_EVENT_NAME") != "push"):
@@ -113,7 +114,15 @@ def approve_main(config, report, context, token):
     try:
         child.communicate(json.dumps({"context": context, "token": token}).encode(), timeout=3900)
         if child.returncode:
-            print("Main approval did not finish; using the last published approval", file=sys.stderr, flush=True)
+            # Approving main is what keeps the installed code honest: when it
+            # fails, every later linux-box job silently runs hosted on an
+            # approval main has moved past. Name that here, so the job that
+            # pays for it says so instead of looking like a plain pass.
+            disclosed.append(
+                "main approval failed (exit " + str(child.returncode) + "); this job used the "
+                "last published approval, so the box may be behind main")
+            print("Main approval did not finish; using the last published approval",
+                  file=sys.stderr, flush=True)
     except BaseException:
         if child.poll() is None:
             arguments = Path("/proc", str(child.pid), "cmdline").read_bytes().split(b"\0")
@@ -166,7 +175,8 @@ def changed_policy(repository, source, token, policy):
 
 
 def prepare(request, config, report, context):
-    capacity(2*1024**3)
+    disclosed = []
+    admits(2*1024**3)
     job = request["args"].get("container")
     if not job or job.get("image") != "stateengine-ci-approved":
         raise RuntimeError("the approved job container is required")
@@ -179,7 +189,7 @@ def prepare(request, config, report, context):
     token = env.get("CI_SOURCE_TOKEN", "")
     if not token:
         raise RuntimeError("the ephemeral repository read token is absent")
-    config, report = approve_main(config, report, context, token)
+    config, report = approve_main(config, report, context, token, disclosed)
     # Policy is checked through the repository API, without extracting candidate
     # bytes onto the host or trusting a manifest written by the candidate.
     changed = changed_policy(repository, source, token, report["policy"])
@@ -195,6 +205,7 @@ def prepare(request, config, report, context):
         "run": context["GITHUB_RUN_ID"], "attempt": context["GITHUB_RUN_ATTEMPT"], "policy_changed": changed,
         "approval": {"image_report": config["image_report"], "cache": config["cache"],
                      "cache_sha256": config["cache_sha256"], "image": report["image"]},
+        "approval_disclosure": disclosed,
         "all_features": context.get("GITHUB_REF") == "refs/heads/main" and
             context.get("GITHUB_EVENT_NAME") in {"schedule", "workflow_dispatch"}})
     return {"state": {"job": directory.name}, "isAlpine": False}
@@ -261,7 +272,10 @@ def script_step(request, config, report, directory):
         if operation == "linux":
             print("Linux infrastructure unavailable: approved CI policy changed; running on hosted",
                   file=sys.stderr, flush=True)
-            return {"exit_code": 0, "outputs": {"status": "unavailable"}}
+            return {"exit_code": 0, "outputs": {"status": "unavailable"},
+                    "summary": summary_text("unavailable", [
+                        "approved CI policy differs from the approved image: "
+                        + ", ".join(changed)])}
         raise RuntimeError("approved CI policy changed; this workload must run on hosted")
     if operation == "changes":
         # Conservative full checking avoids running a candidate change detector
@@ -270,8 +284,9 @@ def script_step(request, config, report, directory):
     if operation == "route":
         return {"exit_code": 0, "outputs": {"route": "hosted" if changed else "box"}}
     if operation == "linux":
-        return linux_step(config, report, directory, all_features=binding.get("all_features", False))
-    capacity(2*1024**3)
+        return linux_step(config, report, directory, all_features=binding.get("all_features", False),
+                          disclosed=list(binding.get("approval_disclosure") or []))
+    admits(2*1024**3)
     with venue(config):
         journal = journal_at(config)
         journal.reconcile()
@@ -286,7 +301,7 @@ def journal_at(config):
     return Journal(slot=config["slot"] if config.get("parallel") else None)
 
 
-def linux_step(config, report, directory, *, all_features=False):
+def linux_step(config, report, directory, *, all_features=False, disclosed=None):
     canceled = threading.Event()
     cohort = None
     outcomes = {}
@@ -300,9 +315,13 @@ def linux_step(config, report, directory, *, all_features=False):
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    # Reasons the job must disclose beyond its typed outcome. The job summary is
+    # the only place a seat can read them: this process runs under `sudo -n -u`
+    # with an empty environment, so it cannot write the runner's files itself.
+    disclosed = list(disclosed or [])
     try:
         limits = resource_limits(config.get("parallel", False))
-        capacity(limits["memory"])
+        admits(limits["memory"])
         with venue(config):
             journal = journal_at(config)
             journal.reconcile()
@@ -339,6 +358,7 @@ def linux_step(config, report, directory, *, all_features=False):
         if canceled.is_set():
             raise InterruptedError("runner canceled this exact job") from error
         unavailable = True
+        disclosed.append("box infrastructure unavailable: " + type(error).__name__ + ": " + str(error))
         print(f"Linux infrastructure unavailable: {type(error).__name__}: {error}",
               file=sys.stderr, flush=True)
     # A cleanup or later admission failure cannot erase an already observed red.
@@ -346,11 +366,47 @@ def linux_step(config, report, directory, *, all_features=False):
         any(row.get("exit") == 1 for row in cohort.outcomes.values()))
     if not failed and not unavailable and set(outcomes) != set(JOBS):
         unavailable = True
+        disclosed.append("box run stopped before every stage finished: "
+                         + ", ".join(sorted(set(JOBS) - set(outcomes))) + " did not run")
+    if failed:
+        # Name what broke in the job summary, not only in this root-only log:
+        # a reviewer without controller access used to see just "failed".
+        named = list(cohort.failed) if cohort else []
+        disclosed.extend(named or ["a box stage failed without naming a test"])
     status = "failed" if failed else "unavailable" if unavailable else "passed"
+    if unavailable:
+        disclosed.append("completed box stages: " + (", ".join(sorted(outcomes)) or "none"))
     windows = "passed" if outcomes.get("windows-clippy") is True else "unavailable"
     if outcomes.get("windows-clippy") is False:
         windows = "failed"
-    return {"exit_code": 1 if failed else 0, "outputs": {"status": status, "windows": windows}}
+    return {"exit_code": 1 if failed else 0,
+            "outputs": {"status": status, "windows": windows},
+            "summary": summary_text(status, disclosed)}
+
+
+def summary_text(status, disclosed):
+    """One bounded, public-safe line list for the job summary and annotation."""
+    # This text leaves the machine and this repository is public, so every line
+    # is scrubbed here whatever produced it: a test name, an approval reason, or
+    # an infrastructure message can all carry a path or a credential-shaped
+    # token. `details()` scrubs its own entries too; this is the last boundary.
+    head = scrub({"passed": "every box stage passed",
+                  "failed": "a box stage failed; the complete check is red, not hosted",
+                  "unavailable": "box checks incomplete; hosted fallback required, completion unverified"}[status])
+    marker = "(further reasons omitted)"
+    kept, total = [], len(head.encode("utf-8"))
+    for line in disclosed:
+        encoded = scrub(str(line)).encode("utf-8", "replace")
+        suffix = " (reason truncated)" if len(encoded) > LOCATE_BYTES else ""
+        line = encoded[:LOCATE_BYTES - len(suffix)].decode("utf-8", "ignore") + suffix
+        added = len(line.encode("utf-8")) + 1
+        # Reserve the newline and marker before accepting another reason.
+        if total + added + len(marker.encode("utf-8")) + 1 > FAIL_BYTES:
+            kept.append(marker)
+            break
+        kept.append(line)
+        total += added
+    return "\n".join([head, *kept])
 
 
 def main():

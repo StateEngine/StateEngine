@@ -355,7 +355,7 @@ fn unavailable(request: &se_core::ops::AtlasRead, index: IndexSummary) -> se_cor
             state => se_types::Read::Unknown {
                 what: match state {
                     IndexState::Disabled => {
-                        "Atlas is explicitly disabled; enable atlas.enabled in configuration"
+                        "Atlas is explicitly disabled; edit [atlas] enabled = true in the selected config.toml, then run se down and se up with the same --home"
                     }
                     IndexState::NotBuilt => "Atlas is not compiled into this build",
                     IndexState::Dormant | IndexState::Absent => {
@@ -403,5 +403,42 @@ fn unavailable(request: &se_core::ops::AtlasRead, index: IndexSummary) -> se_cor
             answer: answer(index),
         }
         .into(),
+    }
+}
+#[cfg(all(test, feature = "listener"))]
+mod refusal_tests {
+    use super::*;
+    /// Bug: PR 186 — the disabled refusal named a setting but no working step.
+    #[test]
+    fn disabled_refusal_names_the_config_edit_and_the_restart() -> se_types::Result<()> {
+        let index = IndexSummary {
+            project: "prj_01890000-0000-7000-8000-000000000001".parse()?,
+            root: "aroot_01890000-0000-7000-8000-000000000002".parse()?,
+            memory: None,
+            epoch: None,
+            generation: None,
+            state: IndexState::Disabled,
+            coverage: crate::atlas_cold::empty_coverage(),
+        };
+        let request = se_core::ops::AtlasRead::Find(
+            serde_json::from_value(serde_json::json!({"query": "main"}))
+                .map_err(|e| SeError::invalid("test request", &e.to_string()))?,
+        );
+        let se_core::ops::AnyOutput::AtlasFind(out) = unavailable(&request, index) else {
+            return Err(SeError::invalid("test output", "a find reply"));
+        };
+        let se_types::Read::Unknown { what } = out.value.answer.data else {
+            return Err(SeError::invalid("test output", "an Unknown refusal"));
+        };
+        for step in [
+            "[atlas]",
+            "enabled = true",
+            "config.toml",
+            "se down",
+            "se up",
+        ] {
+            assert!(what.contains(step), "refusal lacks `{step}`: {what}");
+        }
+        Ok(())
     }
 }

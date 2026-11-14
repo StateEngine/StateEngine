@@ -13,7 +13,7 @@ pub(super) fn check(
     let mut hook = se_core::ops::AtlasAugment {
         target: se_core::ops::AtlasHookTarget::Symbol(QueryText::new("alpha")?),
         root: None,
-        deadline: Some(Instant::now() + Duration::from_millis(500)),
+        deadline: Some(se_atlas::clock::now() + Duration::from_millis(500)),
     };
     let augmentation = {
         let mut reader = super::outer_reader(cache, viewer, records, source, 1, feed_current);
@@ -42,7 +42,7 @@ pub(super) fn check(
     history_is_optional(cache, source, records, viewer, feed_current)?;
     assert!(augmentation.stdout.len() <= 600);
     let mut reader = super::outer_reader(cache, viewer, records, source, 1, feed_current);
-    hook.deadline = Some(Instant::now() - Duration::from_millis(1));
+    hook.deadline = Some(se_atlas::clock::now() - Duration::from_millis(1));
     assert!(
         se_host::atlas_hooks::augment(&mut reader, source, &hook)?
             .stdout
@@ -55,7 +55,7 @@ pub(super) fn check(
             .canonical_source_root
             .join("hook_large.rs"),
     )?);
-    hook.deadline = Some(Instant::now() + Duration::from_millis(500));
+    hook.deadline = Some(se_atlas::clock::now() + Duration::from_millis(500));
     let large_hint = se_host::atlas_hooks::augment(&mut reader, source, &hook)?;
     let large_json: serde_json::Value = serde_json::from_str(&large_hint.stdout)?;
     let large_context = large_json["hookSpecificOutput"]["additionalContext"]
@@ -71,7 +71,7 @@ pub(super) fn check(
             .canonical_source_root
             .join("alpha.rs"),
     )?);
-    hook.deadline = Some(Instant::now() + Duration::from_millis(5));
+    hook.deadline = Some(se_atlas::clock::now() + Duration::from_millis(5));
     assert!(
         se_host::atlas_hooks::augment(&mut reader, source, &hook)?
             .stdout

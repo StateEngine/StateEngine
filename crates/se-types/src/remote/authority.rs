@@ -23,6 +23,7 @@ pub enum RemoteVerb {
     List,
     Watch,
     Send,
+    Launch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, JsonSchema)]
@@ -43,6 +44,7 @@ impl RemoteScope {
         super::request::validate_targets(&self.targets, true)?;
         if self.verbs.is_empty()
             || self.verbs.len() > 3
+            || self.verbs.contains(&RemoteVerb::Launch)
             || self.verbs.iter().collect::<BTreeSet<_>>().len() != self.verbs.len()
         {
             return Err(SeError::invalid(

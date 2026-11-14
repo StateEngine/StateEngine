@@ -19,6 +19,9 @@ use recovery::Uncertain;
 pub(crate) struct Engine {
     pub db: Connection,
     pub path: PathBuf,
+    /// This connection's configured busy timeout, stamped onto the BUSY
+    /// refusals it produces (the store's honest wait, not an ambient guess).
+    pub timeout: Duration,
     pub identity: LeaseIdentity,
     pub poisoned: bool,
     pub pending: Vec<Uncertain>,
@@ -60,8 +63,14 @@ impl Engine {
             })
             .collect();
         let mut result = self.group_inner(batches, maintenance, coupled);
+        if let Err(error) = &mut result {
+            stamp_busy_wait(error, self.timeout);
+        }
         if let Ok((results, _)) = &mut result {
             for (operation, outcome) in attempted.into_iter().zip(results) {
+                if let Err(error) = outcome {
+                    stamp_busy_wait(error, self.timeout);
+                }
                 match outcome {
                     Err(error) if error.code == StoreErrorCode::CommitOutcomeUnknown => {
                         operation.annotate(error);
@@ -361,7 +370,7 @@ impl Engine {
                 ));
             }
         }
-        crate::remote::validate_batch(&self.db, &batch, info, recorded)?;
+        let remote_launch = crate::remote::validate_batch(&self.db, &batch, info, recorded)?;
         if let Some(retained) = idempotency::lookup(&self.db, &batch, info)? {
             return Ok(retained);
         }
@@ -495,15 +504,21 @@ impl Engine {
                     },
                     true,
                 )?;
+                // Descriptor-bound profiles must refuse older readers instead of
+                // losing their harness selection through an unknown JSON field.
+                let schema_version = match &e.body {
+                    EventBody::ProfileSaved { profile, .. } if profile.harness.is_some() => 2,
+                    _ => 1,
+                };
                 self.db.execute(
                     "INSERT INTO events(event_id,project_id,actor_id,session_id,origin_id,door,kind,
                      schema_version,recorded_incarnation,entity_revision,writer_mode,host_generation,
                      durability,operation_id,occurred_at_us,recorded_at_us,cause_event_id,supersedes_event_id)
-                     VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?)",
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     crate::sql_value::sql_params![
                         event, p, event_actor, session,
                         canonical(info.id.as_str()).ok_or_else(|| invalid("canonical StoreId required"))?,
-                        door(e.header.door), kind, info.incarnation, revision, mode, generation,
+                        door(e.header.door), kind, schema_version, info.incarnation, revision, mode, generation,
                         if full { "full" } else { "normal" }, op,
                         e.header.occurred_at_us, recorded, cause, supersedes
                     ],
@@ -516,7 +531,10 @@ impl Engine {
                     seq,
                     revision,
                     facts,
-                    &self.identity,
+                    &apply::ApplyAuthority {
+                        lease: &self.identity,
+                        remote_launch: remote_launch.as_ref(),
+                    },
                 )?;
                 seq
             };
@@ -531,6 +549,7 @@ fn security<T>(b: &EventBody<T>) -> bool {
         b,
         ChannelRecorded { .. }
             | RemoteSecurity { .. }
+            | RemoteLaunchAttributed { .. }
             | CredentialIssued { .. }
             | CredentialActivated { .. }
             | CredentialRevoked { .. }

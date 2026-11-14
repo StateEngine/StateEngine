@@ -12,6 +12,7 @@ mod commands;
 mod machine;
 pub use machine::BootstrapSession;
 mod endpoint;
+mod launch_permission;
 mod policy;
 mod revocations;
 mod startup;

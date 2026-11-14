@@ -68,7 +68,7 @@ fn listener_message_working_and_hook() -> Check {
     let machine_key = secret()?;
     publish(&f, "credential", machine_key.expose())?;
     let session = SessionId::from_parts(1_700_000_000_000 + serial(), [40; 10])?;
-    let conversation = ProviderSessionId::new("otto-real-listener-conversation")?;
+    let conversation = ProviderSessionId::new("se-test-real-listener-conversation")?;
     let source = record(41)?;
     let transcript = f.home.join("provider.jsonl");
     let mut provider = std::fs::OpenOptions::new()
@@ -76,7 +76,7 @@ fn listener_message_working_and_hook() -> Check {
         .append(true)
         .open(&transcript)?;
     let line = serde_json::to_vec(
-        &serde_json::json!({"type":"assistant","sessionId":conversation.as_str(),"uuid":"otto-record-1","message":{"role":"assistant","content":[{"type":"text","text":"outside provider text"}]}}),
+        &serde_json::json!({"type":"assistant","sessionId":conversation.as_str(),"uuid":"se-test-record-1","message":{"role":"assistant","content":[{"type":"text","text":"outside provider text"}]}}),
     )?;
     provider.write_all(&line)?;
     provider.write_all(b"\n")?;

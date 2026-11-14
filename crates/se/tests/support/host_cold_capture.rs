@@ -49,14 +49,14 @@ pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
             matches!(replay,se_core::ops::AnyOutput::HookClaude(ref value) if value.value.receipt.as_ref().is_some_and(|receipt|matches!(receipt.result,se_core::ops::hook::CaptureResult::Duplicate)))
         );
         let mut next: serde_json::Value = serde_json::from_slice(case.first_line)?;
-        next["uuid"] = serde_json::json!("otto-record-2");
+        next["uuid"] = serde_json::json!("se-test-record-2");
         let second = serde_json::to_vec(&next)?;
         let mut append = std::fs::OpenOptions::new()
             .append(true)
             .open(case.transcript)?;
         append.write_all(&second)?;
         append.write_all(b"\n")?;
-        next["uuid"] = serde_json::json!("otto-record-3");
+        next["uuid"] = serde_json::json!("se-test-record-3");
         let third = serde_json::to_vec(&next)?;
         append.write_all(&third)?;
         append.write_all(b"\n")?;
@@ -108,7 +108,7 @@ pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
         writer.write_all(b"X")?;
         writer.sync_all()?;
         drop(writer);
-        next["uuid"] = serde_json::json!("otto-record-4");
+        next["uuid"] = serde_json::json!("se-test-record-4");
         let fourth = serde_json::to_vec(&next)?;
         append.write_all(&fourth)?;
         append.write_all(b"\n")?;
@@ -167,7 +167,9 @@ pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
             .ok_or("confirmed capture natural keys")?;
         assert_eq!(keys.len(), 1);
         let natural = keys[0].as_str().ok_or("confirmed natural key string")?;
-        assert!(natural.contains(case.conversation.as_str()) && natural.contains("otto-record-4"));
+        assert!(
+            natural.contains(case.conversation.as_str()) && natural.contains("se-test-record-4")
+        );
         verify_capture(f, case.source, 4, committed + fourth.len() as u64 + 1)?;
         let independent = ipc::forward(
             &ready.endpoint,

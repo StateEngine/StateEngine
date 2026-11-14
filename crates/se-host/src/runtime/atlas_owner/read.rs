@@ -150,6 +150,9 @@ impl Service {
     }
 }
 impl AtlasReadPort for Service {
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
     fn observe_project(&self, project: &ProjectId, roots: &[se_store::Root]) -> Result<()> {
         let changed = self
             .work

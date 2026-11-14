@@ -1,12 +1,51 @@
 //! WAL maintenance state shared by the commit path and the background task.
 //! COMMIT still establishes every receipt; maintenance never relabels its result.
 use super::*;
+use std::sync::{Arc, Condvar, Mutex};
 
 const SOFT_FRAMES: i64 = 256;
 
 #[derive(Default)]
 pub(crate) struct Schedule {
     pending: bool,
+    pub gate: Gate,
+}
+/// SQLite does not invoke the busy handler when another checkpoint owns its
+/// checkpoint lock. Coordinate our two connections before entering SQLite;
+/// ordinary commits and WAL accounting never acquire this gate.
+#[derive(Clone, Default)]
+pub(crate) struct Gate(Arc<(Mutex<bool>, Condvar)>);
+pub(crate) struct Permit<'a> {
+    gate: &'a Gate,
+}
+impl Gate {
+    pub(crate) fn acquire(&self, timeout: Duration) -> StoreResult<Permit<'_>> {
+        let deadline = Instant::now() + timeout;
+        let (lock, condition) = &*self.0;
+        let mut active = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while *active {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(fail(
+                    StoreErrorCode::Busy,
+                    "another checkpoint exceeded this connection's busy timeout",
+                ));
+            }
+            active = condition
+                .wait_timeout(active, left)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        *active = true;
+        Ok(Permit { gate: self })
+    }
+}
+impl Drop for Permit<'_> {
+    fn drop(&mut self) {
+        let (lock, condition) = &*self.gate.0;
+        *lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = false;
+        condition.notify_one();
+    }
 }
 #[derive(Debug)]
 pub(crate) struct Wal {
@@ -71,21 +110,26 @@ impl Engine {
         }
         let start = Instant::now();
         let hard = wal.bytes >= crate::backup_context::MAX_WAL_BYTES;
-        let result = self.db.query_row(
-            if hard {
-                "PRAGMA wal_checkpoint(TRUNCATE)"
-            } else {
-                "PRAGMA wal_checkpoint(PASSIVE)"
-            },
-            [],
-            |r| {
-                Ok((
-                    crate::sql_value::value::<i64>(r, 0)?,
-                    crate::sql_value::value::<i64>(r, 1)?,
-                    crate::sql_value::value::<i64>(r, 2)?,
-                ))
-            },
-        );
+        let gate = self.checkpoints.gate.clone();
+        let result = gate.acquire(self.timeout).and_then(|_permit| {
+            self.db
+                .query_row(
+                    if hard {
+                        "PRAGMA wal_checkpoint(TRUNCATE)"
+                    } else {
+                        "PRAGMA wal_checkpoint(PASSIVE)"
+                    },
+                    [],
+                    |r| {
+                        Ok((
+                            crate::sql_value::value::<i64>(r, 0)?,
+                            crate::sql_value::value::<i64>(r, 1)?,
+                            crate::sql_value::value::<i64>(r, 2)?,
+                        ))
+                    },
+                )
+                .map_err(sql)
+        });
         let elapsed = start.elapsed();
         self.maintenance = match result {
             Ok((0, log, done)) if log == done && (!hard || log == 0) => None,
@@ -93,7 +137,7 @@ impl Engine {
                 StoreErrorCode::Busy,
                 "committed checkpoint has pending frames",
             )),
-            Err(error) => Some(sql(error)),
+            Err(error) => Some(error),
         };
         self.checkpoints.pending = self.maintenance.is_some();
         Some(elapsed)

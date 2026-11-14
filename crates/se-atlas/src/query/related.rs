@@ -42,14 +42,14 @@ pub(super) fn collect(
                 identities.push((kind, id, true));
             }
         }
-        if Instant::now() >= end {
+        if crate::clock::now() >= end {
             output.truncated = true;
             break;
         }
     }
     let mut resident = 0;
     for (kind, rowid, related) in identities {
-        if Instant::now() >= end {
+        if crate::clock::now() >= end {
             output.truncated = true;
             break;
         }
@@ -245,7 +245,7 @@ fn neighbors(
             *limited = true;
             continue;
         }
-        if output.len() >= 256 || Instant::now() >= end {
+        if output.len() >= 256 || crate::clock::now() >= end {
             *limited = true;
             break;
         }

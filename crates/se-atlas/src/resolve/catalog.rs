@@ -35,7 +35,9 @@ impl SqlCatalog<'_, '_> {
         hops: u8,
         visited: &mut Vec<(FileId, String)>,
     ) -> AtlasResult<Export> {
-        if Instant::now() >= self.deadline || visited.iter().any(|v| v.0 == file && v.1 == name) {
+        if crate::clock::now() >= self.deadline
+            || visited.iter().any(|v| v.0 == file && v.1 == name)
+        {
             return Ok(Export::Incomplete);
         }
         visited.push((file, name.to_owned()));

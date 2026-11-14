@@ -373,11 +373,9 @@ pub(crate) fn run(
         ));
     }
     // Native retirement is also required for crash-left pending artifacts.
-    let reader = SqliteReader {
-        path: context.state.path.clone(),
-        timeout: options.busy_timeout.min(duration),
-        slots: context.state.slots.clone(),
-    };
+    let mut reader = SqliteReader::with_slots(options, context.state.slots.clone())?;
+    reader.timeout = options.busy_timeout.min(duration);
+    reader.bind_identity()?;
     let _slot = reader.slots.acquire()?;
     (|| {
         let source = reader.connect()?;

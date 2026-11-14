@@ -2,6 +2,7 @@
 use super::*;
 use se_types::{Result, SeError};
 use std::{sync::Arc, time::Duration};
+mod launch;
 mod list;
 mod send;
 mod watch;
@@ -68,6 +69,10 @@ impl listener::RemoteService for Service {
                         .await
                         .map(|value| wire::Reply::List(Box::new(value)))
                 }
+                RemoteRequest::Launch(_) => self
+                    .launch(request)
+                    .await
+                    .map(|value| wire::Reply::Launch(Box::new(value))),
                 RemoteRequest::Send(_) => self
                     .send(request)
                     .await

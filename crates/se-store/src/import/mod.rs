@@ -2,27 +2,13 @@
 //! custody and owner admission belong to the caller, never to imported bytes.
 use crate::{apply::expected, codec, connection::project_id, error::*, identity::*, *};
 use rusqlite::{Connection, OptionalExtension};
+pub use se_store_contract::imports::LegacyTarget;
 use serde_json::{Value, json};
 mod apply;
-pub(crate) mod counts;
 mod wire;
 pub(crate) use apply::apply;
 pub(crate) use wire::{decode, metadata};
 
-/// The original declaration used RecordId here, which cannot represent the
-/// private v8 dictionary keys of imported domain identities. Resolve a closed
-/// typed target in the same transaction instead of fabricating a v7 alias.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
-pub enum LegacyTarget {
-    Project(se_types::ProjectId),
-    Principal(Actor),
-    Session(se_types::SessionId),
-    Message(se_types::MessageId),
-    Decision(se_types::DecisionId),
-    Event(se_types::EventId),
-    Record(RecordId),
-}
 fn target_key(
     c: &Connection,
     target: &LegacyTarget,

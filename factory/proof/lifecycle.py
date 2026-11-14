@@ -3,9 +3,11 @@ from datetime import datetime, timezone
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 from report import exit_status, publish, read, summarize
+from matrix_adapter import plan as matrix_plan
 
 
 def save(path, value):
@@ -23,6 +25,13 @@ def plan(config):
     for index, (surface, selection) in enumerate(config["probes"]):
         rows.append({"platform": "linux", "surface": surface, "selection": selection,
                      "output": f"{index + 1}-{surface}-{selection}", "exit": None, "state": "planned"})
+    if not config.get("native_only"):
+        remote = config.get("remote", {})
+        if not isinstance(remote, dict):
+            remote = {}
+        rows.append({"platform": "linux", "surface": remote.get("surface", "claude"),
+                     "selection": "remote", "output": "remote-journey", "exit": None,
+                     "state": "planned", "remote_probe": True})
     for probe in config.get("native_receipts", []):
         if probe.get("platform") not in {"win32", "darwin"} or probe.get("surface") != "claude" or probe.get("selection") != "wave-2":
             raise ValueError("native receipts require a native platform and Claude wave-2 scope")
@@ -44,7 +53,24 @@ def latest(state, directory, record, status):
         "service_invocation_id": record.get("service_invocation_id"), "status": status})
 
 
-def checkpoint(state, directory, record):
+def status_checkpoint(config, directory, record, report, errors=()):
+    try:
+        from night_status import record_status
+        record_status(config, directory, record, report, errors)
+        if config.get("night_status_directory") and not config.get("native_only"):
+            from scoreboard import publish
+            publish(config)
+    except Exception as error:
+        message = "nightly status publication failed: " + str(error)
+        record.setdefault("status_publication_errors", []).append(message)
+        try:
+            save(directory / "run.json", record)
+        except OSError as persistence_error:
+            print("cannot retain status publication error: " + str(persistence_error), file=sys.stderr)
+        print(message, file=sys.stderr, flush=True)
+
+
+def checkpoint(state, directory, record, config=None):
     save(directory / "run.json", record)
     interrupted = record["state"] == "interrupted"
     unavailable = {"state": "interrupted" if interrupted else "partial", "complete": False,
@@ -57,8 +83,13 @@ def checkpoint(state, directory, record):
     except Exception as error:
         unavailable["errors"] = ["report publication failed: " + str(error)]
         latest(state, directory, record, unavailable)
+        if config:
+            status_checkpoint(config, directory, record, None, unavailable["errors"])
         raise
     latest(state, directory, record, report["status"])
+    if config and (record["state"] in {"finished", "interrupted"}
+                   or report["status"]["outcome"] == "FAIL"):
+        status_checkpoint(config, directory, record, report)
     return report
 
 
@@ -71,6 +102,8 @@ def begin(config, activate=True, bind_service=True):
     directory.mkdir(parents=True, mode=0o700)
     record = {"started_at": now.isoformat(), "state": "running", "invocations": plan(config), "errors": [],
               "service_invocation_id": os.environ.get("INVOCATION_ID"), "publish_latest": activate}
+    if 'harness_matrix' in config:
+        record['harness_matrix'] = matrix_plan(config)
     pointer = {"directory": str(directory), "started_at": record["started_at"],
                "service_invocation_id": record["service_invocation_id"]}
     identity = record["service_invocation_id"]
@@ -82,7 +115,7 @@ def begin(config, activate=True, bind_service=True):
         save(services / (identity + ".json"), pointer)
     if activate:
         save(state / "current.json", pointer)
-    checkpoint(state, directory, record)
+    checkpoint(state, directory, record, config)
     return state, directory, record
 
 
@@ -132,5 +165,5 @@ def service_exit(config):
     if not completed:
         record["state"] = "interrupted"
         record["errors"].append("service=" + result + " exit=" + code + ":" + status)
-    checkpoint(state, directory, record)
+    checkpoint(state, directory, record, config)
     return 0

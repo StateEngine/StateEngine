@@ -84,6 +84,7 @@ fn seed_mail(f: &Fixture) -> Check {
                         provider: Provider::Claude,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,
+                        harness: None,
                         named_profile: "claude".into(),
                         effort: None,
                     },

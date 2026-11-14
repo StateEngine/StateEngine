@@ -83,6 +83,9 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
                 },
                 count(agent.unread)
             )?;
+            if let Some(harness) = &agent.harness {
+                writeln!(out, "    Harness: {harness}")?;
+            }
             if agent.session.state != "never-launched" {
                 super::transcript::render(&agent.session.transcript, out)?;
             }

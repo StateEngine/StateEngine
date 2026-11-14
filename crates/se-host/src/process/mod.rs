@@ -25,6 +25,8 @@ mod reactor;
 mod recovery;
 mod release;
 #[cfg(feature = "remote")]
+mod remote_launch;
+#[cfg(feature = "remote")]
 mod remote_live;
 mod remove;
 mod remove_receipt;
@@ -255,17 +257,7 @@ impl LaunchCoordinator {
             secode_services: secode::Services::default(),
             // Installation precedes readiness; retain admission without opening a router.
             capability_admission: host_runtime.admission_context(),
-            store: store::Store {
-                record_feed: context.atlas.records.clone(),
-                reader: context.reader.clone(),
-                reads: context.reads.clone(),
-                writer: context.writer.clone(),
-                pool: context.blocking.clone(),
-                generation: context.generation,
-                pending: context.pending_writes.clone(),
-                mail_waits: context.mail_waits.clone(),
-                fault: context.ownership_fault.clone(),
-            },
+            store: store::Store::for_execution(&context),
             options,
             configuration_file: host_runtime.configuration_file.clone(),
             capture: host_runtime.capture_handle(),

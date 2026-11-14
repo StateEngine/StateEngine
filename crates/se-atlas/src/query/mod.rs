@@ -186,7 +186,7 @@ impl<'a, 'c, 'x> QueryReader<'a, 'c, 'x> {
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
         self.cache
-            .read(Instant::now() + Duration::from_millis(25), |sql| {
+            .read(crate::clock::now() + Duration::from_millis(25), |sql| {
                 snapshot(&identity, &env, sql).map(|value| value.index)
             })
     }
@@ -300,7 +300,7 @@ fn deadline(budget: QueryBudget) -> AtlasResult<Instant> {
             "1..50 results, 1..32768 bytes, 1..40 ms",
         ));
     }
-    Ok(Instant::now() + budget.work)
+    Ok(crate::clock::now() + budget.work)
 }
 fn size(value: &impl Serialize) -> AtlasResult<usize> {
     struct Counter(usize);

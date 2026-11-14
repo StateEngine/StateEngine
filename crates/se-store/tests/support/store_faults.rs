@@ -107,13 +107,21 @@ fn fault_child_fixture() -> Check {
     let (host, lease) = host(&f)?;
     let mut owner = host.start_writer(options(256)?, lease.clone())?;
     let client = owner.client();
+    // Linux comm exposes at most 15 bytes of the native thread name.
+    // Commit faults belong to the writer; idle checkpoint faults belong to
+    // the dedicated maintenance connection, which the writer does not trace.
+    let thread_name = if mode == "checkpoint" {
+        "se-store-checkp"
+    } else {
+        "se-store-writer"
+    };
     let until = Instant::now() + Duration::from_secs(3);
     let tid = loop {
         let mut found = None;
         for entry in std::fs::read_dir("/proc/self/task")? {
             let entry = entry?;
             match std::fs::read_to_string(entry.path().join("comm")) {
-                Ok(name) if name.trim() == "se-store-writer" => {
+                Ok(name) if name.trim() == thread_name => {
                     found = Some(entry.file_name());
                     break;
                 }
@@ -126,17 +134,12 @@ fn fault_child_fixture() -> Check {
             break tid;
         }
         if Instant::now() >= until {
-            return Err("owned writer thread did not start".into());
+            return Err(format!("owned {thread_name} thread did not start").into());
         }
     };
-    // The background checkpoint task's first tick drains the pre-writer WAL
-    // (PASSIVE frame copy plus TRUNCATE reset, both pwrite64) on its own
-    // schedule. When that I/O lands before the tracer attaches in one run and
-    // after it in another, the large commit's pwrite64 index differs between
-    // the baseline and fault runs and the fault lands on the wrong syscall.
-    // Wait for the drain before ready.json: from then until the commit the
-    // task only probes an empty WAL, so the traced prefix is identical in
-    // both runs.
+    // Finish startup maintenance before tracing either thread. Otherwise the
+    // checkpoint case can inject into setup I/O, and the writer cases can
+    // see a different WAL reset position between baseline and fault runs.
     let wal = f.options.state_directory.join("state.db-wal");
     let until = Instant::now() + Duration::from_secs(15);
     while std::fs::metadata(&wal)
@@ -188,7 +191,9 @@ fn fault_child_fixture() -> Check {
         // The receipt precedes idle maintenance. Keep its original fields and
         // let the external syscall tracer observe the later checkpoint fault.
         std::fs::write(root.join("returned.json"), serde_json::to_vec(&returned)?)?;
-        std::thread::sleep(Duration::from_millis(600));
+        // The outside tracer releases this barrier only after observing the
+        // intended checkpoint write; elapsed time does not prove maintenance.
+        wait_path(&root.join("checkpoint-observed"))?;
     }
     let reopen_deadline = Instant::now() + Duration::from_secs(3);
     let mut reopen_busy = 0usize;

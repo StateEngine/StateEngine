@@ -29,6 +29,8 @@ pub use checkpoint::{
     HistoricalCheckpoint, RootPublication, decode_checkpoint, encode_checkpoint,
 };
 mod error;
+mod file_identity;
+pub use file_identity::NativeFileIdentity;
 mod identity;
 mod launch;
 mod native_error;
@@ -49,6 +51,7 @@ pub use process_command::read_process_command;
 mod process_descendants;
 #[cfg(target_os = "linux")]
 pub use process_descendants::read_process_descendants;
+pub mod file_access;
 mod source_root;
 #[cfg(target_os = "linux")]
 pub use source_root::{
@@ -150,3 +153,8 @@ mod parent_image;
 pub use parent_image::parent_process_image;
 
 pub mod atlas_sql;
+
+#[cfg(windows)]
+mod parent_lifetime;
+#[cfg(windows)]
+pub use parent_lifetime::retain_package_parent;

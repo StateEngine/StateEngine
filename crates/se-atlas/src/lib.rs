@@ -8,6 +8,7 @@ pub mod model;
 pub mod queries;
 
 pub mod cache;
+pub mod clock;
 pub mod history;
 pub mod parse;
 pub mod query;

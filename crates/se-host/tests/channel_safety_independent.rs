@@ -126,6 +126,7 @@ fn setup(f: &Fixture, agent_session: bool) -> Check {
                 provider: se_store::Provider::Claude,
                 model: None,
                 permission: PermissionProfile::WorkspaceWrite,
+                harness: None,
                 named_profile: "claude".into(),
                 effort: None,
             },

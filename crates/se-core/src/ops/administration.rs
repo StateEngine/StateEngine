@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentCreate {
+    /// Native provider choice or named declarative ACP harness, saved with this agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
     pub name: String,
     pub provider: Option<Provider>,
     pub model: Option<String>,
@@ -17,6 +20,9 @@ pub struct AgentCreate {
 impl Validate for AgentCreate {
     fn validate(&self) -> Result<()> {
         name("agent name", &self.name)?;
+        if let Some(harness) = &self.harness {
+            crate::config_policy::harness::validate_name(harness)?;
+        }
         if let Some(model) = &self.model {
             bounded("model", model, 256, false)?;
         }

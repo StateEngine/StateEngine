@@ -9,6 +9,16 @@ use se_types::{Generation, HostEpoch, Read, Result, SeError};
 use std::{fs::File, num::NonZeroU32, path::PathBuf, sync::Arc, time::Duration};
 use tokio::runtime::Handle;
 
+/// The launched host's store wait. The background checkpoint's TRUNCATE holds
+/// the WAL write lock across its whole copy-and-fsync of up to 64 MiB; at 250
+/// ms an ordinary write refused under runner load ("store-busy after 0 ms",
+/// issue #196). One second rides out that hold, stays within the store's 5000
+/// ms bound and the stop protocol's deadline. A caller that wants the typed
+/// StoreBusy refusal must keep its own deadline strictly above this wait:
+/// with equal clocks the caller deadline can win under load and report
+/// commit-outcome-unknown for a write that never ran.
+pub const HOST_STORE_BUSY_TIMEOUT: Duration = Duration::from_millis(1000);
+
 /// Receipt of the required startup-only native initialization. Construct this
 /// before configuration/store access or worker creation in the process entry.
 pub struct HostProcessInitialization {
@@ -214,7 +224,7 @@ fn prepare(
     acquire_runtime_lease(&lock, &deadline)?;
     let store_options = se_store::StoreOptions {
         state_directory: options.state_directory.clone(),
-        busy_timeout: Duration::from_millis(250),
+        busy_timeout: HOST_STORE_BUSY_TIMEOUT,
     };
     // The legacy one-core split can run foreground and maintenance together.
     // Every other configuration shares its finite-work budget with these reads.
@@ -476,4 +486,16 @@ fn acquire_runtime_lease(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HOST_STORE_BUSY_TIMEOUT;
+    use std::time::Duration;
+
+    #[test]
+    fn the_host_store_wait_rides_out_a_checkpoint_truncate() {
+        assert_eq!(HOST_STORE_BUSY_TIMEOUT.as_millis(), 1000);
+        assert!(HOST_STORE_BUSY_TIMEOUT <= Duration::from_secs(5));
+    }
 }

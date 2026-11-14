@@ -81,7 +81,10 @@ pub fn create<R: Snapshot>(
     }
     let normalized = serde_json::to_value(&input)
         .map_err(|error| scope::unreadable("agent creation intent", &error.to_string()))?;
-    let provider = input.provider.unwrap_or(configuration.launch.provider);
+    let binding =
+        crate::harness_selection::resolve(configuration, input.provider, input.harness.as_deref())?;
+    let provider = binding.provider;
+    let harness = binding.harness;
     let defaults = match provider {
         Provider::Claude => &configuration.providers.claude,
         Provider::Codex => &configuration.providers.codex,
@@ -125,6 +128,7 @@ pub fn create<R: Snapshot>(
                 },
                 model,
                 permission,
+                harness,
                 named_profile: defaults.profile.clone(),
                 effort: None,
             },
@@ -213,6 +217,7 @@ pub fn committed<R: Snapshot>(
             super::AgentOutcome::Existing
         },
         agent: super::AgentReceiptValue {
+            harness: profile.harness,
             id: agent,
             name,
             provider,
@@ -401,6 +406,7 @@ pub fn rename_committed<R: Snapshot>(
         action: super::AgentAction::Rename,
         outcome,
         agent: super::AgentReceiptValue {
+            harness: profile.harness,
             id: agent,
             name,
             provider,

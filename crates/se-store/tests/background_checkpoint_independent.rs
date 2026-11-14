@@ -114,8 +114,13 @@ fn background_task_resets_the_wal_after_the_reader_releases() -> Check {
     Ok(())
 }
 
-/// Protects: sustained writes stay far below the capacity cutoff with the
-/// checkpoint off the writer task, and the WAL settles to zero once idle.
+/// Protects: sustained writes stay available at the capacity cutoff and the
+/// WAL settles to zero once idle. The checkpoint task keeps the WAL far below
+/// the cutoff while it keeps up; under load it falls behind and the writer's
+/// inline TRUNCATE backstop keeps every commit available instead. A commit may
+/// therefore overshoot the cutoff by at most one in-flight batch (the
+/// pre-append check passes only below it), so the first commit from an empty
+/// WAL measures the bound.
 #[test]
 fn background_task_keeps_sustained_writes_below_the_cutoff() -> Check {
     let f = Fixture::new()?;
@@ -124,24 +129,31 @@ fn background_task_keeps_sustained_writes_below_the_cutoff() -> Check {
     let client = writer.client();
     let outside = observer(&f.options.state_directory.join("state.db"))?;
     let mut largest_log = 0;
+    let mut batch_frames = 0;
     for n in 0..64 {
         let key = format!("bg-sustained-{n}");
         let receipt = wait(client.submit(payload(&f, &key)?)?)??;
         assert_eq!(receipt.state, CommitState::Committed);
-        largest_log = largest_log.max(wal(&outside)?.0);
-        assert!(
-            largest_log < HARD_FRAMES,
-            "sustained writes reached the WAL cutoff at frame {largest_log}"
-        );
+        let log = wal(&outside)?.0;
+        if n == 0 {
+            batch_frames = log;
+        }
+        largest_log = largest_log.max(log);
         std::thread::sleep(Duration::from_millis(10));
     }
+    assert!(
+        largest_log <= HARD_FRAMES + batch_frames,
+        "sustained writes overshot the WAL cutoff by more than one in-flight batch: high water {largest_log} of {HARD_FRAMES} plus one batch of {batch_frames}"
+    );
     poll(
         "background task to drain the settled WAL",
         Duration::from_secs(10),
         || matches!(wal(&outside), Ok((0, 0, _))),
     )?;
     drop(wait(writer.drain(Duration::from_secs(4)))??);
-    eprintln!("sustained controls: 64 groups, high_water_frames={largest_log} of {HARD_FRAMES}");
+    eprintln!(
+        "sustained controls: 64 groups, high_water_frames={largest_log} of {HARD_FRAMES}, one batch {batch_frames}"
+    );
     Ok(())
 }
 

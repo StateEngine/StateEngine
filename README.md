@@ -1,5 +1,9 @@
 # StateEngine
 
+> **Experimental pre-alpha.** StateEngine is in early development and is not recommended
+> for real work yet. Commands, saved data and behaviour can change without notice or a
+> migration path, and some flows are unfinished. Try it only on projects you have backed up.
+
 Run a coding assistant in your project, save its conversation, and pick up where you
 left off. StateEngine launches **Claude Code** or **Codex**, records their work, and
 lets assistants exchange project messages. The `se` command manages those assistants.
@@ -7,7 +11,7 @@ lets assistants exchange project messages. The `se` command manages those assist
 ## Before you install
 
 The first-agent workflow below is for **Linux x86_64** and **Windows x86_64**.
-**macOS cannot run the background service or launch managed agents in this alpha**;
+**macOS cannot run the background service or launch managed agents in this pre-alpha**;
 those commands refuse. macOS packages support installation and saved-state inspection,
 but are not a working first-agent path. Native macOS qualification is still pending.
 
@@ -124,18 +128,19 @@ not a Git repository yet, run `git init` there first. For Claude Code, use
 saved agent named `main`; it does not change your repository files or Git history.
 It ends by printing the exact first-launch command for your project and state home.
 
-On Linux and Windows with Claude Code 2.1.295 or newer, capture sessions you
-start directly by running
-`se init --adopt --provider claude` in the project before opening Claude Code.
-StateEngine merges its hooks into your user settings and leaves existing hooks,
-models and permissions intact. If Claude asks whether to trust these hooks,
-choose Allow to enable the integration; declining leaves Claude usable without
-capture or mail. Only explicitly registered project roots participate. Adopted sessions
-appear with the `observed` surface in status, and incoming mail uses Claude's
-native background wake. StateEngine observes these providers without owning or
-stopping them. Uninstall removes unchanged integration entries, preserves later
-user edits and revokes project adoption. Codex adoption is not available in this
-build.
+On Linux and Windows, capture sessions you start directly with
+`se init --adopt --provider claude` for Claude Code 2.1.295 or newer, or
+`se init --adopt --provider codex` for Codex 0.166.0 or newer. StateEngine adds
+its hooks to the provider's user settings and preserves existing hooks, models,
+permissions and settings text. Codex adoption installs its hooks in `config.toml`
+and trusts only those exact definitions through the provider's discovery hashes.
+Status keeps capture and mail unconfirmed until an authenticated hook runs.
+For Claude, review and trust the new hooks in the provider's own prompt.
+Only explicitly registered project roots participate. Adopted sessions appear
+with the `observed` surface in status. Incoming mail uses the provider's native
+wake or input queue; an offer is not a recipient read receipt. StateEngine does
+not own or stop these user-started processes. Uninstall removes unchanged
+integration entries, preserves later user edits and revokes project adoption.
 
 Default state homes are:
 
@@ -253,13 +258,12 @@ in your state home's `config.toml`; StateEngine does not run a shell to interpre
 those arguments. The agent must support authenticated HTTP MCP connections. Resuming also requires
 loading saved sessions; agents without that capability can start with `--new`. Sign in and select a model using that agent's own setup.
 
-**This harness provides no execution sandbox in protocol mode.** It requires an
-explicitly named profile with `bypass = true` and `network = true`; choose it only
-for work where you accept unsandboxed execution with network access. The saved
-`approval = "never"` setting allows protocol
-permission requests. Other approval settings refuse each such tool request with
-a reason: a human approval interface is not implemented yet. A provider's own
-rules still apply; a protocol mode does not establish OS containment or sandboxing.
+The native agent owns its permissions and sandboxing. StateEngine does not add
+an execution sandbox or network restriction to the protocol. Choose the agent's
+native permission level explicitly. The saved `approval = "never"` setting allows
+protocol permission requests; other approval settings refuse them with a reason
+because a headless approval interface is not implemented yet. A protocol mode or
+saved StateEngine profile does not establish OS containment.
 
 After installing and configuring a protocol agent, add these sections to the
 existing configuration. Replace `protocol-agent` with its native executable and
@@ -300,12 +304,62 @@ se stop main
 se launch main --detach
 ```
 
-Launch and status disclose the unsandboxed policy. Status shows current activity
+Launch and status disclose that the native agent owns its policy. Status shows current activity
 and any permission refusal; streamed text is explicitly provisional until the
 completed turn appears in saved history. Resume loads the same conversation and
 compares its complete text with captured history before offering new input. A
 missing, changed, erased or oversized history refuses resume instead of silently
 starting over. If capture was disabled, use `--new` for a new conversation.
+
+### Named harness descriptors
+
+`se init --harness NAME` selects `claude`, `codex` or `secode` without a
+configuration edit. For an installed, logged-in `qwen-code` or `goose`, init
+detects the executable and package entrypoint and saves the shared protocol
+descriptor automatically. Missing or unreadable installations refuse with
+their actual cause and a native setup link. Init does not install software or
+log into a provider, and saving the descriptor does not establish a successful
+launch. The normal launch still verifies native capabilities and readiness.
+Existing named entries take precedence over catalogue names and keep their
+original command and permission choices.
+
+Several installed protocol agents can share the same adapter. Give each one a
+named entry in `config.toml`, with an explicit mapping for every launch profile
+it uses. This example maps `protocol-work` to the agent's announced native mode;
+replace the command and arguments with the installed agent's documented values:
+
+```toml
+[harnesses.my-agent]
+driver = "acp-stdio"
+command = "protocol-agent"
+arguments = ["--acp", "--model", "{model}"]
+environment = []
+
+[harnesses.my-agent.permissions.protocol-work]
+arguments = []
+mode = ""
+```
+
+Use `se init --harness my-agent`, or `se agent add helper --harness my-agent`.
+Selecting a harness implies the ACP provider; a conflicting explicit provider
+refuses. The `[providers.acp].profile` setting selects an existing launch
+profile, such as `protocol-work` above. Permission entries can supply additional native
+arguments, native mode environment values in `environment`, and an expected
+`mode` that the agent must report before work starts. They do not override
+capabilities reported by the running agent.
+
+Descriptor `environment` lists inherited variable names, never account secrets.
+For a model selected through a native environment variable, set
+`model_environment = "NATIVE_MODEL_VARIABLE"` instead of an argv `{model}` slot.
+To use the native default when no model is saved, put optional model flags in
+`model_arguments = ["--model", "{model}"]`; they are appended only for a selected
+model. Model slots in the main `arguments` remain required.
+The saved agent retains its harness selection across configuration default
+changes and resumes. Existing agents without a saved selection keep the legacy
+`[providers.acp]` and `[acp]` configuration. Restore a missing descriptor before
+launching its saved agents; there is no fallback to a different agent.
+Descriptor-bound profiles use event schema version 2, so older binaries refuse
+them instead of losing the saved selection.
 
 ## Help, upgrade and removal
 
@@ -388,52 +442,29 @@ host and agents continue. Run `remote add` again to reconnect. `remote forget
 remote work. Ordinary return-mail routing and independent agent revocation
 are planned separately.
 
-Attach, pending echo, live output and reconnect timings are not yet measured.
+Remote launch requires a separate Owner decision. At the end of pairing choose
+**launch**, or run `se remote permissions --name build --launch` in a terminal.
+Choose an existing destination agent and allow or revoke future launches. The
+review shows its saved provider and permission profile. Existing machine grants
+keep their list, watch and send verbs; they do not gain launch permission.
 
-## Optional migration from the older Node implementation
+A launched lead can call `stateengine_remote_launch`, and the CLI uses
+`se remote launch --host build --target PROJECT/AGENT --key start-1` with IDs
+from remote list. The destination starts that agent headlessly with its saved
+profile and conversation. It does not create an identity, override its model,
+or stop existing work. A start receipt confirms the original launch; replaying it does not claim the
+agent is still running. Use its returned session for remote send, which refuses
+a stopped or replaced session. A pending launch retains its key; repeat the same launch
+with that key to observe its result. Revoking launch consent blocks future
+reservations; already admitted launches and running agents continue.
 
-New users can skip this section. `se import` is only present in builds compiled with the opt-in `import` cargo feature (off by default); `se import --help` lists the migration options.
-For source-owner selection, read `owner_human_id` in the retained source copy's
-`.stateengine/projects.jsonl` and match it to `human_id` in
-`.stateengine/humans.jsonl`; a display name is not an identity. Target human IDs
-must already be registered in the target project. Run
-`se --json history --kind principal.registered` in that project; for a human entry,
-`payload.principal.kind` is `owner` or `human`, and `payload.principal.id` is the ID
-to use. Follow returned page cursors if needed; `se history --help` describes
-paging. Do not create or guess IDs to make an import pass.
-
-To import existing Node user history, first preserve a source copy containing its
-`.stateengine/projects.jsonl`, named project history, and saved profiles. Initialize
-a Rust data home with `se init`, then run `se import --from-node PATH` as its owner.
-The source must have a single human matching the importing owner. For a different
-source owner or multiple historical humans, pass `--source-owner <human_id>` to
-explicitly adopt that source owner; copies containing projects from other owners
-are refused. Historical humans keep their recorded IDs and display names as project
-members, without becoming owners of the Rust data home. To explicitly associate a
-source human with an existing target human, repeat `--map-human SOURCE_ID=TARGET_ID`.
-The target must already be registered in each imported project; explicit mapping onto
-the importing owner is also supported, because adoption registers that owner there.
-Missing targets are refused before adopting an import run. The source ID and name remain in history, and
-names alone never imply a correspondence. Changing a correspondence after importing
-that human is refused; use a fresh target data home for a different mapping.
-The command keeps source files intact and reports imported, duplicate, unreadable,
-excluded and deferred source rows (individual entries for profile documents). Retry the same retained copy to continue committed
-progress. A malformed final row is recorded as unreadable; preserve a repaired
-export as a separate copy rather than rewriting its consumed prefix. `--json` returns the accounted receipt. An already registered root must be
-released explicitly before its historical project ID can adopt it. `se init` only
-offers this import; it never starts one automatically. Historical humans with colliding display names keep distinct IDs. The lowest source ID keeps the plain name; other IDs receive a stable ` (historical ID-SUFFIX)` suffix derived from their exact ID. Source row order does not change these names. The original name remains in provenance with a counted import note.
-
-Imported agents without a usable saved profile adopt the current owner's safe default
-provider profile after source configuration is processed. This is current configuration,
-not a claim about their historical provider or permissions. Floor broadcasts and messages
-with floor or unmapped human senders retain their recorded sender, audience and text in history;
-replies and replacements referencing retained mail keep their recorded links without native message identities;
-they do not create a sender identity or a new native recipient-read fact.
-
-Imported conversations remain ended. Saved Claude and Codex references are retained
-in history only; launching an imported agent starts a fresh conversation. Missing
-or unsupported references are reported explicitly. Provider
-account files, credentials, running processes and factory authority are not imported.
+The Linux nightly includes a separate remote journey over real SSH: connect,
+launch on the destination, observe live assistant output, exchange a message,
+and reconnect to the original session. Its reports retain attach, pending echo,
+live output and reconnect samples with their measurement boundaries. Live output
+uses an explicitly unqualified monotonic clock estimate across the connection;
+these samples do not certify a latency budget or a physical network topology.
+Windows source/destination coverage and hands-on qualification remain separate.
 
 ## Optional code navigation (Atlas)
 
@@ -485,8 +516,8 @@ Python 3.11+, and rustup with the toolchain pinned in `rust-toolchain.toml`
 (currently Rust 1.97.1, including rust-docs). Use a native machine matching the target:
 Linux needs a C compiler/linker and binutils; Windows needs Visual Studio Build
 Tools with the MSVC C++ workload and Windows SDK; macOS needs Xcode Command Line
-Tools and has the runtime limits stated above. SQLite's C source is bundled;
-Node.js is not needed by the installed product. The build downloads lockfile-pinned
+Tools and has the runtime limits stated above. SQLite's C source is bundled.
+The build downloads lockfile-pinned
 Cargo inputs unless `--offline` is selected with an already populated cache.
 
 For example, on Linux x86_64, choose new output paths outside the source tree:
@@ -520,8 +551,7 @@ To bundle the native runtime inside another application's package, add
 the same verified executable, build receipt and original license and notice
 bytes, with an exact file inventory in `native-payload.json`. The assembly result
 reports the manifest digest, version and source commit for the consumer's pin.
-The directory includes remote bootstrap images when the archive does. It requires
-no Node runtime; the consumer remains responsible for exercising its installed
+The directory includes remote bootstrap images when the archive does. The consumer remains responsible for exercising its installed
 launcher on each native platform.
 The payload output path must be absolute and new. Assembly prepares the archive,
 checksum, payload and diagnostics before publishing their final paths; a refused
@@ -530,8 +560,7 @@ publication rolls back its newly published paths so the same command can retry.
 ## License and contributions
 
 The Rust workspace is licensed under the [GNU Affero General Public License, version 3 only](LICENSE).
-Third-party components retain their own licenses. The separately licensed commercial server is
-outside this workspace's license declaration.
+Third-party components retain their own licenses.
 
 Outside pull requests require a signed [contributor agreement](CONTRIBUTING.md) before merge.
 The agreement preserves your ownership and permits StateEngine LLC to offer your contribution

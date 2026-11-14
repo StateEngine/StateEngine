@@ -1,0 +1,164 @@
+name: Tagged release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu}
+          - {runner: windows-2025, target: x86_64-pc-windows-msvc}
+          - {runner: macos-15, target: aarch64-apple-darwin}
+          - {runner: macos-15-intel, target: x86_64-apple-darwin}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: {python-version: '3.12'}
+      - name: Validate the version tag and read the pinned compiler
+        id: compiler
+        shell: python
+        run: |
+          import os, pathlib, subprocess, tomllib
+          subprocess.run(['python', '-B', 'scripts/release/release_assets.py', '--tag', os.environ['RELEASE_TAG'], '--check-tag'], check=True)
+          channel = tomllib.loads(pathlib.Path('rust-toolchain.toml').read_text())['toolchain']['channel']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'channel={channel}\n')
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: ${{ steps.compiler.outputs.channel }}
+          components: rust-docs, llvm-tools-preview
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        if: runner.os == 'Windows'
+        with: {arch: amd64}
+      - name: Build on the native target
+        shell: python
+        env:
+          BUILD_ROOT: ${{ runner.temp }}/native-build
+        run: |
+          import os, subprocess
+          subprocess.run(['python', '-B', 'scripts/release/build.py', '--target', os.environ['RELEASE_TARGET'], '--out', os.environ['BUILD_ROOT']], check=True)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-${{ matrix.target }}
+          path: ${{ runner.temp }}/native-build/
+          if-no-files-found: error
+          compression-level: 0
+  assemble:
+    needs: build
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: {python-version: '3.12'}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: {pattern: 'native-*', path: '${{ runner.temp }}/builds'}
+      - name: Assemble complete same-source archives and pinned installers
+        shell: python
+        run: |
+          import os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          builds = root / 'builds'
+          for directory in builds.glob('native-*'):
+              directory.rename(builds / directory.name.removeprefix('native-'))
+          subprocess.run(['python', '-B', 'scripts/release/release_assets.py', '--builds', str(builds), '--out', str(root / 'release'), '--tag', os.environ['RELEASE_TAG']], check=True)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/release/*
+          if-no-files-found: error
+          compression-level: 0
+  preview:
+    needs: assemble
+    runs-on: ubuntu-24.04
+    permissions: {contents: write}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: {name: release-assets, path: release}
+      - name: Require the source commit's successful required check
+        shell: bash
+        run: |
+          set -eu
+          gh api "repos/$GH_REPO/commits/$RELEASE_SHA/check-runs?per_page=100" > checks.json
+          python3 - <<'PY'
+          import json
+          checks = [x for x in json.load(open('checks.json'))['check_runs'] if x['name'] == 'check']
+          checks.sort(key=lambda x: x['id'], reverse=True)
+          assert checks and checks[0]['conclusion'] == 'success', 'the tag source requires a successful check'
+          PY
+      - name: Stage all assets before exposing the prerelease
+        shell: bash
+        run: |
+          set -eu
+          gh release create "$RELEASE_TAG" --verify-tag --target "$RELEASE_SHA" --draft --prerelease --latest=false --title "$RELEASE_TAG" --notes 'Unsigned native archives with published SHA-256 checksums; stable promotion awaits native installation readback.'
+          gh release upload "$RELEASE_TAG" release/*
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
+  smoke:
+    needs: preview
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, windows-2025, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Install the public Unix release in an isolated home
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          export HOME="$RUNNER_TEMP/install-home"
+          export SE_HOME="$RUNNER_TEMP/install-state"
+          mkdir -p "$HOME"
+          curl --proto '=https' --proto-redir '=https' -fsSL "https://github.com/StateEngine/StateEngine/releases/download/$RELEASE_TAG/install.sh" -o "$RUNNER_TEMP/install.sh"
+          sh "$RUNNER_TEMP/install.sh"
+          "$HOME/.local/bin/se" --version
+      - name: Install the public Windows release in isolated user directories
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'install-home'
+          $env:SE_HOME = Join-Path $env:RUNNER_TEMP 'install-state'
+          $installerScript = Invoke-RestMethod "https://github.com/StateEngine/StateEngine/releases/download/$env:RELEASE_TAG/install.ps1"
+          Invoke-Expression $installerScript
+          & (Join-Path $env:LOCALAPPDATA 'StateEngine/bin/se.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw 'installed version readback failed' }
+  promote:
+    needs: smoke
+    runs-on: ubuntu-24.04
+    permissions: {contents: write}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Promote qualified stable tags only
+        shell: bash
+        run: |
+          set -eu
+          case "$RELEASE_TAG" in
+            *-*) gh release view "$RELEASE_TAG" ;;
+            *) gh release edit "$RELEASE_TAG" --prerelease=false --latest ;;
+          esac

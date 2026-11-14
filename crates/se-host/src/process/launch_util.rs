@@ -4,11 +4,100 @@ use crate::{CallContext, CancellationState, client::lease::Deadline};
 use se_core::ops::agent_launch::LaunchPlan;
 use se_types::{Result, Secret};
 
-pub(crate) fn resolve_provider(
+#[path = "codex_package.rs"]
+mod codex_package;
+
+pub(super) struct ProviderExecutable {
+    pub(super) executable: PathBuf,
+    pub(super) package: Option<codex_package::PackageLaunch>,
+}
+impl ProviderExecutable {
+    fn direct(executable: PathBuf) -> Self {
+        Self {
+            executable,
+            package: None,
+        }
+    }
+    fn packaged(
+        executable: PathBuf,
+        root: Option<PathBuf>,
+        launcher: &std::path::Path,
+    ) -> std::io::Result<Self> {
+        let package = root
+            .map(|root| codex_package::PackageLaunch::observe(root, &executable, launcher))
+            .transpose()?;
+        Ok(Self {
+            executable,
+            package,
+        })
+    }
+}
+pub(super) fn resolve_provider_launch(
     configuration: &se_core::config_policy::ConfigFile,
     provider: se_types::Provider,
     selected_file: Option<&std::path::Path>,
+    harness: Option<&str>,
+) -> Result<ProviderExecutable> {
+    if provider != se_types::Provider::Codex || harness.is_some() {
+        return resolve_provider(configuration, provider, selected_file, harness)
+            .map(ProviderExecutable::direct);
+    }
+    provider_command_with(
+        configuration.provider_command(provider),
+        provider,
+        selected_file,
+        harness,
+        |path| {
+            #[cfg(windows)]
+            {
+                windows_executable::resolve_package(path, Some(provider))?
+                    .map(|(image, root)| ProviderExecutable::packaged(image, root, path))
+                    .transpose()
+            }
+            #[cfg(unix)]
+            {
+                match std::fs::metadata(path) {
+                    Ok(metadata) if metadata.is_file() => {
+                        match unix_executable::packaged_codex(path)? {
+                            Some((image, root)) => {
+                                se_proc::file_access::require_executable_access(&image)?;
+                                ProviderExecutable::packaged(image, Some(root), path).map(Some)
+                            }
+                            None => {
+                                se_proc::file_access::require_executable_access(path)?;
+                                Ok(Some(ProviderExecutable::direct(path.to_path_buf())))
+                            }
+                        }
+                    }
+                    Ok(_) => Ok(None),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(error) => Err(error),
+                }
+            }
+        },
+    )
+}
+
+pub fn resolve_provider(
+    configuration: &se_core::config_policy::ConfigFile,
+    provider: se_types::Provider,
+    selected_file: Option<&std::path::Path>,
+    harness: Option<&str>,
 ) -> Result<PathBuf> {
+    if let Some(harness) = harness {
+        if provider != se_types::Provider::Acp {
+            return Err(se_types::SeError::invalid(
+                "harness binding",
+                "a saved ACP harness must keep its original provider",
+            ));
+        }
+        return resolve_provider_command(
+            &configuration.harness(harness)?.command,
+            provider,
+            selected_file,
+            Some(harness),
+        );
+    }
     if provider == se_types::Provider::SeCode
         && configuration.provider(provider).command.is_none()
         && let Some(bundled) = crate::harness::secode_image::bundle::discover()?
@@ -19,6 +108,7 @@ pub(crate) fn resolve_provider(
         configuration.provider_command(provider),
         provider,
         selected_file,
+        None,
     )
 }
 
@@ -168,7 +258,7 @@ pub(super) fn route_temporary_files(
 
 #[cfg(target_os = "linux")]
 pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
-    let found = find_command(command, None)?.ok_or_else(|| {
+    let found = find_command(command, |path| native_executable(path, None))?.ok_or_else(|| {
         se_core::scope::unreadable(
             "provider executable",
             "configured command was not found in absolute PATH entries",
@@ -181,7 +271,20 @@ pub(super) fn resolve_provider_command(
     command: &str,
     provider: se_types::Provider,
     configuration_file: Option<&std::path::Path>,
+    harness: Option<&str>,
 ) -> Result<PathBuf> {
+    provider_command_with(command, provider, configuration_file, harness, |path| {
+        native_executable(path, Some(provider))
+    })
+}
+
+fn provider_command_with<T>(
+    command: &str,
+    provider: se_types::Provider,
+    configuration_file: Option<&std::path::Path>,
+    harness: Option<&str>,
+    native: impl FnMut(&std::path::Path) -> std::io::Result<Option<T>>,
+) -> Result<T> {
     let (name, title, install) = match provider {
         se_types::Provider::Codex => ("codex", "Codex", "https://developers.openai.com/codex/cli"),
         se_types::Provider::Claude => (
@@ -203,8 +306,12 @@ pub(super) fn resolve_provider_command(
         None => "the host application's provider configuration".into(),
     };
     let text = if provider == se_types::Provider::Acp {
+        let (command_table, argument_table) = harness.map_or_else(
+            || ("providers.acp".into(), "acp".into()),
+            |name| (format!("harnesses.{name}"), format!("harnesses.{name}")),
+        );
         format!(
-            "Configured protocol command: {command:?}. In {destination}, set [providers.acp].command to the native executable's absolute path. For a script-installed agent, set command to its native interpreter's absolute path and put the agent script's absolute path first in [acp].arguments, followed by its documented protocol arguments. Script shims are not native images. Restart this home's runtime with the same configuration selection, then retry launch."
+            "Configured protocol command: {command:?}. In {destination}, set [{command_table}].command to the native executable's absolute path. For a script-installed agent, set command to its native interpreter's absolute path and put the agent script's absolute path first in [{argument_table}].arguments, followed by its documented protocol arguments. Script shims are not native images. Restart this home's runtime with the same configuration selection, then retry launch."
         )
     } else {
         format!(
@@ -219,7 +326,7 @@ pub(super) fn resolve_provider_command(
         error.body = error.body.with_remedy(help.clone());
         error
     };
-    match find_command(command, Some(provider)) {
+    match find_command(command, native) {
         Ok(Some(path)) => Ok(path),
         Ok(None) => Err(with_help(se_types::SeError::new(
             se_types::Detail::ProviderCliNotFound(se_types::details::ProviderCliNotFound {
@@ -231,10 +338,13 @@ pub(super) fn resolve_provider_command(
     }
 }
 
-fn find_command(command: &str, provider: Option<se_types::Provider>) -> Result<Option<PathBuf>> {
+fn find_command<T>(
+    command: &str,
+    mut native: impl FnMut(&std::path::Path) -> std::io::Result<Option<T>>,
+) -> Result<Option<T>> {
     let path = PathBuf::from(command);
     if path.is_absolute() {
-        return native_executable(&path, provider).map_err(|e| error("provider executable", e));
+        return native(&path).map_err(|e| error("provider executable", e));
     }
     if path.components().count() != 1 {
         return Err(se_types::SeError::invalid(
@@ -253,7 +363,7 @@ fn find_command(command: &str, provider: Option<se_types::Provider>) -> Result<O
         if !directory.is_absolute() {
             continue;
         }
-        match native_executable(&directory.join(command), provider) {
+        match native(&directory.join(command)) {
             Ok(Some(candidate)) => {
                 // Multicall launchers select the provider through argv[0].
                 // Image identity is still observed by the native process arena.
@@ -269,8 +379,11 @@ fn find_command(command: &str, provider: Option<se_types::Provider>) -> Result<O
         None => Ok(None),
     }
 }
-// Match native Windows executable lookup without invoking a command shell or
-// treating an npm batch shim as an executable process image.
+// Resolve packaged providers before their probe and native ownership setup.
+#[cfg(unix)]
+#[path = "unix_executable.rs"]
+mod unix_executable;
+// Windows script shims are never treated as executable process images.
 #[cfg(windows)]
 #[path = "windows_executable.rs"]
 mod windows_executable;
@@ -285,9 +398,18 @@ fn native_executable(
     }
     #[cfg(not(windows))]
     {
-        let _ = provider;
         match std::fs::metadata(path) {
-            Ok(metadata) if metadata.is_file() => Ok(Some(path.to_path_buf())),
+            Ok(metadata) if metadata.is_file() => {
+                #[cfg(unix)]
+                if provider == Some(se_types::Provider::Codex)
+                    && let Some((image, _)) = unix_executable::packaged_codex(path)?
+                {
+                    se_proc::file_access::require_executable_access(&image)?;
+                    return Ok(Some(image));
+                }
+                se_proc::file_access::require_executable_access(path)?;
+                Ok(Some(path.to_path_buf()))
+            }
             Ok(_) => Ok(None),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),

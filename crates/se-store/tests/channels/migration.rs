@@ -1,4 +1,6 @@
 use super::*;
+#[path = "../support/historical_schema.rs"]
+mod historical_schema;
 
 fn schema_objects(
     db: &rusqlite::Connection,
@@ -24,22 +26,8 @@ fn schema_objects(
 
 fn restore_schema_six(db: &rusqlite::Connection) -> Check {
     db.execute_batch("PRAGMA foreign_keys=OFF")?;
-    let historical = rusqlite::Connection::open_in_memory()?;
-    for sql in [
-        include_str!("../../migrations/001.sql"),
-        include_str!("../../migrations/002.sql"),
-        include_str!("../../migrations/003.sql"),
-        include_str!("../../migrations/004.sql"),
-        include_str!("../../migrations/005.sql"),
-        include_str!("../../migrations/006.sql"),
-    ] {
-        historical.execute_batch(sql)?;
-    }
-    db.execute_batch(
-        "DROP TABLE remote_message_attribution;
-         DROP TABLE remote_grants; DROP TABLE channel_receive; DROP INDEX session_data_agent_seq;
-         DROP INDEX mark_data_message_seq; DROP INDEX work_mark_recipient_seq",
-    )?;
+    let historical = historical_schema::through(6)?;
+    historical_schema::remove_later_objects(db, &historical, &[])?;
     // Schema eight widened these constraints. Preserve the rows while restoring
     // the actual pre-upgrade tables, indices and immutable-history triggers.
     for table in [

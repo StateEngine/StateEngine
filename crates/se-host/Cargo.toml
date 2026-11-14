@@ -10,13 +10,14 @@ publish.workspace = true
 default = ["runtime", "listener"]
 import = ["se-core/import"]
 runtime = ["dep:tokio"]
-listener = ["runtime", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util"]
+listener = ["runtime", "se-remote/listener", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util"]
 secode = ["runtime", "listener", "dep:secode-stateengine-api"]
-remote = ["dep:base64", "dep:subtle", "listener", "tokio/fs", "dep:chacha20poly1305", "tokio/macros"]
+remote = ["se-remote/remote", "dep:base64", "dep:subtle", "listener", "tokio/fs", "dep:chacha20poly1305", "tokio/macros"]
 
 [dependencies]
 secode-stateengine-api = { version = "=2.0.0", optional = true }
 se-types = { path = "../se-types" }
+se-remote = { path = "../se-remote" }
 se-core = { path = "../se-core" }
 se-store = { path = "../se-store" }
 se-proc = { path = "../se-proc" }
@@ -25,12 +26,14 @@ reqwest = { version = "0.13.4", default-features = false, features = ["rustls", 
 serde_json.workspace = true
 serde.workspace = true
 shlex = "2.0.1"
+toml_edit = { version = "0.25.13", features = ["serde"] }
+similar = "=2.7.0"
 hmac = "0.12.1"
 subtle = { version = "2.6", optional = true }
 base64 = { version = "0.23.1", optional = true }
 sha2.workspace = true
 ignore = "=0.4.33"
-uuid.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 zeroize.workspace = true
 serde_ignored = "0.1.14"
 tokio = { workspace = true, optional = true }
@@ -60,6 +63,7 @@ path = "tests/w3_lifecycle_independent.rs"
 required-features = ["secode"]
 
 [dev-dependencies]
+se-atlas = { path = "../se-atlas", features = ["test-clock"] }
 rusqlite = { version = "0.41", features = ["hooks"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "io-util"] }
 

@@ -139,7 +139,7 @@ impl NativeRenewal {
                 cycle.phase = Phase::Repairs;
             }
             for _ in 0..8 {
-                if work_deadline.saturating_duration_since(Instant::now())
+                if work_deadline.saturating_duration_since(se_atlas::clock::now())
                     < Duration::from_millis(25)
                 {
                     break;

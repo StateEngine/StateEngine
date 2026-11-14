@@ -109,6 +109,7 @@ fn check(image: Option<std::path::PathBuf>) -> Check {
                         provider: se_store::Provider::Codex,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,
+                        harness: None,
                         named_profile: "default".into(),
                         effort: None,
                     },

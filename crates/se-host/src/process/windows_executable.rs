@@ -20,12 +20,13 @@ fn native_image(path: &Path) -> io::Result<bool> {
         return Ok(false);
     }
     let mut header = [0; 2];
-    let mut input = fs::File::open(path)?;
-    let native = match input.read_exact(&mut header) {
-        Ok(()) => header == *b"MZ",
-        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => false,
-        Err(error) => return Err(error),
-    };
+    let native = se_proc::file_access::with_readable_regular_file(path, |input| {
+        match input.read_exact(&mut header) {
+            Ok(()) => Ok(header == *b"MZ"),
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(false),
+            Err(error) => Err(error),
+        }
+    })?;
     if !native
         && path
             .extension()
@@ -36,18 +37,29 @@ fn native_image(path: &Path) -> io::Result<bool> {
             format!("{} has no native Windows image header", path.display()),
         ));
     }
+    #[cfg(windows)]
+    if native {
+        se_proc::file_access::require_executable_access(path)?;
+    }
     Ok(native)
 }
 
 pub(super) fn resolve(path: &Path, provider: Option<Provider>) -> io::Result<Option<PathBuf>> {
+    resolve_package(path, provider).map(|value| value.map(|(image, _)| image))
+}
+
+pub(super) fn resolve_package(
+    path: &Path,
+    provider: Option<Provider>,
+) -> io::Result<Option<(PathBuf, Option<PathBuf>)>> {
     if path.extension().is_none() {
         let candidate = path.with_extension("exe");
         if native_image(&candidate)? {
-            return Ok(Some(candidate));
+            return Ok(Some((candidate, None)));
         }
     }
     if native_image(path)? {
-        return Ok(Some(path.to_path_buf()));
+        return Ok(Some((path.to_path_buf(), None)));
     }
     if provider != Some(Provider::Codex)
         || !path
@@ -73,16 +85,7 @@ pub(super) fn resolve(path: &Path, provider: Option<Provider>) -> io::Result<Opt
     if !file(&manifest)? {
         return Ok(None);
     }
-    let mut bytes = Vec::new();
-    fs::File::open(&manifest)?
-        .take(65537)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 65536 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Codex package metadata exceeds 64 KiB",
-        ));
-    }
+    let bytes = se_proc::file_access::read_bounded_regular_file(&manifest, 65536)?;
     let metadata: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     if metadata.get("name").and_then(serde_json::Value::as_str) != Some("@openai/codex") {
@@ -111,7 +114,9 @@ pub(super) fn resolve(path: &Path, provider: Option<Provider>) -> io::Result<Opt
     ] {
         let candidate = vendor.join(target).join("bin/codex.exe");
         if native_image(&candidate)? {
-            return Ok(Some(candidate));
+            #[cfg(windows)]
+            let candidate = se_proc::canonicalize_path(&candidate)?;
+            return Ok(Some((candidate, Some(package))));
         }
     }
     Ok(None)

@@ -11,6 +11,8 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTEXT = "cla"
+CHECK_ERRORS = (KeyError, OSError, ValueError, urllib.error.URLError,
+                subprocess.SubprocessError)
 
 
 class GitHub:
@@ -43,8 +45,17 @@ class GitHub:
             page += 1
 
     def status(self, head, state, description):
+        # GitHub returns newest first. A new run URL alone is not a new result;
+        # repeated pending/terminal pairs exhaust the per-head context limit.
+        current = next((row for row in self.pages(f"commits/{head}/statuses")
+                        if row["context"].lower() == CONTEXT), None)
+        description = description[:140]
+        if current is not None:
+            if state == "pending" or (current["state"] == state
+                                      and current.get("description") == description):
+                return
         self.request(f"statuses/{head}", {"state": state, "context": CONTEXT,
-                     "description": description[:140], "target_url": self.run_url})
+                     "description": description, "target_url": self.run_url})
 
 
 def individual_statement(login, digest):
@@ -156,6 +167,17 @@ def membership(pulls):
     return members
 
 
+def refuse_head(github, head, members, description):
+    numbers = ", ".join(str(number) for number, _ in sorted(members))
+    print(f"Pull requests {numbers}: {description}")
+    try:
+        github.status(head, "failure", description)
+    except CHECK_ERRORS as error:
+        # The failure report must survive the same API refusal as the first
+        # write, so other heads still get their own validation and result.
+        print(f"Pull requests {numbers}: failure status could not be published: {error}")
+
+
 def check_pull(github, number):
     # Commit statuses belong to a SHA, not a pull request. Every open request
     # sharing that head must qualify before the SHA can receive success.
@@ -194,33 +216,35 @@ def run():
     branch = github.request("")["default_branch"]
     pulls = [pull for pull in github.pages("pulls") if pull["base"]["ref"] == branch]
     checked_members = membership(pulls)
-    # Every event checks the current open set. A newer globally serialized
-    # event covers an older canceled event, including signature deletions.
+    # Every serialized event checks the current open set, including signature
+    # deletions. Pending is published inside each head's error boundary.
     heads = {pull["head"]["sha"]: pull["number"] for pull in pulls}
-    for head in heads:
-        github.status(head, "pending", "Rechecking contributor signatures")
     results = {}
     for head, number in heads.items():
         try:
             results[head] = check_pull(github, number)
-        except (KeyError, OSError, ValueError, urllib.error.URLError, subprocess.SubprocessError) as error:
+        except CHECK_ERRORS as error:
             print(f"Pull request {number}: agreement check refused: {error}")
             results[head] = False
-            github.status(head, "failure", "Contributor identity or agreement could not be verified")
+            refuse_head(github, head, checked_members[head],
+                        "Contributor identity or agreement could not be verified")
     # Later status writes can race a synchronization after check_pull's own
     # final read. Approval remains bound to the requests and bases we checked.
     try:
         current_members = membership(pull for pull in github.pages("pulls")
                                      if pull["base"]["ref"] == branch)
-    except (KeyError, OSError, ValueError, urllib.error.URLError) as error:
+    except CHECK_ERRORS as error:
         for head in results:
-            github.status(head, "failure", "Pull-request membership could not be rechecked")
+            refuse_head(github, head, checked_members[head],
+                        "Pull-request membership could not be rechecked")
         raise ValueError("pull-request membership is unreadable; rerun the check") from error
     for head in checked_members.keys() | current_members.keys():
         if checked_members.get(head) != current_members.get(head):
             results[head] = False
-            github.status(head, "failure", "Pull-request membership changed; rerun the check")
-    # Keep refreshing every head under global serialization, but a pull-request
+            refuse_head(github, head,
+                        checked_members.get(head, set()) | current_members.get(head, set()),
+                        "Pull-request membership changed; rerun the check")
+    # Keep validating every head under global serialization, but a pull-request
     # event's run belongs to that request. Shared-head peers still qualify together.
     if subject is not None:
         current = github.request(f"pulls/{subject}")
@@ -229,7 +253,8 @@ def run():
         head = current["head"]["sha"]
         if (subject, current["base"]["sha"]) not in checked_members.get(head, set()):
             results[head] = False
-            github.status(head, "failure", "Pull request changed; the new revision needs its own check")
+            refuse_head(github, head, {(subject, current["base"]["sha"])},
+                        "Pull request changed; the new revision needs its own check")
         complete = results.get(head, False)
     else:
         complete = all(results.values())
@@ -240,7 +265,6 @@ def run():
 if __name__ == "__main__":
     try:
         run()
-    except (KeyError, OSError, ValueError, urllib.error.URLError, subprocess.SubprocessError) as error:
-        # Once a head is known its status is pending, so unreadable inputs cannot pass.
+    except CHECK_ERRORS as error:
         print(f"Agreement check refused: {error}")
         raise SystemExit(1)

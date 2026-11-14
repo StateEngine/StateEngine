@@ -196,6 +196,19 @@ impl LaunchCoordinator {
         work: &mut Work,
         deadline: &Deadline,
     ) -> Result<()> {
+        if work.meta.capture
+            && work.activated
+            && let Some(binding) = work
+                .binding
+                .as_ref()
+                .and_then(|binding| binding.acp.as_ref())
+            && let Err(pending) = binding.require_capture_settled()
+        {
+            return Err(work
+                .capture_failure
+                .clone()
+                .map_or(pending, se_types::SeError::from));
+        }
         self.retire_capture(work, deadline).await?;
         if !work.cleanup_files_known {
             self.restore_cleanup(work, deadline).await?;

@@ -131,6 +131,26 @@ pub fn reserve<R: Snapshot>(
             expected: Expected::Absent,
         });
     }
+    if let Some(attribution) = &plan.remote {
+        let se_types::Read::Present { value: profile } = &plan.control.profile else {
+            return Err(scope::unreadable(
+                "remote launch profile",
+                "the exact saved profile revision is unavailable",
+            ));
+        };
+        bodies.push(EventBody::RemoteLaunchAttributed {
+            record: se_store::remote::LaunchAttribution {
+                target: se_types::remote::RemoteTarget {
+                    project: plan.project.id.clone(),
+                    agent: plan.agent.id.clone(),
+                },
+                expected_profile: profile.revision,
+                session: plan.session.clone(),
+                lifecycle: plan.lifecycle.clone(),
+                attribution: attribution.clone(),
+            },
+        });
+    }
     let intent = plan.input.intent(&plan.agent.id)?;
     batch(
         kernel,

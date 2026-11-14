@@ -125,6 +125,7 @@ impl HostedRouter {
         &self,
         owner: &Admission,
         agent: se_types::AgentId,
+        kind: crate::adoption::Kind,
         deadline: &Deadline,
     ) -> Result<()> {
         let selected = agent.clone();
@@ -152,11 +153,13 @@ impl HostedRouter {
                 ops::agent::create(
                     &kernel,
                     ops::AgentCreate {
+                        harness: None,
                         name: format!(
-                            "claude-{}",
+                            "{}-{}",
+                            kind.name(),
                             &selected.as_str()[se_types::AgentId::PREFIX.len()..]
                         ),
-                        provider: Some(se_core::config_policy::Provider::Claude),
+                        provider: Some(kind.policy()),
                         model: None,
                         idempotency_key: format!("observe-agent-{selected}").parse()?,
                     },
@@ -178,7 +181,8 @@ impl HostedRouter {
     ) -> Result<&'static str> {
         let agent = identity.agent.clone();
         let session = identity.session.clone();
-        self.ensure_observed_agent(owner, agent.clone(), deadline)
+        let kind = input.kind;
+        self.ensure_observed_agent(owner, agent.clone(), kind, deadline)
             .await?;
         let handle = self.adoption_capture();
         // The path is derived by native admission, then opened readonly and
@@ -201,7 +205,7 @@ impl HostedRouter {
             };
             let batch = self
                 .adoption_read(owner.clone(), deadline, move |kernel, cx| {
-                    ops::adoption::bind(kernel, binding, cx)
+                    ops::adoption::bind_provider(kernel, binding, kind.provider(), cx)
                 })
                 .await?;
             self.adoption_commit(batch, deadline).await?;
@@ -405,7 +409,7 @@ fn observed_identity(
     generation: se_types::Generation,
 ) -> Result<crate::SessionIdentity> {
     let mut agent_seed = Sha256::new();
-    agent_seed.update(b"observed-claude-agent/v1");
+    agent_seed.update(format!("observed-{}-agent/v1", input.kind.name()));
     agent_seed.update(input.project.as_str());
     agent_seed.update(input.conversation.as_str());
     let agent_hash = agent_seed.finalize();
@@ -420,7 +424,7 @@ fn observed_identity(
     random.copy_from_slice(&agent_hash[6..16]);
     let agent = se_types::AgentId::from_parts(stamp, random)?;
     let mut session_seed = Sha256::new();
-    session_seed.update(b"observed-claude-session/v1");
+    session_seed.update(format!("observed-{}-session/v1", input.kind.name()));
     session_seed.update(agent.as_str());
     session_seed.update(provider.binding());
     session_seed.update(generation.get().to_le_bytes());

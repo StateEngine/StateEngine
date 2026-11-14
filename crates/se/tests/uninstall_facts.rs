@@ -57,7 +57,7 @@ impl Facts {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        let root = std::env::temp_dir().join(format!("otto-uninstall-facts-{suffix}"));
+        let root = std::env::temp_dir().join(format!("se-test-uninstall-facts-{suffix}"));
         let files = NativeStateFiles::create(&root)?;
         let removed = root.join("removed-asset");
         let image = root.join("retry-image");

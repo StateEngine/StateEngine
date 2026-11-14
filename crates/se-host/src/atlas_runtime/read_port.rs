@@ -31,6 +31,10 @@ pub type AtlasObservedReadCallback<'a> = dyn FnMut(
 /// Object-safe owner-loop handoff. The callback runs synchronously while the
 /// selected controller lends its one scoped reader; nothing escapes the call.
 pub trait AtlasReadPort: Send + Sync {
+    /// A retained disabled controller still serves explicit availability errors.
+    fn is_enabled(&self) -> bool {
+        true
+    }
     /// Current project roots from the caller's authoritative read snapshot.
     fn observe_project(&self, _project: &ProjectId, _roots: &[se_store::Root]) -> Result<()> {
         Ok(())
@@ -94,8 +98,8 @@ impl AtlasOwnerPort {
         Ok(())
     }
     #[cfg(feature = "listener")]
-    pub(crate) fn is_installed(&self) -> bool {
-        self.reader.get().is_some()
+    pub(crate) fn is_available(&self) -> bool {
+        self.reader.get().is_some_and(|reader| reader.is_enabled())
     }
     pub fn status(
         &self,
@@ -180,5 +184,39 @@ impl<D: RenewalDriver + Send> AtlasReadPort for ControllerReadPort<D> {
         let controller = self.controller.try_lock().map_err(|_| se_core::scope::unreadable("Atlas owner controller", "the owner is busy or its controller lock is poisoned; retry after the active finite quantum"))?;
         let root = controller.registered_root(project, root)?;
         controller.with_reader(root, |cache, source| read(cache, source, false))
+    }
+}
+#[cfg(all(test, feature = "listener"))]
+mod availability_tests {
+    use super::*;
+    struct Stub(bool);
+    impl AtlasReadPort for Stub {
+        fn is_enabled(&self) -> bool {
+            self.0
+        }
+        fn summary(&self, _: &ProjectId, _: Option<&RootId>) -> Result<IndexSummary> {
+            Err(se_core::scope::unreadable("stub", "no summary"))
+        }
+        fn with_reader(
+            &self,
+            _: &ProjectId,
+            _: Option<&RootId>,
+            _: &mut AtlasReadCallback<'_>,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+    /// Bug: PR 186 — a retained disabled controller advertised Atlas tools.
+    #[test]
+    fn availability_follows_installation_and_the_controller_switch() -> Result<()> {
+        let absent = AtlasOwnerPort::default();
+        assert!(!absent.is_available(), "no controller installed");
+        let disabled = AtlasOwnerPort::default();
+        disabled.install(Arc::new(Stub(false)))?;
+        assert!(!disabled.is_available(), "disabled controller advertised");
+        let enabled = AtlasOwnerPort::default();
+        enabled.install(Arc::new(Stub(true)))?;
+        assert!(enabled.is_available(), "enabled controller hidden");
+        Ok(())
     }
 }

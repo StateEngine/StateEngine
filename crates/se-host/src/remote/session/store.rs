@@ -1,5 +1,6 @@
 //! Adapter to the existing host writer, with fresh finite pins and await-only commits.
 use se_core::{scope, store_error::store_error};
+use se_remote::entropy;
 use se_store::{
     Actor, Admission, AtomicBatch, EventBody, EventHeader, IntentDigest, NewEvent, ReadStore,
     RequestIdentity, Scope, SqliteClient, SqliteReader, StoreInfo, WriterClient, remote::*,
@@ -102,6 +103,7 @@ impl SecurityStore {
             SecurityTransition::Renew { .. } => "remote.lease.renew",
             SecurityTransition::Revoke { .. } => "remote.grant.revoke",
             SecurityTransition::RevokeAll => "remote.grants.revoke-all",
+            SecurityTransition::LaunchPermission { .. } => "remote.launch.permission",
         };
         let original_key = key.clone();
         let batch = AtomicBatch {
@@ -177,19 +179,6 @@ pub(crate) fn now() -> Result<i64> {
         .map_err(|e| scope::unreadable("remote host clock", &e.to_string()))?
         .as_micros();
     i64::try_from(micros).map_err(|e| scope::unreadable("remote host clock", &e.to_string()))
-}
-pub(crate) fn entropy<const N: usize>() -> Result<[u8; N]> {
-    if N > 32 {
-        return Err(scope::unreadable(
-            "remote entropy",
-            "bounded entropy request exceeded",
-        ));
-    }
-    let secret = se_proc::random_secret()
-        .map_err(|e| scope::unreadable("remote entropy", &e.to_string()))?;
-    secret.expose()[..N]
-        .try_into()
-        .map_err(|_| scope::unreadable("remote entropy", "entropy length differs"))
 }
 pub(crate) fn event_id(now: i64) -> Result<EventId> {
     EventId::from_parts(

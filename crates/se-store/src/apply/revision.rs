@@ -45,7 +45,7 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
     let s = scope_key(c, &e.header.scope, false)?;
     match &e.body {
         RemoteSecurity { .. } => crate::remote::revision(c, e),
-        RemoteMessageAttributed { .. } => Ok(1),
+        RemoteMessageAttributed { .. } | RemoteLaunchAttributed { .. } => Ok(1),
         ProjectRegistered {
             project,
             expected: want,

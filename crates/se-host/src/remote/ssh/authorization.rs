@@ -23,6 +23,37 @@ pub struct AuthorizationResult {
 pub enum Request {
     Authorize(Authorization),
     Start(StartRequest),
+    LaunchPermissions(LaunchPermissionsRequest),
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchPermissionsRequest {
+    pub launch_permissions: RemoteHostId,
+    pub grant: se_types::RemoteGrantId,
+    pub after: Option<se_types::remote::RemoteTarget>,
+    pub change: Option<crate::remote::owner_input::LaunchPermissionChange>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PermissionsResult {
+    pub host: RemoteHostId,
+    pub result: std::result::Result<serde_json::Value, ErrorBody>,
+}
+
+pub(crate) async fn launch_permissions(
+    config: &super::ForwardConfig,
+    request: LaunchPermissionsRequest,
+) -> se_types::Result<serde_json::Value> {
+    let bytes = encoded(&Request::LaunchPermissions(request))?;
+    let response = exchange(config, bytes, std::time::Duration::from_secs(35)).await?;
+    let response: PermissionsResult = serde_json::from_slice(&response)
+        .map_err(|_| super::unavailable("SSH launch permissions response is malformed"))?;
+    if response.host != config.host {
+        return Err(super::unavailable(
+            "SSH launch permissions changed the saved destination identity",
+        ));
+    }
+    response.result.map_err(|e| e.with_far_origin().into())
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -159,19 +190,7 @@ async fn exchange(
     match exchange {
         Ok(Ok(response)) => Ok(response),
         result => {
-            if child
-                .try_wait()
-                .map_err(|_| unavailable("SSH authorization custody is unreadable"))?
-                .is_none()
-            {
-                child
-                    .start_kill()
-                    .map_err(|_| unavailable("cannot stop owned SSH authorization"))?;
-            }
-            child
-                .wait()
-                .await
-                .map_err(|_| unavailable("cannot join SSH authorization"))?;
+            super::command::close(&mut child).await?;
             match result {
                 Ok(Err(error)) => Err(error),
                 _ => Err(unavailable(

@@ -1,19 +1,25 @@
 //! Closed remote-security transitions over the existing authoritative writer.
 mod apply;
 mod changes;
+mod launch;
+mod launch_continue;
+mod launch_permission;
 mod model;
+pub(crate) use launch::{
+    apply as apply_launch, target_owned as launch_target_owned, validate_launch,
+};
 mod position;
 mod receipt;
 pub use position::{position_from_payload, position_payload};
 pub use receipt::RemoteMessageReceipt;
 mod read;
-pub(crate) use read::grant as grant_at;
-mod target;
 pub use changes::{Change, ChangeKind, ChangePage, ChangeRequest};
+pub(crate) use read::grant as grant_at;
 mod validate;
+pub use crate::inventory::{LaunchCandidate, SavedLaunchProfile, TargetFacts};
 pub(crate) use apply::{apply, revision};
 pub use model::*;
-pub use target::TargetFacts;
+pub(crate) use validate::LaunchAuthority;
 pub(crate) use validate::{validate_batch, validate_new_batch};
 
 use crate::{error::*, *};
@@ -30,7 +36,7 @@ fn decode<T: DeserializeOwned>(value: String) -> StoreResult<T> {
 fn encode<T: serde::Serialize>(value: &T) -> StoreResult<String> {
     crate::codec::encode(value)
 }
-fn ready(info: &StoreInfo) -> StoreResult<()> {
+pub(crate) fn ready(info: &StoreInfo) -> StoreResult<()> {
     if info.state != StoreState::Ready || info.schema_version < 7 {
         return Err(fail(
             StoreErrorCode::NotReady,
@@ -39,7 +45,7 @@ fn ready(info: &StoreInfo) -> StoreResult<()> {
     }
     Ok(())
 }
-fn denied() -> Box<StoreError> {
+pub(crate) fn denied() -> Box<StoreError> {
     fail(
         StoreErrorCode::ScopeMismatch,
         "remote authority is absent, expired, revoked or outside the requested scope",

@@ -11,7 +11,7 @@ impl SqlView<'_> {
     pub fn prepare(&self, sql: &str) -> AtlasResult<BudgetStatement<'_>> {
         // A previous statement or native operation may have consumed the
         // allowance. Do not start another query on an expired snapshot.
-        if Instant::now() >= self.deadline {
+        if crate::clock::now() >= self.deadline {
             return Err(timeout(0));
         }
         let stmt = self.db.prepare(sql).map_err(cache_error)?;
@@ -49,7 +49,7 @@ pub struct BudgetStatement<'a> {
 }
 impl BudgetStatement<'_> {
     fn ready(&self) -> rusqlite::Result<()> {
-        if Instant::now() >= self.deadline {
+        if crate::clock::now() >= self.deadline {
             return Err(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
                 Some("Atlas SQL snapshot deadline expired before statement execution".into()),
@@ -118,7 +118,7 @@ impl BudgetRows<'_> {
         if self.finished {
             return Ok(None);
         }
-        if Instant::now() >= self.deadline {
+        if crate::clock::now() >= self.deadline {
             self.finished = true;
             return Err(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),

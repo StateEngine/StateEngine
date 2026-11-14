@@ -1,0 +1,8 @@
+[Unit]
+Description=Check for failed or missing nightly first-hour proof
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/python3 %h/.local/lib/stateengine-rust-proof/night_status.py --config %h/.config/stateengine-rust-proof/config.json
+TimeoutStartSec=60

@@ -158,6 +158,7 @@ fn resume_capture(backend: Provider, tools: bool) -> Check {
                     provider: backend,
                     model: None,
                     permission: PermissionProfile::WorkspaceWrite,
+                    harness: None,
                     named_profile: "default".into(),
                     effort: None,
                 },

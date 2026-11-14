@@ -105,6 +105,7 @@ impl Slot {
             _ => 0,
         };
         if bit == READER_SLOT {
+            let deadline = crate::clock::wait_deadline(deadline);
             let mut guard = READER_WAIT
                 .lock()
                 .map_err(|_| cache_error("Atlas reader slot lock poisoned"))?;
@@ -352,7 +353,7 @@ impl<'a> CacheConnection<'a> {
                 deadline,
             });
             let changed = self.files.validate_database(&self.pin);
-            let expired = Instant::now() >= deadline;
+            let expired = crate::clock::now() >= deadline;
             let result = match (result, changed, expired) {
                 (_, _, true) => Err(timeout(budget_ms)),
                 (Ok(value), Ok(()), false) => Ok(value),
@@ -401,7 +402,7 @@ impl<'a> CacheConnection<'a> {
     }
 }
 fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResult<Connection> {
-    if Instant::now() >= deadline {
+    if crate::clock::now() >= deadline {
         return Err(timeout(0));
     }
     let flags = if role.writable() {
@@ -409,17 +410,27 @@ fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResu
     } else {
         OpenFlags::SQLITE_OPEN_READ_ONLY
     };
+    // SQLite appends `-wal`/`-shm` to this name and opens them through its own
+    // Win32 calls, so an ordinary path would be capped at MAX_PATH. The
+    // verbatim form lets the sidecars exist at any reachable length; the file
+    // opened is the one the pin names.
+    let target = se_types::sqlite_path(&pin.path);
+    // SQLite's NOFOLLOW refuses a verbatim path it cannot resolve with its own
+    // walk; the retained pin already names the exact file, so the flag is
+    // dropped only for the verbatim form.
+    let symlink_guard = if target == pin.path {
+        OpenFlags::SQLITE_OPEN_NOFOLLOW
+    } else {
+        OpenFlags::empty()
+    };
     let mut db = Connection::open_with_flags(
-        &pin.path,
-        flags
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_EXRESCODE,
+        &target,
+        flags | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_EXRESCODE | symlink_guard,
     )
     .map_err(cache_error)?;
     db.busy_timeout(
         deadline
-            .saturating_duration_since(Instant::now())
+            .saturating_duration_since(crate::clock::now())
             .min(Duration::from_millis(25)),
     )
     .map_err(cache_error)?;
@@ -512,10 +523,10 @@ fn finite<T>(
     deadline: Instant,
     work: impl FnOnce(&Connection, u64) -> AtlasResult<T>,
 ) -> AtlasResult<T> {
-    if Instant::now() >= deadline {
+    if crate::clock::now() >= deadline {
         return Err(timeout(0));
     }
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    let remaining = deadline.saturating_duration_since(crate::clock::now());
     if remaining.is_zero() {
         return Err(timeout(0));
     }
@@ -524,12 +535,12 @@ fn finite<T>(
         .saturating_add(u64::from(
             !remaining.subsec_nanos().is_multiple_of(1_000_000),
         ));
-    db.progress_handler(1000, Some(move || Instant::now() >= deadline))
+    db.progress_handler(1000, Some(move || crate::clock::now() >= deadline))
         .map_err(cache_error)?;
     let result = work(db, budget_ms);
     db.progress_handler(0, None::<fn() -> bool>)
         .map_err(cache_error)?;
-    if Instant::now() >= deadline {
+    if crate::clock::now() >= deadline {
         Err(timeout(budget_ms))
     } else {
         result

@@ -33,7 +33,7 @@ fn command(image: &Path, home: &Path, json: bool) -> Command {
 #[test]
 fn unsafe_home_reports_native_custody_and_preserves_existing_state() -> Check {
     let root = std::env::temp_dir().join(format!(
-        "otto-install-home-{}-{}",
+        "se-test-install-home-{}-{}",
         std::process::id(),
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));

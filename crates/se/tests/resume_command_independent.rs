@@ -40,6 +40,7 @@ fn observe(
                     provider: Provider::Claude,
                     model: None,
                     permission: PermissionProfile::WorkspaceWrite,
+                    harness: None,
                     named_profile: "default".into(),
                     effort: None,
                 },

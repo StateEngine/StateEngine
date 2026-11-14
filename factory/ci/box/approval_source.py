@@ -38,11 +38,18 @@ def main_source(api, repository, context):
     return {"source": source, "run": int(run_id), "attempt": int(attempt), "pull_request": merged[0]["number"]}
 
 
-def current_main(api, expected):
+def main_tip(api):
+    """The commit main points at right now, without demanding it be `expected`."""
     reference = api.get("git/ref/heads/main")
     if (reference.get("ref") != "refs/heads/main"
             or reference.get("object", {}).get("type") != "commit"
-            or reference.get("object", {}).get("sha") != expected):
+            or not re.fullmatch(r"[a-f0-9]{40}", str(reference.get("object", {}).get("sha")))):
+        raise ValueError("main branch reference is unavailable")
+    return reference["object"]["sha"]
+
+
+def current_main(api, expected):
+    if main_tip(api) != expected:
         raise ValueError("main advanced; only its newest merged commit may update approval")
 
 

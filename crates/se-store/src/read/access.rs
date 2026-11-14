@@ -63,7 +63,13 @@ impl SqliteSnapshot {
     }
 
     pub(super) fn visible(&self, e: &StoredEvent) -> StoreResult<bool> {
-        if matches!(e.body, EventBody::ChannelRecorded { .. }) {
+        if self.remote_launch_grant.is_some() {
+            return self.remote_launch_visible(e);
+        }
+        if matches!(
+            e.body,
+            EventBody::ChannelRecorded { .. } | EventBody::RemoteLaunchAttributed { .. }
+        ) {
             return Ok(matches!(self.scope.visibility, Visibility::Owner)
                 && matches!(self.scope.admission.actor, Actor::Human(_))
                 && self.scope.admission.session.is_none());
@@ -151,7 +157,11 @@ impl SqliteSnapshot {
         Ok(e)
     }
     pub(super) fn project_metadata(&self, seq: i64) -> StoreResult<StoredEvent> {
-        if !matches!(self.scope.visibility, Visibility::SelfOnly(_)) {
+        // Project registration is registry-scoped; the closed native launch
+        // pin still needs this exact project's metadata to plan its saved launch.
+        if !matches!(self.scope.visibility, Visibility::SelfOnly(_))
+            && self.remote_launch_grant.is_none()
+        {
             return self.record(seq);
         }
         let event = load_event(&self.db, seq, &self.info)

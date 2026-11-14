@@ -96,7 +96,7 @@ pub(super) fn extract(
     let mut depth = 0usize;
     loop {
         let node = cursor.node();
-        if Instant::now() >= deadline {
+        if crate::clock::now() >= deadline {
             reasons.push(CoverageReason::ParseWorkLimit);
             break;
         }
@@ -250,7 +250,8 @@ pub(super) fn extract(
                 break;
             }
             if !cursor.goto_parent() {
-                if Instant::now() >= deadline && !reasons.contains(&CoverageReason::ParseWorkLimit)
+                if crate::clock::now() >= deadline
+                    && !reasons.contains(&CoverageReason::ParseWorkLimit)
                 {
                     reasons.push(CoverageReason::ParseWorkLimit)
                 }

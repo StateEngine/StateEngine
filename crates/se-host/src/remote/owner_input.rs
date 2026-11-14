@@ -21,10 +21,22 @@ pub enum OwnerInput {
         alias: String,
         distribution: se_types::NativePath,
     },
+    PrepareAdd {
+        destination: String,
+        alias: String,
+    },
     Bootstrap {
         source_host: RemoteHostId,
     },
     MachineIdentity,
+    #[cfg(feature = "remote")]
+    PairingLaunchPermissions {
+        alias: String,
+        after: Option<RemoteTarget>,
+        change: Option<LaunchPermissionChange>,
+    },
+    #[cfg(feature = "remote")]
+    LaunchPermissions(ssh::LaunchPermissionsRequest),
     Disable,
     Grants {
         after: Option<RemoteGrantId>,
@@ -36,8 +48,20 @@ pub enum OwnerInput {
         key: IdempotencyKey,
     },
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchPermissionChange {
+    pub target: RemoteTarget,
+    pub allowed: bool,
+    pub expected_revision: Option<u64>,
+    pub key: IdempotencyKey,
+}
 impl OwnerInput {
     pub fn requires_terminal(&self) -> bool {
+        #[cfg(feature = "remote")]
+        if matches!(self, Self::PairingLaunchPermissions { .. }) {
+            return true;
+        }
         matches!(
             self,
             Self::Disable | Self::Grants { .. } | Self::Revoke { .. }
@@ -45,12 +69,26 @@ impl OwnerInput {
     }
     pub fn key(&self) -> Option<&IdempotencyKey> {
         match self {
+            #[cfg(feature = "remote")]
+            Self::PairingLaunchPermissions {
+                change: Some(change),
+                ..
+            } => Some(&change.key),
+            #[cfg(feature = "remote")]
+            Self::LaunchPermissions(request) => request.change.as_ref().map(|change| &change.key),
             Self::Revoke { key, .. } => Some(key),
             _ => None,
         }
     }
     pub fn validate(&self) -> Result<()> {
         match self {
+            #[cfg(feature = "remote")]
+            Self::PairingLaunchPermissions { alias, change, .. } => {
+                se_core::ops::remote::validate_alias(alias)?;
+                validate_launch_change(change.as_ref())
+            }
+            #[cfg(feature = "remote")]
+            Self::LaunchPermissions(request) => validate_launch_change(request.change.as_ref()),
             Self::Disconnect { alias, .. } => se_core::ops::remote::validate_alias(alias),
             Self::Add {
                 destination,
@@ -64,6 +102,14 @@ impl OwnerInput {
                         "the calling CLI's absolute executable path",
                     ));
                 }
+                #[cfg(feature = "remote")]
+                ssh::validate_destination(destination)?;
+                #[cfg(not(feature = "remote"))]
+                let _ = destination;
+                Ok(())
+            }
+            Self::PrepareAdd { destination, alias } => {
+                se_core::ops::remote::validate_alias(alias)?;
                 #[cfg(feature = "remote")]
                 ssh::validate_destination(destination)?;
                 #[cfg(not(feature = "remote"))]
@@ -86,4 +132,18 @@ impl OwnerInput {
 pub(crate) struct OwnerCall {
     pub owner: auth::VerifiedLocalOwner,
     pub input: OwnerInput,
+}
+
+#[cfg(feature = "remote")]
+fn validate_launch_change(change: Option<&LaunchPermissionChange>) -> Result<()> {
+    if change.is_some_and(|c| {
+        c.expected_revision
+            .is_some_and(|r| r == 0 || r > i64::MAX as u64)
+    }) {
+        return Err(SeError::invalid(
+            "launch permission revision",
+            "its current nonzero revision, or absent for no consent",
+        ));
+    }
+    Ok(())
 }

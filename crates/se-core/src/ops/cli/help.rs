@@ -25,6 +25,7 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
     Some(match name {
         "remote.list" => "List the agents allowed by a saved remote binding",
         "remote.watch" => "Read one bounded live/durable page; disconnect never stops work",
+        "remote.launch" => "Start an existing Owner-approved remote agent with its saved profile",
         "remote.send" => "Send keyed direct mail to an exact remote agent session",
         "meta.help" => "Explain a command and its options",
         "meta.guide" => "List guide topics or read one named topic",

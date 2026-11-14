@@ -296,14 +296,40 @@ pub struct Fixture {
 }
 impl Fixture {
     pub fn new() -> Result<Self, Box<dyn Error>> {
-        let n = serial();
         let directory = directory::private_directory()?;
         let home = directory.to_path_buf();
+        Self::with_home(home, Some(directory))
+    }
+    /// A fixture under a caller-chosen home, for paths a platform test must
+    /// distinguish by length rather than by temp-directory naming.
+    pub fn at(home: PathBuf, state: PathBuf) -> Result<Self, Box<dyn Error>> {
+        let n = serial();
+        // The caller already created the protected state directory; do not
+        // create a second one beside it.
+        Ok(Self {
+            home,
+            _root: None,
+            options: StoreOptions {
+                state_directory: state,
+                busy_timeout: Duration::from_secs(2),
+            },
+            store: StoreId::from_parts(1_700_000_000_000 + n, [1; 10])?,
+            owner: HumanId::from_parts(1_700_000_000_000 + serial(), [2; 10])?,
+            project: ProjectId::from_parts(1_700_000_000_000 + serial(), [3; 10])?,
+            a: agent()?,
+            b: agent()?,
+        })
+    }
+    fn with_home(
+        home: PathBuf,
+        directory: Option<directory::PrivateDirectory>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let n = serial();
         let root = home.join("state");
         drop(NativeStateFiles::create(&root)?);
         Ok(Self {
             home,
-            _root: Some(directory),
+            _root: directory,
             options: StoreOptions {
                 state_directory: root,
                 busy_timeout: Duration::from_secs(2),

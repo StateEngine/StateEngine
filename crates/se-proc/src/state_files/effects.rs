@@ -16,6 +16,8 @@ use super::windows::effects as os;
 
 /// A single regular file owned by the current native user. The parent chain and
 /// original object are pinned; symlinks, reparse points and hard links refuse.
+/// Windows also accepts Administrators ownership when that group is enabled in
+/// the current process token. Private-file DACL requirements remain separate.
 /// It is not Clone and never exposes an unvalidated mutation handle.
 pub struct OwnedFile(os::Pin);
 
@@ -48,6 +50,18 @@ impl OwnedFile {
         let value = digest(self.0.file(), self.0.path())?;
         self.0.check()?;
         Ok(value)
+    }
+    /// Observe permissions on the pinned object without exposing a write handle.
+    pub fn permissions(&self) -> Result<std::fs::Permissions> {
+        self.0.check()?;
+        let permissions = self
+            .0
+            .file()
+            .metadata()
+            .map_err(|error| io_error("inspect owned file permissions", self.0.path(), error))?
+            .permissions();
+        self.0.check()?;
+        Ok(permissions)
     }
     /// Read bounded profile bytes without silently accepting a truncated prefix.
     pub fn read(&mut self, limit: usize) -> Result<Vec<u8>> {

@@ -451,6 +451,8 @@ pub(super) fn fill_stopped(
         row.resume.state = "capture-incomplete".into();
         let remedy = if work.meta.provider == se_store::Provider::SeCode {
             "Restore the original authenticated service and retry stop to capture its pending records."
+        } else if work.meta.provider == se_store::Provider::Acp {
+            "The closed protocol source cannot supply another terminal reply. Preserve captured history and use se launch <agent> --new for a separate conversation without replaying the interrupted input."
         } else {
             "Restore the original transcript and retry stop to capture its pending records."
         };

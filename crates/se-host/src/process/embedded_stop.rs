@@ -80,7 +80,7 @@ impl LaunchCoordinator {
                     surface: Some(se_store::SessionSurface::Observed),
                     ..
                 } => format!(
-                    "the user-owned Claude provider for conversation {}",
+                    "the user-owned provider for conversation {}",
                     conversation.escape_debug()
                 ),
                 _ => format!(

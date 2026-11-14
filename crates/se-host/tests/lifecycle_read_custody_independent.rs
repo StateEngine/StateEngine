@@ -32,6 +32,7 @@ fn profile() -> Profile {
         provider: Provider::Codex,
         model: None,
         permission: PermissionProfile::WorkspaceWrite,
+        harness: None,
         named_profile: "codex".into(),
         effort: None,
     }

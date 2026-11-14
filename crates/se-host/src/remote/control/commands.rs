@@ -25,7 +25,7 @@ pub(crate) async fn execute(
     }
     let initialize = matches!(
         &input,
-        OwnerInput::Bootstrap { .. } | OwnerInput::Add { .. }
+        OwnerInput::Bootstrap { .. } | OwnerInput::Add { .. } | OwnerInput::PrepareAdd { .. }
     );
     let (control, owner) = Control::prepare(router, owner, initialize, deadline).await?;
     let value = match input {
@@ -47,6 +47,14 @@ pub(crate) async fn execute(
                 .add(router, owner, destination, alias, distribution, deadline)
                 .await?
         }
+        OwnerInput::PrepareAdd { destination, alias } => {
+            let _configure = control.configure.lock().await;
+            control.security.owner(&owner)?;
+            control
+                .check_add(router, &destination, &alias, deadline)
+                .await?;
+            serde_json::json!({"state":"preparing", "name":alias})
+        }
         OwnerInput::Bootstrap { source_host } => {
             control
                 .bootstrap(router, owner, source_host, deadline)
@@ -61,6 +69,20 @@ pub(crate) async fn execute(
                 .run_owned(deadline, move || policy::enabled(&*files, &root))
                 .await?;
             serde_json::json!({"host":control.security.host(), "enabled":enabled})
+        }
+        OwnerInput::PairingLaunchPermissions {
+            alias,
+            after,
+            change,
+        } => {
+            control
+                .pairing_launch_permissions(router, owner, alias, after, change, deadline)
+                .await?
+        }
+        OwnerInput::LaunchPermissions(request) => {
+            control
+                .launch_permissions(router, owner, request, deadline)
+                .await?
         }
         OwnerInput::Disable => {
             let _configure = control.configure.lock().await;

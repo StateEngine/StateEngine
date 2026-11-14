@@ -18,6 +18,7 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
     Ok(match body {
         ChannelRecorded { change } => ("channel.recorded", json!({"change":change})),
         RemoteSecurity { transition } => ("remote.security", json!({"transition":transition})),
+        RemoteLaunchAttributed { record } => ("remote.launch_attributed", json!({"record":record})),
         RemoteMessageAttributed { record } => {
             ("remote.message_attributed", json!({"record":record}))
         }

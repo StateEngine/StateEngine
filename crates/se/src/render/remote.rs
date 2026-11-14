@@ -113,3 +113,42 @@ pub(super) fn send(value: &RemoteSendOutput, out: &mut impl Write) -> io::Result
         value.delivery
     )
 }
+
+pub(super) fn launch(
+    value: &se_core::ops::RemoteLaunchOutput,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    use se_types::{Receipt, remote::RemoteLaunchOutcome};
+    match &value.outcome {
+        RemoteLaunchOutcome::Started { receipt } => match receipt {
+            Receipt::Committed { commit } | Receipt::Replayed { original: commit } => writeln!(
+                out,
+                "Remote launch started {}/{} in session {} (key {}).",
+                commit.value.target.project,
+                commit.value.target.agent,
+                commit.value.session,
+                commit.idempotency_key
+            ),
+            _ => Err(io::Error::other(
+                "remote launch returned an incompatible start receipt",
+            )),
+        },
+        RemoteLaunchOutcome::Pending {
+            launch,
+            idempotency_key,
+            setup_needed,
+        } => writeln!(
+            out,
+            "Remote agent {}/{} is {} (session {}, key {}). Retry remote launch with the same host, target and key.",
+            launch.target.project,
+            launch.target.agent,
+            if *setup_needed {
+                "waiting for destination setup"
+            } else {
+                "starting"
+            },
+            launch.session,
+            idempotency_key
+        ),
+    }
+}
