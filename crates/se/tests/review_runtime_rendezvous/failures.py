@@ -1,9 +1,7 @@
 """Real startup refusals after independently witnessed endpoint retention."""
 import json
 import os
-from pathlib import Path
 import signal
-import stat
 import subprocess
 import time
 
@@ -15,7 +13,6 @@ def trial(args, mode, Fixture):
     f = Fixture(args.se, root)
     report = {'case': mode, 'qualified': False, 'signals': []}
     host, caller, caller_pin = None, None, None
-    original_mode = stat.S_IMODE(args.se.stat().st_mode)
     try:
         f.env.update(args.private)
         f.launch()
@@ -26,8 +23,12 @@ def trial(args, mode, Fixture):
         record_bytes = (f.home / 'endpoint.json').read_bytes()
         endpoint = json.loads(record_bytes)['address']['path']['units']
         connections, retention = root / 'connections.jsonl', root / 'retention.json'
+        bootstraps = root / 'bootstraps.jsonl'
         environment = dict(f.env, LD_PRELOAD=str(args.hook.resolve()),
-                           REVIEW_RETAIN_HOME=str(f.home), REVIEW_RETAIN_LOG=str(retention))
+                           REVIEW_RETAIN_HOME=str(f.home), REVIEW_RETAIN_LOG=str(retention),
+                           REVIEW_BOOTSTRAP_LOG=str(bootstraps))
+        if mode != 'deadline-after-retention':
+            environment['REVIEW_BOOTSTRAP_FAIL'] = '1'
         retry = mode == 'retry-startup-failure'
         if retry:
             environment.update(REVIEW_CONNECT_TARGET=os.fsdecode(bytes(endpoint)),
@@ -69,11 +70,6 @@ def trial(args, mode, Fixture):
                 # The production CLI's original budget is 30 seconds. Let real
                 # monotonic time pass; no clock or deadline value is rewritten.
                 time.sleep(max(0, 31 - (time.monotonic() - started)))
-            else:
-                # Remove execute permission only from this job's own image,
-                # after this CLI is running and retention is externally read.
-                # Replacement startup must now truthfully refuse.
-                args.se.chmod(original_mode & ~0o111)
             send(caller_pin, signal.SIGCONT, report['signals'])
         else:
             assert retry and args.expect == 'refused', 'retention barrier was not reached'
@@ -82,23 +78,30 @@ def trial(args, mode, Fixture):
         report['elapsed_seconds'] = time.monotonic() - started
         output = (root / 'up.stdout').read_text()
         report['up_reply'] = json.loads(output)
+        attempts = [json.loads(line) for line in bootstraps.read_text().splitlines()] if bootstraps.exists() else []
+        report['bootstrap_attempts'] = attempts
         report['provider_survival'] = [alive(p) for p in providers]
         assert caller.returncode != 0 and all(report['provider_survival']), report
         if retention.exists():
             assert retained[0].read_bytes() == record_bytes
             assert str(retained[0]) in output, 'refusal omitted the actual retained record path'
             report['reported_retained_path_verified'] = True
+            if mode == 'deadline-after-retention':
+                assert attempts == [], 'expired request started another bootstrap'
+            else:
+                assert len(attempts) == 1 and attempts[0]['caller'] == caller.pid, attempts
+                assert attempts[0]['result'] == 13 and attempts[0]['child'] == 0, attempts
+                assert 'posix_spawn installed runtime bootstrap' in output, 'original startup failure was lost'
         else:
             assert 'state-conflict' in output
             assert (f.home / 'endpoint.json').read_bytes() == record_bytes
-        args.se.chmod(original_mode)
+            assert attempts == [], 'base authentication refusal started a bootstrap'
         report['ordinary_recovery_after_observation'] = f.ok('up')['process']['pid']
         assert all(alive(p) for p in providers)
         report['qualified'] = True
     except Exception as error:
         report['failure'] = repr(error)
     finally:
-        args.se.chmod(original_mode)
         try:
             if host and alive(host):
                 send(host, signal.SIGCONT, report['signals'])

@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -14,6 +15,26 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
+
+/* Count the real bootstrap boundary and optionally refuse this exact role. */
+int posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *actions,
+                const posix_spawnattr_t *attributes, char *const argv[], char *const environment[]) {
+    static int (*actual)(pid_t *, const char *, const posix_spawn_file_actions_t *,
+                         const posix_spawnattr_t *, char *const [], char *const []);
+    if (!actual) actual = dlsym(RTLD_NEXT, "posix_spawn");
+    if (!actual) _exit(100);
+    const char *log = getenv("REVIEW_BOOTSTRAP_LOG");
+    if (!log || !argv[1] || strcmp(argv[1], "--stateengine-private-runtime-bootstrap"))
+        return actual(pid, path, actions, attributes, argv, environment);
+    int result = getenv("REVIEW_BOOTSTRAP_FAIL") ? EACCES :
+        actual(pid, path, actions, attributes, argv, environment);
+    int output = open(log, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    if (output < 0) _exit(101);
+    dprintf(output, "{\"caller\":%d,\"result\":%d,\"child\":%d}\n",
+            getpid(), result, result ? 0 : *pid);
+    if (fsync(output) || close(output)) _exit(102);
+    return result;
+}
 
 /* Observe the actual completed rename's directory sync, without changing it. */
 int fsync(int fd) {
