@@ -51,6 +51,7 @@ pub use process_command::read_process_command;
 mod process_descendants;
 #[cfg(target_os = "linux")]
 pub use process_descendants::read_process_descendants;
+pub mod file_access;
 mod source_root;
 #[cfg(target_os = "linux")]
 pub use source_root::{

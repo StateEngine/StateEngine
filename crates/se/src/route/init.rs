@@ -73,13 +73,29 @@ fn append(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
+pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
     if cx.session.is_some() {
         return Err(SeError::new(se_types::Detail::OwnerRequired(
             se_types::details::OwnerRequired {
                 op: "project.init".into(),
             },
         )));
+    }
+    let configuration = super::harness_setup::prepare(cx, &input)?;
+    if input.harness.is_some() {
+        let binding = se_core::harness_selection::resolve(
+            &configuration,
+            input.provider,
+            input.harness.as_deref(),
+        )?;
+        input.provider = Some(binding.provider);
+        input.harness = binding.harness;
+    }
+    if input.adopt && input.harness.is_some() {
+        return Err(SeError::invalid(
+            "harness adoption",
+            "named protocol descriptors launch managed sessions; choose Claude Code or Codex for adoption",
+        ));
     }
     let repository = repository::observe(cx, &input)?;
     if input.launch {
@@ -201,8 +217,11 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
     lease.identity.store = Some(store.info().map_err(|e| store_error(&e))?.id);
     let result = registration::finish(
         cx,
-        &input,
-        &repository,
+        registration::Plan {
+            input: &input,
+            repository: &repository,
+            configuration: &configuration,
+        },
         &observed,
         &mut store,
         &lease,

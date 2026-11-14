@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentCreate {
-    /// Named declarative ACP harness, saved with this agent.
+    /// Native provider choice or named declarative ACP harness, saved with this agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
     pub name: String,

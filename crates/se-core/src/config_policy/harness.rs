@@ -18,6 +18,9 @@ pub struct HarnessDescriptor {
     pub command: String,
     #[serde(default)]
     pub arguments: Vec<String>,
+    /// Appended only when an agent has selected a model; native defaults otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_arguments: Vec<String>,
     /// Names only. Native provider login and credential acquisition stay with the harness.
     #[serde(default)]
     pub environment: Vec<String>,
@@ -37,6 +40,7 @@ pub struct PermissionChoice {
 }
 pub struct InvocationSettings {
     pub arguments: Vec<String>,
+    pub model_arguments: Vec<String>,
     pub environment: Vec<String>,
     pub values: BTreeMap<String, String>,
     pub model_environment: Option<String>,
@@ -79,6 +83,7 @@ pub(super) fn validate_registry(values: &BTreeMap<String, HarnessDescriptor>) ->
         for (profile, choice) in &descriptor.permissions {
             validate_name(profile)?;
             let mut arguments = descriptor.arguments.clone();
+            arguments.extend(descriptor.model_arguments.clone());
             arguments.extend(choice.arguments.clone());
             let mut environment = descriptor.environment.clone();
             environment.extend(choice.environment.keys().cloned());
@@ -151,6 +156,7 @@ impl ConfigFile {
         let Some(name) = harness else {
             return Ok(InvocationSettings {
                 arguments: self.acp.arguments.clone(),
+                model_arguments: Vec::new(),
                 environment: self.acp.environment.clone(),
                 values: BTreeMap::new(),
                 model_environment: None,
@@ -163,6 +169,7 @@ impl ConfigFile {
         arguments.extend(permission.arguments.clone());
         Ok(InvocationSettings {
             arguments,
+            model_arguments: descriptor.model_arguments.clone(),
             environment: descriptor.environment.clone(),
             values: permission.environment.clone(),
             model_environment: descriptor.model_environment.clone(),

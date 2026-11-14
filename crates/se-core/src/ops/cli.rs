@@ -295,7 +295,7 @@ fn input_command(name: &str, c: Command) -> Command {
                 .help("Exact registered operation name, e.g. project.status; omit it for the full catalogue"),
         ),
         "project.init" => c
-            .arg(value("harness").help("Save a configured ACP harness descriptor for this agent"))
+            .arg(value("harness").help("Choose claude, codex, secode, qwen-code, goose or a configured protocol harness"))
             .arg(value("repo").help("Existing repository folder to register as this project"))
             .arg(value("name").help("Project name shown in status and listings"))
             .arg(value("agent").default_value("main").help("Name for your first saved agent"))
@@ -417,7 +417,7 @@ fn input_command(name: &str, c: Command) -> Command {
                 .arg(positional("setting_value", 2, true).help("Model string or null for the default, an existing named permission profile, or true/false for can-create"))
         }
         "agent.create" => c
-            .arg(value("harness").help("Save a configured ACP harness descriptor for this agent"))
+            .arg(value("harness").help("Choose claude, codex, secode or a configured protocol harness"))
             .arg(positional("name", 1, true).help("Name for the new saved agent"))
             .arg(value("provider").value_parser(["claude", "codex", "secode", "acp"]).help("Provider for the new agent: claude, codex, secode or acp"))
             .arg(value("model").help("Model for the new agent")),

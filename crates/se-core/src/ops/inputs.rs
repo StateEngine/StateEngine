@@ -69,7 +69,7 @@ impl Validate for ProjectMove {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectInit {
-    /// Named declarative ACP harness, saved with this agent.
+    /// Native provider choice or named declarative ACP harness, saved with this agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
     pub repo: Option<String>,
@@ -201,10 +201,10 @@ impl Validate for ProjectInit {
     fn validate(&self) -> Result<()> {
         if let Some(harness) = &self.harness {
             crate::config_policy::harness::validate_name(harness)?;
-            if self.adopt {
+            if self.adopt && !matches!(harness.as_str(), "claude" | "codex") {
                 return Err(SeError::invalid(
                     "harness",
-                    "ACP descriptors launch managed sessions; adoption supports the native providers",
+                    "adoption supports the claude and codex native choices; protocol descriptors launch managed sessions",
                 ));
             }
         }

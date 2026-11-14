@@ -52,14 +52,19 @@ impl AcpHarness {
     ) -> Result<ResolvedProfile> {
         let profile = configuration.resolve_profile(named_profile, Provider::Acp, true)?;
         let settings = configuration.acp_settings(harness, named_profile)?;
-        let configured_model = settings.arguments.iter().any(|v| v.contains("{model}"))
+        let argument_model = settings.arguments.iter().any(|v| v.contains("{model}"));
+        let configured_model = argument_model
+            || settings
+                .model_arguments
+                .iter()
+                .any(|v| v.contains("{model}"))
             || settings.model_environment.is_some();
         if model.is_some() && !configured_model {
             return Err(error(
                 "The selected model requires an argv {model} slot or a native model_environment binding in this harness configuration.",
             ));
         }
-        if configured_model && model.is_none() {
+        if argument_model && model.is_none() {
             return Err(error(
                 "The selected harness's model binding requires a saved model. Select a model for this agent, or remove that binding to use the native harness default.",
             ));
@@ -137,8 +142,11 @@ impl Harness for AcpHarness {
                 &request.profile.named_profile,
             )?;
             let model = request.profile.model.as_deref();
-            let arguments = settings
-                .arguments
+            let mut arguments = settings.arguments;
+            if model.is_some() {
+                arguments.extend(settings.model_arguments);
+            }
+            let arguments = arguments
                 .iter()
                 .map(|v| v.replace("{model}", model.unwrap_or_default()).into())
                 .collect();
@@ -156,9 +164,9 @@ impl Harness for AcpHarness {
                 environment.retain(|(name, _)| !name.to_string_lossy().eq_ignore_ascii_case(key));
                 environment.push((key.into(), value.into()));
             }
-            if let Some(key) = &settings.model_environment {
+            if let (Some(key), Some(model)) = (&settings.model_environment, model) {
                 environment.retain(|(name, _)| !name.to_string_lossy().eq_ignore_ascii_case(key));
-                environment.push((key.into(), model.unwrap_or_default().into()));
+                environment.push((key.into(), model.into()));
             }
             environment
                 .retain(|(name, _)| !name.to_string_lossy().eq_ignore_ascii_case("SE_SESSION"));

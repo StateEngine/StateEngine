@@ -1,18 +1,27 @@
 //! Finish the separate registry/project setup admissions and read their effects.
 use super::*;
+pub(super) struct Plan<'a> {
+    pub input: &'a ProjectInit,
+    pub repository: &'a repository::Repository,
+    pub configuration: &'a se_core::config_policy::ConfigFile,
+}
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 pub(super) fn finish(
     cx: &Bootstrap,
-    input: &ProjectInit,
-    repository: &repository::Repository,
+    plan: Plan<'_>,
     observed: &owner::FileOwner,
     store: &mut SqliteDirect,
     lease: &DirectLease,
     mut changed: Vec<String>,
 ) -> Result<AnyOutput> {
+    let Plan {
+        input,
+        repository,
+        configuration,
+    } = plan;
     let inventory = owner::inventory(store, &lease.files)?;
     let human = match inventory.owners.as_slice() {
         [owner] => owner.clone(),
@@ -195,14 +204,19 @@ pub(super) fn finish(
         append(store, lease, batch?, &mut changed)?;
         changed.push("registered the project owner".into());
     }
-    let (agent, agent_created) = agent_setup::initial_agent(cx, input, store, lease, &admission)?;
-    let (port, config_changed) =
-        crate::route::init_config::listener_port(cx, &lease.files, observed.os_owner())?;
+    let (port, config_changed) = crate::route::init_config::listener_port(
+        cx,
+        &lease.files,
+        observed.os_owner(),
+        configuration,
+    )?;
+    let (agent, agent_created) =
+        agent_setup::initial_agent(input, store, lease, &admission, configuration)?;
     if agent_created {
         changed.push("created the initial saved agent".into());
     }
     if config_changed {
-        changed.push("persisted the initial listener port".into());
+        changed.push("persisted the setup configuration".into());
     }
     let mut snap = store
         .snapshot(read_scope(&admission))
@@ -286,7 +300,7 @@ pub(super) fn finish(
             },
             provider: agent.provider,
             model: agent.model.clone(),
-            permission_profile: project::saved_profile(&cx.config.value, &agent)?,
+            permission_profile: project::saved_profile(configuration, &agent)?,
         },
         profile: InitProfile {
             schema: "stateengine-init/v1".into(),
