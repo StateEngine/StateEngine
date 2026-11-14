@@ -15,10 +15,13 @@ pub(crate) struct Item {
 }
 impl Item {
     pub fn body(&self, position: Position) -> Result<Body> {
-        if let Some(text) = &self.text {
-            return Body::new(text.clone());
-        }
-        let mut record = Record::new("acp-tool-update", None);
+        let kind = match &self.text {
+            Some(text) if self.role != Role::System => return Body::new(text.clone()),
+            Some(_) => "acp-interrupted-prefix",
+            None => "acp-tool-update",
+        };
+        let mut record = Record::new(kind, None);
+        record.message = self.text.clone();
         record.position = position;
         record.body()
     }
@@ -65,7 +68,7 @@ impl Binding {
                 "part":part,"parts":count,"fragment":fragment,
             })).map_err(error)?;
             Ok(Item {
-                vendor: format!("acp/{key}/interrupted/{part}"),
+                vendor: format!("{}acp/{key}/interrupted/{part}", se_store::TRANSCRIPT_EVENT_PREFIX),
                 role: Role::System,
                 bytes: body.as_bytes().to_vec(),
                 facts: Vec::new(),
