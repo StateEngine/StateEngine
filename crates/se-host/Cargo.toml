@@ -53,6 +53,9 @@ chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["
 [lints]
 workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+se-proc = { path = "../se-proc", features = ["native-sha256"] }
+
 [[test]]
 name = "w3_realhost_independent"
 path = "tests/w3_realhost_independent.rs"

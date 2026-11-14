@@ -12,6 +12,7 @@ use std::{
 };
 
 mod image;
+mod image_digest;
 use image::hash_image;
 mod ancestor;
 pub use ancestor::{provider_ancestor, provider_is_live};

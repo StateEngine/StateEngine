@@ -2,8 +2,8 @@
 //! modification/change times and size. A pathname is never a cache identity.
 //! Native change time invalidates same-inode rewrites even when mtime is restored;
 //! it is not a qualified persistent journal or protection against hostile same-user mutation.
+use super::image_digest::Hasher;
 use super::*;
-use sha2::{Digest, Sha256 as Hasher};
 use std::{
     collections::VecDeque,
     fs::File,
@@ -200,7 +200,7 @@ pub(super) fn hash_image(mut file: std::fs::File, bound: &IpcIoBound) -> IpcNati
             "executable identity changed while hashing; rediscover and retry the original request",
         ));
     }
-    let digest = Sha256::from_bytes(hasher.finalize().into());
+    let digest = Sha256::from_bytes(hasher.finish());
     let mut cache = cache().lock().map_err(|_| {
         refuse(
             IpcNativeErrorCode::Unreadable,
