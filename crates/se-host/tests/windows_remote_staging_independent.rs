@@ -6,6 +6,11 @@ mod remote;
 use remote::{Check, require, with_fixture};
 
 #[test]
+fn os_created_unicode_and_space_profile_runs_staging_through_both_shells() -> Check {
+    remote::profile_paths_and_shells()
+}
+
+#[test]
 fn cold_staging_preserves_binary_bytes_and_verifies_the_published_image() -> Check {
     with_fixture(|f| {
         require(f.prepare()?, "safe runtime directory refused")?;

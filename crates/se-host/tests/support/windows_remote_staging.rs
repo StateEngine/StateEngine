@@ -1,6 +1,9 @@
 //! Native PowerShell observations with invocation-owned cache leaves and joined children.
+#[path = "windows_profile_staging.rs"]
+mod profile;
 #[path = "../../src/remote/native_image/staging.rs"]
 mod staging;
+pub use profile::profile_paths_and_shells;
 
 use sha2::{Digest, Sha256};
 use std::{
@@ -18,6 +21,10 @@ pub fn require(value: bool, reason: &str) -> Check {
 }
 
 fn run(command: &str, bytes: Option<&[u8]>) -> Value<Output> {
+    run_bounded(command, bytes, Duration::from_secs(15))
+}
+
+fn run_bounded(command: &str, bytes: Option<&[u8]>, maximum: Duration) -> Value<Output> {
     let arguments: Vec<_> = command.split_ascii_whitespace().collect();
     require(
         arguments.first() == Some(&"powershell.exe"),
@@ -48,13 +55,13 @@ fn run(command: &str, bytes: Option<&[u8]>) -> Value<Output> {
             return Err(format!("{error}; joined receiver: {}", output.status).into());
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + maximum;
     while child.try_wait()?.is_none() {
         if Instant::now() >= deadline {
             child.kill()?;
             let output = child.wait_with_output()?;
             return Err(format!(
-                "owned PowerShell exceeded 15 seconds; joined: {}",
+                "owned PowerShell exceeded {maximum:?}; joined: {}",
                 output.status
             )
             .into());

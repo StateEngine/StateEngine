@@ -1,5 +1,5 @@
 //! Real MCP calls must retain all selected cursors across bounded pages and a disconnected target stream.
-#![cfg(all(feature = "remote", target_os = "linux"))]
+#![cfg(all(feature = "remote", any(target_os = "linux", windows)))]
 use se_host::remote::*;
 use se_host::remote::{
     auth::VerifiedLocalOwner,
