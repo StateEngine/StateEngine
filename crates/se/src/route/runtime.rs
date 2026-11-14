@@ -70,12 +70,26 @@ pub fn up(
 struct Rendezvous {
     recovery: Option<se_core::ops::EndpointRecovery>,
 }
+/// Which step of one attempt failed. The retry authority is a question about this
+/// phase, never about the rendered error: rendering turns every post-retention
+/// failure into one `state-conflict`, so a rendered error cannot tell a refused
+/// authentication (retryable) from a start that already ran and failed (not
+/// retryable). Respawning after a failed start is a second bootstrap, not a retry.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+enum Phase {
+    /// `autostart` could not route or start: it already decided what to do.
+    Startup(SeError),
+    /// The request clock ran out after retention.
+    Deadline(SeError),
+    /// A published endpoint answered nothing. Only this phase may be retried.
+    Authentication(SeError),
+}
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl Rendezvous {
     fn new() -> Self {
         Self { recovery: None }
     }
-    /// Route and authenticate, absorbing a receipt before any error is wrapped.
+    /// Route and authenticate, absorbing a receipt before any error is read.
     fn attempt(
         &mut self,
         cx: &Bootstrap,
@@ -83,7 +97,7 @@ impl Rendezvous {
         options: &mut se_host::client::ClientOptions,
         bound: &Deadline,
         diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
-    ) -> Result<(se_host::EndpointRecord, ProcessView)> {
+    ) -> std::result::Result<(se_host::EndpointRecord, ProcessView), Phase> {
         let mut routed = None;
         let endpoint = super::autostart::endpoint_with_origin(
             cx,
@@ -98,13 +112,17 @@ impl Rendezvous {
         if routed.is_some() {
             self.recovery = routed;
         }
-        let endpoint = endpoint.map_err(|error| self.report(cx, error))?;
-        options.timeout = bound.remaining().map_err(|error| self.report(cx, error))?;
+        let endpoint = endpoint.map_err(Phase::Startup)?;
+        options.timeout = bound.remaining().map_err(Phase::Deadline)?;
         let process = discovery::authenticate(cx, files, &endpoint, options, bound)
-            .map_err(|error| self.report(cx, error))?;
+            .map_err(Phase::Authentication)?;
         Ok((endpoint, process))
     }
-    fn report(&self, cx: &Bootstrap, error: SeError) -> SeError {
+    /// Render any phase from the one receipt this request owns.
+    fn refuse(&self, cx: &Bootstrap, phase: Phase) -> SeError {
+        let error = match phase {
+            Phase::Startup(error) | Phase::Deadline(error) | Phase::Authentication(error) => error,
+        };
         discovery::after_recovery(cx, self.recovery.as_ref(), error)
     }
 }
@@ -127,26 +145,32 @@ fn rendezvous(
     ProcessView,
 )> {
     let mut rendezvous = Rendezvous::new();
-    let (endpoint, process) = match rendezvous.attempt(cx, files, options, bound, diagnostic) {
+    let first = rendezvous.attempt(cx, files, options, bound, diagnostic);
+    let (endpoint, process) = match first {
         Ok(value) => value,
-        Err(refusal) if refusal.code() == se_types::Code::StateConflict => {
+        // Every phase other than a refused authentication is final as it stands.
+        Err(phase @ (Phase::Startup(_) | Phase::Deadline(_))) => {
+            return Err(rendezvous.refuse(cx, phase));
+        }
+        Err(Phase::Authentication(refusal)) => {
             match discovery::route(cx) {
                 // A held lease is a live host that answered nothing: the original
                 // refusal names what to do, and retrying would report a second
                 // failure as if it were the first.
                 Ok(se_host::EndpointRoute::Live(_)) => {
-                    return Err(rendezvous.report(cx, refusal));
+                    return Err(rendezvous.refuse(cx, Phase::Authentication(refusal)));
                 }
                 Ok(se_host::EndpointRoute::Start { recovery }) => {
                     if recovery.is_some() {
                         rendezvous.recovery = recovery;
                     }
                 }
-                Err(error) => return Err(rendezvous.report(cx, error)),
+                Err(error) => return Err(rendezvous.refuse(cx, Phase::Startup(error))),
             }
-            rendezvous.attempt(cx, files, options, bound, diagnostic)?
+            rendezvous
+                .attempt(cx, files, options, bound, diagnostic)
+                .map_err(|phase| rendezvous.refuse(cx, phase))?
         }
-        Err(refusal) => return Err(rendezvous.report(cx, refusal)),
     };
     Ok((endpoint, rendezvous.recovery, process))
 }
