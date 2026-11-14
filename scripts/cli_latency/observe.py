@@ -38,6 +38,15 @@ def percentile(values, quantile):
     return ordered[math.ceil(quantile * len(ordered)) - 1]
 
 
+def retained(output, label, bound=4000):
+    for suffix in ('stderr', 'stdout'):
+        for path in sorted(output.glob('*-' + label + '.' + suffix)):
+            tail = path.read_bytes()[-bound:].decode('utf-8', 'replace').strip()
+            if tail:
+                return label + '.' + suffix + ': ' + tail
+    return 'no retained ' + label + ' output'
+
+
 def timed(smoke, action):
     arguments = {'status': ['status'], 'agents': ['agent', 'list'],
                  'inbox': ['msg', 'inbox', smoke.agent]}[action]
@@ -155,8 +164,11 @@ def prepare(directory, image, provider, count, mail_count, dirty, with_commits, 
             '[harnesses.probe.permissions.default.environment]\n')
         (smoke.state / 'config.toml').chmod(0o600)
     smoke.initialization_attempted = True
-    profile = smoke.call(['init', '--repo', smoke.repository, '--agent', 'reader-00', *selection],
-                         'init', terminal=False, project=False)['profile']
+    try:
+        profile = smoke.call(['init', '--repo', smoke.repository, '--agent', 'reader-00',
+                              *selection], 'init', terminal=False, project=False)['profile']
+    except Exception as error:
+        raise RuntimeError(str(error) + '; ' + retained(smoke.output, 'init')) from error
     smoke.project, smoke.agent, smoke.owner = (profile[key] for key in ('project', 'agent_id', 'human_id'))
     started = smoke.call(['up'], 'up', project=False)
     smoke.commands.observer.observe(started['process']['pid'])
