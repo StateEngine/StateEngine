@@ -13,6 +13,10 @@ pub(super) fn prepare(
             .with_cause(error)
     })?;
     let mut entries = se_host::provider_environment();
+    // Measurement-only branch: the detached host does not inherit ambient names.
+    if let Some(path) = std::env::var_os("SE_HOST_PHASE_PROFILE") {
+        entries.push(("SE_HOST_PHASE_PROFILE".into(), path));
+    }
     if super::startup_log::StartupLog::success_enabled() {
         entries.push(("SE_STARTUP_LOG".into(), "1".into()));
     }
