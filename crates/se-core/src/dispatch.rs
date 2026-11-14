@@ -26,7 +26,7 @@ pub struct CallFacts {
 }
 pub struct Kernel {
     facts: Option<CallFacts>,
-    configuration: Option<crate::config_policy::ConfigFile>,
+    configuration: Option<se_config::config_policy::ConfigFile>,
     config_origin: Option<String>,
     read_at: Option<se_types::UnixMicros>,
     command_home: Option<std::path::PathBuf>,
@@ -88,7 +88,7 @@ impl Kernel {
     /// a model-facing operation argument or a fallback to ambient defaults.
     pub fn with_configuration(
         mut self,
-        configuration: crate::config_policy::ConfigFile,
+        configuration: se_config::config_policy::ConfigFile,
     ) -> Result<Self> {
         configuration.validate()?;
         self.configuration = Some(configuration);

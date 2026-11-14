@@ -3,7 +3,7 @@
     dead_code,
     reason = "The version and launch integration binaries use different fixture methods."
 )]
-use se_core::config_policy::ConfigFile;
+use se_config::config_policy::ConfigFile;
 #[cfg(unix)]
 use se_host::UnixProviderIo;
 use se_host::{

@@ -33,7 +33,7 @@ impl ProviderExecutable {
     }
 }
 pub(super) fn resolve_provider_launch(
-    configuration: &se_core::config_policy::ConfigFile,
+    configuration: &se_config::config_policy::ConfigFile,
     provider: se_types::Provider,
     selected_file: Option<&std::path::Path>,
     harness: Option<&str>,
@@ -79,7 +79,7 @@ pub(super) fn resolve_provider_launch(
 }
 
 pub fn resolve_provider(
-    configuration: &se_core::config_policy::ConfigFile,
+    configuration: &se_config::config_policy::ConfigFile,
     provider: se_types::Provider,
     selected_file: Option<&std::path::Path>,
     harness: Option<&str>,
@@ -199,16 +199,16 @@ pub(super) fn stabilize_alias(
 pub(super) fn policy(
     plan: &LaunchPlan,
     home: &std::path::Path,
-    configuration: &se_core::config_policy::ConfigFile,
+    configuration: &se_config::config_policy::ConfigFile,
 ) -> Result<se_proc::LaunchPolicy> {
     let scratch = super::files::temporary_directory(home, &plan.session)?;
     Ok(se_proc::LaunchPolicy {
         containment: se_proc::ContainmentRequirement::BestAvailable,
         writes: match plan.resolved.sandbox {
-            se_core::config_policy::EffectiveSandbox::ReadOnly => {
+            se_config::config_policy::EffectiveSandbox::ReadOnly => {
                 se_proc::WritePolicy::ReadOnly { scratch }
             }
-            se_core::config_policy::EffectiveSandbox::WorkspaceWrite => {
+            se_config::config_policy::EffectiveSandbox::WorkspaceWrite => {
                 se_proc::WritePolicy::Workspace {
                     roots: super::git_workspace::roots(
                         plan.cwd.to_local()?,
@@ -220,7 +220,7 @@ pub(super) fn policy(
                     scratch,
                 }
             }
-            se_core::config_policy::EffectiveSandbox::Bypass => {
+            se_config::config_policy::EffectiveSandbox::Bypass => {
                 se_proc::WritePolicy::NamedUnrestricted {
                     profile: plan.profile.named_profile.clone(),
                 }

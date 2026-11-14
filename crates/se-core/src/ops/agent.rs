@@ -6,11 +6,11 @@ use super::{
 };
 use crate::{
     commit::Cx,
-    config_policy::{ConfigFile, EffectiveSandbox, Provider},
     dispatch::{Kernel, admitted},
     scope,
     store_error::store_error,
 };
+use se_config::config_policy::{ConfigFile, EffectiveSandbox, Provider};
 use se_store::{
     Actor, AtomicBatch, EventBody, Expected, GrantKey, PermissionProfile, PrincipalKind, Profile,
     Snapshot,

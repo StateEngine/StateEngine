@@ -1,7 +1,7 @@
 //! Shared harness choices and their existing persisted provider/descriptor binding.
 //! Native discovery, installation, login and process effects remain host-owned.
-use crate::config_policy::ConfigFile;
 use schemars::JsonSchema;
+use se_config::config_policy::ConfigFile;
 use se_types::{Provider, Result, SeError};
 use serde::{Deserialize, Serialize};
 pub mod catalog;
@@ -107,7 +107,7 @@ pub fn resolve(
             harness: configuration.selected_harness(provider, None)?,
         });
     };
-    crate::config_policy::harness::validate_name(name)?;
+    se_config::config_policy::harness::validate_name(name)?;
     let choice = if configuration.harnesses.contains_key(name) {
         Selection::Descriptor { name: name.into() }
     } else {

@@ -57,10 +57,10 @@ impl Kind {
             Self::Codex => se_store::Provider::Codex,
         }
     }
-    pub fn policy(self) -> se_core::config_policy::Provider {
+    pub fn policy(self) -> se_config::config_policy::Provider {
         match self {
-            Self::Claude => se_core::config_policy::Provider::Claude,
-            Self::Codex => se_core::config_policy::Provider::Codex,
+            Self::Claude => se_config::config_policy::Provider::Claude,
+            Self::Codex => se_config::config_policy::Provider::Codex,
         }
     }
 }
@@ -229,7 +229,7 @@ pub(crate) struct NativeCall {
 
 #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 pub fn resolve_provider(
-    configuration: &se_core::config_policy::ConfigFile,
+    configuration: &se_config::config_policy::ConfigFile,
     file: Option<&Path>,
 ) -> Result<std::path::PathBuf> {
     resolve_provider_for(Kind::Claude, configuration, file)
@@ -237,7 +237,7 @@ pub fn resolve_provider(
 #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 pub fn resolve_provider_for(
     kind: Kind,
-    configuration: &se_core::config_policy::ConfigFile,
+    configuration: &se_config::config_policy::ConfigFile,
     file: Option<&Path>,
 ) -> Result<std::path::PathBuf> {
     let provider = match kind {

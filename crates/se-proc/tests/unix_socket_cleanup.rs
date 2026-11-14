@@ -4,7 +4,7 @@ use se_proc::native_ipc::*;
 use std::{
     error::Error,
     fs::{self, File, Permissions},
-    io::Read,
+    io::{self, Read},
     os::{
         fd::AsRawFd,
         unix::{
@@ -101,12 +101,26 @@ fn a_live_unidentified_listener_is_preserved_and_receives_no_application_bytes()
         IpcNativeErrorCode::AlreadyExists
     );
     let (mut probe, _) = listener.accept()?;
-    probe.set_read_timeout(Some(Duration::from_secs(1)))?;
-    assert_eq!(
-        probe.read(&mut [0; 1])?,
-        0,
-        "cleanup probe sent application bytes"
-    );
+    probe.set_nonblocking(true)?;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let received = loop {
+        match probe.read(&mut [0; 1]) {
+            Ok(count) => break count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "cleanup probe did not close",
+                    )
+                    .into());
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    assert_eq!(received, 0, "cleanup probe sent application bytes");
     assert_eq!(fs::symlink_metadata(f.socket())?.ino(), original.ino());
     drop(listener);
     f.observe()?.compare_remove(&bound())?;

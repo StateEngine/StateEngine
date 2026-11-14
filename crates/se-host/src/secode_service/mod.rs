@@ -234,7 +234,7 @@ impl LaunchCoordinator {
             .is_some_and(|profile| profile.git_write);
         if !matches!(
             plan.resolved.approval,
-            se_core::config_policy::Approval::Never
+            se_config::config_policy::Approval::Never
         ) {
             return Err(crate::harness::secode_process::incompatible(
                 "this headless host has no interactive approval transport; select a saved profile with approval = never",
@@ -274,7 +274,7 @@ impl LaunchCoordinator {
             .await?;
         if matches!(
             plan.resolved.sandbox,
-            se_core::config_policy::EffectiveSandbox::WorkspaceWrite
+            se_config::config_policy::EffectiveSandbox::WorkspaceWrite
         ) && !git_write
         {
             let selected = self.secode.images(&executable)?;

@@ -286,9 +286,9 @@ pub fn move_replay<R: Snapshot>(
     move_committed(then, receipt, cx)
 }
 pub fn saved_profile(
-    configuration: &crate::config_policy::ConfigFile,
+    configuration: &se_config::config_policy::ConfigFile,
     row: &super::AgentRow,
-) -> Result<crate::config_policy::ResolvedProfile> {
+) -> Result<se_config::config_policy::ResolvedProfile> {
     // Setup's first-launch command uses --detach. Resolve that same mode,
     // including Codex's sandboxed, escalation-denying headless default.
     configuration

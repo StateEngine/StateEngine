@@ -195,7 +195,7 @@ fn expired_capability_is_refused_after_its_principal_was_memoized() -> Check {
         let mut host =
             HostedRuntime::prepare(initialized, start(&f)?, runtime.handle().clone(), &bound()?)
                 .await?;
-        host.configure(se_core::config_policy::ConfigFile::default())?;
+        host.configure(se_config::config_policy::ConfigFile::default())?;
         let listener = host.listen(runtime.handle().clone(), &bound()?).await?;
         let stop = host.local_stop();
         let state_dir = f.options.state_directory.clone();
@@ -299,7 +299,7 @@ fn failed_first_identity_read_is_not_remembered() -> Check {
         let mut host =
             HostedRuntime::prepare(initialized, start(&f)?, runtime.handle().clone(), &bound()?)
                 .await?;
-        host.configure(se_core::config_policy::ConfigFile::default())?;
+        host.configure(se_config::config_policy::ConfigFile::default())?;
         let listener = host.listen(runtime.handle().clone(), &bound()?).await?;
         let stop = host.local_stop();
         let client = async {
