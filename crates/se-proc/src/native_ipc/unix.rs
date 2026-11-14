@@ -7,6 +7,10 @@ mod cleanup;
 pub use cleanup::NativeUnixSocketCleanup;
 mod paths;
 pub use paths::UnixSocketPaths;
+#[cfg(target_os = "macos")]
+mod macos_io;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 use std::{
     fs::{self, File},
     io::{Read, Write},
@@ -20,7 +24,6 @@ use std::{
         },
     },
     path::PathBuf,
-    time::Duration,
 };
 
 fn private_directory(path: &Path) -> IpcNativeResult<File> {
@@ -169,6 +172,8 @@ impl NativeUnixStream {
         }
         // SAFETY: successful socket allocation transfers unique FD ownership.
         let stream = unsafe { UnixStream::from_raw_fd(raw) };
+        #[cfg(target_os = "macos")]
+        macos_io::configure(&stream).map_err(|e| error("configure native IPC socket", e))?;
         // CLOEXEC is set before publication to a caller and never inherited.
         // SAFETY: this newly owned live socket FD is configured with the documented close-on-exec flag.
         if unsafe { libc::fcntl(raw, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
@@ -241,6 +246,7 @@ impl NativeUnixStream {
                 "IPC server is a different native user",
             ));
         }
+        #[cfg(target_os = "linux")]
         stream
             .set_nonblocking(false)
             .map_err(|e| error("configure IPC stream", e))?;
@@ -258,6 +264,11 @@ impl Read for NativeUnixStream {
         if buffer.is_empty() {
             return Ok(0);
         }
+        #[cfg(target_os = "macos")]
+        {
+            macos_io::read(&self.stream, &self.bound, buffer)
+        }
+        #[cfg(target_os = "linux")]
         loop {
             let remaining = self.bound.remaining()?;
             self.stream
@@ -281,6 +292,11 @@ impl Write for NativeUnixStream {
         if buffer.is_empty() {
             return Ok(0);
         }
+        #[cfg(target_os = "macos")]
+        {
+            macos_io::write(&self.stream, &self.bound, buffer)
+        }
+        #[cfg(target_os = "linux")]
         loop {
             let remaining = self.bound.remaining()?;
             self.stream
