@@ -123,7 +123,7 @@ pub fn clients(f: &Fixture) -> Check {
         String::from_utf8_lossy(&output.stderr)
     );
     print!("{}", String::from_utf8_lossy(&output.stdout));
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     for mode in ["provider", "session", "terminal"] {
         // A real OS pseudo-terminal supplies the native console facts. The
         // Python fixture only owns descriptor plumbing and its exact child;
@@ -150,8 +150,13 @@ while time.monotonic()<deadline:
         if len(data)>65536: raise RuntimeError('native child output exceeded fixture bound')
     if child.poll() is not None: break
 else:
-    actual=open('/proc/'+str(child.pid)+'/cmdline','rb').read().split(b'\0')[:-1]
-    if actual!=[os.fsencode(value) for value in args]: raise RuntimeError('owned child identity changed; refusing signal')
+    if sys.platform=='darwin':
+        actual=subprocess.check_output(['ps','-ww','-p',str(child.pid),'-o','command=']).decode().rstrip('\n')
+        same=actual==' '.join(args)
+    else:
+        actual=open('/proc/'+str(child.pid)+'/cmdline','rb').read().split(b'\0')[:-1]
+        same=actual==[os.fsencode(value) for value in args]
+    if not same: raise RuntimeError('owned child identity changed; refusing signal')
     os.kill(child.pid,signal.SIGKILL)
     child.wait()
     raise RuntimeError('exact native presence child exceeded deadline')
