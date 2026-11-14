@@ -5,6 +5,12 @@ mod directory;
 fn case() -> Result<directory::PrivateDirectory, Box<dyn Error>> {
     directory::private_case_directory()
 }
+// The temp parent may itself sit under a symlinked ancestor (macOS /var);
+// build expected paths from the canonical root so the assertions hold
+// wherever the parent is aliased.
+fn canonical(root: &directory::PrivateDirectory) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    Ok(root.canonicalize()?)
+}
 #[test]
 fn resolve_returns_a_relative_path_unchanged() -> Result<(), Box<dyn Error>> {
     let path = Path::new("state/db.sqlite");
@@ -14,10 +20,11 @@ fn resolve_returns_a_relative_path_unchanged() -> Result<(), Box<dyn Error>> {
 #[test]
 fn resolve_keeps_an_unlinked_absolute_path_canonical() -> Result<(), Box<dyn Error>> {
     let root = case()?;
+    let canonical = canonical(&root)?;
     let dir = root.join("a/b/c");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("state.db");
-    assert_eq!(resolve(&path)?, path);
+    assert_eq!(resolve(&path)?, canonical.join("a/b/c/state.db"));
     root.finish(Ok(()) as Result<(), Box<dyn Error>>)?;
     Ok(())
 }
@@ -26,10 +33,11 @@ fn resolve_follows_a_trusted_ancestor_link() -> Result<(), Box<dyn Error>> {
     let root = case()?;
     let real = root.join("real");
     std::fs::create_dir(&real)?;
+    let canonical = canonical(&root)?;
     let link = root.join("alias");
     symlink(&real, &link)?;
     let path = link.join("state.db");
-    assert_eq!(resolve(&path)?, real.join("state.db"));
+    assert_eq!(resolve(&path)?, canonical.join("real/state.db"));
     root.finish(Ok(()) as Result<(), Box<dyn Error>>)?;
     Ok(())
 }
@@ -39,12 +47,13 @@ fn resolve_follows_a_chain_of_trusted_links() -> Result<(), Box<dyn Error>> {
     let real = root.join("real");
     std::fs::create_dir(&real)?;
     std::fs::create_dir(real.join("deep"))?;
+    let canonical = canonical(&root)?;
     let outer = root.join("outer");
     let inner = root.join("inner");
     symlink(&inner, &outer)?;
     symlink(&real, &inner)?;
     let path = outer.join("deep/state.db");
-    assert_eq!(resolve(&path)?, real.join("deep/state.db"));
+    assert_eq!(resolve(&path)?, canonical.join("real/deep/state.db"));
     root.finish(Ok(()) as Result<(), Box<dyn Error>>)?;
     Ok(())
 }
@@ -55,13 +64,14 @@ fn resolve_normalizes_dot_and_dotdot() -> Result<(), Box<dyn Error>> {
     std::fs::create_dir_all(&dir)?;
     // a/b/.. lands on a, so the walk needs a/c to exist as a directory.
     std::fs::create_dir(root.join("a/c"))?;
+    let canonical = canonical(&root)?;
     assert_eq!(
         resolve(&root.join("a/b/../c/db.sqlite"))?,
-        root.join("a/c/db.sqlite")
+        canonical.join("a/c/db.sqlite")
     );
     assert_eq!(
         resolve(&root.join("a/./b/db.sqlite"))?,
-        root.join("a/b/db.sqlite")
+        canonical.join("a/b/db.sqlite")
     );
     root.finish(Ok(()) as Result<(), Box<dyn Error>>)?;
     Ok(())
@@ -71,11 +81,12 @@ fn resolve_leaves_the_final_component_unfollowed() -> Result<(), Box<dyn Error>>
     let root = case()?;
     let real = root.join("real");
     std::fs::create_dir(&real)?;
+    let canonical = canonical(&root)?;
     let link = root.join("db.sqlite");
     symlink(&real, &link)?;
     let path = root.join("db.sqlite");
     // The link keeps its name: NOFOLLOW at open time is what refuses it.
-    assert_eq!(resolve(&path)?, path);
+    assert_eq!(resolve(&path)?, canonical.join("db.sqlite"));
     root.finish(Ok(()) as Result<(), Box<dyn Error>>)?;
     Ok(())
 }

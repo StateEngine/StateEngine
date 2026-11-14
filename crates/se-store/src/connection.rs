@@ -34,6 +34,10 @@ pub(crate) fn open(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
     // there. The verbatim form keeps every sidecar reachable; the file opened
     // is the one the caller named.
     let target = se_types::sqlite_path(path);
+    // The verbatim exception is decided before ancestor resolution: only the
+    // verbatim prefix cannot honour NOFOLLOW, and a Unix path resolved by
+    // trusted_path keeps the guard on the database name itself.
+    let verbatim = target != path;
     // SQLite's NOFOLLOW refuses a symlinked ancestor outright (extended code
     // 1550), which breaks the ordinary macOS temp directory under /var. The
     // state-files walk admits only root- or current-user-owned link
@@ -46,7 +50,7 @@ pub(crate) fn open(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
     // root rules, so the flag is dropped only for that form; the caller's own
     // pin already establishes which file it laced.
     let mut effective = flags | OpenFlags::SQLITE_OPEN_EXRESCODE;
-    if target != path {
+    if verbatim {
         // Callers pass NOFOLLOW; it cannot be honoured through the prefix, and
         // the caller's pin already named the exact file.
         effective.remove(OpenFlags::SQLITE_OPEN_NOFOLLOW);
@@ -281,3 +285,6 @@ pub(crate) fn mail_table(c: &Connection) -> StoreResult<&'static str> {
         "messages"
     })
 }
+
+#[cfg(test)]
+mod tests;
