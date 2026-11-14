@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 from zoneinfo import ZoneInfo
 
@@ -154,11 +155,16 @@ def record_status(config, directory, record, report, errors=()):
     store(config, value, preserve_newer=True)
 
 
+def scheduled_night(now):
+    local = now.astimezone(SCHEDULE_ZONE)
+    return local.date() - timedelta(days=local.hour < 11)
+
+
 def check(config, now=None):
     now = (now or datetime.now(timezone.utc)).astimezone(SCHEDULE_ZONE)
     # A persistent timer catching up before today's deadline checks yesterday,
     # rather than declaring today's still-pending scheduled run missing.
-    date = now.date() - timedelta(days=now.hour < 11)
+    date = scheduled_night(now)
     night = date.isoformat()
     value = {"schema": "se.nightly-proof-status/v1", "night": night,
              "checked_at": now.isoformat(), "state": "missing", "run_id": None,
@@ -210,7 +216,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
-    value = check(configure(json.loads(args.config.read_text())))
+    config = configure(json.loads(args.config.read_text()))
+    value = check(config)
+    try:
+        from scoreboard import publish
+        publish(config)
+    except Exception as error:
+        message = "scoreboard publication failed: " + str(error)
+        value.setdefault("scoreboard_publication_errors", []).append(message)
+        print(message, file=sys.stderr, flush=True)
+        try:
+            store(config, value)
+        except Exception as persistence_error:
+            print("cannot retain scoreboard publication error: " + str(persistence_error),
+                  file=sys.stderr, flush=True)
     print(json.dumps(value, allow_nan=False))
     return 0 if value["state"] == "green" else 1
 

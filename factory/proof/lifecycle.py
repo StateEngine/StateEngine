@@ -57,6 +57,9 @@ def status_checkpoint(config, directory, record, report, errors=()):
     try:
         from night_status import record_status
         record_status(config, directory, record, report, errors)
+        if config.get("night_status_directory") and not config.get("native_only"):
+            from scoreboard import publish
+            publish(config)
     except Exception as error:
         message = "nightly status publication failed: " + str(error)
         record.setdefault("status_publication_errors", []).append(message)
