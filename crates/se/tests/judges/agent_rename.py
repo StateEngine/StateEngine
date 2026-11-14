@@ -20,9 +20,17 @@ def check(se, root, hosted):
     def call(*args, success=True):
         nonlocal calls
         calls += 1
-        result = subprocess.run([str(se), '--home', str(home), '--json', *args],
-                                cwd=repo, env=environment, stdin=subprocess.DEVNULL,
-                                capture_output=True, timeout=60)
+        try:
+            result = subprocess.run([str(se), '--home', str(home), '--json', *args],
+                                    cwd=repo, env=environment, stdin=subprocess.DEVNULL,
+                                    capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired as error:
+            print('timed-out call:', args, 'stdout:', error.stdout,
+                  'stderr:', error.stderr, flush=True)
+            for log in sorted(home.glob('runtime-startup-*.log')):
+                print('startup log:', log.name, log.read_text(errors='replace'), flush=True)
+            print('endpoint exists:', (home / 'endpoint.json').exists(), flush=True)
+            raise
         (root / f'{calls:02}.stdout').write_bytes(result.stdout)
         (root / f'{calls:02}.stderr').write_bytes(result.stderr)
         if success:
