@@ -9,7 +9,7 @@ pub struct Plan {
     config_home: PathBuf,
     entries: Vec<(String, serde_json::Value)>,
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub fn prepare(
     home: &Path,
     configuration: &se_core::config_policy::ConfigFile,
@@ -58,7 +58,7 @@ pub fn prepare(
         },
     })
 }
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn prepare(
     _home: &Path,
     _configuration: &se_core::config_policy::ConfigFile,

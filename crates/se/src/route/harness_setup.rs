@@ -64,7 +64,7 @@ pub(super) fn prepare(cx: &Bootstrap, input: &ProjectInit) -> Result<ConfigFile>
     Ok(configuration)
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn resolve(
     configuration: &ConfigFile,
     name: &str,
@@ -84,7 +84,7 @@ fn resolve(
     Ok((executable, script))
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn resolve(
     _: &ConfigFile,
     _: &str,

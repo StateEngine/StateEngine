@@ -175,9 +175,9 @@ pub struct RuntimeLaunchSpec {
 }
 /// An exact child pin retained until runtime.lock/endpoint readiness is proved.
 pub struct RuntimeChild {
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(crate) state: crate::bootstrap::Parent,
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     pub(crate) _private: (),
 }
 pub struct RuntimeLaunch {
@@ -221,7 +221,7 @@ pub enum RuntimeDetachment {
     WindowsBreakaway,
     WindowsBroker,
     UserManagerUnit,
-    /// A new session does not escape an inherited external cgroup.
+    /// A new Unix session, without claiming escape from external containment.
     SessionOnly {
         inherited_cgroup: bool,
     },

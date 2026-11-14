@@ -4,7 +4,7 @@
 mod admit;
 #[path = "route/adoption.rs"]
 pub(crate) mod adoption;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "route/autostart.rs"]
 pub(crate) mod autostart;
 #[path = "route/clock.rs"]
@@ -59,7 +59,7 @@ mod status;
 #[path = "route/uninstall.rs"]
 pub mod uninstall;
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use runtime_control::foreground;
 
 #[path = "route/command_hint.rs"]

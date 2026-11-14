@@ -1,14 +1,14 @@
 //! Display birth time never becomes process authority. The endpoint has already
 //! passed protected file and store-owner checks; this read binds its native start.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use se_core::ops::receipt;
 use se_core::{ops::ProcessView, scope};
 use se_host::{EndpointRecord, client::lease::Deadline};
 use se_types::Result;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use se_types::SeError;
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub fn observe(endpoint: &EndpointRecord, bound: &Deadline) -> Result<ProcessView> {
     bound.remaining()?;
     let fields = endpoint.epoch.owner.fields();
@@ -59,7 +59,7 @@ pub fn observe(endpoint: &EndpointRecord, bound: &Deadline) -> Result<ProcessVie
     from_identity(&live.identity, bound)
 }
 /// A native committed startup supplies its exact retained identity directly.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub fn from_identity(identity: &se_proc::ProcessIdentity, bound: &Deadline) -> Result<ProcessView> {
     let born = se_proc::observe_process_birth(identity, bound.at()).map_err(native)?;
     bound.remaining()?;
@@ -70,31 +70,31 @@ pub fn from_identity(identity: &se_proc::ProcessIdentity, bound: &Deadline) -> R
         machine_id: identity.machine.to_string(),
     })
 }
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn observe(_endpoint: &EndpointRecord, _bound: &Deadline) -> Result<ProcessView> {
     Err(scope::unreadable(
         "host birth identity",
         "native birth-time observation is unavailable on this platform",
     ))
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn native(error: se_proc::ProcError) -> SeError {
     scope::unreadable("native host birth observation", &format!("{error:?}"))
         .with_cause(NativeObservationError(error))
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[derive(Debug)]
 struct NativeObservationError(se_proc::ProcError);
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl std::fmt::Display for NativeObservationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.0)
     }
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl std::error::Error for NativeObservationError {}
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) fn witness_exit(instance: &se_types::ProcessInstance, bound: &Deadline) -> Result<()> {
     let expected = instance.fields();
     loop {
@@ -154,7 +154,7 @@ pub(super) fn witness_exit(instance: &se_types::ProcessInstance, bound: &Deadlin
         std::thread::sleep(bound.remaining()?.min(std::time::Duration::from_millis(25)));
     }
 }
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub(super) fn witness_exit(_instance: &se_types::ProcessInstance, _bound: &Deadline) -> Result<()> {
     Err(scope::unreadable(
         "remove host exit",

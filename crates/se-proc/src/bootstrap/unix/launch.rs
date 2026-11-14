@@ -1,8 +1,17 @@
+use super::os::*;
 use super::*;
+use std::{
+    ffi::CString,
+    os::{
+        fd::{AsRawFd, FromRawFd},
+        unix::ffi::OsStrExt,
+    },
+    ptr,
+};
 
 #[expect(
     clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+    reason = "One POSIX spawn transaction retains every descriptor until native creation is returned."
 )]
 pub(in crate::bootstrap) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> ProcResult<Created> {
     let bytes = serde_json::to_vec(&frame).map_err(|e| input("runtime frame", &e.to_string()))?;
@@ -48,23 +57,8 @@ pub(in crate::bootstrap) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> Pro
     let (diagnostic_reader, diagnostic_writer) = socket("create bootstrap plan pipe")?;
     let diagnostics = diagnostics::Capture::start(diagnostic_reader, spec.deadline)?;
     let (parent, child) = socket("create bootstrap control socket")?;
-    let enable: i32 = 1;
-    // SAFETY: retained receiving socket and exact native integer option value.
-    if unsafe {
-        libc::setsockopt(
-            parent.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PASSCRED,
-            (&enable as *const i32).cast(),
-            std::mem::size_of_val(&enable) as u32,
-        )
-    } < 0
-    {
-        return Err(fail(
-            "enable kernel bootstrap credentials",
-            io::Error::last_os_error(),
-        ));
-    }
+    #[cfg(target_os = "linux")]
+    enable_credentials(&parent)?;
     let null = File::options()
         .read(true)
         .write(true)
@@ -93,13 +87,18 @@ pub(in crate::bootstrap) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> Pro
             "set exact runtime descriptors",
         )?;
     }
-    // SAFETY: close-from action runs only in the spawned executable, preserving 0..3 above.
-    code(
-        // SAFETY: initialized child action closes only descriptors above the reserved private set.
-        unsafe { libc::posix_spawn_file_actions_addclosefrom_np(&mut actions.0, 4) },
-        "close unrelated runtime descriptors",
-    )?;
-    let cgroup = crate::platform::runtime_cgroup()?;
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: child-only action preserves exactly the reserved descriptors 0..3.
+        code(
+            unsafe { libc::posix_spawn_file_actions_addclosefrom_np(&mut actions.0, 4) },
+            "close unrelated runtime descriptors",
+        )?;
+    }
+    #[cfg(target_os = "linux")]
+    let inherited_cgroup = crate::platform::runtime_cgroup()?;
+    #[cfg(target_os = "macos")]
+    let inherited_cgroup = false;
     let authorization = parent
         .try_clone()
         .map_err(|e| fail("duplicate bootstrap authorization", e))?;
@@ -126,12 +125,12 @@ pub(in crate::bootstrap) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> Pro
             pid: None,
             pin: None,
             image,
+            #[cfg(target_os = "macos")]
+            exited: std::sync::atomic::AtomicBool::new(false),
         },
         events: parent,
         authorization,
-        detachment: RuntimeDetachment::SessionOnly {
-            inherited_cgroup: cgroup,
-        },
+        detachment: RuntimeDetachment::SessionOnly { inherited_cgroup },
         plan: plan_write,
         encoded: bytes,
         error: None,
@@ -153,39 +152,7 @@ pub(in crate::bootstrap) fn receive() -> ProcResult<(Frame, File, File, File, In
         .filter(|n| *n > 0 && *n <= 300000)
         .ok_or_else(|| input("runtime deadline", "expired or outside the startup bound"))?;
     let deadline = Instant::now() + Duration::from_millis(remaining);
-    let mut credentials: libc::ucred = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut length = std::mem::size_of_val(&credentials) as u32;
-    // SAFETY: retained connected socket and correctly sized writable kernel credentials.
-    if unsafe {
-        libc::getsockopt(
-            events.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&mut credentials as *mut libc::ucred).cast(),
-            &mut length,
-        )
-    } < 0
-    {
-        return Err(fail(
-            "authenticate runtime creator",
-            io::Error::last_os_error(),
-        ));
-    }
-    // SAFETY: immutable current native user read.
-    let user = unsafe { libc::geteuid() };
-    if length as usize != std::mem::size_of_val(&credentials)
-        || credentials.pid as u32 != frame.parent.pid.0
-        || credentials.uid != user
-    {
-        return Err(input(
-            "runtime creator",
-            "inherited channel does not belong to the exact same-user parent",
-        ));
-    }
+    authenticate_creator(&events, &frame.parent)?;
     if let ProcessRead::Present(parent) =
         crate::read_process(frame.parent.machine.clone(), frame.parent.pid)?
     {
@@ -200,16 +167,7 @@ pub(in crate::bootstrap) fn receive() -> ProcResult<(Frame, File, File, File, In
     }
     // Only this executable's early single-threaded entry may fork the final
     // independent runtime. No embedding host/async-runtime thread forks here.
-    let count = std::fs::read_dir("/proc/self/task")
-        .map_err(|e| fail("inspect bootstrap thread count", e))?
-        .try_fold(0usize, |n, entry| entry.map(|_| n + 1))
-        .map_err(|e| fail("read bootstrap thread count", e))?;
-    if count != 1 {
-        return Err(input(
-            "runtime private entry",
-            "bootstrap must precede every runtime thread",
-        ));
-    }
+    single_threaded()?;
     // SAFETY: private early executable is single threaded; setsid has no pointer inputs.
     if unsafe { libc::setsid() } < 0 {
         return Err(fail("detach runtime session", io::Error::last_os_error()));

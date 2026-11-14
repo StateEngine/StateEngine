@@ -227,14 +227,20 @@ pub(crate) struct NativeCall {
     pub provider: se_proc::native_ipc::NativeIpcPeer,
 }
 
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 pub fn resolve_provider(
     configuration: &se_core::config_policy::ConfigFile,
     file: Option<&Path>,
 ) -> Result<std::path::PathBuf> {
     resolve_provider_for(Kind::Claude, configuration, file)
 }
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 pub fn resolve_provider_for(
     kind: Kind,
     configuration: &se_core::config_policy::ConfigFile,

@@ -61,7 +61,7 @@ pub fn read_process_command(
             .collect::<Vec<_>>()
             .join(" ")
     };
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let command = format!(
         "executable only: {}",
         expected.image.display().to_string().escape_debug()

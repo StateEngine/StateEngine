@@ -1,7 +1,7 @@
 //! Fail-open native hook entry. Ambient session/config selections never supply
 //! authority: this home and project come only from explicit installation.
 use crate::{bootstrap::Bootstrap, route};
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod mail;
 use se_host::{
     adoption::{Action, Input, Kind},
@@ -28,7 +28,7 @@ fn kind(args: &[OsString]) -> Option<Kind> {
         _ => None,
     }
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn run(args: &[OsString]) -> Result<u8> {
     if args.len() != 4 {
         return Ok(0);
@@ -87,11 +87,11 @@ fn run(args: &[OsString]) -> Result<u8> {
         Ok(0)
     })
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn managed_ancestry_refusal(error: &SeError) -> bool {
     matches!(error.body.detail(), se_types::Detail::OwnerRequired(detail) if detail.op == "IPC owner")
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn registered(
     args: &[OsString],
     home: PathBuf,
@@ -178,7 +178,7 @@ fn registered(
     forward_lifecycle(&cx, input)?;
     Ok(0)
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn forward_lifecycle(cx: &Bootstrap, input: Input) -> Result<serde_json::Value> {
     // A definite contention refusal keeps the original session/event keys.
     // Reauthenticate each attempt within the provider's short end-hook window.
@@ -196,11 +196,11 @@ fn forward_lifecycle(cx: &Bootstrap, input: Input) -> Result<serde_json::Value> 
         }
     }
 }
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn run(_args: &[OsString]) -> Result<u8> {
     Ok(0)
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn forward(cx: &Bootstrap, input: Input) -> Result<serde_json::Value> {
     let files =
         route::files::Files::open(&cx.home).map_err(|e| se_core::store_error::store_error(&e))?;
@@ -222,7 +222,7 @@ fn forward(cx: &Bootstrap, input: Input) -> Result<serde_json::Value> {
     };
     forward_to(cx, input, &target)
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn forward_to(
     cx: &Bootstrap,
     input: Input,
@@ -270,7 +270,7 @@ fn failure(error: std::io::Error) -> SeError {
 fn native(error: se_proc::StateFileError) -> SeError {
     se_core::scope::unreadable("native adoption file", &error.to_string())
 }
-#[cfg(all(test, any(target_os = "linux", windows)))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
 mod tests {
     use super::managed_ancestry_refusal;
     use se_types::{Detail, SeError, details};

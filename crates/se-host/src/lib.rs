@@ -36,14 +36,23 @@ mod ipc;
 pub mod mcp;
 pub use mcp::{McpBackend, McpReply};
 mod model;
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 mod process;
 #[cfg(feature = "listener")]
 mod process_io;
 mod runtime;
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 pub use process::launch_util::resolve_provider as resolve_provider_executable;
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 pub use process::{ProcessConfiguration, ProcessDrain, ProcessOptions, Reconciliation};
 #[cfg(all(unix, feature = "listener"))]
 pub use process_io::UnixProviderIo;
