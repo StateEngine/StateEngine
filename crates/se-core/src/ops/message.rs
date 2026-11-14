@@ -9,6 +9,20 @@ use se_store::{Actor, MessageQuery, ReadBudget, Snapshot, StoredText};
 use se_types::{Detail, Page, PageRequest, Result, SeError, details};
 use std::{num::NonZeroU32, time::Duration};
 
+/// Successful display names live only for this finite page's read snapshot.
+#[derive(Default)]
+struct ActorRefs(Vec<(Actor, ActorRef)>);
+impl ActorRefs {
+    fn get<R: Snapshot>(&mut self, read: &mut R, actor: &Actor) -> Result<ActorRef> {
+        if let Some((_, value)) = self.0.iter().find(|(known, _)| known == actor) {
+            return Ok(value.clone());
+        }
+        let value = receipt::actor_ref(read, actor)?;
+        self.0.push((actor.clone(), value.clone()));
+        Ok(value)
+    }
+}
+
 #[expect(
     clippy::cognitive_complexity,
     clippy::too_many_lines,
@@ -146,8 +160,14 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
     let window = page.window().clone();
     let next = page.next().cloned();
     let mut items = Vec::with_capacity(page.items().len());
+    let mut actors = ActorRefs::default();
     for record in page.into_items() {
-        let from = receipt::mail_sender_ref(cx.read, &record)?;
+        let from = if matches!(record.sender, Actor::Remote(_)) {
+            // Remote provenance belongs to each message, not just its sender.
+            receipt::mail_sender_ref(cx.read, &record)?
+        } else {
+            actors.get(cx.read, &record.sender)?
+        };
         let event = scope::require_present(
             cx.read
                 .event(record.event.clone())
@@ -214,10 +234,10 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
             to: if record.work.is_some() {
                 receipt::floor_ref()
             } else {
-                receipt::actor_ref(cx.read, &record.recipient)?
+                actors.get(cx.read, &record.recipient)?
             },
             for_recipient: if record.work.is_some() {
-                Some(receipt::actor_ref(cx.read, &record.recipient)?)
+                Some(actors.get(cx.read, &record.recipient)?)
             } else {
                 None
             },
@@ -245,11 +265,11 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
     }
     let to_ref = to
         .as_ref()
-        .map(|actor| receipt::actor_ref(cx.read, actor))
+        .map(|actor| actors.get(cx.read, actor))
         .transpose()?;
     let from_ref = from
         .as_ref()
-        .map(|actor| receipt::actor_ref(cx.read, actor))
+        .map(|actor| actors.get(cx.read, actor))
         .transpose()?;
     let view = MessagePageView {
         op: "list".into(),
