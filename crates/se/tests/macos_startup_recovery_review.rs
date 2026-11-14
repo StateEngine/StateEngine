@@ -89,6 +89,7 @@ impl Fixture {
         ));
         fs::create_dir(&root)?;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+        let root = fs::canonicalize(root)?;
         let image = root.join("se");
         fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
         fs::set_permissions(&image, fs::Permissions::from_mode(0o700))?;
