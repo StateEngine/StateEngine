@@ -355,7 +355,9 @@ fn concurrent_start_retains_one_owner_and_both_callers_finish() -> Check {
 #[test]
 fn failed_start_cleans_up_and_retry_after_port_release_works() -> Check {
     let f = Fixture::new()?;
-    let occupied = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+    let occupied = (20000..30000)
+        .find_map(|port| std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).ok())
+        .ok_or("no free supported fixture port")?;
     let port = occupied.local_addr()?.port();
     let config = f.home.join("config.toml");
     let original = fs::read_to_string(&config)?;

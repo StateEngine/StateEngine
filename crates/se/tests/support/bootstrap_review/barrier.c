@@ -1,5 +1,4 @@
 /* A bounded native-call barrier for real CLI startup failure/recovery controls. */
-#include <dlfcn.h>
 #include <fcntl.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -31,21 +30,14 @@ static void barrier(const char *mode, pid_t child) {
 static int held_spawn(pid_t *pid, const char *path,
         const posix_spawn_file_actions_t *actions, const posix_spawnattr_t *attributes,
         char *const argv[], char *const environment[]) {
-    typedef int (*original_t)(pid_t *, const char *, const posix_spawn_file_actions_t *,
-                             const posix_spawnattr_t *, char *const [], char *const []);
-    original_t original = (original_t)dlsym(RTLD_NEXT, "posix_spawn");
-    if (!original) _exit(96);
-    int code = original(pid, path, actions, attributes, argv, environment);
+    int code = posix_spawn(pid, path, actions, attributes, argv, environment);
     if (!code && argv && argv[1] && !strcmp(argv[1], "--stateengine-private-runtime-bootstrap"))
         barrier("spawn", *pid);
     return code;
 }
 static ssize_t held_send(int fd, const void *bytes, size_t count, int flags) {
-    typedef ssize_t (*original_t)(int, const void *, size_t, int);
-    original_t original = (original_t)dlsym(RTLD_NEXT, "send");
-    if (!original) _exit(97);
     if (count == 33 && ((const unsigned char *)bytes)[0] == 'C') barrier("commit", 0);
-    return original(fd, bytes, count, flags);
+    return send(fd, bytes, count, flags);
 }
 #define INTERPOSE(replacement, original) \
     __attribute__((used)) static struct { const void *a, *b; } pair_##original \
