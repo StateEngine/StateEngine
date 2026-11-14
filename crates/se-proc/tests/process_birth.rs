@@ -84,6 +84,22 @@ fn outside(pid: u32, rate: Option<u64>) -> Result<(ProcessIdentity, i64, Duratio
     )?;
     Ok((expected, micros, Duration::from_secs(1)))
 }
+#[cfg(target_os = "macos")]
+#[path = "../../test-support/macos_process.rs"]
+mod macos_birth_outside;
+#[cfg(target_os = "macos")]
+fn outside(pid: u32, _rate: Option<u64>) -> Result<(ProcessIdentity, i64, Duration)> {
+    let identity = macos_birth_outside::outside(pid, MachineId::new("native-birth-fixture")?)?;
+    let StartIdentity::MacOs {
+        seconds,
+        microseconds,
+    } = identity.start
+    else {
+        return Err("outside Darwin birth absent".into());
+    };
+    let micros = i64::try_from(seconds)? * 1_000_000 + i64::from(microseconds);
+    Ok((identity, micros, Duration::from_micros(1)))
+}
 #[cfg(windows)]
 fn outside(pid: u32, _rate: Option<u64>) -> Result<(ProcessIdentity, i64, Duration)> {
     let script = std::env::temp_dir().join(format!("se-birth-outside-{}.ps1", std::process::id()));
@@ -128,7 +144,7 @@ fn outside(pid: u32, _rate: Option<u64>) -> Result<(ProcessIdentity, i64, Durati
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(10)
 }
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
@@ -196,7 +212,13 @@ fn run() -> Result {
         StartIdentity::Windows { creation_filetime } => StartIdentity::Windows {
             creation_filetime: creation_filetime + 1,
         },
-        _ => return Err("unexpected native start identity".into()),
+        StartIdentity::MacOs {
+            seconds,
+            microseconds,
+        } => StartIdentity::MacOs {
+            seconds: seconds + 1,
+            microseconds,
+        },
     };
     let mut boot = expected.clone();
     boot.boot = match boot.boot {
@@ -264,9 +286,9 @@ fn main() -> Result {
         std::io::stdin().read_line(&mut input)?;
         return Ok(());
     }
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     run()?;
-    #[cfg(not(any(target_os = "linux", windows)))]
-    println!("NOT GRADED: native Windows/Linux birth observation");
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    println!("NOT GRADED: native process birth observation unavailable");
     Ok(())
 }
