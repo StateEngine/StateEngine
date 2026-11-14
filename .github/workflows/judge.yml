@@ -165,6 +165,9 @@ jobs:
         if: ${{ always() }}
         with:
           name: judge-${{ matrix.os }}-${{ matrix.side }}
-          path: target/nextest/ci/junit.xml
+          # Tests may leave timing receipts and traces in target/judge-diagnostics/ for the reviewer.
+          path: |
+            target/nextest/ci/junit.xml
+            target/judge-diagnostics/
           retention-days: 14
           if-no-files-found: warn
