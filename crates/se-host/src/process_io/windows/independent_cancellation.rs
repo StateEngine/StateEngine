@@ -3,7 +3,7 @@
 use super::*;
 use se_proc::*;
 use std::{future::Future, task::Poll, time::Instant as NativeInstant};
-#[path = "../../../../tests/support/prepared_windows_scope.rs"]
+#[path = "../../../tests/support/prepared_windows_scope.rs"]
 mod fixture;
 use fixture::{Fixture, proc_error};
 type Check<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
