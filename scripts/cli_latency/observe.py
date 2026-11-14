@@ -242,9 +242,8 @@ def main():
                   method='spawn through pipe EOF and child exit; alternating pairs; first call separate; '
                          '200 warm calls; nearest-rank p95; validation and census outside timer',
                   images=images, cohorts=[], exit=1)
-    cases = [('status-clean', 'status', 1, 0, False), ('status-dirty', 'status', 1, 0, True),
-             ('agents-small', 'agents', 1, 0, False), ('agents-wide', 'agents', 10, 0, False),
-             ('inbox-empty', 'inbox', 1, 0, False), ('inbox-populated', 'inbox', 1, 20, False)]
+    cases = [('inbox-empty', 'inbox', 1, 0, False),
+             ('inbox-populated', 'inbox', 1, 20, False)]
     for provider in ('claude', 'codex', 'acp'):
         for name, action, count, mail_count, dirty in cases:
             base = 'status-base' if action == 'status' else 'reads-base'
