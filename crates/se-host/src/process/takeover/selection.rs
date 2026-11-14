@@ -23,12 +23,18 @@ fn sessions(plan: &LaunchPlan) -> Vec<se_types::SessionId> {
         .collect()
 }
 
-fn confirmation(plan: &LaunchPlan, reason: String) -> Result<SeError> {
+fn confirmation(plan: &LaunchPlan, home: &std::path::Path, reason: String) -> Result<SeError> {
     // The remedy must be runnable as written: name the exact replacement command
-    // with --force for this project and agent, so a script or agent never has to
-    // reconstruct it from the inventory above.
-    let force =
-        se_core::ops::AgentCommand::launch(&plan.agent.id, None, Some(&plan.project.id), false);
+    // with --force for this project, agent and state home, so a script or agent
+    // never has to reconstruct it from the inventory above. The home is explicit
+    // because an unqualified command would resolve SE_HOME or the default store,
+    // which can be a different home and address another copy of the project.
+    let force = se_core::ops::AgentCommand::launch(
+        &plan.agent.id,
+        se_core::ops::AgentCommand::home_argument(home),
+        Some(&plan.project.id),
+        false,
+    );
     Ok(SeError::new(Detail::LaunchConfirmationRequired(
         details::LaunchConfirmationRequired {
             subject: plan.agent.name.clone(),
@@ -67,7 +73,7 @@ impl LaunchCoordinator {
         expected_sessions.sort();
         current_sessions.sort();
         if expected != current || expected_sessions != current_sessions {
-            return Err(confirmation(plan, "The sessions or managed lifecycles changed after the displayed inventory. No process was stopped; inspect the current selection and confirm again.".into())?);
+            return Err(confirmation(plan, &self.options.home, "The sessions or managed lifecycles changed after the displayed inventory. No process was stopped; inspect the current selection and confirm again.".into())?);
         }
         Ok(())
     }
@@ -151,6 +157,7 @@ impl LaunchCoordinator {
         }
         confirmation(
             plan,
+            &self.options.home,
             format!(
                 "{} active session bindings; {} managed lifecycles. {} No process was stopped.",
                 plan.control.sessions.len(),
