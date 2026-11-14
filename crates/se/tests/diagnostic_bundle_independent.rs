@@ -752,13 +752,19 @@ fn allowlisted_symlink_log_is_unreadable_and_its_target_is_never_exported() -> C
 
 #[cfg(unix)]
 #[test]
-fn non_utf8_temp_parent_refuses_before_creating_any_export_artifacts() -> Check {
+fn non_utf8_tmpdir_value_refuses_before_creating_any_export_artifacts() -> Check {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     let fixture = Fixture::new()?;
     let bad_temp = fixture
         .root
         .join(OsString::from_vec(b"synthetic-temp-\xff".to_vec()));
-    private_dir(&bad_temp)?;
+    // The consumer takes native environment bytes, not an existing directory.
+    // Creating this filename can fail on macOS before the consumer runs.
+    #[cfg(target_os = "macos")]
+    eprintln!(
+        "macOS fixture: non-UTF-8 TMPDIR environment bytes; on-disk non-UTF-8 names are not exercised"
+    );
+    let original_entries = directory_names(&fixture.root)?;
     assert!(bad_temp.to_str().is_none());
     let output = fixture
         .command(&fixture.home)
@@ -776,13 +782,15 @@ fn non_utf8_temp_parent_refuses_before_creating_any_export_artifacts() -> Check 
             .is_some_and(|code| !code.is_empty())
     );
     assert_ne!(refusal["schema"], "se.diagnostic-bundle/v1");
+    assert_eq!(refusal["detail"]["subject"], "diagnostic path");
     assert!(
         refusal.get("path").is_none(),
         "refusal returned an export receipt"
     );
-    assert!(
-        directory_names(&bad_temp)?.is_empty(),
-        "refusal left private export artifacts"
+    assert_eq!(
+        directory_names(&fixture.root)?,
+        original_entries,
+        "refusal created the unrepresentable temp parent or other artifacts"
     );
     assert!(
         directory_names(&fixture.temp)?.is_empty(),
@@ -797,13 +805,18 @@ fn non_utf8_temp_parent_refuses_before_creating_any_export_artifacts() -> Check 
 
 #[cfg(unix)]
 #[test]
-fn non_utf8_user_home_display_and_private_log_suffix_are_redacted() -> Check {
+fn non_utf8_home_value_display_and_private_log_suffix_are_redacted() -> Check {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     let fixture = Fixture::new()?;
     let user_home = fixture
         .root
         .join(OsString::from_vec(b"synthetic-home-\xff".to_vec()));
-    private_dir(&user_home)?;
+    // HOME is diagnostic text even when its native bytes name no directory.
+    #[cfg(target_os = "macos")]
+    eprintln!(
+        "macOS fixture: non-UTF-8 HOME environment bytes; on-disk non-UTF-8 names are not exercised"
+    );
+    let original_entries = directory_names(&fixture.root)?;
     assert!(user_home.to_str().is_none());
     let displayed_home = user_home.display().to_string();
     let suffix = "synthetic-private-suffix.txt";
@@ -831,9 +844,10 @@ fn non_utf8_user_home_display_and_private_log_suffix_are_redacted() -> Check {
             .is_some_and(|text| text.contains("benign displayed home diagnostic survives"))
     );
     assert_eq!(fs::read(fixture.home.join(name))?, content.as_bytes());
-    assert!(
-        directory_names(&user_home)?.is_empty(),
-        "diagnosis wrote to the user home"
+    assert_eq!(
+        directory_names(&fixture.root)?,
+        original_entries,
+        "diagnosis created the environment-only user home or other artifacts"
     );
     Ok(())
 }
