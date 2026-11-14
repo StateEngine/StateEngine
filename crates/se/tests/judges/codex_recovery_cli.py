@@ -137,7 +137,8 @@ class Judge:
         if len(runtimes) != 1 or len(providers) != 1:
             raise AssertionError(("fixture identities ambiguous", rows))
         runtime, provider = runtimes[0], providers[0]
-        helper_pid = json.loads((self.root / "repo/provider-ready.json").read_text())["helper_pid"]
+        ready = json.loads((self.root / "repo/provider-ready.json").read_text())
+        helper_pid = ready["helper_pid"]
         helper = observe(helper_pid)
         if not helper or not any(row["pid"] == helper_pid for row in rows):
             raise AssertionError("native provider helper identity absent")
@@ -161,9 +162,11 @@ class Judge:
         if up.returncode:
             raise AssertionError(("se up failed", up.stdout.decode(), up.stderr.decode()))
         # Recovery supervision is asynchronous after endpoint readiness.
-        end = time.monotonic() + (48 if self.args.scenario == "slow" else 12)
+        end = time.monotonic() + (48 if self.args.scenario == "slow" else 55)
         while time.monotonic() < end:
             if not live(provider):
+                break
+            if self.args.scenario == "crash" and (self.root / "repo/provider-reconnect.json").exists():
                 break
             time.sleep(0.25)
         self.result["original_provider_alive_after_recovery"] = live(provider)
@@ -178,6 +181,13 @@ class Judge:
         else:
             if not live(provider) or not live(helper):
                 raise AssertionError("recovery stopped the original provider without explicit consent")
+            recovered = json.loads((self.root / "repo/provider-reconnect.json").read_text())
+            if (recovered["connection"] < 2 or recovered["native_pid"] != provider["pid"]
+                    or recovered["helper_pid"] != helper["pid"]
+                    or recovered["thread_id"] != ready["thread_id"]
+                    or recovered["policy"] != ready["policy"]):
+                raise AssertionError("the original provider did not echo its saved policy on reconnect")
+            self.result["provider_reconnect"] = recovered
             refused = self.call("--project", self.project, "launch", self.agent, "--detach")
             refusal = refused.stdout + refused.stderr
             self.result["plain_launch_exit"] = refused.returncode

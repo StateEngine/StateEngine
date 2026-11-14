@@ -2,9 +2,9 @@
 
 The first transport supports the actual readiness, policy echo and MCP discovery.
 A disconnected transport leaves its native process alive, as the persistent
-app-server does. A later connection returns a generic RPC refusal to reopen.
+app-server does. A later connection resumes its saved thread and policy.
 The slow control pauses both native processes before reconnect, so silence is
-independent of that refusal. Neither response authorizes automatic reaping.
+independent of an actual successful reconnect. Neither authorizes reaping.
 """
 import base64
 import hashlib
@@ -18,6 +18,13 @@ import threading
 import traceback
 import urllib.request
 import uuid
+
+
+def witness(name, value):
+    target = Path(name)
+    staged = target.with_name(target.name + '.' + str(threading.get_ident()) + '.tmp')
+    staged.write_text(json.dumps(value))
+    staged.replace(target)
 
 
 def exact(stream, size):
@@ -68,7 +75,7 @@ def discover(params):
             raise ValueError('actual prepared MCP discovery was not verified')
 
 
-def connection(stream, number, thread, rollout):
+def connection(stream, number, thread, rollout, saved):
     try:
         request = bytearray()
         while not request.endswith(b'\r\n\r\n'):
@@ -93,12 +100,19 @@ def connection(stream, number, thread, rollout):
             if 'id' not in value:
                 continue
             method, params = value['method'], value.get('params', {})
-            if number > 1:
-                send(stream, json.dumps({'id':value['id'], 'error':{'code':-32000,
-                     'message':'the original client control cannot be reopened'}}).encode())
-                continue
             if method == 'initialize':
                 result = {'userAgent':'independent-recovery-double'}
+            elif method == 'thread/resume' and 'config' not in params:
+                with saved['lock']:
+                    original = saved.get('policy')
+                    if original is None or params['threadId'] != original['thread']['id']:
+                        raise ValueError('reconnect did not select the original conversation')
+                    result = original | {'thread': original['thread'] |
+                                         {'turns': [], 'status': {'type': 'idle'}}}
+                witness('provider-reconnect.json', {
+                    'connection': number, 'helper_pid': os.getpid(), 'native_pid': os.getppid(),
+                    'thread_id': result['thread']['id'],
+                    'policy': {k: result[k] for k in ('approvalPolicy', 'sandbox', 'cwd')}})
             elif method in ('thread/start', 'thread/resume'):
                 discover(params)
                 if method == 'thread/resume':
@@ -123,8 +137,11 @@ def connection(stream, number, thread, rollout):
                     sandbox = {'type':'dangerFullAccess'}
                 result = {'thread':{'id':thread, 'path':str(rollout)},
                           'approvalPolicy':params['approvalPolicy'], 'sandbox':sandbox, 'cwd':params['cwd']}
-                Path('provider-ready.json').write_text(json.dumps({'helper_pid':os.getpid(),
-                    'native_pid':os.getppid(), 'discovery':True}))
+                with saved['lock']:
+                    saved['policy'] = result
+                witness('provider-ready.json', {'helper_pid':os.getpid(),
+                    'native_pid':os.getppid(), 'discovery':True, 'thread_id': thread,
+                    'policy': {k: result[k] for k in ('approvalPolicy', 'sandbox', 'cwd')}})
             elif method == 'thread/read':
                 result = {'thread':{'id':thread, 'path':str(rollout), 'turns':[], 'status':{'type':'idle'}}}
             elif method == 'turn/start':
@@ -154,10 +171,11 @@ def main():
     thread = str(uuid.uuid4())
     rollout = Path(os.environ['CODEX_HOME']) / 'sessions' / ('rollout-' + thread + '.jsonl')
     number = 0
+    saved = {'lock': threading.Lock()}
     while True:
         stream, _ = server.accept()
         number += 1
-        threading.Thread(target=connection, args=(stream, number, thread, rollout), daemon=True).start()
+        threading.Thread(target=connection, args=(stream, number, thread, rollout, saved), daemon=True).start()
 
 
 if __name__ == '__main__':
