@@ -27,9 +27,20 @@ class Smoke:
         binary = self.home / ('AppData/Local/StateEngine/bin/se.exe' if sys.platform == 'win32'
                               else '.local/bin/se')
         self.binary = binary
-        environment = {key: value for key, value in inherited.items()
-                       if key in ('PATH', 'SystemRoot', 'windir', 'ComSpec', 'PATHEXT', 'LANG', 'LC_ALL')
-                       or key in settings.get('environment', [])}
+        # Native names are matched case-insensitively: hosted runners do not
+        # guarantee the classic mixed case, and Winsock refuses to initialize
+        # a child environment that lost its system root.
+        system = {'path', 'systemroot', 'windir', 'comspec', 'pathext', 'lang', 'lc_all'}
+        taken = set()
+        environment = {}
+        for key, value in inherited.items():
+            lowered = key.lower()
+            if lowered in system:
+                if lowered not in taken:
+                    taken.add(lowered)
+                    environment[key] = value
+            elif key in settings.get('environment', []):
+                environment[key] = value
         environment.update(HOME=str(self.home), USERPROFILE=str(self.home), SE_HOME=str(self.state),
                            PATH=str(binary.parent) + os.pathsep + inherited.get('PATH', ''),
                            XDG_CONFIG_HOME=str(self.home / '.config'),

@@ -57,7 +57,7 @@ def protect_state_home(state):
     # principal access; the store refuses that location. Replace it with an
     # owner-only protected DACL, the same shape the product creates itself.
     buffer = ctypes.create_unicode_buffer(256)
-    size = ctypes.c_uint32(buffer.capacity())
+    size = ctypes.c_uint32(len(buffer))
     if not ctypes.windll.kernel32.GetUserNameW(buffer, ctypes.byref(size)):
         raise RuntimeError('state home protection failed: GetUserNameW error '
                            + str(ctypes.get_last_error()))
@@ -324,7 +324,8 @@ def witness(output, images):
                        TMPDIR=str(scratch / 'tmp'), TMP=str(scratch / 'tmp'),
                        TEMP=str(scratch / 'tmp'), LANG='C.UTF-8', LC_ALL='C.UTF-8',
                        GIT_CONFIG_GLOBAL=str(scratch / '.gitconfig'), GIT_CONFIG_NOSYSTEM='1')
-    rows = dict(python=sys.executable, python_machine=platform.machine())
+    rows = dict(python=sys.executable, python_machine=platform.machine(),
+               full_env_keys=sorted(full))
     bind_script = ('import socket\n'
                    'for label, port in (("any-ephemeral", 0), ("scan-range", 25002)):\n'
                    '    try:\n'
