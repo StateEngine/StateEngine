@@ -14,6 +14,24 @@ from .inputs import home_path
 PHASES = ('Launch', 'Work', 'Mail', 'Resume')
 
 
+def stop_closed(row):
+    if (not isinstance(row, dict) or row.get('remaining') != []
+            or row.get('population') != 'empty'
+            or row.get('result') not in ('stopped', 'already-stopped')):
+        return False
+    witness = row.get('witness')
+    if (not isinstance(witness, dict) or witness.get('state') != 'witnessed'
+            or not isinstance(witness.get('observed_at'), str) or not witness['observed_at']):
+        return False
+    if row.get('enumeration') == 'complete':
+        return True
+    # No native population existed to enumerate. This is an affirmative empty
+    # control-snapshot witness, not permission to skip an unavailable census.
+    return (row.get('enumeration') == 'not-applicable'
+            and row['result'] == 'already-stopped' and witness.get('method') == 'not-applicable'
+            and isinstance(witness.get('detail'), str) and bool(witness['detail']))
+
+
 class Smoke:
     def __init__(self, output, package, entry, settings, inherited):
         self.output, self.package, self.entry, self.settings = output, package, entry, settings
@@ -291,8 +309,8 @@ class Smoke:
                     result = self.call(args, 'cleanup-' + name, terminal=name != 'down', project=name == 'stop')
                     if name == 'stop':
                         require(result.get('complete') is True and isinstance(result.get('stops'), list)
-                                and all(row.get('remaining') == [] and row.get('enumeration') == 'complete'
-                                        for row in result['stops']), 'Stop closure is incomplete')
+                                and all(stop_closed(row) for row in result['stops']),
+                                'Stop closure is incomplete')
                     if name == 'down':
                         require(result.get('complete') is True and result.get('witness', {}).get('state') == 'witnessed'
                                 and isinstance(result.get('stops'), list)
