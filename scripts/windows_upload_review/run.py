@@ -23,8 +23,16 @@ def encoded(script):
             base64.b64encode(script.encode('utf-16le')).decode()]
 
 
+def powershell_environment(environment=None):
+    # An intermediate Python process retains PowerShell 7's module paths.
+    # Let Windows PowerShell reconstruct its own defaults, as a direct launch does.
+    return {key: value for key, value in (environment or os.environ).items()
+            if key.casefold() != 'psmodulepath'}
+
+
 def local_ps(script):
-    proc = subprocess.run([PS, *encoded(script)], capture_output=True, timeout=60)
+    proc = subprocess.run([PS, *encoded(script)], env=powershell_environment(),
+                          capture_output=True, timeout=60)
     if proc.returncode:
         raise RuntimeError(proc.stderr.decode(errors='replace'))
     return proc.stdout.decode('utf-8-sig').strip()
@@ -58,6 +66,8 @@ class Review:
         (self.out / 'result.json').write_text(json.dumps(self.report, indent=2))
 
     def run(self, name, argv, limit=60, env=None, stdin=None):
+        if str(argv[0]).casefold() == PS.casefold():
+            env = powershell_environment(env)
         row = {'name': name, 'argv': argv, 'deadline_seconds': limit}
         self.report['commands'].append(row)
         begin = time.monotonic()
