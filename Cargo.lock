@@ -1478,7 +1478,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "se"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "clap",
  "regex",
@@ -1501,7 +1501,7 @@ dependencies = [
 
 [[package]]
 name = "se-atlas"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "blake3",
  "grep-matcher",
@@ -1520,7 +1520,7 @@ dependencies = [
 
 [[package]]
 name = "se-core"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "clap",
  "schemars",
@@ -1533,7 +1533,7 @@ dependencies = [
 
 [[package]]
 name = "se-host"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "base64",
  "chacha20poly1305",
@@ -1569,7 +1569,7 @@ dependencies = [
 
 [[package]]
 name = "se-proc"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "libc",
  "rusqlite",
@@ -1583,7 +1583,7 @@ dependencies = [
 
 [[package]]
 name = "se-remote"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "futures-util",
  "se-core",
@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "se-remote-cli"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "clap",
  "se-core",
@@ -1613,7 +1613,7 @@ dependencies = [
 
 [[package]]
 name = "se-store"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "rusqlite",
  "se-proc",
@@ -1640,7 +1640,7 @@ dependencies = [
 
 [[package]]
 name = "se-types"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "schemars",
  "serde",
