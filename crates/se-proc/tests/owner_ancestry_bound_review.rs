@@ -11,7 +11,9 @@ fn identity() -> Result<ProcessIdentity> {
     match read_process(
         MachineId::new("owner-bound-review")?,
         ProcessId(std::process::id()),
-    )? {
+    )
+    .map_err(|error| format!("native self read failed: {error:?}"))?
+    {
         ProcessRead::Present(live) => Ok(live.identity),
         other => Err(format!("self native identity unavailable: {other:?}").into()),
     }
