@@ -29,7 +29,7 @@ NATIVE.proc_listchildpids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_in
 BOOT = subprocess.check_output(['sysctl', '-n', 'kern.bootsessionuuid'], text=True).strip()
 
 
-def observe(pid):
+def bsd_observation(pid):
     value = BsdInfo()
     ctypes.set_errno(0)
     count = NATIVE.proc_pidinfo(pid, 3, 1, ctypes.byref(value), ctypes.sizeof(value))
@@ -42,13 +42,30 @@ def observe(pid):
         raise RuntimeError('invalid native process receipt')
     result = {name: getattr(value, name) for name in (
         'pid', 'ppid', 'uid', 'status', 'seconds', 'micros')}
-    if value.status != 5:
-        path = ctypes.create_string_buffer(4096)
-        length = NATIVE.proc_pidpath(pid, path, len(path))
-        if length <= 0:
-            raise RuntimeError(f'unreadable native image {pid}: {ctypes.get_errno()}')
-        result['image'] = os.fsdecode(path.value)
     return result
+
+
+def observe(pid):
+    # The process can exit between BSD-info and image lookup. Re-read native
+    # state, never infer absence from a missing image or substitute an empty name.
+    for attempt in range(3):
+        result = bsd_observation(pid)
+        if result is None or result['status'] == 5:
+            return result
+        path = ctypes.create_string_buffer(4096)
+        ctypes.set_errno(0)
+        length = NATIVE.proc_pidpath(pid, path, len(path))
+        cause = ctypes.get_errno()
+        if length > 0:
+            confirmed = bsd_observation(pid)
+            if same(result, confirmed) and confirmed['status'] != 5:
+                confirmed['image'] = os.fsdecode(path.value)
+                return confirmed
+            if confirmed is None or confirmed['status'] == 5:
+                return confirmed
+        elif cause not in (errno.ESRCH, errno.EINVAL):
+            raise RuntimeError(f'unreadable native image {pid}: {cause}')
+    raise RuntimeError(f'unstable or unreadable native image {pid}: {cause}')
 
 
 def same(receipt, current):
@@ -137,13 +154,25 @@ class Trial:
         current = observe(pin['pid'])
         if not same(pin, current) or current['status'] == 5:
             return
-        command = subprocess.check_output(['ps', '-ww', '-p', str(pin['pid']), '-o', 'command='], text=True).strip()
+        command = subprocess.run(['ps', '-ww', '-p', str(pin['pid']), '-o', 'command='],
+                                 text=True, capture_output=True)
+        current = observe(pin['pid'])
+        if not same(pin, current) or current['status'] == 5:
+            return
+        assert command.returncode == 0, command.stderr
+        full_command = command.stdout.strip()
         assert current['image'] in self.images(), current
-        assert current['image'] in command, command
+        assert current['image'] in full_command, full_command
         assert subprocess.check_output(['sysctl', '-n', 'kern.bootsessionuuid'], text=True).strip() == BOOT
-        assert same(pin, observe(pin['pid'])), 'native birth changed before signal'
-        self.events.append({'signal': number, 'receipt': current, 'full_command': command})
-        os.kill(pin['pid'], number)
+        final = observe(pin['pid'])
+        if not same(pin, final) or final['status'] == 5:
+            return
+        self.events.append({'signal': number, 'receipt': final, 'full_command': full_command})
+        try:
+            os.kill(pin['pid'], number)
+        except ProcessLookupError:
+            # Signal-time ESRCH is not itself completion: independently observe.
+            assert not self.alive(pin), 'signal missed a still-live owned birth'
 
     def images(self):
         return (str(self.helper), str(self.clean), str(self.probe), str(self.clean_probe))
@@ -160,9 +189,14 @@ class Trial:
         for value in list(self.pins.values()):
             current = observe(value['pid'])
             if same(value, current) and current['status'] != 5:
-                command = subprocess.check_output(['ps', '-ww', '-p', str(value['pid']), '-o', 'command='], text=True)
-                if role in command:
-                    return current
+                command = subprocess.run(['ps', '-ww', '-p', str(value['pid']), '-o', 'command='],
+                                         text=True, capture_output=True)
+                confirmed = observe(value['pid'])
+                if not same(value, confirmed) or confirmed['status'] == 5:
+                    continue
+                assert command.returncode == 0, command.stderr
+                if role in command.stdout:
+                    return confirmed
         return None
 
     def reconcile(self):
@@ -305,7 +339,8 @@ class Trial:
         live = [pin for pin in self.pins.values() if self.alive(pin)]
         self.report['live_before_external_cleanup'] = live
         if live:
-            errors.append('product left a live owned instance before judge cleanup')
+            errors.append('owned instances remain after interrupted judge' if 'failure' in self.report
+                          else 'product left a live owned instance before judge cleanup')
         # Direct host is reaped only by its creator. Other instances are observed
         # externally and never assigned a made-up wait status.
         for pin in list(self.pins.values()):
