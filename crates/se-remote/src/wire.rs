@@ -36,6 +36,8 @@ pub enum Reply {
     Watch(Box<RemoteWatchBatch>),
     Send(Box<RemoteSendResult>),
     Launch(Box<RemoteLaunchResult>),
+    Replies(Box<RemoteRepliesResult>),
+    Contact(Box<RemoteContactResult>),
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(

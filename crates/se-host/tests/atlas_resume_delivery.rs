@@ -104,6 +104,7 @@ fn resume_packet(
 ) -> Result<ResumeOutput, Box<dyn std::error::Error>> {
     let result = resume(
         Resume {
+            source_failure: None,
             limit: 20,
             since: None,
             byte_budget: 32768,
@@ -165,6 +166,7 @@ fn typed_code_context_uses_only_available_space_on_both_consumers() -> Check {
     assert!(full.code_changes.is_none());
     let mut linked = context(
         SessionContextRequest {
+            source_failure: None,
             limit: 20,
             since: None,
             byte_budget: 32768,

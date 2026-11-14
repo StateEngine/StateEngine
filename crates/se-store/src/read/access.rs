@@ -68,7 +68,9 @@ impl SqliteSnapshot {
         }
         if matches!(
             e.body,
-            EventBody::ChannelRecorded { .. } | EventBody::RemoteLaunchAttributed { .. }
+            EventBody::ChannelRecorded { .. }
+                | EventBody::RemoteLaunchAttributed { .. }
+                | EventBody::RemoteMailboxRecorded { .. }
         ) {
             return Ok(matches!(self.scope.visibility, Visibility::Owner)
                 && matches!(self.scope.admission.actor, Actor::Human(_))

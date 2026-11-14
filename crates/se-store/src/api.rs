@@ -398,6 +398,21 @@ pub trait Snapshot {
             "remote mail provenance reader is unavailable",
         ))
     }
+    /// Resolve only an exact authenticated sender of this recipient's mail.
+    /// The store checks the same contact again when the reply commits.
+    fn remote_reply_recipient(
+        &mut self,
+        _original: MessageId,
+        _selector: &str,
+    ) -> StoreResult<Option<Actor>> {
+        Ok(None)
+    }
+    fn remote_return_sender(
+        &mut self,
+        _message: MessageId,
+    ) -> StoreResult<Option<se_types::remote::RemoteAgentAddress>> {
+        Ok(None)
+    }
     fn messages(
         &mut self,
         query: MessageQuery,

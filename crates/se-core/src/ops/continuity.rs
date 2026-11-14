@@ -48,6 +48,7 @@ pub(crate) fn context_at_home<R: Snapshot>(
     let mut identity = identity::resolve(None, cx)?;
     identity.command_home = home.map(std::path::Path::to_owned);
     let resume = Resume {
+        source_failure: input.source_failure,
         limit: input.limit,
         since: input.since,
         byte_budget: input.byte_budget,
