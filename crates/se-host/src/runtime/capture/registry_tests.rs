@@ -66,6 +66,22 @@ impl Source {
     }
 }
 
+fn wait_for_publication_release(
+    entered: &mpsc::Sender<()>,
+    release: &(Mutex<bool>, Condvar),
+) -> se_types::Result<()> {
+    entered.send(()).map_err(|_| busy())?;
+    let (lock, wake) = release;
+    let released = lock.lock().map_err(|_| busy())?;
+    let (released, timeout) = wake
+        .wait_timeout_while(released, std::time::Duration::from_secs(5), |value| !*value)
+        .map_err(|_| busy())?;
+    if timeout.timed_out() && !*released {
+        return Err(busy());
+    }
+    Ok(())
+}
+
 #[test]
 fn publishing_distinct_sessions_releases_registry_and_reserves_capacity() -> Check {
     let registry = TranscriptBindings::new(2);
@@ -87,20 +103,7 @@ fn publishing_distinct_sessions_releases_registry_and_reserves_capacity() -> Che
                 let release = release.clone();
                 scope.spawn(move || {
                     registry.insert_published(source, |_| {
-                        entered.send(()).map_err(|_| busy())?;
-                        let (lock, wake) = &*release;
-                        let released = lock.lock().map_err(|_| busy())?;
-                        let (released, timeout) = wake
-                            .wait_timeout_while(
-                                released,
-                                std::time::Duration::from_secs(5),
-                                |value| !*value,
-                            )
-                            .map_err(|_| busy())?;
-                        if timeout.timed_out() && !*released {
-                            return Err(busy());
-                        }
-                        Ok(())
+                        wait_for_publication_release(&entered, &release)
                     })
                 })
             })
