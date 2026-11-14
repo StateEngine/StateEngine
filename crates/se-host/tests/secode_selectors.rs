@@ -38,6 +38,11 @@ fn cli(image: &Path, root: &Path, args: &[&str]) -> Check<String> {
         .args(args)
         .env_clear()
         .env("PATH", std::env::var_os("PATH").ok_or("PATH missing")?)
+        .envs(
+            ["SystemRoot", "WINDIR", "TEMP", "TMP"]
+                .into_iter()
+                .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
+        )
         .env("HOME", root)
         .env("USERPROFILE", root)
         .output()?;

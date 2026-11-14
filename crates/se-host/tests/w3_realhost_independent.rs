@@ -38,12 +38,7 @@ fn open_refuses_an_uninitialized_home_by_name() {
     };
     let root = judge_root("open");
     let empty = root.join("home");
-    std::fs::create_dir_all(&empty).required();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&empty, std::fs::Permissions::from_mode(0o700)).required();
-    }
+    se_proc::NativeStateFiles::create(&empty).required();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
