@@ -6,6 +6,7 @@ impl NativeAtlasQualification {
     /// Ordinary installation uses the independently measured Linux components.
     /// Explicit SQL/parser selections retain their bounds; unknown targets
     /// still carry None. Source beyond the measured 64 KiB stays deferred.
+    #[cfg(all(target_env = "gnu", target_arch = "x86_64"))]
     pub(super) fn with_native_sql(mut self) -> Result<Self> {
         #[cfg(all(target_env = "gnu", target_arch = "x86_64"))]
         if self.sql.is_none() {
@@ -14,6 +15,10 @@ impl NativeAtlasQualification {
             }
             self.sql = Some(SqlProfile::from_qualified_overhead(93_702)?);
         }
+        Ok(self)
+    }
+    #[cfg(not(all(target_env = "gnu", target_arch = "x86_64")))]
+    pub(super) fn with_native_sql(self) -> Result<Self> {
         Ok(self)
     }
     /// The measured six-grammar Linux/glibc component profile is the default.

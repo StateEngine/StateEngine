@@ -275,9 +275,14 @@ impl NativeRenewal {
                     .map_err(sql_error)?;
                 Ok(())
             })?;
+            let watch = NativeSourceWatch::new().map_err(|e| source_error("source watch", e))?;
+            #[cfg(target_os = "macos")]
+            watch
+                .start(&native)
+                .map_err(|e| source_error("source watch", e))?;
             root.native = Some(Native {
                 root: native,
-                watch: NativeSourceWatch::new().map_err(|e| source_error("source watch", e))?,
+                watch,
                 metadata: None,
             });
         }

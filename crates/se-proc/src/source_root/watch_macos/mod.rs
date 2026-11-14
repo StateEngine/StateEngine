@@ -43,25 +43,11 @@ impl NativeSourceWatch {
             }),
         })
     }
-    pub fn subscribe(
-        &self,
-        root: &NativeSourceRoot,
-        path: &str,
-    ) -> io::Result<Option<NativeWatchRegistration>> {
-        let Some(directory) = root.open_directory(path)? else {
-            return Ok(None);
-        };
+    /// Arm recursive changes before the first source reconciliation scan.
+    pub fn start(&self, root: &NativeSourceRoot) -> io::Result<()> {
+        root.check()?;
         let key = root.physical_identity()?;
         let mut state = self.state.borrow_mut();
-        if state.registrations.len() >= 1024 {
-            return Err(io::Error::other(
-                "native source watch registration bound reached",
-            ));
-        }
-        let descriptor = state
-            .next
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("native source watch identity exhausted"))?;
         if let std::collections::btree_map::Entry::Vacant(slot) = state.streams.entry(key) {
             let stream = stream::Stream::new(
                 &root.path,
@@ -74,6 +60,28 @@ impl NativeSourceWatch {
             root.check()?;
             slot.insert(stream);
         }
+        Ok(())
+    }
+    pub fn subscribe(
+        &self,
+        root: &NativeSourceRoot,
+        path: &str,
+    ) -> io::Result<Option<NativeWatchRegistration>> {
+        let Some(directory) = root.open_directory(path)? else {
+            return Ok(None);
+        };
+        self.start(root)?;
+        let key = root.physical_identity()?;
+        let mut state = self.state.borrow_mut();
+        if state.registrations.len() >= 1024 {
+            return Err(io::Error::other(
+                "native source watch registration bound reached",
+            ));
+        }
+        let descriptor = state
+            .next
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("native source watch identity exhausted"))?;
         if !directory.validate_name()? {
             return Err(changed("watched directory changed during subscription"));
         }
