@@ -179,12 +179,15 @@ fn selected_native_image_replacement_is_refused_before_reuse() -> Check {
     let p = Profile::new()?;
     let cli = p.0.join("secode");
     let server = p.0.join("secode-server");
-    fs::copy("/bin/true", &cli)?;
-    fs::copy("/bin/true", &server)?;
+    // Reuse a real native image that exists on every supported Unix platform.
+    // A fresh copy has a new file identity even when its bytes are unchanged.
+    let image = std::env::current_exe()?;
+    fs::copy(&image, &cli)?;
+    fs::copy(&image, &server)?;
     let mut selected = Images::open(&cli)?;
     selected.validate()?;
     let replacement = p.0.join("replacement");
-    fs::copy("/bin/false", &replacement)?;
+    fs::copy(&image, &replacement)?;
     fs::rename(replacement, &server)?;
     assert!(selected.validate().is_err(), "replaced server image reused");
     Ok(())
