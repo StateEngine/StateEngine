@@ -10,6 +10,7 @@ import os
 import traceback
 import time
 
+from judge_records import read_json, wait_json
 from mail_cli import Fixture
 
 
@@ -40,11 +41,13 @@ def run(binary, root, mode, control):
     try:
         until = time.monotonic() + 20
         marker = f.repo / 'startup-pids.json'
-        while not marker.exists():
+        published = read_json(marker)
+        while published is None:
             assert launch.poll() is None, 'launch ended before the startup barrier'
             assert time.monotonic() < until, 'provider never entered startup'
             time.sleep(.05)
-        identities = [pin(pid) for pid in json.loads(marker.read_text())]
+            published = read_json(marker)
+        identities = [pin(pid) for pid in published]
         all_identities.extend(identities)
         # The helper runs only after exec. Permit the host one short publication
         # turn; this wait is not provider readiness and must not last its budget.
@@ -63,12 +66,8 @@ def run(binary, root, mode, control):
         remedy = pending[0]['fix']['argv']
         assert remedy == ['se', '--home', str(f.home), '--project', f.project, 'stop', f.agent], remedy
         assert diagnosis['outcome'] != 'healthy'
-        until = time.monotonic() + 10
-        probe = f.repo / 'startup-owner-probe.json'
-        while not probe.exists():
-            assert time.monotonic() < until, 'provider owner-admission probe did not finish'
-            time.sleep(.05)
-        assert json.loads(probe.read_text())['exit'] != 0
+        probe = wait_json(f.repo / 'startup-owner-probe.json', seconds=10)
+        assert probe['exit'] != 0
         print(f'ok - {mode}/{control}: owner status and scoped startup diagnosis before readiness', flush=True)
         control_started = time.monotonic()
         if control == 'stop':
@@ -133,9 +132,9 @@ def run(binary, root, mode, control):
             (f.repo / 'startup-mode').write_text('ready')
             launched = f.ok('--project', f.project, '--key', 'fresh-after-failure', 'launch', f.agent, '--detach', '--new')
             assert launched['state'] == 'running', launched
-            ready = json.loads((f.repo / 'provider-ready.json').read_text())
+            ready = wait_json(f.repo / 'provider-ready.json')
             assert ready['session_discovery'] and ready['http_discovery']
-            all_identities.extend(pin(pid) for pid in json.loads(marker.read_text()))
+            all_identities.extend(pin(pid) for pid in wait_json(marker))
             assert (f.repo / 'startup-count').read_text().count('started') == 2
             print(f'ok - {mode}/{control}: explicit fresh launch succeeds with both credential proofs', flush=True)
     except BaseException as error:

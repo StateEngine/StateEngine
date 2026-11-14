@@ -15,6 +15,7 @@ import traceback
 import uuid
 
 sys.dont_write_bytecode = True
+from judge_records import wait_json
 from mail_cli import Fixture
 from recovery_capture import gone, native, wait
 
@@ -63,8 +64,7 @@ def run(args):
         launch = fixture.ok('--project', fixture.project, 'launch', fixture.agent,
                             '--detach', '--task', 'Retain capture before a queued stop')
         ready = fixture.repo / 'provider-ready.json'
-        wait(ready.exists, 'provider startup did not complete')
-        binding = json.loads(ready.read_text())
+        binding = wait_json(ready)
         pins.extend([native(binding['native_root_pid']), native(binding['helper_pid'])])
         assert all(pins), 'provider identity absent'
         fixture.mail('send', fixture.agent, 'Pending mail must not overtake the queued stop')

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
+from judge_records import wait_json
 from force_relaunch_independent import Fixture
 
 
@@ -22,11 +23,7 @@ def live(job):
 
 def wait_job(f):
     path = f.repo / "takeover-job.json"
-    until = time.monotonic() + 20
-    while not path.exists():
-        assert time.monotonic() < until, "owned background job did not publish"
-        time.sleep(.02)
-    job = json.loads(path.read_text())
+    job = wait_json(path)
     assert live(job), "published job is not live"
     return job
 
@@ -53,7 +50,7 @@ def main():
             time.sleep(.05)
         f.launch()
         old_session = f.session
-        original_conversation = json.loads((f.repo / "provider-ready.json").read_text())["conversation"]
+        original_conversation = wait_json(f.repo / "provider-ready.json")["conversation"]
         old_job = wait_job(f)
         escaped_jobs.append(old_job["escaped"])
         refused = f.call("--project", f.project, "launch", f.agent, "--detach")

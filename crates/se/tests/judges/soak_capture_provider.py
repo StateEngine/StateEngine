@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from judge_records import write_json
 
 
 def main():
@@ -35,8 +36,8 @@ def main():
         headers={**server['headers'], 'Content-Type': 'application/json'})
     with urllib.request.urlopen(call, timeout=20) as response:
         assert response.status == 200 and verified(json.load(response)), 'issued HTTP discovery refused'
-    (repo / 'provider-ready.json').write_text(json.dumps({'conversation': conversation,
-        'native_root_pid': os.getppid(), 'helper_pid': os.getpid(), 'path': str(path)}))
+    write_json(repo / 'provider-ready.json', {'conversation': conversation,
+        'native_root_pid': os.getppid(), 'helper_pid': os.getpid(), 'path': str(path)})
     while True:
         time.sleep(1)
 

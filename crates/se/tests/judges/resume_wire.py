@@ -15,6 +15,7 @@ from fixture_paths import private_runtime_directory
 import traceback
 import urllib.request
 
+from judge_records import wait_json
 from mail_cli import Fixture
 
 
@@ -63,7 +64,7 @@ else:
         pid = f.ok("status")["runtime"]["process"]["pid"]
         f.processes.append((pid, Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[19]))
         f.launch()
-        ready = json.loads((f.repo / "provider-ready.json").read_text())
+        ready = wait_json(f.repo / "provider-ready.json")
         conversation = ready["conversation"]
         transcripts = list((f.root / "owner/.claude/projects").rglob(conversation + ".jsonl"))
         assert len(transcripts) == 1, transcripts
@@ -84,7 +85,7 @@ else:
         launched = f.ok("--project", f.project, "launch", f.agent, "--new", "--detach",
                         "--task", "Resume with retained conversation context")
         f.session = launched["session_id"]
-        ready = json.loads((f.repo / "provider-ready.json").read_text())
+        ready = wait_json(f.repo / "provider-ready.json")
         for pid in (ready["native_root_pid"], ready["helper_pid"]):
             f.processes.append((pid, Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()[19]))
         note = 'Resume the native wire task: λ "quoted" \\ path\n' * 60

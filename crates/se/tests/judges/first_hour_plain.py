@@ -18,6 +18,7 @@ import tempfile
 import time
 import traceback
 
+from judge_records import wait_json
 from mail_cli import Fixture
 
 
@@ -129,7 +130,7 @@ def run(args):
         assert 'Pending writes saved' not in text and 'Shutdown verified' not in text, text
 
     def remember():
-        ready = json.loads((f.repo / 'provider-ready.json').read_text())
+        ready = wait_json(f.repo / 'provider-ready.json')
         status = f.ok('--project', f.project, 'status')
         for pid in [ready['native_root_pid'], ready['helper_pid'], status['runtime']['process']['pid']]:
             birth = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19]

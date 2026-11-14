@@ -6,6 +6,7 @@ import sys
 import time
 import subprocess
 import urllib.request
+from judge_records import write_json
 
 
 def main():
@@ -41,7 +42,7 @@ def main():
     first = append("assistant", "BEFORE_HOST_CRASH_REPLY", "before-host-crash")
     print(json.dumps(first), flush=True)
     print(json.dumps({"type": "result", "session_id": conversation}), flush=True)
-    (repo / "recovery-ready.json").write_text(json.dumps({"helper_pid": os.getpid()}))
+    write_json(repo / "recovery-ready.json", {"helper_pid": os.getpid()})
     while not (repo / "work-release").exists():
         time.sleep(.02)
     (repo / "notes.md").write_text("The original task finished after its host exited.\n")

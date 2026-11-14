@@ -10,6 +10,15 @@ import subprocess
 import sys
 import time
 import uuid
+from judge_records import wait_json
+
+
+def provider_bootstrap():
+    # A run_path wrapper does not add the protocol's directory to sys.path.
+    # Supply fixture modules explicitly; provider environment filtering is real.
+    return ("import runpy,sys;"
+            f"sys.path.insert(0,{str(Path(__file__).resolve().parent)!r});"
+            "sys.argv=sys.argv[1:];runpy.run_path(sys.argv[0],run_name='__main__')")
 
 
 class Fixture:
@@ -43,8 +52,9 @@ let mut request=String::new();std::io::stdin().read_line(&mut request).unwrap();
 println!(r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"settings","response":{{"effective":{{}},"sources":[],"errors":[]}}}}}}"#);return;}
 if a.get(1).map(String::as_str)==Some("--version"){println!("2.1.287 (Claude Code)");return;}
 if a.get(1).map(String::as_str)==Some("auth") {println!(r#"{{"loggedIn":true}}"#);return;}
-let s=std::process::Command::new(PYTHON).args([HELPER,SE,HOME]).args(&a[1..]).status().unwrap();
+let s=std::process::Command::new(PYTHON).args(["-c",BOOTSTRAP,HELPER,SE,HOME]).args(&a[1..]).status().unwrap();
 std::process::exit(s.code().unwrap_or(1));}'''.replace("PYTHON", json.dumps(sys.executable))
+            .replace("BOOTSTRAP", json.dumps(provider_bootstrap()))
             .replace("HELPER,SE,HOME", ",".join(json.dumps(str(p)) for p in [helper, self.se, self.home])))
         executable = self.root / ("provider.exe" if os.name == "nt" else "provider")
         subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(executable)],
@@ -97,7 +107,7 @@ std::process::exit(s.code().unwrap_or(1));}'''.replace("PYTHON", json.dumps(sys.
         result = self.ok("--project", self.project, "launch", self.agent, "--detach", "--task", "Mail judge")
         assert result["state"] == "running", result
         self.session = result["session_id"]
-        ready = json.loads((self.repo / "provider-ready.json").read_text())
+        ready = wait_json(self.repo / "provider-ready.json")
         assert ready["session_discovery"] and ready["http_discovery"]
         if sys.platform == "linux":
             for pid in [ready["native_root_pid"], ready["helper_pid"]]:

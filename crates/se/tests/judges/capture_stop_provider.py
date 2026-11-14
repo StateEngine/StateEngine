@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from judge_records import write_json
 
 
 def main():
@@ -34,8 +35,8 @@ def main():
         reply = json.load(response)
         assert response.status == 200 and ('result' in reply or
             reply.get('error', {}).get('message', '').startswith('session-not-active:'))
-    (repo / 'provider-ready.json').write_text(json.dumps({
-        'path': str(transcript), 'native_root_pid': os.getppid(), 'helper_pid': os.getpid()}))
+    write_json(repo / 'provider-ready.json', {
+        'path': str(transcript), 'native_root_pid': os.getppid(), 'helper_pid': os.getpid()})
     deadline = time.monotonic() + 60
     while not (repo / 'complete-task').exists():
         assert time.monotonic() < deadline, 'capture trigger never arrived'
