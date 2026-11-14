@@ -1,0 +1,78 @@
+name: Native macOS contained Git source check
+on: [push, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  native-source:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 3eb926716aaf585d8515851dcc4cc64c59dc8580
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Read the pinned compiler
+        id: compiler
+        shell: python
+        run: |
+          import os,tomllib
+          from pathlib import Path
+          channel=tomllib.loads(Path('rust-toolchain.toml').read_text())['toolchain']['channel']
+          with open(os.environ['GITHUB_OUTPUT'],'a') as output: print('channel='+channel,file=output)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ steps.compiler.outputs.channel }}
+          components: clippy
+      - name: Compile and link the native source draft
+        shell: python
+        run: |
+          import os,subprocess,pathlib,json,hashlib,shutil
+          root=pathlib.Path(os.environ['RUNNER_TEMP']);out=root/'git-source-evidence';out.mkdir()
+          source=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          assert source=='3eb926716aaf585d8515851dcc4cc64c59dc8580',source
+          target=subprocess.check_output(['rustc','--print','host-tuple'],text=True).strip()
+          assert target=='aarch64-apple-darwin',target
+          env=os.environ.copy();env.update(CARGO_TARGET_DIR=str(root/'git-source-target'),CARGO_INCREMENTAL='0',CARGO_PROFILE_DEV_DEBUG='0',CARGO_PROFILE_TEST_DEBUG='0')
+          commands=[('clippy',['cargo','clippy','--locked','--target',target,'-p','se-proc','-p','se-host','-p','se','--all-targets','--all-features','--','-D','warnings']),('link',['cargo','build','--locked','--target',target,'-p','se','--all-features'])]
+          results=[]
+          for label,command in commands:
+            with (out/(label+'.log')).open('w') as log: result=subprocess.run(command,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=1800)
+            results.append({'step':label,'command':command,'exit':result.returncode})
+            (out/'source-check.json').write_text(json.dumps({'source':source,'target':target,'results':results},indent=2)+'\n')
+            if result.returncode: raise RuntimeError(results)
+          image=root/'git-source-target'/target/'debug/se'
+          result=subprocess.run([str(image),'--version'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=10)
+          (out/'version.stdout').write_bytes(result.stdout);(out/'version.stderr').write_bytes(result.stderr)
+          (out/'image.json').write_text(json.dumps({'source':source,'target':target,'sha256':hashlib.sha256(image.read_bytes()).hexdigest(),'version_exit':result.returncode},indent=2)+'\n')
+          if result.returncode: raise RuntimeError('linked native metadata command failed')
+      - name: Record selected native Git runtime metadata
+        if: always()
+        shell: python
+        run: |
+          import os,pathlib,subprocess,json,shutil
+          out=pathlib.Path(os.environ['RUNNER_TEMP'])/'git-source-evidence';out.mkdir(exist_ok=True)
+          selected=shutil.which('git');records={'path_selected':selected,'developer_selected':None,'calls':[]}
+          def call(args,label):
+            try:
+              result=subprocess.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=10)
+              (out/(label+'.stdout')).write_bytes(result.stdout);(out/(label+'.stderr')).write_bytes(result.stderr)
+              records['calls'].append({'label':label,'argv':args,'exit':result.returncode})
+              return result.stdout.decode(errors='replace').strip() if result.returncode==0 else None
+            except Exception as error:
+              records['calls'].append({'label':label,'argv':args,'error':str(error)})
+          developer=call(['/usr/bin/xcrun','--find','git'],'developer-git');records['developer_selected']=developer
+          for label,image in [('path',selected),('developer',developer)]:
+            if image:
+              call(['/usr/bin/otool','-L',image],label+'-imports')
+              call(['/usr/bin/otool','-l',image],label+'-load-commands')
+          (out/'git-runtime-metadata.json').write_text(json.dumps(records,indent=2)+'\n')
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: macos-git-source-check
+          path: ${{ runner.temp }}/git-source-evidence/
+          if-no-files-found: error
