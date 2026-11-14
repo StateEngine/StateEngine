@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Publish a portable journey scoreboard without private receipt details."""
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import fcntl
 import json
 import os
 from pathlib import Path
 import tempfile
 
-from night_status import SCHEDULE_ZONE, assess, configure, planned, read
+from night_status import SCHEDULE_ZONE, assess, configure, planned, read, scheduled_night
 from report import FIRST_HOUR, NAMES, summarize
 
 PROVIDERS = {"claude": "Claude Code", "codex": "Codex", "secode": "SE Code",
@@ -27,7 +27,7 @@ CAUSES = {None: "Verified", "absent": "Evidence absent", "unreadable": "Evidence
 def snapshot(config, now):
     root = Path(config["night_status_directory"])
     today = now.date()
-    date = today - timedelta(days=now.hour < 11)
+    date = scheduled_night(now)
     # An already-observed failure tonight remains visible before the deadline.
     _, error = read(root / (today.isoformat() + ".json"))
     if error != "absent":
@@ -81,7 +81,7 @@ def cell(entry, directory, number):
     _, error = read(directory / entry["output"] / filename)
     if error == "absent":
         return "MISSING"
-    return "UNREADABLE" if error or entry.get("problems") else "INCOMPLETE"
+    return "UNREADABLE"
 
 
 def render(config, now=None):
@@ -91,7 +91,7 @@ def render(config, now=None):
     try:
         night, status, unavailable, evidence = snapshot(config, now)
     except Exception:
-        night = (now.date() - timedelta(days=now.hour < 11)).isoformat()
+        night = scheduled_night(now).isoformat()
         status, unavailable, evidence = None, "UNREADABLE", None
     state = unavailable or status["state"].upper()
     lines = ["# Journey scoreboard", "", f"Night: {night} (America/New_York)",
@@ -104,7 +104,7 @@ def render(config, now=None):
             reason = "Evidence absent" if unavailable == "MISSING" else "Evidence unreadable"
         lines.append("Reason: " + reason)
     lines += ["", "PASS describes witnessed journey behavior and cleanup; nightly status also includes required budgets.",
-              "MISSING = planned evidence absent; UNREADABLE = evidence cannot be verified; NOT RUN = no planned observation."]
+              "FAIL = observed failure; MISSING = planned evidence absent; UNREADABLE = evidence cannot be verified; NOT RUN = no planned observation."]
     expected = {}
     unsupported = False
     try:
@@ -133,7 +133,7 @@ def render(config, now=None):
                                and entry.get("selection") == selection and entry.get("surface") == provider
                                and entry.get("platform") == platform]
                     samples = [cell(entry, evidence[0], number) for entry in matched] if evidence else []
-                    value = next((state for state in ("FAIL", "UNREADABLE", "MISSING", "INCOMPLETE")
+                    value = next((state for state in ("FAIL", "UNREADABLE", "MISSING")
                                   if state in samples), "PASS" if samples else expected.get(key, "NOT RUN"))
                     values.append(value)
                 lines.append("| " + " | ".join([name, PROVIDERS[provider], *values]) + " |")
