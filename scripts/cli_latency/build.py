@@ -15,7 +15,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = {
     'base': '9048c76edca7e53fb60fa80674af5c33d66c457e',
-    'head': '3c867f841341cb1ea40d72662393da4ac6049e36',
+    'head': '06993110405459727ecf6033346e6d4fee71073e',
 }
 
 
@@ -65,6 +65,15 @@ def main():
         image.chmod(0o500)
         record.update(image=str(image), sha256=hashlib.sha256(image.read_bytes()).hexdigest())
         save(output / 'images.json', manifest)
+        checks = ['cargo', 'test', '-p', 'se-store', '--test', 'read_pool_independent',
+                  '--locked', '--jobs', '2']
+        with (output / (name + '-read-pool-controls.log')).open('xb') as log:
+            checked = subprocess.run(checks, cwd=tree, env=environment,
+                                     stdout=log, stderr=subprocess.STDOUT, timeout=600)
+        record['existing_read_pool_controls'] = dict(command=checks, exit=checked.returncode)
+        save(output / 'images.json', manifest)
+        if checked.returncode != 0:
+            raise RuntimeError(name + ': existing pool controls failed; original log retained')
         # The exact child has joined and the image has been copied. Each build had
         # a distinct target directory, so timestamps cannot reuse another tree.
         shutil.rmtree(target)

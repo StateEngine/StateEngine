@@ -1,7 +1,7 @@
-"""Trace fresh recipient message reads on exact frozen base/head images.
+"""Measure fresh recipient message reads on exact frozen base/head images.
 
-Six configured-provider/repository cohorts compare plain and instrumented images.
-Providers are never launched; diagnostic spans include observer overhead.
+Six configured-provider/repository cohorts compare uninstrumented base and candidate images.
+Providers are never launched; all command validation stays outside the interval.
 """
 import hashlib
 import json
@@ -10,7 +10,6 @@ import subprocess
 import sys
 
 from support import ROUNDS, load, prepare, require, save, summaries, timed
-from phases import profile
 from workloads import ACTIONS, arguments, readback, setup, validate
 
 
@@ -88,7 +87,6 @@ def condition(output, images, provider, dirty, action):
             state = setup(smoke, action)
             facts[side] = dict(state=state, pid=pid,
                                identity=status(smoke, pid, dirty, 'host-before'))
-        smokes['head'].commands.environment['SE_CLI_PHASE_PROFILE'] = '1'
         record['fixtures'] = facts
         save(directory / 'samples.json', record)
         for index in range(ROUNDS + 1):
@@ -111,7 +109,6 @@ def condition(output, images, provider, dirty, action):
             after = status(smoke, fact['pid'], dirty, 'host-after')
             require(after == fact['identity'], 'Native serving identity changed during timing')
         record['summary'] = summaries(record['pairs'])
-        record['phase_profile'] = profile(record['pairs'])
         record['exit'] = 0
     except Exception as error:
         record['error'] = str(error)
@@ -129,7 +126,7 @@ def main():
     observations = output / 'observations'
     observations.mkdir()
     result = dict(scope='Author hosted Linux measurements; configured providers never launched; '
-                        'instrumented times include tracing overhead; not an optimization; '
+                        'uninstrumented paired candidate measurement; '
                         'no independent, native Windows/macOS or cross-machine qualification',
                   method='spawn through pipe EOF and child exit; alternating image pairs; first '
                          'timed call separate; 200 warm calls per image; nearest-rank p95; '
