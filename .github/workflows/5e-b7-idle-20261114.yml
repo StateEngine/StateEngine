@@ -51,17 +51,36 @@ jobs:
         with:
           shared-key: b7-idle-${{ matrix.os }}-v1
       - name: Build the se CLI (dev profile)
-        run: cargo build -p se --locked
+        id: build
+        run: |
+          # Explicit native --target keeps the [target.*-apple-darwin] no_uuid
+          # link flags off host proc-macros on a cold macOS build (without it,
+          # the first proc-macro consumer fails E0463; see run 43632297559).
+          target="$(rustc --print host-tuple)"
+          cargo build -p se --locked --target "$target"
+          echo "se_bin=target/$target/debug/se" >> "$GITHUB_OUTPUT"
       - name: Install Claude Code (pinned)
         run: npm i -g @anthropic-ai/claude-code@2.1.322
       - name: Run the idle probe (2 no-session + 3 one-session trials)
         env:
           OUT: ${{ runner.temp }}/b7-idle
         run: |
+          rc=0
           python3 scripts/b7_idle/probe.py \
-            --se target/debug/se \
+            --se "${{ steps.build.outputs.se_bin }}" \
             --claude-bin "$(command -v claude)" \
-            --out "$OUT"
+            --out "$OUT" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "### B7 probe failed rc=$rc; per-trial errors" >> "$GITHUB_STEP_SUMMARY"
+            python3 -I - "$OUT" >> "$GITHUB_STEP_SUMMARY" 2>&1 <<'PY'
+          import json, sys
+          from pathlib import Path
+          out = Path(sys.argv[1])
+          for p in sorted(out.glob("*/trial.json")):
+              doc = json.loads(p.read_text())
+              print(f"- {doc['label']}-{doc['index']}: {doc.get('error')}")
+          PY
+          fi
           echo "### B7 receipt summary" >> "$GITHUB_STEP_SUMMARY"
           python3 -I - "$OUT/receipt.json" >> "$GITHUB_STEP_SUMMARY" <<'PY'
           import json, sys
@@ -77,8 +96,10 @@ jobs:
               lines.append(f"- verdict {row['id']}: cpu {row['cpu']}, wakeups {row['wakeups']}")
           print("\n".join(lines))
           PY
+          exit "$rc"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
         with:
           name: b7-idle-receipt-${{ matrix.os }}
           path: ${{ runner.temp }}/b7-idle
-          if-no-files-found: error
+          if-no-files-found: warn
