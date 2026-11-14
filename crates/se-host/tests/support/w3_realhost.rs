@@ -44,9 +44,7 @@ pub(super) fn judge_root(label: &str) -> PathBuf {
     // is the base for that path. The deep CARGO_MANIFEST_DIR/target tree
     // overflows the cap, so anchor under the system temp dir with the same
     // per-process, per-test unique name.
-    let base = se_proc::canonicalize_path(&std::env::temp_dir())
-        .required()
-        .join("w3j");
+    let base = std::env::temp_dir().join("w3j");
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     base.join(format!(
         "{label}-{}-{}",

@@ -65,8 +65,7 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
     let image = PathBuf::from(
         std::env::var_os("SE_SELECTOR_SE").ok_or("SE_SELECTOR_SE must name the candidate CLI")?,
     );
-    let root = se_proc::canonicalize_path(&std::env::temp_dir())?
-        .join(format!("sel-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("sel-{}", std::process::id()));
     fs::create_dir(&root)?;
     let home = root.join("state");
     let repo = root.join("repo");
