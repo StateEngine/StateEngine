@@ -16,6 +16,7 @@ mod launch_permission;
 mod policy;
 mod revocations;
 mod source;
+pub use source::SetSourcePermission;
 mod startup;
 pub(crate) use commands::execute;
 pub use startup::startup_notice;
