@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 import uuid
 
 
@@ -43,9 +44,28 @@ def check(se, root, hosted):
     repo2.mkdir()
     other = call('init', '--repo', str(repo2), '--name', 'Other Project',
                  '--agent', 'Other', '--provider', 'codex')
-    if hosted:
-        call('up')
+    foreground = None
     try:
+        if hosted:
+            if os.name == 'nt':
+                # Hosted Windows jobs can refuse detachment. The rename
+                # controls need a host writer, not a detached process.
+                stdout, stderr = root / 'host.stdout', root / 'host.stderr'
+                with stdout.open('wb') as out, stderr.open('wb') as err:
+                    foreground = subprocess.Popen(
+                        [str(se), '--home', str(home), '--json', 'up', '--foreground'],
+                        cwd=repo, env=environment, stdin=subprocess.DEVNULL,
+                        stdout=out, stderr=err)
+                deadline = time.monotonic() + 60
+                while not stdout.read_bytes().endswith(b'\n'):
+                    assert foreground.poll() is None, stderr.read_text(errors='replace')
+                    assert time.monotonic() < deadline, 'foreground readiness timed out'
+                    time.sleep(.02)
+                ready = json.loads(stdout.read_bytes())
+                assert ready['schema'] == 'se.runtime-start/v1' and ready['state'] == 'running'
+                assert ready['process']['pid'] == foreground.pid
+            else:
+                call('up')
         key = str(uuid.uuid4())
         renamed = call(*prefix, '--key', key, 'agent', 'rename', 'Original', 'New Name')
         assert renamed['schema'] == 'se.agent-receipt/v1'
@@ -88,6 +108,8 @@ def check(se, root, hosted):
         stopped = call('down')
         assert stopped['complete'] and stopped['witness']['state'] == 'witnessed'
         assert not (home / 'endpoint.json').exists()
+        if foreground is not None:
+            assert foreground.wait(timeout=60) == 0, 'foreground host did not close cleanly'
         print('ok - normal shutdown is witnessed and endpoint absent', flush=True)
 
 
