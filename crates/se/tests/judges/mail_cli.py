@@ -27,6 +27,8 @@ class Fixture:
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith(("SE_", "STATEENGINE_", "CODEX_", "CLAUDE"))}
         self.env.update(HOME=str(self.root / "owner"), USERPROFILE=str(self.root / "owner"))
+        # Wrapped or copied protocol scripts still import the shared fixture helpers.
+        self.env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
         self.calls, self.session, self.processes = 0, None, []
         init = self.ok("--key", str(uuid.uuid4()), "init", "--repo", str(self.repo),
                        "--name", "Mail Judge", "--agent", "Recipient", "--provider", "claude",
