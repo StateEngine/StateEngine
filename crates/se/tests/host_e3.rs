@@ -4,7 +4,7 @@
 )]
 #[path = "support/host_abandoned.rs"]
 mod abandoned_judge;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "support/host_cold_capture.rs"]
 mod cold_capture;
 #[path = "../src/config.rs"]
@@ -37,7 +37,7 @@ mod route;
 mod shutdown_judge;
 #[path = "support/host_shutdown_write.rs"]
 mod shutdown_write_judge;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "support/host_startup.rs"]
 mod startup_judge;
 use fixture::*;
@@ -55,7 +55,7 @@ use std::{
     time::Duration,
 };
 /// Protects: wave-1 hosted E3 — real authenticated listener/supervisor commits message, working state and pinned Claude stop; fresh outside snapshots observe their atomic facts and natural replay.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
@@ -290,7 +290,7 @@ fn listener_message_working_and_hook() -> Check {
     drop(std::mem::ManuallyDrop::into_inner(f));
     Ok(())
 }
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn main() -> Check {
     if std::env::args().any(|v| v == "--list") {
         if !std::env::args().any(|v| v == "--ignored") {
@@ -298,10 +298,10 @@ fn main() -> Check {
         }
         return Ok(());
     }
-    Err("host_e3 requires Linux or Windows detached-host support; native lifecycle checks were not exercised".into())
+    Err("host_e3 requires Linux, macOS or Windows detached-host support; native lifecycle checks were not exercised".into())
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn main() -> Check {
     if std::env::args().any(|v| v == "--list") {
         if !std::env::args().any(|v| v == "--ignored") {
