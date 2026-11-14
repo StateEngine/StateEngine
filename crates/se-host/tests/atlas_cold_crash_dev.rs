@@ -1,10 +1,10 @@
 //! A real cold child completes, acknowledges, then remains alive: the parent
 //! must not adopt its epoch until exact reap. Killing it preserves the old epoch.
-#[cfg(all(target_os = "linux", not(debug_assertions)))]
+#[cfg(all(any(target_os = "linux", target_os = "macos"), not(debug_assertions)))]
 #[path = "../../test-support/directory.rs"]
 mod cleanup_directory;
-#[cfg(all(target_os = "linux", not(debug_assertions)))]
-mod linux {
+#[cfg(all(any(target_os = "linux", target_os = "macos"), not(debug_assertions)))]
+mod native {
     use se_atlas::{
         cache::{connection::*, *},
         lifecycle::*,
@@ -15,9 +15,9 @@ mod linux {
         atlas_cold::{self, job::ColdJob, protocol::Request},
         atlas_source::NativeAtlasSource,
     };
+    use std::path::{Path, PathBuf};
     use std::{
         error::Error,
-        path::Path,
         time::{Duration, Instant},
     };
     type Check<T = ()> = Result<T, Box<dyn Error>>;
@@ -98,73 +98,143 @@ mod linux {
         };
         Ok((root_owner, request))
     }
-    pub(super) fn run() -> Check {
-        se_proc::initialize_file_creation_owner()?;
-        if std::env::args_os()
-            .nth(1)
-            .is_some_and(|arg| arg == se_proc::atlas_worker::ENTRY)
+    #[cfg(target_os = "macos")]
+    fn absent(pid: u32) -> Check {
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "pid="])
+            .output()?;
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "owned cold worker is still present"
+        );
+        assert!(
+            output.stdout.is_empty() && output.stderr.is_empty(),
+            "outside absence observation failed: {output:?}"
+        );
+        Ok(())
+    }
+    fn child_entry() -> Check {
+        if std::env::current_exe()?
+            .file_name()
+            .is_some_and(|name| name == "atlas-abort-probe")
         {
-            if std::env::current_exe()?
-                .file_name()
-                .is_some_and(|name| name == "atlas-abort-probe")
-            {
-                let (mut channel, bytes) = se_proc::atlas_worker::WorkerChannel::receive()?;
-                let request: Request = serde_json::from_slice(&bytes)?;
-                channel.send(&serde_json::to_vec(
-                    &atlas_cold::protocol::Reply::Working {
-                        job: request.job,
-                        path: Some(se_types::code::RelativePath::new("good.js")?),
-                        phase: atlas_cold::protocol::Phase::Parse,
-                    },
-                )?)?;
-                eprintln!("intentional native abort diagnostic");
-                std::process::abort();
-            }
-            let pressure = std::env::current_exe()?
-                .file_name()
-                .is_some_and(|name| name == "atlas-pressure-probe");
-            let mut padding = Vec::<u8>::new();
-            if pressure {
-                let used = se_proc::atlas_worker::virtual_bytes()?;
-                let bytes = usize::try_from(
-                    (se_proc::atlas_worker::ADDRESS_SPACE_BYTES - 4_000_000)
-                        .checked_sub(used)
-                        .ok_or("pressure fixture baseline is already too large")?,
-                )?;
-                padding.try_reserve_exact(bytes)?;
-                // Reserve address space without faulting every page into RSS.
-                // Even the maximum 2 MB arena credit cannot supply the
-                // unchanged 8 MB cancellation/SQL margin at this occupancy.
-                assert!(
-                    se_proc::atlas_worker::virtual_bytes()?
-                        > se_proc::atlas_worker::ADDRESS_SPACE_BYTES - 6_000_000
-                );
-            }
-            let code = atlas_cold::private_entry()?;
-            std::hint::black_box(&padding);
-            if pressure {
-                return if code == 0 {
-                    Ok(())
-                } else {
-                    Err("pressure worker failed the job".into())
-                };
-            }
-            if code != 0 {
-                return Err("production cold worker refused the fixture".into());
-            }
-            // Deliberately remain alive after the actual production completion
-            // protocol and its parent acknowledgment. No SQL/channel survives.
-            loop {
-                std::thread::park();
-            }
+            let (mut channel, bytes) = se_proc::atlas_worker::WorkerChannel::receive()?;
+            let request: Request = serde_json::from_slice(&bytes)?;
+            channel.send(&serde_json::to_vec(
+                &atlas_cold::protocol::Reply::Working {
+                    job: request.job,
+                    path: Some(se_types::code::RelativePath::new("good.js")?),
+                    phase: atlas_cold::protocol::Phase::Parse,
+                },
+            )?)?;
+            eprintln!("intentional native abort diagnostic");
+            std::process::abort();
         }
-        let (base, request) = prepared()?;
+        #[cfg(target_os = "linux")]
+        let pressure = std::env::current_exe()?
+            .file_name()
+            .is_some_and(|name| name == "atlas-pressure-probe");
+        #[cfg(target_os = "linux")]
+        let mut padding = Vec::<u8>::new();
+        #[cfg(target_os = "linux")]
+        if pressure {
+            let used = se_proc::atlas_worker::virtual_bytes()?;
+            let bytes = usize::try_from(
+                (se_proc::atlas_worker::ADDRESS_SPACE_BYTES - 4_000_000)
+                    .checked_sub(used)
+                    .ok_or("pressure fixture baseline is already too large")?,
+            )?;
+            padding.try_reserve_exact(bytes)?;
+            // Reserve address space without faulting every page into RSS.
+            // Even the maximum 2 MB arena credit cannot supply the
+            // unchanged 8 MB cancellation/SQL margin at this occupancy.
+            assert!(
+                se_proc::atlas_worker::virtual_bytes()?
+                    > se_proc::atlas_worker::ADDRESS_SPACE_BYTES - 6_000_000
+            );
+        }
+        let code = atlas_cold::private_entry()?;
+        #[cfg(target_os = "linux")]
+        std::hint::black_box(&padding);
+        #[cfg(target_os = "linux")]
+        if pressure {
+            return if code == 0 {
+                Ok(())
+            } else {
+                Err("pressure worker failed the job".into())
+            };
+        }
+        if code != 0 {
+            return Err("production cold worker refused the fixture".into());
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use std::io::Write;
+            let executable = std::env::current_exe()?;
+            let marker = executable
+                .parent()
+                .ok_or("owned probe parent absent")?
+                .join("completed.fixture");
+            let staging = marker.with_extension("pending");
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&staging)?;
+            file.write_all(std::process::id().to_string().as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            std::fs::rename(staging, marker)?;
+        }
+        // Deliberately remain alive after the actual production completion
+        // protocol and its parent acknowledgment. No SQL/channel survives.
+        loop {
+            std::thread::park();
+        }
+    }
+    fn old_graph(cache: &NativeAtlasCache, request: &Request, old: &[u8]) -> Check {
         let source = request.source()?;
-        let home = request.home.to_local()?;
-        let cache =
-            NativeAtlasCache::open(&home, source.scope.clone())?.ok_or("old cache absent")?;
-        let old = cache.read_pointer()?.ok_or("old pointer absent")?;
-        let mut job = ColdJob::spawn(&std::env::current_exe()?, request.clone())?;
+        let mut current = pointer::open_current(
+            cache,
+            &source.scope,
+            ConnectionRole::ExternalReader,
+            &SqlProfile::contained_cold(),
+            end(),
+        )?
+        .ok_or("old epoch absent after crash")?;
+        assert_eq!(
+            &current.connection.identity().epoch,
+            request.expected_epoch.as_ref().ok_or("old epoch absent")?
+        );
+        assert_eq!(cache.read_pointer()?.as_deref(), Some(old));
+        current.connection.read(end(), |sql| {
+            let files: i64 = sql
+                .prepare("SELECT count(*) FROM files")?
+                .query_row([], |r| r.get(0))
+                .map_err(|e| se_types::SeError::invalid("old epoch witness", &e.to_string()))?;
+            assert_eq!(files, 0, "a crash changed the old graph");
+            Ok(())
+        })?;
+        drop(current);
+        Ok(())
+    }
+    fn completion_image(base: &Path) -> Check<PathBuf> {
+        #[cfg(target_os = "linux")]
+        {
+            let _ = base;
+            Ok(std::env::current_exe()?)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let image = base.join("atlas-cold-completion-probe");
+            std::fs::copy(std::env::current_exe()?, &image)?;
+            Ok(image.canonicalize()?)
+        }
+    }
+    fn completion(base: &Path, request: &Request, cache: &NativeAtlasCache, old: &[u8]) -> Check {
+        let source = request.source()?;
+        let completion_image = completion_image(base)?;
+        let mut job = ColdJob::spawn(&completion_image, request.clone())?;
         let pid = job.pid();
         let deadline = end();
         loop {
@@ -173,27 +243,54 @@ mod linux {
                 job.poll()?.is_none(),
                 "an unreaped child published its epoch"
             );
+            #[cfg(target_os = "linux")]
             match std::fs::read_link(format!("/proc/{pid}/fd/3")) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
                 Err(error) => return Err(error.into()),
                 Ok(_) => (),
+            }
+            #[cfg(target_os = "macos")]
+            match std::fs::read(base.join("completed.fixture")) {
+                Ok(bytes) => {
+                    assert_eq!(bytes, pid.to_string().as_bytes());
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error.into()),
             }
             if Instant::now() >= deadline {
                 job.cancel()?;
                 return Err("child did not complete and close its channel".into());
             }
         }
+        #[cfg(target_os = "linux")]
         assert!(
             Path::new(&format!("/proc/{pid}")).exists(),
             "the completion probe exited before the exact-reap assertion"
         );
+        #[cfg(target_os = "macos")]
+        {
+            let output = std::process::Command::new("/bin/ps")
+                .args(["-ww", "-p", &pid.to_string(), "-o", "command="])
+                .output()?;
+            assert!(
+                output.status.success(),
+                "outside owned-command observation failed: {output:?}"
+            );
+            let expected = format!(
+                "{} {}",
+                completion_image.canonicalize()?.display(),
+                se_proc::atlas_worker::ENTRY
+            );
+            assert_eq!(String::from_utf8(output.stdout)?.trim(), expected);
+        }
         assert_eq!(
             cache.read_pointer()?.as_deref(),
-            Some(old.as_slice()),
+            Some(old),
             "completion without reap changed the published pointer"
         );
         let mut candidate = CacheConnection::open(
-            &cache,
+            cache,
             CacheIdentity {
                 scope: source.scope.clone(),
                 epoch: request.epoch.clone(),
@@ -220,33 +317,23 @@ mod linux {
             job.poll().is_err(),
             "a killed child was treated as a successfully reaped producer"
         );
+        #[cfg(target_os = "linux")]
         assert!(
             !Path::new(&format!("/proc/{pid}")).exists(),
             "killed child was not reaped"
         );
-        let mut current = pointer::open_current(
-            &cache,
-            &source.scope,
-            ConnectionRole::ExternalReader,
-            &SqlProfile::contained_cold(),
-            end(),
-        )?
-        .ok_or("old epoch absent after crash")?;
-        assert_eq!(
-            &current.connection.identity().epoch,
-            request.expected_epoch.as_ref().ok_or("old epoch absent")?
-        );
-        assert_eq!(cache.read_pointer()?.as_deref(), Some(old.as_slice()));
-        current.connection.read(end(), |sql| {
-            let files: i64 = sql
-                .prepare("SELECT count(*) FROM files")?
-                .query_row([], |r| r.get(0))
-                .map_err(|e| se_types::SeError::invalid("old epoch witness", &e.to_string()))?;
-            assert_eq!(files, 0, "a crash changed the old graph");
-            Ok(())
-        })?;
-        drop(current);
+        #[cfg(target_os = "macos")]
+        absent(pid)?;
+        old_graph(cache, request, old)?;
         drop(job);
+        Ok(())
+    }
+    fn abnormal_exit(
+        base: &Path,
+        request: &Request,
+        cache: &NativeAtlasCache,
+        old: &[u8],
+    ) -> Check {
         let image = base.join("atlas-abort-probe");
         std::fs::copy(std::env::current_exe()?, &image)?;
         let mut failed = ColdJob::spawn(&image, request.clone())?;
@@ -274,9 +361,17 @@ mod linux {
                 "native failure lost {expected}: {error}"
             );
         }
+        #[cfg(target_os = "linux")]
         assert!(!Path::new(&format!("/proc/{}", failed.pid())).exists());
-        assert_eq!(cache.read_pointer()?.as_deref(), Some(old.as_slice()));
+        #[cfg(target_os = "macos")]
+        absent(failed.pid())?;
+        assert_eq!(cache.read_pointer()?.as_deref(), Some(old));
         drop(failed);
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    fn memory_pressure(base: &Path, request: Request, cache: &NativeAtlasCache) -> Check {
+        let source = request.source()?;
         let image = base.join("atlas-pressure-probe");
         std::fs::copy(std::env::current_exe()?, &image)?;
         let mut pressure_request = request;
@@ -297,7 +392,7 @@ mod linux {
             "memory pressure left a file Indexed instead of a typed refusal"
         );
         let mut current = pointer::open_current(
-            &cache,
+            cache,
             &source.scope,
             ConnectionRole::ExternalReader,
             &SqlProfile::contained_cold(),
@@ -340,18 +435,40 @@ mod linux {
         })?;
         drop(current);
         drop(pressure);
-        drop(cache);
-        drop(source);
+        Ok(())
+    }
+    pub(super) fn run() -> Check {
+        se_proc::initialize_file_creation_owner()?;
+        if std::env::args_os()
+            .nth(1)
+            .is_some_and(|arg| arg == se_proc::atlas_worker::ENTRY)
+        {
+            return child_entry();
+        }
+        let (base, request) = prepared()?;
+        let cache =
+            NativeAtlasCache::open(&request.home.to_local()?, request.source()?.scope.clone())?
+                .ok_or("old cache absent")?;
+        let old = cache.read_pointer()?.ok_or("old pointer absent")?;
+        completion(&base, &request, &cache, &old)?;
         println!(
             "PASS actual completed cold child cannot publish before exact reap; crash preserves independently reopened old epoch"
         );
+        abnormal_exit(&base, &request, &cache, &old)?;
         println!(
             "PASS native abort reports its typed file, signal, phase, limit and bounded stderr"
         );
-        println!(
-            "PASS native memory pressure becomes a typed per-file refusal before parser allocation"
-        );
-        println!("3 passed; 0 failed");
+        #[cfg(target_os = "linux")]
+        {
+            memory_pressure(&base, request, &cache)?;
+            println!(
+                "PASS native memory pressure becomes a typed per-file refusal before parser allocation"
+            );
+            println!("3 passed; 0 failed");
+        }
+        #[cfg(target_os = "macos")]
+        println!("2 passed; 0 failed; Linux virtual-address-space pressure case NOT GRADED");
+        drop(cache);
         base.finish(Ok(()))
     }
 }
@@ -362,9 +479,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
-    #[cfg(all(target_os = "linux", not(debug_assertions)))]
-    linux::run()?;
-    #[cfg(not(all(target_os = "linux", not(debug_assertions))))]
-    println!("0 passed; 0 failed; 1 skipped (requires native Linux release image)");
+    #[cfg(all(any(target_os = "linux", target_os = "macos"), not(debug_assertions)))]
+    native::run()?;
+    #[cfg(not(all(any(target_os = "linux", target_os = "macos"), not(debug_assertions))))]
+    println!("0 passed; 0 failed; 1 skipped (requires native Linux or macOS release image)");
     Ok(())
 }

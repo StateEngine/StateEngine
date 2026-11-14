@@ -419,6 +419,9 @@ mod linux {
         Ok(())
     }
 }
+#[cfg(target_os = "macos")]
+#[path = "support/atlas_worker_macos.rs"]
+mod macos;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().any(|v| v == "--list") {
         if !std::env::args().any(|v| v == "--ignored") {
@@ -428,7 +431,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     #[cfg(target_os = "linux")]
     linux::run()?;
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    macos::run()?;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     println!("native Linux Atlas worker failure checks are unsupported on this platform");
     Ok(())
 }
