@@ -1,4 +1,4 @@
-"""Send a dedicated automation token over SSH stdin, with no login-file copies."""
+"""Read dedicated automation tokens and transport remote authentication."""
 import hashlib
 import json
 import os
@@ -40,13 +40,11 @@ def plain(path):
     return data, (info.st_dev, info.st_ino, hashlib.sha256(data).hexdigest())
 
 
-class Credentials:
-    """Read a dedicated token; never materialize it in the destination home."""
-    def __init__(self, journey, sources):
-        self.journey = journey
+class AutomationToken:
+    """Read and recheck a dedicated token without materializing a login file."""
+    def __init__(self, sources):
         self.source = dedicated_source(sources)
         self.original = plain(self.source)[1]
-        self.recovered = False
         info = self.source.lstat()
         if info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise RuntimeError("automation token must be an owned private file (mode 600)")
@@ -70,6 +68,14 @@ class Credentials:
         if any(c.isspace() or ord(c) < 33 for c in value):
             raise RuntimeError("automation token contains whitespace or control characters; write only one generated token")
         return value
+
+
+class Credentials(AutomationToken):
+    """Transport the checked token to a remote provider over SSH stdin."""
+    def __init__(self, journey, sources):
+        super().__init__(sources)
+        self.journey = journey
+        self.recovered = False
 
     def snapshot(self):
         return {"source": str(self.source), "original": list(self.original)}

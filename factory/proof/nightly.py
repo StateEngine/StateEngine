@@ -15,6 +15,7 @@ from lifecycle import begin, checkpoint, save, service_exit
 from native import import_receipt
 from matrix_adapter import run as run_matrix
 from night_status import configure
+from remote_credentials import AutomationToken
 
 GIB = 1024**3
 
@@ -111,7 +112,12 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
     argv = [config["node"], judge / "journeys/run.mjs", "--implementation", "rust",
             "--distribution", "standalone", "--product", descriptor,
             "--surface", surface, "--auth-home", config["auth_home"], "--out", directory / name]
-    if surface in config.get("credential_sources", {}):
+    automation = None
+    if surface == "claude":
+        automation = AutomationToken(config.get("automation_tokens", {}))
+        env = {**env, "CLAUDE_CODE_OAUTH_TOKEN": automation.token()}
+        argv += ["--automation-token-env", "CLAUDE_CODE_OAUTH_TOKEN"]
+    elif surface in config.get("credential_sources", {}):
         argv += ["--credential-source", config["credential_sources"][surface]]
     if selection == "first-hour":
         argv += ["--only", selection, "--archive", archive]
@@ -122,6 +128,11 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
             invocation["exit"] = subprocess.run([str(arg) for arg in argv], env=env,
                 stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                 timeout=remaining(deadline, 7200), close_fds=True).returncode
+        if automation is not None:
+            automation.token()
+            invocation["credential_closure"] = {"source_inode_unchanged": True,
+                "source_digest_unchanged": True, "transport": "environment",
+                "credential_file_copied": False}
         invocation["state"] = "finished"
     except subprocess.TimeoutExpired:
         invocation.update(state="timed-out", error="judge deadline; inspect fixture and native custody")
