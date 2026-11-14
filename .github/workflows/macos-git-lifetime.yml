@@ -1,0 +1,102 @@
+name: Native macOS Git lifetime and resource controls
+
+on: [push, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  lifetime:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 36b772f4c34c4867e034ca4b4d176a824489d165
+          path: source
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 65b2c95e3a1e30d155e68d13d6279002321640cb
+          path: controls
+          sparse-checkout: crates/se-proc/tests/review_git_lifetime
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Read the pinned compiler
+        id: compiler
+        shell: python
+        run: |
+          import os, tomllib
+          from pathlib import Path
+          channel = tomllib.loads(Path('source/rust-toolchain.toml').read_text())['toolchain']['channel']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('channel=' + channel, file=output)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ steps.compiler.outputs.channel }}
+      - name: Compile the pinned library and independent native consumers
+        shell: python
+        run: |
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          source = Path('source').resolve()
+          controls = Path('controls/crates/se-proc/tests/review_git_lifetime').resolve()
+          out = Path(os.environ['RUNNER_TEMP']) / 'git-lifetime-evidence'
+          out.mkdir()
+          target = out / 'target'
+          env = dict(os.environ, CARGO_TARGET_DIR=str(target), CARGO_BUILD_JOBS='2', CARGO_INCREMENTAL='0')
+          host = subprocess.check_output(['rustc','--print','host-tuple'], text=True).strip()
+          assert host.endswith('-apple-darwin'), host
+          assert subprocess.check_output(['git','rev-parse','HEAD'], cwd=source, text=True).strip() == '36b772f4c34c4867e034ca4b4d176a824489d165'
+          command = ['cargo','build','-p','se-proc','--lib','--locked','--target',host,'--message-format=json-render-diagnostics']
+          with (out/'cargo.jsonl').open('w') as stdout, (out/'build.log').open('w') as stderr:
+              result = subprocess.run(command, cwd=source, env=env, stdout=stdout, stderr=stderr, timeout=1200)
+          if result.returncode:
+              raise SystemExit(result.returncode)
+          artifacts = {}
+          for line in (out/'cargo.jsonl').read_text().splitlines():
+              value = json.loads(line)
+              if value.get('reason') == 'compiler-artifact':
+                  for file in value.get('filenames', []):
+                      if file.endswith('.rlib'):
+                          artifacts[value['target']['name']] = file
+          obj = out/'native.o'
+          subprocess.run(['cc','-O1','-Wall','-Wextra','-Werror','-c',str(controls/'native.c'),'-o',str(obj)], check=True)
+          subprocess.run(['cc','-O1','-Wall','-Wextra','-Werror','-DREVIEW_OBSERVER_ONLY','-dynamiclib',str(controls/'native.c'),'-o',str(out/'observer.dylib')], check=True)
+          subprocess.run(['cc','-O1','-Wall','-Wextra','-Werror','-DREVIEW_OBSERVER_ONLY','-DREVIEW_PROBE',str(controls/'native.c'),'-o',str(out/'probe')], check=True)
+          compile_driver = ['rustc','--edition=2024','--crate-name','git_lifetime_review',str(controls/'driver.rs'),
+                            '--target',host,'-Dwarnings','-Cdebuginfo=0','-L',f'dependency={target/host/"debug/deps"}',
+                            '-C',f'link-arg={obj}','-o',str(out/'driver')]
+          for name in ['se_proc','serde_json','libc']:
+              compile_driver += ['--extern',name+'='+artifacts[name]]
+          subprocess.run(compile_driver, check=True, cwd=source)
+          pin = {'source':'36b772f4c34c4867e034ca4b4d176a824489d165','target':host,
+                 'compiler':subprocess.check_output(['rustc','-vV'],text=True),'build_command':command,
+                 'driver_command':compile_driver,'controls':{name:hashlib.sha256((controls/name).read_bytes()).hexdigest() for name in ['driver.rs','native.c','control.py']}}
+          (out/'inputs.json').write_text(json.dumps(pin,indent=2)+'\n')
+      - name: Exercise owner death, exact cleanup and resource failures
+        shell: python
+        run: |
+          import os, subprocess
+          from pathlib import Path
+          out = Path(os.environ['RUNNER_TEMP'])/'git-lifetime-evidence'
+          controls = Path('controls/crates/se-proc/tests/review_git_lifetime').resolve()
+          subprocess.run(['python3','-B',str(controls/'control.py'),'--driver',str(out/'driver'),
+                          '--probe',str(out/'probe'),'--meter',str(out/'observer.dylib'),
+                          '--out',str(out/'results')],check=True,timeout=600)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: macos-git-lifetime-and-limits
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/git-lifetime-evidence/inputs.json
+            ${{ runner.temp }}/git-lifetime-evidence/build.log
+            ${{ runner.temp }}/git-lifetime-evidence/cargo.jsonl
+            ${{ runner.temp }}/git-lifetime-evidence/results/**/*.json
+            ${{ runner.temp }}/git-lifetime-evidence/results/**/*.jsonl
+            ${{ runner.temp }}/git-lifetime-evidence/results/**/*.stderr
+            ${{ runner.temp }}/git-lifetime-evidence/results/**/*.stdout
