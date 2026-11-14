@@ -332,3 +332,274 @@ fn revoked_source_gets_no_queued_reply_and_cannot_send() -> Check {
     w.d.close()?;
     Ok(())
 }
+
+fn inbox(w: &World, full: bool) -> R<se_core::ops::outputs::MessagePage> {
+    let scope = w.f.self_scope(&w.f.a);
+    let mut snapshot = w.reader.snapshot(scope.clone())?;
+    let output = se_core::ops::message::list(
+        se_core::ops::inputs::MessageList {
+            cli_list: false,
+            view: se_core::ops::inputs::MessageView::All,
+            mailbox: se_core::ops::inputs::MessageBox::Inbox,
+            from: None,
+            kind: None,
+            full,
+            limit: 100,
+            preview_chars: Some(3),
+            cursor: None,
+            owner_to: None,
+        },
+        &mut se_core::commit::Cx {
+            read: &mut snapshot,
+            admission: &scope.admission,
+        },
+    );
+    snapshot.close()?;
+    Ok(output?)
+}
+
+/// One delegated principal can speak for several sources; each row retains its own route.
+#[test]
+fn inbox_keeps_distinct_sources_and_reply_ids_for_one_remote_principal() -> Check {
+    let (mut w, targets) = world()?;
+    let target = targets[0].clone();
+    let g = grant(&w.f, 40, targets)?;
+    connect(&mut w, &g, "connect-page")?;
+    let sa = w.session_a.clone();
+    let x = source(&w.f.a, &w.f.project)?;
+    let z = source(&w.f.b, &w.f.project)?;
+    let first = remote_send(&mut w, &g, &x, &target, &sa, "source-x")?;
+    let second = remote_send(&mut w, &g, &z, &target, &sa, "source-z")?;
+    let head = w.d.info()?.head;
+    for full in [false, true] {
+        let output = inbox(&w, full)?;
+        assert_eq!(output.unread_total, Some(2));
+        assert_eq!(output.page.items().len(), 2);
+        for (id, address) in [(&first, x.address()), (&second, z.address())] {
+            let row = output
+                .page
+                .items()
+                .iter()
+                .find(|row| &row.id == id)
+                .ok_or("row missing")?;
+            assert_eq!(row.from.kind, "remote_agent");
+            assert_eq!(row.from.id, address.selector());
+            let reply = row.remote_reply.as_ref().ok_or("reply route missing")?;
+            assert_eq!(reply.to, address.selector());
+            assert_eq!(&reply.reply_to, id);
+            assert_eq!(row.to.id, w.f.a.as_str());
+            assert_eq!(row.disposition.state, "unread");
+            assert_eq!(row.body.bytes, "hello from the remote source".len() as u64);
+            assert_eq!(row.body.complete, full);
+            assert_eq!(
+                row.body.text,
+                if full {
+                    "hello from the remote source"
+                } else {
+                    "hel"
+                }
+            );
+        }
+        assert_eq!(w.d.info()?.head, head, "listing mutated mail");
+    }
+    let a = w.f.a.clone();
+    agent_message(&mut w, &a, &sa, &g.principal, Some(&first), "answer-x")?;
+    agent_message(&mut w, &a, &sa, &g.principal, Some(&second), "answer-z")?;
+    assert_eq!(queued(&w, &g, &x, &target)?, 1);
+    assert_eq!(queued(&w, &g, &z, &target)?, 1);
+    assert_eq!(inbox(&w, true)?.unread_total, Some(2));
+    w.d.close()?;
+    Ok(())
+}
+
+/// Repeated local actors are resolved afresh on the next read, without marking mail read.
+#[test]
+fn inbox_local_names_refresh_between_reads_without_changing_unread_mail() -> Check {
+    let (mut w, _) = world()?;
+    for n in 0..24 {
+        w.d.append(
+            w.f.send(
+                Actor::Agent(w.f.b.clone()),
+                Actor::Agent(w.f.a.clone()),
+                message()?,
+                "é🦀mail",
+                &format!("local-{n}"),
+            )?,
+            &*w.l,
+        )?;
+    }
+    let head = w.d.info()?.head;
+    let first = inbox(&w, false)?;
+    assert_eq!(first.unread_total, Some(24));
+    assert_eq!(first.page.items().len(), 24);
+    for row in first.page.items() {
+        assert_eq!(row.from.name, "Juniper");
+        assert_eq!(row.body.text, "é🦀m");
+        assert_eq!(row.body.bytes, "é🦀mail".len() as u64);
+        assert_eq!(row.disposition.state, "unread");
+    }
+    assert_eq!(w.d.info()?.head, head);
+    w.d.append(
+        w.f.batch(
+            w.f.owner_project(),
+            Some(request("rename-sender")?),
+            vec![EventBody::PrincipalRenamed {
+                principal: Actor::Agent(w.f.b.clone()),
+                name: "Updated sender".into(),
+                expected: revision(1)?,
+            }],
+        )?,
+        &*w.l,
+    )?;
+    let head = w.d.info()?.head;
+    let second = inbox(&w, true)?;
+    assert_eq!(second.unread_total, Some(24));
+    assert_eq!(
+        first.page.items().iter().map(|r| &r.id).collect::<Vec<_>>(),
+        second
+            .page
+            .items()
+            .iter()
+            .map(|r| &r.id)
+            .collect::<Vec<_>>()
+    );
+    for row in second.page.items() {
+        assert_eq!(row.from.name, "Updated sender");
+        assert_eq!(row.disposition.state, "unread");
+        assert_eq!(row.body.text, "é🦀mail");
+        assert!(row.body.complete);
+    }
+    assert_eq!(w.d.info()?.head, head);
+    w.d.close()?;
+    Ok(())
+}
+
+/// Return-mail attribution must win over the generic delegated-principal identity.
+#[test]
+fn inbox_resolves_return_mail_per_message_and_retains_its_reply_route() -> Check {
+    let (mut w, targets) = world()?;
+    let g = grant(&w.f, 40, targets.clone())?;
+    connect(&mut w, &g, "connect-return-page")?;
+    let local = RemoteAgentAddress {
+        host: RemoteHostId(se_types::Sha256::from_bytes([90; 32])),
+        project: w.f.project.clone(),
+        agent: w.f.a.clone(),
+    };
+    let mut expected = Vec::new();
+    for (n, target) in targets.into_iter().enumerate() {
+        let original = message()?;
+        let pending = PendingContact {
+            source: local.clone(),
+            peer: host(),
+            target: target.clone(),
+            alias: "peer".into(),
+            request_key: IdempotencyKey::new(format!("contact-{n}"))?,
+            original_grant: g.grant.clone(),
+            local_reply: None,
+        };
+        let contact = MailContact {
+            source: local.clone(),
+            peer: pending.peer,
+            target: target.clone(),
+            original: original.clone(),
+            principal: g.principal.clone(),
+            alias: pending.alias.clone(),
+            request_key: pending.request_key.clone(),
+            original_grant: pending.original_grant.clone(),
+            local_reply: None,
+        };
+        let mut admission = w.f.admission(
+            Scope::Project(w.f.project.clone()),
+            Actor::Agent(w.f.a.clone()),
+        );
+        admission.session = Some(w.session_a.clone());
+        let mut batch = w.f.batch(
+            admission,
+            Some(request(&format!("contact-write-{n}"))?),
+            vec![
+                EventBody::RemoteMailboxRecorded {
+                    change: MailboxChange::Pending { record: pending },
+                },
+                EventBody::RemoteMailboxRecorded {
+                    change: MailboxChange::Contact { record: contact },
+                },
+            ],
+        )?;
+        for e in &mut batch.events {
+            e.header.door = Door::Host;
+            e.header.session = Some(w.session_a.clone());
+        }
+        w.d.append(batch, &*w.l)?;
+        let id = message()?;
+        let sender = RemoteAgentAddress {
+            host: host(),
+            project: target.project.clone(),
+            agent: target.agent.clone(),
+        };
+        let mut batch = w.f.batch(
+            w.f.admission(
+                Scope::Project(w.f.project.clone()),
+                Actor::Remote(g.principal.clone()),
+            ),
+            Some(request(&format!("receive-{n}"))?),
+            vec![
+                EventBody::MessageSent {
+                    quiet: true,
+                    message: id.clone(),
+                    recipient: Actor::Agent(w.f.a.clone()),
+                    kind: "note".into(),
+                    body: InputText::Inline(format!("return-{n}")),
+                    refs: vec![],
+                    reply_to: None,
+                },
+                EventBody::RemoteMailboxRecorded {
+                    change: MailboxChange::Received {
+                        record: ReturnAttribution {
+                            message: id.clone(),
+                            peer_message: message()?,
+                            original,
+                            source: local.clone(),
+                            sender: sender.clone(),
+                            principal: g.principal.clone(),
+                        },
+                    },
+                },
+                EventBody::RemoteMailboxRecorded {
+                    change: MailboxChange::Checkpoint {
+                        source: local.clone(),
+                        peer: host(),
+                        target,
+                        grant: g.grant.clone(),
+                        cursor: se_types::Cursor::new(format!("return-cursor-{n}"))?,
+                    },
+                },
+            ],
+        )?;
+        for e in &mut batch.events {
+            e.header.door = Door::Host;
+        }
+        w.d.append(batch, &*w.l)?;
+        expected.push((id, sender));
+    }
+    let head = w.d.info()?.head;
+    let output = inbox(&w, true)?;
+    assert_eq!(output.unread_total, Some(2));
+    assert_eq!(output.page.items().len(), 2);
+    for (id, sender) in expected {
+        let row = output
+            .page
+            .items()
+            .iter()
+            .find(|r| r.id == id)
+            .ok_or("return row missing")?;
+        assert_eq!(row.from.kind, "remote_agent");
+        assert_eq!(row.from.id, sender.selector());
+        let reply = row.remote_reply.as_ref().ok_or("return reply missing")?;
+        assert_eq!(reply.to, sender.selector());
+        assert_eq!(reply.reply_to, id);
+        assert_eq!(row.disposition.state, "unread");
+    }
+    assert_eq!(w.d.info()?.head, head);
+    w.d.close()?;
+    Ok(())
+}
