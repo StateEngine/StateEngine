@@ -106,6 +106,12 @@ def prepare(directory, image, provider, count, mail_count, dirty, with_commits, 
     smokes[side] = smoke
     smoke.state = smoke.home / 'stateengine-state'
     smoke.commands.environment['SE_HOME'] = str(smoke.state)
+    if side == 'head':
+        trace = directory / 'host-phases.log'
+        trace.touch(exist_ok=False)
+        trace.chmod(0o600)
+        smoke.commands.environment['SE_HOST_PHASE_PROFILE'] = str(trace)
+        smoke.commands.environment['SE_CLI_PHASE_PROFILE'] = '1'
     smoke.binary.parent.mkdir(parents=True)
     shutil.copyfile(image['image'], smoke.binary)
     smoke.binary.chmod(0o500)
@@ -171,6 +177,41 @@ def summaries(pairs):
     return result
 
 
+def phase_summary(pairs, expected_pid):
+    required_host = {'host_handshake', 'host_with_operation', 'host_finish',
+                     'host_status_prepare', 'host_native_status', 'host_machine_key',
+                     'host_owner_peer', 'host_owner_guard', 'host_owner_observe'}
+    required_client = {'ipc_hello_read', 'ipc_reply_read', 'ipc_self_prewarm',
+                       'ipc_native_connect', 'ipc_self_mac_observation'}
+    values, counts = {}, {}
+    for pair in pairs[1:]:
+        observed = {}
+        for line in pair['host_phase_lines']:
+            fields = line.split()
+            require(len(fields) == 4 and fields[0] == 'host.phase'
+                    and int(fields[1]) == expected_pid, 'Unattributed host phase')
+            observed.setdefault('host.' + fields[2], []).append(int(fields[3]))
+        for line in pair['samples']['head']['stderr'].splitlines():
+            fields = line.split()
+            if fields and fields[0] == 'cli.phase':
+                require(len(fields) == 3, 'Malformed client phase')
+                observed.setdefault('client.' + fields[1], []).append(int(fields[2]))
+        require({'host.' + key for key in required_host}.issubset(observed),
+                'Required host phase was absent; no zero duration is substituted')
+        require({'client.' + key for key in required_client}.issubset(observed),
+                'Required client phase was absent; no zero duration is substituted')
+        for key, durations in observed.items():
+            values.setdefault(key, []).append(sum(durations) / 1e6)
+            counts.setdefault(key, []).append(len(durations))
+    return dict(scope='Inclusive nested phase durations with tracing overhead; '
+                      'diagnostic observations, not an optimization or absolute budget qualification',
+                phases={key: dict(measured_calls=len(samples),
+                                  occurrences_per_call=sorted(set(counts[key])),
+                                  p50_ms=percentile(samples, .5),
+                                  p95_ms=percentile(samples, .95))
+                        for key, samples in sorted(values.items())})
+
+
 def cohort(output, images, provider, name, action, count=1, mail_count=0, dirty=False):
     directory = output / (provider + '-' + name)
     directory.mkdir()
@@ -185,13 +226,18 @@ def cohort(output, images, provider, name, action, count=1, mail_count=0, dirty=
             smoke, bodies, pid = prepare(directory / side, images[side], provider,
                                          count, mail_count, dirty, action == 'status', smokes, side)
             facts[side] = (bodies, pid)
+        trace = directory / 'head/host-phases.log'
         for index in range(ROUNDS + 1):
+            trace_start = trace.stat().st_size
             order = ('base', 'head') if index % 2 == 0 else ('head', 'base')
             pair = dict(index=index, kind='first-timed' if index == 0 else 'warm',
                         order=order, before=load(), samples={})
             for side in order:
                 pair['samples'][side] = timed(smokes[side], action)
             pair['after'] = load()
+            with trace.open('rb') as stream:
+                stream.seek(trace_start)
+                pair['host_phase_lines'] = stream.read().decode('utf-8').splitlines()
             record['pairs'].append(pair)
         save(directory / 'samples.json', record)
         for side, smoke in smokes.items():
@@ -201,6 +247,7 @@ def cohort(output, images, provider, name, action, count=1, mail_count=0, dirty=
             current = smoke.call(['status'], 'host-after')
             require(current['runtime']['process']['pid'] == pid, 'Serving host changed during reads')
         record['summary'] = summaries(record['pairs'])
+        record['phase_profile'] = phase_summary(record['pairs'], facts['head'][1])
         record['exit'] = 0
     except Exception as error:
         record['error'] = str(error)
@@ -227,6 +274,9 @@ def cohort(output, images, provider, name, action, count=1, mail_count=0, dirty=
                 record['exit'] = 1
         record['load_after'] = load()
         save(directory / 'samples.json', record)
+    trace = directory / 'head/host-phases.log'
+    if trace.exists():
+        shutil.copyfile(trace, output.parent / (provider + '-' + name + '-host-phases.log'))
     return {key: value for key, value in record.items() if key != 'pairs'}
 
 
