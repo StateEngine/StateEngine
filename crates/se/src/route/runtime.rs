@@ -35,19 +35,8 @@ pub fn up(
     }
     let mut options = execute::options();
     let bound = Deadline::from_options(&options)?;
-    let mut endpoint_recovery = None;
-    let endpoint = super::autostart::endpoint_with_origin(
-        cx,
-        files,
-        &bound,
-        diagnostic,
-        crate::runtime::host::StartupOrigin::Explicit,
-        &mut endpoint_recovery,
-    )
-    .map_err(|error| discovery::after_recovery(cx, endpoint_recovery.as_ref(), error))?;
-    options.timeout = bound.remaining()?;
-    let process = discovery::authenticate(cx, files, &endpoint, &options, &bound)
-        .map_err(|error| discovery::after_recovery(cx, endpoint_recovery.as_ref(), error))?;
+    let (endpoint, endpoint_recovery, process) =
+        rendezvous(cx, files, &mut options, &bound, diagnostic)?;
     #[cfg(feature = "remote")]
     if let Some(notice) = se_host::remote::startup_notice(files, &cx.home)? {
         diagnostic(&notice).map_err(|error| {
@@ -66,6 +55,60 @@ pub fn up(
         endpoint_recovery,
     }
     .into())
+}
+/// A published endpoint outlives the host that wrote it. A runtime killed while a
+/// request is in flight leaves a record this request may already have routed to,
+/// so authentication fails against a host that is gone while the lease is free
+/// again. The lease decides what happens next and nothing else does: route once
+/// more, and only a released lease starts the replacement host. A still-held lease
+/// keeps the original refusal, and a second failure is reported as itself.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn rendezvous(
+    cx: &Bootstrap,
+    files: &Files,
+    options: &mut se_host::client::ClientOptions,
+    bound: &Deadline,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<(
+    se_host::EndpointRecord,
+    Option<se_core::ops::EndpointRecovery>,
+    ProcessView,
+)> {
+    let mut recovery = None;
+    let mut attempt = 0u8;
+    loop {
+        let mut routed = None;
+        let endpoint = super::autostart::endpoint_with_origin(
+            cx,
+            files,
+            bound,
+            diagnostic,
+            crate::runtime::host::StartupOrigin::Explicit,
+            &mut routed,
+        )
+        .map_err(|error| discovery::after_recovery(cx, routed.as_ref(), error))?;
+        if routed.is_some() {
+            recovery = routed;
+        }
+        options.timeout = bound.remaining()?;
+        match discovery::authenticate(cx, files, &endpoint, options, bound) {
+            Ok(process) => return Ok((endpoint, recovery, process)),
+            // Only a released lease retries, and only once. A held lease is a live
+            // host that answered nothing: the original refusal already names what
+            // to do, and retrying it would report a second failure as the first.
+            Err(error)
+                if attempt == 0
+                    && error.code() == se_types::Code::StateConflict
+                    && matches!(
+                        discovery::route(cx),
+                        Ok(se_host::EndpointRoute::Start { .. })
+                    ) =>
+            {
+                attempt += 1;
+            }
+            Err(error) => return Err(discovery::after_recovery(cx, recovery.as_ref(), error)),
+        }
+    }
 }
 /// The public CLI keeps its original process as the sole standalone host.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

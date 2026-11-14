@@ -38,8 +38,16 @@ pub(super) fn authenticate(
             SeError::new(se_types::Detail::StateConflict(
                 se_types::details::StateConflict {
                     subject: cx.home.join("runtime.lock").display().to_string(),
-                    reason: format!("the runtime lease is held but its endpoint could not be authenticated: {error}"),
-                    next_step: "Run se down for this same data home before retrying se up; the endpoint and live host were preserved.".into(),
+                    reason: format!("the published runtime endpoint could not be authenticated: {error}"),
+                    // A published endpoint can outlive the host that wrote it: a
+                    // runtime killed between publication and the next request
+                    // leaves this record behind while its lease is free again.
+                    // Reading that as a live host and sending the user to `se
+                    // down` stops the provider the crash preserved. Retrying is
+                    // what starts the replacement host, and the lease decides:
+                    // a freed lease starts and re-adopts, a held lease refuses
+                    // again, so this names the step that works without assuming.
+                    next_step: "Run se up again for this same data home; a released lease starts the replacement host and re-adopts the preserved provider. If it refuses again, run se down for this same home before retrying; the endpoint and saved conversations are preserved.".into(),
                 },
             ))
             .with_cause(error)
