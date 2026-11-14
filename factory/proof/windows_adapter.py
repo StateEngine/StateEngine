@@ -87,7 +87,7 @@ def run(config, record, directory, deadline, checkpoint):
                    'reporter_directory': str(Path(__file__).resolve().parent),
                    'producer_config': {'node': config['node'], 'auth_home': config['auth_home'],
                        'credential_sources': config.get('credential_sources', {}),
-                       'admission_ref': settings.get('admission_ref')},
+                       'window_grant': settings.get('window_grant')},
                    'run_timeout_seconds': min(timeout, deadline - time.monotonic() - 300),
                    'output': str(stage / 'receipts'), 'custody_receipt': str(stage / 'custody.json')}
         request_path = stage / 'request.json'
