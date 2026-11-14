@@ -1,0 +1,43 @@
+name: macOS linux_process_facts pair
+on:
+  push:
+    branches: [prime/macos-process-facts-r1]
+permissions:
+  contents: read
+jobs:
+  run:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - side: base
+            sha: 1c2190d6a155f30cc6410a2a68b1fcaf2e28941e
+          - side: head
+            sha: 1c2190d6a155f30cc6410a2a68b1fcaf2e28941e
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Run linux_process_facts and macos_process_reads
+        shell: bash
+        run: |
+          set +e
+          ulimit -c 0
+          mkdir -p logs
+          test "$(git rev-parse HEAD)" = "${{ matrix.sha }}" || exit 2
+          T="$(rustc --print host-tuple)"
+          fail=0
+          for t in linux_process_facts macos_process_reads; do
+            cargo test --locked --all-features --target "$T" -p se-proc --test $t -- --nocapture > logs/$t.log 2>&1
+            c=$?; echo "$t exit=$c" | tee -a logs/summary.txt; tail -30 logs/$t.log; [ $c = 0 ] || fail=1
+          done
+          exit $fail
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: macos-process-facts-${{ matrix.side }}
+          path: logs
