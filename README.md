@@ -547,8 +547,7 @@ publication rolls back its newly published paths so the same command can retry.
 ## License and contributions
 
 The Rust workspace is licensed under the [GNU Affero General Public License, version 3 only](LICENSE).
-Third-party components retain their own licenses. The separately licensed commercial server is
-outside this workspace's license declaration.
+Third-party components retain their own licenses.
 
 Outside pull requests require a signed [contributor agreement](CONTRIBUTING.md) before merge.
 The agreement preserves your ownership and permits StateEngine LLC to offer your contribution
