@@ -90,6 +90,9 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
             "--json",
         ],
     )?;
+    // Init consumed the original temporary path above. Only the catalog's
+    // expected value uses its canonical spelling; setup still exercises aliases.
+    let repo = se_proc::canonicalize_path(&repo)?;
     let initialized: serde_json::Value = serde_json::from_str(&initialized)?;
     let selected = api::ProjectId(
         initialized["project"]["id"]
