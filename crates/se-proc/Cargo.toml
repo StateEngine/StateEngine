@@ -14,6 +14,10 @@ serde.workspace = true
 serde_json.workspace = true
 rusqlite = { version = "0.41", features = ["bundled"] }
 
+# The pinned digest crate gates its aarch64 hardware backend behind this feature.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
