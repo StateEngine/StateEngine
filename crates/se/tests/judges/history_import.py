@@ -18,6 +18,7 @@ import sys
 import time
 import traceback
 import uuid
+from judge_records import wait_json
 
 TS = "2026-10-15T12:00:00.000Z"
 PROJECT = "import-judge"
@@ -420,7 +421,7 @@ std::process::exit(result.code().unwrap_or(1));}
     assert "--resume" not in argv and NATIVE_SESSION not in argv, "imported provider reference became launch authority"
     assert "--session-id" in argv, "fresh launch must select a new conversation"
     assert result.returncode == 0, (result.stdout, result.stderr)
-    ready = json.loads((f.root / "historical-repo/provider-ready.json").read_text())
+    ready = wait_json(f.root / "historical-repo/provider-ready.json")
     assert ready["conversation"] != NATIVE_SESSION and ready["session_discovery"] and ready["http_discovery"]
     launched = json.loads(result.stdout)
     assert launched["state"] == "running" and launched["process"]["pid"] == ready["native_root_pid"]

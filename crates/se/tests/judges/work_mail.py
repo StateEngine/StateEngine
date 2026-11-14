@@ -17,6 +17,7 @@ import urllib.error
 import urllib.request
 import uuid
 
+from judge_records import wait_json
 from mail_cli import Fixture
 
 
@@ -150,7 +151,7 @@ def run(options):
             launch.update(agent=agent, http=config["mcpServers"]["stateengine"])
             sessions.append(launch)
             if sys.platform == "linux":
-                ready = json.loads((f.repo / "provider-ready.json").read_text())
+                ready = wait_json(f.repo / "provider-ready.json")
                 for pid in (launch["process"]["pid"], ready["helper_pid"]):
                     fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
                     f.processes.append((pid, fields[19]))

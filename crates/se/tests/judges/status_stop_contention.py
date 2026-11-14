@@ -22,6 +22,7 @@ import urllib.request
 import uuid
 
 sys.dont_write_bytecode = True
+from judge_records import wait_json
 from mail_cli import Fixture
 from recovery_capture import gone, native, wait
 from directory_owner import DirectoryOwner
@@ -149,8 +150,7 @@ def run_case(args, library, case):
         (f.root / "launch.stdout").write_bytes(launch.stdout)
         (f.root / "launch.stderr").write_bytes(launch.stderr)
         assert launch.returncode == 0, (launch.stdout, launch.stderr)
-        wait(lambda: (f.repo / "provider-ready.json").exists(), "attended provider did not authenticate")
-        ready = json.loads((f.repo / "provider-ready.json").read_text())
+        ready = wait_json(f.repo / "provider-ready.json")
         f.session = "ses_" + ready["conversation"]
         provider_pin = native(ready["native_root_pid"])
         assert provider_pin and str(f.root / "provider") in provider_pin["command"]

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import time
+from judge_records import wait_json
 from mail_cli import Fixture
 
 
@@ -15,7 +16,7 @@ def present(value):
 
 
 def transcript(f):
-    ready = json.loads((f.repo / "provider-ready.json").read_text())
+    ready = wait_json(f.repo / "provider-ready.json")
     paths = list((f.root / "owner/.claude/projects").glob("*/" + ready["conversation"] + ".jsonl"))
     assert len(paths) == 1, paths
     return ready["conversation"], paths[0]
@@ -87,7 +88,7 @@ def one(f, malformed):
     # remains incomplete. A description of a hypothetical remedy is no pass.
     launched = f.ok("--project", f.project, "launch", f.agent, "--new", "--detach", "--task", "Fresh after capture")
     assert launched["state"] == "running" and launched["session_id"] != old, launched
-    ready = json.loads((f.repo / "provider-ready.json").read_text())
+    ready = wait_json(f.repo / "provider-ready.json")
     for pid in (ready["native_root_pid"], ready["helper_pid"]):
         fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
         f.processes.append((pid, fields[19]))

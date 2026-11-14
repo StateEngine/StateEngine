@@ -9,6 +9,7 @@ import time
 import traceback
 import urllib.request
 sys.dont_write_bytecode = True
+from judge_records import write_json
 from mail_provider import main
 
 provider_ready = threading.Event()
@@ -23,7 +24,7 @@ def worker():
     child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(180)', 'owned-self-force-job'],
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     identity = dict(session=session, pids=[os.getppid(), os.getpid(), child.pid])
-    (records / (session + '.json')).write_text(json.dumps(identity))
+    write_json(records / (session + '.json'), identity)
     original = repo / 'self-original-session'
     try:
         with original.open('x') as output:
@@ -47,12 +48,12 @@ def worker():
         request = dict(jsonrpc='2.0', id=label, method='tools/call',
                        params=dict(name=name, arguments=arguments))
         # Record the offered operation without recording the credential headers.
-        (repo / (label + '.request.json')).write_text(json.dumps(request))
+        write_json(repo / (label + '.request.json'), request)
         call = urllib.request.Request(server['url'], data=json.dumps(request).encode(),
                                       headers={**server['headers'], 'Content-Type': 'application/json'})
         with urllib.request.urlopen(call, timeout=30) as response:
             result = json.load(response)
-        (repo / (label + '.response.json')).write_text(json.dumps(result))
+        write_json(repo / (label + '.response.json'), result)
         return result
 
     label = 'self-original' if first else 'self-successor'

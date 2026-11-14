@@ -37,12 +37,23 @@ pub(super) async fn open(
                 .forward
                 .clone()
                 .ok_or_else(|| unavailable("saved SSH binding absent"))?;
+            if let Some(refusal) = forwards.forwarding_refusal(&config).await {
+                return Err(refusal.with_cause(error));
+            }
             forwards
-                .restart(config, signer.clone(), blocking)
+                .restart(config.clone(), signer.clone(), blocking)
                 .await
                 .map_err(|restart| restart.with_cause(error))?;
             controls = Arc::new(Controls::default());
-            transport(route, CLIENT_DATA_PATH, controls.clone()).await?
+            match transport(route, CLIENT_DATA_PATH, controls.clone()).await {
+                Ok(socket) => socket,
+                Err(error) => {
+                    return Err(match forwards.forwarding_refusal(&config).await {
+                        Some(refusal) => refusal.with_cause(error),
+                        None => error,
+                    });
+                }
+            }
         }
         Err(error) => return Err(error),
     };
