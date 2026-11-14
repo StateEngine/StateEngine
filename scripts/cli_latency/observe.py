@@ -38,7 +38,10 @@ def timed(smoke, action):
                  'inbox': ['msg', 'inbox', smoke.agent]}[action]
     argv = list(map(str, [smoke.binary, *arguments, '--home', smoke.state,
                           '--project', smoke.project, '--json']))
-    return timed_command(argv, smoke.repository, smoke.commands.environment)
+    environment = dict(smoke.commands.environment)
+    if 'SE_HOST_PHASE_PROFILE' in environment:
+        environment['SE_CLI_PHASE_PROFILE'] = '1'
+    return timed_command(argv, smoke.repository, environment)
 
 
 def timed_command(argv, cwd, environment):
@@ -120,7 +123,6 @@ def prepare(directory, image, provider, count, mail_count, dirty, with_commits, 
         trace.touch(exist_ok=False)
         trace.chmod(0o600)
         smoke.commands.environment['SE_HOST_PHASE_PROFILE'] = str(trace)
-        smoke.commands.environment['SE_CLI_PHASE_PROFILE'] = '1'
     smoke.binary.parent.mkdir(parents=True)
     shutil.copyfile(image['image'], smoke.binary)
     smoke.binary.chmod(0o500)
