@@ -663,3 +663,6 @@ fn file_retirement_repairs_incoming_edges_and_handles_nested_symbols_atomically(
 
 #[path = "foundation_judge/counts.rs"]
 mod counts;
+
+#[path = "foundation_judge/open_boundary_review.rs"]
+mod open_boundary_review;
