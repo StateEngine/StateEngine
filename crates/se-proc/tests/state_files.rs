@@ -23,8 +23,9 @@ impl Home {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path)?;
-        protect(&path)?;
-        Ok(Self(path))
+        let home = Self(path);
+        protect(&home.0)?;
+        Ok(home)
     }
     fn root(&self) -> PathBuf {
         self.0.join("state")

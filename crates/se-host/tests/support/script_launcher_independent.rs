@@ -24,7 +24,9 @@ impl Home {
             se_types::hex_lower(&random_secret()?.expose()[..16])
         ));
         fs::create_dir(&root)?;
-        let root = fs::canonicalize(root)?;
+        let mut home = Self(root);
+        home.0 = fs::canonicalize(&home.0)?;
+        let root = &home.0;
         let image = root.join("native child ; literal");
         let output = Command::new("cc")
             .args(["-std=c11", "-Wall", "-Wextra", "-Werror"])
@@ -44,7 +46,7 @@ impl Home {
         let script = root.join("script launcher ' $ literal");
         fs::write(&script, b"#!/usr/bin/env sh\nexec \"$@\"\n")?;
         fs::set_permissions(&script, fs::Permissions::from_mode(0o700))?;
-        Ok(Self(root))
+        Ok(home)
     }
     fn image(&self) -> PathBuf {
         self.0.join("native child ; literal")

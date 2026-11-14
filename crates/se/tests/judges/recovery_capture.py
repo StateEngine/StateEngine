@@ -11,6 +11,7 @@ import signal
 import tempfile
 import time
 from mail_cli import Fixture
+from directory_owner import DirectoryOwner
 
 
 def wait(predicate, detail, seconds=15):
@@ -53,6 +54,8 @@ def run_case(options, case):
     f = Fixture(options.se, options.output / case,
                 provider_helper=Path(__file__).with_name('recovery_capture_provider.py'), log_directory='calls')
     runtime = Path(tempfile.mkdtemp(prefix='se-recovery-capture-'))
+    print("fixture root (retained on failed or interrupted closure):", runtime, flush=True)
+    root_owner = DirectoryOwner(runtime)
     f.env['XDG_RUNTIME_DIR'] = str(runtime)
     f.env['TMPDIR'] = '/tmp'
     (f.root / 'routing.json').write_text(json.dumps({key: f.env[key] for key in
@@ -126,20 +129,19 @@ def run_case(options, case):
         checks.append('history and repeated up preserve both replies exactly once')
     finally:
         (f.repo / 'work-release').touch()
-        # A failing assertion must not leave an injected unavailable source.
-        if 'transcript' in locals():
-            if 'retained' in locals() and retained.exists():
-                if transcript.exists():
-                    transcript.unlink()
-                retained.rename(transcript)
-            if transcript.exists() and not transcript.read_bytes().endswith(b'\n'):
-                with transcript.open('ab') as stream:
-                    stream.write(b'\n')
-        f.close()
-        directory = runtime / 'stateengine'
-        if directory.exists():
-            directory.rmdir()
-        runtime.rmdir()
+        try:
+            # A failing assertion must not leave an injected unavailable source.
+            if 'transcript' in locals():
+                if 'retained' in locals() and retained.exists():
+                    if transcript.exists():
+                        transcript.unlink()
+                    retained.rename(transcript)
+                if transcript.exists() and not transcript.read_bytes().endswith(b'\n'):
+                    with transcript.open('ab') as stream:
+                        stream.write(b'\n')
+        finally:
+            f.close()
+            root_owner.remove()
     return checks
 
 

@@ -1,5 +1,7 @@
 //! Real native readers, with NSS changed only inside dedicated child processes.
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_proc::NativeStateFiles;
 use std::{error::Error, fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
@@ -66,6 +68,7 @@ fn process_local_ancestor_proof() -> Result {
     let root = std::env::temp_dir().join(format!("se-ancestor-proof-{}", std::process::id()));
     assert!(!root.exists(), "preserve an existing fixture");
     fs::create_dir(&root)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     fs::write(root.join("control"), b"0")?;
     let output = Command::new("cc")
@@ -83,6 +86,6 @@ fn process_local_ancestor_proof() -> Result {
     fs::remove_dir(root.join("ancestor"))?;
     fs::remove_file(root.join("control"))?;
     fs::remove_file(root.join("account-switch.so"))?;
-    fs::remove_dir(root)?;
-    Ok(())
+
+    _root_owner.finish(Ok(()))
 }

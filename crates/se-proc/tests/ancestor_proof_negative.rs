@@ -1,5 +1,7 @@
 //! NSS refusals cannot grant or permanently poison an ancestor proof.
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_proc::{NativeStateFiles, StateFileErrorCode};
 use std::{error::Error, fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
@@ -58,6 +60,7 @@ fn negative_proof_and_replaced_directory() -> Result {
     let root = std::env::temp_dir().join(format!("se-negative-proof-{}", std::process::id()));
     assert!(!root.exists(), "preserve an existing fixture");
     fs::create_dir(&root)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
     mode(&root, 0o700)?;
     fs::write(root.join("control"), b"0")?;
     let library = root.join("negative-account.so");
@@ -86,6 +89,6 @@ fn negative_proof_and_replaced_directory() -> Result {
     }
     fs::remove_file(root.join("control"))?;
     fs::remove_file(library)?;
-    fs::remove_dir(root)?;
-    Ok(())
+
+    _root_owner.finish(Ok(()))
 }

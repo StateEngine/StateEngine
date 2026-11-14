@@ -19,6 +19,9 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
+
 type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 fn bound() -> IpcIoBound {
     IpcIoBound {
@@ -29,6 +32,7 @@ fn bound() -> IpcIoBound {
 struct Fixture {
     root: PathBuf,
     _lease: File,
+    _root_owner: cleanup_directory::PrivateDirectory,
 }
 impl Fixture {
     fn new() -> Result<Self> {
@@ -38,6 +42,7 @@ impl Fixture {
             SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
         ));
         fs::create_dir(&root)?;
+        let root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
         fs::set_permissions(&root, Permissions::from_mode(0o700))?;
         let lease = File::create(root.join("runtime.lock"))?;
         // SAFETY: a live owned file descriptor; this fixture retains it through cleanup.
@@ -47,6 +52,7 @@ impl Fixture {
         Ok(Self {
             root,
             _lease: lease,
+            _root_owner: root_owner,
         })
     }
     fn socket(&self) -> PathBuf {
@@ -66,9 +72,8 @@ impl Fixture {
             .ok_or("stale socket reported absent".into())
     }
     fn close(self) -> Result {
-        fs::remove_file(self.root.join("runtime.lock"))?;
-        fs::remove_dir(self.root)?;
-        Ok(())
+        drop(self._lease);
+        self._root_owner.finish(Ok(()))
     }
 }
 #[test]

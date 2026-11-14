@@ -38,7 +38,7 @@ fn interrupt_is_exact_group_sigint_and_rejects_wrong_generation() -> Check {
                     arguments: ["--exact", "stdio_binding_child", "--ignored", "--nocapture"]
                         .map(Into::into)
                         .into(),
-                    cwd: home.0.clone(),
+                    cwd: home.0.to_path_buf(),
                     environment: Environment {
                         entries: vec![(
                             "STDIO_BINDING_JUDGE_ROOT".into(),
@@ -51,8 +51,8 @@ fn interrupt_is_exact_group_sigint_and_rejects_wrong_generation() -> Check {
                     policy: LaunchPolicy {
                         containment: ContainmentRequirement::BestAvailable,
                         writes: WritePolicy::Workspace {
-                            roots: vec![home.0.clone()],
-                            scratch: home.0.clone(),
+                            roots: vec![home.0.to_path_buf()],
+                            scratch: home.0.to_path_buf(),
                         },
                         network: NetworkPolicy::Allow,
                         hardening: OptionalHardening::Off,

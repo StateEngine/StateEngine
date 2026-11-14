@@ -1,4 +1,6 @@
 #![cfg(target_os = "linux")]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_proc::{NativeSourceRoot, NativeSourceWatch, NativeWatchAction, NativeWatchEvents};
 use std::{
     fs,
@@ -15,6 +17,7 @@ fn retained_directory_events_do_not_wake_for_source_reads() -> Check {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&path)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(path.clone());
     let root = NativeSourceRoot::open(&path)?;
     let watch = NativeSourceWatch::new()?;
     let registration = watch
@@ -45,8 +48,8 @@ fn retained_directory_events_do_not_wake_for_source_reads() -> Check {
     assert!(watch.remove(registration.descriptor)?);
     drop(watch);
     drop(root);
-    fs::remove_dir_all(path)?;
-    Ok(())
+
+    _root_owner.finish(Ok(()))
 }
 
 #[test]
@@ -58,6 +61,7 @@ fn watch_subscription_refuses_source_links_and_replaced_roots() -> Check {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&path)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(path.clone());
     fs::create_dir(path.join("outside"))?;
     fs::create_dir(path.join("source"))?;
     symlink(path.join("outside"), path.join("source/escape"))?;
@@ -70,8 +74,8 @@ fn watch_subscription_refuses_source_links_and_replaced_roots() -> Check {
     assert!(watch.subscribe(&root, "").is_err());
     drop(watch);
     drop(root);
-    fs::remove_dir_all(path)?;
-    Ok(())
+
+    _root_owner.finish(Ok(()))
 }
 
 #[test]
@@ -99,6 +103,7 @@ fn directory_cursor_survives_its_callers_root_borrow() -> Result<(), Box<dyn std
     let directory =
         std::env::temp_dir().join(format!("atlas-owned-watch-cursor-{}", std::process::id()));
     std::fs::create_dir(&directory)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(directory.clone());
     std::fs::write(directory.join("a.rs"), "fn a() {}")?;
     let mut cursor = {
         let root = se_proc::NativeSourceRoot::open(&directory)?;
@@ -109,5 +114,5 @@ fn directory_cursor_survives_its_callers_root_borrow() -> Result<(), Box<dyn std
     drop(cursor);
     std::fs::remove_file(directory.join("a.rs"))?;
     std::fs::remove_dir(directory)?;
-    Ok(())
+    _root_owner.finish(Ok(()))
 }
