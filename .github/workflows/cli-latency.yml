@@ -1,0 +1,31 @@
+name: paired CLI latency
+on:
+  push:
+    branches: [prime/cli-latency-read-phase-r1]
+permissions:
+  contents: read
+concurrency:
+  group: cli-latency-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Build and interleave the frozen pairs on this runner
+        run: python3 -B scripts/cli_latency/build.py "$RUNNER_TEMP/paired-cli"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: paired-cli-latency
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/paired-cli/*.json
+            ${{ runner.temp }}/paired-cli/*.log
+            ${{ runner.temp }}/paired-cli/observations/*/samples.json
