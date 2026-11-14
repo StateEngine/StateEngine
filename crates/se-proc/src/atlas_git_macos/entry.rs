@@ -123,10 +123,12 @@ fn bootstrap(mut channel: UnixStream, launch: Launch) -> io::Result<()> {
     }
     roots(&launch)?;
     runtime.check()?;
+    // Complete ancestry validation before installing a policy that deliberately
+    // permits only metadata access to those directories. Retain the image pin
+    // through exec; this remains a pre-exec check, not atomic descriptor exec.
     pin.validate().map_err(io::Error::other)?;
     policy::apply(&launch.policy)?;
     roots(&launch)?;
-    pin.validate().map_err(io::Error::other)?;
     expiry.remaining()?;
     let mut command = super::super::command::prepare(&git, &control, &objects, launch.arguments);
     command
