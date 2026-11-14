@@ -54,8 +54,9 @@ def protect_state_home(state):
     if sys.platform != 'win32':
         return
     # A python mkdir inherits the runner scratch tree's DACL, which grants a third
-    # principal access; the store refuses that location. Replace it with an
-    # owner-only protected DACL, the same shape the product creates itself.
+    # principal access; the store refuses that location. Replace it with the product's
+    # own state-home shape: a protected DACL holding user and SYSTEM full-control ACEs
+    # with container and object inheritance for the SQLite side files.
     buffer = ctypes.create_unicode_buffer(256)
     size = ctypes.c_uint32(len(buffer))
     if not ctypes.windll.advapi32.GetUserNameW(buffer, ctypes.byref(size)):
@@ -63,7 +64,8 @@ def protect_state_home(state):
                            + str(ctypes.get_last_error()))
     user = buffer.value
     completed = subprocess.run(['icacls', str(state), '/inheritance:r',
-                                '/grant:r', user + ':F'], capture_output=True, text=True)
+                                '/grant:r', user + ':(OI)(CI)F', 'SYSTEM:(OI)(CI)F'],
+                               capture_output=True, text=True)
     require(completed.returncode == 0,
             'state home protection failed: ' + (completed.stderr or completed.stdout).strip())
 
