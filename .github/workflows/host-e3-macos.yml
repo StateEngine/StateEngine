@@ -1,0 +1,25 @@
+name: host_e3 on macOS
+on:
+  push:
+    branches: [prime/host-e3-macos-20261114]
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: b9692a783b9606ac6ea4526d7230858f7ea75f8a
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Run the host_e3 custom harness
+        shell: bash
+        run: cargo test --target "$(rustc --print host-tuple)" -p se --test host_e3 --all-features --locked 2>&1 | tee host-e3.log; exit ${PIPESTATUS[0]}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: host-e3-macos-15
+          retention-days: 14
+          path: host-e3.log
