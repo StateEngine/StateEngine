@@ -58,7 +58,7 @@ def protect_state_home(state):
     # owner-only protected DACL, the same shape the product creates itself.
     buffer = ctypes.create_unicode_buffer(256)
     size = ctypes.c_uint32(len(buffer))
-    if not ctypes.windll.kernel32.GetUserNameW(buffer, ctypes.byref(size)):
+    if not ctypes.windll.advapi32.GetUserNameW(buffer, ctypes.byref(size)):
         raise RuntimeError('state home protection failed: GetUserNameW error '
                            + str(ctypes.get_last_error()))
     user = buffer.value
@@ -165,8 +165,11 @@ def validate(sample, smoke, action, count, bodies, dirty, host_pid):
 
 def prepare(directory, image, provider, count, mail_count, dirty, with_commits, smokes, side):
     directory.mkdir(mode=0o700)
+    # The full runner environment is passed, not a PATH-only dict: Smoke's
+    # case-insensitive system filter keeps the OS root variables, which Winsock
+    # refuses to initialize without on hosted runners (WinError 10106).
     smoke = Smoke(directory, None, {'id': provider, 'driver': 'native'},
-                  {'provider': provider}, {'PATH': os.environ['PATH']})
+                  {'provider': provider}, dict(os.environ))
     smokes[side] = smoke
     smoke.state = smoke.home / 'stateengine-state'
     smoke.commands.environment['SE_HOME'] = str(smoke.state)
@@ -311,8 +314,14 @@ def witness(output, images):
     scratch = output / 'witness-home'
     scratch.mkdir(mode=0o700)
     (scratch / 'tmp').mkdir()
-    environment = {key: value for key, value in full.items()
-                   if key in ('PATH', 'SystemRoot', 'windir', 'ComSpec', 'PATHEXT', 'LANG', 'LC_ALL')}
+    system = {'path', 'systemroot', 'windir', 'comspec', 'pathext', 'lang', 'lc_all'}
+    taken = set()
+    environment = {}
+    for key, value in full.items():
+        lowered = key.lower()
+        if lowered in system and lowered not in taken:
+            taken.add(lowered)
+            environment[key] = value
     environment.update(HOME=str(scratch), USERPROFILE=str(scratch), SE_HOME=str(scratch / 'stateengine-state'),
                        PATH=full.get('PATH', ''),
                        XDG_CONFIG_HOME=str(scratch / '.config'),
