@@ -25,9 +25,9 @@ fn child() -> Result {
     let process = live(pid)?;
     let peer = se_proc::native_ipc::observe_ipc_self()?;
     let (
-        se_types::StartIdentity::MacOs {
-            seconds: ipc_seconds,
-            microseconds: ipc_micros,
+        se_types::StartIdentity::Macos {
+            start_seconds: ipc_seconds,
+            start_micros: ipc_micros,
         },
         StartIdentity::MacOs {
             seconds,
