@@ -430,7 +430,7 @@ impl LaunchCoordinator {
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
     #[cfg_attr(
-        not(windows),
+        target_os = "linux",
         expect(
             clippy::cognitive_complexity,
             reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
