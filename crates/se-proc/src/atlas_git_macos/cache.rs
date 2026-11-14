@@ -11,13 +11,9 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-// Native sys/stat.h and sys/csr.h ABI values not exposed by libc.
+// Native sys/stat.h ABI values not exposed by libc.
 const SF_RESTRICTED: u32 = 0x0008_0000;
 const SF_NOUNLINK: u32 = 0x0010_0000;
-const CSR_ALLOW_UNRESTRICTED_FS: u32 = 1 << 1;
-unsafe extern "C" {
-    fn csr_get_active_config(config: *mut u32) -> libc::c_int;
-}
 
 #[derive(Eq, PartialEq)]
 struct ContentStamp {
@@ -48,22 +44,6 @@ pub(super) struct CachePins {
     members: Vec<Member>,
 }
 
-fn filesystem_protection() -> io::Result<()> {
-    let mut config = 0;
-    // SAFETY: exact initialized native configuration output; no state changes.
-    if unsafe { csr_get_active_config(&mut config) } != 0 {
-        return Err(io::Error::other(format!(
-            "OS cache filesystem protection is unreadable: {}",
-            io::Error::last_os_error()
-        )));
-    }
-    if config & CSR_ALLOW_UNRESTRICTED_FS != 0 {
-        return Err(invalid(
-            "OS cache requires enabled system filesystem protection",
-        ));
-    }
-    Ok(())
-}
 fn stamp(file: &File, regular: bool) -> io::Result<Stamp> {
     // SAFETY: initialized native metadata output for this retained descriptor.
     let mut value: libc::stat = unsafe { std::mem::zeroed() };
@@ -134,7 +114,7 @@ fn open_at(parent: &File, name: &CString, regular: bool) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 fn walk(path: &Path, expiry: Expiry) -> io::Result<Vec<Node>> {
-    filesystem_protection()?;
+    expiry.remaining()?;
     if !path.is_absolute() || path.as_os_str().len() > 4096 {
         return Err(invalid("OS cache requires a bounded absolute directory"));
     }
