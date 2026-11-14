@@ -24,12 +24,28 @@ fn sessions(plan: &LaunchPlan) -> Vec<se_types::SessionId> {
 }
 
 fn confirmation(plan: &LaunchPlan, reason: String) -> Result<SeError> {
-    Ok(SeError::new(Detail::LaunchConfirmationRequired(details::LaunchConfirmationRequired {
-        subject: plan.agent.name.clone(), reason,
-        lifecycles: plan.control.processes.iter().map(|head| process_identity(head).map(|identity| identity.record.clone())).collect::<Result<Vec<_>>>()?,
-        sessions: sessions(plan),
-        next_step: "Run this launch with --force to stop the listed sessions and all their managed jobs before relaunching. An interactive owner terminal asks for confirmation; scripts and agents must supply --force.".into(),
-    })))
+    // The remedy must be runnable as written: name the exact replacement command
+    // with --force for this project and agent, so a script or agent never has to
+    // reconstruct it from the inventory above.
+    let force =
+        se_core::ops::AgentCommand::launch(&plan.agent.id, None, Some(&plan.project.id), false);
+    Ok(SeError::new(Detail::LaunchConfirmationRequired(
+        details::LaunchConfirmationRequired {
+            subject: plan.agent.name.clone(),
+            reason,
+            lifecycles: plan
+                .control
+                .processes
+                .iter()
+                .map(|head| process_identity(head).map(|identity| identity.record.clone()))
+                .collect::<Result<Vec<_>>>()?,
+            sessions: sessions(plan),
+            next_step: format!(
+                "Rerun this launch with --force to stop the listed sessions and their managed jobs before starting the replacement: {} --force. An interactive owner terminal asks for confirmation; scripts and agents must supply --force.",
+                force.command
+            ),
+        },
+    )))
 }
 
 impl LaunchCoordinator {
