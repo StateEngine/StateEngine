@@ -22,16 +22,50 @@ struct Profile(cleanup_directory::PrivateDirectory);
 impl Profile {
     fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
         let p = cleanup_directory::private_case_directory().map_err(|error| error.to_string())?;
-        let files = se_proc::NativeStateFiles::create(&p)?;
-        let mut stage = files.create_staging(&p)?;
+        let profile = p.join("profile");
+        #[cfg(unix)]
+        drop(se_proc::NativeStateFiles::create(&profile)?);
+        #[cfg(windows)]
+        create_private_profile(&profile)?;
+        // The provider owns this root; its Windows layout excludes SYSTEM.
+        let files = se_proc::NativeProfileFiles::open(&profile)?;
+        let mut stage = files.create_staging(&profile)?;
         stage.file.write_all(b"review:synthetic-secret\n")?;
         drop(stage.file);
-        files.publish_no_replace(&stage.path, &p.join("basic.credential"))?;
+        files.publish_no_replace(&stage.path, &profile.join("basic.credential"))?;
         Ok(Self(p.cleanup_on_drop()))
     }
     fn control(&self, endpoint: &str) -> se_types::Result<Control> {
-        Control::open(&self.0, endpoint)
+        Control::open(&self.0.join("profile"), endpoint)
     }
+}
+#[cfg(windows)]
+fn create_private_profile(path: &std::path::Path) -> Check {
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command"])
+        .arg(
+            r#"$ErrorActionPreference = 'Stop'
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = [System.Security.AccessControl.DirectorySecurity]::new()
+$acl.SetOwner($sid)
+$acl.SetAccessRuleProtection($true, $false)
+$rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+    $sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+$acl.AddAccessRule($rule)
+[System.IO.Directory]::CreateDirectory($env:SE_TEST_PROFILE_PATH, $acl) | Out-Null
+"#,
+        )
+        .env("SE_TEST_PROFILE_PATH", path)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "private profile creation failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(())
 }
 fn deadline(ms: u64) -> se_types::Result<Deadline> {
     Deadline::from_options(&ClientOptions {
