@@ -14,7 +14,7 @@ import time
 def stat(pid):
     try:
         fields = Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
     return {'pid': pid, 'birth': fields[19], 'state': fields[0],
             'boot': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
@@ -47,7 +47,10 @@ def same(a, b):
 
 
 def alive(receipt):
-    current = pin(receipt['pid'])
+    # Kernel exit tears down /proc/exe before it necessarily removes /proc/stat.
+    # Aliveness needs the recorded birth and native state; every signal still
+    # requires the complete executable and argv checks in send().
+    current = stat(receipt['pid'])
     return same(receipt, current) and current['state'] != 'Z'
 
 
