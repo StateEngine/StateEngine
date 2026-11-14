@@ -439,8 +439,28 @@ prove native ownership directs the agent to MCP.
 `se remote disconnect --name build` closes the connection while the remote
 host and agents continue. Run `remote add` again to reconnect. `remote forget
 --name build` also removes the saved local connection. Neither command stops
-remote work. Ordinary return-mail routing and independent agent revocation
-are planned separately.
+remote work.
+
+When a launched agent receives remote mail, its inbox shows the authenticated
+sender's machine, project and agent address, with reply instructions outside the
+message body. It replies using ordinary mail: select that sender address and set
+`reply_to` to the received message ID. Only the original recipient can use that
+contact. Replies stay saved while the source is offline and enter its ordinary
+inbox when its native session reconnects; either agent can continue the thread.
+A saved reply receipt confirms local storage. It does not claim the other agent
+has received or read the reply.
+
+At the end of `remote add`, choose **destination** or **local** to review source
+agents and allow or revoke one address. Revisit destination permissions with
+`se remote permissions --name build`, or run `se remote permissions --local`
+on the destination to review its incoming sources. These Owner controls require
+a terminal; non-interactive pairing reports that permission review was skipped.
+Revoking an agent blocks its address across session and machine-grant renewals
+without removing the machine grant or other agents' access. An interrupted revoke
+stays blocked and appears as pending in that view until you finish it or explicitly
+allow the address. Agents appear after their first authenticated message; replying
+to an arbitrary address never creates permission. Existing machine grants retain
+their list, watch and send permissions.
 
 Remote launch requires a separate Owner decision. At the end of pairing choose
 **launch**, or run `se remote permissions --name build --launch` in a terminal.
@@ -465,6 +485,11 @@ live output and reconnect samples with their measurement boundaries. Live output
 uses an explicitly unqualified monotonic clock estimate across the connection;
 these samples do not certify a latency budget or a physical network topology.
 Windows source/destination coverage and hands-on qualification remain separate.
+The nightly uses an administrator-registered OS account reserved for scheduled
+journeys; development and review runs use separate accounts. Its remote config
+requires `destination_account.identity` (the native UID as a string) and
+`destination_account.profile` (the absolute native profile). The SSH destination
+must match both before any image, token or project is staged.
 
 ## Optional code navigation (Atlas)
 

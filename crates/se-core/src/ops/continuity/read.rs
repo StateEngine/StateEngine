@@ -416,6 +416,7 @@ mod recovery_tests {
         let mut identity = identity()?;
         identity.command_home = Some(std::path::PathBuf::from("/selected home ' 日本語"));
         let input = Resume {
+            source_failure: None,
             limit: 2,
             byte_budget: 1024,
             preview_agent: Some(identity.principal.agent.id.clone()),

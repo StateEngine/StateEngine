@@ -102,6 +102,9 @@ impl Client {
             RemoteRequest::List(r) => (RemoteVerb::List, r.targets.as_slice()),
             RemoteRequest::Watch(r) => (RemoteVerb::Watch, r.targets.as_slice()),
             RemoteRequest::Send(r) => (RemoteVerb::Send, std::slice::from_ref(&r.target)),
+            RemoteRequest::Reply(r) => (RemoteVerb::Send, std::slice::from_ref(&r.target)),
+            RemoteRequest::Replies(r) => (RemoteVerb::Send, std::slice::from_ref(&r.target)),
+            RemoteRequest::ResolveContact(r) => (RemoteVerb::Send, std::slice::from_ref(&r.target)),
         };
         // Launch consent lives on the destination, separately from the legacy
         // saved scope. Asking for consent never grants it.
@@ -119,6 +122,62 @@ impl Client {
     }
 }
 impl RemoteClient for Client {
+    fn reply(
+        &self,
+        call: RemoteCallContext,
+        request: RemoteSendReply,
+    ) -> RemoteFuture<'_, RemoteSendResult> {
+        Box::pin(async move {
+            let key = request.idempotency_key.to_string();
+            let invocation = self.invocation(&call, RemoteRequest::Reply(request))?;
+            match self
+                .connection()
+                .await?
+                .once(Arc::new(call), invocation)
+                .await?
+            {
+                Reply::Send(value) if value.schema == RemoteSendResult::SCHEMA => Ok(*value),
+                _ => Err(unknown_send(key)),
+            }
+        })
+    }
+    fn resolve_contact(
+        &self,
+        call: RemoteCallContext,
+        request: RemoteResolveContact,
+    ) -> RemoteFuture<'_, RemoteContactResult> {
+        Box::pin(async move {
+            let invocation = self.invocation(&call, RemoteRequest::ResolveContact(request))?;
+            match self
+                .connection()
+                .await?
+                .once(Arc::new(call), invocation)
+                .await?
+            {
+                Reply::Contact(value) if value.schema == RemoteContactResult::SCHEMA => Ok(*value),
+                _ => Err(unavailable(
+                    "remote contact recovery is incompatible; update both installations through pairing",
+                )),
+            }
+        })
+    }
+    fn replies(
+        &self,
+        call: RemoteCallContext,
+        request: RemoteReplies,
+    ) -> RemoteFuture<'_, RemoteRepliesResult> {
+        Box::pin(async move {
+            let invocation = self.invocation(&call, RemoteRequest::Replies(request))?;
+            let connection = self.connection().await?;
+            match connection.once(Arc::new(call), invocation).await? {
+                Reply::Replies(value) if value.schema == RemoteRepliesResult::SCHEMA => Ok(*value),
+                _ => Err(unavailable(
+                    "remote return-mail response has an incompatible schema; update both installations through pairing",
+                )),
+            }
+        })
+    }
+
     fn launch(
         &self,
         call: RemoteCallContext,

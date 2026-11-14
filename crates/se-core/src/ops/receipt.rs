@@ -90,6 +90,21 @@ pub fn mail_sender_ref<R: Snapshot>(
     message: &se_store::MessageRecord,
 ) -> Result<ActorRef> {
     if let Actor::Remote(principal) = &message.sender {
+        if let Some(address) = read
+            .remote_return_sender(message.message.clone())
+            .map_err(|e| store_error(&e))?
+        {
+            return Ok(ActorRef {
+                kind: "remote_agent".into(),
+                id: address.selector(),
+                name: format!(
+                    "Remote agent {} (project {}, machine {})",
+                    address.agent,
+                    address.project,
+                    address.host.0.hex()
+                ),
+            });
+        }
         let attribution = read
             .remote_message_attribution(message.message.clone())
             .map_err(|error| store_error(&error))?

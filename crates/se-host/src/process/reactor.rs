@@ -54,7 +54,19 @@ impl NativeReactor for Reactor {
     ) -> ProcResult<Box<dyn NativeRegistration>> {
         let interest = match interest {
             NativeInterest::Readable => Interest::READABLE,
+            #[cfg(target_os = "linux")]
             NativeInterest::Priority => Interest::PRIORITY,
+            #[cfg(not(target_os = "linux"))]
+            NativeInterest::Priority => {
+                return Err(ProcError {
+                    code: ProcErrorCode::ContainmentUnavailable,
+                    detail: Box::new(ProcErrorDetail::Input {
+                        field: "native reactor".into(),
+                        reason: "priority readiness is unavailable on this platform".into(),
+                    }),
+                    native: None,
+                });
+            }
         };
         let entered = self.runtime.enter();
         #[expect(

@@ -146,7 +146,6 @@
   "crates/se-host/src/remote/publish": 4,
   "crates/se-host/src/runtime/endpoint": 4,
   "crates/se-host/src/runtime/remote": 4,
-  "crates/se-proc/src/bootstrap/linux": 4,
   "crates/se-proc/src/linux_native": 4,
   "crates/se-proc/src/runtime/validate": 4,
   "crates/se-store/src/codec/capture": 4,

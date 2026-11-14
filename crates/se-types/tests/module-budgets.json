@@ -128,7 +128,6 @@
   "crates/se-host/src/runtime/shutdown": 565,
   "crates/se-host/src/process/stop": 567,
   "crates/se-store/src/open": 563,
-  "crates/se-proc/src/bootstrap/linux": 561,
   "crates/se/src/route/uninstall": 556,
   "crates/se-core/src/ops/guide": 546,
   "crates/se-store/src/read/channel": 548,

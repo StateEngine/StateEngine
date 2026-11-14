@@ -33,6 +33,16 @@ pub(super) fn endpoint_matches(
                 creation_filetime: b,
             },
         ) => *a == b.get(),
+        (
+            StartIdentity::MacOs {
+                seconds,
+                microseconds,
+            },
+            se_types::StartIdentity::Macos {
+                start_seconds,
+                start_micros,
+            },
+        ) => seconds == start_seconds && microseconds == start_micros,
         _ => false,
     };
     let image = match peer.image().encoded() {

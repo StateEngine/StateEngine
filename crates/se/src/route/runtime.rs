@@ -1,30 +1,28 @@
 //! Explicit host control through the native bootstrap and authenticated fixed
 //! stop protocol. No connection failure permits a direct-write fallback.
 use super::{admit::Caller, execute, files::Files};
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use super::{process, status};
 use crate::bootstrap::Bootstrap;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::config::Origin;
 use se_core::{ops::*, scope};
 use se_host::client::{BlockingIpcClient, lease::Deadline};
-#[cfg(any(target_os = "linux", windows))]
-use se_types::Read;
 use se_types::{Result, SeError};
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::num::NonZeroU32;
 #[path = "runtime/already_down.rs"]
 mod already_down;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "runtime/completion.rs"]
 mod completion;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "runtime/discovery.rs"]
 mod discovery;
 #[path = "runtime/stops.rs"]
 mod stops;
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub fn up(
     cx: &Bootstrap,
     files: &Files,
@@ -35,19 +33,21 @@ pub fn up(
     if caller.owner.is_none() {
         return Err(SeError::invalid("runtime owner", "native owner authority"));
     }
-    let options = execute::options();
+    let mut options = execute::options();
     let bound = Deadline::from_options(&options)?;
-    let (endpoint, process, endpoint_recovery) = match discovery::route(cx)? {
-        se_host::EndpointRoute::Live(value) => {
-            let process = discovery::authenticate(cx, files, &value, &options, &bound)?;
-            (value, process, None)
-        }
-        se_host::EndpointRoute::Start { recovery } => {
-            let (endpoint, process) = start(cx, files, &bound, diagnostic)
-                .map_err(|error| discovery::after_recovery(cx, recovery.as_ref(), error))?;
-            (endpoint, process, recovery)
-        }
-    };
+    let mut endpoint_recovery = None;
+    let endpoint = super::autostart::endpoint_with_origin(
+        cx,
+        files,
+        &bound,
+        diagnostic,
+        crate::runtime::host::StartupOrigin::Explicit,
+        &mut endpoint_recovery,
+    )
+    .map_err(|error| discovery::after_recovery(cx, endpoint_recovery.as_ref(), error))?;
+    options.timeout = bound.remaining()?;
+    let process = discovery::authenticate(cx, files, &endpoint, &options, &bound)
+        .map_err(|error| discovery::after_recovery(cx, endpoint_recovery.as_ref(), error))?;
     #[cfg(feature = "remote")]
     if let Some(notice) = se_host::remote::startup_notice(files, &cx.home)? {
         diagnostic(&notice).map_err(|error| {
@@ -68,7 +68,7 @@ pub fn up(
     .into())
 }
 /// The public CLI keeps its original process as the sole standalone host.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub fn foreground(
     cx: &Bootstrap,
     ready: &mut (dyn FnMut(AnyOutput) -> Result<()> + Send),
@@ -134,43 +134,7 @@ pub fn foreground(
     .map_err(|error| discovery::after_recovery(cx, recovery.as_ref(), error))
 }
 
-#[cfg(any(target_os = "linux", windows))]
-fn start(
-    cx: &Bootstrap,
-    files: &Files,
-    bound: &Deadline,
-    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
-) -> Result<(se_host::EndpointRecord, ProcessView)> {
-    let configuration = match &cx.config.origin {
-        Origin::File(path) => path.clone(),
-        Origin::BuiltIn => cx.home.join("config.toml"),
-    };
-    let machine = super::identity::require_machine(files)?;
-    match crate::runtime::host::start(&cx.home, &configuration, machine, bound) {
-        Ok(started) => {
-            let started: crate::runtime::host::StartedHost = started;
-            let process = process::from_identity(&started.ready.identity, bound)?;
-            if !matches!(started.detachment_record, Read::Present { .. }) {
-                diagnostic(&format!(
-                    "Host is running; its protected detachment observation needs retry: {:?}",
-                    started.detachment_record
-                ))
-                .map_err(|error| {
-                    scope::unreadable("startup diagnostic", &error.to_string()).with_cause(error)
-                })?;
-            }
-            Ok((started.endpoint, process))
-        }
-        Err(failure) => {
-            let body = failure.error.body.clone();
-            Err(SeError {
-                body,
-                cause: Some(Box::new(RetainedStartup(failure))),
-            })
-        }
-    }
-}
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn up(
     _cx: &Bootstrap,
     _files: &Files,
@@ -187,22 +151,6 @@ pub fn up(
     )))
 }
 
-#[cfg(any(target_os = "linux", windows))]
-#[derive(Debug)]
-struct RetainedStartup(Box<crate::runtime::host::StartupFailure>);
-#[cfg(any(target_os = "linux", windows))]
-impl std::fmt::Display for RetainedStartup {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.error.fmt(f)
-    }
-}
-#[cfg(any(target_os = "linux", windows))]
-impl std::error::Error for RetainedStartup {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0.error)
-    }
-}
-
 pub fn down<R: se_store::ReadStore>(
     cx: &Bootstrap,
     files: &Files,
@@ -211,7 +159,7 @@ pub fn down<R: se_store::ReadStore>(
     recover_cold: bool,
 ) -> Result<AnyOutput> {
     let options = execute::options();
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         // Connection failure is not authority. Startup's protected native lease
         // distinguishes a live owner from an obsolete routing record first.
@@ -238,10 +186,17 @@ pub fn down<R: se_store::ReadStore>(
                     // A failed launch can leave exact cleanup debt after its
                     // host exits. Reuse startup's native reconciliation, then
                     // the authenticated stop protocol within this one clock.
-                    let (endpoint, _) = start(cx, files, &bound, &mut |message| {
-                        use std::io::Write;
-                        writeln!(std::io::stderr().lock(), "{message}")
-                    })?;
+                    let endpoint = super::autostart::endpoint_with_origin(
+                        cx,
+                        files,
+                        &bound,
+                        &mut |message| {
+                            use std::io::Write;
+                            writeln!(std::io::stderr().lock(), "{message}")
+                        },
+                        crate::runtime::host::StartupOrigin::Explicit,
+                        &mut None,
+                    )?;
                     let mut options = options;
                     options.timeout = bound.remaining()?;
                     down_live(files, reader, &endpoint, input, options)
@@ -267,7 +222,7 @@ pub fn down<R: se_store::ReadStore>(
             }
         }
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = (cx, recover_cold);
         let observed = execute::endpoint(files)?;
@@ -368,7 +323,7 @@ pub(super) fn down_endpoint(
             // The fixed reply precedes native closure. A protected post-transport
             // record supplies per-lifecycle facts without changing stop/v1.
             let mut report: Option<se_host::client::closure::RuntimeClosure> = None;
-            #[cfg(any(target_os = "linux", windows))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             match completion::report(files, endpoint, &original_key, &bound) {
                 Ok(value) => report = value,
                 Err(error) => pending.push(format!(
@@ -385,7 +340,7 @@ pub(super) fn down_endpoint(
                     pending.push("The original stop's post-transport receipt does not prove complete runtime resource closure.".into());
                 }
             }
-            #[cfg(any(target_os = "linux", windows))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             if pending.is_empty() {
                 match completion::witness(files, endpoint, &original_key, &bound) {
                     Ok(()) => achieved.extend([Fact::ResourcesClosed, Fact::LeaseReleased]),

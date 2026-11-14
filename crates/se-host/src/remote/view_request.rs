@@ -60,6 +60,15 @@ impl ViewRequest {
                 let grant = value.admission().grant();
                 associated["grant"] = serde_json::json!(grant.grant);
                 associated["authority_revision"] = serde_json::json!(grant.authority_revision);
+                if matches!(value.request(), RemoteRequest::Replies(_)) {
+                    associated["source_address"] = serde_json::json!(
+                        value
+                            .attribution()
+                            .source
+                            .as_ref()
+                            .map(RemoteSourceSession::address)
+                    );
+                }
             }
             Self::Local {
                 admission, owner, ..

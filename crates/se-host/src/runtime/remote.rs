@@ -24,6 +24,8 @@ pub(super) async fn execute(
         ));
     };
     #[cfg(feature = "remote")]
+    let mut operation = operation;
+    #[cfg(feature = "remote")]
     let _work = context.mail_waits.remote_work()?;
     #[cfg(feature = "remote")]
     setup::ensure(context, deadline).await?;
@@ -33,36 +35,33 @@ pub(super) async fn execute(
             "an Owner-configured source broker; remote mode is disabled, with no Owner fallback",
         )
     })?;
-    if call.admission.generation != context.generation.get() {
-        return Err(SeError::invalid(
-            "remote source generation",
-            "the exact current source host generation",
-        ));
+    let source = admit_source(
+        context,
+        broker,
+        &call.admission,
+        call.remote_credential,
+        deadline,
+    )
+    .await?;
+    #[cfg(feature = "remote")]
+    if let Some(source) = &source {
+        // Reconnects that first list or watch must also resume saved return mail.
+        let _retained_status = broker.start_mail(context, source.clone()).await?;
     }
-    let source = if matches!(call.admission.actor, se_store::Actor::Agent(_)) {
-        let (credential, hash) = call.remote_credential.ok_or_else(|| {
-            SeError::invalid(
-                "remote source credential",
-                "the exact native-admitted session; no human fallback",
-            )
-        })?;
-        let source = broker.verified_source(&call.admission, credential)?;
-        let expected = call.admission.clone();
-        let reads = context.reads.clone();
-        let generation = context.generation;
-        context
-            .blocking
-            .run_owned(deadline, move || {
-                let phase = super::executor::checked_pooled_phase(&reads, generation)?;
-                let result = validate_source(&phase, &expected, credential, hash);
-                super::executor::close_read(result, phase.close())
-            })
+    #[cfg(feature = "remote")]
+    if let (Some(source), se_core::ops::AnyOp::RemoteSend(input)) = (&source, &mut operation) {
+        broker
+            .prepare_contact(context, source, input, &call.terminal, deadline)
             .await?;
-        Some(source)
-    } else {
-        None
-    };
+    }
     let key = operation.idempotency_key().map(ToString::to_string);
+    #[cfg(feature = "remote")]
+    let outgoing = match &operation {
+        se_core::ops::AnyOp::RemoteSend(input) => Some(input.clone()),
+        _ => None,
+    };
+    #[cfg(feature = "remote")]
+    let mailing_source = source.clone();
     let timeout = deadline.remaining()?;
     let output = tokio::time::timeout(
         timeout,
@@ -89,6 +88,24 @@ pub(super) async fn execute(
         error.body = error.body.with_retry(se_types::Retry::AfterReread);
         error
     })??;
+    #[cfg(feature = "remote")]
+    if let (Some(input), Some(source), se_core::ops::AnyOutput::RemoteSend(result)) =
+        (outgoing, mailing_source, &output)
+    {
+        broker
+            .remember_send(context, &source, &input, &result.value)
+            .await
+            .map_err(|cause| {
+                SeError::new(se_types::Detail::CommitOutcomeUnknown(
+                    se_types::details::CommitOutcomeUnknown {
+                        operation: "remote.send".into(),
+                        key: Some(input.request.idempotency_key.to_string()),
+                        natural_events: Vec::new(),
+                    },
+                ))
+                .with_cause(cause)
+            })?;
+    }
     Ok(ExecutedCall {
         host_phases: Default::default(),
         output,
@@ -97,6 +114,46 @@ pub(super) async fn execute(
         capture_commits: vec![],
         capture_keys: vec![],
     })
+}
+
+#[cfg(feature = "remote")]
+pub(super) async fn resume_mail(
+    context: &ExecutionContext,
+    call: &HostedCall,
+    deadline: &crate::client::lease::Deadline,
+) -> Result<()> {
+    if !context.mail_waits.has_return_mail()
+        || !matches!(call.admission.actor, se_store::Actor::Agent(_))
+    {
+        return Ok(());
+    }
+    setup::ensure(context, deadline).await?;
+    let broker = context
+        .mail_waits
+        .remote()
+        .ok_or_else(|| SeError::invalid("return mail", "the original saved source binding"))?;
+    let (credential, hash) = call.remote_credential.ok_or_else(|| {
+        SeError::invalid(
+            "return mail",
+            "a current native-admitted source agent session",
+        )
+    })?;
+    let source = broker.verified_source(&call.admission, credential)?;
+    let reads = context.reads.clone();
+    let generation = context.generation;
+    let admission = call.admission.clone();
+    context
+        .blocking
+        .run_owned(deadline, move || {
+            let phase = super::executor::checked_pooled_phase(&reads, generation)?;
+            let result = validate_source(&phase, &admission, credential, hash);
+            super::executor::close_read(result, phase.close())
+        })
+        .await?;
+    broker
+        .start_mail(context, source)
+        .await?
+        .map_or(Ok(()), |body| Err(body.into()))
 }
 
 pub(super) fn validate_source(
@@ -131,4 +188,42 @@ pub(super) fn validate_source(
         ));
     }
     Ok(())
+}
+
+async fn admit_source(
+    context: &ExecutionContext,
+    broker: &Arc<RemoteBroker>,
+    admission: &se_store::Admission,
+    credential: Option<(se_store::RecordId, [u8; 32])>,
+    deadline: &crate::client::lease::Deadline,
+) -> Result<Option<crate::remote::broker::VerifiedSourceSession>> {
+    if admission.generation != context.generation.get() {
+        return Err(SeError::invalid(
+            "remote source generation",
+            "the exact current source host generation",
+        ));
+    }
+    if matches!(admission.actor, se_store::Actor::Agent(_)) {
+        let (credential, hash) = credential.ok_or_else(|| {
+            SeError::invalid(
+                "remote source credential",
+                "the exact native-admitted session; no human fallback",
+            )
+        })?;
+        let source = broker.verified_source(admission, credential)?;
+        let expected = admission.clone();
+        let reads = context.reads.clone();
+        let generation = context.generation;
+        context
+            .blocking
+            .run_owned(deadline, move || {
+                let phase = super::executor::checked_pooled_phase(&reads, generation)?;
+                let result = validate_source(&phase, &expected, credential, hash);
+                super::executor::close_read(result, phase.close())
+            })
+            .await?;
+        Ok(Some(source))
+    } else {
+        Ok(None)
+    }
 }

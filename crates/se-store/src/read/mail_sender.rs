@@ -10,6 +10,16 @@ fn inconsistent() -> Box<StoreError> {
 }
 
 impl SqliteSnapshot {
+    pub(super) fn read_return_sender(
+        &mut self,
+        id: se_types::MessageId,
+    ) -> StoreResult<Option<se_types::remote::RemoteAgentAddress>> {
+        if self.info.schema_version < 12 {
+            return Ok(None);
+        }
+        let message = self.message(id)?;
+        crate::return_mail::sender(&self.db, &self.scope.admission, &message)
+    }
     pub(super) fn read_remote_message_attribution(
         &mut self,
         id: se_types::MessageId,
@@ -85,5 +95,66 @@ impl SqliteSnapshot {
         // The writer validated revision, lease and subject when this message
         // committed. Expiry/revocation fences future sends, not that admission.
         Ok(Some(stamp.clone()))
+    }
+}
+
+impl SqliteSnapshot {
+    pub(super) fn read_remote_reply_recipient(
+        &mut self,
+        original: se_types::MessageId,
+        selector: &str,
+    ) -> StoreResult<Option<Actor>> {
+        if let Some(address) = self.read_return_sender(original.clone())? {
+            if address.selector() != selector {
+                return Ok(None);
+            }
+            let message = match self.message(original)? {
+                Read::Present { value } => value,
+                _ => {
+                    return Err(fail(
+                        StoreErrorCode::Unreadable,
+                        "original return mail is unreadable",
+                    ));
+                }
+            };
+            if self.scope.admission.actor != message.recipient
+                || self.scope.admission.session.is_none()
+            {
+                return Err(fail(
+                    StoreErrorCode::ScopeMismatch,
+                    "only the original recipient agent can continue this conversation; use its current session and original received message ID",
+                ));
+            }
+            crate::remote::admit_address(&self.db, &address)?;
+            return Ok(Some(message.sender));
+        }
+        let attribution = self.read_remote_message_attribution(original.clone())?;
+        let Some(attribution) = attribution else {
+            return Ok(None);
+        };
+        let Some(source) = attribution.source.as_ref() else {
+            return Ok(None);
+        };
+        if source.address().selector() != selector {
+            return Ok(None);
+        }
+        let record = match self.message(original)? {
+            Read::Present { value } => value,
+            _ => {
+                return Err(fail(
+                    StoreErrorCode::Unreadable,
+                    "the original remote message is unreadable",
+                ));
+            }
+        };
+        if self.scope.admission.actor != record.recipient || self.scope.admission.session.is_none()
+        {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "only the original recipient agent can reply to this source; use its current session and the original message ID",
+            ));
+        }
+        crate::remote::admit_source(&self.db, Some(source))?;
+        Ok(Some(Actor::Remote(attribution.principal)))
     }
 }

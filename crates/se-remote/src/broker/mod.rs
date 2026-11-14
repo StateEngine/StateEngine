@@ -38,12 +38,18 @@ pub struct BrokerBinding {
     pub device: MachineSession,
     pub signer: Arc<dyn CredentialSource>,
 }
-struct Binding {
+pub struct Binding {
     config: BrokerBinding,
     client: Arc<OnceCell<Arc<dyn RemoteClient>>>,
 }
+impl Binding {
+    pub fn device(&self) -> &MachineSession {
+        &self.config.device
+    }
+}
 /// Verified by protected native IPC or the session-only loopback MCP route on
 /// this call. No caller-provided actor/session field is used to construct it.
+#[derive(Clone)]
 pub struct VerifiedSourceSession {
     source: RemoteSourceSession,
     fence: Arc<AtomicBool>,
@@ -53,7 +59,10 @@ impl VerifiedSourceSession {
     pub fn source(&self) -> &RemoteSourceSession {
         &self.source
     }
-    fn context(&self) -> RemoteCallContext {
+    pub fn credential(&self) -> se_store::RecordId {
+        self.credential
+    }
+    pub fn context(&self) -> RemoteCallContext {
         RemoteCallContext::from_verified_source(self.source.clone(), Arc::clone(&self.fence))
     }
 }
@@ -270,7 +279,7 @@ impl<B: Budget> RemoteBroker<B> {
         }
         Ok(())
     }
-    async fn connection(
+    pub async fn connection(
         &self,
         b: &Binding,
         call: &RemoteCallContext,
