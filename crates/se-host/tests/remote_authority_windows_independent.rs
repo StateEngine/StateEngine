@@ -2,7 +2,7 @@
 //! SSH possession and socket closure are exercised by separate transport controls.
 #![cfg(all(windows, feature = "remote"))]
 use se_host::remote::{
-    auth::{Security, VerifiedLocalOwner},
+    auth::{AuthenticatedDevice, Security, VerifiedLocalOwner},
     keys::ProtectedCredential,
     session::{RevokeGrant, SecurityStore},
     *,
@@ -170,9 +170,9 @@ async fn check_authority(
         )
         .await?;
     let source = RemoteSourceSession {
-        host: match g.subject {
-            RemoteSubject::Machine { host } => host,
-            _ => return Err("machine subject absent".into()),
+        host: {
+            let RemoteSubject::Machine { host } = g.subject;
+            host
         },
         project: f.project.clone(),
         agent: f.b.clone(),
@@ -242,6 +242,16 @@ async fn check_authority(
         },
     )?;
     drop(security.output_fence(&device, &g.scope)?);
+    revoke_and_refuse(security, g, owner, &device, source).await
+}
+
+async fn revoke_and_refuse(
+    security: &Security,
+    g: &GrantRecord,
+    owner: VerifiedLocalOwner,
+    device: &AuthenticatedDevice,
+    source: RemoteSourceSession,
+) -> Check {
     let revoked = security
         .revoke(
             owner,
@@ -258,12 +268,12 @@ async fn check_authority(
     )?;
     require(
         security
-            .authorize_invocation(&device, invocation(Some(source), vec![]))
+            .authorize_invocation(device, invocation(Some(source), vec![]))
             .is_err(),
         "retained revoked device admitted",
     )?;
     require(
-        security.output_fence(&device, &g.scope).is_err(),
+        security.output_fence(device, &g.scope).is_err(),
         "revoked output fence reopened",
     )?;
     require(
