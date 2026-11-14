@@ -124,7 +124,8 @@ fn init_case(kind: &str) -> Result<(Fixture, String, bool, Duration), Box<dyn st
     input.write_all(b"interactive input must not reach Git\n")?;
     let deadline = start + Duration::from_secs(15);
     let timed_out = loop {
-        if child.try_wait()?.is_some() {
+        if let Some(status) = child.try_wait()? {
+            assert!(!status.success(), "init incorrectly succeeded for {kind}");
             break false;
         }
         if Instant::now() >= deadline {
@@ -136,6 +137,28 @@ fn init_case(kind: &str) -> Result<(Fixture, String, bool, Duration), Box<dyn st
     };
     drop(input);
     let elapsed = start.elapsed();
+    if !timed_out && kind == "hang" {
+        let pid = se_proc::ProcessId(fs::read_to_string(fixture.0.join("git.pid"))?.parse()?);
+        let read = se_proc::read_process_until(
+            se_types::MachineId::new("metadata-fixture")?,
+            pid,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .map_err(|error| format!("owned Git exit observation: {error:?}"))?;
+        assert!(
+            matches!(
+                read,
+                se_proc::ProcessRead::Absent { .. } | se_proc::ProcessRead::ExitedRecord { .. }
+            ),
+            "init returned before its exact Git child exited: {read:?}"
+        );
+    }
+    if kind == "pipes" {
+        assert!(
+            fixture.0.join("retainer.pid").exists(),
+            "retained-pipe fixture did not start"
+        );
+    }
     fixture.release()?;
     let output = format!(
         "{}{}",
