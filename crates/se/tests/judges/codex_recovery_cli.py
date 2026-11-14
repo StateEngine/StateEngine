@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import time
 import uuid
@@ -61,10 +62,18 @@ class Judge:
         self.stopped = []
         self.identities = []
         source = self.root / "provider.rs"
-        helper = Path(__file__).with_name("codex_recovery_provider.py").resolve()
+        helper_source = Path(__file__).with_name("codex_recovery_provider.py").resolve(strict=True)
+        # Keep the helper for the whole native lifecycle, independently of the
+        # caller's checkout or temporary driver extraction directory.
+        helper = self.root / "provider.py"
+        shutil.copyfile(helper_source, helper)
         source.write_text('fn main(){let a:Vec<String>=std::env::args().collect();'
                           'if a.iter().any(|v|v=="--version"){println!("codex-cli 0.152.0");return;}'
-                          'let s=std::process::Command::new(PYTHON).arg(HELPER).args(&a[1..]).status().unwrap();'
+                          'let root=std::path::Path::new(HELPER).parent().unwrap();'
+                          'let log=std::fs::File::create(root.join("provider-stderr.txt")).unwrap();'
+                          'let s=std::process::Command::new(PYTHON).arg(HELPER).args(&a[1..])'
+                          '.stderr(log).status().unwrap();'
+                          'std::fs::write(root.join("provider-exit.txt"),format!("{s}\n")).unwrap();'
                           'std::process::exit(s.code().unwrap_or(1));}'
                           .replace("PYTHON",json.dumps(os.sys.executable)).replace("HELPER",json.dumps(str(helper))))
         args.codex = self.root / "provider"
@@ -209,16 +218,31 @@ class Judge:
             if live(process):
                 self.signal(process, signal.SIGCONT)
         try:
-            self.result["cleanup_down_exit"] = self.call("down", timeout=40).returncode
+            down = self.call("down", timeout=40)
+            self.result["cleanup_down_exit"] = down.returncode
+            receipt = json.loads(down.stdout) if down.returncode == 0 else {}
+            if (down.returncode or not receipt.get("complete")
+                    or receipt.get("witness", {}).get("state") != "witnessed"):
+                raise AssertionError("public down did not witness complete shutdown")
         except Exception as error:
             self.result["cleanup_down_error"] = str(error)
+            self.result["passed"] = False
         remaining = owned_rows(self.root)
         self.result["cleanup_remaining"] = remaining
+        if any(live(row) for row in remaining):
+            self.result["passed"] = False
         # Cleanup never broad-kills: only fixture-owned identities just read in full.
         for row in remaining:
             if live(row):
                 self.signal(row, signal.SIGKILL)
+        end = time.monotonic() + 5
+        while any(live(row) for row in remaining) and time.monotonic() < end:
+            time.sleep(.05)
         self.result["cleanup_after_signals"] = owned_rows(self.root)
+        for name in ("provider-stderr.txt", "provider-error.txt", "provider-exit.txt"):
+            path = self.root / name if name != "provider-error.txt" else self.root / "repo" / name
+            if path.exists():
+                self.result[name] = path.read_text()
         (self.root / "result.json").write_text(json.dumps(self.result, indent=2) + "\n")
 
 
