@@ -1,5 +1,6 @@
 //! Finite macOS Git reader with a deny-default native filesystem boundary.
 use super::*;
+mod cache;
 mod clock;
 mod custody;
 mod entry;

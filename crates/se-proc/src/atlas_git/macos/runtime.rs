@@ -1,5 +1,5 @@
 //! Exact Mach-O imports plus the active OS cache, never a directory read grant.
-use super::{clock::Expiry, invalid, macho};
+use super::{cache::CachePins, clock::Expiry, invalid, macho};
 use crate::{NativeExecutableInvocation, NativeExecutablePin};
 use std::{
     collections::BTreeSet,
@@ -15,12 +15,16 @@ unsafe extern "C" {
 pub(super) struct Runtime {
     pins: Vec<NativeExecutableInvocation>,
     names: BTreeSet<PathBuf>,
+    cache: Option<CachePins>,
+    expiry: Expiry,
 }
 impl Runtime {
     pub(super) fn discover(image: &Path, expiry: Expiry) -> io::Result<Self> {
         let mut result = Self {
             pins: Vec::new(),
             names: BTreeSet::new(),
+            cache: None,
+            expiry,
         };
         let mut pending = vec![image.to_owned()];
         let mut cache = false;
@@ -85,6 +89,7 @@ impl Runtime {
         let mut prefix = name.to_vec();
         prefix.push(b'.');
         let mut found = false;
+        let mut custody = CachePins::open(parent, expiry)?;
         for (index, entry) in std::fs::read_dir(parent)?.enumerate() {
             expiry.remaining()?;
             if index >= 4096 {
@@ -98,25 +103,26 @@ impl Runtime {
             if !entry.file_type()?.is_file() {
                 return Err(invalid("OS cache member is not a regular file"));
             }
-            use std::os::unix::fs::MetadataExt;
-            let metadata = entry.metadata()?;
-            if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
-                return Err(invalid(
-                    "OS cache member is not protected by the system owner",
-                ));
-            }
             found |= filename.as_bytes() == name;
-            let pin = self.pin(&entry.path())?;
-            self.pins.push(pin);
+            if self.names.len() >= 96 {
+                return Err(invalid("Git runtime closure exceeds 96 names"));
+            }
+            custody.pin(&entry.path(), expiry)?;
+            self.names.insert(entry.path());
         }
         if !found {
             return Err(invalid("active OS cache was absent from its directory"));
         }
+        self.cache = Some(custody);
         Ok(())
     }
     pub(super) fn check(&self) -> io::Result<()> {
+        self.expiry.remaining()?;
         for pin in &self.pins {
             pin.validate().map_err(io::Error::other)?
+        }
+        if let Some(cache) = &self.cache {
+            cache.check(self.expiry)?;
         }
         Ok(())
     }
