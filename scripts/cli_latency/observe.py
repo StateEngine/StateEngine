@@ -193,7 +193,9 @@ def phase_summary(pairs, expected_pid):
                      'host_status_prepare', 'host_native_status', 'host_machine_key',
                      'host_owner_peer', 'host_owner_guard', 'host_owner_observe'}
     required_client = {'ipc_hello_read', 'ipc_reply_read', 'ipc_self_prewarm',
-                       'ipc_native_connect', 'ipc_self_mac_observation'}
+                       'ipc_native_connect', 'ipc_self_mac_observation',
+                       'ipc_challenge_decode', 'ipc_nonce', 'ipc_owner_mac',
+                       'ipc_hello_decode', 'ipc_call_encode', 'ipc_response_decode'}
     values, counts = {}, {}
     for pair in pairs[1:]:
         observed = {}
@@ -230,7 +232,10 @@ def cli_profile(pairs, version=False):
                      'cli_caller_observation', 'cli_project_selection', 'cli_dispatch',
                      'cli_repository_state', 'cli_status_snapshot', 'cli_status_finish',
                      'cli_session_observation', 'cli_endpoint_discovery', 'cli_credential',
-                     'cli_host_forward', 'cli_ipc_forward', 'cli_output_at'}
+                     'cli_host_forward', 'cli_ipc_forward', 'cli_output_at',
+                     'cli_ipc_authenticate', 'cli_ipc_exchange', 'cli_ipc_operation',
+                     'cli_ipc_decode_output', 'cli_status_lease', 'cli_status_project',
+                     'cli_status_agents', 'cli_status_process', 'cli_status_detachment'}
     values = {}
     for pair in pairs[1:]:
         sample = pair['samples']['head']
