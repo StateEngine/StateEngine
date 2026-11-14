@@ -69,7 +69,11 @@ pub use state_files::{
     StateFileError, StateFileErrorCode,
 };
 #[cfg(windows)]
+mod child_pipe;
+#[cfg(windows)]
 mod stdio;
+#[cfg(windows)]
+pub use child_pipe::NativeChildPipe;
 
 pub use error::*;
 pub use identity::*;
