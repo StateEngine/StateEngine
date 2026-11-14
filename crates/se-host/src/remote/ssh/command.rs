@@ -1,6 +1,7 @@
 //! Fixed commands and image streams retain and join each owned SSH child.
 use super::*;
 use crate::remote::ssh_diagnostic::read_errors;
+use base64::Engine as _;
 use se_types::SeError;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -117,12 +118,13 @@ pub(super) async fn send_image(
         .take()
         .ok_or_else(|| unavailable("SSH image error pipe absent"))?;
     let expected = image.expected;
+    let windows = image.windows;
     let streamed = AtomicU64::new(0);
     let started = std::time::Instant::now();
     let result = {
         let transfer = async {
             tokio::try_join!(
-                copy_image(&mut image.file, input, expected, &streamed),
+                copy_image(&mut image.file, input, expected, windows, &streamed),
                 drain(output, 65536),
                 read_errors(destination, errors)
             )?;
@@ -172,9 +174,15 @@ async fn copy_image(
     file: &mut tokio::fs::File,
     mut input: tokio::process::ChildStdin,
     expected: u64,
+    windows: bool,
     streamed: &AtomicU64,
 ) -> Result<()> {
-    let mut buffer = [0; 65536];
+    let mut buffer = [0; staging::IMAGE_CHUNK_BYTES];
+    let mut frame = String::with_capacity(if windows {
+        staging::WINDOWS_IMAGE_LINE_BYTES + 1
+    } else {
+        0
+    });
     loop {
         let n = file
             .read(&mut buffer)
@@ -186,8 +194,16 @@ async fn copy_image(
         if streamed.load(Ordering::Relaxed) + n as u64 > expected {
             return Err(unavailable("native image changed during streaming"));
         }
+        let bytes = if windows {
+            frame.clear();
+            base64::engine::general_purpose::STANDARD.encode_string(&buffer[..n], &mut frame);
+            frame.push('\n');
+            frame.as_bytes()
+        } else {
+            &buffer[..n]
+        };
         input
-            .write_all(&buffer[..n])
+            .write_all(bytes)
             .await
             .map_err(|_| unavailable("SSH image stream write failed"))?;
         streamed.fetch_add(n as u64, Ordering::Relaxed);
