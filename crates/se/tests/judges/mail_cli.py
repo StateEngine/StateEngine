@@ -13,6 +13,14 @@ import uuid
 from judge_records import wait_json
 
 
+def provider_bootstrap():
+    # A run_path wrapper does not add the protocol's directory to sys.path.
+    # Supply fixture modules explicitly; provider environment filtering is real.
+    return ("import runpy,sys;"
+            f"sys.path.insert(0,{str(Path(__file__).resolve().parent)!r});"
+            "sys.argv=sys.argv[1:];runpy.run_path(sys.argv[0],run_name='__main__')")
+
+
 class Fixture:
     def __init__(self, se, root, provider_helper=None, log_directory=None):
         self.se, self.root = se.resolve(), root.resolve()
@@ -27,8 +35,6 @@ class Fixture:
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith(("SE_", "STATEENGINE_", "CODEX_", "CLAUDE"))}
         self.env.update(HOME=str(self.root / "owner"), USERPROFILE=str(self.root / "owner"))
-        # Wrapped or copied protocol scripts still import the shared fixture helpers.
-        self.env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
         self.calls, self.session, self.processes = 0, None, []
         init = self.ok("--key", str(uuid.uuid4()), "init", "--repo", str(self.repo),
                        "--name", "Mail Judge", "--agent", "Recipient", "--provider", "claude",
@@ -46,8 +52,9 @@ let mut request=String::new();std::io::stdin().read_line(&mut request).unwrap();
 println!(r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"settings","response":{{"effective":{{}},"sources":[],"errors":[]}}}}}}"#);return;}
 if a.get(1).map(String::as_str)==Some("--version"){println!("2.1.287 (Claude Code)");return;}
 if a.get(1).map(String::as_str)==Some("auth") {println!(r#"{{"loggedIn":true}}"#);return;}
-let s=std::process::Command::new(PYTHON).args([HELPER,SE,HOME]).args(&a[1..]).status().unwrap();
+let s=std::process::Command::new(PYTHON).args(["-c",BOOTSTRAP,HELPER,SE,HOME]).args(&a[1..]).status().unwrap();
 std::process::exit(s.code().unwrap_or(1));}'''.replace("PYTHON", json.dumps(sys.executable))
+            .replace("BOOTSTRAP", json.dumps(provider_bootstrap()))
             .replace("HELPER,SE,HOME", ",".join(json.dumps(str(p)) for p in [helper, self.se, self.home])))
         executable = self.root / ("provider.exe" if os.name == "nt" else "provider")
         subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(executable)],
