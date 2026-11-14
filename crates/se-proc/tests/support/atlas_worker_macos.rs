@@ -221,7 +221,11 @@ fn limits() -> Check {
         serde_json::from_slice(&receive(&mut worker)?)?;
     assert_eq!(
         limits,
-        [(900, 900), (64, 64), (inherited.rlim_cur, inherited.rlim_max)]
+        [
+            (900, 900),
+            (64, 64),
+            (inherited.rlim_cur, inherited.rlim_max)
+        ]
     );
     assert!(priority >= 10);
     finish(&mut worker)?;
