@@ -57,8 +57,10 @@ impl Forward {
             "{}:127.0.0.1:{}",
             self.config.local, self.config.remote_port
         );
+        // Forwarding refusals are functional input, so ambient quiet logging
+        // must not suppress the diagnostic read by this owned process.
         let mut child = Command::new("ssh")
-            .args(["-N", "-T", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
+            .args(["-N", "-T", "-o", "LogLevel=INFO", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
                 "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", "-L"])
             .arg(mapping).arg(&self.config.destination)
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
