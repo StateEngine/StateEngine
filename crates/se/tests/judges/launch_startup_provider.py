@@ -8,18 +8,19 @@ import threading
 import time
 import urllib.request
 
+from judge_records import write_json
 from mail_provider import main as ready_provider
 
 repo = Path.cwd()
-(repo / 'startup-pids.json').write_text(json.dumps([os.getppid(), os.getpid()]))
+write_json(repo / 'startup-pids.json', [os.getppid(), os.getpid()])
 # An unready provider must not inherit owner authority through publication.
 probe_env = dict(os.environ)
 probe_env.pop('SE_SESSION', None)
 time.sleep(.3)
 probe = subprocess.run([sys.argv[1], '--home', sys.argv[2], '--json', 'status'],
                        env=probe_env, capture_output=True, timeout=10)
-(repo / 'startup-owner-probe.json').write_text(json.dumps({
-    'exit': probe.returncode, 'stdout': probe.stdout.decode(), 'stderr': probe.stderr.decode()}))
+write_json(repo / 'startup-owner-probe.json', {
+    'exit': probe.returncode, 'stdout': probe.stdout.decode(), 'stderr': probe.stderr.decode()})
 assert probe.returncode != 0, 'unready provider acquired owner CLI authority'
 mode = (repo / 'startup-mode').read_text()
 with (repo / 'startup-count').open('a') as output:
@@ -49,6 +50,6 @@ elif mode == 'http-only':
         headers={**server['headers'], 'Content-Type': 'application/json'})
     with urllib.request.urlopen(request, timeout=15) as response:
         assert response.status == 200
-        (repo / 'startup-http-reply.json').write_text(json.dumps(json.load(response)))
+        write_json(repo / 'startup-http-reply.json', json.load(response))
 while True:
     time.sleep(1)

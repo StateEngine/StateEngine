@@ -10,6 +10,7 @@ from pathlib import Path
 import signal
 import tempfile
 import time
+from judge_records import wait_json
 from mail_cli import Fixture
 from directory_owner import DirectoryOwner
 
@@ -66,13 +67,12 @@ def run_case(options, case):
             (f.repo / 'partial-tail').touch()
         launch = f.ok('--project', f.project, 'launch', f.agent, '--detach', '--task', 'Finish original work')
         f.session = launch['session_id']
-        ready = wait(lambda: (f.repo / 'recovery-ready.json').exists(), 'provider did not start')
-        assert ready
+        ready = wait_json(f.repo / 'recovery-ready.json')
         wait(lambda: 'BEFORE_HOST_CRASH_REPLY' in replies(f), 'initial reply did not capture')
         before = status(f)
         host = native(before['runtime']['process']['pid'])
         provider = native(launch['process']['pid'])
-        helper = native(json.loads((f.repo / 'recovery-ready.json').read_text())['helper_pid'])
+        helper = native(ready['helper_pid'])
         assert host and str(f.se) in host['command']
         assert provider and str(f.root / 'provider') in provider['command']
         assert helper and 'recovery_capture_provider.py' in helper['command']

@@ -7,6 +7,7 @@ import sys
 import time
 import traceback
 import urllib.request
+from judge_records import write_json
 
 
 def main():
@@ -64,9 +65,9 @@ def main():
         reply = json.load(response)
         assert response.status == 200 and ("result" in reply or
                reply.get("error", {}).get("message", "").startswith("session-not-active:")), "prepared HTTP discovery failed"
-    (cwd / "provider-ready.json").write_text(json.dumps({"conversation": conversation,
+    write_json(cwd / "provider-ready.json", {"conversation": conversation,
                                                        "session_discovery": True, "http_discovery": True,
-                                                       "native_root_pid": os.getppid(), "helper_pid": os.getpid()}))
+                                                       "native_root_pid": os.getppid(), "helper_pid": os.getpid()})
     # Keep the actual native root alive until the caller observes running/C3.
     while True:
         time.sleep(1)

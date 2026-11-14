@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from judge_records import wait_json
 
 
 def observe(pid):
@@ -137,7 +138,7 @@ class Judge:
         if len(runtimes) != 1 or len(providers) != 1:
             raise AssertionError(("fixture identities ambiguous", rows))
         runtime, provider = runtimes[0], providers[0]
-        ready = json.loads((self.root / "repo/provider-ready.json").read_text())
+        ready = wait_json(self.root / "repo/provider-ready.json")
         helper_pid = ready["helper_pid"]
         helper = observe(helper_pid)
         if not helper or not any(row["pid"] == helper_pid for row in rows):

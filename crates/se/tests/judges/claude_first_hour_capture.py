@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 
+from judge_records import wait_json
 from mail_cli import Fixture
 
 
@@ -44,7 +45,7 @@ def run(f, gate=None, delay_record='metadata'):
     value = f.ok('--project', f.project, 'launch', f.agent, '--detach', '--task', 'Capture the first reply')
     assert value['state'] == 'running', value
     f.session = value['session_id']
-    ready = json.loads((f.repo / 'provider-ready.json').read_text())
+    ready = wait_json(f.repo / 'provider-ready.json')
     transcript = Path(ready['path'])
     conversation = json.loads(transcript.read_text().splitlines()[0])['sessionId']
     if os.name == 'posix':

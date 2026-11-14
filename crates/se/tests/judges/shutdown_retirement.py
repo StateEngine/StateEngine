@@ -11,6 +11,7 @@ import shutil
 from fixture_paths import private_runtime_directory
 import traceback
 
+from judge_records import wait_json
 from mail_cli import Fixture
 
 
@@ -53,7 +54,7 @@ else:
             f.agent = agent
             f.launch()
             show = f.ok("--project", f.project, "agent", "show", agent)
-            ready = json.loads((f.repo / "provider-ready.json").read_text())
+            ready = wait_json(f.repo / "provider-ready.json")
             conversation = ready["conversation"]
             matches = list((f.root / "owner/.claude/projects").rglob(conversation + ".jsonl"))
             assert len(matches) == 1, matches
