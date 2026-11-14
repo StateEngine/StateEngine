@@ -2,7 +2,6 @@
 //! unreadable service does not conceal other rows or invent an empty execution.
 use super::*;
 use se_core::ops::{AgentRow, AnyOutput, SecodeRuntimeView};
-use se_proc::ProcessRuntime;
 use se_types::{Page, Read, Window};
 use serde_json::Value;
 
@@ -149,27 +148,16 @@ impl LaunchCoordinator {
                 ),
             ));
         }
-        if let Some(failure) = &service.failure {
+        if let Some(failure) = service
+            .failure
+            .as_ref()
+            .or(service.capability_failure.as_ref())
+        {
             return Err(error("SE Code runtime observation", failure));
         }
-        let process = service.process.clone().ok_or_else(|| {
-            error(
-                "SE Code runtime observation",
-                "original service has exited; no replacement was adopted",
-            )
-        })?;
-        let control = service.control.clone().ok_or_else(|| {
-            error(
-                "SE Code runtime observation",
-                "authenticated service control unavailable",
-            )
-        })?;
-        let identity = service.journal.identity.clone().ok_or_else(|| {
-            error(
-                "SE Code runtime observation",
-                "original service incarnation unavailable",
-            )
-        })?;
+        self.observe_secode_birth(&service, deadline).await?;
+        let qualified = service.current()?;
+        let control = qualified.control.clone();
         let initial_sha256 = service.journal.initial_sha256;
         let resume_proved = service.journal.input_free_resume
             && service
@@ -185,24 +173,7 @@ impl LaunchCoordinator {
                 .is_none_or(|release| release.completed);
         let project = service.journal.project.clone();
         drop(service);
-        let native = self.native.clone();
-        let live = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
-                native
-                    .observe(&process)
-                    .map_err(|e| error("SE Code service liveness", e))
-            })
-            .await?;
-        if !matches!(live.root, se_proc::ProcessObservation::Live(_)) {
-            return Err(error(
-                "SE Code service liveness",
-                "recorded native service is no longer live",
-            ));
-        }
-        let binding = control.binding(&retained.session_id, deadline).await?;
-        identity.require_same(&binding.service)?;
+        let binding = qualified.binding(&retained.session_id, deadline).await?;
         let active = control
             .read(&["api", "session", "active"], deadline)
             .await?;
@@ -285,7 +256,7 @@ impl LaunchCoordinator {
         }
         let receipt = control
             .acceptance(
-                &identity,
+                &qualified.service,
                 &retained.session_id,
                 &retained.initial_input_id,
                 deadline,
@@ -298,8 +269,7 @@ impl LaunchCoordinator {
             },
             None=>Read::Absent {checked:"Original input key is absent in this authenticated service incarnation; no replay is authorized.".into()},
         };
-        let after = control.binding(&retained.session_id, deadline).await?;
-        identity.require_same(&after.service)?;
+        let after = qualified.binding(&retained.session_id, deadline).await?;
         let resume_ready = resume_proved
             && current.is_none()
             && matches!(initial_input, Read::Present { .. })

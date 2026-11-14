@@ -1,7 +1,8 @@
 use super::unreadable;
-use se_types::{Read, Result};
+use se_types::{Read, Result, Sha256};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256 as Hasher};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -203,6 +204,15 @@ where
     Option::<T>::deserialize(deserializer)
 }
 impl NoticeBinding {
+    pub(crate) fn require_bound(&self) -> Result<()> {
+        match self.status {
+            NoticeStatus::Ready => self.require_ready().map(|_| ()),
+            NoticeStatus::Held => self.require_held().map(|_| ()),
+            NoticeStatus::RebindRequired => Err(capability_error(
+                "the original PUT remains unconfirmed; retain its attempt while StateEngine waits for readback",
+            )),
+        }
+    }
     pub fn require_held(&self) -> Result<(&str, &str, &str)> {
         let mut ready = self.clone();
         ready.status = NoticeStatus::Ready;
@@ -256,4 +266,155 @@ impl NoticeBinding {
             )),
         }
     }
+}
+
+pub(crate) fn registration_fields(bytes: &[u8]) -> Result<std::collections::BTreeMap<&str, &str>> {
+    let text = std::str::from_utf8(bytes).map_err(|e| unreadable("SE Code registration", e))?;
+    let lines = text
+        .strip_suffix('\n')
+        .ok_or_else(|| unreadable("SE Code registration", "complete terminator absent"))?
+        .split('\n')
+        .collect::<Vec<_>>();
+    let keys = [
+        "slot",
+        "instance",
+        "environment",
+        "generation",
+        "pid",
+        "endpoint",
+        "version",
+        "registered_at",
+    ];
+    if bytes.len() > 8512 || lines.len() != 9 || lines[0] != "secode-service/registration/1" {
+        return Err(registration_error("unsupported or incomplete format"));
+    }
+    let mut result = std::collections::BTreeMap::new();
+    for (line, key) in lines[1..].iter().zip(keys) {
+        let (found, value) = line
+            .split_once('=')
+            .ok_or_else(|| registration_error("field delimiter absent"))?;
+        if found != key
+            || value.is_empty()
+            || value.len() > 1024
+            || value.contains('=')
+            || value.chars().any(char::is_control)
+        {
+            return Err(registration_error("noncanonical field"));
+        }
+        result.insert(key, value);
+    }
+    Ok(result)
+}
+
+fn registration_error(reason: &str) -> se_types::SeError {
+    unreadable("SE Code registration", reason)
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CapabilityRepair {
+    /// Registration joined to the authenticated application incarnation.
+    pub registration: Sha256,
+    pub before: NoticeBinding,
+    pub after: Option<NoticeBinding>,
+    /// Persisted before sending. Older pending records have an unknown outcome.
+    #[serde(default = "unknown_attempt")]
+    pub put_attempted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_failure: Option<se_types::ErrorBody>,
+}
+
+pub(crate) enum RepairPlan {
+    Observed(CapabilityRepair),
+    Put(CapabilityRepair),
+}
+
+impl CapabilityRepair {
+    pub(crate) fn fingerprint(registration: &[u8], identity: &ServiceIdentity) -> Sha256 {
+        let mut hash = Hasher::new();
+        hash.update(b"secode-capability-observation-v1");
+        hash.update((registration.len() as u64).to_le_bytes());
+        hash.update(registration);
+        hash.update(identity.incarnation.as_bytes());
+        Sha256::from_bytes(hash.finalize().into())
+    }
+
+    pub(crate) fn validate(&self, session: &str) -> Result<()> {
+        self.before.service.validate()?;
+        if std::iter::once(&self.before)
+            .chain(self.after.iter())
+            .any(|binding| binding.session_id != session)
+        {
+            return Err(capability_error("retained Session differs"));
+        }
+        if self.before.status == NoticeStatus::RebindRequired {
+            if self.before.target_id.is_some()
+                || self.before.binding.is_some()
+                || self.before.hold_id.is_some()
+            {
+                return Err(capability_error(
+                    "unbound readback carries target or hold coordinates",
+                ));
+            }
+        } else {
+            self.before.require_bound()?;
+        }
+        if let Some(after) = &self.after {
+            self.before.service.require_same(&after.service)?;
+            after.require_bound()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn plan(
+        registration: Sha256,
+        current: NoticeBinding,
+        previous: Option<&Self>,
+    ) -> Result<RepairPlan> {
+        if let Some(previous) = previous.filter(|previous| previous.registration == registration) {
+            previous.before.service.require_same(&current.service)?;
+            if !previous.put_attempted
+                && previous.after.is_none()
+                && current.status == NoticeStatus::RebindRequired
+            {
+                return Ok(RepairPlan::Put(previous.clone()));
+            }
+            current.require_bound()?;
+            if let Some(after) = &previous.after
+                && (after.target_id != current.target_id || after.binding != current.binding)
+            {
+                return Err(capability_error("target changed after the original repair"));
+            }
+            let mut repaired = previous.clone();
+            repaired.after = Some(current);
+            return Ok(RepairPlan::Observed(repaired));
+        }
+        let mut repair = Self {
+            registration,
+            before: current,
+            after: None,
+            put_attempted: false,
+            write_failure: None,
+        };
+        repair.validate(&repair.before.session_id)?;
+        if repair.before.status == NoticeStatus::RebindRequired {
+            Ok(RepairPlan::Put(repair))
+        } else {
+            repair.after = Some(repair.before.clone());
+            Ok(RepairPlan::Observed(repair))
+        }
+    }
+
+    pub(crate) fn owned_binding(&self) -> Option<&NoticeBinding> {
+        (self.put_attempted && self.before.status == NoticeStatus::RebindRequired).then_some(())?;
+        self.after.as_ref()
+    }
+}
+
+fn unknown_attempt() -> bool {
+    true
+}
+
+fn capability_error(reason: &str) -> se_types::SeError {
+    unreadable("SE Code capability repair", reason)
 }

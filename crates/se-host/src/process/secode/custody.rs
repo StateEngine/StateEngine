@@ -49,6 +49,8 @@ pub(super) struct Journal {
     pub server_sha256: Option<se_types::Sha256>,
     pub endpoint: Option<String>,
     pub identity: Option<crate::harness::secode_process::ServiceIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_repair: Option<crate::harness::secode_process::CapabilityRepair>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +73,31 @@ pub(super) struct Notice {
     pub messages: Vec<String>,
 }
 impl Journal {
+    pub(super) fn unprovisioned(&self) -> bool {
+        self.identity.is_none() && !self.initial_offered
+    }
+
+    pub(super) fn require_registration(&self, current: &[u8]) -> Result<()> {
+        let matches = if let Some(repair) = self
+            .capability_repair
+            .as_ref()
+            .filter(|repair| repair.owned_binding().is_some())
+        {
+            crate::harness::secode_process::CapabilityRepair::fingerprint(
+                current,
+                &repair.before.service,
+            ) == repair.registration
+        } else {
+            self.registration.as_deref() == Some(current)
+        };
+        if !matches {
+            return Err(error(
+                "SE Code registration custody",
+                "current registration differs from retained qualified custody",
+            ));
+        }
+        Ok(())
+    }
     pub fn auxiliary(&self, auxiliary: Auxiliary) -> &Option<Checkpoint> {
         match auxiliary {
             Auxiliary::Bootstrap => &self.bootstrap,
@@ -126,6 +153,9 @@ impl Journal {
             serde_json::from_slice(&bytes).map_err(|e| error("SE Code custody", e))?;
         if value.version != 1 {
             return Err(error("SE Code custody", "unsupported version"));
+        }
+        if let Some(repair) = &value.capability_repair {
+            repair.validate(&value.vendor_session)?;
         }
         for checkpoint in Auxiliary::ALL
             .into_iter()

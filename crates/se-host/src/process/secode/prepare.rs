@@ -100,6 +100,7 @@ impl LaunchCoordinator {
                 server_sha256: None,
                 endpoint: None,
                 identity: None,
+                capability_repair: None,
             };
             services.insert(
                 key.clone(),
@@ -117,6 +118,9 @@ impl LaunchCoordinator {
                     retirement_output: None,
                     control: None,
                     failure: None,
+                    capability_failure: None,
+                    live: Default::default(),
+                    capability_check_at: None,
                 })),
             );
         }
@@ -377,6 +381,7 @@ impl LaunchCoordinator {
         let prepared = Prepared {
             control,
             service: identity,
+            live: service.live.clone(),
             profile: service.journal.profile.clone(),
             process: native_record::instance(
                 &service_record.root,

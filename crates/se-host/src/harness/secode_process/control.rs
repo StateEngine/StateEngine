@@ -1,4 +1,6 @@
-use super::{Acceptance, NoticeBinding, ServiceIdentity, unreadable};
+use super::{
+    Acceptance, CapabilityRepair, NoticeBinding, ServiceIdentity, registration_fields, unreadable,
+};
 use crate::client::lease::Deadline;
 use reqwest::{Method, Url};
 use se_types::{Result, Secret};
@@ -37,6 +39,50 @@ pub struct Control {
     client: reqwest::Client,
 }
 impl Control {
+    pub(crate) async fn require_unprovisioned_idle(&self, deadline: &Deadline) -> Result<()> {
+        if self.read(&["api", "health"], deadline).await?.is_null() {
+            return Err(shutdown_refusal(
+                "authenticated health is empty; service retained",
+            ));
+        }
+        self.require_idle(deadline).await
+    }
+
+    pub(crate) async fn require_idle(&self, deadline: &Deadline) -> Result<()> {
+        let active = self.read(&["api", "session", "active"], deadline).await?;
+        match active.get("data").and_then(Value::as_object) {
+            Some(rows) if rows.is_empty() => Ok(()),
+            _ => Err(shutdown_refusal(
+                "active execution inventory is nonempty or unreadable; service retained",
+            )),
+        }
+    }
+
+    pub(crate) async fn put_session_capability(
+        &self,
+        session: &str,
+        credential: &Secret,
+        config: &Path,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let capability = std::str::from_utf8(credential.expose())
+            .map_err(|cause| unreadable("SE Code capability", cause))?;
+        let config = config.to_str().ok_or_else(|| {
+            unreadable(
+                "SE Code policy binding",
+                "the control API requires a UTF-8 path",
+            )
+        })?;
+        self.request(
+            Method::PUT,
+            &["api", "session", session, "stateengine", "capability"],
+            Some(&serde_json::json!({"capability":capability,"configPath":config})),
+            deadline,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub fn open(profile: &Path, endpoint: &str) -> Result<Self> {
         let endpoint = Url::parse(endpoint).map_err(|e| unreadable("SE Code endpoint", e))?;
         let loopback = endpoint
@@ -336,4 +382,61 @@ impl Control {
         binding.service.require_same(&receipt.service)?;
         Ok(receipt)
     }
+}
+
+pub(crate) fn service_registration(profile: &std::path::Path) -> Result<Option<Vec<u8>>> {
+    let path = profile.join("registration");
+    let Some(mut pin) = se_proc::NativeSourcePin::open(&path)
+        .map_err(|e| unreadable("SE Code registration read", e))?
+    else {
+        return Ok(None);
+    };
+    let raw = pin
+        .read_at(0, 8513)
+        .map_err(|e| unreadable("SE Code registration read", e))?;
+    if !raw.end_of_file || raw.bytes.len() > 8512 {
+        return Err(unreadable(
+            "SE Code registration read",
+            "registration exceeds its complete-read bound",
+        ));
+    }
+    pin.validate_path(&path)
+        .map_err(|e| unreadable("SE Code registration custody", e))?;
+    registration_fields(&raw.bytes)?;
+    Ok(Some(raw.bytes))
+}
+
+impl CapabilityRepair {
+    pub(crate) async fn apply(
+        mut self,
+        control: &Control,
+        credential: &Secret,
+        config: &Path,
+        deadline: &Deadline,
+    ) -> Result<Self> {
+        let session = self.before.session_id.as_str();
+        let sent = control
+            .put_session_capability(session, credential, config, deadline)
+            .await;
+        let observed = control.binding(session, deadline).await.and_then(|after| {
+            self.before.service.require_same(&after.service)?;
+            after.require_bound()?;
+            Ok(after)
+        });
+        self.after = Some(match (sent, observed) {
+            (Ok(()), Ok(after)) => after,
+            (Err(write), Ok(after)) => {
+                self.write_failure = Some(write.body);
+                after
+            }
+            (Err(write), Err(read)) => return Err(read.with_cause(write)),
+            (Ok(_), Err(read)) => return Err(read),
+        });
+        Ok(self)
+    }
+}
+
+// Preserve the coordinator's existing shutdown diagnostic encoding.
+fn shutdown_refusal(reason: &str) -> se_types::SeError {
+    se_core::scope::unreadable("SE Code service shutdown", &format!("{reason:?}"))
 }

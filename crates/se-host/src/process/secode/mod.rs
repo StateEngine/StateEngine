@@ -1,4 +1,5 @@
 //! Coordinator-owned private services. Provider adapters cannot spawn them.
+mod capability;
 mod capture;
 mod custody;
 mod diagnostic;
@@ -52,6 +53,9 @@ pub(super) struct Service {
     retirement_output: Option<Arc<diagnostic::Output>>,
     control: Option<Arc<crate::harness::secode_process::Control>>,
     failure: Option<String>,
+    capability_failure: Option<String>,
+    live: crate::harness::secode_process::LiveBinding,
+    capability_check_at: Option<tokio::time::Instant>,
 }
 #[derive(Default)]
 pub(super) struct Services(
@@ -85,6 +89,17 @@ async fn lock_service<'a>(
 }
 
 impl Service {
+    fn current(&self) -> Result<crate::harness::secode_process::QualifiedControl> {
+        self.live.resolve(
+            self.control.clone().ok_or_else(|| {
+                error("SE Code current binding", "authenticated control is absent")
+            })?,
+            self.journal
+                .identity
+                .clone()
+                .ok_or_else(|| error("SE Code current binding", "original identity is absent"))?,
+        )
+    }
     async fn persist(
         &mut self,
         coordinator: &LaunchCoordinator,

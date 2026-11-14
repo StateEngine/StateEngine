@@ -145,22 +145,11 @@ impl LaunchCoordinator {
             self.retire_lost_secode_service(service, deadline).await?;
         }
         if !no_service_or_input && !service.journal.retired {
-            let control = service.control.as_ref().ok_or_else(|| {
-                error(
-                    "SE Code session replacement",
-                    "original authenticated service is unavailable",
-                )
-            })?;
-            let identity = service.journal.identity.as_ref().ok_or_else(|| {
-                error(
-                    "SE Code session replacement",
-                    "original service identity absent",
-                )
-            })?;
-            let before = control
+            let qualified = service.current()?;
+            let control = qualified.control.clone();
+            let before = qualified
                 .binding(&service.journal.vendor_session, deadline)
                 .await?;
-            identity.require_same(&before.service)?;
             if before.status == crate::harness::secode_process::NoticeStatus::Ready
                 && !(resuming
                     && service
@@ -191,14 +180,32 @@ impl LaunchCoordinator {
                     "old service execution is still active",
                 ));
             }
-            let after = control
+            let after = qualified
                 .binding(&service.journal.vendor_session, deadline)
                 .await?;
-            identity.require_same(&after.service)?;
             if resuming {
                 self.release_secode_hold(service, request, after, deadline)
                     .await?;
             }
+            // The old session is closed and captured. A new session may now
+            // start from the qualified service without rewriting its history.
+            let profile = service.journal.profile.to_local()?;
+            let registration = self
+                .store
+                .pool
+                .run_owned(deadline, move || retirement::registration(&profile))
+                .await?
+                .ok_or_else(|| {
+                    error(
+                        "SE Code session replacement",
+                        "qualified service registration is absent",
+                    )
+                })?;
+            service.journal.require_registration(&registration)?;
+            service.journal.endpoint =
+                Some(retirement::fields(&registration)?["endpoint"].to_owned());
+            service.journal.registration = Some(registration);
+            service.journal.identity = Some(qualified.service);
         }
         if service.journal.retired {
             service.journal.service = None;
@@ -226,6 +233,9 @@ impl LaunchCoordinator {
         service.journal.previous_policy_sha256 = service.journal.policy_sha256.take();
         service.journal.client_closed = None;
         service.journal.notice = None;
+        service.journal.capability_repair = None;
+        service.live.invalidate()?;
+        service.live = Default::default();
         service.persist(self, deadline).await
     }
 }

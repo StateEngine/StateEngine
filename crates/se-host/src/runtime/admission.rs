@@ -14,7 +14,7 @@ use se_core::{
     ops::{self, CliSelections},
     store_error::store_error,
 };
-use se_store::{Actor, Admission, RuntimeLease, Scope};
+use se_store::{Actor, Admission, RuntimeLease, Scope, Snapshot};
 use se_types::{Read, Result, SeError, Sha256};
 use sha2::{Digest, Sha256 as Hasher};
 use std::{
@@ -66,6 +66,45 @@ pub(crate) struct OperationMetadata {
     pub presence: Option<crate::client::presence::OwnerPresence>,
 }
 impl AdmissionContext {
+    /// Load the pinned original policy proof and validate its live session together.
+    pub(crate) fn saved_session_capability(
+        &self,
+        profile: &std::path::Path,
+        expected: Option<Sha256>,
+        session: &crate::SessionIdentity,
+    ) -> Result<se_types::Secret> {
+        let expected = expected.ok_or_else(|| policy_error("original policy digest is absent"))?;
+        let files = se_proc::NativeProfileFiles::open(profile).map_err(policy_error)?;
+        let mut file = files
+            .readback(&profile.join("host-policy.json"))
+            .map_err(policy_error)?
+            .ok_or_else(|| policy_error("original policy is absent"))?;
+        let mut bytes = Zeroizing::new(Vec::new());
+        std::io::Read::by_ref(&mut file)
+            .take(1_048_577)
+            .read_to_end(&mut bytes)
+            .map_err(policy_error)?;
+        if bytes.len() > 1_048_576
+            || <[u8; 32]>::from(Hasher::digest(bytes.as_slice())) != *expected.as_bytes()
+        {
+            return Err(policy_error(
+                "original policy digest differs or exceeds its bound",
+            ));
+        }
+        let mut policy: serde_json::Value = serde_json::from_slice(&bytes).map_err(policy_error)?;
+        let proof = policy
+            .pointer_mut("/mcp/stateengine/headers/X-StateEngine-Session-Proof")
+            .map(serde_json::Value::take)
+            .ok_or_else(|| policy_error("session proof is absent"))?;
+        let serde_json::Value::String(proof) = proof else {
+            return Err(policy_error("session proof is not a string"));
+        };
+        let proof = Zeroizing::new(proof);
+        let credential = se_types::Secret::new(proof.as_bytes().to_vec())?;
+        self.verify_session_capability(&credential, session)?;
+        Ok(credential)
+    }
+
     fn lease(&self) -> Result<Arc<HostLease>> {
         self.lease.upgrade().ok_or_else(|| {
             SeError::new(se_types::Detail::RuntimeNotRunning(
@@ -347,6 +386,61 @@ impl AdmissionContext {
         })();
         super::executor::close_read(result, phase.close())
     }
+    /// Re-presenting a protected launch proof uses the normal current-session
+    /// verifier, including expiry, revocation and unproved-stop fences.
+    pub(crate) fn verify_session_capability(
+        &self,
+        secret: &se_types::Secret,
+        expected: &crate::SessionIdentity,
+    ) -> Result<()> {
+        let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
+        let admitted = match (|| -> Result<Admission> {
+            self.check_generation(&phase)?;
+            let admitted = self.session(&phase, secret)?;
+            if admitted.scope != Scope::Project(expected.project.clone())
+                || admitted.actor != Actor::Agent(expected.agent.clone())
+                || admitted.session.as_ref() != Some(&expected.session)
+            {
+                return Err(SeError::new(se_types::Detail::CapabilityInvalid(
+                    se_types::details::CapabilityInvalid {
+                        subject: "presented".into(),
+                        reason: "credential belongs to another launched session".into(),
+                        next_step: "Present the original proof for this agent's current session."
+                            .into(),
+                    },
+                )));
+            }
+            Ok(admitted)
+        })() {
+            Ok(admitted) => admitted,
+            Err(error) => return super::executor::close_read(Err(error), phase.close()),
+        };
+        let mut read = phase
+            .into_snapshot(se_core::admission::read_scope(&admitted))
+            .map_err(|error| store_error(&error))?;
+        let result = (|| {
+            let current = se_core::scope::require_present(
+                read.session(expected.session.clone())
+                    .map_err(|error| store_error(&error))?,
+                "session capability owner",
+                "Reconcile the original launched session.",
+            )?;
+            if !matches!(
+                current.current.body,
+                se_store::EventBody::SessionActivated { .. }
+            ) {
+                return Err(SeError::new(se_types::Detail::CapabilityInvalid(
+                    se_types::details::CapabilityInvalid {
+                        subject: "presented".into(),
+                        reason: "launched session is no longer active".into(),
+                        next_step: RELAUNCH.into(),
+                    },
+                )));
+            }
+            Ok(())
+        })();
+        super::executor::close_read(result, read.close())
+    }
     fn kernel(&self, facts: se_core::dispatch::CallFacts) -> Result<se_core::dispatch::Kernel> {
         let kernel =
             se_core::dispatch::Kernel::new(facts)?.with_command_home(&self.state_directory);
@@ -613,4 +707,8 @@ fn remote_credential(
             "the exact already-admitted active credential",
         )),
     }
+}
+
+fn policy_error(cause: impl std::fmt::Display) -> SeError {
+    se_core::scope::unreadable("SE Code capability policy", &cause.to_string())
 }

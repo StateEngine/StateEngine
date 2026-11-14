@@ -111,6 +111,7 @@ impl LaunchCoordinator {
                 }
             }
         }
+        service.live.invalidate()?;
         service.journal.lost = true;
         service.failure = None;
         service.control = None;

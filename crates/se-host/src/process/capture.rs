@@ -5,6 +5,39 @@ use crate::client::lease::Deadline;
 use se_types::{Read, Result};
 mod recovery;
 impl LaunchCoordinator {
+    /// A complete canonical read must cover the durable capture cursor.
+    pub(super) async fn verify_captured_end(
+        &self,
+        admission: se_store::Admission,
+        source: se_store::RecordId,
+        end: u64,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        use se_store::{EventBody, Snapshot};
+        self.store
+            .read(admission, deadline, move |cx| {
+                let source = se_core::scope::require_present(
+                    cx.read
+                        .capture_source(source)
+                        .map_err(|e| se_core::store_error::store_error(&e))?,
+                    "captured prefix",
+                    "Preserve the original source and cursor.",
+                )?;
+                let saved = match &source.current.body {
+                    EventBody::CaptureSource { .. } => 0,
+                    EventBody::CaptureProgress { new_offset, .. } => *new_offset,
+                    _ => return Err(error("captured prefix", "cursor unavailable")),
+                };
+                if saved != end {
+                    return Err(error(
+                        "captured prefix",
+                        "canonical history ended before covering the saved cursor",
+                    ));
+                }
+                Ok(())
+            })
+            .await
+    }
     pub(super) async fn flush_capture(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
         // A closed protocol stream cannot be reopened as a vendor transcript.
         // Keep its durable incomplete outcome rather than replacing it on retry.

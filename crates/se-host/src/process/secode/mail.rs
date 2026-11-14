@@ -86,6 +86,8 @@ impl LaunchCoordinator {
             .await?
             .ok_or_else(|| error("SE Code notice custody", "private service absent"))?;
         let mut service = lock_service(&slot, deadline).await?;
+        let qualified = managed.current()?;
+        let control = qualified.control.clone();
         let (notice, offer) = if let Some(notice) = &service.journal.notice {
             if notice.input != key || notice.messages != messages {
                 return Err(error(
@@ -95,8 +97,7 @@ impl LaunchCoordinator {
             }
             (notice.clone(), false)
         } else {
-            let binding = managed.control.binding(&managed.session, deadline).await?;
-            managed.service.require_same(&binding.service)?;
+            let binding = qualified.binding(&managed.session, deadline).await?;
             binding.require_ready()?;
             let notice = custody::Notice {
                 input: key.clone(),
@@ -109,13 +110,11 @@ impl LaunchCoordinator {
         };
         drop(service);
         let receipt = if offer {
-            managed
-                .control
+            control
                 .offer_notice(&notice.binding, &notice.input, &notice.messages, deadline)
                 .await?
         } else {
-            managed
-                .control
+            control
                 .acceptance(
                     &notice.binding.service,
                     &notice.binding.session_id,
@@ -153,8 +152,8 @@ impl LaunchCoordinator {
         let Some(notice) = notice else {
             return Ok(());
         };
-        let receipt = managed
-            .control
+        let control = managed.current()?.control;
+        let receipt = control
             .acceptance(
                 &notice.binding.service,
                 &notice.binding.session_id,

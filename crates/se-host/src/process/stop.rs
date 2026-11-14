@@ -27,6 +27,7 @@ impl LaunchCoordinator {
         let mut observation_failed = false;
         loop {
             let mut observation_retry_at = None;
+            let capability_retry_at;
             let wake = {
                 let mut state = job.state.lock().await;
                 if state.released {
@@ -84,6 +85,7 @@ impl LaunchCoordinator {
                 {
                     return;
                 }
+                capability_retry_at = self.maintain_secode_capability(&state, &deadline).await;
                 let mut capture_pending = job.capture_pending.swap(false, Ordering::AcqRel);
                 if let Some(binding) = state
                     .binding
@@ -260,7 +262,11 @@ impl LaunchCoordinator {
             };
             // Mail cannot be delivered until native observation succeeds. Its
             // expired retry clock must not spin while that observation is failing.
-            monitor_wake(&wake.event, observation_retry_at.or(retry_at)).await;
+            let next = [observation_retry_at.or(retry_at), capability_retry_at]
+                .into_iter()
+                .flatten()
+                .min();
+            monitor_wake(&wake.event, next).await;
         }
     }
     #[expect(

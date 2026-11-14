@@ -5,6 +5,46 @@ use se_proc::{CheckpointKind, LaunchProgress, LaunchStart, ProcessRuntime, StopO
 use std::ffi::OsString;
 
 impl LaunchCoordinator {
+    pub(super) async fn observe_secode_birth(
+        &self,
+        service: &Service,
+        deadline: &Deadline,
+    ) -> Result<u32> {
+        let pid = match service
+            .journal
+            .service
+            .as_ref()
+            .map(|checkpoint| &checkpoint.checkpoint)
+        {
+            Some(CheckpointKind::Process(record)) => record.root.pid.0,
+            _ => {
+                return Err(error(
+                    "SE Code native custody",
+                    "original service process is not retained",
+                ));
+            }
+        };
+        let owner = service
+            .process
+            .clone()
+            .ok_or_else(|| error("SE Code native custody", "original service owner is absent"))?;
+        let native = self.native.clone();
+        self.store
+            .pool
+            .run_owned(deadline, move || {
+                let observed = native
+                    .observe(&owner)
+                    .map_err(|failure| error("SE Code native custody", failure))?;
+                if !matches!(observed.root, se_proc::ProcessObservation::Live(_)) {
+                    return Err(error(
+                        "SE Code native custody",
+                        "original native service is not live",
+                    ));
+                }
+                Ok(pid)
+            })
+            .await
+    }
     #[allow(
         clippy::too_many_arguments,
         reason = "one native launch with distinct custody and policy coordinates"

@@ -5,70 +5,9 @@ use se_proc::{CheckpointKind, CheckpointSource, ProcessRuntime, StopObservation}
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 
-pub(super) fn fields(bytes: &[u8]) -> Result<std::collections::BTreeMap<&str, &str>> {
-    let text = std::str::from_utf8(bytes).map_err(|e| error("SE Code registration", e))?;
-    let lines = text
-        .strip_suffix('\n')
-        .ok_or_else(|| error("SE Code registration", "complete terminator absent"))?
-        .split('\n')
-        .collect::<Vec<_>>();
-    let keys = [
-        "slot",
-        "instance",
-        "environment",
-        "generation",
-        "pid",
-        "endpoint",
-        "version",
-        "registered_at",
-    ];
-    if bytes.len() > 8512 || lines.len() != 9 || lines[0] != "secode-service/registration/1" {
-        return Err(error(
-            "SE Code registration",
-            "unsupported or incomplete bounded registration",
-        ));
-    }
-    let mut result = std::collections::BTreeMap::new();
-    for (line, key) in lines[1..].iter().zip(keys) {
-        let (found, value) = line
-            .split_once('=')
-            .ok_or_else(|| error("SE Code registration", "field delimiter absent"))?;
-        if found != key
-            || value.is_empty()
-            || value.len() > 1024
-            || value.contains('=')
-            || value.chars().any(char::is_control)
-        {
-            return Err(error(
-                "SE Code registration",
-                "noncanonical registration field",
-            ));
-        }
-        result.insert(key, value);
-    }
-    Ok(result)
-}
-fn registration(profile: &std::path::Path) -> Result<Option<Vec<u8>>> {
-    let path = profile.join("registration");
-    let Some(mut pin) =
-        se_proc::NativeSourcePin::open(&path).map_err(|e| error("SE Code registration read", e))?
-    else {
-        return Ok(None);
-    };
-    let raw = pin
-        .read_at(0, 8513)
-        .map_err(|e| error("SE Code registration read", e))?;
-    if !raw.end_of_file || raw.bytes.len() > 8512 {
-        return Err(error(
-            "SE Code registration read",
-            "registration exceeds its complete-read bound",
-        ));
-    }
-    pin.validate_path(&path)
-        .map_err(|e| error("SE Code registration custody", e))?;
-    fields(&raw.bytes)?;
-    Ok(Some(raw.bytes))
-}
+pub(super) use crate::harness::secode_process::{
+    registration_fields as fields, service_registration as registration,
+};
 fn empty(profile: &std::path::Path) -> Result<bool> {
     let no_registration = se_proc::NativeSourcePin::open(&profile.join("registration"))
         .map_err(|e| error("SE Code registration retirement", e))?
@@ -131,21 +70,19 @@ impl LaunchCoordinator {
         {
             return Ok(());
         }
-        let original=service.journal.registration.clone().ok_or_else(||error("SE Code registration retirement","no original complete registration was retained; preserve the profile for reconciliation"))?;
         let check = profile.clone();
-        if self
+        let original = self
             .store
             .pool
             .run_owned(deadline, move || registration(&check))
             .await?
-            .as_ref()
-            != Some(&original)
-        {
-            return Err(error(
-                "SE Code registration retirement",
-                "current registration differs from retained bytes; preserve the current owner",
-            ));
-        }
+            .ok_or_else(|| {
+                error(
+                    "SE Code registration retirement",
+                    "current registration is absent while readiness remains",
+                )
+            })?;
+        service.journal.require_registration(&original)?;
         let server = match service.journal.service.as_ref().map(|c| &c.checkpoint) {
             Some(CheckpointKind::Exit { source, .. }) => match &**source {
                 CheckpointSource::Process(record) => record.root.image.clone(),

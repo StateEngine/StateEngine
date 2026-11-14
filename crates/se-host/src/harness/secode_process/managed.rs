@@ -1,22 +1,121 @@
 //! Provider planning and stream attachment only. The launch coordinator owns
 //! profile bootstrap, the service process, durable intent and native effects.
 use super::*;
+use crate::client::lease::Deadline;
 use crate::{Harness, HarnessBinding, HarnessRequest, ProviderIoPlatform};
 use se_types::{NativePath, Read, Result};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
 };
+
+/// One qualified service for every lifecycle consumer. Original capture and
+/// input coordinates remain immutable in Managed and in their journals.
+#[derive(Clone)]
+pub(crate) struct QualifiedControl {
+    pub control: Arc<Control>,
+    pub service: ServiceIdentity,
+    repaired: Option<NoticeBinding>,
+}
+impl QualifiedControl {
+    pub(crate) async fn require_idle(&self, session: &str, deadline: &Deadline) -> Result<()> {
+        self.binding(session, deadline).await?;
+        self.control.require_idle(deadline).await?;
+        self.binding(session, deadline).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn binding(
+        &self,
+        session: &str,
+        deadline: &Deadline,
+    ) -> Result<NoticeBinding> {
+        let current = self.control.binding(session, deadline).await?;
+        self.service.require_same(&current.service)?;
+        if let Some(repaired) = &self.repaired
+            && (repaired.session_id != current.session_id
+                || repaired.target_id != current.target_id
+                || repaired.binding != current.binding)
+        {
+            return Err(binding_error("target changed after credential repair"));
+        }
+        Ok(current)
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct LiveBinding(Arc<RwLock<BindingState>>);
+#[derive(Default)]
+enum BindingState {
+    #[default]
+    Original,
+    Repaired(Box<QualifiedControl>),
+    Unavailable,
+}
+impl LiveBinding {
+    pub(crate) fn resolve(
+        &self,
+        control: Arc<Control>,
+        service: ServiceIdentity,
+    ) -> Result<QualifiedControl> {
+        let state = self
+            .0
+            .read()
+            .map_err(|_| binding_error("poisoned custody"))?;
+        match &*state {
+            BindingState::Repaired(current) => Ok(current.as_ref().clone()),
+            BindingState::Original => Ok(QualifiedControl {
+                control,
+                service,
+                repaired: None,
+            }),
+            BindingState::Unavailable => Err(binding_error(
+                "unqualified binding; retain input pending reconciliation",
+            )),
+        }
+    }
+    pub(crate) fn publish(&self, control: Arc<Control>, repair: &CapabilityRepair) -> Result<()> {
+        let binding = repair
+            .owned_binding()
+            .ok_or_else(|| binding_error("confirmed repair is absent"))?;
+        self.replace(BindingState::Repaired(Box::new(QualifiedControl {
+            control,
+            service: binding.service.clone(),
+            repaired: Some(binding.clone()),
+        })))
+    }
+    pub(crate) fn invalidate(&self) -> Result<()> {
+        self.replace(BindingState::Unavailable)
+    }
+    fn replace(&self, current: BindingState) -> Result<()> {
+        *self
+            .0
+            .write()
+            .map_err(|_| binding_error("poisoned custody"))? = current;
+        Ok(())
+    }
+}
+
+fn binding_error(reason: &str) -> se_types::SeError {
+    unreadable("SE Code current binding", reason)
+}
 
 #[derive(Clone)]
 pub(crate) struct Managed {
     pub control: Arc<Control>,
     pub service: ServiceIdentity,
+    pub live: LiveBinding,
     pub profile: NativePath,
     pub process: se_types::ProcessInstance,
     pub session: String,
     pub initial_input: String,
+}
+impl Managed {
+    pub(crate) fn current(&self) -> Result<QualifiedControl> {
+        self.live
+            .resolve(self.control.clone(), self.service.clone())
+    }
 }
 pub(crate) struct SecodeHarness {
     io: Arc<dyn ProviderIoPlatform>,
@@ -419,15 +518,10 @@ impl Harness for SecodeHarness {
     ) -> crate::HostFuture<'a, crate::ProviderInterrupt> {
         Box::pin(async move {
             let binding = bound(binding)?;
+            let current = binding.managed.current()?;
             let deadline = crate::client::lease::Deadline::idle()?.stage(cx.timeout)?;
-            let current = binding
-                .managed
-                .control
-                .binding(&binding.managed.session, &deadline)
-                .await?;
-            binding.managed.service.require_same(&current.service)?;
-            binding
-                .managed
+            current.binding(&binding.managed.session, &deadline).await?;
+            current
                 .control
                 .request(
                     reqwest::Method::POST,
@@ -436,12 +530,7 @@ impl Harness for SecodeHarness {
                     &deadline,
                 )
                 .await?;
-            let held = binding
-                .managed
-                .control
-                .binding(&binding.managed.session, &deadline)
-                .await?;
-            binding.managed.service.require_same(&held.service)?;
+            let held = current.binding(&binding.managed.session, &deadline).await?;
             if held.status == NoticeStatus::Ready {
                 return Err(unreadable(
                     "SE Code stop fence",

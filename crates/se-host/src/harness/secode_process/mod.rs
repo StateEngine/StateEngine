@@ -11,8 +11,11 @@ pub(crate) mod sandbox;
 pub use contract::{
     Acceptance, AcceptedInput, NoticeBinding, NoticeStatus, ServiceIdentity, notice_text,
 };
+pub(crate) use contract::{CapabilityRepair, RepairPlan, registration_fields};
 pub use control::Control;
+pub(crate) use control::service_registration;
 pub(crate) use managed::{Binding, Managed, SecodeHarness};
+pub(crate) use managed::{LiveBinding, QualifiedControl};
 pub(crate) use managed::{input as initial_input, session as vendor_session};
 
 pub(crate) fn service_key(project: &se_types::ProjectId, agent: &se_types::AgentId) -> String {
