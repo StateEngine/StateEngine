@@ -283,8 +283,9 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
                 .text
                 .len()
                 .saturating_sub(needed - input.byte_budget as usize + 8);
-            if value.command.is_some() && input.byte_budget <= DEFAULT_BYTES {
-                limit = limit.max(value.value.text.len().min(256));
+            if input.byte_budget <= DEFAULT_BYTES {
+                // Shared recovery must not erase the last saved-work fragment.
+                limit = limit.max(value.value.text.len().min(128));
             }
             if limit < value.value.text.len() {
                 value.value.text = read::clip(&value.value.text, limit).into();
