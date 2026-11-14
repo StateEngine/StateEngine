@@ -1,0 +1,35 @@
+name: macOS startup phase profile
+on:
+  push:
+    branches: [prime/macos-startup-profile-r1]
+permissions:
+  contents: read
+jobs:
+  profile:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: d300fa61334f18d07a2e596523f0a60bd1b67a28
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - uses: ./.github/actions/rust
+      - name: Build the native release image
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = d300fa61334f18d07a2e596523f0a60bd1b67a28
+          python scripts/release/build.py --target aarch64-apple-darwin --out "$RUNNER_TEMP/native"
+      - name: Install the process observer
+        run: python -m pip install --disable-pip-version-check --only-binary=:all: psutil==7.0.0
+      - name: Profile fresh and warm startup
+        shell: bash
+        run: python crates/se/tests/judges/startup_phase_profile.py --se "$RUNNER_TEMP/native/se" --output "$RUNNER_TEMP/startup-profile"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: macos-startup-profile
+          path: ${{ runner.temp }}/startup-profile/
+          if-no-files-found: warn
