@@ -3,9 +3,8 @@ use std::{ops::Deref, path::PathBuf};
 /// A private fixture root that removes its whole tree when it goes away.
 ///
 /// Removal runs in `Drop`, so a passing test and a test that fails by returning
-/// `Err` both remove their tree. Only a panic keeps it, and it is printed then,
-/// so a failing test leaves exactly one named root to read and delete. A root
-/// that cannot be removed is printed too. A forced process termination cannot
+/// `Err` both remove their tree. Explicit evidence retention or a panic keeps
+/// the tree and names it. A root that cannot be removed is printed too. A forced process termination cannot
 /// run `Drop`; creation names the root in captured output for that case.
 pub struct PrivateDirectory {
     path: PathBuf,
@@ -41,14 +40,34 @@ impl PrivateDirectory {
         );
         directory
     }
-}
 
-impl PrivateDirectory {
     /// Keep evidence when its live process custody could not be closed safely.
     #[allow(dead_code)]
     pub fn retain(mut self, reason: &str) {
         eprintln!("retained fixture root {}: {reason}", self.path.display());
         self.retained = true;
+    }
+
+    /// Move only this owned tree and keep cleanup attached to its new name.
+    #[allow(dead_code)]
+    pub fn rename_to(&mut self, destination: PathBuf) -> std::io::Result<()> {
+        match std::fs::symlink_metadata(&destination) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+            Ok(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "fixture destination exists; choose a fresh sibling directory",
+                ));
+            }
+        }
+        std::fs::rename(&self.path, &destination)?;
+        self.path = destination;
+        eprintln!(
+            "fixture root (retained if its process is forcibly terminated): {}",
+            self.path.display()
+        );
+        Ok(())
     }
 }
 

@@ -35,26 +35,23 @@ fn source(
     }
     std::fs::write(&path, &bytes)?;
     let pin = se_proc::NativeSourcePin::open(&path)?.ok_or("missing source")?;
-    Ok((
-        root_owner,
-        BoundTranscript {
-            binding: crate::TranscriptPin {
-                identity: crate::SessionIdentity {
-                    project: se_types::ProjectId::from_parts(1, [3; 10])?,
-                    agent: se_types::AgentId::from_parts(1, [4; 10])?,
-                    session: se_types::SessionId::from_parts(1, [1; 10])?,
-                },
-                conversation: "tools-native".parse()?,
-                path: se_types::NativePath::from_local(path)?,
-                file_identity: se_types::Sha256::from_bytes(pin.identity()),
+    let source = BoundTranscript {
+        binding: crate::TranscriptPin {
+            identity: crate::SessionIdentity {
+                project: se_types::ProjectId::from_parts(1, [3; 10])?,
+                agent: se_types::AgentId::from_parts(1, [4; 10])?,
+                session: se_types::SessionId::from_parts(1, [1; 10])?,
             },
-            queue: Default::default(),
-            tools: Default::default(),
-            source: se_store::RecordId::from_parts(1, [2; 10])?,
-            pin,
+            conversation: "tools-native".parse()?,
+            path: se_types::NativePath::from_local(path)?,
+            file_identity: se_types::Sha256::from_bytes(pin.identity()),
         },
-        bytes,
-    ))
+        queue: Default::default(),
+        tools: Default::default(),
+        source: se_store::RecordId::from_parts(1, [2; 10])?,
+        pin,
+    };
+    Ok((root_owner, source, bytes))
 }
 fn scan(
     source: &mut BoundTranscript,
