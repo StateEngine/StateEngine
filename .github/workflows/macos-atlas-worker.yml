@@ -1,7 +1,7 @@
 name: macOS Atlas worker pair
 on:
   push:
-    branches: [prime/macos-atlas-worker-r1]
+    branches: [prime/macos-atlas-worker-r2]
 permissions:
   contents: read
 jobs:
@@ -10,10 +10,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - side: base
-            sha: 52c76e2f88398933543effe659df26409c305039
           - side: head
-            sha: 1341dd0c431ae34f64635860428526a331f62f28
+            sha: c29e53b5f2794dcf00c0e49db15e42043621ba9d
     runs-on: macos-15
     timeout-minutes: 90
     steps:
