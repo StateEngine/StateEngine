@@ -176,7 +176,7 @@ async fn check_authority(
         },
         project: f.project.clone(),
         agent: f.b.clone(),
-        session: session::session()?,
+        session: support::session::session()?,
         generation: se_types::Generation::new(1)?,
     };
     require(
@@ -198,7 +198,6 @@ async fn check_authority(
             .authorize_invocation(
                 &device,
                 invocation(
-                    g,
                     Some(source.clone()),
                     vec![RemoteTarget {
                         project: f.project.clone(),
