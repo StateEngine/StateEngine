@@ -161,6 +161,7 @@ impl AdmissionContext {
         grant: &ConnectionGrant,
         presence: Option<&crate::client::presence::OwnerPresence>,
     ) -> Result<(Admission, HumanTerminal)> {
+        let _phase = se_store::phase_trace::Span::new("caller_authority");
         Ok(match override_authority {
             Some(PresentedAuthority::Session(secret)) => (
                 self.session(phase, secret)?,
@@ -257,6 +258,7 @@ impl AdmissionContext {
     ) -> Result<T> {
         let (peer, connection) = native;
         let mut phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
+        let admission_profile = se_store::phase_trace::Span::new("operation_admit");
         let result = (|| {
             self.check_generation(&phase)?;
             let operation = ops::decode_operation(&raw.name, raw.arguments, raw.key.as_ref())?;
@@ -318,6 +320,7 @@ impl AdmissionContext {
                 selections,
             })
         })();
+        drop(admission_profile);
         match result {
             Ok(call) => finish(phase, call),
             Err(error) => super::executor::close_read(Err(error), phase.close()),

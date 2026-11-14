@@ -196,6 +196,7 @@ impl HostedRouter {
         let fenced = std::sync::Arc::clone(&self.fenced);
         let (mut exchange, span) =
             timings::blocking(&self.execution.blocking, Mode::Owned, deadline, move || {
+                let _profile = se_store::phase_trace::Scope::new("admission");
                 let call = if fenced.load(std::sync::atomic::Ordering::Acquire) {
                     Err(SeError::invalid(
                         "host admission",

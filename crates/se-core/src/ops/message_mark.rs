@@ -103,6 +103,7 @@ pub struct MarkThen {
     replayed: bool,
 }
 fn selected<S: Snapshot>(cx: &mut Cx<'_, S>, id: MessageId) -> Result<MessageRecord> {
+    let _phase = se_store::phase_trace::Span::new("message_lookup");
     scope::project(cx.admission)?;
     scope::require_present(
         cx.read.message(id).map_err(|error| store_error(&error))?,
@@ -111,6 +112,7 @@ fn selected<S: Snapshot>(cx: &mut Cx<'_, S>, id: MessageId) -> Result<MessageRec
     )
 }
 fn row<S: Snapshot>(cx: &mut Cx<'_, S>, record: MessageRecord) -> Result<MessageRow> {
+    let _phase = se_store::phase_trace::Span::new("message_row");
     let from = receipt::mail_sender_ref(cx.read, &record)?;
     let StoredText::Present(body) = record.body else {
         return Err(scope::unreadable(
@@ -187,6 +189,7 @@ fn row<S: Snapshot>(cx: &mut Cx<'_, S>, record: MessageRecord) -> Result<Message
     })
 }
 fn fits(output: &AnyOutput, budget: u32) -> Result<()> {
+    let _phase = se_store::phase_trace::Span::new("response_budget");
     let bytes = serde_json::to_vec(output)
         .map_err(|error| scope::unreadable("complete message response", &error.to_string()))?;
     if bytes.len() > budget as usize {
@@ -203,6 +206,7 @@ pub fn read<S: Snapshot>(
     cx: &mut Cx<'_, S>,
     input: MessageRead,
 ) -> Result<OpStep<AnyOutput, MarkThen>> {
+    let _phase = se_store::phase_trace::Span::new("message_read_plan");
     input.validate()?;
     let record = selected(cx, input.msg_id.clone())?;
     let recipient = record.recipient == cx.admission.actor;
@@ -269,6 +273,7 @@ pub fn plan<S: Snapshot>(
     mark: Mark,
     body_budget: Option<u32>,
 ) -> Result<OpStep<AnyOutput, MarkThen>> {
+    let _phase = se_store::phase_trace::Span::new("marker_plan");
     let record = selected(cx, id.clone())?;
     if record.recipient != cx.admission.actor {
         return Err(SeError::invalid(
@@ -297,10 +302,11 @@ pub fn plan<S: Snapshot>(
         body_budget,
         replayed: false,
     };
-    match cx
-        .read
-        .operation_receipt(cx.admission.actor.clone(), key.clone())
-        .map_err(|error| store_error(&error))?
+    match se_store::phase_trace::measure("marker_receipt_lookup", || {
+        cx.read
+            .operation_receipt(cx.admission.actor.clone(), key.clone())
+    })
+    .map_err(|error| store_error(&error))?
     {
         Read::Present { value } => {
             then.replayed = true;
@@ -339,6 +345,7 @@ pub fn committed<S: Snapshot>(
     then: MarkThen,
     receipt: CommitReceipt,
 ) -> Result<AnyOutput> {
+    let _phase = se_store::phase_trace::Span::new("message_committed");
     receipt::receipt_key(&receipt, &then.key, "message disposition completion")?;
     let event = receipt::committed_event(cx.read, &receipt)?;
     let (message, recipient, tag) = match (&then.mark, &event.body) {

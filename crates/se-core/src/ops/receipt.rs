@@ -49,6 +49,7 @@ pub(crate) fn floor_ref() -> ActorRef {
     }
 }
 pub fn actor_ref<R: Snapshot>(read: &mut R, actor: &Actor) -> Result<ActorRef> {
+    let _phase = se_store::phase_trace::Span::new("actor_reference");
     if let Actor::Remote(id) = actor {
         return Ok(ActorRef {
             kind: "remote".into(),
@@ -171,6 +172,7 @@ pub(crate) fn committed_event<R: Snapshot>(
     read: &mut R,
     receipt: &CommitReceipt,
 ) -> Result<StoredEvent> {
+    let _phase = se_store::phase_trace::Span::new("committed_marker_event");
     let event = scope::require_present(
         read.event(receipt.primary_event.clone())
             .map_err(|e| store_error(&e))?,
@@ -442,6 +444,7 @@ pub fn notification<R: Snapshot>(
     quiet: bool,
     records: Vec<se_store::NotificationRecord>,
 ) -> Result<Notification> {
+    let _phase = se_store::phase_trace::Span::new("notification_materialize");
     let recipients = records
         .into_iter()
         .map(|record| {

@@ -173,6 +173,7 @@ pub(super) async fn finish(
             let pool = context.blocking.clone();
             let (output, continuation) =
                 timings::blocking(&pool, Mode::Finite, &deadline, move || {
+                    let _profile = se_store::phase_trace::Scope::new("readback");
                     finish_deadline.remaining()?;
                     let phase = checked_pooled_phase(&context.reads, generation)?;
                     let mut read = phase
@@ -239,6 +240,7 @@ pub(super) fn plan(
         Option<crate::atlas_runtime::record_fence::RecordFeedTicket>,
     )>,
 ) -> Result<Planned> {
+    let _phase = se_store::phase_trace::Span::new("host_plan");
     let natural_key = match &call.input {
         HostedInput::Capture(capture) => Some(format!(
             "session={:?}, provider={:?}, conversation={}, turn={}",

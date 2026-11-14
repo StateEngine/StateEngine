@@ -23,6 +23,7 @@ mod migration;
 mod model;
 mod open;
 mod owner_guard;
+pub mod phase_trace;
 mod read;
 mod read_phase;
 mod read_phase_pool;

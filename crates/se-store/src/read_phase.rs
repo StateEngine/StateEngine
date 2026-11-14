@@ -42,9 +42,13 @@ impl SqliteReader {
         slot: crate::read_slots::ReadSlot,
         db: Connection,
     ) -> StoreResult<ReadPhase> {
-        connection::begin_snapshot(&db, &self.path)?;
-        let info = connection::info_at(&db, &self.path)?;
-        self.validate_identity()?;
+        crate::phase_trace::measure("snapshot_begin", || {
+            connection::begin_snapshot(&db, &self.path)
+        })?;
+        let info = crate::phase_trace::measure("snapshot_header", || {
+            connection::info_at(&db, &self.path)
+        })?;
+        crate::phase_trace::measure("snapshot_identity", || self.validate_identity())?;
         Ok(ReadPhase {
             db,
             info,
@@ -60,6 +64,7 @@ impl ReadPhase {
     /// Read the current phase's generation fact; no authority is cached for a
     /// later pin or request.
     pub fn runtime_owner(&self) -> StoreResult<Read<RuntimeOwnerHead>> {
+        let _phase = crate::phase_trace::Span::new("generation_lookup");
         let row: Option<(String, u64, u64, i64)> = self.db.query_row(
             "SELECT owner_epoch,owner_generation,revision,last_seq FROM runtime_owner WHERE singleton=1",
             [], |r| Ok((crate::sql_value::value(r, 0)?, crate::sql_value::value(r, 1)?, crate::sql_value::value(r, 2)?, crate::sql_value::value(r, 3)?)),
@@ -113,13 +118,14 @@ impl ReadPhase {
     /// Transfer this exact pin and its reservation to the admitted snapshot.
     /// This consumes the pre-admission phase; it cannot be reused afterward.
     pub fn into_snapshot(self, scope: ReadScope) -> StoreResult<SqliteSnapshot> {
-        SqliteSnapshot::from_phase(self, scope)
+        crate::phase_trace::measure("snapshot_scope", || SqliteSnapshot::from_phase(self, scope))
     }
 
     /// End the read pin before returning its capacity. Ordinary phases close
     /// physically; a host admission phase may return its idle connection to its pool.
     /// Early errors and unwinding also drop the connection and its transaction.
     pub fn close(self) -> StoreResult<()> {
+        let _phase = crate::phase_trace::Span::new("read_close");
         self.db
             .execute_batch("ROLLBACK")
             .map_err(|e| context(sql(e), &self.path, StoreIoStage::ReadSnapshot))?;
