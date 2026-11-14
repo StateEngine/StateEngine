@@ -82,6 +82,7 @@ pub fn apply<S: Snapshot>(
     admission: &mut Admission,
     op: &se_core::ops::AnyOp,
 ) -> Result<()> {
+    let _phase = crate::phase_trace::Phase::new("cli_project_selection");
     let requested = cx.project.as_deref().or_else(|| {
         (!cx.config.value.default_project.is_empty())
             .then_some(cx.config.value.default_project.as_str())

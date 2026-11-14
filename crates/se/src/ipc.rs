@@ -21,6 +21,7 @@ pub fn forward(
     observation: Option<&se_proc::OwnerObservation>,
     options: &ClientOptions,
 ) -> Result<AnyOutput> {
+    let _phase = crate::phase_trace::Phase::new("cli_ipc_forward");
     let expected = op.meta().family.schema();
     let mut call = operation(op, selections, endpoint.generation)?;
     // Only the owner-authenticated route can carry the native self-observation.
@@ -297,6 +298,7 @@ impl SessionForwarder {
         op: AnyOp,
         options: &ClientOptions,
     ) -> Result<AnyOutput> {
+        let _phase = crate::phase_trace::Phase::new("cli_ipc_forward");
         self.request_id = self
             .request_id
             .checked_add(1)

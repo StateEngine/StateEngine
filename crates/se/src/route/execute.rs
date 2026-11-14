@@ -69,6 +69,7 @@ fn forwarding_options(
     Ok(options)
 }
 pub fn endpoint(files: &Files) -> Result<Read<se_host::EndpointRecord>> {
+    let _phase = crate::phase_trace::Phase::new("cli_endpoint_discovery");
     let path = files.0.root().join("endpoint.json");
     match files.readback(&path).map_err(|e| store_error(&e))? {
         Read::Present { value: file } => {
@@ -87,6 +88,7 @@ pub fn endpoint(files: &Files) -> Result<Read<se_host::EndpointRecord>> {
     }
 }
 pub fn credential(cx: &Bootstrap, files: &Files) -> Result<ClientCredential> {
+    let _phase = crate::phase_trace::Phase::new("cli_credential");
     match &cx.session {
         Some(secret) => Ok(ClientCredential::Session(Secret::new(
             secret.expose().to_vec(),
@@ -124,6 +126,7 @@ fn dispatch_with_cold_recovery(
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
     recover_cold: bool,
 ) -> Result<AnyOutput> {
+    let _phase = crate::phase_trace::Phase::new("cli_dispatch");
     let observation_deadline = super::session_observation::deadline()?;
     #[cfg(feature = "import")]
     let op = {

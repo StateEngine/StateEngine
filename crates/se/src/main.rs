@@ -12,6 +12,7 @@ mod installer;
 mod ipc;
 mod mcp;
 mod mcp_stdio;
+mod phase_trace;
 mod private_entry;
 mod remote;
 #[cfg(feature = "remote")]
@@ -49,6 +50,7 @@ pub fn run(
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
     let original_args = args.clone();
+    let parse_phase = phase_trace::Phase::new("cli_parse");
     let invocation = match grammar::parse(args) {
         Ok(invocation) => invocation,
         Err(failure) => {
@@ -69,6 +71,7 @@ pub fn run(
             );
         }
     };
+    drop(parse_phase);
     let hook_event = match &invocation.operation {
         AnyOp::HookClaude(value) => Some(value.event),
         _ => None,
@@ -323,6 +326,8 @@ fn finish(result: se_types::Result<u8>, args: &[OsString]) -> std::process::Exit
 }
 
 fn main() -> std::process::ExitCode {
+    phase_trace::event("main_enter");
+    let _phase = phase_trace::Phase::new("cli_main");
     let args: Vec<_> = std::env::args_os().collect();
     #[cfg(windows)]
     let args = match private_entry::retain_package_parent(args) {

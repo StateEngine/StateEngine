@@ -20,6 +20,7 @@ fn forward_once<R: se_store::ReadStore>(
     selections: &CliSelections,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<AnyOutput> {
+    let _phase = crate::phase_trace::Phase::new("cli_host_forward");
     let options = execute::options();
     let bound = Deadline::from_options(&options)?;
     let automatic = operation.meta().runtime == RuntimeNeed::HostAutoStart;

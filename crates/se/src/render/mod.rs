@@ -30,6 +30,7 @@ pub fn output_at(
     atlas: Option<&se_core::ops::AtlasOptions>,
     out: &mut impl Write,
 ) -> io::Result<u8> {
+    let _phase = crate::phase_trace::Phase::new("cli_output_at");
     if !json
         && let Some(options) = atlas
         && let Some(text) =
@@ -58,6 +59,7 @@ pub fn output_at(
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) -> io::Result<u8> {
+    let _phase = crate::phase_trace::Phase::new("cli_output");
     if !json && matches!(value, AnyOutput::HookClaude(_)) {
         return Err(io::Error::other(
             "native hook output requires its provider framing writer",

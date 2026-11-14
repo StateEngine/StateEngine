@@ -24,6 +24,7 @@ const STDERR_TAIL: usize = 160;
 const COUNT_RETAIN: usize = 256;
 
 pub fn observe(root: &Path) -> Result<Option<GitView>> {
+    let _phase = crate::phase_trace::Phase::new("cli_repository_state");
     let deadline = Instant::now() + STATUS_OBSERVATION_DEADLINE;
     observe_within(root, deadline)
 }

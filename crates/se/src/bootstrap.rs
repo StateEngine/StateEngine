@@ -11,6 +11,7 @@ use std::{
 /// Windows fixes only the default owner for newly created files; existing
 /// ownership remains a strict readback requirement. Unix does no work here.
 pub fn initialize_file_owner() -> Result<()> {
+    let _phase = crate::phase_trace::Phase::new("cli_file_owner");
     se_proc::initialize_file_creation_owner().map(|_| ()).map_err(|error| {
         SeError::new(Detail::SourceUnreadable(details::SourceUnreadable {
             subject: "process default file owner".into(),
@@ -98,6 +99,7 @@ impl Bootstrap {
         recovery: bool,
         diagnostic_export: bool,
     ) -> Result<Self> {
+        let _phase = crate::phase_trace::Phase::new("cli_bootstrap");
         let home = state_home(home)?;
         // Export must describe an unreadable home, not require its repair.
         // The normal status/doctor routes retain their native checks below.

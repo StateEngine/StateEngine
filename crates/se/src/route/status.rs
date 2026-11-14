@@ -47,6 +47,7 @@ pub fn observe_snapshot<S: Snapshot>(
     files: &Files,
     admission: &Admission,
 ) -> Result<AnyOutput> {
+    let _phase = crate::phase_trace::Phase::new("cli_status_snapshot");
     let generated = receipt::timestamp(execute::now_us()?)?;
     let mut output = status::missing(
         cx.home.display().to_string(),
@@ -324,6 +325,7 @@ pub(super) fn finish<R: ReadStore>(
     mut output: AnyOutput,
     admission: &Admission,
 ) -> Result<AnyOutput> {
+    let _phase = crate::phase_trace::Phase::new("cli_status_finish");
     let AnyOutput::ProjectStatus(status) = &mut output else {
         return Ok(output);
     };

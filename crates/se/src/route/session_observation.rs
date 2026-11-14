@@ -180,6 +180,7 @@ pub(super) fn merge_runtime_observation(
     Ok(output)
 }
 pub(super) fn finish(prepared: Prepared, home: &std::path::Path) -> Result<AnyOutput> {
+    let _phase = crate::phase_trace::Phase::new("cli_session_observation");
     let Prepared {
         mut output,
         plans,

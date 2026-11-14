@@ -66,6 +66,7 @@ fn inspect_with<T>(
     open: impl FnOnce(&StoreOptions) -> se_store::StoreResult<Read<T>>,
     pending_init: Option<bool>,
 ) -> Result<Setup<(Files, T)>> {
+    let _phase = crate::phase_trace::Phase::new("cli_registry_open");
     match std::fs::symlink_metadata(home) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(missing(
@@ -86,7 +87,9 @@ fn inspect_with<T>(
     // Protection and directory identity are native facts, independent of DB bytes.
     // A lock or config alone does not establish initialization. Surviving
     // identity/state records prevent an absent DB becoming first-time setup.
+    let files_phase = crate::phase_trace::Phase::new("cli_state_files");
     let files = Files::open(home).map_err(|e| store_error(&e))?;
+    drop(files_phase);
     match open(&StoreOptions {
         state_directory: home.to_owned(),
         busy_timeout: Duration::from_millis(250),
