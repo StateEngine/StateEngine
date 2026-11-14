@@ -20,6 +20,8 @@ use windows_sys::Win32::{
     System::{Pipes::*, Threading::*},
 };
 type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
+#[path = "support/peer_privileges.rs"]
+mod peer_privileges;
 fn wide(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain(Some(0)).collect()
 }
@@ -248,6 +250,25 @@ fn a_live_but_denied_peer_stays_unreadable_and_never_becomes_absent() -> Check {
     if code != ERROR_SUCCESS {
         return Err(std::io::Error::from_raw_os_error(code as i32).into());
     }
+    let mut privileges = peer_privileges::WithoutPrivileges::enter()?;
+    // A debug-enabled runner can bypass a process DACL. Establish the native
+    // denial on this thread before judging either reader's classification.
+    // SAFETY: query-only open of the still-owned child PID; no foreign selector.
+    let denied = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+            0,
+            fixture.client.0.id(),
+        )
+    };
+    if !denied.is_null() {
+        drop(owned(denied)?);
+        return Err("fixture did not establish native process access denial".into());
+    }
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(ERROR_ACCESS_DENIED as i32)
+    );
     let refusal =
         observe_ipc_peer_bounded(fixture.server.as_handle(), IpcPeerSide::Client, &bound())
             .err()
@@ -271,6 +292,7 @@ fn a_live_but_denied_peer_stays_unreadable_and_never_becomes_absent() -> Check {
         Some(i64::from(ERROR_ACCESS_DENIED))
     );
     assert!(fixture.client.0.try_wait()?.is_none());
+    privileges.restore()?;
     fixture.client.exit()?;
     Ok(())
 }

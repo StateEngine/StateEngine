@@ -7,6 +7,8 @@ mod directory;
 fn direct_and_hosted_rename_preserve_identity_and_boundaries()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = directory::private_directory()?;
+    let image = root.join(if cfg!(windows) { "se.exe" } else { "se" });
+    std::fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
     let python = if cfg!(windows) { "python" } else { "python3" };
     let output = std::process::Command::new(python)
         .env("PYTHONDONTWRITEBYTECODE", "1")
@@ -14,7 +16,9 @@ fn direct_and_hosted_rename_preserve_identity_and_boundaries()
             env!("CARGO_MANIFEST_DIR"),
             "/tests/judges/agent_rename.py"
         ))
-        .args(["--se", env!("CARGO_BIN_EXE_se"), "--output"])
+        .arg("--se")
+        .arg(&image)
+        .arg("--output")
         .arg(root.join("output"))
         .output()?;
     assert!(

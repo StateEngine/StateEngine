@@ -1,5 +1,6 @@
 //! Rebuildable Atlas foundation. Native custody is supplied by host adapters.
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
+// The trusted_path FFI module carries the crate's only scoped allowance.
 
 pub mod coverage;
 pub mod errors;
@@ -18,6 +19,7 @@ pub mod render;
 pub mod scope;
 pub mod source;
 pub mod text;
+mod trusted_path;
 
 pub mod resolve;
 
