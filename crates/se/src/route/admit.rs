@@ -91,6 +91,7 @@ pub struct Caller {
     pub owner: Option<owner::FileOwner>,
 }
 pub fn observe(cx: &Bootstrap, phase: &mut ReadPhase, files: &Files) -> Result<Caller> {
+    let _phase = crate::phase_trace::Phase::new("cli_caller_observation");
     if let Some(secret) = &cx.session {
         let record = scope::require_present(
             phase

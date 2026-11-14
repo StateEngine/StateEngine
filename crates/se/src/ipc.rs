@@ -21,6 +21,7 @@ pub fn forward(
     observation: Option<&se_proc::OwnerObservation>,
     options: &ClientOptions,
 ) -> Result<AnyOutput> {
+    let _phase = crate::phase_trace::Phase::new("cli_ipc_forward");
     let expected = op.meta().family.schema();
     let mut call = operation(op, selections, endpoint.generation)?;
     // Only the owner-authenticated route can carry the native self-observation.
@@ -90,12 +91,14 @@ pub(crate) fn exchange_output(
             .map(|key| ("remote authority control".into(), key.clone())),
     };
     let started = Instant::now();
-    let mut connection = BlockingIpcClient::connect_authenticated(
-        endpoint,
-        credential,
-        NonZeroU32::new(DEFAULT_REPLY_BYTES).ok_or_else(|| invalid("nonzero reply budget"))?,
-        options,
-    )?;
+    let mut connection = crate::phase_trace::measure("cli_ipc_authenticate", || {
+        BlockingIpcClient::connect_authenticated(
+            endpoint,
+            credential,
+            NonZeroU32::new(DEFAULT_REPLY_BYTES).ok_or_else(|| invalid("nonzero reply budget"))?,
+            options,
+        )
+    })?;
     // Authentication and exchange consume one caller budget after any separate
     // runtime bootstrap. A new connection never renews that request budget.
     let remaining = options
@@ -115,17 +118,19 @@ pub(crate) fn exchange_output(
         cancelled: options.cancelled.clone(),
     };
     let mut progress = ExchangeProgress::NotSent;
-    let output = connection
-        .exchange_with_progress(call, &exchange_options, &mut progress)
-        .map_err(|error| {
-            if progress == ExchangeProgress::SendAttempted {
-                uncertain(keyed.as_ref(), error)
-            } else {
-                // Definitely unsent and authoritative error replies keep their
-                // original classes, including confirmed-but-unreadable commits.
-                error
-            }
-        })?;
+    let output = crate::phase_trace::measure("cli_ipc_exchange", || {
+        connection
+            .exchange_with_progress(call, &exchange_options, &mut progress)
+            .map_err(|error| {
+                if progress == ExchangeProgress::SendAttempted {
+                    uncertain(keyed.as_ref(), error)
+                } else {
+                    // Definitely unsent and authoritative error replies keep their
+                    // original classes, including confirmed-but-unreadable commits.
+                    error
+                }
+            })
+    })?;
     Ok(output)
 }
 
@@ -176,6 +181,7 @@ pub fn operation(
     selections: &CliSelections,
     generation: se_types::Generation,
 ) -> Result<IpcEnvelope> {
+    let _phase = crate::phase_trace::Phase::new("cli_ipc_operation");
     op.validate()?;
     selections.validate()?;
     let name = op.meta().name.to_owned();
@@ -207,6 +213,7 @@ pub fn operation(
 /// `value` is the complete core family envelope. The host never strips its
 /// read/window/completeness facts or synthesizes a different family at this seam.
 pub fn decode(output: OperationOutput, expected: &str) -> Result<AnyOutput> {
+    let _phase = crate::phase_trace::Phase::new("cli_ipc_decode_output");
     if output.schema != expected {
         return Err(invalid("the registered operation's output family"));
     }
@@ -297,6 +304,7 @@ impl SessionForwarder {
         op: AnyOp,
         options: &ClientOptions,
     ) -> Result<AnyOutput> {
+        let _phase = crate::phase_trace::Phase::new("cli_ipc_forward");
         self.request_id = self
             .request_id
             .checked_add(1)

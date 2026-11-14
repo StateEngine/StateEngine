@@ -1,5 +1,7 @@
 //! Shared absolute time/cancellation bounds. Native lease/channel operations
 //! receive the same deadline; reconnect never renews a request's clock.
+use crate::phase_trace::profile_phase;
+
 use crate::client::ClientOptions;
 use se_types::{Result, SeError};
 use std::{
@@ -264,13 +266,21 @@ impl crate::client::BlockingIpcClient {
             // Cold local file I/O belongs to the caller's original request
             // budget, before a connection holds a server handshake slot. The
             // hello below reobserves native identity through the warmed cache.
-            se_proc::native_ipc::observe_ipc_self_bounded(&budget.native_bound())
-                .map_err(native_error)?;
+            profile_phase("ipc_self_prewarm", || {
+                se_proc::native_ipc::observe_ipc_self_bounded(&budget.native_bound())
+            })
+            .map_err(native_error)?;
         }
         let deadline = budget.stage(HELLO_TIMEOUT)?;
-        let mut stream = native_connect(endpoint, &deadline, false)?;
-        let bytes = wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)?;
-        let challenge = auth::decode_challenge(bytes.as_bytes(), endpoint)?;
+        let mut stream = profile_phase("ipc_native_connect", || {
+            native_connect(endpoint, &deadline, false)
+        })?;
+        let bytes = profile_phase("ipc_challenge_read", || {
+            wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)
+        })?;
+        let challenge = profile_phase("ipc_challenge_decode", || {
+            auth::decode_challenge(bytes.as_bytes(), endpoint)
+        })?;
         if challenge.version != se_types::API_VERSION {
             return Err(SeError::new(se_types::Detail::ApiVersionUnsupported(
                 se_types::details::ApiVersionUnsupported {
@@ -285,16 +295,20 @@ impl crate::client::BlockingIpcClient {
         }
         let authority = match &credential {
             ClientCredential::Machine(key) => {
-                let peer = se_proc::native_ipc::observe_ipc_self_bounded(&deadline.native_bound())
-                    .map_err(native_error)?;
-                let nonce = auth::fresh_nonce()?;
-                let mac = auth::create_owner_mac(
-                    key,
-                    auth::ProofDomain::Owner,
-                    &challenge,
-                    &nonce,
-                    &peer.binding(),
-                )?;
+                let peer = profile_phase("ipc_self_mac_observation", || {
+                    se_proc::native_ipc::observe_ipc_self_bounded(&deadline.native_bound())
+                })
+                .map_err(native_error)?;
+                let nonce = profile_phase("ipc_nonce", auth::fresh_nonce)?;
+                let mac = profile_phase("ipc_owner_mac", || {
+                    auth::create_owner_mac(
+                        key,
+                        auth::ProofDomain::Owner,
+                        &challenge,
+                        &nonce,
+                        &peer.binding(),
+                    )
+                })?;
                 crate::PresentedAuthority::OwnerProof { nonce, mac }
             }
             ClientCredential::Session(token) => {
@@ -311,9 +325,15 @@ impl crate::client::BlockingIpcClient {
             authority,
         };
         deadline.remaining()?;
-        wire::write_frame_bounded(&mut stream, &auth::encode_client_hello(&sent)?, &deadline)?;
-        let bytes = wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)?;
-        let hello = auth::decode_server_hello(bytes.as_bytes(), &sent, &challenge)?;
+        profile_phase("ipc_hello_write", || {
+            wire::write_frame_bounded(&mut stream, &auth::encode_client_hello(&sent)?, &deadline)
+        })?;
+        let bytes = profile_phase("ipc_hello_read", || {
+            wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)
+        })?;
+        let hello = profile_phase("ipc_hello_decode", || {
+            auth::decode_server_hello(bytes.as_bytes(), &sent, &challenge)
+        })?;
         deadline.remaining()?;
         Ok(BlockingConnection {
             stream: Some(stream),
@@ -418,7 +438,7 @@ impl BlockingConnection {
         }
         let deadline = Deadline::from_options(options)?;
         // Encode/refuse before taking custody of the connection or writing.
-        let frame = wire::encode_call(&call)?;
+        let frame = profile_phase("ipc_call_encode", || wire::encode_call(&call))?;
         // Renew before the first send, allowing the whole write stage before
         // the server's idle expiry. Never retry an incomplete exchange: its
         // operation may already have committed, with or without a reply.
@@ -448,17 +468,23 @@ impl BlockingConnection {
         stream.set_bound(writing.native_bound());
         self.last_activity = Instant::now();
         *progress = ExchangeProgress::SendAttempted;
-        wire::write_frame_bounded(&mut stream, &frame, &writing)?;
+        profile_phase("ipc_request_write", || {
+            wire::write_frame_bounded(&mut stream, &frame, &writing)
+        })?;
         stream.set_bound(deadline.native_bound());
         let limit = self.hello.maximum_reply_bytes.get() as usize;
-        let bytes = wire::read_payload_bounded(&mut stream, limit, &deadline)?;
-        let response = wire::decode_response(
-            bytes.as_bytes(),
-            call.version,
-            call.generation,
-            call.request_id,
-            limit,
-        )?;
+        let bytes = profile_phase("ipc_reply_read", || {
+            wire::read_payload_bounded(&mut stream, limit, &deadline)
+        })?;
+        let response = profile_phase("ipc_response_decode", || {
+            wire::decode_response(
+                bytes.as_bytes(),
+                call.version,
+                call.generation,
+                call.request_id,
+                limit,
+            )
+        })?;
         // Preserve a fully received and validated outcome. The native reads
         // were deadline-bound; a late decode cannot erase a confirmed commit.
         *progress = ExchangeProgress::ReplyReceived;

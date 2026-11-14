@@ -61,6 +61,7 @@ pub struct Loaded<T> {
 /// validate policy after decoding. An absent default file means defaults; an
 /// explicit SE_CONFIG that cannot be opened retains its actual failure.
 pub fn load<T: DeserializeOwned + Default>(path: &Path, explicit: bool) -> Result<Loaded<T>> {
+    let _phase = crate::phase_trace::Phase::new("cli_config");
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == ErrorKind::NotFound && !explicit => {

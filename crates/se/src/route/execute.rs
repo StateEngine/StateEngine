@@ -60,6 +60,7 @@ fn forwarding_options(
     home: &std::path::Path,
     endpoint: &se_host::EndpointRecord,
 ) -> Result<ClientOptions> {
+    let _phase = crate::phase_trace::Phase::new("cli_forwarding_options");
     let mut options = options();
     let started = std::time::Instant::now();
     let bound = se_host::client::lease::Deadline::from_options(&options)?;
@@ -69,6 +70,7 @@ fn forwarding_options(
     Ok(options)
 }
 pub fn endpoint(files: &Files) -> Result<Read<se_host::EndpointRecord>> {
+    let _phase = crate::phase_trace::Phase::new("cli_endpoint_discovery");
     let path = files.0.root().join("endpoint.json");
     match files.readback(&path).map_err(|e| store_error(&e))? {
         Read::Present { value: file } => {
@@ -87,6 +89,7 @@ pub fn endpoint(files: &Files) -> Result<Read<se_host::EndpointRecord>> {
     }
 }
 pub fn credential(cx: &Bootstrap, files: &Files) -> Result<ClientCredential> {
+    let _phase = crate::phase_trace::Phase::new("cli_credential");
     match &cx.session {
         Some(secret) => Ok(ClientCredential::Session(Secret::new(
             secret.expose().to_vec(),
@@ -124,6 +127,7 @@ fn dispatch_with_cold_recovery(
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
     recover_cold: bool,
 ) -> Result<AnyOutput> {
+    let _phase = crate::phase_trace::Phase::new("cli_dispatch");
     let observation_deadline = super::session_observation::deadline()?;
     #[cfg(feature = "import")]
     let op = {
@@ -365,11 +369,13 @@ fn dispatch_with_cold_recovery(
         generation: caller.admission.generation,
         mode: LeaseMode::DirectClient,
     };
-    let lease = DirectLease::acquire(
-        Files::open(&cx.home).map_err(|e| store_error(&e))?,
-        &cx.home.join("runtime.lock"),
-        identity,
-    )
+    let lease = crate::phase_trace::measure("cli_writer_lease", || {
+        DirectLease::acquire(
+            Files::open(&cx.home)?,
+            &cx.home.join("runtime.lock"),
+            identity,
+        )
+    })
     .map_err(|e| store_error(&e))?;
     let retry = super::startup_retry::Retry::capture(cx, &caller.admission, &op);
     if let AnyOp::RuntimeUp(input) = op {
