@@ -49,7 +49,7 @@ fn detached_runtime_outlives_its_cli_and_concurrent_start_retains_one_birth() ->
 fn a_child_bind_failure_retires_custody_and_allows_a_later_start() -> Check {
     let f = Fixture::new()?;
     f.down(&f.birth()?)?;
-    let blocker = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+    let blocker = occupied_port()?;
     let selected = blocker.local_addr()?.port();
     port(&f, selected)?;
     let output = f.call(&["up"])?;
@@ -76,4 +76,20 @@ fn a_child_bind_failure_retires_custody_and_allows_a_later_start() -> Check {
     assert_eq!(running["state"], "running");
     let current = f.birth()?;
     f.down(&current)
+}
+
+fn occupied_port() -> Check<std::net::TcpListener> {
+    let offset = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .subsec_nanos()
+        % 10000;
+    for attempt in 0..10000 {
+        let port = 20000 + ((offset + attempt) % 10000) as u16;
+        match std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) {
+            Ok(listener) => return Ok(listener),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => (),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err("supported listener range has no available fixture port".into())
 }
