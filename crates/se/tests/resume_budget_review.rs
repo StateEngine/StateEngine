@@ -337,6 +337,8 @@ fn setup(provider: Provider, saved_notes: bool) -> TestResult<Consumer> {
             &format!("CHANGED-{n}: {}", "retained context λ \" \\ ".repeat(30)),
         )?;
         for e in &mut batch.events {
+            // Public event reads require the synthetic capture producer's provenance.
+            e.header.door = Door::Hook;
             if let EventBody::SessionTurn { provider: p, .. } = &mut e.body {
                 *p = provider;
             }
