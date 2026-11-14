@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import random
 import shutil
+import socket
 import statistics
 import subprocess
 import sys
@@ -45,6 +46,33 @@ def retained(output, label, bound=4000):
             if tail:
                 return label + '.' + suffix + ': ' + tail
     return 'no retained ' + label + ' output'
+
+
+def protect_state_home(state):
+    if sys.platform != 'win32':
+        return
+    # A python mkdir inherits the runner scratch tree's DACL, which grants a third
+    # principal access; the store refuses that location. Replace it with an
+    # owner-only protected DACL, the same shape the product creates itself.
+    user = subprocess.run(['whoami', '/username'], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    completed = subprocess.run(['icacls', str(state), '/inheritance:r',
+                                '/grant:r', user + ':F'], capture_output=True, text=True)
+    require(completed.returncode == 0,
+            'state home protection failed: ' + (completed.stderr or completed.stdout).strip())
+
+
+def loopback_probe():
+    rows = {}
+    for label, address in (('any-ephemeral', ('127.0.0.1', 0)),
+                           ('scan-range', ('127.0.0.1', 25001))):
+        try:
+            listener = socket.create_server(address)
+            listener.close()
+            rows[label] = 'ok'
+        except OSError as error:
+            rows[label] = str(error)
+    return rows
 
 
 def timed(smoke, action):
@@ -157,6 +185,7 @@ def prepare(directory, image, provider, count, mail_count, dirty, with_commits, 
     selection = ['--harness', 'probe'] if provider == 'acp' else ['--provider', provider]
     if provider == 'acp':
         smoke.state.mkdir(mode=0o700)
+        protect_state_home(smoke.state)
         (smoke.state / 'config.toml').write_text(
             'version = 1\n[harnesses.probe]\ndriver = "acp-stdio"\n'
             'command = "/bin/true"\narguments = ["acp"]\n'
@@ -274,6 +303,7 @@ def main():
     result = dict(scope='Author hosted measurements on ' + sys.platform
                          + '; no independent or cross-machine qualification',
                   platform=sys.platform,
+                  loopback_probe=loopback_probe(),
                   method='spawn through pipe EOF and child exit; alternating pairs; first call separate; '
                          '200 warm calls; nearest-rank p95; validation and census outside timer',
                   images=images, cohorts=[], exit=1)
