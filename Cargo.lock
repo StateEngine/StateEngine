@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "se-store-contract"
-version = "0.0.1"
+version = "0.0.1-alpha.1"
 dependencies = [
  "rusqlite",
  "se-types",
