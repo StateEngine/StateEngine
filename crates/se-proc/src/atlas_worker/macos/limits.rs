@@ -11,11 +11,9 @@ unsafe extern "C" {
 }
 /// Runs between fork and exec, using only native async-signal-safe calls.
 pub(super) unsafe fn prepare(parent: u32) -> io::Result<()> {
-    for (kind, value) in [
-        (libc::RLIMIT_CPU, 900),
-        (libc::RLIMIT_NOFILE, 64),
-        (libc::RLIMIT_RSS, MEMORY_BYTES),
-    ] {
+    // Darwin aliases RLIMIT_RSS to its address-space limit. The native
+    // footprint guard below enforces the resident budget without capping mappings.
+    for (kind, value) in [(libc::RLIMIT_CPU, 900), (libc::RLIMIT_NOFILE, 64)] {
         let limit = libc::rlimit {
             rlim_cur: value,
             rlim_max: value,
