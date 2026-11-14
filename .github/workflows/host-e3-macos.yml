@@ -1,7 +1,7 @@
 name: host_e3 on macOS
 on:
   push:
-    branches: [prime/host-e3-macos-20261114]
+    branches: [prime/host-e3-macos-r2]
 permissions:
   contents: read
 jobs:
@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: b9692a783b9606ac6ea4526d7230858f7ea75f8a
+          ref: 1f55c6e99bf6d8df4480e1642a82acb2102f15d7
           persist-credentials: false
       - uses: ./.github/actions/rust
       - name: Run the host_e3 custom harness
