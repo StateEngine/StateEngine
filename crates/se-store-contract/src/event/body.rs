@@ -423,7 +423,7 @@ pub enum EventBody<T> {
         family: crate::ImportFamily,
         format_version: u32,
         legacy_id: String,
-        mapped_id: crate::import::LegacyTarget,
+        mapped_id: crate::imports::LegacyTarget,
         source: SourceEvidence,
         bytes: Option<LegacyBytes>,
         /// Duplicate history refers to the original owning payload instead of

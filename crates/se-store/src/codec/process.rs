@@ -3,18 +3,9 @@ use rusqlite::Connection;
 use se_types::{NativePath, ProcessFields, ProcessInstance, Sha256, StartIdentity};
 use std::num::NonZeroU32;
 pub(crate) fn name(value: ProcessState) -> &'static str {
-    match value {
-        ProcessState::Reserved => "reserved",
-        ProcessState::Starting => "starting",
-        ProcessState::Running => "running",
-        ProcessState::LeaderExited => "leader-exited",
-        ProcessState::StopRequested => "stop-requested",
-        ProcessState::StopUnproved => "stop-unproved",
-        ProcessState::Exited => "exited",
-        ProcessState::Lost => "lost",
-        ProcessState::Historical => "historical",
-    }
+    value.as_str()
 }
+
 pub(crate) fn body(
     c: &Connection,
     seq: i64,
