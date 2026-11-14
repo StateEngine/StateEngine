@@ -115,10 +115,10 @@ fn observe(
     #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = (pid, principal, bound);
-        return Err(refuse(
+        Err(refuse(
             IpcNativeErrorCode::Unsupported,
             "native provider adoption on Linux or Windows",
-        ));
+        ))
     }
     #[cfg(any(target_os = "linux", windows))]
     {

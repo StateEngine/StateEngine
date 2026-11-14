@@ -68,7 +68,7 @@ opt-level = 3
 [profile.distribution]
 inherits = "release"
 opt-level = "s"
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 
 # Keep bundled SQLite and the authentication/digest primitives optimized for speed.
