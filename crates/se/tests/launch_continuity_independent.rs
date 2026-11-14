@@ -56,9 +56,37 @@ fn nested_launch_discards_parent_provider_and_identity_markers()
 #[test]
 fn saved_conversation_launch_explains_resume_and_age_and_new_starts_fresh()
 -> Result<(), Box<dyn std::error::Error>> {
-    for attempt in 1..=20 {
-        eprintln!("launch/stop repetition {attempt}/20");
-        judge("resume")?;
-    }
-    Ok(())
+    judge("resume")
 }
+
+// Development repetitions retain the original control and its per-case timeout.
+macro_rules! repeat_saved_conversation {
+    ($($name:ident),+ $(,)?) => {$(
+        #[test]
+        fn $name() -> Result<(), Box<dyn std::error::Error>> {
+            judge("resume")
+        }
+    )+};
+}
+repeat_saved_conversation!(
+    repeat_saved_conversation_01,
+    repeat_saved_conversation_02,
+    repeat_saved_conversation_03,
+    repeat_saved_conversation_04,
+    repeat_saved_conversation_05,
+    repeat_saved_conversation_06,
+    repeat_saved_conversation_07,
+    repeat_saved_conversation_08,
+    repeat_saved_conversation_09,
+    repeat_saved_conversation_10,
+    repeat_saved_conversation_11,
+    repeat_saved_conversation_12,
+    repeat_saved_conversation_13,
+    repeat_saved_conversation_14,
+    repeat_saved_conversation_15,
+    repeat_saved_conversation_16,
+    repeat_saved_conversation_17,
+    repeat_saved_conversation_18,
+    repeat_saved_conversation_19,
+    repeat_saved_conversation_20,
+);
