@@ -8,8 +8,6 @@ use crate::bootstrap::Bootstrap;
 use crate::config::Origin;
 use se_core::{ops::*, scope};
 use se_host::client::{BlockingIpcClient, lease::Deadline};
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-use se_types::Read;
 use se_types::{Result, SeError};
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::num::NonZeroU32;
@@ -37,17 +35,18 @@ pub fn up(
     }
     let options = execute::options();
     let bound = Deadline::from_options(&options)?;
-    let (endpoint, process, endpoint_recovery) = match discovery::route(cx)? {
-        se_host::EndpointRoute::Live(value) => {
-            let process = discovery::authenticate(cx, files, &value, &options, &bound)?;
-            (value, process, None)
-        }
-        se_host::EndpointRoute::Start { recovery } => {
-            let (endpoint, process) = start(cx, files, &bound, diagnostic)
-                .map_err(|error| discovery::after_recovery(cx, recovery.as_ref(), error))?;
-            (endpoint, process, recovery)
-        }
-    };
+    let mut endpoint_recovery = None;
+    let endpoint = super::autostart::endpoint_with_origin(
+        cx,
+        files,
+        &bound,
+        diagnostic,
+        crate::runtime::host::StartupOrigin::Explicit,
+        &mut endpoint_recovery,
+    )
+    .map_err(|error| discovery::after_recovery(cx, endpoint_recovery.as_ref(), error))?;
+    let process = discovery::authenticate(cx, files, &endpoint, &options, &bound)
+        .map_err(|error| discovery::after_recovery(cx, endpoint_recovery.as_ref(), error))?;
     #[cfg(feature = "remote")]
     if let Some(notice) = se_host::remote::startup_notice(files, &cx.home)? {
         diagnostic(&notice).map_err(|error| {
@@ -134,42 +133,6 @@ pub fn foreground(
     .map_err(|error| discovery::after_recovery(cx, recovery.as_ref(), error))
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-fn start(
-    cx: &Bootstrap,
-    files: &Files,
-    bound: &Deadline,
-    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
-) -> Result<(se_host::EndpointRecord, ProcessView)> {
-    let configuration = match &cx.config.origin {
-        Origin::File(path) => path.clone(),
-        Origin::BuiltIn => cx.home.join("config.toml"),
-    };
-    let machine = super::identity::require_machine(files)?;
-    match crate::runtime::host::start(&cx.home, &configuration, machine, bound) {
-        Ok(started) => {
-            let started: crate::runtime::host::StartedHost = started;
-            let process = process::from_identity(&started.ready.identity, bound)?;
-            if !matches!(started.detachment_record, Read::Present { .. }) {
-                diagnostic(&format!(
-                    "Host is running; its protected detachment observation needs retry: {:?}",
-                    started.detachment_record
-                ))
-                .map_err(|error| {
-                    scope::unreadable("startup diagnostic", &error.to_string()).with_cause(error)
-                })?;
-            }
-            Ok((started.endpoint, process))
-        }
-        Err(failure) => {
-            let body = failure.error.body.clone();
-            Err(SeError {
-                body,
-                cause: Some(Box::new(RetainedStartup(failure))),
-            })
-        }
-    }
-}
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn up(
     _cx: &Bootstrap,
@@ -185,22 +148,6 @@ pub fn up(
             next_step: "Use se init, se status and direct saved-state operations on macOS; use a Linux or Windows installation for se up and hosted agent work".into(),
         },
     )))
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-#[derive(Debug)]
-struct RetainedStartup(Box<crate::runtime::host::StartupFailure>);
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-impl std::fmt::Display for RetainedStartup {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.error.fmt(f)
-    }
-}
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-impl std::error::Error for RetainedStartup {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0.error)
-    }
 }
 
 pub fn down<R: se_store::ReadStore>(
