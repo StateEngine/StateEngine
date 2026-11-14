@@ -98,7 +98,17 @@ impl LaunchCoordinator {
             }
             .into(),
         );
-        status.value.runtime.process = Some(launch_util::view(&self.owner, deadline.at())?);
+        // Display metadata belongs to this exact retained process instance.
+        // Every reply still verifies its native identity and liveness above;
+        // failures converting its birth time are never retained as a value.
+        let process = match self.owner_display.get() {
+            Some(value) => value,
+            None => {
+                let value = launch_util::view(&self.owner, deadline.at())?;
+                self.owner_display.get_or_init(|| value)
+            }
+        };
+        status.value.runtime.process = Some(process.clone());
         status.value.runtime.generation = Some(self.store.generation.get());
         status.value.runtime.version = Some(env!("CARGO_PKG_VERSION").into());
         status.value.runtime.observed_at = Some(receipt::timestamp(
