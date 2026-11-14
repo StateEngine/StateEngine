@@ -1,0 +1,45 @@
+name: macOS custom harness batch
+on:
+  push:
+    branches: [prime/macos-harnesses-r1]
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 52c76e2f88398933543effe659df26409c305039
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Run each harness separately and keep its full output
+        shell: bash
+        run: |
+          set +e
+          ulimit -c 0
+          T="$(rustc --print host-tuple)"
+          mkdir -p harness-logs
+          fail=0
+          run() {
+            name=$1; shift
+            cargo test --locked --target "$T" "$@" > "harness-logs/$name.log" 2>&1
+            code=$?
+            echo "$name exit=$code" | tee -a harness-logs/summary.txt
+            [ $code = 0 ] || fail=1
+          }
+          run credential_native -p se --test credential_native
+          run host_e3 -p se --test host_e3 --all-features
+          run bootstrap_stderr -p se-proc --test bootstrap_stderr
+          run process_birth -p se-proc --test process_birth
+          run atlas_worker_failure -p se-proc --test atlas_worker_failure
+          run atlas_cold_crash_dev --release -p se-host --test atlas_cold_crash_dev
+          run macos_process_reads -p se-proc --test macos_process_reads --test macos_process_read_failures
+          exit $fail
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: macos-harness-logs
+          retention-days: 14
+          path: harness-logs/
