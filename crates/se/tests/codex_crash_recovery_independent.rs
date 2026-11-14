@@ -2,12 +2,12 @@
 //! No provider account, real conversation turn or paid request is exercised.
 #![cfg(target_os = "linux")]
 use std::{path::PathBuf, process::Command};
+#[path = "../../test-support/directory.rs"]
+mod directory;
 
 fn judge(scenario: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let root = std::env::temp_dir().join(format!(
-        "provider-recovery-{}-{scenario}",
-        std::process::id()
-    ));
+    let home = directory::private_case_directory()?;
+    let root = home.join("run");
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/judges/codex_recovery_cli.py");
     let output = Command::new("python3")
@@ -31,7 +31,7 @@ fn judge(scenario: &str) -> Result<(), Box<dyn std::error::Error>> {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    Ok(())
+    home.finish(Ok(()))
 }
 
 #[test]
