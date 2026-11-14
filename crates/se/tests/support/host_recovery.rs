@@ -19,7 +19,7 @@ fn payload(f: &Fixture) -> Result<String, Box<dyn std::error::Error>> {
     ))?)
 }
 /// Protects: restart following an actual abrupt host process exit reconciles its protected stale endpoint under the exclusive lease and publishes a different live native owner.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub fn restart_after_crash() -> Check {
     let f = std::mem::ManuallyDrop::new(Fixture::new()?);
     let (direct, lease) = f.direct()?;

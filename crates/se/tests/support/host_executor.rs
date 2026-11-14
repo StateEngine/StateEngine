@@ -55,18 +55,22 @@ pub async fn uncertain_write(
     // writer/VFS/runtime double or a production pause hook.
     let competing = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
     competing.execute_batch("BEGIN IMMEDIATE")?;
-    let mut bounded = options();
-    // Strictly above the launched host's store wait: equal clocks let the
-    // caller deadline win under load, turning this clean StoreBusy into
-    // commit-outcome-unknown (PR 212's CI return).
-    bounded.timeout = se_host::HOST_STORE_BUSY_TIMEOUT + Duration::from_secs(1);
-    let deadline = se_host::client::lease::Deadline::from_options(&bounded)?;
+    // This is a store-contention control, not a caller-timeout control. Use
+    // the fixture's ordinary bound for planning, native work and delivery;
+    // the store's busy timeout bounds the lock wait independently.
+    let deadline = bound()?;
+    let started = std::time::Instant::now();
     let outcome = router.execute_call(call()?, &deadline).await;
     competing.execute_batch("ROLLBACK")?;
     drop(competing);
     let error = outcome
         .err()
         .ok_or("competing SQLite writer was silently ignored")?;
+    eprintln!(
+        "contention result after {:?}: {:?}",
+        started.elapsed(),
+        error.body.detail()
+    );
     assert!(
         matches!(error.body.detail(), se_types::Detail::StoreBusy(_)),
         "wrong contention result: {error}"
