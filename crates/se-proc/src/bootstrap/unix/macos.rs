@@ -47,8 +47,9 @@ pub(in crate::bootstrap) fn receive_hello(
     // child has just written hello and remains paused until our pin ACK.
     let (uid, pid) = credentials(events)?;
     // SAFETY: immutable native current-user query.
+    let current_uid = unsafe { libc::geteuid() };
     if byte != *b"R"
-        || uid != unsafe { libc::geteuid() }
+        || uid != current_uid
         || Some(pid.0 as i32) == child.launcher
         || pid.0 == std::process::id()
     {

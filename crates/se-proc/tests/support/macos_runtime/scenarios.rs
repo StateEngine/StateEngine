@@ -223,32 +223,7 @@ pub fn cold(home: &Home, mode: &str) -> Check {
         Ok(runtime.recover(plan, generation).map_err(error)?)
     })?;
     if mode == "cold-root-exited" {
-        let RecoveryOutcome::Unproved { error, .. } = recovered else {
-            return Err(format!(
-                "{case} pid={}: cold reconciliation forgot a known live escaped child",
-                root_pid.0
-            )
-            .into());
-        };
-        println!(
-            "{case} pid={} unproved reconciliation: {error:?}",
-            root_pid.0
-        );
-        assert_eq!(
-            error.code,
-            ProcErrorCode::RecoveryUnproved,
-            "unrelated native unreadability is not a history witness"
-        );
-        phase(&format!("{case} outside root exit"), root_pid, || {
-            closed(&home.0, "provider")
-        })?;
-        let child = native::read_pin(&home.0, "child")?;
-        assert!(native::live(&child)?);
-        phase(
-            &format!("{case} exact escaped-child cleanup"),
-            child.identity.pid,
-            || native::cleanup(&child),
-        )?;
+        exited_root(home, recovered, &case, root_pid)?;
     } else {
         let (process, adopted) = match recovered {
             RecoveryOutcome::Recovered { process, record } => (process, record),
@@ -309,6 +284,39 @@ pub fn cold(home: &Home, mode: &str) -> Check {
         "cold recovery created a new provider birth"
     );
     assert!(runtime.arena_snapshot().map_err(error)?.entries.len() <= 1);
+    legacy_refusal(record, generation, &case)
+}
+fn exited_root(home: &Home, recovered: RecoveryOutcome, case: &str, root_pid: ProcessId) -> Check {
+    let RecoveryOutcome::Unproved { error, .. } = recovered else {
+        return Err(format!(
+            "{case} pid={}: cold reconciliation forgot a known live escaped child",
+            root_pid.0
+        )
+        .into());
+    };
+    println!(
+        "{case} pid={} unproved reconciliation: {error:?}",
+        root_pid.0
+    );
+    assert_eq!(
+        error.code,
+        ProcErrorCode::RecoveryUnproved,
+        "unrelated native unreadability is not a history witness"
+    );
+    phase(&format!("{case} outside root exit"), root_pid, || {
+        closed(&home.0, "provider")
+    })?;
+    let child = native::read_pin(&home.0, "child")?;
+    assert!(native::live(&child)?);
+    phase(
+        &format!("{case} exact escaped-child cleanup"),
+        child.identity.pid,
+        || native::cleanup(&child),
+    )?;
+    Ok(())
+}
+fn legacy_refusal(record: ProcessRecord, generation: GenerationId, case: &str) -> Check {
+    let root_pid = record.root.pid;
     // Records predating tracked history never grant a cold empty-scope witness.
     let mut legacy = record;
     let legacy_runtime = phase(
@@ -348,6 +356,7 @@ pub fn cold(home: &Home, mode: &str) -> Check {
     assert_eq!(error.code, ProcErrorCode::RecoveryUnproved);
     Ok(())
 }
+
 #[test]
 #[ignore = "private host: parent observes its native effects and joins it"]
 fn detached_host() -> Check {
@@ -388,39 +397,7 @@ fn detached_host() -> Check {
         )?;
     }
     if mode.starts_with("cold") {
-        let observed = phase(
-            &format!("case={mode} previous host observe before save"),
-            pin.identity.pid,
-            || Ok(runtime.observe(process).map_err(error)?),
-        )?;
-        // Describe, observations and snapshots must all retain already-observed history.
-        let described = runtime.describe(process).map_err(error)?;
-        let snap = runtime.arena_snapshot().map_err(error)?;
-        assert_eq!(described.root, observed.record.root);
-        assert_eq!(
-            serde_json::to_value(&described)?["tracked_obligations"],
-            serde_json::to_value(&observed.record)?["tracked_obligations"]
-        );
-        let saved = snap
-            .entries
-            .first()
-            .and_then(|e| e.record.as_ref())
-            .ok_or("snapshot lost record")?;
-        assert_eq!(saved.root, described.root);
-        assert_eq!(
-            serde_json::to_value(saved)?["tracked_obligations"],
-            serde_json::to_value(&described)?["tracked_obligations"]
-        );
-        json(root.join("record.json"), &described)?;
-        if mode == "cold-root-exited" {
-            let deadline = until();
-            fs::write(root.join("exit-root"), b"exit")?;
-            phase(
-                &format!("case={mode} previous host outside root exit"),
-                pin.identity.pid,
-                || native::wait_exit(&pin, deadline),
-            )?;
-        }
+        save_cold(&runtime, process, &root, &mode, &pin)?;
         std::process::exit(0);
     }
     if matches!(
@@ -451,64 +428,7 @@ fn detached_host() -> Check {
         }
     }
     if mode == "launch" {
-        let wrong = GenerationId::new(2)?;
-        assert!(runtime.prepare_stop(process, wrong, until()).is_err());
-        assert!(
-            runtime
-                .prepare_stop(process, generation, Instant::now())
-                .is_err()
-        );
-        assert!(native::live(&pin)?);
-        let expiry = Instant::now() + Duration::from_millis(50);
-        let expiring = runtime
-            .prepare_stop(process, generation, expiry)
-            .map_err(error)?;
-        std::thread::sleep(
-            expiry.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
-        );
-        assert!(
-            runtime
-                .request_stop(expiring)
-                .map_err(error)?
-                .dispatch
-                .is_err()
-        );
-        assert!(
-            native::live(&pin)?,
-            "expired token signalled the original birth"
-        );
-        let superseded = runtime
-            .prepare_stop(process, generation, until())
-            .map_err(error)?;
-        let _current = runtime
-            .prepare_stop(process, generation, until())
-            .map_err(error)?;
-        assert!(
-            runtime
-                .request_stop(superseded)
-                .map_err(error)?
-                .dispatch
-                .is_err()
-        );
-        assert!(
-            native::live(&pin)?,
-            "superseded token signalled the original birth"
-        );
-        let proof: serde_json::Value =
-            serde_json::from_slice(&fs::read(root.join("provider.json"))?)?;
-        assert_eq!(proof["input"], "selected provider input");
-        assert_eq!(proof["inherited_descriptor"], false);
-        assert_eq!(proof["ambient_inherited"], false);
-        assert_eq!(
-            proof["cwd"],
-            root.to_str().ok_or("fixture path is not UTF-8")?
-        );
-        wait(|| {
-            Ok(
-                fs::read_to_string(root.join("output"))?.contains("SELECTED-PROVIDER-OUTPUT")
-                    && fs::read_to_string(root.join("error"))?.contains("SELECTED-PROVIDER-ERROR"),
-            )
-        })?;
+        verify_launch(&runtime, process, generation, &root, &pin)?;
     }
     if mode == "escape" {
         let result = escaped_stop(&runtime, process, generation, &root)?;
@@ -524,6 +444,114 @@ fn detached_host() -> Check {
     }
     Ok(())
 }
+fn save_cold(
+    runtime: &NativeProcessRuntime,
+    process: &OwnedProcess,
+    root: &Path,
+    mode: &str,
+    pin: &native::Pin,
+) -> Check {
+    let observed = phase(
+        &format!("case={mode} previous host observe before save"),
+        pin.identity.pid,
+        || Ok(runtime.observe(process).map_err(error)?),
+    )?;
+    // Describe, observations and snapshots must all retain already-observed history.
+    let described = runtime.describe(process).map_err(error)?;
+    let snap = runtime.arena_snapshot().map_err(error)?;
+    assert_eq!(described.root, observed.record.root);
+    assert_eq!(
+        serde_json::to_value(&described)?["tracked_obligations"],
+        serde_json::to_value(&observed.record)?["tracked_obligations"]
+    );
+    let saved = snap
+        .entries
+        .first()
+        .and_then(|e| e.record.as_ref())
+        .ok_or("snapshot lost record")?;
+    assert_eq!(saved.root, described.root);
+    assert_eq!(
+        serde_json::to_value(saved)?["tracked_obligations"],
+        serde_json::to_value(&described)?["tracked_obligations"]
+    );
+    json(root.join("record.json"), &described)?;
+    if mode == "cold-root-exited" {
+        let deadline = until();
+        fs::write(root.join("exit-root"), b"exit")?;
+        phase(
+            &format!("case={mode} previous host outside root exit"),
+            pin.identity.pid,
+            || native::wait_exit(pin, deadline),
+        )?;
+    }
+
+    Ok(())
+}
+fn verify_launch(
+    runtime: &NativeProcessRuntime,
+    process: &OwnedProcess,
+    generation: GenerationId,
+    root: &Path,
+    pin: &native::Pin,
+) -> Check {
+    let wrong = GenerationId::new(2)?;
+    assert!(runtime.prepare_stop(process, wrong, until()).is_err());
+    assert!(
+        runtime
+            .prepare_stop(process, generation, Instant::now())
+            .is_err()
+    );
+    assert!(native::live(pin)?);
+    let expiry = Instant::now() + Duration::from_millis(50);
+    let expiring = runtime
+        .prepare_stop(process, generation, expiry)
+        .map_err(error)?;
+    std::thread::sleep(expiry.saturating_duration_since(Instant::now()) + Duration::from_millis(5));
+    assert!(
+        runtime
+            .request_stop(expiring)
+            .map_err(error)?
+            .dispatch
+            .is_err()
+    );
+    assert!(
+        native::live(pin)?,
+        "expired token signalled the original birth"
+    );
+    let superseded = runtime
+        .prepare_stop(process, generation, until())
+        .map_err(error)?;
+    let _current = runtime
+        .prepare_stop(process, generation, until())
+        .map_err(error)?;
+    assert!(
+        runtime
+            .request_stop(superseded)
+            .map_err(error)?
+            .dispatch
+            .is_err()
+    );
+    assert!(
+        native::live(pin)?,
+        "superseded token signalled the original birth"
+    );
+    let proof: serde_json::Value = serde_json::from_slice(&fs::read(root.join("provider.json"))?)?;
+    assert_eq!(proof["input"], "selected provider input");
+    assert_eq!(proof["inherited_descriptor"], false);
+    assert_eq!(proof["ambient_inherited"], false);
+    assert_eq!(
+        proof["cwd"],
+        root.to_str().ok_or("fixture path is not UTF-8")?
+    );
+    wait(|| {
+        Ok(
+            fs::read_to_string(root.join("output"))?.contains("SELECTED-PROVIDER-OUTPUT")
+                && fs::read_to_string(root.join("error"))?.contains("SELECTED-PROVIDER-ERROR"),
+        )
+    })?;
+    Ok(())
+}
+
 pub fn fault_library(home: &Home) -> Check<PathBuf> {
     let source = home.0.join("native-fault.c");
     let library = home.0.join("native-fault.dylib");
