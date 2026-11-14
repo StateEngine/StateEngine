@@ -1,4 +1,7 @@
 //! Cold real bootstrap consumers; no host, endpoint or public stdio substitute.
+#[cfg(windows)]
+#[path = "support/bootstrap_broker.rs"]
+mod broker_fixture;
 #[cfg(any(target_os = "linux", windows))]
 mod judge {
     use se_proc::*;
@@ -403,9 +406,15 @@ mod judge {
             return child(guard);
         }
         #[cfg(windows)]
+        if std::env::args_os().any(|arg| arg == super::broker_fixture::ENTRY) {
+            return super::broker_fixture::child();
+        }
+        #[cfg(windows)]
         if std::env::args_os().any(|arg| arg == "--strict-job") {
             return strict_job();
         }
+        #[cfg(windows)]
+        let mut broker = super::broker_fixture::Fixture::start()?;
         #[cfg(windows)]
         {
             let output = std::process::Command::new(std::env::current_exe().map_err(error)?)
@@ -424,6 +433,8 @@ mod judge {
         }
         if std::env::args_os().any(|arg| arg == "--retained-only") {
             trial("retained-await")?;
+            #[cfg(windows)]
+            broker.finish()?;
             println!("bootstrap_stderr retained: 1 passed, 0 failed");
             return Ok(());
         }
@@ -440,6 +451,7 @@ mod judge {
         #[cfg(windows)]
         {
             trial("inheritance")?;
+            broker.finish()?;
             println!("bootstrap_stderr: 7 passed, 0 failed");
         }
         #[cfg(not(windows))]
