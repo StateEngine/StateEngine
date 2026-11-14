@@ -481,3 +481,6 @@ fn windows_native_launch_child() -> Check {
     writeln!(std::io::stderr(), "native stderr marker")?;
     Ok(())
 }
+
+#[path = "support/native_execution_boundary.rs"]
+mod native_execution_boundary;
