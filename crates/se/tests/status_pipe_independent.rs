@@ -6,8 +6,7 @@ use repository::state as git_state;
 
 use serde_json::{Value, json};
 use std::{
-    fs, io,
-    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -56,51 +55,45 @@ impl Fixture {
             .expect("descendant identity receipt")
             .parse()
             .unwrap();
-        // Waiting is observational: no process is signalled, and the child has a finite lifetime.
-        let raw = unsafe { OpenProcess(0x00100000 | 0x1000, 0, pid) };
-        if raw.is_null() {
-            assert_eq!(
-                io::Error::last_os_error().raw_os_error(),
-                Some(87),
-                "open exact fixture PID"
-            );
-            assert!(self.0.join("descendant.closed").exists(), "exit receipt");
-            return;
-        }
-        let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
-        if unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) } != 0 {
-            let mut image = vec![0u16; 32768];
-            let mut size = image.len() as u32;
-            let observed = unsafe {
-                QueryFullProcessImageNameW(handle.as_raw_handle(), 0, image.as_mut_ptr(), &mut size)
-            };
-            if observed != 0 {
-                use std::os::windows::ffi::OsStringExt;
-                let image = PathBuf::from(std::ffi::OsString::from_wide(&image[..size as usize]));
-                assert_eq!(
-                    fs::canonicalize(image).unwrap(),
-                    fs::canonicalize(self.0.join("bin/git.exe")).unwrap()
-                );
-            } else {
-                assert_eq!(
-                    unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) },
-                    0,
-                    "identity read failed on live fixture"
-                );
+        let machine = se_types::MachineId::new("status-pipe-fixture").unwrap();
+        let mut original = None;
+        loop {
+            // Read-only native observations grant no signal authority. No process is
+            // killed: the retained writer has a finite lifetime and is joined here.
+            match se_proc::read_process_until(machine.clone(), se_proc::ProcessId(pid), until) {
+                Ok(
+                    se_proc::ProcessRead::Absent { .. } | se_proc::ProcessRead::ExitedRecord { .. },
+                ) => {
+                    assert!(
+                        self.0.join("descendant.closed").exists(),
+                        "natural exit receipt"
+                    );
+                    break;
+                }
+                Ok(se_proc::ProcessRead::Present(value)) => {
+                    assert_eq!(
+                        fs::canonicalize(&value.identity.image).unwrap(),
+                        fs::canonicalize(self.0.join("bin/git.exe")).unwrap()
+                    );
+                    if let Some(expected) = &original {
+                        assert_eq!(expected, &value.identity, "fixture native identity changed");
+                    } else {
+                        original = Some(value.identity);
+                    }
+                }
+                Err(error) => {
+                    assert!(
+                        Instant::now() < until,
+                        "native child exit remained unreadable: {error:?}"
+                    );
+                }
             }
+            assert!(
+                Instant::now() < until,
+                "finite fixture descendant did not exit"
+            );
+            std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(
-            unsafe { WaitForSingleObject(handle.as_raw_handle(), 6000) },
-            0,
-            "finite descendant failed to join"
-        );
-        let mut exit = 0;
-        assert_ne!(
-            unsafe { GetExitCodeProcess(handle.as_raw_handle(), &mut exit) },
-            0
-        );
-        assert_eq!(exit, 0, "descendant exit");
-        assert!(self.0.join("descendant.closed").exists(), "closed receipt");
     }
 }
 
@@ -108,19 +101,6 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.0).expect("remove joined private fixture");
     }
-}
-
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
-    fn WaitForSingleObject(handle: *mut std::ffi::c_void, millis: u32) -> u32;
-    fn QueryFullProcessImageNameW(
-        handle: *mut std::ffi::c_void,
-        flags: u32,
-        name: *mut u16,
-        size: *mut u32,
-    ) -> i32;
-    fn GetExitCodeProcess(handle: *mut std::ffi::c_void, code: *mut u32) -> i32;
 }
 
 fn control(case: &str) {
