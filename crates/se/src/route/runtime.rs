@@ -77,6 +77,10 @@ fn rendezvous(
     let mut recovery = None;
     let mut retried = false;
     loop {
+        // Every fallible exit after retention reports the latest receipt this
+        // request holds, including one retained by the guard route below: a
+        // receipt that names a renamed endpoint is the only pointer back to it,
+        // so losing it turns a recoverable refusal into a lost record.
         let mut routed = None;
         let endpoint = super::autostart::endpoint_with_origin(
             cx,
@@ -86,11 +90,14 @@ fn rendezvous(
             crate::runtime::host::StartupOrigin::Explicit,
             &mut routed,
         )
-        .map_err(|error| discovery::after_recovery(cx, routed.as_ref(), error))?;
+        .map_err(|error| discovery::after_recovery(cx, recovery.as_ref(), error))?;
+        // This route may retain the stale endpoint itself, so it is the latest.
         if routed.is_some() {
             recovery = routed;
         }
-        options.timeout = bound.remaining()?;
+        options.timeout = bound
+            .remaining()
+            .map_err(|error| discovery::after_recovery(cx, recovery.as_ref(), error))?;
         let refusal = match discovery::authenticate(cx, files, &endpoint, options, bound) {
             Ok(process) => return Ok((endpoint, recovery, process)),
             Err(error) => error,
