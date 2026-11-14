@@ -10,6 +10,7 @@ import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from codex_crash_recovery import Model
 from recovery_capture import Fixture, gone, native, replies, status, wait
+from directory_owner import DirectoryOwner
 
 
 def completed(path):
@@ -27,6 +28,8 @@ def run_case(options, case):
     f = Fixture(options.se, options.output / case, log_directory='calls')
     model = Model(f.root, f.repo)
     runtime = Path(tempfile.mkdtemp(prefix='se-recovery-codex-'))
+    print("fixture root (retained on failed or interrupted closure):", runtime, flush=True)
+    root_owner = DirectoryOwner(runtime)
     home = f.root / 'owner/.codex'
     home.mkdir()
     f.env.update(CODEX_HOME=str(home), OPENAI_API_KEY='sk-owned-loopback-no-account',
@@ -85,14 +88,13 @@ def run_case(options, case):
         assert replies(f) == captured
         rows.append('history and repeated up keep the original Codex reply exactly once')
     finally:
-        if 'retained' in locals() and retained.exists():
-            retained.rename(transcript)
-        f.close()
-        model.close()
-        directory = runtime / 'stateengine'
-        if directory.exists():
-            directory.rmdir()
-        runtime.rmdir()
+        try:
+            if 'retained' in locals() and retained.exists():
+                retained.rename(transcript)
+        finally:
+            f.close()
+            model.close()
+            root_owner.remove()
     return rows
 
 

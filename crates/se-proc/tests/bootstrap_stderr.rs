@@ -147,6 +147,10 @@ mod judge {
         ));
         if mode == "retained-await" {
             std::fs::create_dir(&root).map_err(error)?;
+            eprintln!(
+                "bootstrap fixture retained on failed or interrupted closure: {}",
+                root.display()
+            );
         }
         let machine = MachineId::new("persisted-cold-bootstrap-judge").map_err(error)?;
         #[cfg(windows)]

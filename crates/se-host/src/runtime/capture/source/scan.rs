@@ -2,6 +2,8 @@
 //! atomically with its next chat/continuity record. Live tails remain pending.
 use super::super::claude::{self, TextRecord};
 use super::*;
+#[cfg(test)]
+use crate::test_directory as cleanup_directory;
 use se_core::ops::{
     hook::{CaptureMetadata, CaptureRequest},
     transcript::{Position, Record},
@@ -376,6 +378,7 @@ mod tests {
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let directory = std::env::temp_dir().join(format!("se-noise-unit-{}", std::process::id()));
         std::fs::create_dir(&directory)?;
+        let _root_owner = cleanup_directory::PrivateDirectory::for_case(directory.clone());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -455,7 +458,7 @@ mod tests {
         assert!(source.queue.iter().any(|(at, _)| *at == end));
         drop(source);
         std::fs::remove_file(path)?;
-        std::fs::remove_dir(directory)?;
-        Ok(())
+
+        _root_owner.finish(Ok(()))
     }
 }

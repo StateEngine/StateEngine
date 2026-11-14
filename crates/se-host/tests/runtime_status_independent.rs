@@ -20,6 +20,9 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
+
 type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 fn image(name: &str) -> Check<PathBuf> {
@@ -30,7 +33,7 @@ fn image(name: &str) -> Check<PathBuf> {
     }
     Ok(value)
 }
-fn root(label: &str) -> Check<PathBuf> {
+fn root(label: &str) -> Check<cleanup_directory::PrivateDirectory> {
     let secret = se_proc::random_secret().map_err(|e| format!("entropy: {e:?}"))?;
     let parent = std::env::var_os("SE_RUNTIME_JUDGE_OUT")
         .map(PathBuf::from)
@@ -40,13 +43,27 @@ fn root(label: &str) -> Check<PathBuf> {
     // while the caller's deep artifact directory retains its exact location.
     let value = std::env::temp_dir().join(format!("se-rs-{name}"));
     fs::create_dir(&value)?;
+    let root_owner = cleanup_directory::PrivateDirectory::for_case(value.clone());
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&value, fs::Permissions::from_mode(0o700))?;
     fs::write(
         parent.join(format!("{name}.fixture.json")),
         serde_json::to_vec(&json!({"root":value}))?,
     )?;
-    Ok(value)
+    Ok(root_owner)
+}
+fn cleanup(root: &cleanup_directory::PrivateDirectory) -> Check {
+    let artifacts =
+        PathBuf::from(std::env::var_os("SE_RUNTIME_JUDGE_OUT").ok_or("artifact directory absent")?);
+    let name = root
+        .file_name()
+        .ok_or("fixture name absent")?
+        .to_string_lossy();
+    fs::copy(
+        root.join("status.json"),
+        artifacts.join(format!("{name}.status.json")),
+    )?;
+    root.finish(Ok(()))
 }
 fn command(image: &Path, home: &Path, args: &[&str]) -> Command {
     let mut value = Command::new(image);
@@ -244,7 +261,7 @@ fn standalone_direct_and_hosted_status_obey_section_50() -> Check {
         failures.join("; "),
         root.display()
     );
-    Ok(())
+    cleanup(&root)
 }
 
 #[test]
@@ -336,6 +353,7 @@ fn embedded_direct_and_hosted_status_obey_section_50() -> Check {
             failures.join("; "),
             root.display()
         );
+        cleanup(&root)?;
         Ok::<(), Box<dyn std::error::Error>>(())
     })
 }

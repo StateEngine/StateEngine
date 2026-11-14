@@ -138,6 +138,7 @@ def run_case(options, cold):
     f = Fixture(options.se, options.output / name, log_directory='calls')
     model = Model(f.root, f.repo)
     short = Path(tempfile.mkdtemp(prefix='se-capture-repair-'))
+    print("fixture root (retained on failed or interrupted closure):", short, flush=True)
     try:
         code = f.root / 'codex-home'
         code.mkdir(mode=0o700)

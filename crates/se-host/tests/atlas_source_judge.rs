@@ -31,9 +31,10 @@ fn fixture() -> Result<Fixture, Box<dyn Error>> {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&p)?;
-    fs::create_dir(p.join("source"))?;
-    fs::create_dir(p.join("cache"))?;
-    Ok(Fixture(p))
+    let fixture = Fixture(p);
+    fs::create_dir(fixture.0.join("source"))?;
+    fs::create_dir(fixture.0.join("cache"))?;
+    Ok(fixture)
 }
 fn registration(f: &Fixture) -> Result<RootRegistration, Box<dyn Error>> {
     Ok(RootRegistration {

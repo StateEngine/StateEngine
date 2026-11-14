@@ -466,9 +466,10 @@ mod release_mode_tests {
         let root = std::env::temp_dir().join(unique);
         std::fs::create_dir_all(&root)?;
         let record = root.join("claim-record");
-        std::fs::write(&record, b"record")?;
-        std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600))?;
-        Ok(Case { root, record })
+        let case = Case { root, record };
+        std::fs::write(&case.record, b"record")?;
+        std::fs::set_permissions(&case.record, std::fs::Permissions::from_mode(0o600))?;
+        Ok(case)
     }
 
     /// A duplicate of the same open file description, as a spawned child holds
