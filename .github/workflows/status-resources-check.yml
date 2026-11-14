@@ -1,0 +1,93 @@
+name: Status resources hosted checks
+on:
+  push:
+    branches: [prime/status-resources-check-r1]
+permissions:
+  contents: read
+jobs:
+  clippy:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_TERM_COLOR: never
+      EXPECTED_SOURCE: a7b2b32c424f15244852b64d34cc291e1dd5213c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: a7b2b32c424f15244852b64d34cc291e1dd5213c
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          shared-key: hosted-debug-v1
+      - name: Strict workspace Clippy on the exact source
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, re, subprocess, sys, time
+          from pathlib import Path
+          expected = os.environ['EXPECTED_SOURCE']
+          assert re.fullmatch('[0-9a-f]{40}', expected), 'Use a full source commit'
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert actual == expected, (actual, expected)
+          assert not subprocess.check_output(['git', 'status', '--porcelain'], text=True)
+          out = Path('clippy-evidence')
+          out.mkdir()
+          command = ['cargo', 'clippy', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']
+          versions = {name: subprocess.check_output([name, '--version'], text=True).strip() for name in ['rustc', 'cargo']}
+          started = time.monotonic()
+          with (out / 'clippy.log').open('xb') as log:
+              result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
+          receipt = dict(source=actual, platform=sys.platform, command=command, versions=versions, exit=result.returncode, seconds=time.monotonic()-started, child_joined=True)
+          (out / 'result.json').write_text(json.dumps(receipt, indent=2)+'\n')
+          print(json.dumps(receipt))
+          if result.returncode:
+              print((out / 'clippy.log').read_text(errors='replace')[-12000:])
+          raise SystemExit(result.returncode)
+          PY
+      - name: Retain the full compiler result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: strict-clippy-${{ matrix.os }}
+          path: clippy-evidence
+          if-no-files-found: warn
+  reviewer-controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: a7b2b32c424f15244852b64d34cc291e1dd5213c
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Append the reviewer module to the candidate and run it
+        shell: bash
+        run: |
+          set -o pipefail
+          git fetch --no-tags origin d959a10a984d4a6400fd31dbd9f5b2f9dfe7dd71
+          test "$(git rev-parse HEAD)" = a7b2b32c424f15244852b64d34cc291e1dd5213c
+          mkdir -p control-evidence
+          git show d959a10a984d4a6400fd31dbd9f5b2f9dfe7dd71:tests/status_resource_merge_review.rs > control-evidence/status_resource_merge_review.rs
+          { echo; cat control-evidence/status_resource_merge_review.rs; } >> crates/se/src/route/status.rs
+          T="$(rustc --print host-tuple)"
+          cargo test --target "$T" -p se --bin se --all-features --locked reviewer_resource_merge -- --nocapture 2>&1 | tee control-evidence/control.log
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: status-resource-reviewer-controls
+          path: control-evidence
+          if-no-files-found: warn
