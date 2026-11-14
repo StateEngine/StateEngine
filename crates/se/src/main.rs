@@ -17,6 +17,7 @@ mod remote;
 #[cfg(feature = "remote")]
 mod remote_owner;
 mod render;
+mod repository;
 mod route;
 mod runtime;
 
