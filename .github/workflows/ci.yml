@@ -247,7 +247,7 @@ jobs:
   windows-archive:
     name: Windows archive (informational)
     needs: [changes, linux-box, windows-clippy]
-    if: ${{ always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && (needs.windows-clippy.result == 'success' || (needs.windows-clippy.result == 'skipped' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed')) }}
+    if: ${{ always() && !cancelled() && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && (needs.windows-clippy.result == 'success' || (needs.windows-clippy.result == 'skipped' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed')) }}
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -291,12 +291,12 @@ jobs:
           echo "Windows build cache exact hit = ${CACHE_HIT:-not reported}" >> "$GITHUB_STEP_SUMMARY"
           echo "Windows build cache restored key = ${CACHE_MATCH:-not reported}" >> "$GITHUB_STEP_SUMMARY"
 
-  # Every Windows test remains visible but non-required; runtime/process/install
-  # changes still require native VM qualification before merge.
+  # Windows tests run on every pull request but stay non-required until they prove stable;
+  # runtime/process/install changes still require native VM qualification before merge.
   windows-test:
     name: Windows ${{ matrix.mode == 'full' && 'runtime' || 'smoke' }} (informational, shard ${{ matrix.shard }})
     needs: [changes, linux-box, windows-clippy, windows-archive]
-    if: ${{ always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && (needs.windows-clippy.result == 'success' || (needs.windows-clippy.result == 'skipped' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed')) }}
+    if: ${{ always() && !cancelled() && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && (needs.windows-clippy.result == 'success' || (needs.windows-clippy.result == 'skipped' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -320,7 +320,7 @@ jobs:
   # Dispatch from main with job=macos and target_ref to test branches with older workflows.
   macos:
     name: macOS portability (informational)
-    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ !cancelled() && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: macos-15
     timeout-minutes: 10
     steps:
