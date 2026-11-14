@@ -17,7 +17,11 @@ def dedicated_source(sources):
     if source.is_symlink():
         raise RuntimeError("automation token source is a symlink; select an owned plain file outside the native login home")
     home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(strict=True)
-    if source.resolve(strict=True).is_relative_to(home):
+    try:
+        resolved = source.resolve(strict=True)
+    except FileNotFoundError:
+        raise RuntimeError("configure automation_tokens.claude: file not found; create the dedicated token file at the configured path") from None
+    if resolved.is_relative_to(home):
         raise RuntimeError("automation token must be outside the login user's real home")
     parent = source.parent.resolve(strict=True)
     info = parent.stat()

@@ -131,8 +131,7 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
         if automation is not None:
             automation.token()
             invocation["credential_closure"] = {"source_inode_unchanged": True,
-                "source_digest_unchanged": True, "transport": "environment",
-                "credential_file_copied": False}
+                "source_digest_unchanged": True, "transport": "environment"}
         invocation["state"] = "finished"
     except subprocess.TimeoutExpired:
         invocation.update(state="timed-out", error="judge deadline; inspect fixture and native custody")
