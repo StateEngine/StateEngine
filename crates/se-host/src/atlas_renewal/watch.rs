@@ -215,6 +215,11 @@ impl NativeRenewal {
                     return Ok(vec![SourceHint::Reconcile(ReconcileReason::WatchFailure)]);
                 }
             };
+            if event.action == NativeWatchAction::Rescan {
+                return Ok(vec![SourceHint::Reconcile(
+                    ReconcileReason::DirectoryChanged,
+                )]);
+            }
             if event.action == NativeWatchAction::Overflow {
                 reason(&mut self.roots[index], CoverageReason::WatchLoss);
                 return Ok(vec![SourceHint::Reconcile(ReconcileReason::WatchOverflow)]);

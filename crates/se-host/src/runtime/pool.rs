@@ -74,7 +74,7 @@ impl BlockingPool {
     /// Maintenance can produce owned readiness descriptors and its next wake.
     /// Join that finite work even when native IO outlives the admission clock;
     /// losing the result would strand already-committed pending work.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) async fn run_background_owned<T, F>(&self, deadline: &Deadline, work: F) -> Result<T>
     where
         T: Send + 'static,

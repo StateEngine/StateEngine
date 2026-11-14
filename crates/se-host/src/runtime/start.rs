@@ -56,7 +56,7 @@ impl RuntimeLease for HostLease {
     }
 }
 pub struct HostedRuntime {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(super) atlas_owner: Option<Arc<super::atlas_owner::Service>>,
     pub(crate) channels: Arc<std::sync::OnceLock<Arc<crate::channels::Channels>>>,
     pub(crate) channel_transport: Option<Arc<dyn crate::channels::ChannelTransport>>,
@@ -362,7 +362,7 @@ fn prepare(
         ownership_fault: Arc::default(),
     };
     Ok(HostedRuntime {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         atlas_owner: None,
         channels: Arc::default(),
         channel_transport: None,

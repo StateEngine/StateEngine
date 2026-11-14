@@ -27,6 +27,7 @@ codes! {
     SessionRequired => ("session-required", Unauthorized) { op: String } => "`{op}` acts as an agent and needs a launched session", "Use `se launch AGENT`";
     ApiVersionUnsupported => ("api-version-unsupported", Refused) { client: String, host: String } => "client API {client} vs runtime {host}", "upgrade the older side";
     AtlasFileOverBudget => ("atlas-file-over-budget", Refused) { path: String, size: u64, budget: u64 } => "{path} ({size}) exceeds the per-file parse budget", "none; the file stays text-searchable";
+    AtlasHistoryUnavailable => ("atlas-history-unavailable", Unavailable) { platform: String } => "Git history is unavailable on {platform} in this release. Current-source indexing and queries remain available.", "Search current-source content with `--kind text`.";
     AtlasIndexAbsent => ("atlas-index-absent", Refused) { project: ProjectId } => "no code index for {project} yet", "Indexing runs after host readiness by default; use `se status` for progress and inspect atlas.enabled in the selected config.toml if it was explicitly disabled";
     AtlasLanguageUnsupported => ("atlas-language-unsupported", Refused) { path: String, language: Option<String> } => "{language} files aren't parsed", "text search: `--kind text`";
     AtlasPathOutsideRoot => ("atlas-path-outside-root", Refused) { path: String, root: String } => "{path} is outside {root}", "use a project-relative path";

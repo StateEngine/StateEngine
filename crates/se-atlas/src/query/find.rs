@@ -61,6 +61,11 @@ impl QueryReader<'_, '_, '_> {
         let env = self.ctx.split();
         let answer = self.cache.read(end, |sql| {
             let snapshot = snapshot(&identity, &env, sql)?;
+            if query.kind == SearchKind::Commit
+                && let Some(reason) = snapshot.index.coverage.history_unavailable.clone()
+            {
+                return Err(reason.into());
+            }
             let previous = query
                 .next
                 .as_ref()

@@ -32,7 +32,7 @@ enum ConnectionEnd {
     Cancelled,
     Stop(Box<AuthorizedStop>),
     CatchUp(Result<()>),
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     Atlas(Result<()>),
 }
 #[allow(
@@ -120,7 +120,7 @@ impl HostedRuntime {
             super::memory::while_serving(idle, self.memory_reclaim.clone()),
         );
         let mut tasks = JoinSet::new();
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(service) = self.atlas_owner.clone() {
             let context = self.execution.clone();
             let stopped = cancelled.clone();
@@ -242,7 +242,7 @@ impl HostedRuntime {
                     exit.stop = Some(stop);
                     break exit;
                 }
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 Event::Joined(Ok(Ok(ConnectionEnd::Atlas(result)))) => {
                     if let Err(error) = result {
                         eprintln!("Code index owner paused: {error}");
@@ -360,7 +360,7 @@ impl HostedRuntime {
                     }
                 }
                 Ok(Err(error)) => outcome.runtime.failed_connection(error),
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 Ok(Ok(ConnectionEnd::Atlas(Err(error)))) => {
                     outcome.failure.get_or_insert(error);
                 }
@@ -377,7 +377,7 @@ impl HostedRuntime {
         }
         outcome.failed_connections = outcome.runtime.connection_failures;
         outcome.last_connection_error = outcome.runtime.last_connection_error.clone();
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let (Some(service), Some(bound)) = (
             outcome.runtime.atlas_owner.clone(),
             outcome.runtime.shutdown_deadline.as_ref(),

@@ -70,7 +70,7 @@ mod atlas_continuity;
 pub mod atlas_hooks;
 pub mod atlas_queries;
 pub mod atlas_records;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod atlas_renewal;
 pub mod atlas_runtime;
 pub mod atlas_source;

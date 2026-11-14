@@ -57,7 +57,7 @@ mod process_descendants;
 pub use process_descendants::read_process_descendants;
 pub mod file_access;
 mod source_root;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use source_root::{
     NativeSourceWatch, NativeWatchAction, NativeWatchDirectory, NativeWatchEvent,
     NativeWatchEvents, NativeWatchRegistration,
