@@ -1,6 +1,26 @@
-//! Remove repeated recovery metadata before spending the saved-work preview.
+//! Fit continuity previews while preserving scoped recovery and source counts.
 use super::types::ResumeOutput;
 use se_types::{Page, Result};
+
+pub(super) fn unread_preview(value: &mut ResumeOutput, excess: usize) -> Result<bool> {
+    let mut rows = value.unread.items().to_vec();
+    let Some(row) = rows.first_mut() else {
+        return Ok(false);
+    };
+    if row.body.complete || row.body.text.is_empty() {
+        return Ok(false);
+    }
+    // An already-partial body keeps its original byte count, required message
+    // ID and scoped recovery. Spend its preview before refusing the packet.
+    let limit = row.body.text.len().saturating_sub(excess.saturating_add(8));
+    row.body.text = super::read::clip(&row.body.text, limit).into();
+    value.unread = Page::new(
+        rows,
+        value.unread.window().clone(),
+        value.unread.next().cloned(),
+    )?;
+    Ok(true)
+}
 
 pub(super) fn recovery(value: &mut ResumeOutput) -> Result<bool> {
     let mut changed = false;

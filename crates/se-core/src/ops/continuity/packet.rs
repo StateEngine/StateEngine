@@ -299,6 +299,9 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
         if input.since.is_some() && trim_turn(result, data, input, needed)? {
             continue;
         }
+        if super::compact::unread_preview(result, needed - input.byte_budget as usize)? {
+            continue;
+        }
         return Err(read::budget_refusal(identity, input, needed)?);
     }
     Err(scope::unreadable(
