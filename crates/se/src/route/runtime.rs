@@ -33,7 +33,7 @@ pub fn up(
     if caller.owner.is_none() {
         return Err(SeError::invalid("runtime owner", "native owner authority"));
     }
-    let options = execute::options();
+    let mut options = execute::options();
     let bound = Deadline::from_options(&options)?;
     let mut endpoint_recovery = None;
     let endpoint = super::autostart::endpoint_with_origin(
@@ -45,6 +45,7 @@ pub fn up(
         &mut endpoint_recovery,
     )
     .map_err(|error| discovery::after_recovery(cx, endpoint_recovery.as_ref(), error))?;
+    options.timeout = bound.remaining()?;
     let process = discovery::authenticate(cx, files, &endpoint, &options, &bound)
         .map_err(|error| discovery::after_recovery(cx, endpoint_recovery.as_ref(), error))?;
     #[cfg(feature = "remote")]
