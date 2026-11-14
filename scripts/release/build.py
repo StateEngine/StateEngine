@@ -32,6 +32,20 @@ REMAPPED = {"source": "/stateengine/source", "cargo": "/rust/cargo",
 SEED_SCHEMA = "se.release-build-seed/v1"
 
 
+def system_root_env():
+    # A PATH-less child environment that keeps the OS root variables under any runner
+    # casing: Winsock refuses to initialize a child environment that lost its system
+    # root (WinError 10106), and hosted runners do not guarantee the classic mixed case.
+    system = {'path', 'systemroot', 'windir', 'temp', 'tmp'}
+    taken = set()
+    env = {}
+    for key, value in {**os.environ, 'PATH': ''}.items():
+        lowered = key.lower()
+        if lowered in system and lowered not in taken:
+            taken.add(lowered)
+            env[key] = value
+    return env
+
 def digest(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -466,8 +480,7 @@ def main():
     (out / name).chmod(0o755)
     requirements = native_requirements(out / name, "windows" in args.target, args.target)
     version = subprocess.run([str(out / name), "--version"], cwd=out, check=True, text=True,
-        stdout=subprocess.PIPE, env={k: v for k, v in {**os.environ, "PATH": ""}.items()
-                                    if k in ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP")}).stdout.strip()
+        stdout=subprocess.PIPE, env=system_root_env()).stdout.strip()
     packages = {p["id"]: p for p in metadata["packages"]}
     features = {}
     notices = out / "notices"
