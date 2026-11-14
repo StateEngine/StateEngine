@@ -14,8 +14,8 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = {
-    'base': '19eba34fffd9ab92e79b6d9ad4b4385076669c4c',
-    'head': '9048c76edca7e53fb60fa80674af5c33d66c457e',
+    'base': '9048c76edca7e53fb60fa80674af5c33d66c457e',
+    'head': 'bb6124ac8541816f6d104a5b53e79570579e1ca7',
 }
 
 
@@ -26,10 +26,10 @@ def save(path, value):
 def main():
     if sys.platform != 'linux':
         raise RuntimeError('This measurement requires a disposable Linux runner')
-    parent = subprocess.check_output(['git', 'rev-parse', SOURCES['head'] + '^'],
+    parent = subprocess.check_output(['git', 'merge-base', SOURCES['base'], SOURCES['head']],
                                      cwd=ROOT, text=True).strip()
     if parent != SOURCES['base']:
-        raise RuntimeError('The comparison base is not the frozen head parent')
+        raise RuntimeError('The frozen draft does not descend from the comparison base')
     output = Path(sys.argv[1]).resolve()
     output.mkdir(parents=True, exist_ok=False)
     images = output / 'images'

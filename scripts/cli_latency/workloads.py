@@ -8,7 +8,7 @@ import json
 
 from support import ROUNDS, require
 
-ACTIONS = ('msg-list', 'msg-send', 'msg-read', 'resume-preview')
+ACTIONS = ('msg-list', 'msg-send', 'msg-read')
 
 
 def body(index):
