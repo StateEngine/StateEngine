@@ -81,6 +81,21 @@ fn moved_project_is_diagnosed_and_reattached_with_the_recorded_git_identity() ->
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    let initialized: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let registered = std::path::PathBuf::from(
+        initialized["project"]["root"]
+            .as_str()
+            .ok_or("registered root")?,
+    );
+    for (label, path) in [("input", &original), ("registered", &registered)] {
+        eprintln!(
+            "root observation {label}: path={path:?}, exists={}, try_exists={:?}, metadata={:?}, symlink_metadata={:?}",
+            path.exists(),
+            path.try_exists(),
+            std::fs::metadata(path),
+            std::fs::symlink_metadata(path)
+        );
+    }
     let row = doctor_check(
         &command(home, &original, true, None)
             .arg("doctor")
