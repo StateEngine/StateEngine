@@ -229,10 +229,9 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         if self.root.exists()
             && let Err(error) = self.stop()
+            && let Some(root) = self.root_owner.take()
         {
-            if let Some(root) = self.root_owner.take() {
-                root.retain(&format!("strict-job shutdown failed: {error}"));
-            }
+            root.retain(&format!("strict-job shutdown failed: {error}"));
         }
     }
 }

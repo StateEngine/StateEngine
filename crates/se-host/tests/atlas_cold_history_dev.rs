@@ -2,11 +2,11 @@
 //! Component profile values come from the measured Linux owner profile; this
 //! development consumer does not certify the joined production owner's memory.
 #[cfg(all(target_os = "linux", not(debug_assertions)))]
-#[path = "../../test-support/atlas_clock.rs"]
-mod test_clock;
-#[cfg(all(target_os = "linux", not(debug_assertions)))]
 #[path = "../../test-support/directory.rs"]
 mod cleanup_directory;
+#[cfg(all(target_os = "linux", not(debug_assertions)))]
+#[path = "../../test-support/atlas_clock.rs"]
+mod test_clock;
 #[cfg(all(target_os = "linux", not(debug_assertions)))]
 mod native {
     use se_atlas::{

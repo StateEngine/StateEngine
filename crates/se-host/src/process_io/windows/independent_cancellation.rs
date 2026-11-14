@@ -1,8 +1,7 @@
 //! Real prepared Windows scopes and IOCP pipes; no provider process or H05 is
 //! claimed. The child endpoints stay owned by the prepared launch until stop.
-#[path = "../../../../../test-support/directory_owner.rs"]
-mod cleanup_directory;
 use super::*;
+use crate::test_directory as cleanup_directory;
 use se_proc::*;
 use std::{fs, future::Future, task::Poll, time::Instant as NativeInstant};
 type Check<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;

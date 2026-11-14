@@ -11,15 +11,12 @@ struct Package {
     root: PathBuf,
     cli: PathBuf,
     server: PathBuf,
+    _root_owner: crate::test_directory::PrivateDirectory,
 }
 impl Package {
     fn new() -> std::result::Result<Self, Box<dyn std::error::Error>> {
-        let mut nonce = [0; 16];
-        se_proc::fill_entropy(&mut nonce)?;
-        let root =
-            std::env::temp_dir().join(format!("image-review-{}", se_types::hex_lower(&nonce)));
-        let mut directory = se_proc::NativeDirectoryCreation::begin();
-        drop(directory.create(&root)?);
+        let root_owner = crate::test_directory::private_directory()?;
+        let root = root_owner.to_path_buf();
         let cli = root.join(if cfg!(windows) {
             "secode.exe"
         } else {
@@ -30,7 +27,12 @@ impl Package {
         } else {
             "secode-server"
         });
-        let package = Self { root, cli, server };
+        let package = Self {
+            root,
+            cli,
+            server,
+            _root_owner: root_owner,
+        };
         for path in [&package.cli, &package.server] {
             fs::write(path, crate::harness::secode_image_fixture::image_bytes())?;
         }

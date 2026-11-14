@@ -1,8 +1,7 @@
 //! Named workspace permission for Git without a second command service.
-#[cfg(test)]
-#[path = "../../../test-support/directory_owner.rs"]
-mod cleanup_directory;
 use super::error;
+#[cfg(test)]
+use crate::test_directory as cleanup_directory;
 use se_types::Result;
 use std::{io::ErrorKind, path::PathBuf};
 

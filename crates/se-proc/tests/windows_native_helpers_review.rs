@@ -333,7 +333,7 @@ fn launched_child_has_only_explicit_stdio_and_starts_in_its_exact_job() -> Check
             "--nocapture".into(),
             "--test-threads=1".into(),
         ],
-        cwd: home.0.clone(),
+        cwd: home.0.to_path_buf(),
         environment: Environment {
             entries: vec![
                 (
@@ -356,8 +356,8 @@ fn launched_child_has_only_explicit_stdio_and_starts_in_its_exact_job() -> Check
         policy: LaunchPolicy {
             containment: ContainmentRequirement::KernelScope,
             writes: WritePolicy::Workspace {
-                roots: vec![home.0.clone()],
-                scratch: home.0.clone(),
+                roots: vec![home.0.to_path_buf()],
+                scratch: home.0.to_path_buf(),
             },
             network: NetworkPolicy::Allow,
             hardening: OptionalHardening::Off,

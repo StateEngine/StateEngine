@@ -135,7 +135,11 @@ else:
             if len(failures) > failed_before:
                 record["runtime_directory"] = str(runtime_dir)
             else:
-                shutil.rmtree(runtime_dir)
+                try:
+                    shutil.rmtree(runtime_dir)
+                except OSError:
+                    failures.append(mode + " fixture removal: " + traceback.format_exc())
+                    record["runtime_directory"] = str(runtime_dir)
             cases.append(record)
     result = {"se_sha256": hashlib.sha256(args.se.read_bytes()).hexdigest(),
               "checks": checks, "failures": failures, "cases": cases}

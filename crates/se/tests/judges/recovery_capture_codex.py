@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -91,11 +92,8 @@ def run_case(options, case):
                 retained.rename(transcript)
         finally:
             f.close()
-        model.close()
-        directory = runtime / 'stateengine'
-        if directory.exists():
-            directory.rmdir()
-        runtime.rmdir()
+            model.close()
+            shutil.rmtree(runtime)
     return rows
 
 

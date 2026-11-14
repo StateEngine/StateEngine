@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import tempfile
 import time
 from mail_cli import Fixture
@@ -139,10 +140,7 @@ def run_case(options, case):
                         stream.write(b'\n')
         finally:
             f.close()
-        directory = runtime / 'stateengine'
-        if directory.exists():
-            directory.rmdir()
-        runtime.rmdir()
+            shutil.rmtree(runtime)
     return checks
 
 

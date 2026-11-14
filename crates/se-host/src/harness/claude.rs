@@ -9,8 +9,7 @@
 //! `claude -p` with stream-json input and output, so the host can write tasks
 //! and mail as user messages and read readiness from the provider's own echo.
 #[cfg(test)]
-#[path = "../../../test-support/directory_owner.rs"]
-mod cleanup_directory;
+use crate::test_directory as cleanup_directory;
 use crate::{ConfigPlan, HarnessRequest, OwnedLaunchFile, ProviderInvocation};
 use se_types::{Body, NativePath, ProviderSessionId, Read, Result, SeError, Secret};
 use serde_json::{Value, json};

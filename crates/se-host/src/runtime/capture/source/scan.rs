@@ -1,10 +1,9 @@
 //! Count frequent bookkeeping while scanning one raw range, then publish it
 //! atomically with its next chat/continuity record. Live tails remain pending.
-#[cfg(test)]
-#[path = "../../../../../test-support/directory_owner.rs"]
-mod cleanup_directory;
 use super::super::claude::{self, TextRecord};
 use super::*;
+#[cfg(test)]
+use crate::test_directory as cleanup_directory;
 use se_core::ops::{
     hook::{CaptureMetadata, CaptureRequest},
     transcript::{Position, Record},

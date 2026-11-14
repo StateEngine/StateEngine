@@ -1,6 +1,6 @@
 #[path = "../../../test-support/directory.rs"]
 mod cleanup_directory;
-use std::{fs, process::Command};
+use std::process::Command;
 pub type Check = Result<(), Box<dyn std::error::Error>>;
 pub struct Home(pub cleanup_directory::PrivateDirectory);
 impl Home {

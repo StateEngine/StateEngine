@@ -168,8 +168,7 @@ pub fn require_ready(
 }
 
 #[cfg(test)]
-#[path = "../../../../test-support/directory.rs"]
-mod test_directory;
+use crate::test_directory;
 
 #[cfg(test)]
 mod tests {
@@ -184,7 +183,6 @@ mod tests {
     }
 
     fn home(
-        _name: &str,
         contents: Option<&str>,
     ) -> std::result::Result<super::test_directory::PrivateDirectory, Box<dyn std::error::Error>>
     {
@@ -198,36 +196,29 @@ mod tests {
     #[test]
     fn the_users_own_value_is_read_or_the_file_refuses()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        assert_eq!(user_choice(&home("absent", None)?).ok(), Some(None));
+        assert_eq!(user_choice(&home(None)?).ok(), Some(None));
         assert_eq!(
-            user_choice(&home("value", Some("[windows]\nsandbox = \"elevated\"\n"))?)
+            user_choice(&home(Some("[windows]\nsandbox = \"elevated\"\n"))?)
                 .ok()
                 .flatten(),
             Some(Implementation::Elevated)
         );
         // An unrelated table is not a value.
         assert_eq!(
-            user_choice(&home("other", Some("[windows]\nallow_mxc = true\n"))?)
+            user_choice(&home(Some("[windows]\nallow_mxc = true\n"))?)
                 .ok()
                 .flatten(),
             None
         );
-        let number = refusal(user_choice(&home(
-            "number",
-            Some("[windows]\nsandbox = 3\n"),
-        )?));
+        let number = refusal(user_choice(&home(Some("[windows]\nsandbox = 3\n"))?));
         assert!(number.contains("not a string"), "{number}");
-        let scalar = refusal(user_choice(&home(
-            "scalar",
-            Some("windows = \"elevated\"\n"),
-        )?));
+        let scalar = refusal(user_choice(&home(Some("windows = \"elevated\"\n"))?));
         assert!(scalar.contains("object-valued windows table"), "{scalar}");
-        let unknown = refusal(user_choice(&home(
-            "unknown",
-            Some("[windows]\nsandbox = \"legacy\"\n"),
-        )?));
+        let unknown = refusal(user_choice(&home(Some(
+            "[windows]\nsandbox = \"legacy\"\n",
+        ))?));
         assert!(unknown.contains("`legacy`"), "{unknown}");
-        let broken = refusal(user_choice(&home("broken", Some("windows = \n"))?));
+        let broken = refusal(user_choice(&home(Some("windows = \n"))?));
         assert!(broken.contains("does not parse"), "{broken}");
         Ok(())
     }

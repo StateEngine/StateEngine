@@ -8,9 +8,10 @@ use se_host::{
     client::{ClientOptions, lease::Deadline},
     secode_process::Control,
 };
+#[cfg(unix)]
+use std::fs;
 use std::{
     error::Error,
-    fs,
     io::{Read, Write},
     net::TcpListener,
     sync::{Arc, atomic::AtomicBool},

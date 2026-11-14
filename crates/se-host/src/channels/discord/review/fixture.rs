@@ -1,6 +1,5 @@
-#[path = "../../../../../test-support/directory_owner.rs"]
-mod cleanup_directory;
 use super::*;
+use crate::test_directory as cleanup_directory;
 use std::{
     fs,
     os::unix::fs::PermissionsExt,

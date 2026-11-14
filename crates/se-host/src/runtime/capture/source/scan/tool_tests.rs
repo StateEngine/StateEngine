@@ -1,7 +1,6 @@
 //! Exercise the production native-pin scanner, including retries and cold joins.
-#[path = "../../../../../../test-support/directory_owner.rs"]
-mod cleanup_directory;
 use super::*;
+use crate::test_directory as cleanup_directory;
 use se_core::ops::transcript::tool::{Outcome, Phase, Target};
 use se_store::RecordIdentity;
 use serde_json::{Value, json};

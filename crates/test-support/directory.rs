@@ -1,5 +1,7 @@
 // Short, exclusively created fixture roots avoid shared redirected temp parents.
-use std::{error::Error, path::PathBuf};
+use std::error::Error;
+#[cfg(unix)]
+use std::path::PathBuf;
 #[path = "directory_owner.rs"]
 mod owner;
 pub use owner::PrivateDirectory;

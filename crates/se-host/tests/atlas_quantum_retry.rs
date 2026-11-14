@@ -1,10 +1,10 @@
 #![cfg(target_os = "linux")]
 //! Native enumeration resumes the exact entry whose SQL was preempted.
 //! The authorizer only pauses one prepare; it grants no extra SQL authority.
-#[path = "../../test-support/atlas_clock.rs"]
-mod test_clock;
 #[path = "../../test-support/directory.rs"]
 mod cleanup_directory;
+#[path = "../../test-support/atlas_clock.rs"]
+mod test_clock;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use se_atlas::{
     cache::{connection::*, *},

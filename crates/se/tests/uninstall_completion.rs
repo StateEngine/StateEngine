@@ -26,7 +26,8 @@ fn completion_channel_does_not_bypass_public_human_admission()
     assert_ne!(output.status.code(), Some(75));
     assert!(
         !home.try_exists()?,
-        "refused output-channel request created a home"
+        "refused output-channel request created fixture home {}",
+        home.display()
     );
     Ok(())
 }

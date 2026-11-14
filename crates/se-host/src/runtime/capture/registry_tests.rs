@@ -1,7 +1,6 @@
 //! Production registry publication: slow durable I/O cannot hold other sessions' map lock.
-#[path = "../../../../test-support/directory_owner.rs"]
-mod cleanup_directory;
 use super::*;
+use crate::test_directory as cleanup_directory;
 use se_store::RecordIdentity;
 use std::{
     sync::{
