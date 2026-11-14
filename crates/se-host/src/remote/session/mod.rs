@@ -1,10 +1,10 @@
 //! Protected machine sessions over the existing host writer.
 #[cfg(feature = "remote")]
-mod launch_permission;
+mod permissions;
 #[cfg(feature = "remote")]
 mod store;
 #[cfg(feature = "remote")]
-pub use super::control::SetSourcePermission;
+pub use permissions::SetSourcePermission;
 #[cfg(feature = "remote")]
 pub(crate) use se_remote::entropy;
 #[cfg(feature = "remote")]
