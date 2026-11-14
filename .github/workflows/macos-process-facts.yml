@@ -11,7 +11,7 @@ jobs:
       matrix:
         include:
           - side: base
-            sha: 1c2190d6a155f30cc6410a2a68b1fcaf2e28941e
+            sha: f198c3d80e07ead441f7bcd80d49152807434f71
           - side: head
             sha: 1c2190d6a155f30cc6410a2a68b1fcaf2e28941e
     runs-on: macos-15
