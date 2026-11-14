@@ -133,6 +133,7 @@ fn row<S: Snapshot>(cx: &mut Cx<'_, S>, record: MessageRecord) -> Result<Message
     )?;
     Ok(MessageRow {
         channel_reply: super::message::channel_reply(cx.read, &record.message)?,
+        remote_reply: super::message::remote_reply_from(&from, &record.message),
         id: record.message,
         event_id: record.event,
         from,

@@ -37,6 +37,19 @@ pub enum OwnerInput {
     },
     #[cfg(feature = "remote")]
     LaunchPermissions(ssh::LaunchPermissionsRequest),
+    #[cfg(feature = "remote")]
+    PairingPermissions {
+        alias: String,
+        after: Option<RemoteAgentAddress>,
+        change: Option<SourcePermissionChange>,
+    },
+    #[cfg(feature = "remote")]
+    LocalPairingPermissions {
+        after: Option<RemoteAgentAddress>,
+        change: Option<SourcePermissionChange>,
+    },
+    #[cfg(feature = "remote")]
+    SourcePermissions(ssh::PermissionsRequest),
     Disable,
     Grants {
         after: Option<RemoteGrantId>,
@@ -56,10 +69,23 @@ pub struct LaunchPermissionChange {
     pub expected_revision: Option<u64>,
     pub key: IdempotencyKey,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourcePermissionChange {
+    pub address: RemoteAgentAddress,
+    pub allowed: bool,
+    pub expected_revision: Option<u64>,
+    pub key: IdempotencyKey,
+}
 impl OwnerInput {
     pub fn requires_terminal(&self) -> bool {
         #[cfg(feature = "remote")]
-        if matches!(self, Self::PairingLaunchPermissions { .. }) {
+        if matches!(
+            self,
+            Self::PairingLaunchPermissions { .. }
+                | Self::PairingPermissions { .. }
+                | Self::LocalPairingPermissions { .. }
+        ) {
             return true;
         }
         matches!(
@@ -76,6 +102,17 @@ impl OwnerInput {
             } => Some(&change.key),
             #[cfg(feature = "remote")]
             Self::LaunchPermissions(request) => request.change.as_ref().map(|change| &change.key),
+            #[cfg(feature = "remote")]
+            Self::PairingPermissions {
+                change: Some(change),
+                ..
+            }
+            | Self::LocalPairingPermissions {
+                change: Some(change),
+                ..
+            } => Some(&change.key),
+            #[cfg(feature = "remote")]
+            Self::SourcePermissions(request) => request.change.as_ref().map(|change| &change.key),
             Self::Revoke { key, .. } => Some(key),
             _ => None,
         }
@@ -89,6 +126,15 @@ impl OwnerInput {
             }
             #[cfg(feature = "remote")]
             Self::LaunchPermissions(request) => validate_launch_change(request.change.as_ref()),
+            #[cfg(feature = "remote")]
+            Self::PairingPermissions { alias, change, .. } => {
+                se_core::ops::remote::validate_alias(alias)?;
+                validate_source_change(change.as_ref())
+            }
+            #[cfg(feature = "remote")]
+            Self::SourcePermissions(request) => validate_source_change(request.change.as_ref()),
+            #[cfg(feature = "remote")]
+            Self::LocalPairingPermissions { change, .. } => validate_source_change(change.as_ref()),
             Self::Disconnect { alias, .. } => se_core::ops::remote::validate_alias(alias),
             Self::Add {
                 destination,
@@ -143,6 +189,21 @@ fn validate_launch_change(change: Option<&LaunchPermissionChange>) -> Result<()>
         return Err(SeError::invalid(
             "launch permission revision",
             "its current nonzero revision, or absent for no consent",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "remote")]
+fn validate_source_change(change: Option<&SourcePermissionChange>) -> Result<()> {
+    if change.is_some_and(|change| {
+        change
+            .expected_revision
+            .is_some_and(|r| r == 0 || r > i64::MAX as u64)
+    }) {
+        return Err(SeError::invalid(
+            "source permission revision",
+            "its current nonzero revision, or absent for no override",
         ));
     }
     Ok(())

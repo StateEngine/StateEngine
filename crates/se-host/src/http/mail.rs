@@ -15,6 +15,8 @@ pub(crate) mod bell;
 
 pub(crate) struct Waits {
     #[cfg(feature = "remote")]
+    return_mail: AtomicBool,
+    #[cfg(feature = "remote")]
     pub(crate) remote_activity: crate::remote::activity::Activity,
     pub(crate) bells: Arc<bell::Bells>,
     #[cfg(feature = "remote")]
@@ -48,6 +50,14 @@ struct Wait {
     _permit: OwnedSemaphorePermit,
 }
 impl Waits {
+    #[cfg(feature = "remote")]
+    pub(crate) fn enable_return_mail(&self) {
+        self.return_mail.store(true, Ordering::Release);
+    }
+    #[cfg(feature = "remote")]
+    pub(crate) fn has_return_mail(&self) -> bool {
+        self.return_mail.load(Ordering::Acquire)
+    }
     #[cfg(feature = "remote")]
     pub(crate) fn forwards(&self) -> Arc<crate::remote::ssh::Forwards> {
         self.forwards
@@ -109,6 +119,8 @@ impl Waits {
 
     pub(crate) fn new(maximum: usize) -> Arc<Self> {
         Arc::new(Self {
+            #[cfg(feature = "remote")]
+            return_mail: AtomicBool::new(false),
             #[cfg(feature = "remote")]
             remote_activity: crate::remote::activity::Activity::new(),
             bells: bell::Bells::new(maximum),

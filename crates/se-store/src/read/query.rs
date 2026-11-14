@@ -150,6 +150,7 @@ pub(super) fn kind_name(k: EventKind) -> &'static str {
     match k {
         EventKind::RemoteSecurity => "remote.security",
         EventKind::RemoteLaunchAttributed => "remote.launch_attributed",
+        EventKind::RemoteMailboxRecorded => "remote.mailbox_recorded",
         EventKind::RemoteMessageAttributed => "remote.message_attributed",
         EventKind::ProjectRegistered => "project.registered",
         EventKind::ProjectUpdated => "project.updated",

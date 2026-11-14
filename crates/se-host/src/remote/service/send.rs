@@ -11,16 +11,26 @@ impl Service {
     ) -> Result<RemoteSendResult> {
         self.router.check_open()?;
         let (admission, input, attribution, permit) = request.into_parts();
-        let RemoteRequest::Send(input) = input else {
-            return Err(SeError::invalid(
-                "remote send",
-                "an authorized send request",
-            ));
+        let (target, key, operation) = match &input {
+            RemoteRequest::Send(input) => (
+                input.target.clone(),
+                input.idempotency_key.clone(),
+                "remote.send",
+            ),
+            RemoteRequest::Reply(input) => (
+                input.target.clone(),
+                input.idempotency_key.clone(),
+                "remote.reply",
+            ),
+            _ => {
+                return Err(SeError::invalid(
+                    "remote message",
+                    "an authorized send or linked reply",
+                ));
+            }
         };
-        let target = input.target.clone();
         let grant = admission.grant().grant.clone();
         let revision = admission.grant().authority_revision;
-        let key = input.idempotency_key.clone();
         let store_key = se_core::remote::request_key(&attribution, &key)?;
         let store = self.store.clone();
         let batch = self
@@ -36,11 +46,19 @@ impl Service {
                     sent_event: session::event_id(now)?,
                     attribution_event: session::event_id(now)?,
                 };
-                se_core::remote::plan_send(admission, input, attribution, facts)
+                match input {
+                    RemoteRequest::Send(input) => {
+                        se_core::remote::plan_send(admission, input, attribution, facts)
+                    }
+                    RemoteRequest::Reply(input) => {
+                        se_core::remote::plan_reply(admission, input, attribution, facts)
+                    }
+                    _ => Err(SeError::invalid("remote message", "a send or linked reply")),
+                }
             })
             .await?;
         let identity = crate::runtime::WriteIdentity {
-            operation: "remote.send",
+            operation,
             natural_key: None,
             key: Some(key.clone()),
             natural_events: vec![],
@@ -62,7 +80,7 @@ impl Service {
         )
         .await?;
         let known = crate::runtime::CommittedWrite {
-            operation: "remote.send".into(),
+            operation: operation.into(),
             key: Some(key.clone()),
             natural_events: vec![],
             committed_events: receipt.events.clone(),

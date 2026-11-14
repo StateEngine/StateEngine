@@ -156,7 +156,7 @@ async fn reader(
                                 return Err(unavailable("request IDs must increase on this connection; reconnect before reuse"));
                             }
                             last_request = Some(id);
-                            let mutation = matches!(invocation.request, RemoteRequest::Send(_));
+                            let mutation = matches!(invocation.request, RemoteRequest::Send(_) | RemoteRequest::Reply(_) | RemoteRequest::Launch(_));
                             let admission = match slot.limits.request(mutation) {
                                 Ok(admission) => admission,
                                 Err(error) => {

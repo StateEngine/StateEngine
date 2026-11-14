@@ -8,6 +8,9 @@ pub(super) fn command<H: OwnerCommands + Presentation>(
     stderr: &mut impl Write,
     host: &H,
 ) -> io::Result<u8> {
+    if !m.get_flag("launch") {
+        return super::source_permissions::command(m, json, stdout, stderr, host);
+    }
     if text(m, "name").is_none()
         || json
         || !io::stdin().is_terminal()
@@ -50,7 +53,8 @@ pub(super) fn review<H: OwnerCommands>(
     if line(&mut input)? == "launch" {
         super::launch_permissions::review(m, stdout, &mut input, host)?;
     }
-    Ok(())
+    drop(input);
+    super::source_permissions::review(m, stdout, host)
 }
 pub(super) fn line(input: &mut impl BufRead) -> io::Result<String> {
     let mut bytes = Vec::new();

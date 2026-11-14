@@ -9,7 +9,7 @@ struct Step {
     sql: &'static str,
     table_rebuild: bool,
 }
-const STEPS: [Step; 10] = [
+const STEPS: [Step; 11] = [
     Step {
         version: 2,
         sql: include_str!("../migrations/002.sql"),
@@ -58,6 +58,11 @@ const STEPS: [Step; 10] = [
     Step {
         version: 11,
         sql: include_str!("../migrations/011.sql"),
+        table_rebuild: false,
+    },
+    Step {
+        version: 12,
+        sql: include_str!("../migrations/012.sql"),
         table_rebuild: false,
     },
 ];
@@ -169,3 +174,6 @@ fn apply_step(db: &Connection, step: &Step) -> StoreResult<()> {
 fn sql_error(e: rusqlite::Error) -> Box<StoreError> {
     sql(e)
 }
+
+#[cfg(test)]
+mod tests;
