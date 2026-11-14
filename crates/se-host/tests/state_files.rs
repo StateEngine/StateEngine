@@ -1,25 +1,22 @@
 //! Exercise the shared production store port with both caller policies and
 //! independent native readback; the existing CLI/host consumers cover routing.
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_host::state_files::{FilePolicy, Files};
 use se_proc::NativeStateFiles;
 use se_store::{StateFiles, StoreErrorCode};
 use se_types::{Read, Retry};
 use sha2::{Digest, Sha256};
-use std::{fs, io::Write, path::PathBuf};
+use std::{fs, io::Write};
 type Check = Result<(), Box<dyn std::error::Error>>;
 
-struct Home(PathBuf);
+struct Home(cleanup_directory::PrivateDirectory);
 impl Home {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         se_proc::initialize_file_creation_owner()?;
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let path = std::env::temp_dir().join(format!(
-            "se-shared-files-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
+        let path = cleanup_directory::private_case_directory()?;
         drop(NativeStateFiles::create(&path)?);
-        Ok(Self(path))
+        Ok(Self(path.cleanup_on_drop()))
     }
     fn files(&self, policy: FilePolicy) -> Result<Files, Box<dyn std::error::Error>> {
         Ok(Files::open_with_policy(&self.0, policy)?)
@@ -33,13 +30,6 @@ impl Home {
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         Ok(Some(bytes))
-    }
-}
-impl Drop for Home {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_dir_all(&self.0) {
-            eprintln!("owned shared StateFiles fixture cleanup: {error}");
-        }
     }
 }
 const POLICIES: [FilePolicy; 2] = [FilePolicy::Direct, FilePolicy::Host];

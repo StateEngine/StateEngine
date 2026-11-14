@@ -124,7 +124,7 @@
   "crates/se/src/render/event": 4,
   "crates/se/src/route/uninstall": 4,
   "crates/se-atlas/src/query/freshness": 4,
-  "crates/se-core/src/config_policy": 4,
+  "crates/se-config/src/config_policy": 4,
   "crates/se-core/src/ops/agent_launch": 4,
   "crates/se-core/src/ops/agent_session": 4,
   "crates/se-core/src/ops/doctor": 4,

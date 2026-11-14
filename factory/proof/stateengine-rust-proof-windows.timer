@@ -1,0 +1,13 @@
+[Unit]
+Description=Continue the pinned nightly in a native Windows custody window
+
+[Timer]
+OnCalendar=*-*-* 13:00:00 UTC
+OnCalendar=*-*-* 19:00:00 UTC
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=false
+Unit=stateengine-rust-proof-windows.service
+
+[Install]
+WantedBy=timers.target

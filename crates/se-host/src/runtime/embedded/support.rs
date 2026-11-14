@@ -61,11 +61,11 @@ fn argv_digest() -> Sha256 {
 }
 
 /// The owner's config.toml, validated; absent is a refusal, never a default.
-pub(super) fn load_config(home: &Path) -> Result<se_core::config_policy::ConfigFile> {
+pub(super) fn load_config(home: &Path) -> Result<se_config::config_policy::ConfigFile> {
     let path = home.join("config.toml");
     let text = std::fs::read_to_string(&path)
         .map_err(|e| se_core::scope::unreadable("config.toml", &e.to_string()).with_cause(e))?;
-    let config: se_core::config_policy::ConfigFile = toml::from_str(&text)
+    let config: se_config::config_policy::ConfigFile = toml::from_str(&text)
         .map_err(|e| se_core::scope::unreadable("config.toml", &e.to_string()))?;
     config.validate()?;
     Ok(config)
@@ -88,7 +88,7 @@ pub(super) fn writer_options() -> Result<se_store::WriterOptions> {
 /// notice bounds applied where the linked API names them.
 pub(super) fn limits(
     linked: &api::Limits,
-    config: &se_core::config_policy::ConfigFile,
+    config: &se_config::config_policy::ConfigFile,
 ) -> Result<crate::HostLimits> {
     let cores = std::thread::available_parallelism().ok();
     Ok(crate::HostLimits {

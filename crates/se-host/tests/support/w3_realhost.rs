@@ -1,6 +1,8 @@
 //! Shared helpers for the two W3 real-host judge test roots (doc 90,
 //! black-box): CLI-driven trusted setup, public readback, the linked host
 //! judge and the store witness. Test-specific imports stay in each root.
+#[path = "../../../test-support/directory.rs"]
+mod directory;
 use se_store::{
     Admission, EventBody, ReadBudget, ReadScope, Scope, Snapshot, SqliteFactory, SqliteReader,
     SqliteSnapshot, StoreOptions, StoredEvent, StoredText, Visibility,
@@ -15,10 +17,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     process::{Command, Output},
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -38,19 +37,8 @@ pub(super) fn require_se() -> Result<PathBuf, ()> {
 pub(super) fn missing_helper() -> ! {
     panic!("SE_W3_SE_BIN must name a real se binary; W3 was not exercised");
 }
-pub(super) fn judge_root(label: &str) -> PathBuf {
-    // Keep the state home short: the host's protected runtime socket is a
-    // Unix domain socket whose full path is capped (~108 bytes), and the home
-    // is the base for that path. The deep CARGO_MANIFEST_DIR/target tree
-    // overflows the cap, so anchor under the system temp dir with the same
-    // per-process, per-test unique name.
-    let base = std::env::temp_dir().join("w3j");
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    base.join(format!(
-        "{label}-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ))
+pub(super) fn judge_root(_label: &str) -> Result<directory::PrivateDirectory, String> {
+    directory::private_case_directory().map_err(|error| error.to_string())
 }
 /// A clean owner-terminal environment: no session, no provider markers.
 pub(super) fn owner_env(home: &Path) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
@@ -341,13 +329,14 @@ pub(super) struct Judge {
     pub(super) project: String,
     pub(super) agent: String,
     pub(super) retain: bool,
+    root_owner: Option<directory::PrivateDirectory>,
 }
 impl Drop for Judge {
     fn drop(&mut self) {
-        if self.retain || std::thread::panicking() {
-            eprintln!("W3 retained fixture: {}", self.root.display());
-        } else {
-            let _ = std::fs::remove_dir_all(&self.root);
+        if (self.retain || std::thread::panicking())
+            && let Some(root) = self.root_owner.take()
+        {
+            root.retain("native linked-host failure evidence");
         }
     }
 }
@@ -359,7 +348,8 @@ impl Drop for Judge {
 impl Judge {
     pub(super) fn new(label: &str) -> Result<Self, String> {
         let helper = require_se().map_err(|_| "se binary missing".to_owned())?;
-        let root = judge_root(label);
+        let root_owner = judge_root(label)?;
+        let root = root_owner.to_path_buf();
         let (home, project, agent) = init_project(&helper, &root)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -376,6 +366,7 @@ impl Judge {
             project,
             agent,
             retain: false,
+            root_owner: Some(root_owner.cleanup_on_drop()),
         })
     }
     fn config(&self) -> api::HostConfig {

@@ -67,7 +67,7 @@ fn discord_identify_spacing_first_waits_nothing() -> Check {
 #[test]
 fn discord_wire_review_identify_first_is_prompt_and_later_is_spaced() -> Check {
     let f = Fixture::new("expired")?;
-    runtime()?.block_on(async {
+    f.finish(runtime()?.block_on(async {
         let started = std::time::Instant::now();
         let mut receiver = ready(&f).await?;
         require(
@@ -95,7 +95,7 @@ fn discord_wire_review_identify_first_is_prompt_and_later_is_spaced() -> Check {
             "the second fresh Identify was not spaced from the first",
         )?;
         f.no_fixture_errors()
-    })
+    }))
 }
 
 /// The actual REST client validates synthetic TLS, suppresses mentions and never
@@ -103,7 +103,7 @@ fn discord_wire_review_identify_first_is_prompt_and_later_is_spaced() -> Check {
 #[test]
 fn discord_wire_review_rest_send_proof_and_no_automatic_retries() -> Check {
     let f = Fixture::new("normal")?;
-    runtime()?.block_on(async {
+    f.finish(runtime()?.block_on(async {
         let identity = f.adapter.identity(&f.token).await?;
         require(
             identity.id.to_string() == "9001",
@@ -166,7 +166,7 @@ fn discord_wire_review_rest_send_proof_and_no_automatic_retries() -> Check {
             "redirect reached another route",
         )?;
         f.no_fixture_errors()
-    })
+    }))
 }
 
 /// Sender admission uses a REST-verified one-to-one channel and the actual
@@ -174,7 +174,7 @@ fn discord_wire_review_rest_send_proof_and_no_automatic_retries() -> Check {
 #[test]
 fn discord_wire_review_private_human_normalization() -> Check {
     let f = Fixture::new("normalize")?;
-    runtime()?.block_on(async {
+    f.finish(runtime()?.block_on(async {
         let mut receiver = ready(&f).await?;
         for sequence in 2..=9 {
             let row = next(receiver.as_mut(), &f.token).await?;
@@ -187,7 +187,7 @@ fn discord_wire_review_private_human_normalization() -> Check {
             receiver.ack(&row.cursor)?;
         }
         f.no_fixture_errors()
-    })
+    }))
 }
 
 /// Cancelling slow identity verification retains its dispatch and does not block
@@ -195,7 +195,7 @@ fn discord_wire_review_private_human_normalization() -> Check {
 #[test]
 fn discord_wire_review_cancellation_and_heartbeats() -> Check {
     let f = Fixture::new("cancel")?;
-    runtime()?.block_on(async {
+    f.finish(runtime()?.block_on(async {
         let mut receiver = ready(&f).await?;
         require(
             tokio::time::timeout(Duration::from_millis(100), receiver.next(&f.token))
@@ -227,7 +227,7 @@ fn discord_wire_review_cancellation_and_heartbeats() -> Check {
             "identity read was not retried for the retained dispatch",
         )?;
         f.no_fixture_errors()
-    })
+    }))
 }
 
 /// A new receiver resumes after the last acknowledged cursor, even when the
@@ -263,7 +263,7 @@ fn discord_wire_review_resume_uses_durable_checkpoint() -> Check {
     if outcome.is_err() {
         f.report("discord_wire_review_resume_uses_durable_checkpoint");
     }
-    outcome
+    f.finish(outcome)
 }
 
 /// Queue overflow closes the socket visibly; replay supplies every dispatch
@@ -271,7 +271,7 @@ fn discord_wire_review_resume_uses_durable_checkpoint() -> Check {
 #[test]
 fn discord_wire_review_overflow_recovers_every_message() -> Check {
     let f = Fixture::new("burst")?;
-    runtime()?.block_on(async {
+    f.finish(runtime()?.block_on(async {
         let mut receiver = ready(&f).await?;
         let mut seen = Vec::new();
         let mut cursor = None;
@@ -303,7 +303,7 @@ fn discord_wire_review_overflow_recovers_every_message() -> Check {
             "overflow lost or duplicated private text",
         )?;
         f.no_fixture_errors()
-    })
+    }))
 }
 
 /// An expired resume session is explicit and invalidated, so the subsequent
@@ -311,7 +311,7 @@ fn discord_wire_review_overflow_recovers_every_message() -> Check {
 #[test]
 fn discord_wire_review_expired_replay_is_visible() -> Check {
     let f = Fixture::new("expired")?;
-    runtime()?.block_on(async {
+    f.finish(runtime()?.block_on(async {
         let mut receiver = ready(&f).await?;
         let first = next(receiver.as_mut(), &f.token).await?;
         receiver.ack(&first.cursor)?;
@@ -342,5 +342,5 @@ fn discord_wire_review_expired_replay_is_visible() -> Check {
             "invalid replay session was retried forever",
         )?;
         f.no_fixture_errors()
-    })
+    }))
 }

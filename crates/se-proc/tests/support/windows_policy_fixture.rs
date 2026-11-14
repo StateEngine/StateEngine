@@ -1,4 +1,6 @@
 //! Native fixtures for private policy checks. No production exports or policy substitutes.
+#[path = "../../../test-support/directory.rs"]
+mod cleanup_directory;
 use std::{
     ffi::{OsStr, OsString},
     fs::{self, File},
@@ -100,22 +102,13 @@ pub(crate) fn user() -> Check<String> {
     crate::windows_native::process_sid(unsafe { GetCurrentProcess() })
         .map_err(|e| format!("{}: {}", e.operation, e.source).into())
 }
-pub(crate) struct Home(pub(crate) PathBuf);
+pub(crate) struct Home(pub(crate) cleanup_directory::PrivateDirectory);
 impl Home {
     pub(crate) fn new() -> Check<Self> {
         crate::initialize_file_creation_owner()?;
-        let nonce = se_types::hex_lower(crate::random_secret()?.expose());
-        let path =
-            std::env::temp_dir().join(format!("se-native-policy-{}-{nonce}", std::process::id()));
+        let path = cleanup_directory::private_case_directory()?;
         drop(crate::NativeStateFiles::create(&path)?);
-        Ok(Self(path))
-    }
-}
-impl Drop for Home {
-    fn drop(&mut self) {
-        if let Err(e) = fs::remove_dir_all(&self.0) {
-            eprintln!("owned native-policy fixture cleanup: {e}");
-        }
+        Ok(Self(path.cleanup_on_drop()))
     }
 }
 pub(crate) fn event() -> Check<OwnedHandle> {

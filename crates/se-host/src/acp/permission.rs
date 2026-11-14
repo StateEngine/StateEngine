@@ -14,9 +14,9 @@ pub enum PermissionPolicy {
     Refuse,
 }
 impl PermissionPolicy {
-    pub fn from_saved_approval(approval: se_core::config_policy::Approval) -> Self {
+    pub fn from_saved_approval(approval: se_config::config_policy::Approval) -> Self {
         match approval {
-            se_core::config_policy::Approval::Never => Self::NeverAsk,
+            se_config::config_policy::Approval::Never => Self::NeverAsk,
             _ => Self::Refuse,
         }
     }

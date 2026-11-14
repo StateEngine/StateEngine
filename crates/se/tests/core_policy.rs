@@ -77,7 +77,7 @@ fn kernel() -> Outcome<Kernel> {
         occurred_at_us: 1_700_000_000_000_000,
         door: Door::Cli,
     })?
-    .with_configuration(se_core::config_policy::ConfigFile::default())?)
+    .with_configuration(se_config::config_policy::ConfigFile::default())?)
 }
 fn plan(
     f: &Fixture,

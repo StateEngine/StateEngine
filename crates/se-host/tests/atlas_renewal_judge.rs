@@ -18,9 +18,12 @@ use se_host::{
 use se_types::{ProjectId, SeError};
 use std::{
     fs::{self, OpenOptions},
-    path::{Path, PathBuf},
+    path::Path,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+#[path = "../../test-support/directory.rs"]
+mod directory;
+
 type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
 type Native = NativeController<NativeRenewal>;
 fn deadline() -> Instant {
@@ -189,13 +192,11 @@ fn start(controller: &mut Native, registration: &RootRegistration) -> Check {
 )]
 fn native_events_repair_after_writer_contention_and_release_root_slots() -> Check {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let base: PathBuf =
-        std::env::temp_dir().join(format!("se-atlas-native-{}-{nonce}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("se-atlas-native-{}-{nonce}", std::process::id()));
     fs::create_dir(&base)?;
-    eprintln!(
-        "independent native Atlas fixture retained: {}",
-        base.display()
-    );
+    // Only the complete passing case authorizes cleanup. Returned errors and
+    // panics keep the native state at the named diagnostic root.
+    let base = directory::PrivateDirectory::for_case(base);
     let home = base.join("cache");
     let first = registration(&base, &home, 2)?;
     fs::write(
@@ -372,5 +373,5 @@ fn native_events_repair_after_writer_contention_and_release_root_slots() -> Chec
     println!(
         "PASS native close, root-slot recycling, two-active-root cap and final parked controller"
     );
-    Ok(())
+    base.finish(Ok(()))
 }

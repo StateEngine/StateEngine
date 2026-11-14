@@ -1,6 +1,9 @@
 //! A real cold child completes, acknowledges, then remains alive: the parent
 //! must not adopt its epoch until exact reap. Killing it preserves the old epoch.
 #[cfg(all(target_os = "linux", not(debug_assertions)))]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
+#[cfg(all(target_os = "linux", not(debug_assertions)))]
 mod linux {
     use se_atlas::{
         cache::{connection::*, *},
@@ -14,7 +17,7 @@ mod linux {
     };
     use std::{
         error::Error,
-        path::{Path, PathBuf},
+        path::Path,
         time::{Duration, Instant},
     };
     type Check<T = ()> = Result<T, Box<dyn Error>>;
@@ -26,7 +29,7 @@ mod linux {
             serde_json::json!({"discovered_files":0,"indexed_files":0,"partial_files":0,"deferred_files":0,"failed_files":0,"discovery_complete":true,"stale_files":0,"resolved_references":0,"name_only_references":0,"watched_directories":0,"unwatched_directories":0,"watch_discovery_complete":false,"watch_stats_started":null,"watch_activation_attempts":0,"watch_limited_activations":0,"reasons":[]}),
         )?)
     }
-    fn prepared() -> Check<(PathBuf, Request)> {
+    fn prepared() -> Check<(super::cleanup_directory::PrivateDirectory, Request)> {
         let base = std::env::temp_dir().join(format!(
             "atlas-cold-crash-{}-{}",
             std::process::id(),
@@ -34,8 +37,10 @@ mod linux {
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_nanos()
         ));
+        std::fs::create_dir(&base)?;
+        let root_owner = super::cleanup_directory::PrivateDirectory::for_case(base.clone());
         let source = base.join("source");
-        std::fs::create_dir_all(&source)?;
+        std::fs::create_dir(&source)?;
         let project = se_types::ProjectId::from_parts(1, [42; 10])?;
         let root = RootId::from_parts(1, [43; 10])?;
         let home = base.join("atlas");
@@ -91,7 +96,7 @@ mod linux {
             global_patterns: Vec::new(),
             generated_prefixes: Vec::new(),
         };
-        Ok((base, request))
+        Ok((root_owner, request))
     }
     pub(super) fn run() -> Check {
         se_proc::initialize_file_creation_owner()?;
@@ -337,7 +342,6 @@ mod linux {
         drop(pressure);
         drop(cache);
         drop(source);
-        std::fs::remove_dir_all(base)?;
         println!(
             "PASS actual completed cold child cannot publish before exact reap; crash preserves independently reopened old epoch"
         );
@@ -348,7 +352,7 @@ mod linux {
             "PASS native memory pressure becomes a typed per-file refusal before parser allocation"
         );
         println!("3 passed; 0 failed");
-        Ok(())
+        base.finish(Ok(()))
     }
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {

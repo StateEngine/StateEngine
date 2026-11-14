@@ -1,3 +1,5 @@
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_proc::native_ipc::*;
 use std::{
     error::Error,
@@ -22,11 +24,13 @@ struct Endpoint {
     native: NativeUnixEndpoint,
     #[cfg(windows)]
     native: NativePipeReservation,
+    _root_owner: cleanup_directory::PrivateDirectory,
 }
 impl Endpoint {
     fn new(label: &str) -> Result<Self> {
         let root = std::env::temp_dir().join(format!("se-ipc-{}-{label}", std::process::id()));
         fs::create_dir(&root)?;
+        let root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -36,7 +40,11 @@ impl Endpoint {
         let native = NativeUnixEndpoint::bind(&root.join("ipc.sock"))?;
         #[cfg(windows)]
         let native = NativePipeReservation::create(&Self::name(&root))?;
-        Ok(Self { root, native })
+        Ok(Self {
+            root,
+            native,
+            _root_owner: root_owner,
+        })
     }
     #[cfg(windows)]
     fn name(root: &std::path::Path) -> std::ffi::OsString {
@@ -51,8 +59,7 @@ impl Endpoint {
         self.native.close()?;
         #[cfg(windows)]
         drop(self.native);
-        fs::remove_dir(self.root)?;
-        Ok(())
+        self._root_owner.finish(Ok(()))
     }
 }
 #[test]

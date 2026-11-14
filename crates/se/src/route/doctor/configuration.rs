@@ -2,7 +2,7 @@
 //! admission. Invalid configuration must not prevent doctor from diagnosing it.
 use super::{Bootstrap, CheckFix, CheckState, DiagnosisCheck};
 use crate::{bootstrap, config};
-use se_core::config_policy::ConfigFile;
+use se_config::config_policy::ConfigFile;
 use se_types::{RenderCx, Result};
 
 pub(super) fn check(cx: &Bootstrap, at: &str) -> Result<DiagnosisCheck> {

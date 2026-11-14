@@ -2,7 +2,8 @@
 //! A competing edit refuses its original digest rather than replacing new data.
 use super::files::Files;
 use crate::{bootstrap::Bootstrap, config::Origin};
-use se_core::{config_policy::ConfigFile, scope, store_error::store_error};
+use se_config::config_policy::ConfigFile;
+use se_core::{scope, store_error::store_error};
 use se_store::StateFiles;
 use se_types::{Result, SeError};
 use sha2::{Digest, Sha256};

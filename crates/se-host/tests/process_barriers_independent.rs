@@ -1,9 +1,9 @@
 //! Independent public core barriers over a real protected store and FULL writer.
 //! Process identities below are typed store fixtures, not native launch witnesses.
 #![cfg(any(target_os = "linux", windows))]
+use se_config::config_policy::ConfigFile;
 use se_core::{
     commit::Cx,
-    config_policy::ConfigFile,
     dispatch::{CallFacts, Kernel},
     ops::{
         agent_launch::{AgentLaunch, LaunchPlan},

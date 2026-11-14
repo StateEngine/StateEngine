@@ -67,7 +67,7 @@ pub struct HostedRuntime {
     pub(crate) execution: ExecutionContext,
     pub(crate) sources: TranscriptBindings,
     pub(crate) admission_reads: se_store::ReadPhasePool,
-    pub(crate) configuration: Option<se_core::config_policy::ConfigFile>,
+    pub(crate) configuration: Option<se_config::config_policy::ConfigFile>,
     pub(crate) configuration_file: Option<PathBuf>,
     pub(crate) prepared_requests: Arc<std::sync::OnceLock<crate::PreparedRequestProofs>>,
     pub(crate) writer: Option<se_store::SqliteWriter>,
@@ -137,7 +137,7 @@ impl HostedRuntime {
             .run_owned(deadline, move || prepare(options, work_pool, work_deadline))
             .await
     }
-    pub fn configure(&mut self, configuration: se_core::config_policy::ConfigFile) -> Result<()> {
+    pub fn configure(&mut self, configuration: se_config::config_policy::ConfigFile) -> Result<()> {
         if self.phase != crate::HostPhase::Prepared {
             return Err(SeError::invalid(
                 "host configuration",
@@ -153,7 +153,7 @@ impl HostedRuntime {
     /// adapter. Embedded callers without a file continue to use `configure`.
     pub fn configure_file(
         &mut self,
-        configuration: se_core::config_policy::ConfigFile,
+        configuration: se_config::config_policy::ConfigFile,
         file: PathBuf,
     ) -> Result<()> {
         if !file.is_absolute() {

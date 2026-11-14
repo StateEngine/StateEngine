@@ -9,7 +9,7 @@ pub(super) fn initial_agent(
     store: &mut SqliteDirect,
     lease: &DirectLease,
     admission: &Admission,
-    configuration: &se_core::config_policy::ConfigFile,
+    configuration: &se_config::config_policy::ConfigFile,
 ) -> Result<(AgentRow, bool)> {
     let mut snap = store
         .snapshot(read_scope(admission))

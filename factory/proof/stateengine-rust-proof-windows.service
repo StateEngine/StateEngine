@@ -1,0 +1,12 @@
+[Unit]
+Description=Native Windows continuation of the pinned nightly journeys
+After=stateengine-rust-proof.service
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/usr/bin/python3 %h/.local/lib/stateengine-rust-proof/nightly.py --config %h/.config/stateengine-rust-proof/config.json --windows-continuation
+ExecStopPost=/usr/bin/python3 %h/.local/lib/stateengine-rust-proof/nightly.py --config %h/.config/stateengine-rust-proof/config.json --windows-service-exit
+TimeoutStartSec=6900
+TimeoutStopSec=300
+KillMode=control-group

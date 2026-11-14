@@ -72,6 +72,7 @@ def run(args):
     helper = args.output / 'provider.py'
     provider(helper)
     runtime = Path(tempfile.mkdtemp(prefix='plain-runtime-', dir=os.environ.get('TMPDIR')))
+    print("fixture root (retained on failed or interrupted closure):", runtime, flush=True)
     isolated = {'XDG_RUNTIME_DIR': str(runtime)}
     for key in ['CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME']:
         path = args.output / key.lower()
