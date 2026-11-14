@@ -29,12 +29,12 @@ fn confirmation(plan: &LaunchPlan, home: &std::path::Path, reason: String) -> Re
     // never has to reconstruct it from the inventory above. The home is explicit
     // because an unqualified command would resolve SE_HOME or the default store,
     // which can be a different home and address another copy of the project.
-    let force = se_core::ops::AgentCommand::launch(
-        &plan.agent.id,
-        se_core::ops::AgentCommand::home_argument(home),
-        Some(&plan.project.id),
-        false,
-    );
+    // launch_in_home returns None when the home is not UTF-8 or contains a line
+    // break. Never fall back to an unqualified command there: that would name
+    // the default store and silently address a different home, which is the
+    // same missing-scope defect the explicit home exists to prevent.
+    let force =
+        se_core::ops::AgentCommand::launch_in_home(&plan.agent.id, home, &plan.project.id, false);
     Ok(SeError::new(Detail::LaunchConfirmationRequired(
         details::LaunchConfirmationRequired {
             subject: plan.agent.name.clone(),
@@ -46,10 +46,16 @@ fn confirmation(plan: &LaunchPlan, home: &std::path::Path, reason: String) -> Re
                 .map(|head| process_identity(head).map(|identity| identity.record.clone()))
                 .collect::<Result<Vec<_>>>()?,
             sessions: sessions(plan),
-            next_step: format!(
-                "Rerun this launch with --force to stop the listed sessions and their managed jobs before starting the replacement: {} --force. An interactive owner terminal asks for confirmation; scripts and agents must supply --force.",
-                force.command
-            ),
+            next_step: match force {
+                Some(force) => format!(
+                    "Rerun this launch with --force to stop the listed sessions and their managed jobs before starting the replacement: {} --force. An interactive owner terminal asks for confirmation; scripts and agents must supply --force.",
+                    force.command
+                ),
+                None => format!(
+                    "Rerun this launch with --force from the owner terminal to stop the listed sessions and their managed jobs before starting the replacement. {}",
+                    se_core::ops::AgentCommand::HOME_UNAVAILABLE
+                ),
+            },
         },
     )))
 }
