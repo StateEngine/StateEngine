@@ -296,6 +296,12 @@ class Trial:
         if fault:
             if not any(x['kind'] == fault for x in self.report.get('fault_events', [])):
                 errors.append('native fault was not exercised')
+        sampled = [x for x in self.report.get('fault_events', []) if x['kind'] == 'first-native-sample']
+        self.report['first_native_sample_delays_ms'] = [
+            (x['wall_ns'] - x['actor_birth_ns']) / 1_000_000 for x in sampled]
+        self.report['sampling_measurement_limits'] = (
+            'Native instrumentation includes its own bounded event-write overhead; '
+            'the outside peak and overshoot are observed lower bounds, not an upper guarantee.')
         live = [pin for pin in self.pins.values() if self.alive(pin)]
         self.report['live_before_external_cleanup'] = live
         if live:

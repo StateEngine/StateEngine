@@ -10,7 +10,9 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 static char evidence[4096];
@@ -22,10 +24,16 @@ void review_configure(const char *root, int mode) {
 }
 
 #ifndef REVIEW_OBSERVER_ONLY
-static void event(const char *kind, int target) {
+static void event(const char *kind, int target, uint64_t peak) {
     int fd = open(evidence, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
     if (fd < 0) _exit(92);
-    dprintf(fd, "{\"kind\":\"%s\",\"actor\":%d,\"target\":%d}\n", kind, getpid(), target);
+    struct timespec monotonic={0}; struct timeval wall={0}; struct proc_bsdinfo actor={0};
+    if (clock_gettime(CLOCK_MONOTONIC,&monotonic) || gettimeofday(&wall,0)) _exit(95);
+    if (proc_pidinfo(getpid(),PROC_PIDTBSDINFO,1,&actor,sizeof(actor)) != (int)sizeof(actor)) _exit(96);
+    dprintf(fd, "{\"kind\":\"%s\",\"actor\":%d,\"target\":%d,\"peak_bytes\":%llu,\"monotonic_ns\":%llu,\"wall_ns\":%llu,\"actor_birth_ns\":%llu}\n", kind, getpid(), target, peak,
+            (uint64_t)monotonic.tv_sec*1000000000+monotonic.tv_nsec,
+            (uint64_t)wall.tv_sec*1000000000+(uint64_t)wall.tv_usec*1000,
+            actor.pbi_start_tvsec*1000000000+actor.pbi_start_tvusec*1000);
     int children[16] = {0};
     int count = proc_listchildpids(getpid(), children, sizeof(children));
     for (int i=0; i<count && i<16; ++i) {
@@ -43,12 +51,22 @@ static void event(const char *kind, int target) {
 
 int proc_pid_rusage(int pid, int flavor, rusage_info_t *buffer) {
     static int (*actual)(int,int,rusage_info_t*);
+    static int calls; static uint64_t recorded_peak;
     if (!actual) actual = dlsym(RTLD_NEXT, "proc_pid_rusage");
     if (!actual) _exit(93);
-    if (fault_mode == 1) { event("first-unreadable",pid); fault_mode=0; errno=EPERM; return -1; }
+    if (fault_mode == 1) { event("first-unreadable",pid,0); fault_mode=0; errno=EPERM; return -1; }
     int result = actual(pid, flavor, buffer);
+    if (result == 0 && flavor == RUSAGE_INFO_V4) {
+        struct rusage_info_v4 *usage=(struct rusage_info_v4*)buffer;
+        uint64_t peak=usage->ri_lifetime_max_phys_footprint > usage->ri_resident_size ? usage->ri_lifetime_max_phys_footprint : usage->ri_resident_size;
+        calls++;
+        if (calls<=2 || peak>recorded_peak+1024*1024) {
+            event(calls<=2?"first-native-sample":"native-peak",pid,peak);
+            if (peak>recorded_peak) recorded_peak=peak;
+        }
+    }
     if (fault_mode == 2 && result == 0 && flavor == RUSAGE_INFO_V4) {
-        event("first-over-budget",pid); fault_mode=0;
+        event("first-over-budget",pid,80ULL*1024*1024); fault_mode=0;
         ((struct rusage_info_v4 *)buffer)->ri_lifetime_max_phys_footprint=80ULL*1024*1024;
     }
     return result;
@@ -57,7 +75,7 @@ int kill(pid_t pid, int number) {
     static int (*actual)(pid_t,int);
     if (!actual) actual = dlsym(RTLD_NEXT, "kill");
     if (!actual) _exit(94);
-    if (fault_mode == 3 && number == SIGKILL) { event("kill-denied",pid); errno=EPERM; return -1; }
+    if (fault_mode == 3 && number == SIGKILL) { event("kill-denied",pid,0); errno=EPERM; return -1; }
     return actual(pid,number);
 }
 #endif
