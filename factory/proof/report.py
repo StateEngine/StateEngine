@@ -28,7 +28,8 @@ LABELS = {
     "B7": ("CLI --version", "CLI contextual read verbs"),
     "B8": ("host restart re-adoption",),
     "B9": ("CLI writes through running host", "in-session kept-open writes",
-           "Claude stop hook through running host"), "FULL": (),
+           "Claude stop hook through running host"),
+    "B10": ("CLI writes through running host",), "FULL": (),
 }
 
 
@@ -66,7 +67,8 @@ def budget_numbers(budget, row):
         "B3": ("count", "added_processes"), "B4": ("rss_bytes",),
         "B5": ("cpu_percent_one_core",), "B6": ("wakeups",),
         "B7": ("reads",), "B8": ("readoption", "readopt", "cutover", "elapsed_ms"),
-        "B9": ("writes", "samples", "p95", "ceiling_ms"), "FULL": (),
+        "B9": ("writes", "samples", "p95", "ceiling_ms"),
+        "B10": ("writes", "samples", "p95", "ceiling_ms"), "FULL": (),
     }
     return {path: value for path, value in numbers(row).items()
             if any(part in path for part in selectors[budget])
@@ -74,7 +76,50 @@ def budget_numbers(budget, row):
 
 
 
+def windows_full_write_result(row, limits):
+    """B10: native Windows serial send against the Windows full-write ceiling.
+
+    This budget is a second ceiling on the same measured send-and-readback samples
+    the CLI write budget uses, not a second method. Only a row that names the
+    Windows budget and carries its own recorded ceiling can be judged, and a
+    non-Windows row never answers it: a measurement from another platform is a
+    different fact.
+    """
+    if row.get("platform") not in (None, "win32"):
+        return "NOT MEASURED"
+    writes = row.get("writes")
+    if not isinstance(writes, list):
+        return "NOT MEASURED"
+    budgeted = [sample for sample in writes
+                if isinstance(sample, dict) and sample.get("budget") == "full_write_windows_p95_ms_inclusive"]
+    if not budgeted:
+        return "NOT MEASURED"
+    ceiling_key = "full_write_windows_p95_ms_inclusive"
+    ceiling = limits.get(ceiling_key)
+    if not finite_nonnegative(ceiling):
+        return "NOT MEASURED"
+    for sample in budgeted:
+        value, recorded = sample.get("p95_ms"), sample.get("ceiling_ms_inclusive")
+        raw = sample.get("samples")
+        count = 30 * sample.get("clients", 0) if type(sample.get("clients")) is int else 0
+        # The row must be the serial send cohort and carry its own complete samples.
+        if (sample.get("action") != "send" or sample.get("clients") != 1 or not count
+                or not finite_nonnegative(value) or recorded != ceiling
+                or not isinstance(raw, list) or len(raw) != count
+                or any(not isinstance(s, dict) or type(s.get("code")) is not int
+                       or s["code"] != 0 or s.get("error") or s.get("routing_error")
+                       or not finite_nonnegative(s.get("ms")) for s in raw)):
+            return "NOT MEASURED"
+        if value != sorted(s["ms"] for s in raw)[math.ceil(count * 0.95) - 1]:
+            return "NOT MEASURED"
+        if sample.get("passed") is not True or value > ceiling:
+            return "MISS"
+    return "PASS"
+
+
 def probe_result(budget, row, limits, numeric):
+    if budget == "B10":
+        return windows_full_write_result(row, limits)
     if not numeric or row.get("state") == "unavailable":
         return "NOT MEASURED"
     if budget not in {"B5", "B6"}:
@@ -115,6 +160,8 @@ def first_hour_probe_result(budget, row, limits):
     if budget in {"B5", "B6"}:
         return probe_result(budget, row, limits, budget_numbers(budget, row))
     label = row.get("label")
+    if budget == "B10":
+        return windows_full_write_result(row, limits)
     if budget in {"B7", "B9"}:
         read = budget == "B7"
         samples = row.get("reads" if read else "writes")
