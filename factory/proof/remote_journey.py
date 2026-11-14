@@ -171,6 +171,11 @@ class Journey:
         self.step("dedicated account, exact native image and fresh project verified")
 
     def verify_account(self):
+        expected = self.config.get("destination_account")
+        if (not isinstance(expected, dict) or set(expected) != {"identity", "profile"} or
+                not isinstance(expected["identity"], str) or not expected["identity"].isdecimal() or
+                not isinstance(expected["profile"], str) or not Path(expected["profile"]).is_absolute()):
+            raise RuntimeError("configure destination_account with the registered nightly-only account's native identity and absolute profile; do not reuse a development or review account")
         # Reuse the administrator-registration check rather than trusting HOME.
         check = Path(self.config.get("account_check", Path(__file__).resolve().parents[2] /
                                      "scripts/ci/installation_account.py"))
@@ -181,6 +186,10 @@ class Journey:
         args = self.ssh("python3 -c " + shlex.quote(program))
         registered = self.command(args)
         self.record["destination_account"] = registered
+        self.persist()
+        if (registered.get("identity") != expected["identity"] or
+                registered.get("profile") != expected["profile"]):
+            raise RuntimeError("SSH destination differs from destination_account; restore the nightly-only SSH destination or register and configure its replacement before running")
         self.remote_root = str(Path(registered["profile"]) / self.remote_root)
         self.remote_se = self.remote_root + "/se"
 
