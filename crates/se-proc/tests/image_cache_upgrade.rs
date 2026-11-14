@@ -1,4 +1,6 @@
 //! A persisted digest must not hide an ordinary executable upgrade in a fresh process.
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_proc::{NativeStateFiles, native_ipc::*};
 use se_types::Sha256;
 use sha2::{Digest, Sha256 as Hasher};
@@ -64,8 +66,8 @@ fn image_upgrade_child() -> Result<()> {
 }
 #[test]
 fn persisted_image_hint_detects_upgrade() -> Result<()> {
-    let root = std::env::temp_dir().join(format!("se-cache-upgrade-{}", std::process::id()));
-    assert!(!root.exists(), "preserve an existing fixture");
+    let _root_owner = cleanup_directory::private_directory()?;
+    let root = _root_owner.to_path_buf();
     let files = NativeStateFiles::create(&root)?;
     let image = root.join(if cfg!(windows) {
         "original.exe"

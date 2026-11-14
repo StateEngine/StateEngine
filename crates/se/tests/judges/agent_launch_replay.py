@@ -73,6 +73,7 @@ def run(args):
             assert args.codex, "--codex is required for native Codex"
             model = TakeoverModel(f.root, f.repo)
             short = Path(tempfile.mkdtemp(prefix="se5p-replay-", dir="/tmp"))
+            print("fixture root (retained on failed or interrupted closure):", short, flush=True)
             code_home = f.root / "owned-codex-home"
             code_home.mkdir(mode=0o700)
             f.env.update(CODEX_HOME=str(code_home), OPENAI_API_KEY="sk-owned-loopback-no-account",

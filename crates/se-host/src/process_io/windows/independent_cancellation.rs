@@ -1,8 +1,10 @@
 //! Real prepared Windows scopes and IOCP pipes; no provider process or H05 is
 //! claimed. The child endpoints stay owned by the prepared launch until stop.
+#[path = "../../../../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use super::*;
 use se_proc::*;
-use std::{fs, future::Future, path::PathBuf, task::Poll, time::Instant as NativeInstant};
+use std::{fs, future::Future, task::Poll, time::Instant as NativeInstant};
 type Check<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 fn proc_error(error: ProcError) -> String {
     format!("{error:?}")
@@ -23,13 +25,15 @@ struct Fixture {
     owner: OwnedProcess,
     prepared: Option<PreparedLaunch>,
     generation: GenerationId,
-    root: PathBuf,
+    released: bool,
+    root_owner: Option<cleanup_directory::PrivateDirectory>,
 }
 impl Fixture {
     fn new() -> Check<Self> {
         let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
         let root = std::env::temp_dir().join(format!("se-wrapper-{}", se_types::hex_lower(&nonce)));
         fs::create_dir(&root)?;
+        let root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
         let root = fs::canonicalize(root)?;
         let machine = MachineId::new("independent-wrapper-cancellation")?;
         let host = HostInstanceId(nonce);
@@ -96,7 +100,8 @@ impl Fixture {
             owner: prepared.process,
             prepared: Some(prepared.prepared),
             generation,
-            root,
+            released: false,
+            root_owner: Some(root_owner),
         })
     }
     fn platform(&self) -> WindowsProviderIo<NativeProcessRuntime> {
@@ -130,7 +135,10 @@ impl Fixture {
             .map_err(proc_error)?;
         Ok(io.host)
     }
-    fn release(&self) -> Check {
+    fn release(&mut self) -> Check {
+        if self.released {
+            return Ok(());
+        }
         let stop = self
             .runtime
             .prepare_stop(
@@ -168,8 +176,17 @@ impl Fixture {
         {
             return Err("released wrapper still owns an arena entry".into());
         }
-        fs::remove_dir_all(&self.root)?;
+        self.released = true;
         Ok(())
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if let Err(error) = self.release()
+            && let Some(root) = self.root_owner.take()
+        {
+            root.retain(&format!("prepared wrapper release failed: {error}"));
+        }
     }
 }
 /// Poll once without replacing the real operation or its native completion.

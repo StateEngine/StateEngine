@@ -1,5 +1,7 @@
 //! Actual native custody failures must not invent a filesystem diagnosis.
 #![cfg(unix)]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -38,6 +40,7 @@ fn unsafe_home_reports_native_custody_and_preserves_existing_state() -> Check {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&root)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     let image = root.join("se");
     fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;

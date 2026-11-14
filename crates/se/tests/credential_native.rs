@@ -1,4 +1,6 @@
 //! Actual production credential adapter; never prints credential bytes/digests.
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 #[path = "../src/route/credential.rs"]
 mod credential;
 #[allow(
@@ -15,15 +17,10 @@ use std::{
     path::PathBuf,
 };
 type Check = Result<(), Box<dyn std::error::Error>>;
-struct Home(PathBuf);
+struct Home(cleanup_directory::PrivateDirectory);
 impl Home {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let root = std::env::temp_dir().join(format!(
-            "se-credential-native-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
+        let root = cleanup_directory::private_directory()?;
         drop(NativeStateFiles::create(&root)?);
         #[cfg(unix)]
         {
@@ -72,13 +69,6 @@ impl Home {
             assert_eq!(fs::metadata(&self.0)?.mode() & 0o777, 0o775);
         }
         Ok(secret)
-    }
-}
-impl Drop for Home {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_dir_all(&self.0) {
-            eprintln!("owned credential fixture cleanup: {error}");
-        }
     }
 }
 fn publication_and_reuse() -> Check {

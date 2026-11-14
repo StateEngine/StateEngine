@@ -8,6 +8,9 @@
 //! which carries only the `ses_` handle hooks resolve. Claude then runs as
 //! `claude -p` with stream-json input and output, so the host can write tasks
 //! and mail as user messages and read readiness from the provider's own echo.
+#[cfg(test)]
+#[path = "../../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use crate::{ConfigPlan, HarnessRequest, OwnedLaunchFile, ProviderInvocation};
 use se_types::{Body, NativePath, ProviderSessionId, Read, Result, SeError, Secret};
 use serde_json::{Value, json};
@@ -487,6 +490,8 @@ mod transcript_location_tests {
             "se-transcript-location-{}-{nonce}",
             std::process::id()
         ));
+        std::fs::create_dir(&base)?;
+        let _root_owner = cleanup_directory::PrivateDirectory::adopt(base.clone());
         let config_home = base.join("config");
         let cwd = base.join("cwd");
         let newer_root = base.join("newer-root");

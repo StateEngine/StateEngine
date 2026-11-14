@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import select
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -82,6 +83,7 @@ def run(args):
     with (f.home / "config.toml").open("rb") as source:
         (f.root / "config.json").write_text(json.dumps(tomllib.load(source)))
     runtime = Path(tempfile.mkdtemp(prefix="se-ad-", dir="/tmp"))
+    print("fixture root (retained on failed or interrupted closure):", runtime, flush=True)
     f.env.update(XDG_RUNTIME_DIR=str(runtime), TMPDIR=str(runtime),
                  STOP_ADMISSION_ROOT=str(f.root), STOP_ADMISSION_SE=str(f.se))
     for name in ["CODEX_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]:
@@ -204,6 +206,7 @@ def run(args):
             assert not (f.home / "endpoint.json").exists()
             with (f.home / "runtime.lock").open("rb") as lease:
                 fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            shutil.rmtree(runtime)
             check(True, "application shutdown closes recorded births, endpoint and native lease")
         except Exception:
             failures.append("outside closure: " + traceback.format_exc())

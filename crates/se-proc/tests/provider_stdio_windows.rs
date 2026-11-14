@@ -1,6 +1,8 @@
 //! Protects: real Windows IOCP stream custody, cancellation, generation fencing
 //! and exact close witnesses. Run on Windows; cross compilation is not execution.
 #![cfg(windows)]
+#[path = "../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use se_proc::*;
 use std::{
     fs,
@@ -179,6 +181,7 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
     let root: PathBuf =
         std::env::temp_dir().join(format!("se-native-streams-{}", se_types::hex_lower(&nonce)));
     fs::create_dir(&root)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
     let root = fs::canonicalize(root)?;
     eprintln!("provider stream fixture: {}", root.display());
     let machine = MachineId::new("independent-provider-streams")?;

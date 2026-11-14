@@ -1,5 +1,7 @@
 //! Real loopback consumers protect credential routing and complete response reads.
 #![cfg(feature = "listener")]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 #[cfg(unix)]
 use se_host::secode_process::Images;
 use se_host::{
@@ -11,21 +13,14 @@ use std::{
     fs,
     io::{Read, Write},
     net::TcpListener,
-    path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 type Check = Result<(), Box<dyn Error + Send + Sync>>;
-struct Profile(PathBuf);
+struct Profile(cleanup_directory::PrivateDirectory);
 impl Profile {
     fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let p = std::env::temp_dir().join(format!(
-            "service-boundary-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
+        let p = cleanup_directory::private_directory().map_err(|error| error.to_string())?;
         let files = se_proc::NativeStateFiles::create(&p)?;
         let mut stage = files.create_staging(&p)?;
         stage.file.write_all(b"review:synthetic-secret\n")?;
@@ -35,11 +30,6 @@ impl Profile {
     }
     fn control(&self, endpoint: &str) -> se_types::Result<Control> {
         Control::open(&self.0, endpoint)
-    }
-}
-impl Drop for Profile {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 fn deadline(ms: u64) -> se_types::Result<Deadline> {

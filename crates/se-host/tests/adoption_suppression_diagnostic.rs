@@ -1,6 +1,8 @@
 //! Reviewer-owned regression: a suppressed managed-ancestry hook leaves a
 //! bounded doctor observation that never becomes pending adoption status.
 #![cfg(any(target_os = "linux", windows))]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 
 use se_host::adoption::{Action, diagnostic};
 use se_types::ProjectId;
@@ -8,26 +10,15 @@ use std::{
     error::Error,
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 type Check = Result<(), Box<dyn Error>>;
 
-struct Scratch(PathBuf);
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_dir_all(&self.0) {
-            eprintln!("cannot remove owned diagnostic fixture: {error}");
-        }
-    }
-}
+type Scratch = cleanup_directory::PrivateDirectory;
 fn home() -> Result<(Scratch, PathBuf), Box<dyn Error>> {
-    let path = std::env::temp_dir().join(format!(
-        "se-adoption-diagnostic-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-    ));
-    se_proc::NativeStateFiles::create(&path)?;
-    Ok((Scratch(path.clone()), path))
+    let root = cleanup_directory::private_directory()?;
+    let path = root.to_path_buf();
+    se_proc::NativeStateFiles::create(&root)?;
+    Ok((root, path))
 }
 fn names(home: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     let mut names = Vec::new();

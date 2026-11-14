@@ -3,6 +3,8 @@
 //! The authorizer only pauses one prepare; it grants no extra SQL authority.
 #[path = "../../test-support/atlas_clock.rs"]
 mod test_clock;
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use se_atlas::{
     cache::{connection::*, *},
@@ -94,6 +96,7 @@ fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&base)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::adopt(base.clone());
     let repo = base.join("source");
     fs::create_dir(&repo)?;
     fs::write(repo.join("last.py"), "def retained_entry(): return 1\n")?;

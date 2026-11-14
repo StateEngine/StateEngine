@@ -15,23 +15,14 @@ use std::{fs, path::PathBuf};
 #[path = "support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 
 /// A fresh store home whose full path is longer than `MAX_PATH` allows.
-fn long_home() -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
-    // Process id and clock keep repeated runs apart; a failed run leaves this
-    // tree behind, and reusing its name would make the next run see a database
-    // that is already there.
-    let root = std::env::temp_dir().join(format!(
-        "se-long-path-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos()
-    ));
-    if root.exists() {
-        fs::remove_dir_all(&root)?;
-    }
-    let mut deep = root.clone();
+fn long_home() -> Result<(cleanup_directory::PrivateDirectory, PathBuf), Box<dyn std::error::Error>>
+{
+    let root = cleanup_directory::private_directory()?;
+    let mut deep = root.to_path_buf();
     // Each component stays within a normal filesystem limit; the total is what
     // exceeds MAX_PATH, which is the condition SQLite's sidecar open trips over.
     for index in 0..5 {
@@ -54,7 +45,7 @@ fn store_keeps_working_sidecars_beyond_max_path() -> Check {
         "fixture path is only {} characters",
         path.as_os_str().len()
     );
-    let fixture = Fixture::at(root.clone(), home.clone())?;
+    let fixture = Fixture::at(root.to_path_buf(), home.clone())?;
     let (direct, lease) = fixture.direct()?;
     // The fixture's setup already wrote the owner and project through the store,
     // which is a WAL-backed write at this path. Read one back before closing.

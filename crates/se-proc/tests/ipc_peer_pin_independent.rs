@@ -1,4 +1,7 @@
 #[cfg(target_os = "linux")]
+#[path = "../../test-support/directory_owner.rs"]
+mod cleanup_directory;
+#[cfg(target_os = "linux")]
 mod linux {
     use se_proc::native_ipc::{IpcPeerSide, observe_ipc_peer};
     use std::{
@@ -123,6 +126,7 @@ mod linux {
     fn socket_peer_proof_survives_peer_exit_and_closes_on_drop() -> Check {
         let root = std::env::temp_dir().join(format!("se-ipc-pin-{}", std::process::id()));
         fs::create_dir(&root)?;
+        let _root_owner = super::cleanup_directory::PrivateDirectory::adopt(root.clone());
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
         let path = root.join("socket");
         let listener = UnixListener::bind(&path)?;

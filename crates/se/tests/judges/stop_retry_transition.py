@@ -42,6 +42,7 @@ else:
         # A passing case removes this runtime directory; a failing one keeps it,
         # named in result.json, so the evidence survives the exception.
         runtime_dir = tempfile.mkdtemp(prefix="se-sretry-", dir="/tmp")
+        print("fixture root (retained on failed or interrupted closure):", runtime_dir, flush=True)
         runtime = Path(runtime_dir)
         failed_before = len(failures)
         arm, hit = f.root / "deny-signal", f.root / "signal-refused"
@@ -134,7 +135,7 @@ else:
             if len(failures) > failed_before:
                 record["runtime_directory"] = str(runtime_dir)
             else:
-                shutil.rmtree(runtime_dir, ignore_errors=True)
+                shutil.rmtree(runtime_dir)
             cases.append(record)
     result = {"se_sha256": hashlib.sha256(args.se.read_bytes()).hexdigest(),
               "checks": checks, "failures": failures, "cases": cases}

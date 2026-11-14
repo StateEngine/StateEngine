@@ -1,4 +1,6 @@
 //! Exercise the production native-pin scanner, including retries and cold joins.
+#[path = "../../../../../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use super::*;
 use se_core::ops::transcript::tool::{Outcome, Phase, Target};
 use se_store::RecordIdentity;
@@ -7,12 +9,20 @@ type Check = std::result::Result<(), Box<dyn std::error::Error>>;
 
 fn source(
     rows: &[Value],
-) -> std::result::Result<(BoundTranscript, Vec<u8>), Box<dyn std::error::Error>> {
+) -> std::result::Result<
+    (
+        cleanup_directory::PrivateDirectory,
+        BoundTranscript,
+        Vec<u8>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_nanos();
     let directory = std::env::temp_dir().join(format!("se-tools-{}-{nonce}", std::process::id()));
     std::fs::create_dir(&directory)?;
+    let root_owner = cleanup_directory::PrivateDirectory::adopt(directory.clone());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -27,6 +37,7 @@ fn source(
     std::fs::write(&path, &bytes)?;
     let pin = se_proc::NativeSourcePin::open(&path)?.ok_or("missing source")?;
     Ok((
+        root_owner,
         BoundTranscript {
             binding: crate::TranscriptPin {
                 identity: crate::SessionIdentity {
@@ -84,7 +95,7 @@ fn tool_only_progress_keeps_exact_ranges_and_cold_call_result_identity() -> Chec
         "sessionId":"tools-native","message":{"role":"user","content":[{
             "type":"tool_result","tool_use_id":"call-0","is_error":false,"content":"PRIVATE_OUTPUT"}]}}),
     ];
-    let (mut source, bytes) = source(&rows)?;
+    let (_root_owner, mut source, bytes) = source(&rows)?;
     let first = scan(&mut source, 0, se_store::Provider::Claude)?.ok_or("called fact missing")?;
     assert_eq!(first.request.role, se_store::Role::System);
     let record = Record::decode(first.request.text.as_str())?;
@@ -121,7 +132,8 @@ fn tool_only_progress_keeps_exact_ranges_and_cold_call_result_identity() -> Chec
 #[test]
 fn metadata_bound_flushes_prior_noise_and_never_skips_an_overfull_native_record() -> Check {
     let noise = json!({"type":"file-history-snapshot","snapshot":{}});
-    let (mut source, bytes) = source(&[noise.clone(), assistant((0..32).map(call).collect())])?;
+    let (_root_owner, mut source, bytes) =
+        source(&[noise.clone(), assistant((0..32).map(call).collect())])?;
     let first = scan(&mut source, 0, se_store::Provider::Claude)?.ok_or("noise prefix missing")?;
     let boundary = serde_json::to_vec(&noise)?.len() as u64 + 1;
     assert_eq!(first.request.new_offset, boundary);
@@ -137,7 +149,8 @@ fn metadata_bound_flushes_prior_noise_and_never_skips_an_overfull_native_record(
             .all(|m| m.record.captured_tool.is_some())
     );
     cleanup(source)?;
-    let (mut overfull, _) = self::source(&[assistant((0..33).map(call).collect())])?;
+    let (_overfull_owner, mut overfull, _) =
+        self::source(&[assistant((0..33).map(call).collect())])?;
     assert!(scan(&mut overfull, 0, se_store::Provider::Claude).is_err());
     assert!(
         overfull.tools.is_empty(),
@@ -162,7 +175,7 @@ fn codex_pin_retains_file_and_mcp_facts_without_turn_text_or_patch_content() -> 
             "arguments":{"query":"actual query"}}),
         ),
     ];
-    let (mut source, bytes) = source(&rows)?;
+    let (_root_owner, mut source, bytes) = source(&rows)?;
     let first = scan(&mut source, 0, se_store::Provider::Codex)?.ok_or("file fact")?;
     let file = Record::decode(first.request.text.as_str())?
         .captured_tool

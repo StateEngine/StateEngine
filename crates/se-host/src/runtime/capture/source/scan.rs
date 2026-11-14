@@ -1,5 +1,8 @@
 //! Count frequent bookkeeping while scanning one raw range, then publish it
 //! atomically with its next chat/continuity record. Live tails remain pending.
+#[cfg(test)]
+#[path = "../../../../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use super::super::claude::{self, TextRecord};
 use super::*;
 use se_core::ops::{
@@ -376,6 +379,7 @@ mod tests {
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let directory = std::env::temp_dir().join(format!("se-noise-unit-{}", std::process::id()));
         std::fs::create_dir(&directory)?;
+        let _root_owner = cleanup_directory::PrivateDirectory::adopt(directory.clone());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

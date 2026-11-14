@@ -1,4 +1,7 @@
 //! Named workspace permission for Git without a second command service.
+#[cfg(test)]
+#[path = "../../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use super::error;
 use se_types::Result;
 use std::{io::ErrorKind, path::PathBuf};
@@ -51,6 +54,7 @@ mod tests {
         let workspace =
             std::env::temp_dir().join(format!("se-git-profile-{}-{nonce}", std::process::id()));
         std::fs::create_dir(&workspace)?;
+        let _root_owner = cleanup_directory::PrivateDirectory::adopt(workspace.clone());
         let result = (|| -> std::result::Result<(), Box<dyn std::error::Error>> {
             assert_eq!(roots(workspace.clone(), false)?, vec![workspace.clone()]);
             assert!(roots(workspace.clone(), true).is_err());

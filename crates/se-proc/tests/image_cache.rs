@@ -1,3 +1,5 @@
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_proc::{NativeStateFiles, native_ipc::*};
 use se_types::Sha256;
 use std::{
@@ -49,6 +51,10 @@ fn restored_hint_keeps_native_self_identity() -> Result<()> {
 fn protected_cache_contract() -> Result<()> {
     let root = std::env::temp_dir().join(format!("se-image-cache-{}", std::process::id()));
     assert!(!root.exists(), "preserve an existing fixture");
+    eprintln!(
+        "cache custody fixture retained on failure: {}",
+        root.display()
+    );
     let files = NativeStateFiles::create(&root)?;
     let digest = observe_ipc_self_bounded(&bound())?.image_sha256();
     assert_eq!(
@@ -127,6 +133,7 @@ fn restored_modification_time_does_not_reuse_old_digest() -> Result<()> {
     let root = std::env::temp_dir().join(format!("se-image-ctime-{}", std::process::id()));
     assert!(!root.exists(), "preserve an existing fixture");
     fs::create_dir(&root)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
     let cache = root.join("cache");
     let files = NativeStateFiles::create(&cache)?;
     let image = root.join(if cfg!(windows) { "probe.exe" } else { "probe" });
@@ -200,7 +207,8 @@ fn changed_image_child() -> Result<()> {
 #[test]
 fn remote_image_hint_keeps_host_hint_and_changed_file_proof() -> Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
-    let root = std::env::temp_dir().join(format!("se-remote-cache-{}", std::process::id()));
+    let _root_owner = cleanup_directory::private_directory()?;
+    let root = _root_owner.to_path_buf();
     let files = NativeStateFiles::create(&root)?;
     let expected = observe_ipc_self_bounded(&bound())?.image_sha256();
     publish_image_cache(&root, expected, &bound())?;

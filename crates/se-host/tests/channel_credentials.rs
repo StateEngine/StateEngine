@@ -1,16 +1,14 @@
 //! Native custody tests use invalid dummy credentials, never a real provider token.
 #![cfg(any(target_os = "linux", windows))]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_host::channels::{ChannelError, NativeChannelCredentials};
 use se_types::{HumanId, StoreId};
-use std::path::PathBuf;
 type Check = Result<(), Box<dyn std::error::Error>>;
-struct Home(PathBuf);
+struct Home(cleanup_directory::PrivateDirectory);
 impl Home {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let path = std::env::temp_dir().join(format!(
-            "se-channel-custody-{}",
-            se_types::hex_lower(se_proc::random_secret()?.expose())
-        ));
+        let path = cleanup_directory::private_directory()?;
         drop(se_proc::NativeStateFiles::create(&path)?);
         Ok(Self(path))
     }
@@ -22,11 +20,6 @@ impl Home {
             HumanId::from_parts(1_700_000_000_001, [2; 10])
                 .map_err(|_| ChannelError::InvalidInput)?,
         )
-    }
-}
-impl Drop for Home {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 const DUMMY: &[u8] = b"123456:dummy_invalid_provider_token_123456\n";

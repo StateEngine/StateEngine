@@ -40,6 +40,7 @@ def run(args):
         pass''')
     helper.write_text(provider)
     runtime = Path(tempfile.mkdtemp(prefix='ot-first-', dir='/tmp'))
+    print("fixture root (retained on failed or interrupted closure):", runtime, flush=True)
     private_env = {'XDG_RUNTIME_DIR': str(runtime), 'TMPDIR': '/tmp'}
     for key, leaf in [('CODEX_HOME', 'codex'), ('XDG_CONFIG_HOME', 'config'),
                       ('XDG_CACHE_HOME', 'cache'), ('XDG_DATA_HOME', 'data'),

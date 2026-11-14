@@ -1,11 +1,13 @@
 //! Public CLI success and honest refusal from actual strict Windows jobs.
 #![cfg(windows)]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use std::{
     error::Error,
     fs,
     path::PathBuf,
     process::{Command, Output},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
 fn clear(command: &mut Command) {
@@ -26,15 +28,13 @@ struct Fixture {
     executable: PathBuf,
     home: PathBuf,
     host: Option<se_proc::ProcessIdentity>,
+    root_owner: Option<cleanup_directory::PrivateDirectory>,
 }
 impl Fixture {
-    fn new(case: &str) -> Result<Self> {
+    fn new(_case: &str) -> Result<Self> {
         se_proc::initialize_file_creation_owner()?;
-        let root = std::env::temp_dir().join(format!(
-            "se-job-{case}-{}-{}",
-            std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
-        ));
+        let root_owner = cleanup_directory::private_directory()?;
+        let root = root_owner.to_path_buf();
         drop(se_proc::NativeStateFiles::create(&root)?);
         // Cargo hard-links its binary; the installed runtime requires a single-link image.
         let executable = root.join("se.exe");
@@ -44,6 +44,7 @@ impl Fixture {
             root,
             executable,
             host: None,
+            root_owner: Some(root_owner),
         };
         fs::create_dir(fixture.root.join("repo"))?;
         fixture.ok(&[
@@ -229,10 +230,9 @@ impl Drop for Fixture {
         if self.root.exists()
             && let Err(error) = self.stop()
         {
-            eprintln!(
-                "retaining owned strict-job fixture {}: {error}",
-                self.root.display()
-            );
+            if let Some(root) = self.root_owner.take() {
+                root.retain(&format!("strict-job shutdown failed: {error}"));
+            }
         }
     }
 }

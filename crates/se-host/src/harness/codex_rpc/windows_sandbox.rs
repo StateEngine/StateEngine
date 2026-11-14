@@ -168,6 +168,10 @@ pub fn require_ready(
 }
 
 #[cfg(test)]
+#[path = "../../../../test-support/directory.rs"]
+mod test_directory;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -179,11 +183,12 @@ mod tests {
         }
     }
 
-    fn home(name: &str, contents: Option<&str>) -> std::io::Result<std::path::PathBuf> {
-        let path =
-            std::env::temp_dir().join(format!("se-windows-sandbox-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path)?;
+    fn home(
+        _name: &str,
+        contents: Option<&str>,
+    ) -> std::result::Result<super::test_directory::PrivateDirectory, Box<dyn std::error::Error>>
+    {
+        let path = super::test_directory::private_directory()?;
         if let Some(contents) = contents {
             std::fs::write(path.join("config.toml"), contents)?;
         }
@@ -191,7 +196,8 @@ mod tests {
     }
 
     #[test]
-    fn the_users_own_value_is_read_or_the_file_refuses() -> std::io::Result<()> {
+    fn the_users_own_value_is_read_or_the_file_refuses()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         assert_eq!(user_choice(&home("absent", None)?).ok(), Some(None));
         assert_eq!(
             user_choice(&home("value", Some("[windows]\nsandbox = \"elevated\"\n"))?)

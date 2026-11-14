@@ -1,5 +1,7 @@
 //! Real native reader across an executable/exit race. Only the observer is interposed.
 #![cfg(target_os = "linux")]
+#[path = "../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use se_proc::{
     MachineId, ProcErrorCode, ProcessIdentity, ProcessRead, read_process, read_process_until,
 };
@@ -44,6 +46,7 @@ fn wait_ready(path: &Path, child: &mut Child) -> Check {
 fn native_executable_exit_requires_fresh_facts_and_keeps_the_original_bound() -> Check {
     let root = std::env::temp_dir().join(format!("se-exit-read-{}", std::process::id()));
     std::fs::create_dir(&root)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
     let library = root.join("readlink-fault.so");
     let compiled = Command::new("cc")
         .args([

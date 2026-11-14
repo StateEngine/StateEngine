@@ -1,6 +1,8 @@
 #![cfg(target_os = "linux")]
 //! Development consumer of the real controller/runtime, retained filesystem and
 //! scoped SQL ports. Synthetic parser/SQL profiles are NOT B4 qualification.
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_atlas::{
     cache::{connection::*, *},
     controller::Controller,

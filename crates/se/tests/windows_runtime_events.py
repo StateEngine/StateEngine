@@ -355,6 +355,7 @@ def main():
     args.cleanup_se = (args.cleanup_se or args.se).resolve(strict=True)
     args.out.mkdir(mode=0o700)
     root = Path(tempfile.mkdtemp(prefix='se-console-events-'))
+    print("fixture root (retained on failed or interrupted closure):", root, flush=True)
     image = root / 'se.exe'
     shutil.copy2(args.se, image)
     digest = hashlib.sha256(args.se.read_bytes()).hexdigest()
@@ -383,6 +384,15 @@ def main():
             # Never allow a failed prior host to contaminate a different home.
             print('STOP: prior case did not prove native cleanup; no next host started', flush=True)
             break
+    if not report['failed']:
+        try:
+            shutil.rmtree(root)
+        except OSError as error:
+            rows[-1]['cleanup_errors'].append('fixture removal: ' + str(error))
+            rows[-1]['passed'] = False
+            report['passed'] = sum(row['passed'] for row in rows)
+            report['failed'] = sum(not row['passed'] for row in rows)
+            (args.out / 'results.json').write_text(json.dumps(report, indent=2))
     print(f"Windows console events: {report['passed']} passed, {report['failed']} failed", flush=True)
     return 1 if report['failed'] else 0
 

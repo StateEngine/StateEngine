@@ -1,5 +1,7 @@
 //! Protected executable hints must preserve kernel-observed caller and image identity.
 #![cfg(target_os = "linux")]
+#[path = "../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use se_proc::{NativeStateFiles, native_ipc::*};
 use se_types::{BootId, MachineId, ProcessFields, ProcessInstance, Sha256};
 use std::{
@@ -49,11 +51,14 @@ struct Fixture {
     root: PathBuf,
     image: PathBuf,
     listener: UnixListener,
+    _root_owner: cleanup_directory::PrivateDirectory,
 }
 impl Fixture {
     fn new() -> Check<Self> {
         let root = std::env::temp_dir().join(format!("se-native-hint-{}", std::process::id()));
-        assert!(!root.exists(), "preserve an existing fixture");
+        fs::create_dir(&root)?;
+        let root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
+        fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
         drop(NativeStateFiles::create(&root)?);
         let image = root.join("client");
         fs::copy(std::env::current_exe()?, &image)?;
@@ -65,6 +70,7 @@ impl Fixture {
             root,
             image,
             listener,
+            _root_owner: root_owner,
         })
     }
     fn exchange(&self, mode: &str, digest: Sha256) -> Check<(NativeIpcPeer, Vec<u8>)> {
@@ -179,6 +185,9 @@ fn unreadable_remote_hint_refuses_after_warming_native_self_proof() -> Check {
     // This test has its own process under nextest; distinct names also support libtest.
     let root =
         std::env::temp_dir().join(format!("se-native-hint-unreadable-{}", std::process::id()));
+    fs::create_dir(&root)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     drop(NativeStateFiles::create(&root)?);
     let digest = observe_ipc_self_bounded(&bound())?.image_sha256();
     assert_eq!(

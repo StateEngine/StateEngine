@@ -1,6 +1,8 @@
 #![cfg(target_os = "linux")]
 //! Regression from the qualified Linux 1 KiB/512-row parser counterexample.
 //! Real source/controller/cache consumer; the synthetic SQL profile proves no memory bound.
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_atlas::{
     cache::{connection::*, *},
     controller::Controller,
@@ -135,6 +137,7 @@ fn parser_limit_retains_stale_graph_and_other_files_keep_renewing() -> Check {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&root)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
     fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
     let repo = root.join("repo");
     fs::create_dir(&repo)?;

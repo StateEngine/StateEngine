@@ -1,4 +1,6 @@
 //! Production registry publication: slow durable I/O cannot hold other sessions' map lock.
+#[path = "../../../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use super::*;
 use se_store::RecordIdentity;
 use std::{
@@ -15,6 +17,7 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 struct Source {
     path: std::path::PathBuf,
     pin: Option<BoundTranscript>,
+    _root_owner: cleanup_directory::PrivateDirectory,
 }
 impl Source {
     fn new() -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
@@ -31,6 +34,7 @@ impl Source {
             builder.mode(0o700);
         }
         builder.create(&directory)?;
+        let root_owner = cleanup_directory::PrivateDirectory::adopt(directory.clone());
         let path = directory.join("source.jsonl");
         std::fs::write(&path, b"source\n")?;
         let pin = se_proc::NativeSourcePin::open(&path)?.ok_or("native source absent")?;
@@ -53,6 +57,7 @@ impl Source {
                 queue: Default::default(),
                 tools: Default::default(),
             }),
+            _root_owner: root_owner,
         })
     }
     fn take(

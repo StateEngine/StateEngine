@@ -1,6 +1,8 @@
 //! Public-consumer checks for the shared Windows security and launch mechanics.
 //! Native Windows execution is required; a cross-check supplies no runtime grade.
 #![cfg(windows)]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_proc::{native_ipc::*, *};
 use std::{
     ffi::OsStr,
@@ -12,10 +14,7 @@ use std::{
     },
     path::{Path, PathBuf},
     ptr,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
@@ -65,26 +64,13 @@ impl Drop for Descriptor {
         }
     }
 }
-struct Home(PathBuf);
+struct Home(cleanup_directory::PrivateDirectory);
 impl Home {
     fn new() -> Check<Self> {
         se_proc::initialize_file_creation_owner()?;
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let suffix = se_types::hex_lower(&se_proc::random_secret()?.expose()[..8]);
-        let path = std::env::temp_dir().join(format!(
-            "se-windows-native-{}-{}-{suffix}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let path = cleanup_directory::private_directory()?;
         drop(NativeStateFiles::create(&path)?);
         Ok(Self(path))
-    }
-}
-impl Drop for Home {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_dir_all(&self.0) {
-            eprintln!("owned Windows native judge cleanup: {error}");
-        }
     }
 }
 fn sid() -> Check<String> {

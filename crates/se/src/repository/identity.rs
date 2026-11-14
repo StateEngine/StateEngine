@@ -6,6 +6,9 @@
 //! can only re-attach the repository that was registered. Every Git
 //! invocation passes a top-precedence `core.fsmonitor=false` command
 //! parameter and bounded output, matching the init repository observation.
+#[cfg(test)]
+#[path = "../../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use se_types::{Result, SeError, details};
 #[cfg(test)]
 use std::process::Command;
@@ -263,17 +266,18 @@ mod tests {
         }
         Ok(())
     }
-    fn fresh_repo(tag: &str) -> Result<PathBuf> {
+    fn fresh_repo(tag: &str) -> Result<cleanup_directory::PrivateDirectory> {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let dir =
             std::env::temp_dir().join(format!("se-git-id-{}-{stamp}-{tag}", std::process::id()));
-        std::fs::create_dir_all(&dir)
+        std::fs::create_dir(&dir)
             .map_err(|e| SeError::invalid("test repository", &e.to_string()))?;
-        git(&dir, &["init", "-b", "main"])?;
-        Ok(dir)
+        let owner = cleanup_directory::PrivateDirectory::adopt(dir);
+        git(&owner, &["init", "-b", "main"])?;
+        Ok(owner)
     }
     fn commit(dir: &Path, file: &str, body: &str) -> Result<()> {
         std::fs::write(dir.join(file), body)
@@ -330,6 +334,9 @@ mod tests {
             .unwrap_or(0);
         let bare =
             std::env::temp_dir().join(format!("se-git-id-{}-{stamp}-bare", std::process::id()));
+        std::fs::create_dir(&bare)
+            .map_err(|e| SeError::invalid("test repository", &e.to_string()))?;
+        let bare = cleanup_directory::PrivateDirectory::adopt(bare);
         git(
             &plain,
             &[

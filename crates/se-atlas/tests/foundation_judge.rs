@@ -126,13 +126,14 @@ fn setup() -> Result<(Native, CacheSeed, SqlProfile), Box<dyn Error>> {
             .as_nanos()
     ));
     fs::create_dir(&dir)?;
+    let native = Native { dir };
     let scope = Scope::new(
         RootRegistration {
             project: ProjectId::from_parts(1, [1; 10])?,
             root: RootId::from_parts(1, [2; 10])?,
-            canonical_source_root: dir.clone(),
+            canonical_source_root: native.dir.clone(),
             cache: CacheLocation {
-                directory: dir.clone(),
+                directory: native.dir.clone(),
             },
             git_metadata: None,
         },
@@ -151,11 +152,7 @@ fn setup() -> Result<(Native, CacheSeed, SqlProfile), Box<dyn Error>> {
         coverage,
         state: IndexState::Current,
     };
-    Ok((
-        Native { dir },
-        seed,
-        SqlProfile::from_qualified_overhead(1)?,
-    ))
+    Ok((native, seed, SqlProfile::from_qualified_overhead(1)?))
 }
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)

@@ -1,5 +1,8 @@
 //! Isolated native error returns must never become fabricated process facts.
 #[cfg(target_os = "macos")]
+#[path = "../../test-support/directory_owner.rs"]
+mod cleanup_directory;
+#[cfg(target_os = "macos")]
 mod macos {
     use se_proc::{MachineId, ProcErrorCode, ProcessId, read_process, read_process_until};
     use std::{
@@ -42,6 +45,7 @@ mod macos {
         let scratch =
             std::env::temp_dir().join(format!("se-darwin-reader-fault-{}", std::process::id()));
         std::fs::create_dir(&scratch)?;
+        let _root_owner = super::cleanup_directory::PrivateDirectory::adopt(scratch.clone());
         let source = scratch.join("fault.c");
         let library = scratch.join("fault.dylib");
         let mut file = std::fs::OpenOptions::new()

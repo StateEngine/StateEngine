@@ -96,6 +96,7 @@ def run_case(args, library, case):
     f = Fixture(args.se, args.output / case, log_directory="calls")
     compile_provider(f)
     runtime = Path(tempfile.mkdtemp(prefix="se-sc-"))
+    print("fixture root (retained on failed or interrupted closure):", runtime, flush=True)
     gate = runtime / "gate"
     gate.mkdir()
     f.env.update(TMPDIR=str(runtime), XDG_RUNTIME_DIR=str(runtime),
@@ -236,6 +237,7 @@ def run_case(args, library, case):
                 assert "Xvfb -displayfd" in current["command"]
                 os.kill(display.pid, signal.SIGTERM)
             display.wait(timeout=10)
+        outside_closed = False
         try:
             with (f.home / "runtime.lock").open("rb") as lease:
                 fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -243,11 +245,16 @@ def run_case(args, library, case):
             assert all(gone(pin) for pin in pins)
             result["outside"] = [{"before": pin, "after": native(pin["pid"])} for pin in pins]
             check(True, "foreground Ctrl-C drained all recorded births, removed the endpoint and released the lease")
+            outside_closed = True
         except Exception:
             result["failures"].append("outside closure: " + traceback.format_exc())
         result["markers"] = {p.name: p.read_text() for p in gate.iterdir() if p.is_file()}
+        if outside_closed:
+            try:
+                shutil.rmtree(runtime)
+            except OSError:
+                result["failures"].append("fixture removal: " + traceback.format_exc())
         (f.root / "result.json").write_text(json.dumps(result, indent=2))
-        shutil.rmtree(runtime)
     return result
 
 

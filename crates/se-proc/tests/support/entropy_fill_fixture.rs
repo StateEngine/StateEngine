@@ -1,23 +1,13 @@
-use std::{fs, path::PathBuf, process::Command};
+#[path = "../../../test-support/directory.rs"]
+mod cleanup_directory;
+use std::{fs, process::Command};
 pub type Check = Result<(), Box<dyn std::error::Error>>;
-pub struct Home(pub PathBuf);
+pub struct Home(pub cleanup_directory::PrivateDirectory);
 impl Home {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let path = std::env::temp_dir().join(format!(
-            "se-entropy-fill-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
+        let path = cleanup_directory::private_directory()?;
         drop(se_proc::NativeStateFiles::create(&path)?);
         Ok(Self(path))
-    }
-}
-impl Drop for Home {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_dir_all(&self.0) {
-            eprintln!("owned entropy judge cleanup: {error}");
-        }
     }
 }
 pub fn run_child(name: &str) -> Check {

@@ -1,5 +1,7 @@
 //! Development integration exercise. Synthetic capacity profiles exercise the
 //! algorithm only; they are NOT measured admission profiles or B4 evidence.
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_atlas::{
     cache::{connection::*, *},
     lifecycle::*,
@@ -87,6 +89,7 @@ fn complete_file_stale_recovery_and_publication() -> Check {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&dir)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::adopt(dir.clone());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

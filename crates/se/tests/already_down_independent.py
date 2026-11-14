@@ -39,6 +39,7 @@ def main():
     setup = (args.setup_se or args.se).resolve(strict=True)
     args.out.mkdir(mode=0o700)
     root = Path(tempfile.mkdtemp(prefix='se-already-down-', dir=Path.home()))
+    print("fixture root (retained on failed or interrupted closure):", root, flush=True)
     binary = root / 'se'
     shutil.copy2(image, binary)
     env = {'HOME': str(root), 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
@@ -138,6 +139,11 @@ def main():
                 failures.append('public fixture cleanup failed; endpoint retained')
         if user.read_bytes() != b'Keep user work.\n':
             failures.append('user work changed')
+        if not failures:
+            try:
+                shutil.rmtree(root)
+            except OSError as error:
+                failures.append('fixture removal: ' + str(error))
         report = {'passed': not failures, 'failures': failures, 'calls': calls,
                   'fixture_root': str(root), 'known_host': known,
                   'binary_sha256': hashlib.sha256(image.read_bytes()).hexdigest(),

@@ -1,3 +1,5 @@
+#[path = "../../../../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use super::*;
 use std::{
     fs,
@@ -19,6 +21,7 @@ struct Process {
     root: PathBuf,
     child: Child,
     helper: PathBuf,
+    _root_owner: cleanup_directory::PrivateDirectory,
 }
 
 impl Fixture {
@@ -34,6 +37,7 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&root)?;
+        let root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
         let openssl = |args: &[&str]| -> Check<()> {
             let output = Command::new("openssl")
@@ -115,6 +119,7 @@ impl Fixture {
             root: root.clone(),
             child,
             helper,
+            _root_owner: root_owner,
         };
         let started = std::time::Instant::now();
         while !root.join("ready.json").exists() {

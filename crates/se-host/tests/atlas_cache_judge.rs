@@ -1,5 +1,7 @@
 //! Native cache ownership and file cleanup through the host's production adapter.
 //! SqlProfile(1) exercises the plumbing; this does not qualify SQL RSS overhead.
+#[path = "../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use se_atlas::{
     cache::{connection::*, pointer, *},
     model::*,
@@ -20,6 +22,7 @@ struct Fixture {
     dir: PathBuf,
     home: PathBuf,
     scope: Scope,
+    _root_owner: cleanup_directory::PrivateDirectory,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -34,6 +37,7 @@ fn fixture() -> Result<Fixture, Box<dyn Error>> {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&dir)?;
+    let root_owner = cleanup_directory::PrivateDirectory::adopt(dir.clone());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -54,7 +58,12 @@ fn fixture() -> Result<Fixture, Box<dyn Error>> {
         },
         [3; 32],
     )?;
-    Ok(Fixture { dir, home, scope })
+    Ok(Fixture {
+        dir,
+        home,
+        scope,
+        _root_owner: root_owner,
+    })
 }
 fn epoch(n: u8) -> Result<CacheEpoch, Box<dyn Error>> {
     Ok(CacheEpoch::from_parts(1, [n; 10])?)

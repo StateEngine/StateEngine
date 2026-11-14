@@ -5,6 +5,9 @@
 #[path = "../../test-support/atlas_clock.rs"]
 mod test_clock;
 #[cfg(all(target_os = "linux", not(debug_assertions)))]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
+#[cfg(all(target_os = "linux", not(debug_assertions)))]
 mod native {
     use se_atlas::{
         cache::{connection::*, *},
@@ -147,6 +150,7 @@ mod native {
         let source = base.join("source");
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new().mode(0o700).create(&base)?;
+        let _root_owner = super::cleanup_directory::PrivateDirectory::adopt(base.clone());
         fs::create_dir(&source)?;
         git(&source, &["init", "--initial-branch=main"])?;
         for index in 0..5 {

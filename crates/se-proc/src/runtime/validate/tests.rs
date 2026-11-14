@@ -21,7 +21,8 @@ fn verbatim_only_child_is_inside_plain_workspace_but_not_its_plain_alias()
     let name: String = se_types::hex_lower(&entropy);
     let path = std::env::temp_dir().join(format!("se-workspace-path-{name}"));
     fs::create_dir(&path)?;
-    let home = Home(fs::canonicalize(path)?);
+    let mut home = Home(path);
+    home.0 = fs::canonicalize(&home.0)?;
     let plain = crate::canonicalize_path(&home.0)?;
     fs::create_dir(home.0.join("literal"))?;
     let cwd = home.0.join("literal.");

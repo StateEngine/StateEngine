@@ -1,4 +1,6 @@
 #![cfg(target_os = "linux")]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 use se_proc::{NativeSourceRoot, NativeSourceWatch, NativeWatchAction, NativeWatchEvents};
 use std::{
     fs,
@@ -15,6 +17,7 @@ fn retained_directory_events_do_not_wake_for_source_reads() -> Check {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&path)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::adopt(path.clone());
     let root = NativeSourceRoot::open(&path)?;
     let watch = NativeSourceWatch::new()?;
     let registration = watch
@@ -58,6 +61,7 @@ fn watch_subscription_refuses_source_links_and_replaced_roots() -> Check {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&path)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::adopt(path.clone());
     fs::create_dir(path.join("outside"))?;
     fs::create_dir(path.join("source"))?;
     symlink(path.join("outside"), path.join("source/escape"))?;
@@ -99,6 +103,7 @@ fn directory_cursor_survives_its_callers_root_borrow() -> Result<(), Box<dyn std
     let directory =
         std::env::temp_dir().join(format!("atlas-owned-watch-cursor-{}", std::process::id()));
     std::fs::create_dir(&directory)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::adopt(directory.clone());
     std::fs::write(directory.join("a.rs"), "fn a() {}")?;
     let mut cursor = {
         let root = se_proc::NativeSourceRoot::open(&directory)?;
