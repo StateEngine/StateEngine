@@ -1,0 +1,46 @@
+name: Sent mail author checks
+
+on:
+  push:
+    branches: [prime/sent-mail-checks-r1]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sent-mail-checks-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 3877da0649a18483a845975da2e49a3410c2a9a4
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - run: cargo fmt --all -- --check
+      - name: Strict Clippy on the changed core and host consumers
+        run: cargo clippy -p se-core -p se-host --all-targets --all-features --locked -- -D warnings
+      - name: Existing shared mail decoding and channel privacy controls
+        run: |
+          cargo test -p se-core --test mail_id_arguments --all-features --locked
+          cargo test -p se-store --test channels --all-features --locked -- --test-threads=1
+      - name: Existing public CLI and MCP mail flow
+        if: ${{ runner.os == 'Linux' }}
+        run: cargo test -p se --test mail_cli_independent --all-features --locked -- --test-threads=1
