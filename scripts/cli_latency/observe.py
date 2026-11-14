@@ -11,6 +11,7 @@ import sys
 
 from support import ROUNDS, load, prepare, require, save, summaries, timed
 from phases import profile
+from host_phases import profile as host_profile
 from workloads import ACTIONS, arguments, readback, setup, validate
 
 
@@ -95,9 +96,15 @@ def condition(output, images, provider, dirty, action):
             order = ('base', 'head') if index % 2 == 0 else ('head', 'base')
             pair = dict(index=index, kind='first-timed' if index == 0 else 'warm',
                         order=order, before=load(), samples={})
+            host_trace = directory / 'head' / 'host-phases.log'
+            trace_start = host_trace.stat().st_size
             for side in order:
                 argv = arguments(smokes[side], action, facts[side]['state'], index)
                 pair['samples'][side] = timed(smokes[side], argv)
+            with host_trace.open('rb') as trace:
+                trace.seek(trace_start)
+                pair['host_phase_lines'] = trace.read().decode('ascii').splitlines()
+            pair['host_pid'] = facts['head']['pid']
             pair['after'] = load()
             record['pairs'].append(pair)
             if index % 25 == 0:
@@ -112,6 +119,7 @@ def condition(output, images, provider, dirty, action):
             require(after == fact['identity'], 'Native serving identity changed during timing')
         record['summary'] = summaries(record['pairs'])
         record['phase_profile'] = profile(record['pairs'])
+        record['host_phase_profile'] = host_profile(record['pairs'], facts['head']['pid'])
         record['exit'] = 0
     except Exception as error:
         record['error'] = str(error)

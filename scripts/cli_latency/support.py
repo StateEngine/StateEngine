@@ -62,6 +62,12 @@ def prepare(directory, image, provider, dirty, smokes, side):
     smokes[side] = smoke
     smoke.state = smoke.home / 'stateengine-state'
     smoke.commands.environment['SE_HOME'] = str(smoke.state)
+    if side == 'head':
+        trace = directory / 'host-phases.log'
+        with trace.open('x'):
+            pass
+        trace.chmod(0o600)
+        smoke.commands.environment['SE_HOST_PHASE_PROFILE'] = str(trace.resolve())
     smoke.binary.parent.mkdir(parents=True)
     shutil.copyfile(image['image'], smoke.binary)
     smoke.binary.chmod(0o500)

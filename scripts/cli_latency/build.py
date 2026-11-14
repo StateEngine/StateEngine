@@ -15,7 +15,7 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = {
     'base': '9048c76edca7e53fb60fa80674af5c33d66c457e',
-    'head': '3c867f841341cb1ea40d72662393da4ac6049e36',
+    'head': '4cbeb5d124980a030cabb0b2990ba800be4551ba',
 }
 
 
@@ -28,8 +28,10 @@ def main():
         raise RuntimeError('This measurement requires a disposable Linux runner')
     parent = subprocess.check_output(['git', 'rev-parse', SOURCES['head'] + '^'],
                                      cwd=ROOT, text=True).strip()
-    if parent != SOURCES['base']:
-        raise RuntimeError('The comparison base is not the frozen head parent')
+    if parent != '3c867f841341cb1ea40d72662393da4ac6049e36':
+        raise RuntimeError('The diagnostic source parent changed')
+    subprocess.run(['git', 'merge-base', '--is-ancestor', SOURCES['base'], SOURCES['head']],
+                   cwd=ROOT, check=True)
     output = Path(sys.argv[1]).resolve()
     output.mkdir(parents=True, exist_ok=False)
     images = output / 'images'
