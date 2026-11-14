@@ -10,7 +10,6 @@ pub mod ports;
 pub mod scope;
 pub mod store_error;
 
-pub mod config_policy;
 pub mod harness_selection;
 pub mod registry;
 pub mod remote;

@@ -22,7 +22,7 @@ pub struct CliSelections {
     pub status_all: bool,
     pub control_all: bool,
     pub stop_release: bool,
-    pub launch_provider: Option<crate::config_policy::Provider>,
+    pub launch_provider: Option<se_config::config_policy::Provider>,
 }
 impl CliSelections {
     pub fn validate(&self) -> Result<()> {

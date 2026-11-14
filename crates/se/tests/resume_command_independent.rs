@@ -113,10 +113,8 @@ fn non_utf8_configured_home_never_becomes_a_different_receipt_home() -> Check {
 #[cfg(unix)]
 #[test]
 fn human_launch_stop_hint_preserves_the_receipt_home_project_and_agent() -> Check {
-    use se_core::{
-        config_policy::{ConfigFile, Provider},
-        ops::{AgentCommand, LaunchResult, ProcessView, ResumeCommand},
-    };
+    use se_config::config_policy::{ConfigFile, Provider};
+    use se_core::ops::{AgentCommand, LaunchResult, ProcessView, ResumeCommand};
     use se_types::{LaunchId, LifecycleId, Named, ProviderSessionId, SessionId};
     let f = Fixture::new()?;
     let home = Path::new("/private/Selected home");

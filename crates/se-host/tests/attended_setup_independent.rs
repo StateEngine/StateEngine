@@ -1,9 +1,9 @@
 //! Independent core consumers over a protected store and FULL writer.
 //! These typed fixtures establish projection/planning rules, not native expiry.
 #![cfg(any(target_os = "linux", windows))]
+use se_config::config_policy::ConfigFile;
 use se_core::{
     commit::Cx,
-    config_policy::ConfigFile,
     dispatch::{CallFacts, Kernel},
     ops::{
         agent_launch::{AgentLaunch, LaunchPlan},

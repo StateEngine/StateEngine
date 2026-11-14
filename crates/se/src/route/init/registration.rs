@@ -3,7 +3,7 @@ use super::*;
 pub(super) struct Plan<'a> {
     pub input: &'a ProjectInit,
     pub repository: &'a repository::Repository,
-    pub configuration: &'a se_core::config_policy::ConfigFile,
+    pub configuration: &'a se_config::config_policy::ConfigFile,
 }
 #[expect(
     clippy::too_many_lines,
