@@ -56,5 +56,9 @@ fn nested_launch_discards_parent_provider_and_identity_markers()
 #[test]
 fn saved_conversation_launch_explains_resume_and_age_and_new_starts_fresh()
 -> Result<(), Box<dyn std::error::Error>> {
-    judge("resume")
+    for attempt in 1..=20 {
+        eprintln!("launch/stop repetition {attempt}/20");
+        judge("resume")?;
+    }
+    Ok(())
 }
