@@ -366,7 +366,7 @@ fn dispatch_with_cold_recovery(
         mode: LeaseMode::DirectClient,
     };
     let lease = DirectLease::acquire(
-        Files::open(&cx.home).map_err(|e| store_error(&e))?,
+        &files,
         &cx.home.join("runtime.lock"),
         identity,
     )
