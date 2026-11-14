@@ -157,7 +157,13 @@ pub(super) fn endpoint_with_origin(
                 };
                 match attempt {
                     Ok(started) => {
-                        report_started(&started, endpoint_recovery.as_ref(), origin, diagnostic)?;
+                        report_started(
+                            &started,
+                            endpoint_recovery.as_ref(),
+                            origin,
+                            bound,
+                            diagnostic,
+                        )?;
                         return Ok(started.endpoint);
                     }
                     Err(failed) => failure = Some(failed),
@@ -170,8 +176,12 @@ fn report_started(
     started: &crate::runtime::host::StartedHost,
     recovery: Option<&se_core::ops::EndpointRecovery>,
     origin: StartupOrigin,
+    bound: &Deadline,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<()> {
+    if matches!(origin, StartupOrigin::Explicit) {
+        super::process::from_identity(&started.ready.identity, bound)?;
+    }
     if matches!(origin, StartupOrigin::Automatic)
         && let Some(recovery) = recovery
     {
