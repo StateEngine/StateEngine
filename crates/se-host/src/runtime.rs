@@ -1,8 +1,14 @@
-#[cfg(not(all(feature = "listener", any(target_os = "linux", windows))))]
+#[cfg(not(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+)))]
 pub struct LaunchCoordinator {
     pub(crate) _private: (),
 }
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 pub use crate::process::LaunchCoordinator;
 
 #[cfg(all(feature = "listener", target_os = "linux", target_env = "gnu"))]

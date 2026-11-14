@@ -1,5 +1,7 @@
 //! Author development consumer: a real embedded host over CLI-created state.
 #![cfg(feature = "secode")]
+#[path = "../../test-support/directory.rs"]
+mod cleanup_directory;
 #[path = "support/selector_services.rs"]
 mod services;
 #[path = "support/shutdown_linked_fixture.rs"]
@@ -38,6 +40,11 @@ fn cli(image: &Path, root: &Path, args: &[&str]) -> Check<String> {
         .args(args)
         .env_clear()
         .env("PATH", std::env::var_os("PATH").ok_or("PATH missing")?)
+        .envs(
+            ["SystemRoot", "WINDIR", "TEMP", "TMP"]
+                .into_iter()
+                .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
+        )
         .env("HOME", root)
         .env("USERPROFILE", root)
         .output()?;
@@ -62,6 +69,7 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
     );
     let root = std::env::temp_dir().join(format!("sel-{}", std::process::id()));
     fs::create_dir(&root)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
     let home = root.join("state");
     let repo = root.join("repo");
     fs::create_dir(&repo)?;
@@ -85,6 +93,9 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
             "--json",
         ],
     )?;
+    // Init consumed the original temporary path above. Only the catalog's
+    // expected value uses its canonical spelling; setup still exercises aliases.
+    let repo = se_proc::canonicalize_path(&repo)?;
     let initialized: serde_json::Value = serde_json::from_str(&initialized)?;
     let selected = api::ProjectId(
         initialized["project"]["id"]
@@ -420,6 +431,6 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
         result(opened.host.close(drained, options).await)?;
         Ok::<(), Box<dyn std::error::Error>>(())
     })?;
-    fs::remove_dir_all(&root)?;
-    Ok(())
+
+    _root_owner.finish(Ok(()))
 }

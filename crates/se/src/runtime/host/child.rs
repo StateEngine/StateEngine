@@ -148,7 +148,7 @@ fn serve(
         log.note("Host process preparation started");
     }
     let initialized = se_host::initialize_host_process()?;
-    let config = crate::config::load::<se_core::config_policy::ConfigFile>(
+    let config = crate::config::load::<se_config::config_policy::ConfigFile>(
         &configuration,
         configuration != home.join("config.toml"),
     )?;

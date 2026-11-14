@@ -37,7 +37,7 @@ fn native_admission_host() -> Check {
     let root = PathBuf::from(std::env::var_os("STOP_ADMISSION_ROOT").ok_or("fixture root absent")?);
     let home = root.join("state");
     let configuration = home.join("config.toml");
-    let config: se_core::config_policy::ConfigFile =
+    let config: se_config::config_policy::ConfigFile =
         serde_json::from_slice(&std::fs::read(root.join("config.json"))?)?;
     let machine: serde_json::Value =
         serde_json::from_slice(&std::fs::read(home.join("machine.json"))?)?;

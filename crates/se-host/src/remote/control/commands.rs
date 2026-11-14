@@ -23,11 +23,8 @@ pub(crate) async fn execute(
             window: None,
         });
     }
-    let initialize = matches!(
-        &input,
-        OwnerInput::Bootstrap { .. } | OwnerInput::Add { .. } | OwnerInput::PrepareAdd { .. }
-    );
-    let (control, owner) = Control::prepare(router, owner, initialize, deadline).await?;
+    let (control, owner) =
+        Control::prepare(router, owner, input.initializes_resources(), deadline).await?;
     let value = match input {
         OwnerInput::Authorize(authorization) => {
             serde_json::to_value(control.security.authorize_channel(authorization).await?)
@@ -82,6 +79,34 @@ pub(crate) async fn execute(
         OwnerInput::LaunchPermissions(request) => {
             control
                 .launch_permissions(router, owner, request, deadline)
+                .await?
+        }
+        OwnerInput::PairingPermissions {
+            alias,
+            after,
+            change,
+        } => {
+            control
+                .pairing_permissions(router, owner, alias, after, change, deadline)
+                .await?
+        }
+        OwnerInput::SourcePermissions(request) => {
+            control
+                .source_permissions(router, owner, request, deadline)
+                .await?
+        }
+        OwnerInput::LocalPairingPermissions { after, change } => {
+            control
+                .source_permissions(
+                    router,
+                    owner,
+                    ssh::PermissionsRequest {
+                        permissions: control.security.host(),
+                        after,
+                        change,
+                    },
+                    deadline,
+                )
                 .await?
         }
         OwnerInput::Disable => {

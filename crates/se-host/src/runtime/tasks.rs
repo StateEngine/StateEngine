@@ -41,7 +41,7 @@ impl OwnershipFault {
                 )
             })
     }
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(any(unix, test))]
     pub(crate) fn retain_native(
         &self,
         task: tokio::task::JoinHandle<()>,

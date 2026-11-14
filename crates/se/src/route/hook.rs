@@ -1,17 +1,17 @@
 //! Native hook writes always use a host. A cold call gets one finite bootstrap
 //! clock, joins a concurrent starter and never writes through a direct store.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use super::execute;
 use super::files::Files;
 use crate::bootstrap::Bootstrap;
 use se_types::{Result, SeError};
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use {
     se_host::client::{ClientOptions, lease::Deadline},
     std::sync::Arc,
 };
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub fn forward(
     cx: &Bootstrap,
     files: &Files,
@@ -48,7 +48,7 @@ pub fn forward(
     )
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn forward(
     _cx: &Bootstrap,
     _files: &Files,

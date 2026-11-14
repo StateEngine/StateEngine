@@ -4,13 +4,8 @@ use super::{
     agent_launch::{AgentLaunch, LaunchPlan},
     inputs::Validate,
 };
-use crate::{
-    commit::Cx,
-    config_policy::{ConfigFile, EffectiveSandbox, Provider},
-    dispatch::Kernel,
-    scope,
-    store_error::store_error,
-};
+use crate::{commit::Cx, dispatch::Kernel, scope, store_error::store_error};
+use se_config::config_policy::{ConfigFile, EffectiveSandbox, Provider};
 use se_store::{Actor, EventBody, PermissionProfile, Snapshot};
 use se_types::{AgentId, Named, ProviderSessionId, Read, Result, SeError};
 

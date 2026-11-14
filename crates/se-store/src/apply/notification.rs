@@ -16,8 +16,18 @@ pub(super) fn sent(c: &Connection, seq: i64, recipient: &[u8], quiet: bool) -> S
     if connection::info(c)?.schema_version < 4 {
         return Ok(());
     }
-    let human: bool = c.query_row("SELECT p.principal_kind='human' FROM principals p JOIN message_deliveries d ON d.project_id=p.project_id AND d.recipient_id=p.principal_id WHERE d.sent_seq=? AND d.recipient_id=?", crate::sql_value::sql_params![seq,recipient], |r|r.get(0)).map_err(sql)?;
-    let state = if human {
+    let human: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM principals p JOIN message_deliveries d ON d.project_id=p.project_id AND d.recipient_id=p.principal_id WHERE d.sent_seq=? AND d.recipient_id=? AND p.principal_kind='human')", crate::sql_value::sql_params![seq,recipient], |r|r.get(0)).map_err(sql)?;
+    let remote = if connection::info(c)?.schema_version >= 12 {
+        c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM remote_reply_outbox WHERE event_seq=?)",
+            [seq],
+            |r| r.get::<_, bool>(0),
+        )
+        .map_err(sql)?
+    } else {
+        false
+    };
+    let state = if human || remote {
         "not-applicable"
     } else if quiet {
         "quiet"

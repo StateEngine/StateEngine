@@ -114,6 +114,97 @@ pub fn plan_send(
     attribution: RemoteAttribution,
     facts: RemoteSendFacts,
 ) -> Result<AtomicBatch> {
+    plan_message(
+        admission,
+        MessageInput {
+            target: input.target,
+            session: Some(input.session),
+            body: input.body,
+            idempotency_key: input.idempotency_key,
+            reply_to: None,
+            operation: "remote.send",
+            kind: "note".into(),
+            quiet: false,
+        },
+        attribution,
+        facts,
+    )
+}
+
+pub fn plan_reply(
+    admission: RemoteAdmission,
+    input: se_types::remote::RemoteSendReply,
+    attribution: RemoteAttribution,
+    mut facts: RemoteSendFacts,
+) -> Result<AtomicBatch> {
+    input.validate()?;
+    let source = attribution
+        .source
+        .as_ref()
+        .ok_or_else(|| scope::unreadable("remote reply", "its authenticated source address"))?
+        .address();
+    // A renewed grant has a different writer principal. Stable event identity
+    // fences a late old-grant completion from duplicating this same source mail.
+    // Its timestamp comes from the original native source message, not a hash.
+    let bytes = input
+        .source_message
+        .canonical_bytes()?
+        .ok_or_else(|| scope::unreadable("remote reply", "a canonical native source message ID"))?;
+    let millis = u64::from_be_bytes([
+        0, 0, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+    ]);
+    for (purpose, event) in [
+        ("message", &mut facts.sent_event),
+        ("attribution", &mut facts.attribution_event),
+    ] {
+        let digest = Sha256::digest(
+            serde_json::to_vec(&(
+                "remote-reply/v1",
+                &source,
+                &facts.store.id,
+                &input.target,
+                &input.source_message,
+                purpose,
+            ))
+            .map_err(|e| scope::unreadable("remote reply identity", &e.to_string()))?,
+        );
+        let mut random = [0; 10];
+        random.copy_from_slice(&digest[..10]);
+        *event = EventId::from_parts(millis, random)?;
+    }
+    plan_message(
+        admission,
+        MessageInput {
+            target: input.target,
+            session: None,
+            body: input.body,
+            idempotency_key: input.idempotency_key,
+            reply_to: Some(input.reply_to),
+            operation: "remote.reply",
+            kind: input.kind,
+            quiet: input.quiet,
+        },
+        attribution,
+        facts,
+    )
+}
+
+struct MessageInput {
+    target: RemoteTarget,
+    session: Option<se_types::SessionId>,
+    body: se_types::Body,
+    idempotency_key: se_types::IdempotencyKey,
+    reply_to: Option<MessageId>,
+    operation: &'static str,
+    kind: String,
+    quiet: bool,
+}
+fn plan_message(
+    admission: RemoteAdmission,
+    input: MessageInput,
+    attribution: RemoteAttribution,
+    facts: RemoteSendFacts,
+) -> Result<AtomicBatch> {
     if admission.verb != RemoteVerb::Send
         || admission.targets.as_slice() != [input.target.clone()]
         || input.body.is_empty()
@@ -129,7 +220,14 @@ pub fn plan_send(
     let key = request_key(&attribution, &input.idempotency_key)?;
     let origin = attribution.source.as_ref().map(|source| source.address());
     let grant = admission.grant;
-    let intent=serde_json::to_vec(&serde_json::json!({"operation":"remote.send","codec_version":1,"source":origin,"grant":grant.grant,"authority_revision":grant.authority_revision,"target":input.target,"session":input.session,"body":input.body})).map_err(|e|scope::unreadable("remote send intent",&e.to_string()))?;
+    let mut intent = serde_json::json!({"operation":input.operation,"codec_version":1,"source":origin,"grant":grant.grant,"authority_revision":grant.authority_revision,"target":input.target,"session":input.session,"body":input.body});
+    if let Some(reply) = &input.reply_to {
+        intent["reply_to"] = serde_json::json!(reply);
+        intent["kind"] = serde_json::json!(input.kind);
+        intent["quiet"] = serde_json::json!(input.quiet);
+    }
+    let intent = serde_json::to_vec(&intent)
+        .map_err(|e| scope::unreadable("remote message intent", &e.to_string()))?;
     let local = Admission {
         scope: Scope::Project(input.target.project.clone()),
         actor: Actor::Remote(grant.principal.clone()),
@@ -162,7 +260,7 @@ pub fn plan_send(
         request: Some(RequestIdentity {
             key,
             intent: IntentDigest {
-                operation: "remote.send",
+                operation: input.operation,
                 codec_version: 1,
                 sha256: Sha256::digest(intent).into(),
             },
@@ -173,11 +271,11 @@ pub fn plan_send(
                 body: EventBody::MessageSent {
                     message: facts.message,
                     recipient: Actor::Agent(input.target.agent),
-                    kind: "note".into(),
+                    kind: input.kind,
                     body: InputText::Inline(input.body.into()),
-                    quiet: false,
+                    quiet: input.quiet,
                     refs: Vec::new(),
-                    reply_to: None,
+                    reply_to: input.reply_to,
                 },
             },
             NewEvent {
@@ -203,7 +301,6 @@ pub fn request_key(
         se_types::hex_lower(&Sha256::digest(bytes))
     ))
 }
-
 #[cfg(test)]
 mod identity_tests {
     use super::*;

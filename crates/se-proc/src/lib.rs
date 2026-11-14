@@ -5,6 +5,10 @@
 //! Windows system uninstall carrier have concrete native implementations. Native
 //! resource layouts are intentionally opaque; no handle is Clone or Default.
 
+// Shared native fixture helpers use the same crate path in unit and integration tests.
+#[cfg(test)]
+extern crate self as se_proc;
+
 #[cfg(windows)]
 mod windows_directory;
 #[cfg(windows)]
@@ -43,9 +47,9 @@ pub use uninstall::{
     HelperCleanupOutcome, NativeUninstallCarrier, UninstallHelperCleanup, UninstallNativeError,
 };
 mod ownership;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod process_command;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use process_command::read_process_command;
 #[cfg(target_os = "linux")]
 mod process_descendants;
@@ -69,7 +73,11 @@ pub use state_files::{
     StateFileError, StateFileErrorCode,
 };
 #[cfg(windows)]
+mod child_pipe;
+#[cfg(windows)]
 mod stdio;
+#[cfg(windows)]
+pub use child_pipe::NativeChildPipe;
 
 pub use error::*;
 pub use identity::*;
@@ -84,9 +92,9 @@ pub use ownership::*;
 #[cfg(windows)]
 pub use stdio::*;
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod bootstrap;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use bootstrap::{
     NativeRuntimeIdentity, RuntimeAdmission, RuntimeBootstrap, RuntimeStartupStderr,
     current_process_identity, current_runtime_identity,

@@ -1,7 +1,7 @@
 //! The closed wave-one DTOs. Surface adapters supply authority and entropy separately.
 use crate::commit::{MessageSend, WorkingStateSet};
-use crate::config_policy::Provider;
 use schemars::JsonSchema;
+use se_config::config_policy::Provider;
 use se_types::{
     Cursor, Detail, IdempotencyKey, MESSAGE_BODY_MAX_BYTES, Result, SeError,
     WORKING_STATE_MAX_BYTES, details,
@@ -200,7 +200,7 @@ impl Validate for WorkingStateGet {
 impl Validate for ProjectInit {
     fn validate(&self) -> Result<()> {
         if let Some(harness) = &self.harness {
-            crate::config_policy::harness::validate_name(harness)?;
+            se_config::config_policy::harness::validate_name(harness)?;
             if self.adopt && !matches!(harness.as_str(), "claude" | "codex") {
                 return Err(SeError::invalid(
                     "harness",

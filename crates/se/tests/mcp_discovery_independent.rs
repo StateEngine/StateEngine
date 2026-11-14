@@ -98,14 +98,14 @@ async fn stdio_list(home: &Path, capability: &str) -> Result<Value, Box<dyn std:
 
 #[test]
 fn real_stdio_client_lists_every_available_registered_tool() -> Check {
-    discovery(se_core::config_policy::ConfigFile::default())
+    discovery(se_config::config_policy::ConfigFile::default())
 }
 
 /// Bug: PR 186 — a disabled Atlas still advertised its five query tools.
 #[test]
 #[cfg(target_os = "linux")]
 fn disabled_atlas_is_not_advertised_over_http_or_stdio() -> Check {
-    let mut config = se_core::config_policy::ConfigFile::default();
+    let mut config = se_config::config_policy::ConfigFile::default();
     config.atlas.enabled = false;
     discovery(config)
 }
@@ -114,7 +114,7 @@ fn disabled_atlas_is_not_advertised_over_http_or_stdio() -> Check {
     clippy::too_many_lines,
     reason = "one real-host scenario shared by the enabled and disabled catalogues"
 )]
-fn discovery(config: se_core::config_policy::ConfigFile) -> Check {
+fn discovery(config: se_config::config_policy::ConfigFile) -> Check {
     let atlas_enabled = config.atlas.enabled;
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;

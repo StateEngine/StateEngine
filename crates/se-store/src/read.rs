@@ -475,6 +475,19 @@ impl Snapshot for SqliteSnapshot {
         self.require_local_port()?;
         self.read_remote_message_attribution(id)
     }
+    fn remote_return_sender(
+        &mut self,
+        message: se_types::MessageId,
+    ) -> StoreResult<Option<se_types::remote::RemoteAgentAddress>> {
+        self.read_return_sender(message)
+    }
+    fn remote_reply_recipient(
+        &mut self,
+        original: se_types::MessageId,
+        selector: &str,
+    ) -> StoreResult<Option<Actor>> {
+        self.read_remote_reply_recipient(original, selector)
+    }
     fn messages(
         &mut self,
         query: MessageQuery,

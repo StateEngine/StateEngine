@@ -15,6 +15,9 @@ pub(crate) fn validate_batch(
     info: &StoreInfo,
     now: i64,
 ) -> StoreResult<Option<LaunchAuthority>> {
+    if crate::return_mail::validate_returns(c, batch)? {
+        return Ok(None);
+    }
     if super::validate_launch(c, batch, info, now)? {
         return Ok(Some(LaunchAuthority(())));
     }
@@ -66,6 +69,7 @@ pub(crate) fn validate_batch(
         .ok_or_else(denied)?;
     let g = read::grant(c, &attr.grant)?.ok_or_else(denied)?;
     let stamp = &attr.attribution;
+    super::admit_source(c, stamp.source.as_ref())?;
     if &attr.principal != principal
         || g.principal != *principal
         || g.store != info.id
@@ -103,9 +107,13 @@ pub(crate) fn validate_batch(
     if message.0 != &attr.message
         || message.1 != &Actor::Agent(attr.target.agent.clone())
         || !message.3.is_empty()
-        || message.4.is_some()
     {
         return Err(denied());
+    }
+    match (&attr.expected_session, message.4) {
+        (Some(_), None) => (),
+        (None, Some(original)) => crate::return_mail::validate_incoming_reply(c, attr, original)?,
+        _ => return Err(denied()),
     }
     match message.2 {
         InputText::Inline(body)
@@ -138,17 +146,14 @@ pub(crate) fn validate_new_batch(c: &Connection, batch: &AtomicBatch) -> StoreRe
     }) else {
         return Ok(());
     };
+    let Some(expected_session) = &attr.expected_session else {
+        return Ok(());
+    };
     let p = crate::identity::key(c, "project", attr.target.project.as_str(), &[0], false)?;
     let mut namespace = vec![1];
     namespace.extend_from_slice(&p);
     let agent = crate::identity::key(c, "agent", attr.target.agent.as_str(), &namespace, false)?;
-    let session = crate::identity::key(
-        c,
-        "session",
-        attr.expected_session.as_str(),
-        &namespace,
-        false,
-    )?;
+    let session = crate::identity::key(c, "session", expected_session.as_str(), &namespace, false)?;
     let active:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=? AND agent_id=? AND session_id=? AND state='active')",rusqlite::params![p,agent,session],|r|r.get(0)).map_err(sql)?;
     if !active {
         return Err(denied());

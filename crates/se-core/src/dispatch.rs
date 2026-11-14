@@ -26,7 +26,7 @@ pub struct CallFacts {
 }
 pub struct Kernel {
     facts: Option<CallFacts>,
-    configuration: Option<crate::config_policy::ConfigFile>,
+    configuration: Option<se_config::config_policy::ConfigFile>,
     config_origin: Option<String>,
     read_at: Option<se_types::UnixMicros>,
     command_home: Option<std::path::PathBuf>,
@@ -88,7 +88,7 @@ impl Kernel {
     /// a model-facing operation argument or a fallback to ambient defaults.
     pub fn with_configuration(
         mut self,
-        configuration: crate::config_policy::ConfigFile,
+        configuration: se_config::config_policy::ConfigFile,
     ) -> Result<Self> {
         configuration.validate()?;
         self.configuration = Some(configuration);
@@ -186,7 +186,33 @@ impl CoreOps for Kernel {
             }
             None
         } else {
-            Some(scope::selected_actor(cx, &input.to)?)
+            let remote = input
+                .reply_to
+                .as_ref()
+                .map(|original| {
+                    cx.read
+                        .remote_reply_recipient(original.clone(), &input.to)
+                        .map_err(|error| store_error(&error))
+                })
+                .transpose()?
+                .flatten();
+            if remote.is_none()
+                && input.to.split_once('/').is_some_and(|(host, rest)| {
+                    host.len() == 64
+                        && host.bytes().all(|b| b.is_ascii_hexdigit())
+                        && rest.contains('/')
+                })
+            {
+                return Err(SeError::new(se_types::Detail::CapabilityInvalid(se_types::details::CapabilityInvalid {
+                    subject: "remote reply contact".into(),
+                    reason: "this recipient has no authenticated message from that source address".into(),
+                    next_step: "Reply from the original recipient's current session using the sender address and original message ID as reply_to. The destination Owner can restore revoked source access with se remote permissions --local in a terminal on the destination.".into(),
+                })));
+            }
+            Some(match remote {
+                Some(actor) => actor,
+                None => scope::selected_actor(cx, &input.to)?,
+            })
         };
         let registry = cx.read.legacy_registry().map_err(|e| store_error(&e))?;
         let refs = input

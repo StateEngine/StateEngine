@@ -5,19 +5,20 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
-    io::{self, Read},
     path::PathBuf,
     time::{Duration, Instant},
 };
 #[cfg(target_os = "linux")]
-mod linux;
-#[cfg(target_os = "linux")]
-use linux as os;
+use unix::linux as os;
+#[cfg(target_os = "macos")]
+use unix::macos as os;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 use windows as os;
 mod diagnostics;
+#[cfg(unix)]
+mod unix;
 pub use diagnostics::RuntimeStartupStderr;
 mod validation;
 use validation::{endpoint_matches, validate_spec};
@@ -383,12 +384,19 @@ impl NativeProcessApi for NativeProcessRuntime {
                 ProcessRead::Present(live) => live.identity,
                 _ => return Err(input("runtime startup", "native child has already exited")),
             };
-            child.state.identity = Some(observed.clone());
+            #[cfg(not(target_os = "macos"))]
+            {
+                child.state.identity = Some(observed.clone());
+            }
             let reported: ProcessIdentity =
                 serde_json::from_slice(&frame_read(&mut child.state.events, spec.deadline)?)
                     .map_err(|e| input("runtime identity frame", &e.to_string()))?;
             if reported != observed {
                 return Err(changed(&observed, Some(&reported)));
+            }
+            #[cfg(target_os = "macos")]
+            {
+                child.state.identity = Some(observed.clone());
             }
             os::verify_image(&child.state.native, &spec.executable, &observed)?;
             os::settle_launcher(&mut child.state.native, spec.deadline)?;

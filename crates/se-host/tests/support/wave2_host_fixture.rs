@@ -278,7 +278,7 @@ pub async fn old_stop_unproved(f: &Fixture, writer: &SqliteClient) -> Check {
 
 /// Bind and retain the actual fixture listener; no released port probe can race startup.
 pub fn configure_private_listener(host: &mut HostedRuntime) -> Check {
-    host.configure(se_core::config_policy::ConfigFile::default())?;
+    host.configure(se_config::config_policy::ConfigFile::default())?;
     host.bind_loopback()?;
     Ok(())
 }

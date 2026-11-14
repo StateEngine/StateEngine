@@ -17,6 +17,9 @@ pub(super) fn resume<R: Snapshot>(
     cx: &mut Cx<'_, R>,
 ) -> Result<ResumeOutput> {
     let mut data = read::gather(&input, &identity, input.limit, cx)?;
+    if let Some(failure) = input.source_failure.clone() {
+        data.failures.push(failure);
+    }
     let mut result = initial(&input, at, &identity, &data)?;
     fit(&input, &identity, &mut data, &mut result, cx, |value, _| {
         wire_bytes("se.resume/v1", value)
@@ -41,6 +44,9 @@ pub(super) fn context<R: Snapshot>(
     cx: &mut Cx<'_, R>,
 ) -> Result<SessionContextOutput> {
     let mut data = read::gather(&input, &identity, input.limit, cx)?;
+    if let Some(failure) = input.source_failure.clone() {
+        data.failures.push(failure);
+    }
     let mut result = initial(&input, at, &identity, &data)?;
     fit(
         &input,
@@ -191,7 +197,7 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
         }
         // A since cursor asks what changed: spend recovery duplication and
         // older saved context before discarding those newly captured turns.
-        if input.since.is_some() && super::compact::recovery(result)? {
+        if input.since.is_some() && super::compact::recovery(result) {
             continue;
         }
         if input.since.is_none() && trim_turn(result, data, input, needed)? {
@@ -222,19 +228,14 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
             ));
             continue;
         }
-        if input.byte_budget <= DEFAULT_BYTES && super::compact::recovery(result)? {
+        if input.byte_budget <= DEFAULT_BYTES && super::compact::recovery(result) {
             continue;
         }
         if input.byte_budget <= DEFAULT_BYTES
-            && (input.since.is_some()
-                || result
-                    .omissions
-                    .iter()
-                    .any(|item| item.section == "working_state"))
             && super::compact::expanded(
                 result,
                 read::resume_command(identity, input.since.as_ref())?,
-            )?
+            )
         {
             continue;
         }
@@ -282,8 +283,9 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
                 .text
                 .len()
                 .saturating_sub(needed - input.byte_budget as usize + 8);
-            if value.command.is_some() && input.byte_budget <= DEFAULT_BYTES {
-                limit = limit.max(value.value.text.len().min(256));
+            if input.byte_budget <= DEFAULT_BYTES {
+                // Shared recovery must not erase the last saved-work fragment.
+                limit = limit.max(value.value.text.len().min(128));
             }
             if limit < value.value.text.len() {
                 value.value.text = read::clip(&value.value.text, limit).into();
@@ -296,6 +298,9 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
             }
         }
         if input.since.is_some() && trim_turn(result, data, input, needed)? {
+            continue;
+        }
+        if super::compact::unread_preview(result, needed - input.byte_budget as usize) {
             continue;
         }
         return Err(read::budget_refusal(identity, input, needed)?);

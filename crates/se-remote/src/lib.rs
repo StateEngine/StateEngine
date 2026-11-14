@@ -65,6 +65,43 @@ pub trait CredentialSource: Send + Sync {
 /// One authenticated multiplexed connection; callers never choose its identity
 /// by changing per-connection state. Every operation carries its own source fence.
 pub trait RemoteClient: Send + Sync {
+    fn reply(
+        &self,
+        _call: RemoteCallContext,
+        _request: RemoteSendReply,
+    ) -> RemoteFuture<'_, RemoteSendResult> {
+        Box::pin(async {
+            Err(se_types::SeError::invalid(
+                "remote reply",
+                "a destination supporting durable return conversations; update both installations through pairing",
+            ))
+        })
+    }
+    fn resolve_contact(
+        &self,
+        _call: RemoteCallContext,
+        _request: RemoteResolveContact,
+    ) -> RemoteFuture<'_, RemoteContactResult> {
+        Box::pin(async {
+            Err(se_types::SeError::invalid(
+                "remote contact recovery",
+                "a destination supporting scoped receipt recovery; update both installations through pairing",
+            ))
+        })
+    }
+    fn replies(
+        &self,
+        _call: RemoteCallContext,
+        _request: RemoteReplies,
+    ) -> RemoteFuture<'_, RemoteRepliesResult> {
+        Box::pin(async {
+            Err(se_types::SeError::invalid(
+                "remote return mail",
+                "a destination supporting durable replies; update both installations through pairing",
+            ))
+        })
+    }
+
     fn launch(
         &self,
         _call: RemoteCallContext,

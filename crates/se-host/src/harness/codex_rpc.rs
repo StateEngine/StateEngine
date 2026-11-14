@@ -28,7 +28,7 @@ use crate::{
     ProviderInterrupt, ProviderInvocation, ProviderIoPlatform, ProviderStream, ProviderTransport,
     ProviderVersion, StreamRead,
 };
-use se_core::config_policy::{ConfigFile, Provider, ResolvedProfile};
+use se_config::config_policy::{ConfigFile, Provider, ResolvedProfile};
 use se_types::{NativePath, ProviderSessionId, Read, Result, SeError};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};

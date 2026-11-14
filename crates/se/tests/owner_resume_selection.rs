@@ -3,10 +3,7 @@
 mod fixture;
 use fixture::*;
 use se_store::*;
-use std::{
-    fs,
-    process::{Command, Output},
-};
+use std::process::{Command, Output};
 
 fn run(f: &Fixture, args: &[String]) -> Result<Output, Box<dyn std::error::Error>> {
     Ok(Command::new(env!("CARGO_BIN_EXE_se"))
@@ -27,9 +24,7 @@ fn run(f: &Fixture, args: &[String]) -> Result<Output, Box<dyn std::error::Error
 fn owner_resume_refusal_lists_saved_agents_with_the_exact_home_and_project() -> Check {
     let mut f = Fixture::new()?;
     let renamed = f.home.with_extension("owner's selected home");
-    fs::rename(&f.home, &renamed)?;
-    f.home = renamed;
-    f.options.state_directory = f.home.join("state");
+    f.move_home(renamed)?;
     let (mut store, lease) = f.direct()?;
     for (agent, key) in [(&f.a, "profile-a"), (&f.b, "profile-b")] {
         store.append(

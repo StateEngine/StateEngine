@@ -395,6 +395,10 @@ impl<T> Page<T> {
     pub fn items(&self) -> &[T] {
         &self.items
     }
+    /// Edit row values without changing the checked row count or cursors.
+    pub fn items_mut(&mut self) -> &mut [T] {
+        &mut self.items
+    }
     pub fn window(&self) -> &Window {
         &self.window
     }

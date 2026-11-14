@@ -1,3 +1,5 @@
+#[path = "../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use se_proc::{NativeSourceKind, NativeSourceRoot};
 use std::{
     collections::BTreeMap,
@@ -12,6 +14,8 @@ fn retained_directory_streams_restart_and_reject_replaced_names() -> Check {
         std::process::id(),
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
+    fs::create_dir(&base)?;
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(base.clone());
     let root = base.join("root");
     fs::create_dir_all(root.join("nested"))?;
     fs::write(root.join("file.rs"), "fn example() {}")?;
@@ -73,6 +77,6 @@ fn retained_directory_streams_restart_and_reject_replaced_names() -> Check {
     assert_eq!(fs::read(base.join("moved/retained.rs"))?, b"retained");
     drop(cursor);
     drop(source);
-    fs::remove_dir_all(base)?;
-    Ok(())
+
+    _root_owner.finish(Ok(()))
 }

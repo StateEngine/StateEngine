@@ -4,7 +4,7 @@
 mod admit;
 #[path = "route/adoption.rs"]
 pub(crate) mod adoption;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "route/autostart.rs"]
 pub(crate) mod autostart;
 #[path = "route/clock.rs"]
@@ -22,10 +22,7 @@ mod endpoint_diagnostic;
 pub mod execute;
 #[path = "route/files.rs"]
 pub mod files;
-#[path = "route/git_identity.rs"]
-mod git_identity;
-#[path = "route/git_state.rs"]
-mod git_state;
+use crate::repository::{identity as git_identity, state as git_state};
 mod harness_setup;
 #[path = "route/hook.rs"]
 mod hook;
@@ -59,7 +56,7 @@ mod status;
 #[path = "route/uninstall.rs"]
 pub mod uninstall;
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use runtime_control::foreground;
 
 #[path = "route/command_hint.rs"]

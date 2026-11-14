@@ -16,6 +16,11 @@ mod agent_observation;
 pub mod channels;
 pub mod client;
 pub mod remote;
+#[cfg(feature = "remote")]
+mod return_mail;
+#[cfg(test)]
+#[path = "../../test-support/directory.rs"]
+mod test_directory;
 #[cfg(feature = "runtime")]
 pub use agent_observation::{
     AgentObservation, AgentObservationPlan, observe_agent, prepare_agent_observation,
@@ -36,15 +41,23 @@ mod ipc;
 pub mod mcp;
 pub use mcp::{McpBackend, McpReply};
 mod model;
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 mod process;
 #[cfg(feature = "listener")]
-#[path = "process/io/mod.rs"]
 mod process_io;
 mod runtime;
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 pub use process::launch_util::resolve_provider as resolve_provider_executable;
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+#[cfg(all(
+    feature = "listener",
+    any(target_os = "linux", target_os = "macos", windows)
+))]
 pub use process::{ProcessConfiguration, ProcessDrain, ProcessOptions, Reconciliation};
 #[cfg(all(unix, feature = "listener"))]
 pub use process_io::UnixProviderIo;

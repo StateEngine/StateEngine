@@ -351,6 +351,7 @@ impl Connection {
     ) -> Result<Reply> {
         let key = match &invocation.request {
             RemoteRequest::Send(r) => Some(("remote.send", r.idempotency_key.to_string())),
+            RemoteRequest::Reply(r) => Some(("remote.reply", r.idempotency_key.to_string())),
             RemoteRequest::Launch(r) => Some(("remote.launch", r.idempotency_key.to_string())),
             _ => None,
         };

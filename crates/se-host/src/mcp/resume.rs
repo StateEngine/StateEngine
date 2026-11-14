@@ -61,11 +61,14 @@ async fn select(
         if needed <= limit {
             return response;
         }
+        let content_bytes = output.to_string().len();
         smallest = Some(output);
         if input.byte_budget as usize <= floor {
             break;
         }
+        // Unused requested budget must not consume packet-fitting retries.
         let next = (input.byte_budget as usize)
+            .min(content_bytes)
             .saturating_mul(limit)
             .checked_div(needed)
             .unwrap_or(0)
@@ -191,6 +194,7 @@ mod tests {
     }
     fn input() -> Resume {
         Resume {
+            source_failure: None,
             limit: 20,
             since: None,
             byte_budget: 4096,

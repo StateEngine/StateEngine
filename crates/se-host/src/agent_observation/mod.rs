@@ -211,7 +211,7 @@ pub fn observe_agent(
         plan.row.resume.command = command.as_ref().map(|command| command.command.clone());
         plan.row.resume.argv = command.map(|command| command.argv);
     } else if live
-        && plan.row.provider == se_core::config_policy::Provider::Claude
+        && plan.row.provider == se_config::config_policy::Provider::Claude
         && plan.row.session.surface.as_deref() == Some("window")
         && plan.row.session.recorded_state.as_deref() == Some("prepared")
     {

@@ -82,6 +82,45 @@ impl RemoteLaunchResult {
     pub const SCHEMA: &str = "stateengine.remote-launch/v1";
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteReplyMessage {
+    pub message: MessageId,
+    pub original: MessageId,
+    pub sender: super::RemoteAgentAddress,
+    pub body: crate::Body,
+    pub kind: String,
+    pub quiet: bool,
+    pub occurred_at_us: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteRepliesBody {
+    pub messages: Vec<RemoteReplyMessage>,
+    pub next: Option<crate::Cursor>,
+    pub more: bool,
+}
+pub type RemoteRepliesResult = RemoteResponse<RemoteRepliesBody>;
+impl RemoteRepliesResult {
+    pub const SCHEMA: &str = "stateengine.remote-replies/v1";
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteResolvedContact {
+    pub message: MessageId,
+    pub event: crate::EventId,
+    pub source: super::RemoteAgentAddress,
+    pub target: RemoteTarget,
+    pub original_grant: super::RemoteGrantId,
+    pub idempotency_key: crate::IdempotencyKey,
+}
+pub type RemoteContactResult = RemoteResponse<Read<RemoteResolvedContact>>;
+impl RemoteContactResult {
+    pub const SCHEMA: &str = "stateengine.remote-contact/v1";
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteTurnRole {

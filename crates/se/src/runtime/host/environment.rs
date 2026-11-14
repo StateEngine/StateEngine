@@ -28,7 +28,7 @@ pub(super) fn prepare(
     }
     // The detached host must retain human-selected protocol context too;
     // each protocol child still receives only its neutral and configured names.
-    let selected = crate::config::load::<se_core::config_policy::ConfigFile>(
+    let selected = crate::config::load::<se_config::config_policy::ConfigFile>(
         configuration,
         configuration != files.root().join("config.toml"),
     )?;

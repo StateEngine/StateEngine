@@ -43,8 +43,7 @@ prerelease and does not replace stable `latest`.
 
 These are explicitly unsigned releases. HTTPS delivers the installer and its
 embedded checksum; SHA-256 detects archive corruption or substitution relative
-to that installer, and is not a separate publisher signature. The older
-`bootstrap.*` and `npx-install` signed-index routes are separate consumers.
+to that installer, and is not a separate publisher signature.
 
 The download scripts reject unsupported platforms, unsafe archive paths/types,
 download or checksum failures and version/target mismatches before handoff. The

@@ -16,6 +16,7 @@ use std::{
 mod authorize;
 mod fence;
 mod handshake;
+mod source;
 pub(crate) use fence::GrantFence;
 pub use fence::{OutputFence, OutputInvalidation};
 
@@ -38,8 +39,18 @@ pub struct AuthorizedRemoteRequest {
     pub(crate) request: RemoteRequest,
     pub(crate) attribution: RemoteAttribution,
     pub(crate) fence: Arc<fence::GrantFence>,
+    source_fence: Option<Arc<fence::GrantFence>>,
 }
 impl AuthorizedRemoteRequest {
+    pub(crate) fn register_source_output(
+        &self,
+        output: &Arc<dyn OutputInvalidation>,
+    ) -> Result<()> {
+        if let Some(fence) = &self.source_fence {
+            fence.register(output)?;
+        }
+        Ok(())
+    }
     pub fn request(&self) -> &RemoteRequest {
         &self.request
     }
@@ -65,6 +76,7 @@ impl AuthorizedRemoteRequest {
             AdmissionPermit {
                 principal,
                 fence: self.fence,
+                source_fence: self.source_fence,
             },
         )
     }
@@ -73,6 +85,7 @@ impl AuthorizedRemoteRequest {
 pub struct AdmissionPermit {
     principal: RemotePrincipalId,
     fence: Arc<fence::GrantFence>,
+    source_fence: Option<Arc<fence::GrantFence>>,
 }
 impl AdmissionPermit {
     pub fn submit(
@@ -93,6 +106,11 @@ impl AdmissionPermit {
             return Err(refused("remote admission principal differs"));
         }
         let _guard = self.fence.output()?;
+        let _source_guard = self
+            .source_fence
+            .as_ref()
+            .map(|fence| fence.output())
+            .transpose()?;
         writer.submit(batch).map_err(|error| map_error(&error))
     }
 }
@@ -105,12 +123,17 @@ struct PendingChannel {
 struct CachedFence {
     fence: std::sync::Weak<fence::GrantFence>,
 }
+struct SourceFence {
+    revision: u64,
+    fence: Arc<fence::GrantFence>,
+}
 #[derive(Default)]
 pub(crate) struct State {
     pub(crate) all_fenced: bool,
     pending: HashMap<[u8; 32], PendingChannel>,
     fences: HashMap<RemoteGrantId, CachedFence>,
     renewing: std::collections::HashSet<RemoteGrantId>,
+    source_fences: HashMap<String, HashMap<String, SourceFence>>,
 }
 pub struct Security {
     pub(crate) store: Arc<SecurityStore>,

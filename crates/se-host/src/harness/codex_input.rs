@@ -2,7 +2,7 @@
 //! user's CODEX_HOME, login, global settings, or selected sandbox implementation.
 use super::codex_rpc::incompatible;
 use crate::{HarnessRequest, ProviderInvocation};
-use se_core::config_policy::{Approval, EffectiveSandbox, ResolvedProfile};
+use se_config::config_policy::{Approval, EffectiveSandbox, ResolvedProfile};
 use se_proc::{NetworkPolicy, WritePolicy};
 use se_types::{Body, ProviderSessionId, Read, Result, SeError};
 use serde_json::{Value, json};
