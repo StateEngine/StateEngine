@@ -35,14 +35,12 @@ impl Fixture {
             root: root.to_path_buf(),
             _root: root,
         };
-        for path in [
-            &fixture.user_home,
-            &fixture.home,
-            &fixture.repos,
-            &fixture.temp,
-        ] {
+        for path in [&fixture.user_home, &fixture.repos, &fixture.temp] {
             private_dir(path)?;
         }
+        // State roots require a protected native DACL on Windows; mkdir's
+        // inherited permissions do not satisfy that contract.
+        drop(se_proc::NativeStateFiles::create(&fixture.home)?);
         Ok(fixture)
     }
 
