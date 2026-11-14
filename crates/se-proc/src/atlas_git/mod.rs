@@ -170,6 +170,7 @@ pub use repository::{
 };
 
 #[cfg(target_os = "macos")]
+#[path = "../atlas_git_macos/mod.rs"]
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{private_entry, read_with_helper, reconcile_pending};

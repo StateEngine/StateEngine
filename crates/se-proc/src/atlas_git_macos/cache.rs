@@ -160,6 +160,11 @@ fn walk(path: &Path, expiry: Expiry) -> io::Result<Vec<Node>> {
             .last()
             .ok_or_else(|| invalid("OS cache lost its retained root"))?;
         let next = node(open_at(&parent.file, &name, false)?, false)?;
+        if protected_edge && next.stamp.flags & SF_RESTRICTED == 0 {
+            return Err(invalid(
+                "OS cache strict descendants of SF_NOUNLINK require SF_RESTRICTED",
+            ));
+        }
         if parent.stamp.mode & 0o022 != 0 {
             if protected_edge
                 || parent.stamp.mode & 0o002 == 0
