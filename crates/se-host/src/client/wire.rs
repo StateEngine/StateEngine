@@ -60,18 +60,45 @@ impl Write for LimitedBuffer {
     }
 }
 
+struct ByteCount {
+    bytes: usize,
+    limit: usize,
+}
+impl Write for ByteCount {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes) {
+            return Err(io::Error::other("IPC JSON exceeds its byte budget"));
+        }
+        self.bytes += bytes.len();
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Count the entire JSON envelope, including window/marker/error metadata.
 /// A refusal writes no prefix or partial JSON to the channel.
 pub fn encode_json<T: Serialize>(value: &T, limit: usize) -> Result<WireBytes> {
     if limit == 0 || limit > MAX_FRAME_BYTES {
         return Err(invalid("a nonzero budget at most 1 MiB"));
     }
+    let mut count = ByteCount { bytes: 0, limit };
+    serde_json::to_writer(&mut count, value)
+        .map_err(|_| invalid("complete JSON within the negotiated byte budget"))?;
+    // Size without retaining bytes, then forbid growth of the protected buffer.
+    // Erasure covers its full allocation, including unused capacity.
     let mut output = LimitedBuffer {
-        bytes: Zeroizing::new(Vec::with_capacity(limit)),
-        limit,
+        bytes: Zeroizing::new(Vec::with_capacity(count.bytes)),
+        limit: count.bytes,
     };
     serde_json::to_writer(&mut output, value)
         .map_err(|_| invalid("complete JSON within the negotiated byte budget"))?;
+    if output.bytes.len() != count.bytes {
+        return Err(invalid(
+            "the same JSON byte count during sizing and encoding",
+        ));
+    }
     Ok(WireBytes(output.bytes))
 }
 
