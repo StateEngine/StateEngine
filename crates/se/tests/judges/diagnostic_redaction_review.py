@@ -12,6 +12,28 @@ import subprocess
 import sys
 
 
+def state_home(path):
+    if os.name != 'nt':
+        path.mkdir(mode=0o700)
+        return
+    # Match a state root's protected current-user and SYSTEM layout. chmod
+    # controls the read-only attribute on Windows, not the directory DACL.
+    script = r"""$ErrorActionPreference = 'Stop'
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = [System.Security.AccessControl.DirectorySecurity]::new()
+$acl.SetOwner($sid)
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($principal in @($sid, [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'))) {
+    $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+        $principal, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+}
+[System.IO.Directory]::CreateDirectory($env:SE_TEST_STATE_HOME, $acl) | Out-Null
+"""
+    environment = dict(os.environ, SE_TEST_STATE_HOME=str(path))
+    subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+                   env=environment, capture_output=True, check=True, timeout=30)
+
+
 class Fixture:
     def __init__(self, root, executable):
         root.mkdir(mode=0o700)
@@ -20,8 +42,9 @@ class Fixture:
         self.home = self.user / 'state'
         self.temp = root / 'exports'
         self.repo = root / 'repository'
-        for path in [self.user, self.home, self.temp, self.repo]:
+        for path in [self.user, self.temp, self.repo]:
             path.mkdir(mode=0o700)
+        state_home(self.home)
         self.environment = {}
         for key in ['PATH', 'SystemRoot', 'WINDIR', 'COMSPEC', 'SYSTEMDRIVE', 'PATHEXT']:
             if key in os.environ:
