@@ -97,6 +97,7 @@ pub(in crate::state_files) fn prepare_created_directory(
     // the walk's own verdict instead of the leaf's.
     // SAFETY: initialized no-follow stat output, retained parent, literal name.
     let mut entry: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: the same no-follow entry query into the initialized stat above.
     if unsafe {
         libc::fstatat(
             parent.as_raw_fd(),

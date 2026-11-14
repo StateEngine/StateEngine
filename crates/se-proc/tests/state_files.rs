@@ -1,4 +1,6 @@
-use se_proc::{NativeDirectoryCreation, NativeStateFiles, StateFileErrorCode};
+#[cfg(unix)]
+use se_proc::NativeDirectoryCreation;
+use se_proc::{NativeStateFiles, StateFileErrorCode};
 use std::{
     error::Error,
     fs,
