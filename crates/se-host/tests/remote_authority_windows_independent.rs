@@ -179,12 +179,12 @@ async fn check_authority(
         session: support::session::session()?,
         generation: se_types::Generation::new(1)?,
     };
-    require(
-        security
-            .authorize_invocation(&device, invocation(None, vec![]))
-            .is_err(),
-        "machine grant acquired human fallback",
-    )?;
+    // Native terminal calls may omit agent attribution; they retain machine scope.
+    let terminal = security.authorize_invocation(&device, invocation(None, vec![]))?;
+    assert_eq!(terminal.admission().targets(), g.scope.targets);
+    assert_eq!(terminal.attribution().grant, g.grant);
+    assert_eq!(terminal.attribution().device, g.device);
+    assert!(terminal.attribution().source.is_none());
     let mut wrong = source.clone();
     wrong.host = RemoteHostId(se_types::Sha256::from_bytes([65; 32]));
     require(
