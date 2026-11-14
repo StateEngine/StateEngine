@@ -90,6 +90,20 @@ impl Fixture {
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
     fn read_bundle(&self, output: Output, complete: bool) -> Check<Bundle> {
+        if let Ok(receipt) = serde_json::from_slice::<Value>(&output.stdout)
+            && let Some(path) = receipt["path"].as_str()
+            && let Ok(bytes) = fs::read(path)
+            && let Ok(document) = serde_json::from_slice::<Value>(&bytes)
+        {
+            for section in ["version", "status", "doctor", "logs"] {
+                eprintln!(
+                    "diagnostic section {section}: state={}, code={}, reason={}",
+                    document[section]["state"],
+                    document[section]["code"],
+                    document[section]["reason"]
+                );
+            }
+        }
         assert_eq!(
             output.status.code(),
             Some(if complete { 0 } else { 2 }),
