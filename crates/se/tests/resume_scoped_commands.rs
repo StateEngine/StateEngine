@@ -126,6 +126,7 @@ fn preview_succeeds_when_only_turns_are_omitted_for_packet_budget() -> Check {
     let mut read = store.snapshot(scope)?;
     let bound = se_core::ops::continuity::resume(
         se_core::ops::continuity::Resume {
+            source_failure: None,
             limit: 20,
             since: None,
             byte_budget: 4096,
@@ -468,12 +469,14 @@ fn bound_resume_and_session_context_share_scoped_commands_and_exact_budgets() ->
         .with_command_home(&f.options.state_directory);
     for op in [
         AnyOp::Resume(Resume {
+            source_failure: None,
             limit: 20,
             since: None,
             byte_budget: 32768,
             preview_agent: None,
         }),
         AnyOp::SessionContext(SessionContextRequest {
+            source_failure: None,
             limit: 20,
             since: None,
             byte_budget: 32768,

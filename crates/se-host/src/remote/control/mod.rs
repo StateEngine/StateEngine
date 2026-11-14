@@ -15,6 +15,7 @@ mod endpoint;
 mod launch_permission;
 mod policy;
 mod revocations;
+mod source;
 mod startup;
 pub(crate) use commands::execute;
 pub use startup::startup_notice;

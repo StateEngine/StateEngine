@@ -88,7 +88,7 @@ pub use cli::{
 pub use event::{EventOutput, EventRead, HistoryEvent};
 pub use hook::{HookClaude, HookEvent, HookResult};
 pub use inputs::*;
-pub use message::channel_reply_instruction;
+pub use message::{channel_reply_instruction, remote_reply_from};
 pub use meta::{
     McpTool, decode_operation, decode_tool, mcp_tools, metadata_output, schema_catalogue,
 };

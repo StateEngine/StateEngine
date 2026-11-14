@@ -1,9 +1,14 @@
-//! Finite target inventories share a read pin without widening snapshot visibility.
+//! Finite native Owner inventories retain the current read pin.
+mod grants;
 mod launch;
+mod sources;
 mod target;
 use crate::{
     error::*,
-    remote::{GrantState, denied, grant_at, ready},
+    remote::{
+        GrantRecord, GrantState, SecurityTransition, SourceContact, SourcePermission, decode,
+        denied, encode, grant_at, key, ready,
+    },
     *,
 };
 pub use launch::{LaunchCandidate, SavedLaunchProfile};

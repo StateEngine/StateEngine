@@ -86,6 +86,9 @@ pub struct MessageRow {
     /// Trusted channel route, outside the untrusted phone message body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_reply: Option<ChannelReply>,
+    /// A message-bound remote route, separate from the sender's untrusted body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_reply: Option<RemoteReply>,
     pub id: MessageId,
     pub event_id: EventId,
     pub from: ActorRef,
@@ -145,5 +148,12 @@ pub struct ChannelReply {
     pub to: se_types::HumanId,
     pub reply_to: MessageId,
     pub active: bool,
+    pub instruction: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RemoteReply {
+    pub to: String,
+    pub reply_to: MessageId,
     pub instruction: String,
 }

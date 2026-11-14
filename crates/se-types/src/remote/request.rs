@@ -116,14 +116,52 @@ pub struct RemoteSend {
 }
 impl RemoteSend {
     pub fn validate(&self) -> Result<()> {
-        if self.body.is_empty() {
-            return Err(SeError::invalid("remote body", "nonempty UTF-8 text"));
+        validate_body(&self.body)
+    }
+}
+fn validate_body(body: &Body) -> Result<()> {
+    if body.is_empty() {
+        return Err(SeError::invalid("remote body", "nonempty UTF-8 text"));
+    }
+    if body.len() > MESSAGE_BODY_MAX_BYTES {
+        return Err(SeError::too_large(
+            "remote body",
+            MESSAGE_BODY_MAX_BYTES,
+            body.len(),
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteSendReply {
+    pub source_message: crate::MessageId,
+    pub target: RemoteTarget,
+    pub reply_to: crate::MessageId,
+    pub body: Body,
+    pub idempotency_key: IdempotencyKey,
+    pub kind: String,
+    pub quiet: bool,
+}
+impl RemoteSendReply {
+    pub fn validate(&self) -> Result<()> {
+        validate_body(&self.body)?;
+        if self.source_message.canonical_bytes()?.is_none()
+            || self.idempotency_key.as_str() != format!("remote-reply-{}", self.source_message)
+        {
+            return Err(SeError::invalid(
+                "remote reply identity",
+                "the saved native source message ID and its original remote-reply key",
+            ));
         }
-        if self.body.len() > MESSAGE_BODY_MAX_BYTES {
-            return Err(SeError::too_large(
-                "remote body",
-                MESSAGE_BODY_MAX_BYTES,
-                self.body.len(),
+        if !matches!(
+            self.kind.as_str(),
+            "note" | "task" | "question" | "answer" | "blocker" | "done" | "handoff" | "finding"
+        ) {
+            return Err(SeError::invalid(
+                "remote reply kind",
+                "an ordinary mail kind",
             ));
         }
         Ok(())
@@ -142,6 +180,9 @@ pub enum RemoteRequest {
     Watch(RemoteWatch),
     Send(RemoteSend),
     Launch(RemoteLaunch),
+    Reply(RemoteSendReply),
+    Replies(RemoteReplies),
+    ResolveContact(RemoteResolveContact),
 }
 impl RemoteRequest {
     pub fn validate(&self) -> Result<()> {
@@ -150,7 +191,46 @@ impl RemoteRequest {
             Self::Watch(v) => v.validate(),
             Self::Send(v) => v.validate(),
             Self::Launch(_) => Ok(()),
+            Self::Reply(v) => v.validate(),
+            Self::Replies(v) => v.validate(),
+            Self::ResolveContact(_) => Ok(()),
         }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteResolveContact {
+    pub target: RemoteTarget,
+    pub original_grant: super::RemoteGrantId,
+    pub idempotency_key: IdempotencyKey,
+}
+
+/// Return mail for this authenticated source address from one exact contact.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteReplies {
+    pub target: RemoteTarget,
+    pub after: Option<Cursor>,
+    #[serde(default = "default_limit")]
+    pub limit: u16,
+    #[serde(default = "default_reply_budget")]
+    pub budget: u32,
+}
+fn default_reply_budget() -> u32 {
+    65536
+}
+impl RemoteReplies {
+    pub fn validate(&self) -> Result<()> {
+        if !(1..=20).contains(&self.limit)
+            || !(49152..=REMOTE_REQUEST_BUDGET_BYTES as u32).contains(&self.budget)
+        {
+            return Err(SeError::invalid(
+                "remote reply page",
+                "1..20 messages and 49152..65536 encoded bytes",
+            ));
+        }
+        Ok(())
     }
 }
 

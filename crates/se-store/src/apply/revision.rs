@@ -46,6 +46,7 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
     match &e.body {
         RemoteSecurity { .. } => crate::remote::revision(c, e),
         RemoteMessageAttributed { .. } | RemoteLaunchAttributed { .. } => Ok(1),
+        RemoteMailboxRecorded { .. } => Ok(1),
         ProjectRegistered {
             project,
             expected: want,

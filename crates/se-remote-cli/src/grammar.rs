@@ -43,8 +43,9 @@ pub(super) fn command() -> Command {
                     .arg(Arg::new("destination").index(1).required(true))
                     .arg(value("name").required(true)),
             )
-            .subcommand(leaf("permissions", "Review launch consent as the native Owner")
-                .arg(value("name").required(true))
+            .subcommand(leaf("permissions", "Review source access or launch consent as the native Owner")
+                .arg(value("name"))
+                .arg(Arg::new("local").long("local").action(clap::ArgAction::SetTrue).conflicts_with_all(["name", "launch"]))
                 .arg(Arg::new("launch").long("launch").action(clap::ArgAction::SetTrue).help("Review which existing destination agents this paired machine may launch")))
             .subcommand(leaf(
                 "disable",

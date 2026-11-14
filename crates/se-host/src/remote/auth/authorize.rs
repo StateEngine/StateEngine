@@ -50,6 +50,30 @@ impl Security {
             RemoteRequest::Watch(v) => (RemoteVerb::Watch, v.targets.as_slice()),
             RemoteRequest::Send(v) => (RemoteVerb::Send, std::slice::from_ref(&v.target)),
             RemoteRequest::Launch(v) => (RemoteVerb::Launch, std::slice::from_ref(&v.target)),
+            RemoteRequest::Reply(v) => {
+                if invocation.source.is_none() {
+                    return Err(refused(
+                        "a mail reply requires the authenticated source agent that received the original; use its current session",
+                    ));
+                }
+                (RemoteVerb::Send, std::slice::from_ref(&v.target))
+            }
+            RemoteRequest::Replies(v) => {
+                if invocation.source.is_none() {
+                    return Err(refused(
+                        "return mail requires an authenticated source agent address; use its current launched session",
+                    ));
+                }
+                (RemoteVerb::Send, std::slice::from_ref(&v.target))
+            }
+            RemoteRequest::ResolveContact(v) => {
+                if invocation.source.is_none() {
+                    return Err(refused(
+                        "send-receipt recovery requires an authenticated source agent address; use its current launched session",
+                    ));
+                }
+                (RemoteVerb::Send, std::slice::from_ref(&v.target))
+            }
         };
         let attribution = RemoteAttribution {
             host: self.host,
@@ -85,6 +109,11 @@ impl Security {
                 "watch cursor or visible target is outside the machine session's scope",
             ));
         }
+        let source_fence = attribution
+            .source
+            .as_ref()
+            .map(|source| self.source_fence(&source.address()))
+            .transpose()?;
         // A revoke between the fresh read and this lock still refuses.
         drop(device.fence.output()?);
         Ok(AuthorizedRemoteRequest {
@@ -92,6 +121,7 @@ impl Security {
             request: invocation.request,
             attribution,
             fence: device.fence.clone(),
+            source_fence,
         })
     }
     pub fn output_fence<'a>(
