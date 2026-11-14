@@ -122,9 +122,18 @@ fn established() -> Result<
     drop(NativeStateFiles::create(&real.join("state"))?);
     let alias = root.join("alias");
     std::os::unix::fs::symlink(&real, &alias)?;
-    let f = Fixture::at(root.to_path_buf(), alias.join("state"))?;
+    // Bootstrap through the physical spelling on both revisions; only the
+    // subsequent open is meant to encounter the selected ancestor shape.
+    let mut f = Fixture::at(root.to_path_buf(), real.join("state"))?;
     let (db, lease) = f.direct()?;
     db.close()?;
+    drop(lease);
+    f.options.state_directory = alias.join("state");
+    let lease = Lease::acquire(
+        &f.options.state_directory,
+        LeaseMode::DirectClient,
+        Some(f.store.clone()),
+    )?;
     Ok((root, f, lease, real, alias))
 }
 #[test]
