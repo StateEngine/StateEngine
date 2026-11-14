@@ -66,9 +66,9 @@ async fn observe(root: &Path, args: &[&str]) -> Spawn {
 async fn collect(child: &mut Child) -> std::result::Result<Output, String> {
     let stdout = child.stdout.take().ok_or("Git stdout pipe is absent")?;
     let stderr = child.stderr.take().ok_or("Git stderr pipe is absent")?;
-    let stdout = crate::route::git_pipe::stdout(stdout)
+    let stdout = crate::repository::pipe::stdout(stdout)
         .map_err(|error| format!("could not attach Git stdout reader: {error}"))?;
-    let stderr = crate::route::git_pipe::stderr(stderr)
+    let stderr = crate::repository::pipe::stderr(stderr)
         .map_err(|error| format!("could not attach Git stderr reader: {error}"))?;
     let (status, stdout, stderr) = tokio::try_join!(
         async {

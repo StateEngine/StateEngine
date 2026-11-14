@@ -11,17 +11,17 @@ use tokio::{
     time::{Instant, Sleep, sleep},
 };
 
-pub(in crate::route) fn stdout(pipe: tokio::process::ChildStdout) -> io::Result<Pipe> {
+pub(in crate::repository) fn stdout(pipe: tokio::process::ChildStdout) -> io::Result<Pipe> {
     Ok(Pipe::new(NativeChildPipe::new(pipe.into_owned_handle()?)))
 }
 
-pub(in crate::route) fn stderr(pipe: tokio::process::ChildStderr) -> io::Result<Pipe> {
+pub(in crate::repository) fn stderr(pipe: tokio::process::ChildStderr) -> io::Result<Pipe> {
     Ok(Pipe::new(NativeChildPipe::new(pipe.into_owned_handle()?)))
 }
 
 /// No async read is started on the original synchronous Windows pipe. Taking
 /// its handle first avoids creating a blocking task that cancellation cannot stop.
-pub(in crate::route) struct Pipe {
+pub(in crate::repository) struct Pipe {
     native: NativeChildPipe,
     retry: Pin<Box<Sleep>>,
 }

@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
     process::Output,
 };
-#[path = "git_identity/command.rs"]
+#[path = "identity/command.rs"]
 mod command;
 use command::run;
 

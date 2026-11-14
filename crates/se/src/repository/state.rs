@@ -161,9 +161,9 @@ async fn observe_count(root: &Path, deadline: Instant) -> Result<CountRead> {
         .ok_or_else(|| scope::unreadable("Git HEAD", "commit count error pipe was not attached"))?;
     // Both pipes are drained to EOF or the deadline, so a writer that fills
     // either one cannot block the child while the exit wait is outstanding.
-    let stdout = super::git_pipe::stdout(stdout)
+    let stdout = super::pipe::stdout(stdout)
         .map_err(|error| scope::unreadable("Git stdout pipe", &error.to_string()))?;
-    let stderr = super::git_pipe::stderr(stderr)
+    let stderr = super::pipe::stderr(stderr)
         .map_err(|error| scope::unreadable("Git stderr pipe", &error.to_string()))?;
     let stdout_task = tokio::spawn(retain_bounded(stdout, COUNT_RETAIN, deadline));
     let stderr_task = tokio::spawn(retain_bounded(stderr, STDERR_RETAIN, deadline));
@@ -264,9 +264,9 @@ async fn observe_status(root: &Path, deadline: Instant) -> Result<StatusRead> {
     let stderr = child.stderr.take().ok_or_else(|| {
         scope::unreadable("Git working tree", "status error pipe was not attached")
     })?;
-    let stdout = super::git_pipe::stdout(stdout)
+    let stdout = super::pipe::stdout(stdout)
         .map_err(|error| scope::unreadable("Git stdout pipe", &error.to_string()))?;
-    let stderr = super::git_pipe::stderr(stderr)
+    let stderr = super::pipe::stderr(stderr)
         .map_err(|error| scope::unreadable("Git stderr pipe", &error.to_string()))?;
     let stdout_task = tokio::spawn(read_status(stdout, deadline));
     let stderr_task = tokio::spawn(stderr_retain(stderr, deadline));
