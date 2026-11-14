@@ -43,7 +43,13 @@ pub(super) fn inspect_for_init(
 }
 fn inspect_home(home: &Path, generated_at: String, pending_init: Option<bool>) -> Result<Setup> {
     Ok(
-        match inspect_with(home, generated_at, SqliteFactory::open_reader, pending_init)? {
+        match inspect_with(
+            home,
+            generated_at,
+            SqliteFactory::open_reader,
+            pending_init,
+            Files::open,
+        )? {
             Setup::Absent(output) => Setup::Absent(output),
             Setup::Present((_, reader)) => Setup::Present(reader),
         },
@@ -58,6 +64,19 @@ pub fn inspect_phase(
         generated_at,
         SqliteFactory::open_reader_with_phase,
         None,
+        Files::open,
+    )
+}
+pub fn inspect_status_phase(
+    home: &Path,
+    generated_at: String,
+) -> Result<Setup<(Files, (SqliteReader, ReadPhase))>> {
+    inspect_with(
+        home,
+        generated_at,
+        SqliteFactory::open_reader_with_phase,
+        None,
+        Files::open_for_invocation,
     )
 }
 fn inspect_with<T>(
@@ -65,6 +84,7 @@ fn inspect_with<T>(
     generated_at: String,
     open: impl FnOnce(&StoreOptions) -> se_store::StoreResult<Read<T>>,
     pending_init: Option<bool>,
+    open_files: fn(&Path) -> se_store::StoreResult<Files>,
 ) -> Result<Setup<(Files, T)>> {
     match std::fs::symlink_metadata(home) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -86,7 +106,7 @@ fn inspect_with<T>(
     // Protection and directory identity are native facts, independent of DB bytes.
     // A lock or config alone does not establish initialization. Surviving
     // identity/state records prevent an absent DB becoming first-time setup.
-    let files = Files::open(home).map_err(|e| store_error(&e))?;
+    let files = open_files(home).map_err(|e| store_error(&e))?;
     match open(&StoreOptions {
         state_directory: home.to_owned(),
         busy_timeout: Duration::from_millis(250),

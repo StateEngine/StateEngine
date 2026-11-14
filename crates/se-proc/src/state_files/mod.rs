@@ -146,6 +146,20 @@ impl NativeStateFiles {
             directory,
         })
     }
+    /// Retains traversal handles for one finite CLI invocation. Native name
+    /// and permission checks remain fresh; never retain this in a serving host.
+    /// Windows keeps its ordinary full traversal until relative custody can
+    /// preserve every existing pathname and ACL check.
+    pub fn open_for_invocation(root: &Path) -> Result<Self> {
+        #[cfg(unix)]
+        let directory = os::Directory::open_for_invocation(root)?;
+        #[cfg(windows)]
+        let directory = os::Directory::open(root)?;
+        Ok(Self {
+            root: root.to_owned(),
+            directory,
+        })
+    }
     /// Explicit init only: creates absent directory components with native
     /// owner-only protection, and refuses an existing unsafe final directory.
     /// Existing ancestor permissions are never changed.

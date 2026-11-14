@@ -4,6 +4,7 @@ mod acl;
 mod ancestors;
 #[cfg(target_os = "macos")]
 mod created_acl;
+mod pinned_path;
 #[cfg(target_os = "macos")]
 pub(super) use created_acl::clear as clear_created_acl;
 #[path = "effects/unix.rs"]
@@ -20,6 +21,7 @@ use std::{
 pub(super) struct Directory {
     file: File,
     identity: (u64, u64),
+    ancestors: Option<pinned_path::PinnedPath>,
 }
 fn name(value: &OsStr, path: &Path) -> Result<CString> {
     CString::new(value.as_bytes()).map_err(|_| unsafe_path("NUL in native path", path))
@@ -80,6 +82,15 @@ fn walk_with_private_root(
     create: bool,
     private_root: bool,
     sticky_final: bool,
+) -> Result<File> {
+    walk_with_pins(path, create, private_root, sticky_final, None)
+}
+fn walk_with_pins(
+    path: &Path,
+    create: bool,
+    private_root: bool,
+    sticky_final: bool,
+    mut pins: Option<&mut pinned_path::PinnedPath>,
 ) -> Result<File> {
     let root = CString::new("/").map_err(|_| unsafe_path("native root", path))?;
     // SAFETY: constant path, successful open supplies an independently owned FD.
@@ -189,6 +200,9 @@ fn walk_with_private_root(
         if !private_root {
             effects::trusted_directory(&next, path, index + 1 == parts.len() && !sticky_final)?;
         }
+        if let Some(pins) = pins.as_mut() {
+            pins.push(parent, component, traversed.clone(), symlink);
+        }
         parent = next;
     }
     Ok(parent)
@@ -255,9 +269,23 @@ impl Directory {
         Ok(Self {
             file,
             identity: (meta.dev(), meta.ino()),
+            ancestors: None,
+        })
+    }
+    pub fn open_for_invocation(path: &Path) -> Result<Self> {
+        let mut ancestors = pinned_path::PinnedPath::default();
+        let file = walk_with_pins(path, false, true, false, Some(&mut ancestors))?;
+        let meta = metadata(&file, path, true)?;
+        Ok(Self {
+            file,
+            identity: (meta.dev(), meta.ino()),
+            ancestors: Some(ancestors),
         })
     }
     pub fn check_name(&self, path: &Path) -> Result<()> {
+        if let Some(ancestors) = &self.ancestors {
+            return ancestors.check(&self.file, path);
+        }
         let observed = Self::open(path)?;
         if observed.identity != self.identity {
             return Err(failure(

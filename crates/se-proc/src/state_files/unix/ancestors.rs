@@ -96,6 +96,9 @@ fn private_group(gid: libc::gid_t, path: &Path) -> Result<bool> {
     }
 }
 pub(super) fn validate(file: &File, path: &Path) -> Result<()> {
+    inspect(file, path).map(|_| ())
+}
+pub(super) fn inspect(file: &File, path: &Path) -> Result<std::fs::Metadata> {
     // Other agents can create siblings while NSS proves a private group. A
     // changed directory epoch requires a complete fresh proof, never reuse of
     // the old permissions/account result. Persistent drift still refuses.
@@ -108,7 +111,7 @@ pub(super) fn validate(file: &File, path: &Path) -> Result<()> {
     }
     result
 }
-fn validate_once(file: &File, path: &Path) -> Result<()> {
+fn validate_once(file: &File, path: &Path) -> Result<std::fs::Metadata> {
     let meta = file
         .metadata()
         .map_err(|e| io_error("inspect existing ancestor", path, e))?;
@@ -121,7 +124,7 @@ fn validate_once(file: &File, path: &Path) -> Result<()> {
     }
     if meta.mode() & 0o002 != 0 {
         if meta.mode() & 0o1000 != 0 {
-            return Ok(());
+            return Ok(meta);
         }
         return Err(unsafe_path(
             "ancestor is world-writable without sticky protection",
@@ -134,7 +137,7 @@ fn validate_once(file: &File, path: &Path) -> Result<()> {
             path,
         ));
     }
-    Ok(())
+    Ok(meta)
 }
 
 // gr_mem lists supplemental members; another account may also use this GID

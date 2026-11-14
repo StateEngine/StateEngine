@@ -161,8 +161,13 @@ fn dispatch_with_cold_recovery(
     {
         return Ok(output);
     }
+    let inspect = if matches!(op, AnyOp::ProjectStatus(_)) {
+        setup::inspect_status_phase
+    } else {
+        setup::inspect_phase
+    };
     let (files, (reader, mut phase)) =
-        match setup::inspect_phase(&cx.home, se_core::ops::receipt::timestamp(now_us()?)?)? {
+        match inspect(&cx.home, se_core::ops::receipt::timestamp(now_us()?)?)? {
             setup::Setup::Absent(output) if matches!(op, AnyOp::ProjectStatus(_)) => {
                 return Ok((*output).into());
             }

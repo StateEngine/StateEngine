@@ -153,6 +153,12 @@ impl Files {
     pub fn open(path: &Path) -> StoreResult<Self> {
         Self::open_with_policy(path, FilePolicy::Direct)
     }
+    /// Direct access for one finite CLI invocation, never a retained host.
+    pub fn open_for_invocation(path: &Path) -> StoreResult<Self> {
+        NativeStateFiles::open_for_invocation(path)
+            .map(Self::from_native)
+            .map_err(native_error)
+    }
     pub fn open_with_policy(path: &Path, policy: FilePolicy) -> StoreResult<Self> {
         NativeStateFiles::open(path)
             .map(|native| Self(native, policy))
