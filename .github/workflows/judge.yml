@@ -1,0 +1,167 @@
+# Reviewer judging on hosted machines: run the same tests against a base and a head,
+# on Linux, Windows and macOS, without the shared box or VM.
+# Hosted Windows jobs keep every child process inside the job, so behaviour that must
+# outlive a job step (host detachment) still needs a native Windows machine.
+name: judge
+
+on:
+  workflow_dispatch:
+    inputs:
+      head:
+        description: Ref or SHA under review (for a pull request, its head branch or SHA)
+        type: string
+        required: true
+      base:
+        description: Ref or SHA to compare against; empty runs the head only
+        type: string
+        default: main
+      tests:
+        description: Optional reviewer branch; its changed files under tests/ directories are laid over both base and head
+        type: string
+        default: ''
+      filter:
+        description: nextest filter expression
+        type: string
+        default: all()
+      os:
+        description: Platforms to run
+        type: choice
+        default: all
+        options: [all, linux, windows, macos]
+      all_features:
+        description: Build with --all-features
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: judge-${{ github.run_id }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Choose platforms and sides
+        id: plan
+        env:
+          OS: ${{ inputs.os }}
+          HEAD: ${{ inputs.head }}
+          BASE: ${{ inputs.base }}
+        run: |
+          python3 -I - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          runners = {"linux": "ubuntu-24.04", "windows": "windows-2025", "macos": "macos-15"}
+          chosen = list(runners) if os.environ["OS"] == "all" else [os.environ["OS"]]
+          sides = [("head", os.environ["HEAD"].strip())]
+          if os.environ["BASE"].strip():
+              sides.append(("base", os.environ["BASE"].strip()))
+          include = [{"os": name, "runner": runners[name], "side": side, "ref": ref}
+                     for name in chosen for side, ref in sides]
+          print("matrix=" + json.dumps({"include": include}))
+          PY
+
+  judge:
+    name: ${{ matrix.os }} ${{ matrix.side }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ matrix.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Lay the reviewer's tests over this tree
+        if: ${{ inputs.tests != '' }}
+        env:
+          TESTS: ${{ inputs.tests }}
+          SIDE: ${{ matrix.side }}
+        run: |
+          git fetch --quiet origin "refs/heads/$TESTS:refs/remotes/judge/tests" "refs/heads/main:refs/remotes/judge/main"
+          fork="$(git merge-base refs/remotes/judge/main refs/remotes/judge/tests)"
+          git diff --name-only --diff-filter=AM "$fork" refs/remotes/judge/tests > "$RUNNER_TEMP/judge-files"
+          python3 -I - "$RUNNER_TEMP/judge-files" <<'PY'
+          import re, sys
+          paths = [p for p in open(sys.argv[1], encoding="utf-8").read().splitlines() if p]
+          outside = [p for p in paths if not re.match(r"^(crates/[^/]+/)?tests/", p)]
+          if not paths:
+              sys.exit("the tests branch changes no files under a tests/ directory; nothing to lay over")
+          if outside:
+              sys.exit("the tests branch also changes files outside tests/ directories, refusing: " + ", ".join(outside))
+          PY
+          xargs git checkout refs/remotes/judge/tests -- < "$RUNNER_TEMP/judge-files"
+          {
+            echo "### Reviewer tests laid over $SIDE"
+            sed 's/^/- /' "$RUNNER_TEMP/judge-files"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: judge-${{ matrix.os }}-v1
+          save-if: ${{ matrix.side == 'base' }}
+      - name: Register the disposable runner account for installation tests
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            python scripts/ci/installation_account.py provision
+          else
+            identity="$(id -u)"
+            profile="$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')"
+            sudo python3 scripts/ci/installation_account.py provision --identity "$identity" --profile "$profile"
+          fi
+      - name: Run the selected tests
+        env:
+          FILTER: ${{ inputs.filter }}
+          ALL_FEATURES: ${{ inputs.all_features }}
+        run: |
+          features=()
+          if [[ "$ALL_FEATURES" == true ]]; then features+=(--all-features); fi
+          cargo nextest run --workspace "${features[@]}" --locked --profile ci \
+            --no-fail-fast --no-tests fail -E "$FILTER"
+      - name: Record what ran
+        if: ${{ always() }}
+        env:
+          LABEL: ${{ matrix.os }} ${{ matrix.side }}
+        run: |
+          echo "### $LABEL: $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          if [[ -f target/nextest/ci/junit.xml ]]; then
+            python3 -I - target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          suites = [root] if root.tag == "testsuite" else list(root)
+          totals = {k: sum(int(s.get(k, 0)) for s in suites) for k in ("tests", "failures", "errors", "skipped")}
+          print(f"tests {totals['tests']}, failures {totals['failures']}, errors {totals['errors']}, skipped {totals['skipped']}")
+          for suite in suites:
+              for case in suite:
+                  if case.find("failure") is not None or case.find("error") is not None:
+                      print(f"- FAILED {suite.get('name')} {case.get('name')}")
+          PY
+          else
+            echo "No test report was written: the build or the test start failed before any test ran." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: judge-${{ matrix.os }}-${{ matrix.side }}
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
+          if-no-files-found: warn
