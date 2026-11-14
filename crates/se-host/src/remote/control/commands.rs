@@ -23,11 +23,8 @@ pub(crate) async fn execute(
             window: None,
         });
     }
-    let initialize = matches!(
-        &input,
-        OwnerInput::Bootstrap { .. } | OwnerInput::Add { .. } | OwnerInput::PrepareAdd { .. }
-    );
-    let (control, owner) = Control::prepare(router, owner, initialize, deadline).await?;
+    let (control, owner) =
+        Control::prepare(router, owner, input.initializes_resources(), deadline).await?;
     let value = match input {
         OwnerInput::Authorize(authorization) => {
             serde_json::to_value(control.security.authorize_channel(authorization).await?)
