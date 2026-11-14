@@ -272,7 +272,12 @@ pub(crate) fn observe_direct_child(
     // SAFETY: read-only native effective-user query.
     let observed = macos::observe(pid, unsafe { libc::geteuid() }, bound)?;
     let info = crate::macos_process::info(crate::ProcessId(pid), bound.deadline)
-        .map_err(|e| error("observe direct child parent", io::Error::other(e)))?
+        .map_err(|e| {
+            error(
+                "observe direct child parent",
+                io::Error::other(format!("{e:?}")),
+            )
+        })?
         .ok_or_else(|| refuse(IpcNativeErrorCode::PeerChanged, "direct child disappeared"))?;
     let birth = StartIdentity::Macos {
         start_seconds: info.pbi_start_tvsec,

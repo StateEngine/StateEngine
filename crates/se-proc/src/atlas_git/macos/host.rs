@@ -36,7 +36,11 @@ impl Session {
             return Ok(());
         }
         // Give the living supervisor its normal cancellation/reap path first.
-        self.channel.shutdown(std::net::Shutdown::Both)?;
+        if let Err(error) = self.channel.shutdown(std::net::Shutdown::Both)
+            && error.raw_os_error() != Some(libc::ENOTCONN)
+        {
+            return Err(error);
+        }
         let deadline = Instant::now() + Duration::from_millis(200);
         let graceful = Instant::now() + Duration::from_millis(50);
         while self.child.try_wait()?.is_none() && Instant::now() < graceful {
@@ -55,11 +59,13 @@ impl Session {
                 "Git supervisor exited without its child receipt; retain creation intent and allocation",
             ));
         }
-        if let Some(custody) = self.custody.take() {
-            custody.retire(deadline)?
+        if let Some(custody) = &self.custody {
+            custody.retire(deadline)?;
+            self.custody = None;
         }
-        if let Some(intent) = self.intent.take() {
-            intent.retire()?
+        if let Some(intent) = &self.intent {
+            intent.retire()?;
+            self.intent = None;
         }
         self.closed = true;
         self.lease.release();
@@ -110,24 +116,104 @@ fn receive_tree(
             ));
         }
     }
-    let Frame::Tree {
-        nonce: received,
-        supervisor: claimed,
-        git,
-    } = protocol::receive(&mut session.channel, expiry)?
-    else {
-        return Err(invalid("Git native tree receipt is absent"));
-    };
-    if received != nonce {
-        return Err(invalid("Git native tree receipt has a different nonce"));
+    match protocol::receive(&mut session.channel, expiry)? {
+        Frame::Tree {
+            nonce: received,
+            supervisor: claimed,
+            git,
+        } if received == nonce => {
+            supervisor.verify(&claimed)?;
+            ProcessPin::child(git.pid, supervisor.pid, expiry)?.verify(&git)?;
+            Ok(git)
+        }
+        Frame::Refused {
+            nonce: received,
+            reason,
+            child,
+            reaped,
+        } if received == nonce => Err(refused(session, supervisor, child, reaped, reason, expiry)?),
+        _ => Err(invalid("Git native tree receipt is absent or mismatched")),
     }
-    supervisor.verify(&claimed)?;
-    ProcessPin::child(git.pid, supervisor.pid, expiry)?.verify(&git)?;
-    Ok(git)
+}
+/// An authenticated direct owner can report its exact child's reap even when the
+/// child exited before the host received a birth receipt. Silence proves nothing.
+fn refused(
+    session: &mut Session,
+    supervisor: &ProcessPin,
+    child: Option<ProcessPin>,
+    reaped: bool,
+    reason: String,
+    expiry: Expiry,
+) -> io::Result<io::Error> {
+    if reason.len() > 8192 {
+        return Err(invalid("Git refusal diagnostic exceeds its bound"));
+    }
+    if let Some(pin) = child {
+        if pin.pid == supervisor.pid
+            || pin.boot != supervisor.boot
+            || pin.uid != supervisor.uid
+            || pin.image != supervisor.image
+            || pin.digest != supervisor.digest
+        {
+            return Err(invalid("Git refused-child receipt differs from its helper"));
+        }
+        if let Some(existing) = &session.git {
+            existing.verify(&pin)?;
+        } else if pin.state(expiry.native_bound()?.deadline)? == State::Alive {
+            ProcessPin::child(pin.pid, supervisor.pid, expiry)?.verify(&pin)?;
+        }
+        let alive = pin.state(expiry.native_bound()?.deadline)? == State::Alive;
+        session.git = Some(pin);
+        if reaped && alive {
+            return Err(invalid(
+                "Git owner claimed to reap a still-live native instance",
+            ));
+        }
+    } else if reaped && session.git.is_none() {
+        session.could_have_git = false;
+    }
+    Ok(invalid(format!("Git contained reader refused: {reason}")))
 }
 struct Pipes {
     stdout: std::process::ChildStdout,
     stderr: std::process::ChildStderr,
+    output: Vec<u8>,
+    diagnostic: Vec<u8>,
+}
+impl Pipes {
+    fn drain(&mut self) -> io::Result<bool> {
+        let stdout = drain(
+            &mut self.stdout,
+            &mut self.output,
+            super::super::OUTPUT_BYTES,
+        )?;
+        let stderr = drain(
+            &mut self.stderr,
+            &mut self.diagnostic,
+            super::super::STDERR_BYTES,
+        )?;
+        Ok(stdout && stderr)
+    }
+    fn failure(&mut self, cause: io::Error, session: &mut Session) -> io::Error {
+        let cleanup = session.close();
+        let captured = self.drain();
+        let mut message = cause.to_string();
+        if let Err(error) = cleanup {
+            message.push_str(&format!("; cleanup unresolved: {error}"));
+        }
+        match captured {
+            Err(error) => message.push_str(&format!("; stderr/output capture failed: {error}")),
+            Ok(false) => message.push_str("; output writer remains unobserved"),
+            Ok(true) => (),
+        }
+        if !self.diagnostic.is_empty() {
+            message.push_str(&format!(
+                "; helper stderr: {}",
+                String::from_utf8_lossy(&self.diagnostic)
+            ));
+        }
+        io::Error::new(cause.kind(), message)
+    }
 }
 struct Started {
     session: Session,
@@ -226,7 +312,12 @@ fn start(launch: &Launch, lease: Lease) -> io::Result<Started> {
     Ok(Started {
         session,
         supervisor,
-        pipes: Pipes { stdout, stderr },
+        pipes: Pipes {
+            stdout,
+            stderr,
+            output: Vec::new(),
+            diagnostic: Vec::new(),
+        },
     })
 }
 fn collect(
@@ -234,16 +325,10 @@ fn collect(
     pipes: &mut Pipes,
     nonce: [u8; 32],
     expiry: Expiry,
-) -> io::Result<super::super::GitOutput> {
-    let (mut output, mut diagnostic) = (Vec::new(), Vec::new());
-    let status = loop {
+) -> io::Result<ExitStatus> {
+    loop {
         expiry.remaining()?;
-        drain(&mut pipes.stdout, &mut output, super::super::OUTPUT_BYTES)?;
-        drain(
-            &mut pipes.stderr,
-            &mut diagnostic,
-            super::super::STDERR_BYTES,
-        )?;
+        pipes.drain()?;
         if process::ready(session.channel.as_raw_fd(), expiry)? {
             match protocol::receive(&mut session.channel, expiry)? {
                 Frame::Finished {
@@ -251,7 +336,17 @@ fn collect(
                     status,
                     peak_bytes,
                 } if received == nonce && peak_bytes <= crate::atlas_worker::MEMORY_BYTES => {
-                    break ExitStatus::from_raw(status);
+                    return Ok(ExitStatus::from_raw(status));
+                }
+                Frame::Refused {
+                    nonce: received,
+                    reason,
+                    ..
+                } if received == nonce => {
+                    if reason.len() > 8192 {
+                        return Err(invalid("Git refusal diagnostic exceeds its bound"));
+                    }
+                    return Err(invalid(format!("Git contained reader refused: {reason}")));
                 }
                 _ => {
                     return Err(invalid(
@@ -265,12 +360,7 @@ fn collect(
                 "Git supervisor exited without its final reap receipt",
             ));
         }
-    };
-    Ok(super::super::GitOutput {
-        status,
-        stdout: output,
-        stderr: diagnostic,
-    })
+    }
 }
 pub(super) fn read(
     helper: &Path,
@@ -287,49 +377,57 @@ pub(super) fn read(
     let nonce = launch.nonce;
     let mut started = start(&launch, lease)?;
     let session = &mut started.session;
-    session.could_have_git = true;
-    protocol::send(
-        &mut session.channel,
-        &Frame::Launch(Box::new(launch.clone())),
-        expiry,
-    )?;
-    let git = receive_tree(session, &started.supervisor, nonce, expiry)?;
-    session.git = Some(git.clone());
-    session.custody = Some(Custody::publish(
-        control,
-        Record {
-            schema: 1,
-            nonce,
-            control_identity: launch.control_identity,
-            host: launch.host,
-            supervisor: started.supervisor,
-            git,
-        },
-    )?);
-    runtime.check()?;
-    for root in roots {
-        root.check()?
+    let result = (|| {
+        session.could_have_git = true;
+        protocol::send(
+            &mut session.channel,
+            &Frame::Launch(Box::new(launch.clone())),
+            expiry,
+        )?;
+        let git = receive_tree(session, &started.supervisor, nonce, expiry)?;
+        session.git = Some(git.clone());
+        let custody = Custody::publish(
+            control,
+            Record {
+                schema: 1,
+                nonce,
+                control_identity: launch.control_identity,
+                host: launch.host,
+                supervisor: started.supervisor,
+                git,
+            },
+        )?;
+        session
+            .intent
+            .as_ref()
+            .ok_or_else(|| invalid("Git creation intent is absent"))?
+            .matches(&custody)?;
+        session.custody = Some(custody);
+        runtime.check()?;
+        for root in roots {
+            root.check()?
+        }
+        // Both records are durable and independently reopened before this token.
+        protocol::send(&mut session.channel, &Frame::Release { nonce }, expiry)?;
+        let status = collect(session, &mut started.pipes, nonce, expiry)?;
+        session.close()?;
+        if !started.pipes.drain()? {
+            return Err(invalid(
+                "Git output pipes still have an unobserved writer after tree cleanup",
+            ));
+        }
+        runtime.check()?;
+        for root in roots {
+            root.check()?
+        }
+        Ok(status)
+    })();
+    match result {
+        Ok(status) => Ok(super::super::GitOutput {
+            status,
+            stdout: started.pipes.output,
+            stderr: started.pipes.diagnostic,
+        }),
+        Err(error) => Err(started.pipes.failure(error, session)),
     }
-    // Both records are durable and independently reopened before this token.
-    protocol::send(&mut session.channel, &Frame::Release { nonce }, expiry)?;
-    let mut output = collect(session, &mut started.pipes, nonce, expiry)?;
-    session.close()?;
-    if !drain(
-        &mut started.pipes.stdout,
-        &mut output.stdout,
-        super::super::OUTPUT_BYTES,
-    )? || !drain(
-        &mut started.pipes.stderr,
-        &mut output.stderr,
-        super::super::STDERR_BYTES,
-    )? {
-        return Err(invalid(
-            "Git output pipes still have an unobserved writer after tree cleanup",
-        ));
-    }
-    runtime.check()?;
-    for root in roots {
-        root.check()?
-    }
-    Ok(output)
 }

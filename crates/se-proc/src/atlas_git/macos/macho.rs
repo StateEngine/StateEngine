@@ -74,7 +74,7 @@ fn slice(file: &File, expiry: Expiry) -> io::Result<(u64, u64)> {
     }
     selected.ok_or_else(|| invalid("Git has no qualified native architecture slice"))
 }
-fn path(command: &[u8], minimum: usize) -> io::Result<PathBuf> {
+fn path(command: &[u8], minimum: usize, absolute: bool) -> io::Result<PathBuf> {
     let offset = number(command, 8, 4, false)? as usize;
     if offset < minimum {
         return Err(invalid("Git load-command name overlaps its header"));
@@ -91,10 +91,11 @@ fn path(command: &[u8], minimum: usize) -> io::Result<PathBuf> {
         std::str::from_utf8(&bytes[..end]).map_err(|_| invalid("Git runtime path is not UTF-8"))?;
     let result = PathBuf::from(text);
     // Relative and @rpath images require a separately qualified resolution policy.
-    if !result.is_absolute()
-        || result
-            .components()
-            .any(|p| matches!(p, std::path::Component::ParentDir))
+    if absolute
+        && (!result.is_absolute()
+            || result
+                .components()
+                .any(|p| matches!(p, std::path::Component::ParentDir)))
     {
         return Err(invalid(
             "Git runtime closure requires absolute dependency paths",
@@ -136,11 +137,14 @@ pub(super) fn dependencies(file: &File, expiry: Expiry) -> io::Result<Vec<PathBu
             .get(..size)
             .ok_or_else(|| invalid("Git load command is truncated"))?;
         match kind {
-            0x0c | 0x8000_0018 | 0x8000_001f | 0x8000_0023 => result.push(path(command, 24)?),
-            0x0e => result.push(path(command, 12)?),
-            // Refuse search-path expansion, even if no current import uses it.
-            0x8000_001c | 0x20 => {
-                return Err(invalid("Git runtime search paths are not qualified"));
+            0x0c | 0x20 | 0x8000_0018 | 0x8000_001f | 0x8000_0023 => {
+                result.push(path(command, 24, true)?);
+            }
+            0x0e => result.push(path(command, 12, true)?),
+            0x8000_001c => {
+                // Validate this metadata but grant no search directory. Every
+                // dependency must still name an absolute, individually pinned image.
+                path(command, 12, false)?;
             }
             _ => (),
         }

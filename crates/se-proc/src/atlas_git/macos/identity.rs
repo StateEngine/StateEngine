@@ -86,7 +86,7 @@ impl ProcessPin {
             return Ok(State::Absent);
         }
         let native = crate::macos_process::info(crate::ProcessId(self.pid), deadline)
-            .map_err(io::Error::other)?;
+            .map_err(|error| io::Error::other(format!("{error:?}")))?;
         let Some(native) = native else {
             return Ok(State::Absent);
         };

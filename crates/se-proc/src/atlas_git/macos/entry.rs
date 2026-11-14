@@ -138,6 +138,33 @@ fn bootstrap(mut channel: UnixStream, launch: Launch) -> io::Result<()> {
     Err(command.exec())
 }
 fn supervise(mut channel: UnixStream, mut launch: Launch) -> io::Result<()> {
+    let mut child = None;
+    let mut receipt = None;
+    let result = create_tree(&mut channel, &mut launch, &mut child, &mut receipt);
+    if let Err(error) = &result {
+        let reaped = child.as_mut().is_none_or(|child| {
+            let reaped = process::reap(&mut child.0).is_ok();
+            child.1 = reaped;
+            reaped
+        });
+        let frame = Frame::Refused {
+            nonce: launch.nonce,
+            reason: refusal_reason(error),
+            child: receipt,
+            reaped,
+        };
+        // A refusal carries the direct owner's reap result. If the original
+        // deadline has elapsed, failure to send does not invent a receipt.
+        let _ = protocol::send(&mut channel, &frame, launch.expiry);
+    }
+    result
+}
+fn create_tree(
+    channel: &mut UnixStream,
+    launch: &mut Launch,
+    owned: &mut Option<Owned>,
+    receipt: &mut Option<ProcessPin>,
+) -> io::Result<()> {
     let expiry = launch.expiry;
     let own = ProcessPin::own(expiry)?;
     if own.image != launch.helper {
@@ -160,19 +187,45 @@ fn supervise(mut channel: UnixStream, mut launch: Launch) -> io::Result<()> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     process::prepare(&mut command, &bootstrap_channel, own.pid)?;
-    let mut child = Owned(command.spawn()?, false);
+    *owned = Some(Owned(command.spawn()?, false));
     drop(bootstrap_channel);
+    let child = owned
+        .as_mut()
+        .ok_or_else(|| invalid("Git child owner is absent"))?;
     invocation.validate().map_err(io::Error::other)?;
     let observed = ProcessPin::child(child.0.id(), own.pid, expiry)?;
+    *receipt = Some(observed.clone());
     launch.parent = own.clone();
     protocol::send(
         &mut child_channel,
         &Frame::Launch(Box::new(launch.clone())),
         expiry,
     )?;
+    run_job(channel, &mut child_channel, launch, &own, &observed, child)
+}
+fn refusal_reason(error: &io::Error) -> String {
+    let text = error.to_string();
+    if text.chars().count() <= 1024 {
+        text
+    } else {
+        format!(
+            "{} [diagnostic exceeded 1024 characters]",
+            text.chars().take(1024).collect::<String>()
+        )
+    }
+}
+fn run_job(
+    channel: &mut UnixStream,
+    child_channel: &mut UnixStream,
+    launch: &Launch,
+    own: &ProcessPin,
+    observed: &ProcessPin,
+    child: &mut Owned,
+) -> io::Result<()> {
+    let expiry = launch.expiry;
     let mut peak = 0;
     loop {
-        peak = peak.max(process::before_release(&own, &observed, expiry)?);
+        peak = peak.max(process::before_release(own, observed, expiry)?);
         if process::ready(channel.as_raw_fd(), expiry)? {
             return Err(invalid("Git host closed before bootstrap receipt"));
         }
@@ -180,7 +233,7 @@ fn supervise(mut channel: UnixStream, mut launch: Launch) -> io::Result<()> {
             break;
         }
     }
-    match protocol::receive(&mut child_channel, expiry)? {
+    match protocol::receive(child_channel, expiry)? {
         Frame::Receipt { nonce, process } if nonce == launch.nonce => observed.verify(&process)?,
         _ => {
             return Err(invalid(
@@ -189,7 +242,7 @@ fn supervise(mut channel: UnixStream, mut launch: Launch) -> io::Result<()> {
         }
     }
     protocol::send(
-        &mut channel,
+        channel,
         &Frame::Tree {
             nonce: launch.nonce,
             supervisor: own.clone(),
@@ -198,12 +251,12 @@ fn supervise(mut channel: UnixStream, mut launch: Launch) -> io::Result<()> {
         expiry,
     )?;
     loop {
-        peak = peak.max(process::before_release(&own, &observed, expiry)?);
+        peak = peak.max(process::before_release(own, observed, expiry)?);
         if process::ready(channel.as_raw_fd(), expiry)? {
             break;
         }
     }
-    match protocol::receive(&mut channel, expiry)? {
+    match protocol::receive(channel, expiry)? {
         Frame::Release { nonce } if nonce == launch.nonce => (),
         _ => {
             return Err(invalid(
@@ -211,9 +264,9 @@ fn supervise(mut channel: UnixStream, mut launch: Launch) -> io::Result<()> {
             ));
         }
     }
-    peak = peak.max(process::before_release(&own, &observed, expiry)?);
+    peak = peak.max(process::before_release(own, observed, expiry)?);
     protocol::send(
-        &mut child_channel,
+        child_channel,
         &Frame::Release {
             nonce: launch.nonce,
         },
@@ -224,7 +277,7 @@ fn supervise(mut channel: UnixStream, mut launch: Launch) -> io::Result<()> {
             child.1 = true;
             use std::os::unix::process::ExitStatusExt;
             return protocol::send(
-                &mut channel,
+                channel,
                 &Frame::Finished {
                     nonce: launch.nonce,
                     status: status.into_raw(),
@@ -233,7 +286,7 @@ fn supervise(mut channel: UnixStream, mut launch: Launch) -> io::Result<()> {
                 expiry,
             );
         }
-        if let Some(bytes) = process::combined(&own, &observed, expiry)? {
+        if let Some(bytes) = process::combined(own, observed, expiry)? {
             peak = peak.max(bytes);
         }
         if process::ready(channel.as_raw_fd(), expiry)? {

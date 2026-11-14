@@ -89,10 +89,10 @@ pub fn reconcile_pending(parent: &Path) -> io::Result<()> {
         crate::NativeStateFiles::open(&control).map_err(io::Error::other)?;
         let intent = custody::Intent::open(&control)?;
         if let Some(record) = custody::Custody::open(&control)? {
+            let intent = intent.ok_or_else(|| invalid("Git custody has no creation intent"))?;
+            intent.matches(&record)?;
             record.reconcile()?;
-            if let Some(intent) = intent {
-                intent.retire()?
-            }
+            intent.retire()?;
         } else if intent.is_some() {
             return Err(invalid(
                 "Git creation intent has no complete native child receipt; allocation remains unresolved",

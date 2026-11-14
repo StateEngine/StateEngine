@@ -120,7 +120,7 @@ impl Custody {
             digest: Sha256::digest(bytes).into(),
         }))
     }
-    pub(super) fn retire(self, deadline: Instant) -> io::Result<()> {
+    pub(super) fn retire(&self, deadline: Instant) -> io::Result<()> {
         for pin in [&self.record.git, &self.record.supervisor] {
             if pin.state(deadline)? == State::Alive {
                 return Err(invalid("Git cleanup custody still names a live process"));
@@ -170,6 +170,8 @@ pub(super) struct Intent {
     root: NativeSourceRoot,
     path: PathBuf,
     digest: [u8; 32],
+    host: ProcessPin,
+    nonce: [u8; 32],
 }
 impl Intent {
     pub(super) const NAME: &str = ".git-intent.json";
@@ -187,11 +189,12 @@ impl Intent {
             .map_err(io::Error::other)?;
         sync_root(control)?;
         root.check()?;
-        Ok(Self {
-            root,
-            path,
-            digest: Sha256::digest(bytes).into(),
-        })
+        let published = Self::open(control)?
+            .ok_or_else(|| invalid("published Git creation intent is absent"))?;
+        if published.digest != <[u8; 32]>::from(Sha256::digest(bytes)) {
+            return Err(invalid("Git creation intent changed on readback"));
+        }
+        Ok(published)
     }
     pub(super) fn open(control: &Path) -> io::Result<Option<Self>> {
         let root = NativeSourceRoot::open(control)?;
@@ -213,20 +216,34 @@ impl Intent {
             || host.uid != unsafe { libc::geteuid() }
             || host.pid == 0
             || host.pid > i32::MAX as u32
+            || !matches!(host.birth, se_types::StartIdentity::Macos { .. })
             || identity != root.physical_identity()?
         {
             return Err(invalid(
                 "Git creation intent differs from its protected root",
             ));
         }
+        root.check()?;
         Ok(Some(Self {
             root,
             path,
             digest: Sha256::digest(bytes).into(),
+            host,
+            nonce,
         }))
     }
+    pub(super) fn matches(&self, custody: &Custody) -> io::Result<()> {
+        self.root.check()?;
+        custody.root.check()?;
+        if self.nonce != custody.record.nonce
+            || self.root.physical_identity()? != custody.record.control_identity
+        {
+            return Err(invalid("Git custody differs from its creation intent"));
+        }
+        self.host.verify(&custody.record.host)
+    }
     /// Only the owner that proved its complete tree gone may retire this intent.
-    pub(super) fn retire(self) -> io::Result<()> {
+    pub(super) fn retire(&self) -> io::Result<()> {
         self.root.check()?;
         OwnedFile::open(&self.path)
             .map_err(io::Error::other)?
