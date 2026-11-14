@@ -1,3 +1,5 @@
+# Check out text with LF on every host, so release fingerprints match across platforms.
+* text=auto eol=lf
 # Release inputs must retain the exact published license bytes on every host.
 scripts/release/licenses/** -text whitespace=-blank-at-eof
 LICENSE -text
