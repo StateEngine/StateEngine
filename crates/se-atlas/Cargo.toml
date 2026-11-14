@@ -29,5 +29,5 @@ grep-searcher = "=0.1.17"
 workspace = true
 
 [dev-dependencies]
-# Enable deterministic time in integration fixtures, including default test runs.
+# Enable deterministic time in debug integration fixtures and default test runs.
 se-atlas = { path = ".", features = ["test-clock"] }

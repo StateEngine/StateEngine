@@ -1,11 +1,11 @@
 //! Monotonic time for synchronous Atlas work budgets.
-//! The optional test clock freezes only its calling thread; native builds use
-//! the system clock directly and retain the same deadlines and allowances.
+//! Debug fixtures may freeze only their calling thread. Builds without debug
+//! assertions always use system time, even when Cargo unifies test-clock.
 use std::time::Instant;
 
 #[inline]
 pub fn now() -> Instant {
-    #[cfg(feature = "test-clock")]
+    #[cfg(all(feature = "test-clock", debug_assertions))]
     if let Some(now) = manual::current() {
         return now;
     }
@@ -15,17 +15,17 @@ pub fn now() -> Instant {
 // A thread blocked in an OS wait cannot advance its manual clock. Translate
 // only that wait's remaining allowance so admission still has a finite bound.
 pub(crate) fn wait_deadline(deadline: Instant) -> Instant {
-    #[cfg(feature = "test-clock")]
+    #[cfg(all(feature = "test-clock", debug_assertions))]
     if let Some(now) = manual::current() {
         return Instant::now() + deadline.saturating_duration_since(now);
     }
     deadline
 }
 
-#[cfg(feature = "test-clock")]
+#[cfg(all(feature = "test-clock", debug_assertions))]
 pub use manual::{Paused, advance, pause};
 
-#[cfg(feature = "test-clock")]
+#[cfg(all(feature = "test-clock", debug_assertions))]
 mod manual {
     use std::{
         cell::Cell,

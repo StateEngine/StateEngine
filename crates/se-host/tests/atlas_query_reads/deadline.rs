@@ -61,7 +61,7 @@ impl Read for DelayedFile<'_> {
             self.observed.set(true);
             // Cross the source-scan allowance while leaving time to finalize
             // the same SQL snapshot and emit its continuation.
-            se_atlas::clock::advance(Duration::from_millis(960));
+            super::test_clock::advance(Duration::from_millis(960));
         }
         self.inner.read(bytes)
     }

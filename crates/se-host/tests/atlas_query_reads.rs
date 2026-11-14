@@ -11,6 +11,8 @@ mod private;
 mod scan_deadline;
 #[path = "atlas_query_reads/scope.rs"]
 mod scope_queries;
+#[path = "../../test-support/atlas_clock.rs"]
+mod test_clock;
 #[path = "atlas_query_reads/text.rs"]
 mod text_queries;
 use fixture::*;
@@ -73,7 +75,7 @@ fn outer_reader<'a, 'c, 'x>(
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
-    let _clock = se_atlas::clock::pause();
+    let _clock = test_clock::control();
     let f = Fixture::new()?;
     let (mut direct, lease) = f.direct()?;
     direct.append(

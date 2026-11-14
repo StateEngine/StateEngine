@@ -1,5 +1,7 @@
 //! Protects: the public Atlas adapter retries one expired read, never errors or writes.
 //! Real native SQLite; explicit clock advances model preemption, not memory qualification.
+#[path = "../../test-support/atlas_clock.rs"]
+mod test_clock;
 use rusqlite::hooks::{AuthAction, Authorization, TransactionOperation};
 use se_atlas::{
     cache::{connection::*, *},
@@ -64,7 +66,7 @@ impl CacheFiles for ControlledCache {
                 {
                     fault.expired_transaction.store(true, Ordering::SeqCst);
                     fault.expiries.fetch_add(1, Ordering::SeqCst);
-                    se_atlas::clock::advance(Duration::from_millis(250));
+                    test_clock::advance(Duration::from_millis(250));
                 }
             }
             if matches!(
@@ -107,7 +109,7 @@ impl CacheFiles for ControlledCache {
         if self.fault.expire_write.load(Ordering::SeqCst) {
             // Native write admission must finish before the injected expiry.
             // Consume more than the former 50 ms fixture deadline.
-            se_atlas::clock::advance(Duration::from_millis(150));
+            test_clock::advance(Duration::from_millis(150));
         }
         self.native.reserve_growth(bytes)
     }
@@ -208,7 +210,7 @@ fn setup(state: IndexState) -> Result<Setup, Box<dyn std::error::Error>> {
 )]
 fn exercise(case: Case) -> Check {
     let _case = CASE_LOCK.lock().map_err(|_| "fixture lock poisoned")?;
-    let _clock = se_atlas::clock::pause();
+    let _clock = test_clock::control();
     let (f, source, native, seed) = setup(IndexState::Current)?;
     let fault = native.fault.clone();
     let mut cache = CacheConnection::create(
@@ -232,7 +234,7 @@ fn exercise(case: Case) -> Check {
                 assert_eq!(changed, 1, "native UPDATE did not execute");
                 // Expire the same write deadline only after real mutation, so
                 // generation zero below proves rollback rather than non-admission.
-                se_atlas::clock::advance(
+                test_clock::advance(
                     deadline.saturating_duration_since(se_atlas::clock::now())
                         + Duration::from_millis(25),
                 );

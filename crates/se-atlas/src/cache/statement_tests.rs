@@ -141,6 +141,7 @@ fn literals(source: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
 #[test]
 fn expired_sql_is_not_started_and_live_submillisecond_budget_is_positive()
 -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(debug_assertions)]
     let _clock = crate::clock::pause();
     let mut db = Connection::open_in_memory()?;
     let entered = Cell::new(false);
@@ -186,6 +187,7 @@ fn expired_sql_is_not_started_and_live_submillisecond_budget_is_positive()
 #[test]
 fn prepared_queries_and_writes_recheck_the_snapshot_deadline()
 -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(debug_assertions)]
     let _clock = crate::clock::pause();
     let db = Connection::open_in_memory()?;
     db.execute_batch("CREATE TABLE retained(value INTEGER)")?;
@@ -202,7 +204,10 @@ fn prepared_queries_and_writes_recheck_the_snapshot_deadline()
     let mut lazy = lazy_statement.query([])?;
     let mut mapped_statement = view.prepare("SELECT 1")?;
     let mut mapped = mapped_statement.query_map([], |row| row.get::<_, i64>(0))?;
+    #[cfg(debug_assertions)]
     crate::clock::advance(Duration::from_millis(110));
+    #[cfg(not(debug_assertions))]
+    std::thread::sleep(Duration::from_millis(110));
     assert!(
         lazy.next().is_err(),
         "lazy query executed its first step after expiry"
