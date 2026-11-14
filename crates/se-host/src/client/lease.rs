@@ -1,5 +1,7 @@
 //! Shared absolute time/cancellation bounds. Native lease/channel operations
 //! receive the same deadline; reconnect never renews a request's clock.
+use crate::phase_trace::profile_phase;
+
 use crate::client::ClientOptions;
 use se_types::{Result, SeError};
 use std::{
@@ -264,12 +266,18 @@ impl crate::client::BlockingIpcClient {
             // Cold local file I/O belongs to the caller's original request
             // budget, before a connection holds a server handshake slot. The
             // hello below reobserves native identity through the warmed cache.
-            se_proc::native_ipc::observe_ipc_self_bounded(&budget.native_bound())
-                .map_err(native_error)?;
+            profile_phase("ipc_self_prewarm", || {
+                se_proc::native_ipc::observe_ipc_self_bounded(&budget.native_bound())
+            })
+            .map_err(native_error)?;
         }
         let deadline = budget.stage(HELLO_TIMEOUT)?;
-        let mut stream = native_connect(endpoint, &deadline, false)?;
-        let bytes = wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)?;
+        let mut stream = profile_phase("ipc_native_connect", || {
+            native_connect(endpoint, &deadline, false)
+        })?;
+        let bytes = profile_phase("ipc_challenge_read", || {
+            wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)
+        })?;
         let challenge = auth::decode_challenge(bytes.as_bytes(), endpoint)?;
         if challenge.version != se_types::API_VERSION {
             return Err(SeError::new(se_types::Detail::ApiVersionUnsupported(
@@ -285,8 +293,10 @@ impl crate::client::BlockingIpcClient {
         }
         let authority = match &credential {
             ClientCredential::Machine(key) => {
-                let peer = se_proc::native_ipc::observe_ipc_self_bounded(&deadline.native_bound())
-                    .map_err(native_error)?;
+                let peer = profile_phase("ipc_self_mac_observation", || {
+                    se_proc::native_ipc::observe_ipc_self_bounded(&deadline.native_bound())
+                })
+                .map_err(native_error)?;
                 let nonce = auth::fresh_nonce()?;
                 let mac = auth::create_owner_mac(
                     key,
@@ -311,8 +321,12 @@ impl crate::client::BlockingIpcClient {
             authority,
         };
         deadline.remaining()?;
-        wire::write_frame_bounded(&mut stream, &auth::encode_client_hello(&sent)?, &deadline)?;
-        let bytes = wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)?;
+        profile_phase("ipc_hello_write", || {
+            wire::write_frame_bounded(&mut stream, &auth::encode_client_hello(&sent)?, &deadline)
+        })?;
+        let bytes = profile_phase("ipc_hello_read", || {
+            wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)
+        })?;
         let hello = auth::decode_server_hello(bytes.as_bytes(), &sent, &challenge)?;
         deadline.remaining()?;
         Ok(BlockingConnection {
@@ -448,10 +462,14 @@ impl BlockingConnection {
         stream.set_bound(writing.native_bound());
         self.last_activity = Instant::now();
         *progress = ExchangeProgress::SendAttempted;
-        wire::write_frame_bounded(&mut stream, &frame, &writing)?;
+        profile_phase("ipc_request_write", || {
+            wire::write_frame_bounded(&mut stream, &frame, &writing)
+        })?;
         stream.set_bound(deadline.native_bound());
         let limit = self.hello.maximum_reply_bytes.get() as usize;
-        let bytes = wire::read_payload_bounded(&mut stream, limit, &deadline)?;
+        let bytes = profile_phase("ipc_reply_read", || {
+            wire::read_payload_bounded(&mut stream, limit, &deadline)
+        })?;
         let response = wire::decode_response(
             bytes.as_bytes(),
             call.version,

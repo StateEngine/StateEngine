@@ -15,6 +15,7 @@ pub mod adoption;
 mod agent_observation;
 pub mod channels;
 pub mod client;
+mod phase_trace;
 pub mod remote;
 #[cfg(feature = "remote")]
 mod return_mail;

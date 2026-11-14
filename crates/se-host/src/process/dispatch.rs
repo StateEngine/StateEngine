@@ -1,4 +1,6 @@
 //! The shared host executor dispatches only typed, already admitted plans.
+use crate::phase_trace::HostPhaseSpan;
+
 use super::*;
 use crate::{CustodyExecutor, HostFuture, client::lease::Deadline};
 use se_core::{ops::AnyOutput, ports::CustodyPlan};
@@ -32,6 +34,7 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
         deadline: &Deadline,
     ) -> se_types::Result<()> {
         if matches!(output, AnyOutput::ProjectStatus(_)) {
+            let _phase = HostPhaseSpan::new("host_native_status");
             self.observe_status(output, admission, deadline)?;
         }
         Ok(())
@@ -42,9 +45,16 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
         deadline: &'a Deadline,
     ) -> HostFuture<'a, AnyOutput> {
         Box::pin(async move {
-            self.observe_provider_output(
-                self.observe_acp_output(self.observe_secode_output(output, deadline).await?)?,
-            )
+            let output = {
+                let _phase = HostPhaseSpan::new("host_secode_output");
+                self.observe_secode_output(output, deadline).await?
+            };
+            let output = {
+                let _phase = HostPhaseSpan::new("host_acp_output");
+                self.observe_acp_output(output)?
+            };
+            let _phase = HostPhaseSpan::new("host_provider_output");
+            self.observe_provider_output(output)
         })
     }
 

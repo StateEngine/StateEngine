@@ -1,6 +1,8 @@
 //! Authenticate native observations and current protected credentials before an
 //! admitted snapshot exists. An override is checked on its own, never retried
 //! using the connection's earlier authority.
+use crate::phase_trace::HostPhaseSpan;
+
 use super::{
     start::{allocate_facts, owner_budget},
     *,
@@ -116,6 +118,7 @@ impl AdmissionContext {
         })
     }
     pub fn handshake(&self, pending: &mut PendingIpcHandshake) -> Result<ConnectionGrant> {
+        let _phase = HostPhaseSpan::new("host_handshake");
         let mut phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
@@ -255,6 +258,7 @@ impl AdmissionContext {
         metadata: OperationMetadata,
         finish: impl FnOnce(se_store::ReadPhase, HostedCall) -> Result<T>,
     ) -> Result<T> {
+        let _phase = HostPhaseSpan::new("host_with_operation");
         let (peer, connection) = native;
         let mut phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
@@ -565,6 +569,7 @@ impl AdmissionContext {
         })
     }
     pub(crate) fn machine_key(&self) -> Result<se_types::Secret> {
+        let _phase = HostPhaseSpan::new("host_machine_key");
         let path = self.state_directory.join("credential");
         let lease = self.lease()?;
         let mut file = match lease.files().readback(&path).map_err(|e| store_error(&e))? {
@@ -590,14 +595,18 @@ impl AdmissionContext {
         se_types::Secret::new(std::mem::take(&mut *bytes))
     }
     fn owner_peer(&self, phase: &mut se_store::ReadPhase, peer: &PeerProof) -> Result<()> {
+        let _phase = HostPhaseSpan::new("host_owner_peer");
         // This finite auth phase deliberately retains its SQL pin through the
         // protected readback and bounded native ancestry observation below.
         // machine_key likewise reads a protected file before the phase closes;
         // none of these synchronous reads submits a write or awaits the network.
         let lease = self.lease()?;
-        let inventory = phase
-            .owner_guard(lease.files(), owner_budget()?)
-            .map_err(|e| store_error(&e))?;
+        let inventory = {
+            let _phase = HostPhaseSpan::new("host_owner_guard");
+            phase
+                .owner_guard(lease.files(), owner_budget()?)
+                .map_err(|e| store_error(&e))?
+        };
         if inventory.owners.as_slice() != [self.owner.clone()] {
             return Err(SeError::invalid(
                 "host owner",
@@ -623,14 +632,17 @@ impl AdmissionContext {
                 }
             }
         };
-        let observed = se_proc::observe_owner(
-            se_proc::OwnerTarget::Process {
-                pid: se_proc::ProcessId(native.pid()),
-                start: &start,
-            },
-            &records,
-        )
-        .map_err(|e| se_core::scope::unreadable("native IPC peer ancestry", &e.to_string()))?;
+        let observed = {
+            let _phase = HostPhaseSpan::new("host_owner_observe");
+            se_proc::observe_owner(
+                se_proc::OwnerTarget::Process {
+                    pid: se_proc::ProcessId(native.pid()),
+                    start: &start,
+                },
+                &records,
+            )
+            .map_err(|e| se_core::scope::unreadable("native IPC peer ancestry", &e.to_string()))?
+        };
         let owner = match observed.owner() {
             se_proc::NativeOwner::Unix {
                 real_uid,
@@ -669,6 +681,7 @@ impl AdmissionContext {
     }
 
     fn check_generation(&self, phase: &se_store::ReadPhase) -> Result<()> {
+        let _phase = HostPhaseSpan::new("host_check_generation");
         match phase.runtime_owner().map_err(|e| store_error(&e))? {
             Read::Present { value } if value.generation == self.generation => Ok(()),
             _ => Err(SeError::invalid(

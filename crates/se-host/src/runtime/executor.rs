@@ -1,5 +1,7 @@
 //! The sole async store bridge. Synchronous planning, submission and continuation
 //! run on bounded blocking jobs; only the owned commit completion is awaited.
+use crate::phase_trace::HostPhaseSpan;
+
 use super::failure::WriteIdentity;
 use super::timings::{self, Mode};
 use super::*;
@@ -91,6 +93,7 @@ pub(super) async fn finish(
     deadline: Deadline,
     mut host_phases: se_core::ops::HostPhaseTimings,
 ) -> Result<ExecutedCall> {
+    let _phase = HostPhaseSpan::new("host_finish");
     let generation = context.generation;
     let Planned {
         step,
@@ -106,6 +109,7 @@ pub(super) async fn finish(
                 .then(|| context.custody.get().cloned())
                 .flatten();
             if !observations.is_empty() || native.is_some() {
+                let _phase_native = HostPhaseSpan::new("host_native_blocking_wait");
                 let observe_deadline = deadline.clone();
                 let command_home = context.state_directory.clone();
                 let observed_admission = admission.clone();
@@ -132,6 +136,7 @@ pub(super) async fn finish(
                     .await?;
             }
             if let Some(custody) = context.custody.get() {
+                let _phase_custody = HostPhaseSpan::new("host_custody_output");
                 output = custody.observe_output(output, &deadline).await?;
             }
             Ok(ExecutedCall {

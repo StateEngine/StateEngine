@@ -1,4 +1,6 @@
 //! Pure status rows are collected on the admission/planning snapshot.
+use crate::phase_trace::HostPhaseSpan;
+
 use se_core::{commit::Cx, ops::*, scope, store_error::store_error};
 use se_store::{Actor, EventBody, MessageQuery, Snapshot};
 use se_types::{Read, Result};
@@ -8,6 +10,7 @@ pub(crate) fn prepare<S: Snapshot>(
     home: &std::path::Path,
     cx: &mut Cx<'_, S>,
 ) -> Result<AnyOutput> {
+    let _phase = HostPhaseSpan::new("host_status_prepare");
     if input.all {
         return Err(error("host status", "use the owner CLI for status --all"));
     }
