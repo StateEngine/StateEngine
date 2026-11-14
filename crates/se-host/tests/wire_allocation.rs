@@ -108,10 +108,10 @@ fn child(case: &str) -> Check {
     Ok(())
 }
 
-fn observe(test: &str, case: &str) -> Result<Observation, Box<dyn Error>> {
+fn observe(test: &str, case: &str, check: impl FnOnce(Observation)) -> Check {
     let home = fixture::Home::new()?;
     let directory = home.0.until_success();
-    let result = observe_case(test, case, &directory);
+    let result = observe_case(test, case, &directory).map(check);
     directory.finish(result)
 }
 
@@ -195,20 +195,21 @@ fn wire_capacity_tracks_serialized_payload() -> Check {
         return Ok(());
     }
     for case in ["json", "escaped", "frame", "call", "response"] {
-        let (length, events) = observe(test, case)?;
-        let allocations: Vec<_> = events.iter().filter(|row| row.0 == 'A').collect();
-        assert!(
-            !allocations.is_empty(),
-            "observer did not see wire allocation"
-        );
-        assert!(
-            allocations.iter().all(|row| row.1 <= length),
-            "capacity must follow actual envelope, not its budget: {events:?}"
-        );
-        assert!(
-            !events.iter().any(|row| row.0 == 'R'),
-            "secret buffer grew through realloc"
-        );
+        observe(test, case, |(length, events)| {
+            let allocations: Vec<_> = events.iter().filter(|row| row.0 == 'A').collect();
+            assert!(
+                !allocations.is_empty(),
+                "observer did not see wire allocation"
+            );
+            assert!(
+                allocations.iter().all(|row| row.1 <= length),
+                "capacity must follow actual envelope, not its budget: {events:?}"
+            );
+            assert!(
+                !events.iter().any(|row| row.0 == 'R'),
+                "secret buffer grew through realloc"
+            );
+        })?;
     }
     Ok(())
 }
@@ -219,16 +220,18 @@ fn wire_release_erases_every_allocated_byte() -> Check {
     if delegated()? {
         return Ok(());
     }
-    let (_, dirty) = observe(test, "observer_dirty")?;
-    assert!(
-        dirty.iter().any(|row| row.0 == 'F' && !row.2),
-        "observer must detect unwiped source and spare capacity"
-    );
-    let (_, clean) = observe(test, "observer_clean")?;
-    assert!(
-        clean.iter().any(|row| row.0 == 'F' && row.2),
-        "observer must witness whole-capacity wiping"
-    );
+    observe(test, "observer_dirty", |(_, dirty)| {
+        assert!(
+            dirty.iter().any(|row| row.0 == 'F' && !row.2),
+            "observer must detect unwiped source and spare capacity"
+        );
+    })?;
+    observe(test, "observer_clean", |(_, clean)| {
+        assert!(
+            clean.iter().any(|row| row.0 == 'F' && row.2),
+            "observer must witness whole-capacity wiping"
+        );
+    })?;
     for case in [
         "json",
         "escaped",
@@ -239,19 +242,20 @@ fn wire_release_erases_every_allocated_byte() -> Check {
         "over_frame",
         "error",
     ] {
-        let (_, events) = observe(test, case)?;
-        assert!(
-            events
-                .iter()
-                .filter(|row| matches!(row.0, 'F' | 'R'))
-                .all(|row| row.2),
-            "unwiped storage before release: {events:?}"
-        );
-        assert_eq!(
-            events.iter().filter(|row| row.0 == 'A').count(),
-            events.iter().filter(|row| row.0 == 'F').count(),
-            "unobserved release"
-        );
+        observe(test, case, |(_, events)| {
+            assert!(
+                events
+                    .iter()
+                    .filter(|row| matches!(row.0, 'F' | 'R'))
+                    .all(|row| row.2),
+                "unwiped storage before release: {events:?}"
+            );
+            assert_eq!(
+                events.iter().filter(|row| row.0 == 'A').count(),
+                events.iter().filter(|row| row.0 == 'F').count(),
+                "unobserved release"
+            );
+        })?;
     }
     Ok(())
 }
@@ -263,11 +267,12 @@ fn wire_oversize_refusal_retains_no_payload_buffer() -> Check {
         return Ok(());
     }
     for case in ["over", "over_frame", "error"] {
-        let (_, events) = observe(test, case)?;
-        assert!(
-            !events.iter().any(|row| row.0 == 'A'),
-            "refused JSON allocated a secret buffer: {events:?}"
-        );
+        observe(test, case, |(_, events)| {
+            assert!(
+                !events.iter().any(|row| row.0 == 'A'),
+                "refused JSON allocated a secret buffer: {events:?}"
+            );
+        })?;
     }
     Ok(())
 }
