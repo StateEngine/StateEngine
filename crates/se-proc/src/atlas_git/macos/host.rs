@@ -172,7 +172,7 @@ fn refused(
     } else if reaped && session.git.is_none() {
         session.could_have_git = false;
     }
-    Ok(invalid(format!("Git contained reader refused: {reason}")))
+    Ok(invalid(&format!("Git contained reader refused: {reason}")))
 }
 struct Pipes {
     stdout: std::process::ChildStdout,
@@ -346,7 +346,7 @@ fn collect(
                     if reason.len() > 8192 {
                         return Err(invalid("Git refusal diagnostic exceeds its bound"));
                     }
-                    return Err(invalid(format!("Git contained reader refused: {reason}")));
+                    return Err(invalid(&format!("Git contained reader refused: {reason}")));
                 }
                 _ => {
                     return Err(invalid(

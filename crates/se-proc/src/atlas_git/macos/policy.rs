@@ -79,11 +79,15 @@ pub(super) fn apply(policy: &str) -> io::Result<()> {
         "no native diagnostic".to_owned()
     } else {
         // SAFETY: sandbox_init owns the terminated diagnostic until it is freed.
-        let text = unsafe { CStr::from_ptr(error) }
-            .to_string_lossy()
-            .chars()
-            .take(512)
-            .collect();
+        let diagnostic = unsafe { CStr::from_ptr(error) }.to_string_lossy();
+        let text = if diagnostic.chars().count() > 512 {
+            format!(
+                "{} [diagnostic exceeded 512 characters]",
+                diagnostic.chars().take(512).collect::<String>()
+            )
+        } else {
+            diagnostic.into_owned()
+        };
         // SAFETY: native diagnostic is released exactly once.
         unsafe { sandbox_free_error(error) };
         text
