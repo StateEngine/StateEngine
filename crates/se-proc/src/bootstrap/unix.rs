@@ -320,10 +320,11 @@ pub(super) fn release(child: &mut Child) -> ProcResult<()> {
 pub(super) fn revoke(events: &File) -> ProcResult<()> {
     // SAFETY: shut down only this private parent's authorization direction.
     if unsafe { libc::shutdown(events.as_raw_fd(), libc::SHUT_WR) } < 0 {
-        return Err(fail(
-            "revoke runtime authorization",
-            io::Error::last_os_error(),
-        ));
+        let error = io::Error::last_os_error();
+        // A disconnected private channel cannot carry another authorization.
+        if error.raw_os_error() != Some(libc::ENOTCONN) {
+            return Err(fail("revoke runtime authorization", error));
+        }
     }
     Ok(())
 }
