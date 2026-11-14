@@ -4,11 +4,13 @@ The first timed call is separate from 200 warm calls per image and condition.
 All output validation and process censuses happen outside the measured interval.
 Absolute hosted latency does not qualify a different machine's latency budget.
 """
+import ctypes
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import platform
 import random
 import shutil
 import socket
@@ -54,8 +56,12 @@ def protect_state_home(state):
     # A python mkdir inherits the runner scratch tree's DACL, which grants a third
     # principal access; the store refuses that location. Replace it with an
     # owner-only protected DACL, the same shape the product creates itself.
-    user = subprocess.run(['whoami', '/username'], capture_output=True, text=True,
-                          check=True).stdout.strip()
+    buffer = ctypes.create_unicode_buffer(256)
+    size = ctypes.c_uint32(buffer.capacity())
+    if not ctypes.windll.kernel32.GetUserNameW(buffer, ctypes.byref(size)):
+        raise RuntimeError('state home protection failed: GetUserNameW error '
+                           + str(ctypes.get_last_error()))
+    user = buffer.value
     completed = subprocess.run(['icacls', str(state), '/inheritance:r',
                                 '/grant:r', user + ':F'], capture_output=True, text=True)
     require(completed.returncode == 0,
@@ -292,7 +298,79 @@ def cohort(output, images, provider, name, action, count=1, mail_count=0, dirty=
     return {key: value for key, value in record.items() if key != 'pairs'}
 
 
+
+def witness(output, images):
+    """Separate the r5 10106 bind failure before any cohort runs: a python
+    loopback bind under the minimal smoke environment, the se binary's own
+    init under the full inherited environment, and whoami diagnostics under
+    the minimal environment. The in-process loopback_probe covers the third
+    cell (python, full environment)."""
+    if sys.platform != 'win32':
+        return {'platform': sys.platform, 'note': 'Windows-only witness'}
+    full = dict(os.environ)
+    scratch = output / 'witness-home'
+    scratch.mkdir(mode=0o700)
+    (scratch / 'tmp').mkdir()
+    environment = {key: value for key, value in full.items()
+                   if key in ('PATH', 'SystemRoot', 'windir', 'ComSpec', 'PATHEXT', 'LANG', 'LC_ALL')}
+    environment.update(HOME=str(scratch), USERPROFILE=str(scratch), SE_HOME=str(scratch / 'stateengine-state'),
+                       PATH=full.get('PATH', ''),
+                       XDG_CONFIG_HOME=str(scratch / '.config'),
+                       XDG_STATE_HOME=str(scratch / '.local/state'),
+                       XDG_DATA_HOME=str(scratch / '.local/share'),
+                       XDG_CACHE_HOME=str(scratch / '.cache'),
+                       APPDATA=str(scratch / 'AppData/Roaming'),
+                       LOCALAPPDATA=str(scratch / 'AppData/Local'),
+                       TMPDIR=str(scratch / 'tmp'), TMP=str(scratch / 'tmp'),
+                       TEMP=str(scratch / 'tmp'), LANG='C.UTF-8', LC_ALL='C.UTF-8',
+                       GIT_CONFIG_GLOBAL=str(scratch / '.gitconfig'), GIT_CONFIG_NOSYSTEM='1')
+    rows = dict(python=sys.executable, python_machine=platform.machine())
+    bind_script = ('import socket\n'
+                   'for label, port in (("any-ephemeral", 0), ("scan-range", 25002)):\n'
+                   '    try:\n'
+                   '        listener = socket.create_server(("127.0.0.1", port))\n'
+                   '        listener.close()\n'
+                   '        print(label + "=ok")\n'
+                   '    except OSError as error:\n'
+                   '        print(label + "=fail:" + str(error))\n')
+    child = subprocess.run([sys.executable, '-c', bind_script], env=environment,
+                           capture_output=True, text=True, timeout=60)
+    rows['python-bind-minimal-env'] = dict(rc=child.returncode,
+                                           lines=child.stdout.strip().splitlines(),
+                                           stderr=child.stderr.strip()[-300:],
+                                           env_keys=sorted(environment))
+    binary = images['status-base']['image']
+    repository = scratch / 'repository'
+    repository.mkdir()
+    subprocess.run(['git', '-C', str(repository), 'init', '--initial-branch=feature/measurement'],
+                   env=full, capture_output=True, timeout=60)
+    full_env = dict(full)
+    full_env.update(HOME=str(scratch), USERPROFILE=str(scratch), SE_HOME=str(scratch / 'stateengine-state'),
+                    APPDATA=str(scratch / 'AppData/Roaming'),
+                    LOCALAPPDATA=str(scratch / 'AppData/Local'),
+                    TMPDIR=str(scratch / 'tmp'), TMP=str(scratch / 'tmp'),
+                    TEMP=str(scratch / 'tmp'))
+    init = subprocess.run([binary, 'init', '--repo', str(repository), '--agent', 'reader-00',
+                           '--provider', 'claude', '--home', str(scratch / 'stateengine-state'),
+                           '--json', '--no-color'],
+                          env=full_env, capture_output=True, text=True, timeout=180)
+    down = subprocess.run([binary, 'down', '--home', str(scratch / 'stateengine-state'),
+                           '--json', '--no-color'],
+                          env=full_env, capture_output=True, text=True, timeout=120)
+    rows['se-init-full-env'] = dict(binary=Path(binary).parent.name, rc=init.returncode,
+                                    stdout=init.stdout.strip()[:300],
+                                    stderr=init.stderr.strip()[-500:],
+                                    down_rc=down.returncode)
+    for label, argv in (('where-whoami', ['where.exe', 'whoami']),
+                        ('whoami-username', ['whoami', '/username'])):
+        child = subprocess.run(argv, env=environment, capture_output=True, text=True, timeout=60)
+        rows[label] = dict(rc=child.returncode, stdout=child.stdout.strip()[:300],
+                           stderr=child.stderr.strip()[:300])
+    return rows
+
+
 def main():
+
     output = Path(sys.argv[1]).resolve()
     images = json.loads((output / 'images.json').read_text())
     for image in images.values():
@@ -304,6 +382,7 @@ def main():
                          + '; no independent or cross-machine qualification',
                   platform=sys.platform,
                   loopback_probe=loopback_probe(),
+                  witness=witness(output, images),
                   method='spawn through pipe EOF and child exit; alternating pairs; first call separate; '
                          '200 warm calls; nearest-rank p95; validation and census outside timer',
                   images=images, cohorts=[], exit=1)
