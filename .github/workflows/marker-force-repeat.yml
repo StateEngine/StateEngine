@@ -1,0 +1,125 @@
+name: Repeated complete readiness markers
+'on':
+  push:
+    branches:
+    - prime/marker-force-repeat-r1
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+defaults:
+  run:
+    shell: bash
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: b03525139529790359f84db9e7e5d44486b0b442
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: judge-linux-v1
+        save-if: 'false'
+    - name: Build the candidate CLI for real consumer tests
+      env:
+        ALL_FEATURES: 'true'
+      run: |
+        python3 -I - <<'PY'
+        from pathlib import Path
+        for report in ("target/nextest/ci/junit.xml", "target/nextest/input-judges.json",
+                       "target/nextest/custom-harnesses.json"):
+            Path(report).unlink(missing_ok=True)
+        PY
+        features=()
+        if [[ "$ALL_FEATURES" == true ]]; then features+=(--all-features); fi
+        target="$(rustc --print host-tuple)"
+        cargo build --target "$target" --workspace --bins "${features[@]}" --locked
+        python3 -I - "$target" <<'PY'
+        import os, sys
+        from pathlib import Path
+        image = (Path("target") / sys.argv[1] / "debug"
+                 / ("se.exe" if sys.platform == "win32" else "se")).resolve(strict=True)
+        if not image.is_file():
+            sys.exit("candidate CLI is not a regular file")
+        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+            for name in ("SE_W3_SE_BIN", "SE_SELECTOR_SE"):
+                print(f"{name}={image}", file=output)
+        PY
+    - name: Register the disposable runner account for installation tests
+      run: |
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          python scripts/ci/installation_account.py provision
+        else
+          identity="$(id -u)"
+          profile="$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')"
+          sudo python3 scripts/ci/installation_account.py provision --identity "$identity" --profile "$profile"
+        fi
+    - name: Repeat both real force journeys twenty times with joined cleanup
+      shell: python
+      run: |
+        """Repeat the existing public force journey; publish closure receipts, never homes."""
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        import shutil
+        import subprocess
+        import sys
+        import tempfile
+
+        root = Path(os.environ['RUNNER_TEMP'])/'marker-repeat-results'
+        root.mkdir()
+        source = subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+        assert source == 'b03525139529790359f84db9e7e5d44486b0b442'
+        image = Path(os.environ['SE_SELECTOR_SE'])
+        with image.open('rb') as stream:
+            image_hash = hashlib.file_digest(stream,'sha256').hexdigest()
+        summary = {'source':source,'image_sha256':image_hash,'rounds_requested':20,'rounds':[],
+                   'provider':'native Claude protocol double','retries':0,'complete':False}
+        for number in range(1,21):
+            logs = root/f'round-{number:02}';logs.mkdir()
+            scratch = Path(tempfile.mkdtemp(prefix='sefr-'))
+            with (logs/'judge.stdout').open('wb') as out, (logs/'judge.stderr').open('wb') as err:
+                result = subprocess.run([sys.executable,'-B','crates/se/tests/judges/force_relaunch_independent.py',
+                                         '--se',str(image),'--output',str(scratch/'output')],stdout=out,stderr=err)
+            row = {'round':number,'exit':result.returncode,'closure':{},'complete':False}
+            for case in ('managed','interrupted'):
+                path = scratch/'output'/case/'closure.json'
+                if path.is_file():
+                    closure = json.loads(path.read_text())
+                    row['closure'][case] = closure
+                    (logs/(case+'-closure.json')).write_text(json.dumps(closure,indent=2))
+                for name in ('failure.txt','original.stdout','original.stderr'):
+                    path = scratch/'output'/case/name
+                    if path.is_file():
+                        shutil.copyfile(path,logs/(case+'-'+name))
+            closed = set(row['closure'])=={'managed','interrupted'} and all(
+                records and all(p['exited'] is True for p in records) for records in row['closure'].values())
+            row['complete'] = result.returncode==0 and closed
+            if closed:
+                shutil.rmtree(scratch)
+                row['homes_removed'] = not scratch.exists()
+            else:
+                row['retained_path'] = str(scratch)
+            summary['rounds'].append(row)
+            (root/'result.json').write_text(json.dumps(summary,indent=2))
+            print(json.dumps({'round':number,'exit':result.returncode,'complete':row['complete']}),flush=True)
+            if not row['complete']:
+                break
+        summary['complete'] = len(summary['rounds'])==20 and all(r['complete'] and r['homes_removed'] for r in summary['rounds'])
+        (root/'result.json').write_text(json.dumps(summary,indent=2))
+        assert summary['complete'], 'twenty complete witnessed rounds were not observed; see raw receipts'
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: marker-force-twenty-rounds
+        path: ${{ runner.temp }}/marker-repeat-results/
+        if-no-files-found: error
