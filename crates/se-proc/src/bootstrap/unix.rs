@@ -212,6 +212,7 @@ pub(in crate::bootstrap) fn write(
         let flags = libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT;
         #[cfg(target_os = "macos")]
         let flags = libc::MSG_DONTWAIT;
+        // SAFETY: retained stream socket and borrowed immutable byte extent.
         let count =
             unsafe { libc::send(file.as_raw_fd(), bytes.as_ptr().cast(), bytes.len(), flags) };
         if count > 0 {

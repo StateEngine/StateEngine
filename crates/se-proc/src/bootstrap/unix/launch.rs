@@ -91,6 +91,7 @@ pub(in crate::bootstrap) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> Pro
     {
         // SAFETY: child-only action preserves exactly the reserved descriptors 0..3.
         code(
+            // SAFETY: initialized child action excludes only unrelated inherited descriptors.
             unsafe { libc::posix_spawn_file_actions_addclosefrom_np(&mut actions.0, 4) },
             "close unrelated runtime descriptors",
         )?;

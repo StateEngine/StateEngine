@@ -5,7 +5,6 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
-    io::{self, Read},
     path::PathBuf,
     time::{Duration, Instant},
 };
