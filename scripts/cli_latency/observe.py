@@ -1,8 +1,9 @@
-"""Trace fresh recipient message reads on exact frozen base/head images.
+"""Uninstrumented status cost of retaining authenticated host resource counters.
 
-Six configured-provider/repository cohorts compare plain and instrumented images.
-Providers are never launched; diagnostic spans include observer overhead.
+The baseline includes the accepted IPC encoder. Providers are configured only;
+this is an author paired observation, not idle/session/provider qualification.
 """
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -10,44 +11,50 @@ import subprocess
 import sys
 
 from support import ROUNDS, load, prepare, require, save, summaries, timed
-from phases import profile
-from workloads import ACTIONS, arguments, readback, setup, validate
 
 
-def preflight(output, images):
-    """Retain each binary's actual public help before using its command flags."""
-    result = {}
-    for side, image in images.items():
-        require(image['exit'] == 0 and hashlib.sha256(Path(image['image']).read_bytes()).hexdigest()
-                == image['sha256'], 'Build receipt or image digest differs')
-        result[side] = {}
-        for words in (['msg', 'list'], ['msg', 'send'], ['msg', 'read'], ['resume']):
-            child = subprocess.run([image['image'], 'help', *words], capture_output=True,
-                                   text=True, timeout=30)
-            result[side][' '.join(words)] = dict(exit=child.returncode, stdout=child.stdout,
-                                                 stderr=child.stderr)
-            save(output / 'public-help.json', result)
-            require(child.returncode == 0 and child.stdout.strip(), 'Command help unavailable')
-
-
-def status(smoke, pid, dirty, label):
-    value = smoke.call(['status'], label)
+def validate(sample, smoke, pid, side, dirty):
+    require(sample['exit'] == 0 and sample['error'] is None, 'Public status failed')
+    value = json.loads(sample['stdout'])
+    require(value.get('schema') == 'se.status/v1' and value.get('ok') is not False,
+            'Wrong status response family')
     project = value['project']
     require(project['state'] == 'present' and project['value']['id'] == smoke.project,
-            'Project became absent or changed')
+            'Project absent or changed')
     git = project['value']['git']
     require(git['commits'] == 2 and git['branch'] == 'feature/measurement'
             and git['uncommitted'] is dirty, 'Repository display changed')
-    require(value['runtime']['state'] == 'running'
-            and value['runtime']['process']['pid'] == pid, 'Serving host changed')
+    runtime = value['runtime']
+    require(runtime['state'] == 'running' and runtime['process']['pid'] == pid
+            and runtime['host'] == 'daemon', 'Serving host changed')
     require(len(value['agents']['items']) == 1
             and value['agents']['items'][0]['session']['state'] == 'never-launched',
             'Configured provider unexpectedly launched')
-    observed = smoke.commands.observer.observe(pid)
-    identities = [item for item in observed if item['pid'] == pid]
-    require(len(identities) == 1 and identities[0]['birth'] and identities[0]['command'],
-            'Serving host native identity is unavailable')
-    return {key: identities[0][key] for key in ('pid', 'birth', 'command')}
+    if side == 'base':
+        require('resources' not in runtime and 'resources_unavailable' not in runtime,
+                'Base no longer reproduces the dropped resource fields')
+    else:
+        counters = runtime.get('resources')
+        require(isinstance(counters, dict) and not runtime.get('resources_unavailable'),
+                'Head dropped its fresh resource observation')
+        require(counters['method'] == 'linux:getrusage(RUSAGE_SELF)+/proc/self/statm',
+                'Host counter scope changed')
+        for name in ('self_voluntary_switches', 'self_involuntary_switches',
+                     'cpu_user_us', 'cpu_system_us', 'rss_bytes'):
+            require(type(counters.get(name)) is int and counters[name] >= 0,
+                    'Host counter absent, unreadable or not a native integer')
+        require(counters['rss_bytes'] > 0, 'Live host RSS is falsely zero')
+        at = datetime.fromisoformat(counters['sampled_at'].replace('Z', '+00:00'))
+        require(datetime.fromtimestamp(sample['wall_started_ns'] / 1e9, timezone.utc) <= at
+                <= datetime.fromtimestamp(sample['wall_ended_ns'] / 1e9, timezone.utc),
+                'Resource timestamp lies outside its public call')
+
+
+def identity(smoke, pid):
+    rows = [row for row in smoke.commands.observer.observe(pid) if row['pid'] == pid]
+    require(len(rows) == 1 and rows[0]['birth'] and rows[0]['command'],
+            'Native host identity is unavailable')
+    return {key: rows[0][key] for key in ('pid', 'birth', 'command')}
 
 
 def close(smokes, record):
@@ -60,7 +67,7 @@ def close(smokes, record):
                         and stopped.get('witness', {}).get('state') == 'witnessed'
                         and isinstance(stopped.get('stops'), list)
                         and all(row.get('complete') is True for row in stopped['stops']),
-                        'Incomplete public shutdown')
+                        'Incomplete authenticated shutdown')
         except Exception as error:
             record['cleanup'][side] = dict(error=str(error))
             record['exit'] = 1
@@ -73,45 +80,34 @@ def close(smokes, record):
             record['exit'] = 1
 
 
-def condition(output, images, provider, dirty, action):
-    name = provider + '-' + ('dirty' if dirty else 'clean') + '-' + action
-    directory = output / name
+def condition(output, images, provider, dirty):
+    directory = output / (provider + '-' + ('dirty' if dirty else 'clean'))
     directory.mkdir()
-    record = dict(provider=provider, dirty=dirty, action=action, load_before=load(), exit=1,
+    record = dict(provider=provider, dirty=dirty, exit=1, load_before=load(),
                   sources={side: image['source'] for side, image in images.items()},
-                  pairs=[], cleanup={}, process_closure={}, readback={})
-    smokes, facts = {}, {}
+                  pairs=[], identities={}, cleanup={}, process_closure={})
+    smokes, pids = {}, {}
     try:
         for side in ('base', 'head'):
-            # Retain partially initialized homes for shutdown on setup failure.
             smoke, pid = prepare(directory / side, images[side], provider, dirty, smokes, side)
-            state = setup(smoke, action)
-            facts[side] = dict(state=state, pid=pid,
-                               identity=status(smoke, pid, dirty, 'host-before'))
-        smokes['head'].commands.environment['SE_CLI_PHASE_PROFILE'] = '1'
-        record['fixtures'] = facts
-        save(directory / 'samples.json', record)
+            pids[side] = pid
+            record['identities'][side] = identity(smoke, pid)
         for index in range(ROUNDS + 1):
             order = ('base', 'head') if index % 2 == 0 else ('head', 'base')
             pair = dict(index=index, kind='first-timed' if index == 0 else 'warm',
                         order=order, before=load(), samples={})
             for side in order:
-                argv = arguments(smokes[side], action, facts[side]['state'], index)
-                pair['samples'][side] = timed(smokes[side], argv)
+                pair['samples'][side] = timed(smokes[side], ['status'])
             pair['after'] = load()
             record['pairs'].append(pair)
             if index % 25 == 0:
                 save(directory / 'samples.json', record)
-        save(directory / 'samples.json', record)
         for side, smoke in smokes.items():
-            fact = facts[side]
-            values = [validate(pair['samples'][side], smoke, action, fact['state'], index)
-                      for index, pair in enumerate(record['pairs'])]
-            record['readback'][side] = readback(smoke, action, fact['state'], values)
-            after = status(smoke, fact['pid'], dirty, 'host-after')
-            require(after == fact['identity'], 'Native serving identity changed during timing')
+            for pair in record['pairs']:
+                validate(pair['samples'][side], smoke, pids[side], side, dirty)
+            require(identity(smoke, pids[side]) == record['identities'][side],
+                    'Native host instance changed during status timing')
         record['summary'] = summaries(record['pairs'])
-        record['phase_profile'] = profile(record['pairs'])
         record['exit'] = 0
     except Exception as error:
         record['error'] = str(error)
@@ -119,33 +115,39 @@ def condition(output, images, provider, dirty, action):
         close(smokes, record)
         record['load_after'] = load()
         save(directory / 'samples.json', record)
-    return {key: value for key, value in record.items() if key not in ('pairs', 'fixtures')}
+    return {key: value for key, value in record.items() if key != 'pairs'}
 
 
 def main():
     output = Path(sys.argv[1]).resolve()
     images = json.loads((output / 'images.json').read_text())
-    preflight(output, images)
+    help_rows = {}
+    for side, image in images.items():
+        require(image['exit'] == 0 and hashlib.sha256(Path(image['image']).read_bytes()).hexdigest()
+                == image['sha256'], 'Frozen image or build receipt changed')
+        child = subprocess.run([image['image'], 'help', 'status'], capture_output=True,
+                               text=True, timeout=30)
+        help_rows[side] = dict(exit=child.returncode, stdout=child.stdout, stderr=child.stderr)
+        save(output / 'public-status-help.json', help_rows)
+        require(child.returncode == 0 and child.stdout.strip(), 'Public status help unavailable')
     observations = output / 'observations'
     observations.mkdir()
-    result = dict(scope='Author hosted Linux measurements; configured providers never launched; '
-                        'instrumented times include tracing overhead; not an optimization; '
-                        'no independent, native Windows/macOS or cross-machine qualification',
-                  method='spawn through pipe EOF and child exit; alternating image pairs; first '
-                         'timed call separate; 200 warm calls per image; nearest-rank p95; '
-                         'validation, write readback and process inventory outside timer',
+    result = dict(scope='Author paired Linux status observation; accepted encoder on both '
+                        'images, uninstrumented; configured providers never launched; no '
+                        'independent review, idle/session budget or Windows/macOS qualification',
+                  method='spawn through pipe EOF and exact child join; 200 alternating warm '
+                         'pairs per cohort; first separate; complete field checks and native '
+                         'censuses outside timing; all tails retained',
                   images=images, cohorts=[], exit=1)
     for provider in ('claude', 'codex', 'acp'):
         for dirty in (False, True):
-            for action in ACTIONS:
-                observed = condition(observations, images, provider, dirty, action)
-                result['cohorts'].append(observed)
-                save(output / 'result.json', result)
-                print(json.dumps(observed), flush=True)
-                if any(value != [] for value in observed['process_closure'].values()):
-                    raise RuntimeError('Process closure failed; later fixtures were not started')
+            row = condition(observations, images, provider, dirty)
+            result['cohorts'].append(row)
+            save(output / 'result.json', result)
+            if any(value != [] for value in row['process_closure'].values()):
+                raise RuntimeError('Process closure failed; later fixtures were not started')
     result['exit'] = 0 if len(result['cohorts']) == 6 and all(
-        item['exit'] == 0 for item in result['cohorts']) else 1
+        row['exit'] == 0 for row in result['cohorts']) else 1
     save(output / 'result.json', result)
     raise SystemExit(result['exit'])
 
