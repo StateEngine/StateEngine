@@ -120,6 +120,31 @@ jobs:
         with:
           shared-key: judge-${{ matrix.os }}-v1
           save-if: ${{ matrix.side == 'base' }}
+      - name: Build the candidate CLI for real consumer tests
+        env:
+          ALL_FEATURES: ${{ inputs.all_features }}
+        run: |
+          python3 -I - <<'PY'
+          from pathlib import Path
+          for report in ("target/nextest/ci/junit.xml", "target/nextest/input-judges.json",
+                         "target/nextest/custom-harnesses.json"):
+              Path(report).unlink(missing_ok=True)
+          PY
+          features=()
+          if [[ "$ALL_FEATURES" == true ]]; then features+=(--all-features); fi
+          target="$(rustc --print host-tuple)"
+          cargo build --target "$target" --workspace --bins "${features[@]}" --locked
+          python3 -I - "$target" <<'PY'
+          import os, sys
+          from pathlib import Path
+          image = (Path("target") / sys.argv[1] / "debug"
+                   / ("se.exe" if sys.platform == "win32" else "se")).resolve(strict=True)
+          if not image.is_file():
+              sys.exit("candidate CLI is not a regular file")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              for name in ("SE_W3_SE_BIN", "SE_SELECTOR_SE"):
+                  print(f"{name}={image}", file=output)
+          PY
       - name: Register the disposable runner account for installation tests
         run: |
           if [[ "$RUNNER_OS" == Windows ]]; then
@@ -138,8 +163,27 @@ jobs:
           if [[ "$ALL_FEATURES" == true ]]; then features+=(--all-features); fi
           # An explicit host target keeps proc-macro crates loadable on macOS, as in CI.
           target="$(rustc --print host-tuple)"
+          # Nextest cannot run custom harnesses; name every excluded target explicitly.
+          python3 -I - <<'PY_CUSTOM'
+          import json, sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path("scripts/ci").resolve()))
+          from custom import custom_targets
+          report = {"schema": "judge-custom-harnesses/v1", "not_run": [
+              {"judge": name, "status": "not_run",
+               "reason": "custom harness requires a standalone runner; judge uses nextest"}
+              for name in sorted(custom_targets())]}
+          output = Path("target/nextest/custom-harnesses.json")
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+          for item in report["not_run"]:
+              print(f"NOT RUN {item['judge']}: {item['reason']}", file=sys.stderr)
+          PY_CUSTOM
+          # Match CI's exclusion of unavailable external producers.
+          # Present but invalid inputs remain ordinary test failures.
+          supported="$(python3 scripts/ci/custom.py filter "${features[@]}")"
           cargo nextest run --target "$target" --workspace "${features[@]}" --locked --profile ci \
-            --no-fail-fast --no-tests fail -E "$FILTER"
+            --no-fail-fast --no-tests fail -E "($FILTER) and ($supported)"
       - name: Record what ran
         if: ${{ always() }}
         env:
@@ -161,6 +205,25 @@ jobs:
           else
             echo "No test report was written: the build or the test start failed before any test ran." >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [[ -f target/nextest/input-judges.json ]]; then
+            python3 -I - target/nextest/input-judges.json >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          print("External fixture availability (separate from passing tests; selections may be outside the requested filter):")
+          for item in report["not_run"]:
+              print(f"- UNSUPPORTED {item['judge']}: missing external inputs "
+                    + ", ".join(item["missing_inputs"]))
+          PY
+          fi
+          if [[ -f target/nextest/custom-harnesses.json ]]; then
+            python3 -I - target/nextest/custom-harnesses.json >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          print("Custom harness availability (separate from passing tests; selections may be outside the requested filter):")
+          for item in report["not_run"]:
+              print(f"- NOT RUN {item['judge']}: {item['reason']}")
+          PY
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ always() }}
         with:
@@ -168,6 +231,8 @@ jobs:
           # Tests may leave timing receipts and traces in target/judge-diagnostics/ for the reviewer.
           path: |
             target/nextest/ci/junit.xml
+            target/nextest/input-judges.json
+            target/nextest/custom-harnesses.json
             target/judge-diagnostics/
           retention-days: 14
           if-no-files-found: warn
