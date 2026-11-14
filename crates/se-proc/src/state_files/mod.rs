@@ -12,6 +12,7 @@ mod permissions;
 pub use metadata::NativeMetadataPin;
 mod profile;
 pub use profile::NativeProfileFiles;
+pub(crate) mod executable;
 pub(crate) mod source;
 pub use permissions::{
     PermissionKind, PermissionProtection, PermissionRepairPin, PermissionRepairWitness,

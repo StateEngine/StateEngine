@@ -107,7 +107,7 @@ impl LaunchCoordinator {
             )
         })?;
         let image = server.clone();
-        let images = self
+        let (server, images) = self
             .store
             .pool
             .run_owned(deadline, move || {
@@ -124,7 +124,7 @@ impl LaunchCoordinator {
                     ));
                 }
                 images.validate()?;
-                Ok(images)
+                Ok((images.server_invocation()?, images))
             })
             .await?;
         if service.journal.retirement.is_some() {

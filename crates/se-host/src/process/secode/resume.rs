@@ -38,7 +38,30 @@ impl LaunchCoordinator {
                     ));
                 }
             };
-            if !probe::supports_resume(&probe::capabilities(&server, deadline).await?) {
+            let expected = service
+                .journal
+                .server_sha256
+                .ok_or_else(|| error("SE Code resume image", "original image digest absent"))?;
+            let server = self
+                .store
+                .pool
+                .run_owned(deadline, move || {
+                    let cli = server.with_file_name(if cfg!(windows) {
+                        "secode.exe"
+                    } else {
+                        "secode"
+                    });
+                    let mut images = crate::harness::secode_process::Images::open(&cli)?;
+                    if images.server != server || images.server_sha256() != expected {
+                        return Err(error(
+                            "SE Code resume image",
+                            "selected image differs from original service",
+                        ));
+                    }
+                    images.server_invocation()
+                })
+                .await?;
+            if !probe::supports_resume(&probe::capabilities(server, deadline).await?) {
                 return Err(crate::harness::secode_process::incompatible(
                     "the retained service has no fenced input-free hold release",
                 ));

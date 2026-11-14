@@ -63,6 +63,7 @@ impl Fixture {
                     created_at_unix_ns: 1,
                 },
                 LaunchSpec {
+                    executable_custody: None,
                     lifecycle,
                     generation,
                     executable: std::env::current_exe()?,

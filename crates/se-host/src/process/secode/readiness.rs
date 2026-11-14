@@ -87,11 +87,11 @@ impl LaunchCoordinator {
                     .lock()
                     .map_err(|_| error("SE Code readiness images", "poisoned custody"))?;
                 images.validate()?;
-                Ok(images.cli.clone())
+                images.cli_invocation()
             })
             .await?;
         let bytes = probe::command(
-            &cli,
+            cli,
             &[
                 "status".into(),
                 "--service".into(),

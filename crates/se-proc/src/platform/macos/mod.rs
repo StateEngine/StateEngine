@@ -15,6 +15,7 @@ pub(crate) struct Driver {
     helper: PathBuf,
 }
 pub(crate) struct Scope {
+    image_custody: Option<NativeExecutableInvocation>,
     child: Option<spawn::Child>,
     recovered: Option<ProcessIdentity>,
     tracked: Vec<ProcessIdentity>,
@@ -82,6 +83,7 @@ impl Driver {
             ));
         }
         Ok(Scope {
+            image_custody: None,
             child: None,
             recovered: None,
             tracked: Vec::new(),
@@ -100,7 +102,8 @@ impl Driver {
             executable: spec.executable.clone(),
         })
     }
-    pub fn begin(&self, scope: &mut Scope, spec: LaunchSpec, hub: &Arc<Hub>) -> ProcResult<()> {
+    pub fn begin(&self, scope: &mut Scope, mut spec: LaunchSpec, hub: &Arc<Hub>) -> ProcResult<()> {
+        scope.image_custody = spec.executable_custody.take();
         scope.child = Some(spawn::begin(spec, &self.helper)?);
         let child = scope
             .child
@@ -171,6 +174,7 @@ impl Driver {
             ));
         }
         Ok(Scope {
+            image_custody: None,
             child: None,
             recovered: Some(root.clone()),
             tracked: history.members.clone(),
@@ -433,12 +437,25 @@ impl Scope {
         };
         self.tracked.retain(|p| p.pid != child.pid);
         self.tracked.push(live.identity.clone());
+        // Retain the actual child before a refusal so stop/recovery can still
+        // observe it. Darwin's readback detects drift, not an atomic exec proof.
+        if let Some(image) = &self.image_custody {
+            image
+                .validate()
+                .map_err(|e| input("qualified image readback", &e.to_string()))?;
+        }
+        self.image_custody = None;
         Ok(Progress::Executed(
             live.identity.clone(),
             Box::new(ProcessObservation::Live(live)),
         ))
     }
     pub fn authorize(&mut self) -> ProcResult<()> {
+        if let Some(image) = &self.image_custody {
+            image
+                .validate()
+                .map_err(|e| input("qualified image authorization", &e.to_string()))?;
+        }
         let child = self
             .child
             .as_mut()

@@ -14,8 +14,8 @@ pub struct Images {
     pub server: PathBuf,
     pub version: String,
     pub resume_supported: bool,
-    cli_pin: se_proc::NativeSourcePin,
-    server_pin: se_proc::NativeSourcePin,
+    cli_pin: se_proc::NativeExecutablePin,
+    server_pin: se_proc::NativeExecutablePin,
     cli_digest: [u8; 32],
     server_digest: [u8; 32],
     cli_bytes: u64,
@@ -24,6 +24,22 @@ pub struct Images {
     server_stamp: Option<ExecutableStamp>,
 }
 impl Images {
+    pub fn cli_invocation(&mut self) -> Result<se_proc::NativeExecutableInvocation> {
+        let invocation = self
+            .cli_pin
+            .prepare()
+            .map_err(|e| unreadable("SE Code CLI execution custody", e))?;
+        self.validate()?;
+        Ok(invocation)
+    }
+    pub fn server_invocation(&mut self) -> Result<se_proc::NativeExecutableInvocation> {
+        let invocation = self
+            .server_pin
+            .prepare()
+            .map_err(|e| unreadable("SE Code server execution custody", e))?;
+        self.validate()?;
+        Ok(invocation)
+    }
     pub fn server_sha256(&self) -> se_types::Sha256 {
         se_types::Sha256::from_bytes(self.server_digest)
     }
@@ -129,7 +145,7 @@ impl Images {
     }
 }
 type PinnedImage = (
-    se_proc::NativeSourcePin,
+    se_proc::NativeExecutablePin,
     [u8; 32],
     u64,
     Option<ExecutableStamp>,
@@ -138,7 +154,7 @@ fn observe_stamp(path: &Path) -> Result<Option<ExecutableStamp>> {
     ExecutableStamp::observe(path).map_err(|e| unreadable("SE Code executable stamp", e))
 }
 fn pin(path: &Path) -> Result<PinnedImage> {
-    let mut pin = se_proc::NativeSourcePin::open(path)
+    let mut pin = se_proc::NativeExecutablePin::open(path)
         .map_err(|e| unreadable("SE Code image pin", e))?
         .ok_or_else(|| incompatible("a selected SE Code native image is absent"))?;
     let before = observe_stamp(path)?;
@@ -150,7 +166,7 @@ fn pin(path: &Path) -> Result<PinnedImage> {
     }
     Ok((pin, digest, bytes, before))
 }
-fn digest(pin: &mut se_proc::NativeSourcePin) -> Result<([u8; 32], u64)> {
+fn digest(pin: &mut se_proc::NativeExecutablePin) -> Result<([u8; 32], u64)> {
     let mut hash = Sha256::new();
     let mut offset = 0;
     const MAXIMUM: u64 = 512 * 1024 * 1024;

@@ -165,6 +165,7 @@ impl Scope {
                     created_at_unix_ns: 1,
                 },
                 LaunchSpec {
+                    executable_custody: None,
                     lifecycle,
                     generation,
                     executable: invocation.executable.to_local()?,

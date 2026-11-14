@@ -57,7 +57,7 @@ impl LaunchCoordinator {
         &self,
         service: &mut Service,
         auxiliary: Auxiliary,
-        executable: PathBuf,
+        executable: se_proc::NativeExecutableInvocation,
         arguments: Vec<OsString>,
         cwd: PathBuf,
         policy: se_proc::LaunchPolicy,
@@ -130,10 +130,12 @@ impl LaunchCoordinator {
                     .into_os_string(),
             ));
         }
+        let image_path = executable.original_path().to_owned();
         let spec = se_proc::LaunchSpec {
+            executable_custody: Some(executable),
             lifecycle,
             generation: self.options.epoch.generation,
-            executable,
+            executable: image_path,
             arguments,
             cwd,
             environment: se_proc::Environment {

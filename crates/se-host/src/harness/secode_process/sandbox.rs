@@ -26,7 +26,10 @@ fn document(bytes: &[u8]) -> Result<Value> {
     Ok(value)
 }
 
-pub(crate) async fn require_capability(server: &Path, deadline: &Deadline) -> Result<()> {
+pub(crate) async fn require_capability(
+    server: se_proc::NativeExecutableInvocation,
+    deadline: &Deadline,
+) -> Result<()> {
     let bytes = probe::command(server, &["sandbox-policy".into(), "--capabilities".into()], deadline)
         .await.map_err(|cause| incompatible(format!(
             "workspace-write requires provider capability {CAPABILITY}; sandbox inspection failed: {cause}")))?;
@@ -35,7 +38,7 @@ pub(crate) async fn require_capability(server: &Path, deadline: &Deadline) -> Re
 }
 
 pub(crate) async fn inspect(
-    server: &Path,
+    server: se_proc::NativeExecutableInvocation,
     profile: &Path,
     directory: &Path,
     deadline: &Deadline,

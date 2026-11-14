@@ -91,6 +91,9 @@ pub struct StandardIo {
     pub stderr: Option<File>,
 }
 pub struct LaunchSpec {
+    /// Optional execution capability retained from native image qualification.
+    /// Its original name must match the requested image; Linux executes its fd.
+    pub executable_custody: Option<crate::NativeExecutableInvocation>,
     pub lifecycle: LifecycleId,
     pub generation: GenerationId,
     pub executable: PathBuf,

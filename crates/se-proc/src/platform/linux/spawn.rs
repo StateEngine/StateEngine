@@ -117,6 +117,16 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
     };
     let terminal_arguments = terminal.as_ref().map(|window| window.arguments());
     let executable = cstring(spec.executable.as_os_str().as_bytes(), "executable")?;
+    let execution_path = match &spec.executable_custody {
+        Some(image) => CString::new(format!("/proc/self/fd/{}", image.descriptor()))
+            .map_err(|_| input("qualified image", "invalid descriptor path"))?,
+        None => executable.clone(),
+    };
+    let interpreter_fd = spec
+        .executable_custody
+        .as_ref()
+        .filter(|image| image.uses_interpreter())
+        .map(|image| image.descriptor());
     let cwd = cstring(spec.cwd.as_os_str().as_bytes(), "cwd")?;
     let mut args = Vec::with_capacity(spec.arguments.len() + 1);
     args.push(executable.clone());
@@ -168,6 +178,9 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
     let error_fd = error.as_raw_fd();
     let authorization_fd = authorization.as_raw_fd();
     let mut kept = vec![error_fd, authorization_fd];
+    if let Some(image) = &spec.executable_custody {
+        kept.push(image.descriptor());
+    }
     if deferred {
         kept.extend_from_slice(&stream_fds);
     }
@@ -301,7 +314,14 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
                     &envp,
                 ));
             }
-            libc::execve(executable.as_ptr(), argv.as_ptr(), envp.as_ptr());
+            // A shebang interpreter opens its script after exec. Retain only
+            // that explicit read-only source descriptor; native images close it.
+            if let Some(fd) = interpreter_fd
+                && libc::fcntl(fd, libc::F_SETFD, 0) < 0
+            {
+                die(*libc::__errno_location());
+            }
+            libc::execve(execution_path.as_ptr(), argv.as_ptr(), envp.as_ptr());
             die(*libc::__errno_location());
         }
     }
