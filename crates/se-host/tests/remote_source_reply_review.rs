@@ -345,7 +345,7 @@ fn inbox(w: &World, full: bool) -> R<se_core::ops::outputs::MessagePage> {
             kind: None,
             full,
             limit: 100,
-            preview_chars: Some(3),
+            preview_chars: (!full).then_some(3),
             cursor: None,
             owner_to: None,
         },
