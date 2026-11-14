@@ -1,0 +1,88 @@
+name: Observe native runtime crash teardown
+'on':
+  push:
+    branches:
+    - prime/marker-crash-classify-r1
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+defaults:
+  run:
+    shell: bash
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.ref }}
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: judge-linux-v1
+        save-if: 'false'
+    - name: Build the candidate CLI for real consumer tests
+      env:
+        ALL_FEATURES: 'true'
+      run: |
+        python3 -I - <<'PY'
+        from pathlib import Path
+        for report in ("target/nextest/ci/junit.xml", "target/nextest/input-judges.json",
+                       "target/nextest/custom-harnesses.json"):
+            Path(report).unlink(missing_ok=True)
+        PY
+        features=()
+        if [[ "$ALL_FEATURES" == true ]]; then features+=(--all-features); fi
+        target="$(rustc --print host-tuple)"
+        cargo build --target "$target" --workspace --bins "${features[@]}" --locked
+        python3 -I - "$target" <<'PY'
+        import os, sys
+        from pathlib import Path
+        image = (Path("target") / sys.argv[1] / "debug"
+                 / ("se.exe" if sys.platform == "win32" else "se")).resolve(strict=True)
+        if not image.is_file():
+            sys.exit("candidate CLI is not a regular file")
+        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+            for name in ("SE_W3_SE_BIN", "SE_SELECTOR_SE"):
+                print(f"{name}={image}", file=output)
+        PY
+    - name: Register the disposable runner account for installation tests
+      run: |
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          python scripts/ci/installation_account.py provision
+        else
+          identity="$(id -u)"
+          profile="$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')"
+          sudo python3 scripts/ci/installation_account.py provision --identity "$identity" --profile "$profile"
+        fi
+    - name: Write the outside native observer
+      shell: python
+      run: |
+        import os
+        from pathlib import Path
+        p=Path(os.environ["RUNNER_TEMP"])/"crash-probe.py"
+        p.write_text('"""Observe the existing crash control\'s native teardown; do not retry its up call."""\nimport argparse\nimport json\nimport os\nfrom pathlib import Path\nimport shutil\nimport signal\nimport subprocess\nimport sys\nimport tempfile\nimport time\nimport traceback\n\nparser=argparse.ArgumentParser()\nparser.add_argument(\'--se\',type=Path,required=True)\nparser.add_argument(\'--output\',type=Path,required=True)\nargs=parser.parse_args()\nargs.output.mkdir()\nsys.path.insert(0,str(Path(\'crates/se/tests/judges\').resolve()))\nimport codex_recovery_cli as control\nsource=subprocess.check_output([\'git\',\'rev-parse\',\'HEAD\'],text=True).strip()\noriginal_observe,original_signal=control.observe,control.Judge.signal\nselected={}\nevents=[]\n\n\ndef snapshot(label):\n    pid=selected[\'pid\'];root=selected[\'root\']\n    row={\'label\':label,\'at_ns\':time.monotonic_ns(),\'pid\':pid,\'tasks\':[]}\n    try:\n        for task in Path(f\'/proc/{pid}/task\').iterdir():\n            try:\n                text=(task/\'stat\').read_text();fields=text.rsplit(\') \',1)[1].split()\n                row[\'tasks\'].append({\'tid\':int(task.name),\'state\':fields[0],\'parent\':int(fields[1]),\'birth\':fields[19]})\n            except FileNotFoundError:\n                row[\'tasks\'].append({\'tid\':int(task.name),\'state\':\'absent-during-read\'})\n    except FileNotFoundError:\n        row[\'tasks_state\']=\'absent\'\n    info=(root/\'state/runtime.lock\').stat()\n    def owns_inode(word):\n        parts=word.split(\':\')\n        try:\n            return len(parts)==3 and int(parts[0],16)==os.major(info.st_dev) and int(parts[1],16)==os.minor(info.st_dev) and int(parts[2])==info.st_ino\n        except ValueError:\n            return False\n    row[\'lock_inode\']={\'device\':info.st_dev,\'inode\':info.st_ino}\n    row[\'kernel_locks\']=[line for line in Path(\'/proc/locks\').read_text().splitlines()\n                         if any(owns_inode(word) for word in line.split())]\n    row[\'provider_parent\']=[{\'pid\':p[\'pid\'],\'parent\':p[\'ppid\'],\'state\':p[\'state\']}\n                            for p in control.owned_rows(root) if p[\'pid\']!=pid]\n    events.append(row)\n\n\ndef observe(pid):\n    row=original_observe(pid)\n    if pid==selected.get(\'pid\') and not selected.get(\'capturing\') and len(events)<30:\n        selected[\'capturing\']=True\n        try:\n            if row is None or row[\'state\']==\'Z\':snapshot(\'leader-observed-\'+(\'absent\' if row is None else row[\'state\']))\n        finally:selected[\'capturing\']=False\n    return row\n\n\ndef send(self,identity,sig):\n    if sig==signal.SIGKILL and \'--stateengine-private-runtime-bootstrap\' in identity[\'argv\']:\n        selected.update(pid=identity[\'pid\'],root=self.root,capturing=False)\n        snapshot(\'before-exact-kill\')\n    return original_signal(self,identity,sig)\n\ncontrol.observe=observe\ncontrol.Judge.signal=send\nreport={\'source\':source,\'rounds_requested\':20,\'rounds\':[],\'measurement\':\'existing crash control, native observation only; no retry or new wait\'}\nfor number in range(1,21):\n    directory=args.output/f\'round-{number:02}\';directory.mkdir()\n    scratch=Path(tempfile.mkdtemp(prefix=\'secp-\'))\n    options=argparse.Namespace(se=args.se.resolve(),output=scratch/\'run\',scenario=\'crash\')\n    events=[];selected.clear()\n    judge=control.Judge(options)\n    try:\n        judge.run()\n    except Exception as error:\n        judge.result.update(passed=False,failure=str(error),probe_traceback=traceback.format_exc())\n    finally:\n        judge.cleanup()\n    result=judge.result\n    (directory/\'result.json\').write_text(json.dumps(result,indent=2))\n    (directory/\'native-teardown.json\').write_text(json.dumps(events,indent=2))\n    closed=result.get(\'cleanup_down_exit\')==0 and not result.get(\'cleanup_remaining\') and not result.get(\'cleanup_after_signals\')\n    row={\'round\':number,\'passed\':result.get(\'passed\',False),\'failure\':result.get(\'failure\'),\n         \'native_observations\':len(events),\'complete_cleanup\':closed}\n    if closed:\n        shutil.rmtree(scratch)\n    else:row[\'retained_path\']=str(scratch)\n    report[\'rounds\'].append(row)\n    (args.output/\'result.json\').write_text(json.dumps(report,indent=2))\n    print(json.dumps(row),flush=True)\n    if not closed:break\nreport[\'complete\']=len(report[\'rounds\'])==20 and all(r[\'complete_cleanup\'] for r in report[\'rounds\'])\n(args.output/\'result.json\').write_text(json.dumps(report,indent=2))\nassert report[\'complete\'],\'native teardown observation did not complete\'\n')
+    - name: Observe twenty existing crash controls without changing their assertions
+      run: |
+        python "$RUNNER_TEMP/crash-probe.py" --se "$SE_SELECTOR_SE" --output "$RUNNER_TEMP/crash-observations"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: marker-crash-${{ matrix.side }}
+        path: ${{ runner.temp }}/crash-observations/
+        if-no-files-found: error
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - side: head
+          ref: f0ab8a66d63b6a16a813e248d88988696dc9fe8b
+        - side: base
+          ref: c7ad3effb82f73a233328f2a091d2f1f0db77638
