@@ -469,6 +469,8 @@ impl HostStore for SqliteHost {
         lease: &dyn RuntimeLease,
     ) -> StoreResult<CheckpointReport> {
         connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
+        let gate = self.engine.checkpoints.gate.clone();
+        let _permit = gate.acquire(self.engine.timeout)?;
         let report = self
             .engine
             .db
