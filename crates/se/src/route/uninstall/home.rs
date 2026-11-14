@@ -243,7 +243,7 @@ fn retire(cx: &Bootstrap, effects: &mut Vec<FileEffect>, confirmed: bool) -> Res
         };
         effects.push(effect(&path, removed)?);
     }
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     effects.push(effect(
         &cx.home.join("runtime-info.json"),
         crate::runtime::host::retire_detachment(&files, &bound)?,

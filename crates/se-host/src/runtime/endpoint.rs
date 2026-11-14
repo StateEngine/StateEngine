@@ -111,7 +111,7 @@ impl HostedRuntime {
     /// Detached process entry publishes while admission remains fenced. The
     /// native inherited channel must commit this exact owner before a router
     /// exists. The finite native wait is joined on the supplied blocking pool.
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub async fn listen_bootstrap(
         &mut self,
         runtime: tokio::runtime::Handle,
