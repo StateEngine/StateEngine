@@ -81,8 +81,11 @@ enum Phase {
     Startup(SeError),
     /// The request clock ran out after retention.
     Deadline(SeError),
-    /// A published endpoint answered nothing. Only this phase may be retried.
-    Authentication(SeError),
+    /// The published endpoint itself could not be reached. This is the only
+    /// retryable phase, and the phase alone is not enough: `authenticate` also
+    /// wraps credential reads and process observation, and neither is an answer
+    /// from the endpoint, so the original code is kept and tested at the gate.
+    Authentication { error: SeError, unreachable: bool },
 }
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl Rendezvous {
@@ -114,14 +117,21 @@ impl Rendezvous {
         }
         let endpoint = endpoint.map_err(Phase::Startup)?;
         options.timeout = bound.remaining().map_err(Phase::Deadline)?;
-        let process = discovery::authenticate(cx, files, &endpoint, options, bound)
-            .map_err(Phase::Authentication)?;
+        let process =
+            discovery::authenticate(cx, files, &endpoint, options, bound).map_err(|error| {
+                // Read before rendering: rendering replaces the code with
+                // `state-conflict`, and only the endpoint-unreachable cause may
+                // authorize a retry.
+                let unreachable = discovery::endpoint_unreachable(&error);
+                Phase::Authentication { error, unreachable }
+            })?;
         Ok((endpoint, process))
     }
     /// Render any phase from the one receipt this request owns.
     fn refuse(&self, cx: &Bootstrap, phase: Phase) -> SeError {
         let error = match phase {
-            Phase::Startup(error) | Phase::Deadline(error) | Phase::Authentication(error) => error,
+            Phase::Startup(error) | Phase::Deadline(error) => error,
+            Phase::Authentication { error, .. } => error,
         };
         discovery::after_recovery(cx, self.recovery.as_ref(), error)
     }
@@ -152,13 +162,22 @@ fn rendezvous(
         Err(phase @ (Phase::Startup(_) | Phase::Deadline(_))) => {
             return Err(rendezvous.refuse(cx, phase));
         }
-        Err(Phase::Authentication(refusal)) => {
+        Err(Phase::Authentication {
+            error: refusal,
+            unreachable: true,
+        }) => {
             match discovery::route(cx) {
                 // A held lease is a live host that answered nothing: the original
                 // refusal names what to do, and retrying would report a second
                 // failure as if it were the first.
                 Ok(se_host::EndpointRoute::Live(_)) => {
-                    return Err(rendezvous.refuse(cx, Phase::Authentication(refusal)));
+                    return Err(rendezvous.refuse(
+                        cx,
+                        Phase::Authentication {
+                            error: refusal,
+                            unreachable: true,
+                        },
+                    ));
                 }
                 Ok(se_host::EndpointRoute::Start { recovery }) => {
                     if recovery.is_some() {
@@ -170,6 +189,16 @@ fn rendezvous(
             rendezvous
                 .attempt(cx, files, options, bound, diagnostic)
                 .map_err(|phase| rendezvous.refuse(cx, phase))?
+        }
+        // An authentication call that failed for any other reason (credential
+        // preparation, process observation) is not a refusal from the endpoint
+        // and must not retain or start anything.
+        Err(
+            phase @ Phase::Authentication {
+                unreachable: false, ..
+            },
+        ) => {
+            return Err(rendezvous.refuse(cx, phase));
         }
     };
     Ok((endpoint, rendezvous.recovery, process))

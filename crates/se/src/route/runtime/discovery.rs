@@ -34,6 +34,10 @@ pub(super) fn authenticate(
         options,
     )
     .map_err(|error| {
+        // The refusal this refusal shapes is the only one later recovery may act
+        // on. A credential or observation failure in the same call is not an
+        // answer from the published endpoint, so it keeps its own code and its
+        // own non-retryable phase.
         if error.code() == se_types::Code::IpcUnavailable {
             SeError::new(se_types::Detail::StateConflict(
                 se_types::details::StateConflict {
@@ -58,6 +62,21 @@ pub(super) fn authenticate(
     process::observe(endpoint, bound)
 }
 
+/// Whether this refusal was produced because the published endpoint could not be
+/// reached.
+///
+/// `authenticate` returns this refusal for an endpoint that answered nothing, but
+/// the same call also reads the credential and observes the process, and neither
+/// of those is an answer from the endpoint. The refusal keeps the unreachable
+/// error as its cause, so the cause is what recovery may act on: the rendered code
+/// is `state-conflict` for the intended refusal and unchanged for the others.
+pub(super) fn endpoint_unreachable(error: &SeError) -> bool {
+    error
+        .cause
+        .as_ref()
+        .and_then(|cause| cause.downcast_ref::<SeError>())
+        .is_some_and(|cause| cause.code() == se_types::Code::IpcUnavailable)
+}
 pub(super) fn after_recovery(
     cx: &Bootstrap,
     recovery: Option<&EndpointRecovery>,
