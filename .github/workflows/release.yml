@@ -22,7 +22,6 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.ref_name }}
       RELEASE_TARGET: ${{ matrix.target }}
-      BUILD_ROOT: ${{ runner.temp }}/native-build
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: {fetch-depth: 0, persist-credentials: false}
@@ -46,6 +45,8 @@ jobs:
         with: {arch: amd64}
       - name: Build on the native target
         shell: python
+        env:
+          BUILD_ROOT: ${{ runner.temp }}/native-build
         run: |
           import os, subprocess
           subprocess.run(['python', '-B', 'scripts/release/build.py', '--target', os.environ['RELEASE_TARGET'], '--out', os.environ['BUILD_ROOT']], check=True)
