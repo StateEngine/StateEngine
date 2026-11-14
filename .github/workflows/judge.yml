@@ -12,7 +12,7 @@ on:
         type: string
         required: true
       base:
-        description: Ref or SHA to compare against; empty runs the head only
+        description: Ref or SHA to compare against; none runs the head only
         type: string
         default: main
       tests:
@@ -70,8 +70,9 @@ jobs:
           runners = {"linux": "ubuntu-24.04", "windows": "windows-2025", "macos": "macos-15"}
           chosen = list(runners) if os.environ["OS"] == "all" else [os.environ["OS"]]
           sides = [("head", os.environ["HEAD"].strip())]
-          if os.environ["BASE"].strip():
-              sides.append(("base", os.environ["BASE"].strip()))
+          base = os.environ["BASE"].strip()
+          if base and base != "none":
+              sides.append(("base", base))
           include = [{"os": name, "runner": runners[name], "side": side, "ref": ref}
                      for name in chosen for side, ref in sides]
           print("matrix=" + json.dumps({"include": include}))
@@ -135,7 +136,9 @@ jobs:
         run: |
           features=()
           if [[ "$ALL_FEATURES" == true ]]; then features+=(--all-features); fi
-          cargo nextest run --workspace "${features[@]}" --locked --profile ci \
+          # An explicit host target keeps proc-macro crates loadable on macOS, as in CI.
+          target="$(rustc --print host-tuple)"
+          cargo nextest run --target "$target" --workspace "${features[@]}" --locked --profile ci \
             --no-fail-fast --no-tests fail -E "$FILTER"
       - name: Record what ran
         if: ${{ always() }}
@@ -162,6 +165,9 @@ jobs:
         if: ${{ always() }}
         with:
           name: judge-${{ matrix.os }}-${{ matrix.side }}
-          path: target/nextest/ci/junit.xml
+          # Tests may leave timing receipts and traces in target/judge-diagnostics/ for the reviewer.
+          path: |
+            target/nextest/ci/junit.xml
+            target/judge-diagnostics/
           retention-days: 14
           if-no-files-found: warn
