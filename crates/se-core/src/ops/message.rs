@@ -337,7 +337,7 @@ pub(super) fn channel_reply<R: se_store::Snapshot>(
 fn se_core_store_error(error: &se_store::StoreError) -> se_types::SeError {
     crate::store_error::store_error(error)
 }
-pub(super) fn remote_reply_from(
+pub fn remote_reply_from(
     from: &super::outputs::ActorRef,
     id: &se_types::MessageId,
 ) -> Option<super::outputs::RemoteReply> {
@@ -355,12 +355,4 @@ pub fn channel_reply_instruction<R: se_store::Snapshot>(
     id: &se_types::MessageId,
 ) -> se_types::Result<Option<String>> {
     Ok(channel_reply(read, id)?.map(|route| route.instruction))
-}
-
-/// Reuse the exact message's verified sender without rereading local mail.
-pub fn remote_reply_instruction(
-    from: &super::outputs::ActorRef,
-    id: &se_types::MessageId,
-) -> Option<String> {
-    remote_reply_from(from, id).map(|route| route.instruction)
 }

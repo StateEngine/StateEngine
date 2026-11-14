@@ -4,7 +4,7 @@ mod launch_permission;
 #[cfg(feature = "remote")]
 mod store;
 #[cfg(feature = "remote")]
-pub use super::source_control::SetSourcePermission;
+pub use super::control::SetSourcePermission;
 #[cfg(feature = "remote")]
 pub(crate) use se_remote::entropy;
 #[cfg(feature = "remote")]
