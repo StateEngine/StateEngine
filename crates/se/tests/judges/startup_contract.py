@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 import uuid
+from judge_records import wait_json
 
 
 def release_scope_quota(unit, group, pins, control_env, exited, result):
@@ -150,7 +151,7 @@ def pending_recovery(f, reply, stderr, key, task, release_quota, track, result, 
         status, row = agent(f)
         assert status['runtime']['state'] == 'running', status['runtime']
         track(status['runtime']['process']['pid'])
-        ready = json.loads((f.repo / 'provider-ready.json').read_text())
+        ready = wait_json(f.repo / 'provider-ready.json')
         assert ready['session_discovery'] and ready['http_discovery'], ready
         assert row['conversation']['id'] == ready['conversation'], (row, ready)
         assert row['session']['session_id'] is not None, row

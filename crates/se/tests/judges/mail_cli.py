@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
+from judge_records import wait_json
 
 
 class Fixture:
@@ -97,7 +98,7 @@ std::process::exit(s.code().unwrap_or(1));}'''.replace("PYTHON", json.dumps(sys.
         result = self.ok("--project", self.project, "launch", self.agent, "--detach", "--task", "Mail judge")
         assert result["state"] == "running", result
         self.session = result["session_id"]
-        ready = json.loads((self.repo / "provider-ready.json").read_text())
+        ready = wait_json(self.repo / "provider-ready.json")
         assert ready["session_discovery"] and ready["http_discovery"]
         if sys.platform == "linux":
             for pid in [ready["native_root_pid"], ready["helper_pid"]]:

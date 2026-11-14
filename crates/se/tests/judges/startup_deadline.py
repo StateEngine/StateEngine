@@ -21,6 +21,7 @@ import time
 import traceback
 import uuid
 
+from judge_records import wait_json
 from mail_cli import Fixture
 from startup_contract import pending_recovery, native_refusal, release_scope_quota
 from directory_owner import DirectoryOwner
@@ -188,7 +189,7 @@ def run_case(image, directory, control_env, quota, expect):
         if run.returncode == 0:
             assert expect == 'ready', 'required pending/refusal control was not reached'
             assert launched['state'] == 'running', launched
-            ready = json.loads((f.repo / 'provider-ready.json').read_text())
+            ready = wait_json(f.repo / 'provider-ready.json')
             assert ready['session_discovery'] and ready['http_discovery'], ready
             assert ready['conversation'] == launched['conversation_id'], (ready, launched)
             for pid in [ready['native_root_pid'], ready['helper_pid']]:
