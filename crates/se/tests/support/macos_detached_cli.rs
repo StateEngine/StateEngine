@@ -38,6 +38,7 @@ impl Fixture {
             "--name",
             "Detached startup control",
         ])?;
+        f.ok(&["up"])?;
         Ok(f)
     }
     pub fn command(&self, args: &[&str]) -> Command {
@@ -79,9 +80,10 @@ impl Fixture {
         Ok(serde_json::from_slice(&out.stdout)?)
     }
     pub fn endpoint(&self) -> Check<se_host::EndpointRecord> {
-        Ok(se_host::client::endpoint::decode_endpoint(&std::fs::read(
-            self.home.join("endpoint.json"),
-        )?)?)
+        let path = self.home.join("endpoint.json");
+        let bytes = std::fs::read(&path)
+            .map_err(|e| format!("published endpoint {}: {e}", path.display()))?;
+        Ok(se_host::client::endpoint::decode_endpoint(&bytes)?)
     }
     pub fn birth(&self) -> Check<ProcessIdentity> {
         let endpoint = self.endpoint()?;
