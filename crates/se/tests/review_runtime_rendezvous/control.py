@@ -179,16 +179,20 @@ def trial(args, name, held, Fixture):
     except Exception as error:
         report['failure'] = repr(error)
     finally:
-        if host and alive(host):
-            send(host, signal.SIGCONT, report['signals'])
-        if caller and caller.poll() is None:
-            if caller_pin:
-                send(caller_pin, signal.SIGCONT, report['signals'])
-            try:
-                caller.wait(timeout=40)
-            except subprocess.TimeoutExpired:
-                send(caller_pin, signal.SIGKILL, report['signals'])
-                caller.wait(timeout=5)
+        try:
+            if host and alive(host):
+                send(host, signal.SIGCONT, report['signals'])
+            if caller and caller.poll() is None:
+                if caller_pin:
+                    send(caller_pin, signal.SIGCONT, report['signals'])
+                try:
+                    caller.wait(timeout=40)
+                except subprocess.TimeoutExpired:
+                    send(caller_pin, signal.SIGKILL, report['signals'])
+                    caller.wait(timeout=5)
+        except Exception as error:
+            report['qualified'] = False
+            report['resume_join_failure'] = repr(error)
         try:
             f.close()
             assert not (f.home / 'endpoint.json').exists()
