@@ -715,6 +715,10 @@ impl LaunchCoordinator {
                 "{reason}; capture incomplete ({}); restore the original authenticated service and retry stop to reconcile its retained cursor",
                 error.code().as_str()
             ),
+            Some(error) if work.meta.provider == se_store::Provider::Acp => format!(
+                "{reason}; protocol capture incomplete ({}); preserve the partial history and use --new to start a separate conversation without replaying interrupted input",
+                error.code().as_str()
+            ),
             Some(error) => format!(
                 "{reason}; capture incomplete ({}); restore the original transcript and retry stop to reconcile its retained cursor before resuming",
                 error.code().as_str()

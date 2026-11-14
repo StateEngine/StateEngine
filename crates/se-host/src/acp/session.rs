@@ -426,6 +426,20 @@ impl Session {
     /// Native scope exit must already be witnessed by the caller. Draining
     /// stdout and processing all queued updates precedes final capture/close.
     pub async fn drain(&self, cx: &CallContext) -> Result<()> {
+        self.drain_stream(cx).await?;
+        let state = self.lock()?;
+        ready(&state)?;
+        if state.active.is_some() {
+            return Err(failure(
+                "ACP capture",
+                "original prompt never reached a terminal reply",
+            ));
+        }
+        Ok(())
+    }
+    /// Native stream custody can finish even when protocol completion failed.
+    /// The coordinator must separately retain and publish that capture outcome.
+    pub(crate) async fn drain_stream(&self, cx: &CallContext) -> Result<()> {
         let until = super::connection::until(cx)?;
         let mut changed = self.connection.subscribe();
         loop {
@@ -438,13 +452,6 @@ impl Session {
                         "stdout did not reach a complete protocol EOF",
                     ));
                 }
-                ready(&*self.lock()?)?;
-                if self.lock()?.active.is_some() {
-                    return Err(failure(
-                        "ACP capture",
-                        "original prompt never reached a terminal reply",
-                    ));
-                }
                 return Ok(());
             }
             tokio::time::timeout_at(until, changed.changed())
@@ -452,6 +459,35 @@ impl Session {
                 .map_err(|_| failure("ACP drain", "stdout still owned after wait bound"))?
                 .map_err(|_| failure("ACP drain", "stream observation closed"))?;
         }
+    }
+    /// Call only after witnessed native exit and drain. This is a provisional
+    /// prefix, never a completed turn or proof the offered input was accepted.
+    pub(crate) fn interrupted_prefix(&self) -> Result<Option<(String, Value)>> {
+        let transport = self.connection.diagnostics()?;
+        let state = self.lock()?;
+        if !transport.stdout_terminal
+            || !transport.stdout_complete
+            || state.processed < transport.events_queued
+        {
+            return Err(failure(
+                "ACP interrupted capture",
+                "complete stream drain is unproved",
+            ));
+        }
+        Ok(state.active.as_ref().map(|turn| {
+            let mut prefix = turn.interrupted_prefix();
+            // Preserve the parsed prefix and its failure together. Neither is
+            // a terminal protocol response or permission to offer more input.
+            prefix["failure"] = json!(state.failure.as_ref().or(transport.failure.as_ref()));
+            prefix["permissions"] = json!(
+                state
+                    .permissions
+                    .values()
+                    .map(|p| &p.view)
+                    .collect::<Vec<_>>()
+            );
+            (turn.input_key.clone(), prefix)
+        }))
     }
     pub async fn finish_input(&self, cx: CallContext) -> Result<()> {
         self.connection.finish_input(cx).await

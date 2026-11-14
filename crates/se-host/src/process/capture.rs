@@ -6,6 +6,14 @@ use se_types::{Read, Result};
 mod recovery;
 impl LaunchCoordinator {
     pub(super) async fn flush_capture(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
+        // A closed protocol stream cannot be reopened as a vendor transcript.
+        // Keep its durable incomplete outcome rather than replacing it on retry.
+        if work.released
+            && work.meta.provider == se_store::Provider::Acp
+            && let Some(failure) = &work.capture_failure
+        {
+            return Err(failure.clone().into());
+        }
         if work.capture_flushed || !work.meta.capture || !work.activated {
             return self.retire_capture(work, deadline).await;
         }

@@ -1,4 +1,4 @@
-//! Sealed native protocol facts enter the existing immutable capture writer.
+//! Complete turns and explicitly interrupted prefixes enter immutable capture.
 use super::*;
 use crate::{client::lease::Deadline, harness::acp::bound};
 use se_core::{
@@ -34,6 +34,23 @@ impl LaunchCoordinator {
             )
         })?)?
         .clone();
+        let final_capture =
+            work.process_retired || work.native_already_reconciled || work.session_retired;
+        if final_capture {
+            if work.last_witness.is_none() {
+                return Err(error(
+                    "ACP final capture",
+                    "original native exit witness is absent",
+                ));
+            }
+            binding
+                .session
+                .drain_stream(&super::super::launch_util::call(
+                    self.store.generation,
+                    deadline,
+                )?)
+                .await?;
+        }
         let observation = binding.session.observe()?;
         let conversation = se_types::ProviderSessionId::new(
             observation
@@ -50,9 +67,23 @@ impl LaunchCoordinator {
             session: Some(work.meta.session.clone()),
             generation: self.store.generation.get(),
         };
-        for request in observation.completed {
+        let mut groups = observation
+            .completed
+            .iter()
+            .map(|request| Ok((Some(*request), binding.items(*request)?)))
+            .collect::<Result<Vec<_>>>()?;
+        let interrupted = if final_capture {
+            binding.interrupted_items()?
+        } else {
+            None
+        };
+        let incomplete = interrupted.is_some();
+        if let Some(items) = interrupted {
+            groups.push((None, items));
+        }
+        for (request, items) in groups {
             let mut offset = binding.offset();
-            for item in binding.items(request)? {
+            for item in items {
                 let length = item.bytes.len() as u64;
                 let end = offset
                     .checked_add(length)
@@ -185,25 +216,27 @@ impl LaunchCoordinator {
                 offset = end;
             }
             // The canonical writer continuation has read back every exact item.
-            binding.acknowledge(request, offset)?;
+            match request {
+                Some(request) => binding.acknowledge(request, offset)?,
+                None => binding.acknowledge_interrupted(offset),
+            }
         }
         if let Some(failure) = observation.failure {
             return Err(failure.into());
         }
-        if work.process_retired || work.native_already_reconciled || work.session_retired {
+        if final_capture {
+            if incomplete {
+                return Err(error(
+                    "ACP final capture",
+                    "The native provider exited without completing the original prompt. Observed partial input, replies and tool updates are saved as incomplete diagnostics, not a completed turn or proof of input acceptance. Preserve this history and use se launch <agent> --new to start a separate conversation without replaying the interrupted input.",
+                ));
+            }
             if observation.active_input.is_some() || observation.cancelling {
                 return Err(error(
                     "ACP final capture",
-                    "original prompt is unsettled after native exit",
+                    "Original protocol input or cancellation remains unsettled after native exit; no completion is claimed.",
                 ));
             }
-            binding
-                .session
-                .drain(&super::super::launch_util::call(
-                    self.store.generation,
-                    deadline,
-                )?)
-                .await?;
         }
         Ok(())
     }

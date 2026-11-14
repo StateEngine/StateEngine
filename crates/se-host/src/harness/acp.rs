@@ -6,7 +6,7 @@ use se_types::{Result, SeError};
 use serde_json::json;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 mod capture;
 mod environment;
@@ -23,6 +23,8 @@ pub struct Binding {
     initial: Mutex<Option<(String, String)>>,
     incarnation: Mutex<Option<Vec<u8>>>,
     capture_offset: AtomicU64,
+    interrupted_captured: AtomicBool,
+    interrupted_prefix: Mutex<Option<(String, String)>>,
     cwd: String,
 }
 fn error(reason: impl std::fmt::Display) -> SeError {
@@ -215,6 +217,8 @@ impl Harness for AcpHarness {
                 ))),
                 incarnation: Mutex::new(None),
                 capture_offset: AtomicU64::new(0),
+                interrupted_captured: AtomicBool::new(false),
+                interrupted_prefix: Mutex::new(None),
                 cwd: request
                     .cwd
                     .to_local()?
@@ -358,7 +362,7 @@ impl Harness for AcpHarness {
         Box::pin(async move {
             let session = &bound(binding)?.session;
             let until = tokio::time::Instant::now() + cx.timeout;
-            let drained = session.drain(&cx).await;
+            let drained = session.drain_stream(&cx).await;
             session
                 .close(CallContext {
                     timeout: until.saturating_duration_since(tokio::time::Instant::now()),
