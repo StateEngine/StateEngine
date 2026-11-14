@@ -20,7 +20,7 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 struct Connection {
     root: PathBuf,
     client: NativeUnixStream,
-    server: UnixStream,
+    server: Option<UnixStream>,
     cancelled: Arc<AtomicBool>,
 }
 impl Connection {
@@ -47,7 +47,7 @@ impl Connection {
         Ok(Self {
             root,
             client,
-            server,
+            server: Some(server),
             cancelled,
         })
     }
@@ -64,8 +64,12 @@ impl Connection {
 fn buffered_native_reply_survives_peer_shutdown_then_reports_eof() -> Result {
     let mut connection = Connection::new(5_000)?;
     let expected = b"buffered-native-reply";
-    connection.server.write_all(expected)?;
-    connection.server.shutdown(std::net::Shutdown::Both)?;
+    connection
+        .server
+        .as_mut()
+        .ok_or("server absent")?
+        .write_all(expected)?;
+    drop(connection.server.take());
     // Force the late read to begin only after the sender has closed its direction.
     let mut actual = vec![0; expected.len()];
     connection.client.read_exact(&mut actual)?;
@@ -107,7 +111,7 @@ fn cancelled_native_read_does_not_wait_for_peer_activity() -> Result {
 #[test]
 fn closed_peer_write_returns_an_error_without_terminating_the_client() -> Result {
     let mut connection = Connection::new(5_000)?;
-    connection.server.shutdown(std::net::Shutdown::Both)?;
+    drop(connection.server.take());
     let error = connection
         .client
         .write_all(b"closed-peer-write")
