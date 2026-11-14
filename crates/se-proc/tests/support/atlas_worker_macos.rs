@@ -83,14 +83,17 @@ fn probe_limits(channel: &mut WorkerChannel) -> Check {
     channel.send(&serde_json::to_vec(&(values, priority))?)?;
     Ok(())
 }
-fn probe_denials(channel: &mut WorkerChannel) -> Check {
-    // SAFETY: no borrowed output; any unexpectedly created descriptor is closed below.
-    let socket = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-    let socket_error = io::Error::last_os_error().raw_os_error();
-    if socket >= 0 {
-        // SAFETY: close only the descriptor returned by this probe.
-        unsafe { libc::close(socket) };
-    }
+fn probe_denials(channel: &mut WorkerChannel, port: u16) -> Check {
+    // Socket allocation alone need not perform a sandboxed network operation.
+    // The parent holds a reachable listener, so refusal is not an absent peer.
+    let (connect, connect_error) =
+        match std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)) {
+            Ok(stream) => {
+                drop(stream);
+                (0, None)
+            }
+            Err(error) => (-1, error.raw_os_error()),
+        };
     // SAFETY: the unexpected child executes only _exit; no allocation, lock or unwind after fork.
     let fork = unsafe { libc::fork() };
     let fork_error = io::Error::last_os_error().raw_os_error();
@@ -116,8 +119,8 @@ fn probe_denials(channel: &mut WorkerChannel) -> Check {
     let exec = unsafe { libc::execve(image.as_ptr(), argv.as_ptr(), env.as_ptr()) };
     let exec_error = io::Error::last_os_error().raw_os_error();
     channel.send(&serde_json::to_vec(&(
-        socket,
-        socket_error,
+        connect,
+        connect_error,
         fork,
         fork_error,
         exec,
@@ -130,7 +133,13 @@ fn probe() -> Check {
     let mode: String = serde_json::from_slice(&bytes)?;
     match mode.as_str() {
         "limits" => probe_limits(&mut channel)?,
-        "denials" => probe_denials(&mut channel)?,
+        value if value.starts_with("denials:") => probe_denials(
+            &mut channel,
+            value
+                .strip_prefix("denials:")
+                .ok_or("denial port missing")?
+                .parse()?,
+        )?,
         "abort" => {
             let limit = libc::rlimit {
                 rlim_cur: 0,
@@ -232,7 +241,12 @@ fn limits() -> Check {
     Ok(())
 }
 fn denials() -> Check {
-    let mut worker = spawn("denials", end())?;
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+    // First witness that the exact loopback listener accepts outside the worker.
+    let connected = std::net::TcpStream::connect(listener.local_addr()?)?;
+    drop(listener.accept()?);
+    drop(connected);
+    let mut worker = spawn(&format!("denials:{}", listener.local_addr()?.port()), end())?;
     let facts: (i32, Option<i32>, i32, Option<i32>, i32, Option<i32>) =
         serde_json::from_slice(&receive(&mut worker)?)?;
     assert_eq!(

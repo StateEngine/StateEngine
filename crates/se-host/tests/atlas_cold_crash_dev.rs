@@ -176,12 +176,15 @@ mod native {
                 .parent()
                 .ok_or("owned probe parent absent")?
                 .join("completed.fixture");
+            let staging = marker.with_extension("pending");
             let mut file = std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(marker)?;
+                .open(&staging)?;
             file.write_all(std::process::id().to_string().as_bytes())?;
             file.sync_all()?;
+            drop(file);
+            std::fs::rename(staging, marker)?;
         }
         // Deliberately remain alive after the actual production completion
         // protocol and its parent acknowledgment. No SQL/channel survives.
