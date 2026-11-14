@@ -37,7 +37,7 @@ impl<'a, 'q> Observed<'a, 'q> {
 }
 impl Read for Observed<'_, '_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        if Instant::now() >= self.deadline {
+        if crate::clock::now() >= self.deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "Atlas text deadline",

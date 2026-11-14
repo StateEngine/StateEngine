@@ -1,6 +1,8 @@
 //! Independent foundation consumer checks. The native test adapter is not a production
 //! custody implementation or a qualification of the proposed SQL overhead profile.
 #![cfg(unix)]
+#[path = "../../test-support/atlas_clock.rs"]
+mod test_clock;
 use se_atlas::{
     cache::{connection::*, pointer, prune, *},
     errors::AtlasResult,

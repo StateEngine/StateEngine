@@ -73,7 +73,7 @@ pub(super) fn signature(
     let mut hash = blake3::Hasher::new();
     let mut cursor = node.walk();
     loop {
-        if Instant::now() >= deadline {
+        if crate::clock::now() >= deadline {
             return None;
         }
         let n = cursor.node();

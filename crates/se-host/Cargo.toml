@@ -63,6 +63,7 @@ path = "tests/w3_lifecycle_independent.rs"
 required-features = ["secode"]
 
 [dev-dependencies]
+se-atlas = { path = "../se-atlas", features = ["test-clock"] }
 rusqlite = { version = "0.41", features = ["hooks"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "io-util"] }
 

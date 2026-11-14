@@ -29,7 +29,7 @@ pub(super) fn collect(
     'files: for &file in files {
         let pointer = file_by_id(sql, file)?.pointer;
         for symbol in [false, true] {
-            if Instant::now() >= end {
+            if crate::clock::now() >= end {
                 output.limited = true;
                 break 'files;
             }
@@ -56,7 +56,7 @@ pub(super) fn collect(
                 if seen.contains(&id) {
                     continue;
                 }
-                if seen.len() == 512 || Instant::now() >= end {
+                if seen.len() == 512 || crate::clock::now() >= end {
                     output.limited = true;
                     break 'files;
                 }

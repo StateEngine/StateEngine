@@ -210,7 +210,7 @@ struct Matches<'a, 'b> {
 impl Sink for Matches<'_, '_> {
     type Error = io::Error;
     fn matched(&mut self, _: &grep_searcher::Searcher, found: &SinkMatch<'_>) -> io::Result<bool> {
-        if Instant::now() >= self.request.deadline {
+        if crate::clock::now() >= self.request.deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "Atlas text deadline",

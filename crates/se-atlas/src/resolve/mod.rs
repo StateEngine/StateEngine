@@ -39,7 +39,7 @@ pub fn resolve(
 ) -> AtlasResult<ResolutionReport> {
     let mut report = ResolutionReport::default();
     for index in 0..parsed.imports.len() {
-        if Instant::now() >= deadline {
+        if crate::clock::now() >= deadline {
             report.incomplete = true;
             break;
         }
@@ -64,7 +64,7 @@ pub fn resolve(
         let mut context = None;
         let mut ambiguous = false;
         for candidate in imports::binding_candidates(path, import)? {
-            if Instant::now() >= deadline {
+            if crate::clock::now() >= deadline {
                 report.incomplete = true;
                 break;
             }
@@ -98,7 +98,7 @@ pub fn resolve(
             }
         }
         for candidate in imports::namespace_candidates(path, import)? {
-            if Instant::now() >= deadline {
+            if crate::clock::now() >= deadline {
                 report.incomplete = true;
                 break;
             }
@@ -122,7 +122,7 @@ pub fn resolve(
         }
     }
     for index in 0..parsed.references.len() {
-        if Instant::now() >= deadline {
+        if crate::clock::now() >= deadline {
             report.incomplete = true;
             break;
         }

@@ -143,7 +143,7 @@ pub(super) fn collect(
             at += 1;
             continue;
         }
-        if Instant::now() >= end {
+        if crate::clock::now() >= end {
             exhausted = true;
             break;
         }
@@ -214,7 +214,7 @@ fn edges(
         let mut statement=sql.prepare("SELECT id,file,start_byte FROM imports WHERE target_file=?1 AND resolution='ExplicitImport' ORDER BY file,start_byte,id LIMIT 1025")?;
         let mut rows = statement.query([file]).map_err(cache_error)?;
         while let Some(row) = rows.next().map_err(cache_error)? {
-            if examined == limit || Instant::now() >= end {
+            if examined == limit || crate::clock::now() >= end {
                 limited = true;
                 break;
             }
@@ -239,7 +239,7 @@ fn edges(
         ids
     };
     for symbol in symbols {
-        if Instant::now() >= end {
+        if crate::clock::now() >= end {
             limited = true;
             break;
         }

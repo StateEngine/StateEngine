@@ -162,7 +162,7 @@ impl QueryReader<'_, '_, '_> {
             let Some(source) = source else {
                 break;
             };
-            if Instant::now() >= work_end || matching == MAX_MATCHING_FILES {
+            if crate::clock::now() >= work_end || matching == MAX_MATCHING_FILES {
                 more_window = true;
                 break;
             }
@@ -179,7 +179,7 @@ impl QueryReader<'_, '_, '_> {
                     more_window = pinned.as_ref().is_some_and(|p| p.has_more);
                     break 'scan;
                 }
-                if Instant::now() >= work_end || matching == MAX_MATCHING_FILES {
+                if crate::clock::now() >= work_end || matching == MAX_MATCHING_FILES {
                     more_window = true;
                     break 'scan;
                 }
@@ -267,14 +267,14 @@ impl QueryReader<'_, '_, '_> {
                 // the whole unfinished file behind the continuation and
                 // leave the remaining snapshot time for rendering, rather
                 // than issuing metadata SQL after the source deadline.
-                if result.time_limited || Instant::now() >= work_end {
+                if result.time_limited || crate::clock::now() >= work_end {
                     window_end = previous_end;
                     more_window = true;
                     range_incomplete = true;
                     break 'scan;
                 }
                 let metadata = metadata_pool.best(env, sql, &snapshot, &file, query, mode)?;
-                if Instant::now() >= work_end {
+                if crate::clock::now() >= work_end {
                     window_end = previous_end;
                     more_window = true;
                     range_incomplete = true;

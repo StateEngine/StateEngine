@@ -55,7 +55,7 @@ impl Verifier<'_, '_, '_, '_> {
         let (Some(source), Some(expected)) = (self.reader.ctx.source, pointer.content_hash) else {
             return Ok(Some(CoverageReason::StaleSnapshot));
         };
-        if Instant::now() >= self.end {
+        if crate::clock::now() >= self.end {
             return Ok(Some(CoverageReason::TimeLimit));
         }
         let Some(mut file) = source.open_stream(&pointer.path)? else {
@@ -72,7 +72,7 @@ impl Verifier<'_, '_, '_, '_> {
         let mut line = 1;
         let mut column = 0;
         loop {
-            if Instant::now() >= self.end {
+            if crate::clock::now() >= self.end {
                 return Ok(Some(CoverageReason::TimeLimit));
             }
             let count = file
@@ -103,7 +103,7 @@ impl Verifier<'_, '_, '_, '_> {
         if ContentHash(*hash.finalize().as_bytes()) != expected {
             return Ok(Some(CoverageReason::StaleSnapshot));
         }
-        if Instant::now() >= self.end {
+        if crate::clock::now() >= self.end {
             return Ok(Some(CoverageReason::TimeLimit));
         }
         // A file pointer gains an extent only for the revision just verified.

@@ -164,7 +164,7 @@ mod tests {
     use super::*;
     #[test]
     fn git_directory_wildcards_and_escaped_literals() -> AtlasResult<()> {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = se_atlas::clock::now() + Duration::from_secs(2);
         for (pattern, path, want) in [
             ("a/**/b", "a/b", true),
             ("a/**/b", "a/x/y/b", true),

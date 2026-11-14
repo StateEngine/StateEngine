@@ -2,6 +2,8 @@
 //! Synthetic SQL overhead here is functional evidence, not a native RAM profile.
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
+#[path = "../../test-support/atlas_clock.rs"]
+mod test_clock;
 use fixture::*;
 use se_atlas::{
     cache::{connection::*, *},
@@ -52,7 +54,7 @@ impl RecordReader for NoRecords {
     }
 }
 fn end() -> Instant {
-    Instant::now() + Duration::from_secs(5)
+    se_atlas::clock::now() + Duration::from_secs(5)
 }
 #[test]
 #[expect(
@@ -60,6 +62,7 @@ fn end() -> Instant {
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 fn compact_literal_and_regex_reach_ten_files_past_unmatched_files_and_prefix_bytes() -> Check {
+    let _clock = test_clock::control();
     let f = Fixture::new()?;
     let root = RootId::from_parts(1, [2; 10])?;
     let directory = f.home.join("source");

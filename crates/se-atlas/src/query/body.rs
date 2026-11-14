@@ -38,7 +38,7 @@ pub(super) fn source(
     let mut lines = 0;
     let mut cut = false;
     loop {
-        if Instant::now() >= end {
+        if crate::clock::now() >= end {
             return Err(capacity("Atlas full-body work deadline", 1, 0));
         }
         let count = file

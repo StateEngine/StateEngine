@@ -90,7 +90,7 @@ impl QueryReader<'_, '_, '_> {
         let mut exhausted = false;
         let mut at = 0;
         while at < nodes.len() {
-            if Instant::now() >= end {
+            if crate::clock::now() >= end {
                 exhausted = true;
                 break;
             }
@@ -109,7 +109,7 @@ impl QueryReader<'_, '_, '_> {
             exhausted |= partial;
             examined += edges.len();
             for edge in edges {
-                if Instant::now() >= end {
+                if crate::clock::now() >= end {
                     exhausted = true;
                     break;
                 }
@@ -165,7 +165,7 @@ impl QueryReader<'_, '_, '_> {
         )?;
         limited |= files.limited;
         for result in &results {
-            if Instant::now() >= end {
+            if crate::clock::now() >= end {
                 limited = true;
                 break;
             }

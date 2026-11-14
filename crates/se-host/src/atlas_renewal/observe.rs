@@ -39,7 +39,7 @@ pub(super) fn file(
     }
     budget.max_work = budget
         .max_work
-        .min(deadline.saturating_duration_since(Instant::now()));
+        .min(deadline.saturating_duration_since(se_atlas::clock::now()));
     let mut observation_budget = policy.parse;
     observation_budget.max_work = budget.max_work;
     let observed = if profile.is_none() {
@@ -172,7 +172,7 @@ pub(super) fn file(
             let mut parser = SemanticParser::new(source.scope.clone(), profiles.to_vec())?;
             budget.max_work = budget
                 .max_work
-                .min(deadline.saturating_duration_since(Instant::now()));
+                .min(deadline.saturating_duration_since(se_atlas::clock::now()));
             timely(deadline)?;
             let mut parsed = match parser.parse(&snapshot, language, budget) {
                 Ok(parsed) => parsed,
