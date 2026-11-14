@@ -73,12 +73,22 @@ pub(super) fn stop_native(
 pub(super) fn wait_native_exit(identity: &se_proc::ProcessIdentity) -> Check {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        // A terminating Windows process can deny its image query before its
-        // retained object signals. Spend this waiter's original bound; the
-        // denial itself must never count as an exit or absence witness.
-        match se_proc::read_process_until(identity.machine.clone(), identity.pid, deadline)
-            .map_err(|error| format!("native child readback {error:?}"))?
-        {
+        // A terminating process can lose its image query before the next
+        // complete observation proves exit. Spend this waiter's original bound;
+        // an unreadable observation never counts as exit or absence.
+        let observed =
+            match se_proc::read_process_until(identity.machine.clone(), identity.pid, deadline) {
+                Ok(observed) => observed,
+                Err(error)
+                    if error.code == se_proc::ProcErrorCode::IdentityUnreadable
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::park_timeout(Duration::from_millis(10));
+                    continue;
+                }
+                Err(error) => return Err(format!("native child readback {error:?}").into()),
+            };
+        match observed {
             se_proc::ProcessRead::Absent { .. } => return Ok(()),
             se_proc::ProcessRead::ExitedRecord {
                 pid, boot, start, ..
