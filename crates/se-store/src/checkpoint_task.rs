@@ -449,14 +449,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn join_records_a_panicked_task_as_failed() {
+    fn join_records_a_panicked_task_as_failed() -> StoreResult<()> {
         let status = Status::default();
         let task = CheckpointTask {
             handle: Some(std::thread::spawn(|| panic!("planted checkpoint panic"))),
             closed: Arc::new(AtomicBool::new(false)),
             status: status.clone(),
         };
-        task.join(Instant::now() + Duration::from_secs(2)).unwrap();
+        task.join(Instant::now() + Duration::from_secs(2))?;
         assert!(
             status.failed(),
             "a dead task must read as Failed, never Clear"
@@ -477,5 +477,6 @@ mod tests {
             "the maintenance remedy must name a working step, got: {}",
             error.remedy.text
         );
+        Ok(())
     }
 }
