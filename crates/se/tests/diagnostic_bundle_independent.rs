@@ -212,6 +212,13 @@ struct Bundle {
     document: Value,
 }
 
+#[cfg(windows)]
+fn private_dir(path: &Path) -> Check {
+    drop(se_proc::NativeStateFiles::create(path)?);
+    Ok(())
+}
+
+#[cfg(not(windows))]
 fn private_dir(path: &Path) -> Check {
     let builder = fs::DirBuilder::new();
     #[cfg(unix)]
