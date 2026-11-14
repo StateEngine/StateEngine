@@ -13,6 +13,11 @@ pub(super) async fn run(
         security.authorize_invocation(&checked, invocation)
     })
     .await;
+    let authorized = authorized.and_then(|request| {
+        let output: Arc<dyn auth::OutputInvalidation> = output.clone();
+        request.register_source_output(&output)?;
+        Ok(request)
+    });
     let result = match authorized {
         Ok(request) if matches!(request.request(), RemoteRequest::Watch(_)) => {
             watch(&endpoint, &output, &device, id, request).await

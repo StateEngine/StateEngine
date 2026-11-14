@@ -65,6 +65,7 @@ def main():
     for running in [False, True]:
         f = Fixture(a.se, a.output / ('running' if running else 'never-started'))
         runtime = Path(tempfile.mkdtemp(prefix='se5b-home-', dir='/tmp'))
+        print("fixture root (retained on failed or interrupted closure):", runtime, flush=True)
         for name, suffix in [('CODEX_HOME', 'codex'), ('XDG_CONFIG_HOME', 'config'), ('XDG_CACHE_HOME', 'cache'), ('XDG_DATA_HOME', 'data'), ('XDG_STATE_HOME', 'state')]:
             location = f.root / ('private-' + suffix)
             location.mkdir(mode=0o700)

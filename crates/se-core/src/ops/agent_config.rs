@@ -3,11 +3,11 @@
 use super::{ConfigGet, ConfigSet, inputs::Validate};
 use crate::{
     commit::Cx,
-    config_policy::{ConfigFile, EffectiveSandbox},
     dispatch::{Kernel, admitted},
     scope,
     store_error::store_error,
 };
+use se_config::config_policy::{ConfigFile, EffectiveSandbox};
 use se_store::{
     Actor, AtomicBatch, EventBody, Expected, GrantKey, PermissionProfile, ProjectionRecord,
     Snapshot,
@@ -190,7 +190,7 @@ pub fn set<R: Snapshot>(
         )));
     }
     let (selector, field) = Field::parse(&input.key)?;
-    let human_only = crate::config_policy::key_metadata(&input.key)?.human_only;
+    let human_only = se_config::config_policy::key_metadata(&input.key)?.human_only;
     let agent = match replay_target(&input.idempotency_key, cx)? {
         Some(agent) => agent,
         None => agent(selector, cx)?,
@@ -246,10 +246,10 @@ pub fn set<R: Snapshot>(
                 }
             } else {
                 let provider = match profile.provider {
-                    se_store::Provider::Claude => crate::config_policy::Provider::Claude,
-                    se_store::Provider::Codex => crate::config_policy::Provider::Codex,
-                    se_store::Provider::SeCode => crate::config_policy::Provider::SeCode,
-                    se_store::Provider::Acp => crate::config_policy::Provider::Acp,
+                    se_store::Provider::Claude => se_config::config_policy::Provider::Claude,
+                    se_store::Provider::Codex => se_config::config_policy::Provider::Codex,
+                    se_store::Provider::SeCode => se_config::config_policy::Provider::SeCode,
+                    se_store::Provider::Acp => se_config::config_policy::Provider::Acp,
                 };
                 let resolved = configuration.resolve_profile(&input.value, provider, false)?;
                 profile.permission = match resolved.sandbox {

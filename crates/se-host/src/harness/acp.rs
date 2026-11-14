@@ -1,7 +1,7 @@
 //! Configured ACP executables use the same native launch lifecycle as stock harnesses.
 use super::*;
 use crate::acp::{CapturedMessage, Connection, PermissionPolicy, Session};
-use se_core::config_policy::{ConfigFile, Provider, ResolvedProfile};
+use se_config::config_policy::{ConfigFile, Provider, ResolvedProfile};
 use se_types::{Result, SeError};
 use serde_json::json;
 use std::sync::{

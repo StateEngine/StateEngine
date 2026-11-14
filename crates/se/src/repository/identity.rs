@@ -6,6 +6,9 @@
 //! can only re-attach the repository that was registered. Every Git
 //! invocation passes a top-precedence `core.fsmonitor=false` command
 //! parameter and bounded output, matching the init repository observation.
+#[cfg(test)]
+#[path = "../../../test-support/directory_owner.rs"]
+mod cleanup_directory;
 use se_types::{Result, SeError, details};
 #[cfg(test)]
 use std::process::Command;
@@ -263,17 +266,18 @@ mod tests {
         }
         Ok(())
     }
-    fn fresh_repo(tag: &str) -> Result<PathBuf> {
+    fn fresh_repo(tag: &str) -> Result<cleanup_directory::PrivateDirectory> {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let dir =
             std::env::temp_dir().join(format!("se-git-id-{}-{stamp}-{tag}", std::process::id()));
-        std::fs::create_dir_all(&dir)
+        std::fs::create_dir(&dir)
             .map_err(|e| SeError::invalid("test repository", &e.to_string()))?;
-        git(&dir, &["init", "-b", "main"])?;
-        Ok(dir)
+        let owner = cleanup_directory::PrivateDirectory::for_case(dir);
+        git(&owner, &["init", "-b", "main"])?;
+        Ok(owner)
     }
     fn commit(dir: &Path, file: &str, body: &str) -> Result<()> {
         std::fs::write(dir.join(file), body)
@@ -330,6 +334,9 @@ mod tests {
             .unwrap_or(0);
         let bare =
             std::env::temp_dir().join(format!("se-git-id-{}-{stamp}-bare", std::process::id()));
+        std::fs::create_dir(&bare)
+            .map_err(|e| SeError::invalid("test repository", &e.to_string()))?;
+        let bare = cleanup_directory::PrivateDirectory::for_case(bare);
         git(
             &plain,
             &[
@@ -342,10 +349,7 @@ mod tests {
         assert!(is_bare(&bare)?);
         let absent = fresh_repo("absent")?;
         assert!(!is_bare(&absent)?);
-        for dir in [plain, bare, absent] {
-            std::fs::remove_dir_all(dir).ok();
-        }
-        Ok(())
+        plain.finish(bare.finish(absent.finish(Ok(()))))
     }
     #[test]
     fn marker_roundtrip_verifies_head_and_branch() -> Result<()> {
@@ -356,8 +360,7 @@ mod tests {
         let (current, branch) = verify(&dir, "p1")?;
         assert_eq!(current, first);
         assert_eq!(branch.as_deref(), Some("main"));
-        std::fs::remove_dir_all(dir).ok();
-        Ok(())
+        dir.finish(Ok(()))
     }
     #[test]
     fn verify_refuses_wrong_project_and_bad_marker() -> Result<()> {
@@ -394,8 +397,7 @@ mod tests {
         refusal(verify(&dir, "p1"), "malformed")?;
         std::fs::remove_file(&path).map_err(|e| SeError::invalid("test marker", &e.to_string()))?;
         refusal(verify(&dir, "p1"), "no recorded git identity")?;
-        std::fs::remove_dir_all(dir).ok();
-        Ok(())
+        dir.finish(Ok(()))
     }
     #[test]
     fn verify_allows_ancestry_either_way_and_refuses_unrelated() -> Result<()> {
@@ -413,8 +415,7 @@ mod tests {
         git(&dir, &["add", "-A"])?;
         commit(&dir, "c.txt", "three\n")?;
         refusal(verify(&dir, "p1"), "share no ancestry")?;
-        std::fs::remove_dir_all(dir).ok();
-        Ok(())
+        dir.finish(Ok(()))
     }
     #[test]
     fn verify_refuses_unborn_head() -> Result<()> {
@@ -424,7 +425,6 @@ mod tests {
         record(&dir, "p1", &first, &None)?;
         git(&dir, &["update-ref", "-d", "HEAD"])?;
         refusal(verify(&dir, "p1"), "no commits yet")?;
-        std::fs::remove_dir_all(dir).ok();
-        Ok(())
+        dir.finish(Ok(()))
     }
 }

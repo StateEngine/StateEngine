@@ -172,7 +172,7 @@ fn stdio_caller_assertion_tracks_the_authenticated_binding() -> Check {
         let mut host =
             HostedRuntime::prepare(initialized, start(&f)?, runtime.handle().clone(), &bound()?)
                 .await?;
-        host.configure(se_core::config_policy::ConfigFile::default())?;
+        host.configure(se_config::config_policy::ConfigFile::default())?;
         let listener = host.listen(runtime.handle().clone(), &bound()?).await?;
         let stop = host.local_stop();
         let state_dir = f.options.state_directory.clone();

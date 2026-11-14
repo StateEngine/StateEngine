@@ -112,7 +112,7 @@ fn listener_message_working_and_hook() -> Check {
             &bound()?,
         )
         .await?;
-        runtime.configure(se_core::config_policy::ConfigFile::default())?;
+        runtime.configure(se_config::config_policy::ConfigFile::default())?;
         let path = NativePath::from_local(transcript.clone())?;
         runtime
             .bind_transcript(

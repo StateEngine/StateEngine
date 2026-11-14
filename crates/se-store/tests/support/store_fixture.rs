@@ -300,6 +300,16 @@ impl Fixture {
         let home = directory.to_path_buf();
         Self::with_home(home, Some(directory))
     }
+    /// Retarget the directory owner along with the selected state home.
+    pub fn move_home(&mut self, home: PathBuf) -> Check {
+        self._root
+            .as_mut()
+            .ok_or("this fixture does not own its home; move the caller-owned fixture instead")?
+            .rename_to(home.clone())?;
+        self.home = home;
+        self.options.state_directory = self.home.join("state");
+        Ok(())
+    }
     /// A fixture under a caller-chosen home, for paths a platform test must
     /// distinguish by length rather than by temp-directory naming.
     pub fn at(home: PathBuf, state: PathBuf) -> Result<Self, Box<dyn Error>> {

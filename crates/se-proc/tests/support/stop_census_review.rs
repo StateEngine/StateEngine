@@ -136,7 +136,7 @@ fn native_census_observer() -> Check {
                 ]
                 .map(Into::into)
                 .into(),
-                cwd: home.0.clone(),
+                cwd: home.0.to_path_buf(),
                 environment: Environment {
                     entries: vec![
                         ("SE_CENSUS_ROOT".into(), home.0.as_os_str().into()),
@@ -149,8 +149,8 @@ fn native_census_observer() -> Check {
                 policy: LaunchPolicy {
                     containment: ContainmentRequirement::BestAvailable,
                     writes: WritePolicy::Workspace {
-                        roots: vec![home.0.clone()],
-                        scratch: home.0.clone(),
+                        roots: vec![home.0.to_path_buf()],
+                        scratch: home.0.to_path_buf(),
                     },
                     network: NetworkPolicy::Allow,
                     hardening: OptionalHardening::Off,
@@ -164,7 +164,7 @@ fn native_census_observer() -> Check {
         .bind_stdio(&prepared.prepared, home.endpoints("census")?)
         .map_err(error)?;
     let process = prepared.process;
-    let mut release = Release(home.0.clone(), None);
+    let mut release = Release(home.0.to_path_buf(), None);
     let ticket = match runtime.begin_launch(prepared.prepared) {
         LaunchStart::Pending { ticket, .. } => ticket,
         LaunchStart::Failed(failure) => return Err(format!("launch: {:?}", failure.error).into()),

@@ -161,6 +161,7 @@ impl Harness {
 }
 fn request(bytes: u32) -> SessionContextRequest {
     SessionContextRequest {
+        source_failure: None,
         limit: 20,
         since: None,
         byte_budget: bytes,
@@ -168,6 +169,7 @@ fn request(bytes: u32) -> SessionContextRequest {
 }
 fn resume_request(bytes: u32, preview_agent: Option<AgentId>) -> Resume {
     Resume {
+        source_failure: None,
         limit: 20,
         since: None,
         byte_budget: bytes,

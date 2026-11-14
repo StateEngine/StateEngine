@@ -1,4 +1,4 @@
-//! Shared finite automatic runtime rendezvous for launch and native hooks.
+//! Shared finite runtime rendezvous for explicit startup, launch and native hooks.
 //! No request is submitted here; authentication remains the forwarding step.
 use super::{execute, files::Files};
 use crate::{
@@ -11,15 +11,33 @@ use se_proc::{NativeProcessApi, NativeProcessRuntime, RuntimeExitObservation};
 use se_types::{Read, Result, SeError};
 use std::time::Duration;
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub(crate) fn endpoint(
     cx: &Bootstrap,
     files: &Files,
     bound: &Deadline,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<se_host::EndpointRecord> {
+    endpoint_with_origin(
+        cx,
+        files,
+        bound,
+        diagnostic,
+        StartupOrigin::Automatic,
+        &mut None,
+    )
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
+pub(super) fn endpoint_with_origin(
+    cx: &Bootstrap,
+    files: &Files,
+    bound: &Deadline,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+    origin: StartupOrigin,
+    endpoint_recovery: &mut Option<se_core::ops::EndpointRecovery>,
 ) -> Result<se_host::EndpointRecord> {
     #[cfg(unix)]
     let expected = se_host::IpcEndpoint::UnixSocket(se_types::NativePath::from_local(
@@ -112,6 +130,9 @@ pub(crate) fn endpoint(
                 }
             }
             se_host::EndpointRoute::Start { recovery } => {
+                if recovery.is_some() {
+                    *endpoint_recovery = recovery;
+                }
                 if let Some(failed) = failure {
                     // There is no winner holding the exclusive lease. Preserve
                     // the actual failed attempt rather than spawning repeatedly.
@@ -122,27 +143,27 @@ pub(crate) fn endpoint(
                     return Err(retain(error, Some(failed)));
                 }
                 let machine = super::identity::require_machine(files)?;
-                match crate::runtime::host::start_with_origin(
-                    &cx.home,
-                    &configuration,
-                    machine,
-                    StartupOrigin::Automatic,
-                    bound,
-                ) {
+                let attempt = match origin {
+                    StartupOrigin::Explicit => {
+                        crate::runtime::host::start(&cx.home, &configuration, machine, bound)
+                    }
+                    StartupOrigin::Automatic => crate::runtime::host::start_with_origin(
+                        &cx.home,
+                        &configuration,
+                        machine,
+                        origin,
+                        bound,
+                    ),
+                };
+                match attempt {
                     Ok(started) => {
-                        if let Some(recovery) = recovery {
-                            diagnostic(&format!(
-                                "Retained stale runtime endpoint at {:?}",
-                                recovery.retained
-                            ))
-                            .map_err(|error| {
-                                se_core::scope::unreadable(
-                                    "automatic host startup diagnostic",
-                                    &error.to_string(),
-                                )
-                                .with_cause(error)
-                            })?;
-                        }
+                        report_started(
+                            &started,
+                            endpoint_recovery.as_ref(),
+                            origin,
+                            bound,
+                            diagnostic,
+                        )?;
                         return Ok(started.endpoint);
                     }
                     Err(failed) => failure = Some(failed),
@@ -150,6 +171,41 @@ pub(crate) fn endpoint(
             }
         }
     }
+}
+fn report_started(
+    started: &crate::runtime::host::StartedHost,
+    recovery: Option<&se_core::ops::EndpointRecovery>,
+    origin: StartupOrigin,
+    bound: &Deadline,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<()> {
+    if matches!(origin, StartupOrigin::Explicit) {
+        super::process::from_identity(&started.ready.identity, bound)?;
+    }
+    if matches!(origin, StartupOrigin::Automatic)
+        && let Some(recovery) = recovery
+    {
+        diagnostic(&format!(
+            "Retained stale runtime endpoint at {:?}",
+            recovery.retained
+        ))
+        .map_err(|error| {
+            se_core::scope::unreadable("automatic host startup diagnostic", &error.to_string())
+                .with_cause(error)
+        })?;
+    }
+    if matches!(origin, StartupOrigin::Explicit)
+        && !matches!(started.detachment_record, Read::Present { .. })
+    {
+        diagnostic(&format!(
+            "Host is running; its protected detachment observation needs retry: {:?}",
+            started.detachment_record
+        ))
+        .map_err(|error| {
+            se_core::scope::unreadable("startup diagnostic", &error.to_string()).with_cause(error)
+        })?;
+    }
+    Ok(())
 }
 fn pause(bound: &Deadline) {
     std::thread::park_timeout(

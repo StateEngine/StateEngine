@@ -8,6 +8,7 @@ pub enum EventKind {
     RemoteSecurity,
     RemoteMessageAttributed,
     RemoteLaunchAttributed,
+    RemoteMailboxRecorded,
     ProjectRegistered,
     ProjectUpdated,
     ProjectMoved,
@@ -79,6 +80,9 @@ pub enum EventBody<T> {
     },
     RemoteLaunchAttributed {
         record: crate::remote::LaunchAttribution,
+    },
+    RemoteMailboxRecorded {
+        change: crate::remote::MailboxChange,
     },
     ProjectRegistered {
         project: ProjectId,

@@ -408,7 +408,7 @@ async fn session_mode_and_capability_refusals_never_offer_a_prompt() -> Check {
 
 #[tokio::test]
 async fn session_saved_approval_controls_original_permission_choices() -> Check {
-    use se_core::config_policy::Approval;
+    use se_config::config_policy::Approval;
     for (approval, expected) in [
         (Approval::Never, "allow-short"),
         (Approval::OnRequest, "deny-short"),

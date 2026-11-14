@@ -1,6 +1,7 @@
 //! Prepare a catalogue choice from an existing installation before setup writes.
 use crate::bootstrap::Bootstrap;
-use se_core::{config_policy::ConfigFile, harness_selection::catalog, ops::ProjectInit};
+use se_config::config_policy::ConfigFile;
+use se_core::{harness_selection::catalog, ops::ProjectInit};
 use se_types::{Result, SeError};
 
 pub(super) fn prepare(cx: &Bootstrap, input: &ProjectInit) -> Result<ConfigFile> {
@@ -64,7 +65,7 @@ pub(super) fn prepare(cx: &Bootstrap, input: &ProjectInit) -> Result<ConfigFile>
     Ok(configuration)
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn resolve(
     configuration: &ConfigFile,
     name: &str,
@@ -84,7 +85,7 @@ fn resolve(
     Ok((executable, script))
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn resolve(
     _: &ConfigFile,
     _: &str,

@@ -157,7 +157,17 @@ pub(crate) fn actor(db: &Connection, bytes: &[u8], scope: &[u8]) -> StoreResult<
                 |r| r.get(0),
             )
             .map_err(sql)?;
-        if remote {
+        let returned = if crate::connection::info(db)?.schema_version >= 12 {
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM remote_mail_contacts WHERE principal_id=?)",
+                [bytes],
+                |r| r.get::<_, bool>(0),
+            )
+            .map_err(sql)?
+        } else {
+            false
+        };
+        if remote || returned {
             return Ok(Actor::Remote(
                 wire(db, "remote", bytes, &[0])?
                     .try_into()

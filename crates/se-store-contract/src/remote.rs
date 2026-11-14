@@ -1,8 +1,8 @@
 //! Durable public authority facts. Machine credentials never enter the store.
 use crate::{Revision, StoreId};
 use se_types::remote::{
-    CredentialDigest, RemoteAttribution, RemoteDeviceId, RemoteGrantId, RemoteHostId,
-    RemotePrincipalId, RemoteScope, RemoteSubject, RemoteTarget,
+    CredentialDigest, RemoteAgentAddress, RemoteAttribution, RemoteDeviceId, RemoteGrantId,
+    RemoteHostId, RemotePrincipalId, RemoteScope, RemoteSubject, RemoteTarget,
 };
 use se_types::{MessageId, SessionId};
 use serde::{Deserialize, Serialize};
@@ -58,6 +58,34 @@ pub enum SecurityTransition {
     },
     /// Existing Owner credential rotation/restore calls this before accepting clients.
     RevokeAll,
+    /// Independent of the disposable machine grant and provider session.
+    SourcePermission {
+        address: RemoteAgentAddress,
+        allowed: bool,
+        expected: Option<Revision>,
+    },
+    SourceRevokeIntent {
+        address: RemoteAgentAddress,
+        expected: Option<Revision>,
+        key: se_types::IdempotencyKey,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourcePermission {
+    pub address: RemoteAgentAddress,
+    pub allowed: bool,
+    pub revision: Revision,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceContact {
+    pub address: RemoteAgentAddress,
+    /// None retains the machine grant's existing permissions.
+    pub permission: Option<SourcePermission>,
+    pub pending_revocation: Option<se_types::IdempotencyKey>,
 }
 
 /// Stored beside the ordinary message in the same atomic transaction.
@@ -70,7 +98,8 @@ pub struct MessageAttribution {
     pub grant: RemoteGrantId,
     pub authority_revision: Revision,
     pub target: RemoteTarget,
-    pub expected_session: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_session: Option<SessionId>,
     pub attribution: RemoteAttribution,
 }
 
@@ -102,3 +131,6 @@ pub struct LaunchAttribution {
     pub lifecycle: se_types::LifecycleId,
     pub attribution: RemoteAttribution,
 }
+
+mod mailbox;
+pub use mailbox::*;

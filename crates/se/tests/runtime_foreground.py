@@ -20,6 +20,7 @@ import sys
 import tempfile
 import termios
 import time
+from judges.directory_owner import DirectoryOwner
 
 
 def identity(pid):
@@ -77,6 +78,8 @@ def main():
     if libc.prctl(36, 1, 0, 0, 0) != 0:
         raise OSError(ctypes.get_errno(), 'PR_SET_CHILD_SUBREAPER')
     root = Path(tempfile.mkdtemp(prefix='se-fg-', dir=Path.home()))
+    print("fixture root (retained on failed or interrupted closure):", root, flush=True)
+    root_owner = DirectoryOwner(root)
     results = []
     for ending in ('down', 'ctrl-c'):
         home = root / ending
@@ -218,6 +221,16 @@ def main():
             'setup_binary_sha256': hashlib.sha256(setup.read_bytes()).hexdigest(),
             'fixture_root': str(root), 'cases': results}, indent=2))
         print(('PASS' if row['passed'] else 'FAIL') + ': ' + ending + ': ' + str(failure), flush=True)
+    if all(row['passed'] for row in results):
+        try:
+            root_owner.remove()
+        except OSError as error:
+            results[-1]['cleanup_errors'].append('fixture removal: ' + str(error))
+            results[-1]['passed'] = False
+            (args.out / 'results.json').write_text(json.dumps({
+                'binary_sha256': hashlib.sha256(args.se.read_bytes()).hexdigest(),
+                'setup_binary_sha256': hashlib.sha256(setup.read_bytes()).hexdigest(),
+                'fixture_root': str(root), 'cases': results}, indent=2))
     return 0 if all(r['passed'] for r in results) else 1
 
 

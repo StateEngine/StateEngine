@@ -1,8 +1,8 @@
 //! Closed inputs for owner administration and FULL writes. Authority and allocated
 //! identities are supplied separately by the admitted caller.
 use super::inputs::{Validate, bounded, name};
-use crate::config_policy::Provider;
 use schemars::JsonSchema;
+use se_config::config_policy::Provider;
 use se_types::{AgentId, Cursor, IdempotencyKey, Result, SeError};
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +21,7 @@ impl Validate for AgentCreate {
     fn validate(&self) -> Result<()> {
         name("agent name", &self.name)?;
         if let Some(harness) = &self.harness {
-            crate::config_policy::harness::validate_name(harness)?;
+            se_config::config_policy::harness::validate_name(harness)?;
         }
         if let Some(model) = &self.model {
             bounded("model", model, 256, false)?;

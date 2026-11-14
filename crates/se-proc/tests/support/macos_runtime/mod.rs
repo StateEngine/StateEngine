@@ -50,7 +50,8 @@ impl Home {
         let nonce = se_types::hex_lower(&random_secret()?.expose()[..16]);
         let path = std::env::temp_dir().join(format!("se-macos-runtime-{nonce}"));
         fs::DirBuilder::new().mode(0o700).create(&path)?;
-        let home = Self(fs::canonicalize(path)?);
+        let mut home = Self(path);
+        home.0 = fs::canonicalize(&home.0)?;
         println!("native runtime fixture: {}", home.0.display());
         Ok(home)
     }

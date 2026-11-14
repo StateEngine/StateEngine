@@ -4,6 +4,7 @@ Run with --bundle EXTRACTED_NATIVE_ARCHIVE --codex STOCK_CODEX --output NEW_DIRE
 from pathlib import Path
 import argparse, datetime, fcntl, hashlib, json, os, shlex, socket, sqlite3, subprocess, tempfile, time, uuid
 from codex_first_launch import Model
+from judges.directory_owner import DirectoryOwner
 
 def sha(p):
     return hashlib.sha256(p.read_bytes()).hexdigest()
@@ -36,6 +37,8 @@ class Fixture:
         self.pins = []
         self.port = port
         self.short = Path(tempfile.mkdtemp(prefix='se-uninstall-test-', dir='/tmp'))
+        print("fixture root (retained on failed or interrupted closure):", self.short, flush=True)
+        self.short_owner = DirectoryOwner(self.short)
         self.bin = self.home / '.local/bin/se'
         self.env = {'HOME': str(self.home), 'USERPROFILE': str(self.home), 'CODEX_HOME': str(self.home / '.codex'), 'XDG_CONFIG_HOME': str(self.home / '.config'), 'XDG_CACHE_HOME': str(self.home / '.cache'), 'XDG_STATE_HOME': str(self.home / '.local/state'), 'XDG_DATA_HOME': str(self.home / '.local/share'), 'XDG_RUNTIME_DIR': str(self.short), 'PATH': str(self.home / '.local/bin') + ':/usr/bin:/bin', 'SHELL': '/bin/sh', 'LANG': 'C.UTF-8', 'NO_COLOR': '1', 'PYTHONDONTWRITEBYTECODE': '1'}
         (self.home / '.profile').write_text('# owned profile: retain me\n')
@@ -166,6 +169,11 @@ class Fixture:
         for u in self.units:
             subprocess.run(['systemctl', '--user', 'stop', u + '.service'], check=True, capture_output=True)
         self.closed('final') if (self.state / 'runtime.lock').exists() else None
+        for pin in self.pins:
+            current = birth(pin['pid'])
+            assert current is None or current['start'] != pin['start'] or current['state'] == 'Z', 'owned process remains live'
+        self.short_owner.remove()
+
 
 def main(options):
     os.umask(0o077)

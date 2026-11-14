@@ -1,7 +1,8 @@
 //! A retained request can still be starting without an activated process receipt.
 use super::{AgentLaunch, LaunchPlan, LaunchResult, TakeoverReport};
-use crate::{config_policy::Provider, ops::AgentCommand};
+use crate::ops::AgentCommand;
 use schemars::JsonSchema;
+use se_config::config_policy::Provider;
 use se_types::{AgentId, IdempotencyKey, LifecycleId, Named, ProjectId, SessionId};
 use serde::{Deserialize, Serialize};
 

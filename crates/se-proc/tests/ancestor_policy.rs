@@ -23,14 +23,15 @@ mod linux {
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
             fs::create_dir(&root)?;
-            fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
             let parent = root.join("existing-ancestor");
-            fs::create_dir(&parent)?;
+            let fixture = Self { root, parent };
+            fs::set_permissions(&fixture.root, fs::Permissions::from_mode(0o700))?;
+            fs::create_dir(&fixture.parent)?;
             if let Some(group) = group {
-                chown(&parent, None, Some(group))?;
+                chown(&fixture.parent, None, Some(group))?;
             }
-            fs::set_permissions(&parent, fs::Permissions::from_mode(mode))?;
-            Ok(Self { root, parent })
+            fs::set_permissions(&fixture.parent, fs::Permissions::from_mode(mode))?;
+            Ok(fixture)
         }
         fn accepted(&self, expected_mode: u32) -> Result {
             let state = self.parent.join("state");

@@ -66,6 +66,7 @@ def main():
     f = Fixture(args.se, args.output / "fixture", log_directory="calls")
     model = TakeoverModel(args.output, f.repo)
     short = Path(tempfile.mkdtemp(prefix="se-takeover-codex-", dir="/tmp"))
+    print("fixture root (retained on failed or interrupted closure):", short, flush=True)
     code_home = args.output / "owned-codex-home"
     code_home.mkdir(mode=0o700)
     f.env.update(CODEX_HOME=str(code_home), OPENAI_API_KEY="sk-owned-loopback-no-account",

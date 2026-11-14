@@ -60,7 +60,7 @@ fn run(serial: bool) -> Check {
             &bound()?,
         )
         .await?;
-        runtime.configure(se_core::config_policy::ConfigFile::default())?;
+        runtime.configure(se_config::config_policy::ConfigFile::default())?;
         let listener = runtime.listen(engine.handle().clone(), &bound()?).await?;
         let endpoint = listener.endpoint().clone();
         let generation = runtime.generation();

@@ -36,6 +36,7 @@ def run(args):
         path.mkdir()
         private[key] = str(path)
     runtime = Path(tempfile.mkdtemp(prefix='se-pe-', dir='/tmp'))
+    print("fixture root (retained on failed or interrupted closure):", runtime, flush=True)
     private['XDG_RUNTIME_DIR'] = str(runtime)
 
     class IsolatedFixture(Fixture):

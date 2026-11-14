@@ -49,7 +49,7 @@ pub(crate) struct AdmissionContext {
     pub owner: se_types::HumanId,
     pub generation: se_types::Generation,
     pub state_directory: std::path::PathBuf,
-    pub configuration: Option<se_core::config_policy::ConfigFile>,
+    pub configuration: Option<se_config::config_policy::ConfigFile>,
     /// Exact selected configuration file; absent when the embedded caller
     /// configured values without a file. The origin label is derived here so
     /// the host never invents an origin for in-memory configuration.

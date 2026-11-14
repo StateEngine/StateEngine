@@ -29,7 +29,7 @@ pub fn plan_launch<R: Snapshot>(
     input: RemoteLaunch,
     attribution: RemoteAttribution,
     kernel: &Kernel,
-    configuration: &crate::config_policy::ConfigFile,
+    configuration: &se_config::config_policy::ConfigFile,
     cx: &mut Cx<'_, R>,
 ) -> Result<LaunchPlan> {
     if admission.verb != RemoteVerb::Launch

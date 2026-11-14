@@ -18,6 +18,8 @@ use std::sync::Arc;
 pub(crate) mod watch;
 pub struct RemoteBroker {
     inner: se_remote::broker::RemoteBroker<Deadline>,
+    #[cfg(feature = "remote")]
+    pub(crate) mailbox: crate::return_mail::Mailboxes,
 }
 impl std::ops::Deref for RemoteBroker {
     type Target = se_remote::broker::RemoteBroker<Deadline>;
@@ -34,6 +36,14 @@ impl se_remote::broker::Budget for Deadline {
     }
 }
 impl RemoteBroker {
+    pub(crate) async fn close(&self) -> Result<()> {
+        #[cfg(feature = "remote")]
+        let mail = self.mailbox.close().await;
+        let remote = self.inner.close().await;
+        #[cfg(feature = "remote")]
+        mail?;
+        remote
+    }
     pub(crate) fn fence(&self, revoked: &crate::runtime::mail::Revocations) -> Result<()> {
         self.inner.fence(&revoked.sessions, &revoked.credentials)
     }
@@ -52,6 +62,7 @@ impl RemoteBroker {
         blocking: crate::BlockingPool,
     ) -> Self {
         Self {
+            mailbox: crate::return_mail::Mailboxes::default(),
             inner: se_remote::broker::RemoteBroker::with_resolver(
                 source_host,
                 connector,

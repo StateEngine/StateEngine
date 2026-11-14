@@ -17,6 +17,9 @@ pub(super) fn resume<R: Snapshot>(
     cx: &mut Cx<'_, R>,
 ) -> Result<ResumeOutput> {
     let mut data = read::gather(&input, &identity, input.limit, cx)?;
+    if let Some(failure) = input.source_failure.clone() {
+        data.failures.push(failure);
+    }
     let mut result = initial(&input, at, &identity, &data)?;
     fit(&input, &identity, &mut data, &mut result, cx, |value, _| {
         wire_bytes("se.resume/v1", value)
@@ -41,6 +44,9 @@ pub(super) fn context<R: Snapshot>(
     cx: &mut Cx<'_, R>,
 ) -> Result<SessionContextOutput> {
     let mut data = read::gather(&input, &identity, input.limit, cx)?;
+    if let Some(failure) = input.source_failure.clone() {
+        data.failures.push(failure);
+    }
     let mut result = initial(&input, at, &identity, &data)?;
     fit(
         &input,

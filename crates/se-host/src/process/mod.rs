@@ -50,7 +50,7 @@ pub use recovery::Reconciliation;
 pub use shutdown::ProcessDrain;
 
 use crate::{ClaudeHarness, CodexHarness, PreparedRequestProofs, ProviderIoPlatform};
-use se_core::config_policy::ConfigFile;
+use se_config::config_policy::ConfigFile;
 use se_proc::{NativeProcessRuntime, ProcessRuntime};
 use se_types::{HostEpoch, NativePath, Result};
 use std::{path::PathBuf, sync::Arc};

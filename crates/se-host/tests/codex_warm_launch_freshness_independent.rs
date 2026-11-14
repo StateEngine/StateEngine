@@ -4,7 +4,7 @@
 #[path = "support/codex_probe_fixture.rs"]
 mod fixture;
 use fixture::{Check, Fixture, context};
-use se_core::config_policy::{ConfigFile, Provider};
+use se_config::config_policy::{ConfigFile, Provider};
 use se_host::{
     Harness, HarnessRequest, SessionIdentity,
     codex_input::{self, CodexLaunch},
