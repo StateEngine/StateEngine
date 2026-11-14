@@ -2,6 +2,7 @@
 //! credential/file retirement and native release. An incomplete witness keeps
 //! the supervisor and its obligations live.
 mod completion;
+#[path = "../process_monitor.rs"]
 mod monitor;
 use super::*;
 use super::{

@@ -32,6 +32,7 @@ mod remote_launch;
 mod runtime;
 mod search;
 mod selector;
+#[path = "read_snapshot.rs"]
 mod snapshot;
 mod transcript;
 use crate::{codec, connection, error::*, identity::*, open::SqliteReader, *};
