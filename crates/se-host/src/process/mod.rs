@@ -32,6 +32,7 @@ mod remove;
 mod remove_receipt;
 mod requests;
 mod resume_source;
+#[path = "../secode_service/mod.rs"]
 mod secode;
 mod shutdown;
 mod startup_stop;

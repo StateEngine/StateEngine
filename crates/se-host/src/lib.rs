@@ -39,7 +39,6 @@ mod model;
 #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 mod process;
 #[cfg(feature = "listener")]
-#[path = "process/io/mod.rs"]
 mod process_io;
 mod runtime;
 #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
