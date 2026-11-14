@@ -175,7 +175,12 @@ impl Drop for Consumer {
 fn setup(provider: Provider) -> TestResult<Consumer> {
     let root = directory::private_directory()?;
     fs::create_dir(root.join("owner"))?;
-    fs::create_dir(root.join("runtime"))?;
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(root.join("runtime"))?;
+    }
     fs::create_dir(root.join("repo"))?;
     let home = root.join("state");
     let mut c = Consumer {
