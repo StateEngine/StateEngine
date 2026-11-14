@@ -1,0 +1,36 @@
+name: paired CLI latency matrix
+on:
+  push:
+    branches: [prime/cli-latency-matrix-r5]
+permissions:
+  contents: read
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Build and interleave the frozen pairs on this runner
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then PY=python; else PY=python3; fi
+          "$PY" -B scripts/cli_latency/build.py "$RUNNER_TEMP/paired-cli"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: paired-cli-latency-${{ matrix.os }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/paired-cli/*.json
+            ${{ runner.temp }}/paired-cli/*.log
+            ${{ runner.temp }}/paired-cli/observations/*/samples.json
+            ${{ runner.temp }}/paired-cli/**/*.stderr
