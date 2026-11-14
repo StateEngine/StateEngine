@@ -415,6 +415,12 @@ fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResu
     // verbatim form lets the sidecars exist at any reachable length; the file
     // opened is the one the pin names.
     let target = se_types::sqlite_path(&pin.path);
+    // SQLite's NOFOLLOW refuses a symlinked ancestor outright (extended code
+    // 1550), which breaks the ordinary macOS temp directory under /var. The
+    // state-files walk admits only root- or current-user-owned link
+    // ancestors; resolve that same rule here and hand SQLite the resolved
+    // path, leaving NOFOLLOW to own the database name itself.
+    let target = crate::trusted_path::resolve(&target).map_err(cache_error)?;
     // SQLite's NOFOLLOW refuses a verbatim path it cannot resolve with its own
     // walk; the retained pin already names the exact file, so the flag is
     // dropped only for the verbatim form.
