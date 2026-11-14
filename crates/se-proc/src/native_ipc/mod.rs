@@ -295,3 +295,9 @@ fn current_uid() -> u32 {
     // SAFETY: geteuid reads the current native credential without pointers or mutation.
     unsafe { libc::geteuid() }
 }
+
+/// Native local-socket credentials only; callers separately validate birth and image.
+#[cfg(target_os = "macos")]
+pub(crate) fn local_socket_credentials(channel: BorrowedIpc<'_>) -> IpcNativeResult<(u32, u32)> {
+    macos::credentials(channel)
+}
