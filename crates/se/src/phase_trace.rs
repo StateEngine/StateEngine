@@ -36,3 +36,8 @@ pub(crate) fn event(name: &str) {
         eprintln!("cli.event {} {}", name, now.as_nanos());
     }
 }
+
+pub(crate) fn measure<T>(name: &'static str, action: impl FnOnce() -> T) -> T {
+    let _phase = Phase::new(name);
+    action()
+}

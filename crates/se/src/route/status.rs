@@ -61,20 +61,23 @@ pub fn observe_snapshot<S: Snapshot>(
     };
     // The shared native lock is held for the observation. Its acquisition proves
     // that no host currently holds its required exclusive writer lease.
-    let lease = super::files::DirectLease::acquire(
-        files,
-        &cx.home.join("runtime.lock"),
-        se_store::LeaseIdentity {
-            store: Some(snap.info().id),
-            generation: admission.generation,
-            mode: se_store::LeaseMode::DirectClient,
-        },
-    )
+    let lease = crate::phase_trace::measure("cli_status_lease", || {
+        super::files::DirectLease::acquire(
+            files,
+            &cx.home.join("runtime.lock"),
+            se_store::LeaseIdentity {
+                store: Some(snap.info().id),
+                generation: admission.generation,
+                mode: se_store::LeaseMode::DirectClient,
+            },
+        )
+    })
     .map_err(|e| store_error(&e))?;
     if lease.is_some() {
         output.runtime.state = "stopped".into();
     }
     if let Scope::Project(project) = &admission.scope {
+        let _phase = crate::phase_trace::Phase::new("cli_status_project");
         let result = (|| {
             let record = scope::require_present(
                 snap.project(project.clone()).map_err(|e| store_error(&e))?,
@@ -186,13 +189,15 @@ pub fn observe_snapshot<S: Snapshot>(
                 full_body: false,
             };
             let unread = snap.message_count(query).map_err(|e| store_error(&e))?;
-            output.agents = Some(agent_status::page(
-                super::select::budget(None)?,
-                &mut se_core::commit::Cx {
-                    read: snap,
-                    admission,
-                },
-            )?);
+            output.agents = Some(crate::phase_trace::measure("cli_status_agents", || {
+                agent_status::page(
+                    super::select::budget(None)?,
+                    &mut se_core::commit::Cx {
+                        read: snap,
+                        admission,
+                    },
+                )
+            })?);
             match &admission.actor {
                 Actor::Remote(_) => {
                     return Err(se_types::SeError::invalid(
@@ -244,7 +249,7 @@ pub fn observe_snapshot<S: Snapshot>(
             }
             let options = execute::options();
             let observation_bound = se_host::client::lease::Deadline::from_options(&options)?;
-            let verified = super::process::observe(&endpoint, &observation_bound);
+            let verified = crate::phase_trace::measure("cli_status_process", || super::process::observe(&endpoint, &observation_bound));
             match verified {
                 Ok(process) => {
                     output.runtime.state = "running".into();
@@ -263,7 +268,7 @@ pub fn observe_snapshot<S: Snapshot>(
                     #[cfg(any(target_os = "linux", windows))]
                     {
                         let bound = se_host::client::lease::Deadline::from_options(&options)?;
-                        match crate::runtime::host::read_detachment(files, &endpoint, &bound) {
+                        match crate::phase_trace::measure("cli_status_detachment", || crate::runtime::host::read_detachment(files, &endpoint, &bound)) {
                             Ok(Read::Present { value }) => {
                                 output.runtime.detachment = Some(value.detachment)
                             }

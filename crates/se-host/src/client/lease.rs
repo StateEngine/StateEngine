@@ -278,7 +278,9 @@ impl crate::client::BlockingIpcClient {
         let bytes = profile_phase("ipc_challenge_read", || {
             wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)
         })?;
-        let challenge = auth::decode_challenge(bytes.as_bytes(), endpoint)?;
+        let challenge = profile_phase("ipc_challenge_decode", || {
+            auth::decode_challenge(bytes.as_bytes(), endpoint)
+        })?;
         if challenge.version != se_types::API_VERSION {
             return Err(SeError::new(se_types::Detail::ApiVersionUnsupported(
                 se_types::details::ApiVersionUnsupported {
@@ -297,14 +299,16 @@ impl crate::client::BlockingIpcClient {
                     se_proc::native_ipc::observe_ipc_self_bounded(&deadline.native_bound())
                 })
                 .map_err(native_error)?;
-                let nonce = auth::fresh_nonce()?;
-                let mac = auth::create_owner_mac(
-                    key,
-                    auth::ProofDomain::Owner,
-                    &challenge,
-                    &nonce,
-                    &peer.binding(),
-                )?;
+                let nonce = profile_phase("ipc_nonce", auth::fresh_nonce)?;
+                let mac = profile_phase("ipc_owner_mac", || {
+                    auth::create_owner_mac(
+                        key,
+                        auth::ProofDomain::Owner,
+                        &challenge,
+                        &nonce,
+                        &peer.binding(),
+                    )
+                })?;
                 crate::PresentedAuthority::OwnerProof { nonce, mac }
             }
             ClientCredential::Session(token) => {
@@ -327,7 +331,9 @@ impl crate::client::BlockingIpcClient {
         let bytes = profile_phase("ipc_hello_read", || {
             wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)
         })?;
-        let hello = auth::decode_server_hello(bytes.as_bytes(), &sent, &challenge)?;
+        let hello = profile_phase("ipc_hello_decode", || {
+            auth::decode_server_hello(bytes.as_bytes(), &sent, &challenge)
+        })?;
         deadline.remaining()?;
         Ok(BlockingConnection {
             stream: Some(stream),
@@ -432,7 +438,7 @@ impl BlockingConnection {
         }
         let deadline = Deadline::from_options(options)?;
         // Encode/refuse before taking custody of the connection or writing.
-        let frame = wire::encode_call(&call)?;
+        let frame = profile_phase("ipc_call_encode", || wire::encode_call(&call))?;
         // Renew before the first send, allowing the whole write stage before
         // the server's idle expiry. Never retry an incomplete exchange: its
         // operation may already have committed, with or without a reply.
@@ -470,13 +476,15 @@ impl BlockingConnection {
         let bytes = profile_phase("ipc_reply_read", || {
             wire::read_payload_bounded(&mut stream, limit, &deadline)
         })?;
-        let response = wire::decode_response(
-            bytes.as_bytes(),
-            call.version,
-            call.generation,
-            call.request_id,
-            limit,
-        )?;
+        let response = profile_phase("ipc_response_decode", || {
+            wire::decode_response(
+                bytes.as_bytes(),
+                call.version,
+                call.generation,
+                call.request_id,
+                limit,
+            )
+        })?;
         // Preserve a fully received and validated outcome. The native reads
         // were deadline-bound; a late decode cannot erase a confirmed commit.
         *progress = ExchangeProgress::ReplyReceived;
