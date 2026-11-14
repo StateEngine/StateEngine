@@ -78,6 +78,14 @@ pub struct SourcePermissionChange {
     pub key: IdempotencyKey,
 }
 impl OwnerInput {
+    #[cfg(feature = "remote")]
+    pub(crate) fn initializes_resources(&self) -> bool {
+        matches!(
+            self,
+            Self::Bootstrap { .. } | Self::Add { .. } | Self::PrepareAdd { .. }
+        )
+    }
+
     pub fn requires_terminal(&self) -> bool {
         #[cfg(feature = "remote")]
         if matches!(
