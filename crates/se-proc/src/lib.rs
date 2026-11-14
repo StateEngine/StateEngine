@@ -47,9 +47,9 @@ pub use uninstall::{
     HelperCleanupOutcome, NativeUninstallCarrier, UninstallHelperCleanup, UninstallNativeError,
 };
 mod ownership;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod process_command;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use process_command::read_process_command;
 #[cfg(target_os = "linux")]
 mod process_descendants;
@@ -92,9 +92,9 @@ pub use ownership::*;
 #[cfg(windows)]
 pub use stdio::*;
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod bootstrap;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use bootstrap::{
     NativeRuntimeIdentity, RuntimeAdmission, RuntimeBootstrap, RuntimeStartupStderr,
     current_process_identity, current_runtime_identity,
