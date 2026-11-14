@@ -1,5 +1,6 @@
 //! Git output uses readiness observation rather than blocking reader threads.
 #[cfg(windows)]
+#[path = "pipe/windows.rs"]
 mod windows;
 #[cfg(windows)]
 pub(super) use windows::{stderr, stdout};
