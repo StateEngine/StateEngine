@@ -1,5 +1,9 @@
 //! Real Linux process, owner and IPC readers agree on one native birth even
 //! when comm contains final-delimiter lookalikes, whitespace and non-UTF8.
+//! macOS checks native reader agreement without claiming Linux comm parsing.
+#[cfg(target_os = "macos")]
+#[path = "support/macos_process_facts.rs"]
+mod macos;
 #[cfg(target_os = "linux")]
 mod linux {
     use se_proc::{
@@ -172,7 +176,7 @@ mod linux {
         Ok(())
     }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().any(|v| v == "--list") {
         if !std::env::args().any(|v| v == "--ignored") {
@@ -180,9 +184,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
-    linux::run()
+    #[cfg(target_os = "linux")]
+    {
+        linux::run()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::run()
+    }
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn main() {
     if std::env::args().any(|v| v == "--list") {
         if !std::env::args().any(|v| v == "--ignored") {
@@ -190,5 +201,7 @@ fn main() {
         }
         return;
     }
-    println!("linux_process_facts: 0 cases; Linux native consumer only");
+    println!(
+        "linux_process_facts: 0 cases; native process-facts consumer unavailable on this platform"
+    );
 }
