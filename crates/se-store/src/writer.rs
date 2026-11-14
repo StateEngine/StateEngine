@@ -251,6 +251,7 @@ pub(crate) fn start(
         host.reader.timeout,
         context.clone(),
         lease.clone(),
+        host.engine.checkpoints.gate.clone(),
     )?;
     let thread = std::thread::Builder::new()
         .name("se-store-writer".into())

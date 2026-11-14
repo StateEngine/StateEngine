@@ -188,13 +188,24 @@ impl CheckpointTask {
         timeout: Duration,
         context: BackupContext,
         lease: Arc<dyn RuntimeLease>,
+        gate: crate::transaction::checkpoint::Gate,
     ) -> StoreResult<Self> {
         let status = Status::default();
         let closed = Arc::new(AtomicBool::new(false));
         let (task_status, task_closed) = (status.clone(), closed.clone());
         let handle = std::thread::Builder::new()
             .name("se-store-checkpoint".into())
-            .spawn(move || run(path, timeout, context, lease, task_closed, task_status))
+            .spawn(move || {
+                run(
+                    path,
+                    timeout,
+                    context,
+                    lease,
+                    task_closed,
+                    task_status,
+                    gate,
+                )
+            })
             .map_err(invalid)?;
         Ok(Self {
             handle: Some(handle),
@@ -253,6 +264,7 @@ fn run(
     lease: Arc<dyn RuntimeLease>,
     closed: Arc<AtomicBool>,
     status: Status,
+    gate: crate::transaction::checkpoint::Gate,
 ) {
     loop {
         if closed.load(Ordering::Acquire) {
@@ -277,7 +289,16 @@ fn run(
             }
             continue;
         }
-        tick(&db, &context, &lease, &status);
+        match gate.acquire(BACKOFF) {
+            Ok(_permit) => tick(&db, &context, &lease, &status),
+            Err(_) => {
+                // Contention leaves debt, but cannot clear a retained failure
+                // without a successful maintenance tick.
+                if !status.pending() {
+                    status.set(Maint::Pending);
+                }
+            }
+        }
         // Only owe work after a tick that left debt: frames a pinned reader
         // blocked, or a failure the next tick may clear. Anything else is the
         // no-op tick, and waiting for the next idle edge removes it.
