@@ -8,9 +8,9 @@ type Check = Result<(), Box<dyn std::error::Error>>;
 struct Home(cleanup_directory::PrivateDirectory);
 impl Home {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let path = cleanup_directory::private_directory()?;
+        let path = cleanup_directory::private_case_directory()?;
         drop(se_proc::NativeStateFiles::create(&path)?);
-        Ok(Self(path))
+        Ok(Self(path.cleanup_on_drop()))
     }
     fn vault(&self) -> Result<NativeChannelCredentials, ChannelError> {
         NativeChannelCredentials::open(

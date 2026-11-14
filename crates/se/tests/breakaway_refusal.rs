@@ -33,7 +33,7 @@ struct Fixture {
 impl Fixture {
     fn new(_case: &str) -> Result<Self> {
         se_proc::initialize_file_creation_owner()?;
-        let root_owner = cleanup_directory::private_directory()?;
+        let root_owner = cleanup_directory::private_case_directory()?;
         let root = root_owner.to_path_buf();
         drop(se_proc::NativeStateFiles::create(&root)?);
         // Cargo hard-links its binary; the installed runtime requires a single-link image.
@@ -221,8 +221,10 @@ impl Fixture {
     }
     fn finish(mut self) -> Result {
         self.stop()?;
-        fs::remove_dir_all(&self.root)?;
-        Ok(())
+        self.root_owner
+            .as_ref()
+            .ok_or("strict-job fixture owner absent")?
+            .finish(Ok(()))
     }
 }
 impl Drop for Fixture {

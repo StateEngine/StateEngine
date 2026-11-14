@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import signal
 import subprocess
 import sys
@@ -19,6 +18,7 @@ import traceback
 sys.dont_write_bytecode = True
 from mail_cli import Fixture
 from recovery_capture import gone, native, wait
+from directory_owner import DirectoryOwner
 
 
 def run(args):
@@ -43,6 +43,7 @@ else:
         # named in result.json, so the evidence survives the exception.
         runtime_dir = tempfile.mkdtemp(prefix="se-sretry-", dir="/tmp")
         print("fixture root (retained on failed or interrupted closure):", runtime_dir, flush=True)
+        root_owner = DirectoryOwner(runtime_dir)
         runtime = Path(runtime_dir)
         failed_before = len(failures)
         arm, hit = f.root / "deny-signal", f.root / "signal-refused"
@@ -136,7 +137,7 @@ else:
                 record["runtime_directory"] = str(runtime_dir)
             else:
                 try:
-                    shutil.rmtree(runtime_dir)
+                    root_owner.remove()
                 except OSError:
                     failures.append(mode + " fixture removal: " + traceback.format_exc())
                     record["runtime_directory"] = str(runtime_dir)

@@ -40,7 +40,7 @@ fn unsafe_home_reports_native_custody_and_preserves_existing_state() -> Check {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&root)?;
-    let _root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     let image = root.join("se");
     fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
@@ -96,8 +96,8 @@ fn unsafe_home_reports_native_custody_and_preserves_existing_state() -> Check {
     );
     assert_eq!(fs::read(&sentinel)?, b"retain original state");
     assert_eq!(fs::read_dir(&home)?.count(), 1);
-    fs::remove_dir_all(root)?;
-    Ok(())
+
+    _root_owner.finish(Ok(()))
 }
 
 #[path = "../../test-support/executable.rs"]

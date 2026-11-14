@@ -96,7 +96,7 @@ fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&base)?;
-    let _root_owner = cleanup_directory::PrivateDirectory::adopt(base.clone());
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(base.clone());
     let repo = base.join("source");
     fs::create_dir(&repo)?;
     fs::write(repo.join("last.py"), "def retained_entry(): return 1\n")?;
@@ -281,6 +281,6 @@ fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
         owner.close(&root, CloseReason::HostDrain, deadline())?,
         CloseResult::Closed
     ));
-    fs::remove_dir_all(base)?;
-    Ok(())
+
+    _root_owner.finish(Ok(()))
 }

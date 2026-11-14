@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import socket
-import shutil
 import tomllib
 from pathlib import Path
 import subprocess
@@ -24,6 +23,7 @@ import uuid
 
 from mail_cli import Fixture
 from startup_contract import pending_recovery, native_refusal, release_scope_quota
+from directory_owner import DirectoryOwner
 
 
 def native(pid):
@@ -65,6 +65,7 @@ def run_case(image, directory, control_env, quota, expect):
     directory.mkdir(mode=0o700)
     runtime = Path(tempfile.mkdtemp(prefix='startup-runtime-', dir=os.environ.get('TMPDIR')))
     print("fixture root (retained on failed or interrupted closure):", runtime, flush=True)
+    root_owner = DirectoryOwner(runtime)
     isolated = {'XDG_RUNTIME_DIR': str(runtime)}
     for name in ['XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME']:
         path = directory / name.lower()
@@ -255,7 +256,7 @@ def run_case(image, directory, control_env, quota, expect):
             result['passed'] = result['passed'] and result['cleanup_complete']
             if result['cleanup_complete']:
                 try:
-                    shutil.rmtree(runtime)
+                    root_owner.remove()
                 except OSError as error:
                     result['runtime_directory_cleanup'] = str(error)
                     result['cleanup_complete'] = False

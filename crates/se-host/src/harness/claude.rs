@@ -490,7 +490,7 @@ mod transcript_location_tests {
             std::process::id()
         ));
         std::fs::create_dir(&base)?;
-        let _root_owner = cleanup_directory::PrivateDirectory::adopt(base.clone());
+        let _root_owner = cleanup_directory::PrivateDirectory::for_case(base.clone());
         let config_home = base.join("config");
         let cwd = base.join("cwd");
         let newer_root = base.join("newer-root");
@@ -530,6 +530,6 @@ mod transcript_location_tests {
         )?;
         assert_eq!(fresh, transcript_path(&config_home, &cwd, &conversation));
         let _ = std::fs::remove_dir_all(&base);
-        Ok(())
+        _root_owner.finish(Ok(()))
     }
 }

@@ -5,9 +5,9 @@ pub type Check = Result<(), Box<dyn std::error::Error>>;
 pub struct Home(pub cleanup_directory::PrivateDirectory);
 impl Home {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let path = cleanup_directory::private_directory()?;
+        let path = cleanup_directory::private_case_directory()?;
         drop(se_proc::NativeStateFiles::create(&path)?);
-        Ok(Self(path))
+        Ok(Self(path.cleanup_on_drop()))
     }
 }
 pub fn run_child(name: &str) -> Check {

@@ -183,43 +183,59 @@ mod tests {
     }
 
     fn home(
+        owners: &mut Vec<super::test_directory::PrivateDirectory>,
         contents: Option<&str>,
-    ) -> std::result::Result<super::test_directory::PrivateDirectory, Box<dyn std::error::Error>>
-    {
-        let path = super::test_directory::private_directory()?;
+    ) -> std::result::Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let owner = super::test_directory::private_case_directory()?;
         if let Some(contents) = contents {
-            std::fs::write(path.join("config.toml"), contents)?;
+            std::fs::write(owner.join("config.toml"), contents)?;
         }
+        let path = owner.to_path_buf();
+        owners.push(owner);
         Ok(path)
     }
 
     #[test]
     fn the_users_own_value_is_read_or_the_file_refuses()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        assert_eq!(user_choice(&home(None)?).ok(), Some(None));
+        let mut owners = Vec::new();
+        assert_eq!(user_choice(&home(&mut owners, None)?).ok(), Some(None));
         assert_eq!(
-            user_choice(&home(Some("[windows]\nsandbox = \"elevated\"\n"))?)
-                .ok()
-                .flatten(),
+            user_choice(&home(
+                &mut owners,
+                Some("[windows]\nsandbox = \"elevated\"\n")
+            )?)
+            .ok()
+            .flatten(),
             Some(Implementation::Elevated)
         );
         // An unrelated table is not a value.
         assert_eq!(
-            user_choice(&home(Some("[windows]\nallow_mxc = true\n"))?)
+            user_choice(&home(&mut owners, Some("[windows]\nallow_mxc = true\n"))?)
                 .ok()
                 .flatten(),
             None
         );
-        let number = refusal(user_choice(&home(Some("[windows]\nsandbox = 3\n"))?));
+        let number = refusal(user_choice(&home(
+            &mut owners,
+            Some("[windows]\nsandbox = 3\n"),
+        )?));
         assert!(number.contains("not a string"), "{number}");
-        let scalar = refusal(user_choice(&home(Some("windows = \"elevated\"\n"))?));
+        let scalar = refusal(user_choice(&home(
+            &mut owners,
+            Some("windows = \"elevated\"\n"),
+        )?));
         assert!(scalar.contains("object-valued windows table"), "{scalar}");
-        let unknown = refusal(user_choice(&home(Some(
-            "[windows]\nsandbox = \"legacy\"\n",
-        ))?));
+        let unknown = refusal(user_choice(&home(
+            &mut owners,
+            Some("[windows]\nsandbox = \"legacy\"\n"),
+        )?));
         assert!(unknown.contains("`legacy`"), "{unknown}");
-        let broken = refusal(user_choice(&home(Some("windows = \n"))?));
+        let broken = refusal(user_choice(&home(&mut owners, Some("windows = \n"))?));
         assert!(broken.contains("does not parse"), "{broken}");
+        for owner in owners {
+            owner.finish(Ok::<(), Box<dyn std::error::Error>>(()))?;
+        }
         Ok(())
     }
 

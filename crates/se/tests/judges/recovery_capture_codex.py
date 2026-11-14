@@ -4,13 +4,13 @@ import json
 import os
 from pathlib import Path
 import signal
-import shutil
 import subprocess
 import sys
 import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from codex_crash_recovery import Model
 from recovery_capture import Fixture, gone, native, replies, status, wait
+from directory_owner import DirectoryOwner
 
 
 def completed(path):
@@ -29,6 +29,7 @@ def run_case(options, case):
     model = Model(f.root, f.repo)
     runtime = Path(tempfile.mkdtemp(prefix='se-recovery-codex-'))
     print("fixture root (retained on failed or interrupted closure):", runtime, flush=True)
+    root_owner = DirectoryOwner(runtime)
     home = f.root / 'owner/.codex'
     home.mkdir()
     f.env.update(CODEX_HOME=str(home), OPENAI_API_KEY='sk-owned-loopback-no-account',
@@ -93,7 +94,7 @@ def run_case(options, case):
         finally:
             f.close()
             model.close()
-            shutil.rmtree(runtime)
+            root_owner.remove()
     return rows
 
 

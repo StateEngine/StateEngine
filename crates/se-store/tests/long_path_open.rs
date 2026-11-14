@@ -21,7 +21,7 @@ mod cleanup_directory;
 /// A fresh store home whose full path is longer than `MAX_PATH` allows.
 fn long_home() -> Result<(cleanup_directory::PrivateDirectory, PathBuf), Box<dyn std::error::Error>>
 {
-    let root = cleanup_directory::private_directory()?;
+    let root = cleanup_directory::private_case_directory()?;
     let mut deep = root.to_path_buf();
     // Each component stays within a normal filesystem limit; the total is what
     // exceeds MAX_PATH, which is the condition SQLite's sidecar open trips over.
@@ -59,6 +59,5 @@ fn store_keeps_working_sidecars_beyond_max_path() -> Check {
     direct.close()?;
     drop(lease);
     assert!(path.is_file(), "database absent at a long path");
-    fs::remove_dir_all(&root)?;
-    Ok(())
+    root.finish(Ok(()))
 }

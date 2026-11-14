@@ -20,6 +20,7 @@ import sys
 import tempfile
 import termios
 import time
+from judges.directory_owner import DirectoryOwner
 
 
 def identity(pid):
@@ -78,6 +79,7 @@ def main():
         raise OSError(ctypes.get_errno(), 'PR_SET_CHILD_SUBREAPER')
     root = Path(tempfile.mkdtemp(prefix='se-fg-', dir=Path.home()))
     print("fixture root (retained on failed or interrupted closure):", root, flush=True)
+    root_owner = DirectoryOwner(root)
     results = []
     for ending in ('down', 'ctrl-c'):
         home = root / ending
@@ -221,7 +223,7 @@ def main():
         print(('PASS' if row['passed'] else 'FAIL') + ': ' + ending + ': ' + str(failure), flush=True)
     if all(row['passed'] for row in results):
         try:
-            shutil.rmtree(root)
+            root_owner.remove()
         except OSError as error:
             results[-1]['cleanup_errors'].append('fixture removal: ' + str(error))
             results[-1]['passed'] = False

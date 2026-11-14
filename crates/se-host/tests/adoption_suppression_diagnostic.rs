@@ -15,10 +15,10 @@ type Check = Result<(), Box<dyn Error>>;
 
 type Scratch = cleanup_directory::PrivateDirectory;
 fn home() -> Result<(Scratch, PathBuf), Box<dyn Error>> {
-    let root = cleanup_directory::private_directory()?;
+    let root = cleanup_directory::private_case_directory()?;
     let path = root.to_path_buf();
     se_proc::NativeStateFiles::create(&root)?;
-    Ok((root, path))
+    Ok((root.cleanup_on_drop(), path))
 }
 fn names(home: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     let mut names = Vec::new();

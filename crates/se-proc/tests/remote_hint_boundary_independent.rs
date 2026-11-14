@@ -57,7 +57,7 @@ impl Fixture {
     fn new() -> Check<Self> {
         let root = std::env::temp_dir().join(format!("se-native-hint-{}", std::process::id()));
         fs::create_dir(&root)?;
-        let root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
+        let root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
         fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
         drop(NativeStateFiles::create(&root)?);
         let image = root.join("client");
@@ -116,10 +116,7 @@ impl Fixture {
     }
     fn close(self) -> Check {
         drop(self.listener);
-        fs::remove_file(self.image)?;
-        fs::remove_file(self.root.join("ipc-remote-image-cache.json"))?;
-        fs::remove_dir(self.root)?;
-        Ok(())
+        self._root_owner.finish(Ok(()))
     }
 }
 /// Protects: a restored remote hint never replays the old process or executable proof.
@@ -186,7 +183,7 @@ fn unreadable_remote_hint_refuses_after_warming_native_self_proof() -> Check {
     let root =
         std::env::temp_dir().join(format!("se-native-hint-unreadable-{}", std::process::id()));
     fs::create_dir(&root)?;
-    let _root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     drop(NativeStateFiles::create(&root)?);
     let digest = observe_ipc_self_bounded(&bound())?.image_sha256();
@@ -218,8 +215,8 @@ fn unreadable_remote_hint_refuses_after_warming_native_self_proof() -> Check {
     assert_eq!(fs::read(&saved)?, original);
     fs::remove_file(&path)?;
     fs::remove_file(saved)?;
-    fs::remove_dir(root)?;
-    Ok(())
+
+    _root_owner.finish(Ok(()))
 }
 #[test]
 #[ignore = "fresh process invoked by native boundary controls"]

@@ -21,13 +21,13 @@ type Check = Result<(), Box<dyn Error + Send + Sync>>;
 struct Profile(cleanup_directory::PrivateDirectory);
 impl Profile {
     fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let p = cleanup_directory::private_directory().map_err(|error| error.to_string())?;
+        let p = cleanup_directory::private_case_directory().map_err(|error| error.to_string())?;
         let files = se_proc::NativeStateFiles::create(&p)?;
         let mut stage = files.create_staging(&p)?;
         stage.file.write_all(b"review:synthetic-secret\n")?;
         drop(stage.file);
         files.publish_no_replace(&stage.path, &p.join("basic.credential"))?;
-        Ok(Self(p))
+        Ok(Self(p.cleanup_on_drop()))
     }
     fn control(&self, endpoint: &str) -> se_types::Result<Control> {
         Control::open(&self.0, endpoint)

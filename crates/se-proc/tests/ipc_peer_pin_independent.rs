@@ -126,7 +126,7 @@ mod linux {
     fn socket_peer_proof_survives_peer_exit_and_closes_on_drop() -> Check {
         let root = std::env::temp_dir().join(format!("se-ipc-pin-{}", std::process::id()));
         fs::create_dir(&root)?;
-        let _root_owner = super::cleanup_directory::PrivateDirectory::adopt(root.clone());
+        let _root_owner = super::cleanup_directory::PrivateDirectory::for_case(root.clone());
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
         let path = root.join("socket");
         let listener = UnixListener::bind(&path)?;
@@ -169,7 +169,7 @@ mod linux {
         let output = child.wait_with_output()?;
         drop(listener);
         fs::remove_file(path)?;
-        fs::remove_dir(root)?;
+
         let (peer, before, fd) = result.map_err(|error| {
             format!(
                 "{error}; native helper stdout: {}; stderr: {}",
@@ -198,7 +198,7 @@ mod linux {
         if pidfds()? != before {
             return Err("server proof drop leaked its pidfd".into());
         }
-        Ok(())
+        _root_owner.finish(Ok(()))
     }
 }
 

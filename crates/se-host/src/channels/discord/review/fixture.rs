@@ -36,7 +36,7 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&root)?;
-        let root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
+        let root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
         let openssl = |args: &[&str]| -> Check<()> {
             let output = Command::new("openssl")
@@ -148,6 +148,9 @@ impl Fixture {
             token: se_types::Secret::new(b"synthetic-discord-token-for-local-tests-only".to_vec())?,
         })
     }
+    pub fn finish<T>(&self, result: Check<T>) -> Check<T> {
+        self._process._root_owner.finish(result)
+    }
     pub fn events(&self) -> Check<Vec<Value>> {
         let path = self.root.join("events.json");
         if !path.exists() {
@@ -192,7 +195,12 @@ impl Drop for Process {
                 let _ = self.child.kill();
             }
         }
-        let _ = self.child.wait();
+        match self.child.wait() {
+            Ok(status) if status.success() => {}
+            observed => self._root_owner.keep(&format!(
+                "provider child did not settle successfully: {observed:?}"
+            )),
+        }
         if let Some(output) = std::env::var_os("CHANNEL_REVIEW_EVIDENCE") {
             let destination = PathBuf::from(output).join(self.root.file_name().unwrap_or_default());
             if fs::create_dir_all(&destination).is_ok() {
@@ -201,6 +209,5 @@ impl Drop for Process {
                 }
             }
         }
-        let _ = fs::remove_dir_all(&self.root);
     }
 }

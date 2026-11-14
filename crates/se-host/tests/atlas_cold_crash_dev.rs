@@ -38,7 +38,7 @@ mod linux {
                 .as_nanos()
         ));
         std::fs::create_dir(&base)?;
-        let root_owner = super::cleanup_directory::PrivateDirectory::adopt(base.clone());
+        let root_owner = super::cleanup_directory::PrivateDirectory::for_case(base.clone());
         let source = base.join("source");
         std::fs::create_dir(&source)?;
         let project = se_types::ProjectId::from_parts(1, [42; 10])?;
@@ -342,7 +342,6 @@ mod linux {
         drop(pressure);
         drop(cache);
         drop(source);
-        std::fs::remove_dir_all(base)?;
         println!(
             "PASS actual completed cold child cannot publish before exact reap; crash preserves independently reopened old epoch"
         );
@@ -353,7 +352,7 @@ mod linux {
             "PASS native memory pressure becomes a typed per-file refusal before parser allocation"
         );
         println!("3 passed; 0 failed");
-        Ok(())
+        base.finish(Ok(()))
     }
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {

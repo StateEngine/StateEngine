@@ -44,3 +44,8 @@ pub fn private_directory() -> Result<PrivateDirectory, Box<dyn Error>> {
     }
     Err("no fresh private fixture directory was created".into())
 }
+
+#[allow(dead_code)]
+pub fn private_case_directory() -> Result<PrivateDirectory, Box<dyn Error>> {
+    Ok(private_directory()?.until_success())
+}

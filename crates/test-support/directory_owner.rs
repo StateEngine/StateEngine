@@ -1,56 +1,92 @@
-use std::{ops::Deref, path::PathBuf};
+use std::{
+    ops::Deref,
+    path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
+};
+#[path = "directory_binding.rs"]
+mod binding;
 
-/// A private fixture root that removes its whole tree when it goes away.
-///
-/// Removal runs in `Drop`, so a passing test and a test that fails by returning
-/// `Err` both remove their tree. Explicit evidence retention or a panic keeps
-/// the tree and names it. A root that cannot be removed is printed too. A forced process termination cannot
-/// run `Drop`; creation names the root in captured output for that case.
+/// Own a created fixture root, its native identity, and cleanup authorization.
+/// A case owner keeps returned-error evidence until its final result succeeds.
+/// Forced termination cannot run Drop; creation always names the root.
 pub struct PrivateDirectory {
     path: PathBuf,
+    binding: std::io::Result<binding::Binding>,
+    completed: AtomicBool,
     retained: bool,
 }
-
 impl Deref for PrivateDirectory {
     type Target = std::path::Path;
     fn deref(&self) -> &Self::Target {
         &self.path
     }
 }
-
 impl AsRef<std::path::Path> for PrivateDirectory {
     fn as_ref(&self) -> &std::path::Path {
         &self.path
     }
 }
-
 impl PrivateDirectory {
-    /// Adopt a root that this process created itself, so the same drop-time
-    /// cleanup applies. The caller owns the directory: it created it, and it
-    /// excludes foreign files. Removal deletes symlinks themselves, not their targets.
+    /// Existing fixture factories retain their established drop-time policy.
+    /// Newly managed cases use for_case and authorize cleanup at final success.
     #[allow(dead_code)]
     pub fn adopt(path: PathBuf) -> Self {
-        let directory = Self {
-            path,
-            retained: false,
+        let (path, binding) = match binding::Binding::capture(&path) {
+            Ok((physical, binding)) => (physical, Ok(binding)),
+            Err(error) => (path, Err(error)),
         };
         eprintln!(
-            "fixture root (retained if its process is forcibly terminated): {}",
-            directory.path.display()
+            "fixture root (retained if interrupted or cleanup is unproved): {}",
+            path.display()
         );
-        directory
+        Self {
+            path,
+            binding,
+            completed: AtomicBool::new(true),
+            retained: false,
+        }
     }
-
-    /// Keep evidence when its live process custody could not be closed safely.
+    #[allow(dead_code)]
+    pub fn for_case(path: PathBuf) -> Self {
+        Self::adopt(path).until_success()
+    }
+    #[allow(dead_code)]
+    pub fn until_success(self) -> Self {
+        self.completed.store(false, Ordering::Relaxed);
+        self
+    }
+    /// Preserve an existing fixture destructor's policy after setup succeeds.
+    #[allow(dead_code)]
+    pub fn cleanup_on_drop(self) -> Self {
+        self.completed.store(true, Ordering::Relaxed);
+        self
+    }
+    /// Call only with the complete case result, after native closure succeeds.
+    /// Early ? returns and panics never grant cleanup authorization.
+    #[allow(dead_code)]
+    pub fn finish<T, E>(&self, result: Result<T, E>) -> Result<T, E> {
+        self.completed.store(result.is_ok(), Ordering::Relaxed);
+        result
+    }
+    #[allow(dead_code)]
+    pub fn keep(&self, reason: &str) {
+        self.completed.store(false, Ordering::Relaxed);
+        eprintln!("retained fixture root {}: {reason}", self.path.display());
+    }
     #[allow(dead_code)]
     pub fn retain(mut self, reason: &str) {
         eprintln!("retained fixture root {}: {reason}", self.path.display());
         self.retained = true;
     }
-
-    /// Move only this owned tree and keep cleanup attached to its new name.
+    /// Move this owned tree and rebind its new name to the same native root.
     #[allow(dead_code)]
     pub fn rename_to(&mut self, destination: PathBuf) -> std::io::Result<()> {
+        let binding = self
+            .binding
+            .as_ref()
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        binding.check()?;
+        let identity = binding.identity()?;
         match std::fs::symlink_metadata(&destination) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
@@ -63,42 +99,49 @@ impl PrivateDirectory {
         }
         std::fs::rename(&self.path, &destination)?;
         self.path = destination;
+        // An unsuccessful rebind must leave the moved tree named and retained.
+        self.binding = Err(std::io::Error::other(
+            "moved fixture root has not been rebound",
+        ));
+        let (physical, binding) = binding::Binding::capture(&self.path)?;
+        if binding.identity()? != identity {
+            return Err(std::io::Error::other(
+                "moved fixture root differs from its original native identity",
+            ));
+        }
+        self.path = physical;
+        self.binding = Ok(binding);
         eprintln!(
-            "fixture root (retained if its process is forcibly terminated): {}",
+            "fixture root (retained if interrupted or cleanup is unproved): {}",
             self.path.display()
         );
         Ok(())
     }
 }
-
 impl Drop for PrivateDirectory {
     fn drop(&mut self) {
         if self.retained {
             return;
         }
-        // Unwinding is the failure a fixture can observe: keep the tree and
-        // print it, so a failing test leaves one named home to read and delete.
-        // A passing test and a test that returns `Err` still remove their tree.
-        if std::thread::panicking() {
+        if std::thread::panicking() || !self.completed.load(Ordering::Relaxed) {
             eprintln!(
-                "retained fixture root after failure: {}",
+                "retained fixture root after incomplete or failed case: {}",
                 self.path.display()
             );
             return;
         }
-        // This process owns the fixture tree. Recursive removal removes links
-        // themselves without following them. An already-absent root is not
-        // an error: a caller may also have removed it by hand.
-        match std::fs::remove_dir_all(&self.path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            // The tree is still there: name it so the residue can be found and
-            // deleted. Nothing here may panic while an original failure is
-            // already unwinding, so this is a message, not a second panic.
-            Err(error) => eprintln!(
-                "retained fixture root {}: cleanup failed: {error}",
+        let result = (|| {
+            self.binding
+                .as_ref()
+                .map_err(|e| std::io::Error::other(e.to_string()))?
+                .check()?;
+            std::fs::remove_dir_all(&self.path)
+        })();
+        if let Err(error) = result {
+            eprintln!(
+                "fixture cleanup refused or failed at original root {}: {error}",
                 self.path.display()
-            ),
+            );
         }
     }
 }

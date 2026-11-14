@@ -23,6 +23,7 @@ import time
 import urllib.request
 sys.path.insert(0, str(Path(__file__).parent / 'judges'))
 from mail_cli import Fixture
+from judges.directory_owner import DirectoryOwner
 
 
 def native(pid):
@@ -262,6 +263,7 @@ def main():
     args.out.mkdir(mode=0o700)
     directory = Path(tempfile.mkdtemp(prefix='se-runtime-followups-', dir=Path.home()))
     print("fixture root (retained on failed or interrupted closure):", directory, flush=True)
+    root_owner = DirectoryOwner(directory)
     image = directory / 'se'
     shutil.copy2(args.se, image)
     source_hash = hashlib.sha256(args.se.read_bytes()).hexdigest()
@@ -295,7 +297,7 @@ def main():
         (args.out / 'results.json').write_text(json.dumps(report, indent=2))
     if not report['failed']:
         try:
-            shutil.rmtree(directory)
+            root_owner.remove()
         except OSError as error:
             rows[-1]['cleanup_errors'].append('fixture removal: ' + str(error))
             rows[-1]['passed'] = False

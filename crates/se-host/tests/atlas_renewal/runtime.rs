@@ -13,7 +13,7 @@ fn real_runtime_renews_watches_reconciles_and_preserves_failed_baselines() -> Ch
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&root)?;
-    let _root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
     fs::set_permissions(&root, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
     let repo = root.join("repo");
     fs::create_dir(&repo)?;
@@ -788,5 +788,5 @@ fn real_runtime_renews_watches_reconciles_and_preserves_failed_baselines() -> Ch
     println!(
         "PASS sequential roots reuse bounded native slots and recover same-process activation counts"
     );
-    Ok(())
+    _root_owner.finish(Ok(()))
 }

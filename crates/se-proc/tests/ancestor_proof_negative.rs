@@ -60,7 +60,7 @@ fn negative_proof_and_replaced_directory() -> Result {
     let root = std::env::temp_dir().join(format!("se-negative-proof-{}", std::process::id()));
     assert!(!root.exists(), "preserve an existing fixture");
     fs::create_dir(&root)?;
-    let _root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
     mode(&root, 0o700)?;
     fs::write(root.join("control"), b"0")?;
     let library = root.join("negative-account.so");
@@ -89,6 +89,6 @@ fn negative_proof_and_replaced_directory() -> Result {
     }
     fs::remove_file(root.join("control"))?;
     fs::remove_file(library)?;
-    fs::remove_dir(root)?;
-    Ok(())
+
+    _root_owner.finish(Ok(()))
 }

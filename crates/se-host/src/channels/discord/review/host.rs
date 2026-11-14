@@ -102,7 +102,7 @@ fn discord_wire_review_native_host_saves_only_after_exact_approval() -> Check {
     files.publish_no_replace(&staged.path, &f.options.state_directory.join("credential"))?;
     let provider = Fixture::new("pairing")?;
     let runtime = runtime()?;
-    runtime.block_on(async {
+    provider.finish(runtime.block_on(async {
         let mut host = HostedRuntime::prepare(initialized, start(&f)?, runtime.handle().clone(), &bound()?).await?;
         host.install_channel_transport(provider.adapter.clone())?;
         let service = host.channels()?;
@@ -162,5 +162,5 @@ fn discord_wire_review_native_host_saves_only_after_exact_approval() -> Check {
         let closure = exit.finish(&bound()?).await;
         result?;
         require(closure.transport_closed && closure.endpoint_retired, "native host did not close its owned transport")
-    })
+    }))
 }

@@ -181,7 +181,7 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
     let root: PathBuf =
         std::env::temp_dir().join(format!("se-native-streams-{}", se_types::hex_lower(&nonce)));
     fs::create_dir(&root)?;
-    let _root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
     let root = fs::canonicalize(root)?;
     eprintln!("provider stream fixture: {}", root.display());
     let machine = MachineId::new("independent-provider-streams")?;
@@ -559,8 +559,8 @@ fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
     drop(scope);
     drop(runtime);
     drop(foreign);
-    fs::remove_dir_all(root)?;
-    Ok(())
+
+    _root_owner.finish(Ok(()))
 }
 fn runtime_for_other_arena(machine: MachineId) -> Check<NativeProcessRuntime> {
     runtime(machine, HostInstanceId([99; 16]))

@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import traceback
+from judges.directory_owner import DirectoryOwner
 
 CONSOLE_HANDLERS = []  # Native callbacks must remain alive until process exit.
 
@@ -356,6 +357,7 @@ def main():
     args.out.mkdir(mode=0o700)
     root = Path(tempfile.mkdtemp(prefix='se-console-events-'))
     print("fixture root (retained on failed or interrupted closure):", root, flush=True)
+    root_owner = DirectoryOwner(root)
     image = root / 'se.exe'
     shutil.copy2(args.se, image)
     digest = hashlib.sha256(args.se.read_bytes()).hexdigest()
@@ -386,7 +388,7 @@ def main():
             break
     if not report['failed']:
         try:
-            shutil.rmtree(root)
+            root_owner.remove()
         except OSError as error:
             rows[-1]['cleanup_errors'].append('fixture removal: ' + str(error))
             rows[-1]['passed'] = False

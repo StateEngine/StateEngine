@@ -30,7 +30,7 @@ impl Endpoint {
     fn new(label: &str) -> Result<Self> {
         let root = std::env::temp_dir().join(format!("se-ipc-{}-{label}", std::process::id()));
         fs::create_dir(&root)?;
-        let root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
+        let root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -59,8 +59,7 @@ impl Endpoint {
         self.native.close()?;
         #[cfg(windows)]
         drop(self.native);
-        fs::remove_dir(self.root)?;
-        Ok(())
+        self._root_owner.finish(Ok(()))
     }
 }
 #[test]

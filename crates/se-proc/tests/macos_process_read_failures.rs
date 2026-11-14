@@ -45,7 +45,7 @@ mod macos {
         let scratch =
             std::env::temp_dir().join(format!("se-darwin-reader-fault-{}", std::process::id()));
         std::fs::create_dir(&scratch)?;
-        let _root_owner = super::cleanup_directory::PrivateDirectory::adopt(scratch.clone());
+        let _root_owner = super::cleanup_directory::PrivateDirectory::for_case(scratch.clone());
         let source = scratch.join("fault.c");
         let library = scratch.join("fault.dylib");
         let mut file = std::fs::OpenOptions::new()
@@ -90,7 +90,7 @@ mod macos {
         }
         std::fs::remove_file(source)?;
         std::fs::remove_file(library)?;
-        std::fs::remove_dir(scratch)?;
-        Ok(())
+
+        _root_owner.finish(Ok(()))
     }
 }

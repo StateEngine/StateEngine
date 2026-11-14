@@ -21,7 +21,7 @@ fn source(
         .as_nanos();
     let directory = std::env::temp_dir().join(format!("se-tools-{}-{nonce}", std::process::id()));
     std::fs::create_dir(&directory)?;
-    let root_owner = cleanup_directory::PrivateDirectory::adopt(directory.clone());
+    let root_owner = cleanup_directory::PrivateDirectory::for_case(directory.clone());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -69,13 +69,11 @@ fn scan(
         true,
     )
 }
-fn cleanup(source: BoundTranscript) -> Check {
-    let path = source.pin.path().to_path_buf();
+fn cleanup(owner: cleanup_directory::PrivateDirectory, source: BoundTranscript) -> Check {
     drop(source);
-    std::fs::remove_file(&path)?;
-    std::fs::remove_dir(path.parent().ok_or("parent")?)?;
-    Ok(())
+    owner.finish(Ok(()))
 }
+
 fn call(n: usize) -> Value {
     json!({"type":"tool_use","id":format!("call-{n}"),"name":"Edit","input":{"file_path":format!("{n}.rs")}})
 }
@@ -123,7 +121,7 @@ fn tool_only_progress_keeps_exact_ranges_and_cold_call_result_identity() -> Chec
     assert_eq!(result.position.offset, end);
     assert_eq!(second.request.new_offset, bytes.len() as u64);
     assert!(!second.request.text.as_str().contains("PRIVATE_OUTPUT"));
-    cleanup(source)
+    cleanup(_root_owner, source)
 }
 #[test]
 fn metadata_bound_flushes_prior_noise_and_never_skips_an_overfull_native_record() -> Check {
@@ -144,7 +142,7 @@ fn metadata_bound_flushes_prior_noise_and_never_skips_an_overfull_native_record(
             .iter()
             .all(|m| m.record.captured_tool.is_some())
     );
-    cleanup(source)?;
+    drop(source);
     let (_overfull_owner, mut overfull, _) =
         self::source(&[assistant((0..33).map(call).collect())])?;
     assert!(scan(&mut overfull, 0, se_store::Provider::Claude).is_err());
@@ -153,7 +151,7 @@ fn metadata_bound_flushes_prior_noise_and_never_skips_an_overfull_native_record(
         "refused record retained speculative progress"
     );
     assert!(scan(&mut overfull, 0, se_store::Provider::Claude).is_err());
-    cleanup(overfull)
+    _root_owner.finish(cleanup(_overfull_owner, overfull))
 }
 #[test]
 fn codex_pin_retains_file_and_mcp_facts_without_turn_text_or_patch_content() -> Check {
@@ -195,5 +193,5 @@ fn codex_pin_retains_file_and_mcp_facts_without_turn_text_or_patch_content() -> 
         second.request.evidence.sha256,
         Some(Sha256::digest(&bytes[first.request.new_offset as usize..]).into())
     );
-    cleanup(source)
+    cleanup(_root_owner, source)
 }

@@ -38,7 +38,7 @@ pub(super) fn missing_helper() -> ! {
     panic!("SE_W3_SE_BIN must name a real se binary; W3 was not exercised");
 }
 pub(super) fn judge_root(_label: &str) -> Result<directory::PrivateDirectory, String> {
-    directory::private_directory().map_err(|error| error.to_string())
+    directory::private_case_directory().map_err(|error| error.to_string())
 }
 /// A clean owner-terminal environment: no session, no provider markers.
 pub(super) fn owner_env(home: &Path) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
@@ -371,7 +371,7 @@ impl Judge {
             project,
             agent,
             retain: false,
-            root_owner: Some(root_owner),
+            root_owner: Some(root_owner.cleanup_on_drop()),
         })
     }
     fn config(&self) -> api::HostConfig {

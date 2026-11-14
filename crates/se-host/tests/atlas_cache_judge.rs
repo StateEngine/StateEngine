@@ -24,11 +24,6 @@ struct Fixture {
     scope: Scope,
     _root_owner: cleanup_directory::PrivateDirectory,
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
-    }
-}
 fn fixture() -> Result<Fixture, Box<dyn Error>> {
     se_proc::initialize_file_creation_owner()?;
     let dir = std::env::temp_dir().join(format!(
@@ -37,7 +32,7 @@ fn fixture() -> Result<Fixture, Box<dyn Error>> {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&dir)?;
-    let root_owner = cleanup_directory::PrivateDirectory::adopt(dir.clone());
+    let root_owner = cleanup_directory::PrivateDirectory::for_case(dir.clone());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -101,7 +96,7 @@ fn absent_reader_has_no_creation_and_read_only_adapter_cannot_write() -> Check {
     let reader = NativeAtlasCache::open(&f.home, f.scope.clone())?.ok_or("reader absent")?;
     assert!(reader.reserve_database(&epoch(4)?).is_err());
     assert!(reader.reserve_growth(1).is_err());
-    Ok(())
+    f._root_owner.finish(Ok(()))
 }
 #[test]
 fn failed_real_create_discards_the_reserved_epoch_with_outside_absence() -> Check {
@@ -131,7 +126,7 @@ fn failed_real_create_discards_the_reserved_epoch_with_outside_absence() -> Chec
             .exists()
     );
     assert!(cache.read_pointer()?.is_none());
-    Ok(())
+    f._root_owner.finish(Ok(()))
 }
 #[test]
 fn discard_refuses_unknown_files_before_deleting_any_owned_bytes() -> Check {
@@ -147,7 +142,7 @@ fn discard_refuses_unknown_files_before_deleting_any_owned_bytes() -> Check {
     fs::remove_file(unknown)?;
     cache.discard_unpublished(&pin)?;
     assert!(!pin.path.exists());
-    Ok(())
+    f._root_owner.finish(Ok(()))
 }
 #[test]
 fn discard_refuses_replaced_database_and_preserves_both_files() -> Check {
@@ -168,7 +163,7 @@ fn discard_refuses_replaced_database_and_preserves_both_files() -> Check {
     assert!(cache.discard_unpublished(&pin).is_err());
     assert_eq!(fs::read(&pin.path)?, b"other replacement");
     assert!(old.exists());
-    Ok(())
+    f._root_owner.finish(Ok(()))
 }
 #[test]
 fn published_epoch_cannot_be_discarded_and_readers_do_no_inventory() -> Check {
@@ -206,7 +201,7 @@ fn published_epoch_cannot_be_discarded_and_readers_do_no_inventory() -> Check {
     })?;
     assert_eq!(count, 0);
     assert_eq!(fs::read(unknown)?, b"preserve");
-    Ok(())
+    f._root_owner.finish(Ok(()))
 }
 /// A second lease on the same home must be refused on every platform.
 ///
@@ -232,7 +227,7 @@ fn a_second_writer_lease_on_one_home_is_refused() -> Check {
     assert!(refused, "a second lease was granted on a held Atlas home");
     drop(held);
     NativeAtlasCache::create(&f.home, f.scope.clone())?;
-    Ok(())
+    f._root_owner.finish(Ok(()))
 }
 
 /// The Atlas writer lease must end explicitly, not by close.
@@ -296,7 +291,7 @@ fn writer_lease_ends_explicitly_while_another_thread_spawns() -> Check {
         refusals, 0,
         "the released writer lease was refused {refusals} times in {leases} leases while {spawned} children were spawned"
     );
-    Ok(())
+    f._root_owner.finish(Ok(()))
 }
 
 #[test]
@@ -323,7 +318,7 @@ fn writer_lease_releases_on_drop_and_sparse_growth_obeys_disk_budget() -> Check 
     let reservation = cache.reserve_growth(1)?;
     drop(reservation);
     cache.discard_unpublished(&pin)?;
-    Ok(())
+    f._root_owner.finish(Ok(()))
 }
 
 #[test]
@@ -390,7 +385,7 @@ fn native_writer_lease_is_process_owned_and_released_after_child_exit() -> Check
     drop(child.stdin.take()); // normal input EOF, never a name/pattern process kill
     assert!(child.wait()?.success());
     let _writer = NativeAtlasCache::create(&f.home, f.scope.clone())?;
-    Ok(())
+    f._root_owner.finish(Ok(()))
 }
 
 #[test]
@@ -431,7 +426,7 @@ fn new_reservation_cannot_claim_or_erase_preexisting_epoch_sidecars() -> Check {
             panic!("a new epoch reservation claimed a nonfresh directory with prior sidecars");
         }
     }
-    Ok(())
+    f._root_owner.finish(Ok(()))
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -578,7 +573,7 @@ fn three_killed_unpublished_writers_do_not_exhaust_epoch_slots() -> Check {
             "crashed unpublished epoch was not reclaimed"
         );
     }
-    Ok(())
+    f._root_owner.finish(Ok(()))
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -639,5 +634,5 @@ fn crash_recovery_preserves_published_epoch_and_unowned_sidecars() -> Check {
         .map_err(|error| format!("crashed reservation still occupies an epoch slot: {error}"))?;
     cache.discard_unpublished(&pin)?;
     assert_eq!(fs::read(wal)?, b"unowned WAL must survive crash recovery");
-    Ok(())
+    f._root_owner.finish(Ok(()))
 }

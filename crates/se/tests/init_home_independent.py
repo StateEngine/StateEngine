@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from judges.directory_owner import DirectoryOwner
 
 
 def main():
@@ -29,6 +30,7 @@ def main():
     args.out.mkdir(mode=0o700)
     root = Path(tempfile.mkdtemp(prefix='se-init-homes-', dir=Path.home()))
     print("fixture root (retained on failed or interrupted closure):", root, flush=True)
+    root_owner = DirectoryOwner(root)
     binary = root / 'se'
     shutil.copy2(image, binary)
     digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -127,7 +129,7 @@ def main():
         failures.append('three independent homes did not retain distinct agents')
     if not failures:
         try:
-            shutil.rmtree(root)
+            root_owner.remove()
         except OSError as error:
             failures.append('fixture removal: ' + str(error))
     report = {'passed': not failures, 'binary_sha256': digest(image), 'fixture_root': str(root),

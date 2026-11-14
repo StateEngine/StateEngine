@@ -106,9 +106,9 @@ pub(crate) struct Home(pub(crate) cleanup_directory::PrivateDirectory);
 impl Home {
     pub(crate) fn new() -> Check<Self> {
         crate::initialize_file_creation_owner()?;
-        let path = cleanup_directory::private_directory()?;
+        let path = cleanup_directory::private_case_directory()?;
         drop(crate::NativeStateFiles::create(&path)?);
-        Ok(Self(path))
+        Ok(Self(path.cleanup_on_drop()))
     }
 }
 pub(crate) fn event() -> Check<OwnedHandle> {

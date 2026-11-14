@@ -53,7 +53,7 @@ mod tests {
         let workspace =
             std::env::temp_dir().join(format!("se-git-profile-{}-{nonce}", std::process::id()));
         std::fs::create_dir(&workspace)?;
-        let _root_owner = cleanup_directory::PrivateDirectory::adopt(workspace.clone());
+        let _root_owner = cleanup_directory::PrivateDirectory::for_case(workspace.clone());
         let result = (|| -> std::result::Result<(), Box<dyn std::error::Error>> {
             assert_eq!(roots(workspace.clone(), false)?, vec![workspace.clone()]);
             assert!(roots(workspace.clone(), true).is_err());
@@ -83,7 +83,6 @@ mod tests {
             }
             Ok(())
         })();
-        std::fs::remove_dir_all(workspace)?;
-        result
+        _root_owner.finish(result)
     }
 }

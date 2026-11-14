@@ -89,7 +89,7 @@ fn complete_file_stale_recovery_and_publication() -> Check {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::create_dir(&dir)?;
-    let _root_owner = cleanup_directory::PrivateDirectory::adopt(dir.clone());
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(dir.clone());
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -550,6 +550,6 @@ fn complete_file_stale_recovery_and_publication() -> Check {
     drop(cache);
     drop(source);
     // This exact private fixture contains only files created by this test.
-    fs::remove_dir_all(&dir)?;
-    Ok(())
+
+    _root_owner.finish(Ok(()))
 }

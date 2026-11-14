@@ -12,7 +12,7 @@ use std::{
 fn missing_host_and_unclosed_provider_input_are_silent_and_finite()
 -> Result<(), Box<dyn std::error::Error>> {
     se_proc::initialize_file_creation_owner()?;
-    let _root_owner = cleanup_directory::private_directory()?;
+    let _root_owner = cleanup_directory::private_case_directory()?;
     let home = _root_owner.to_path_buf();
     let files = se_proc::NativeStateFiles::create(&home)?;
     fs::write(
@@ -66,5 +66,5 @@ fn missing_host_and_unclosed_provider_input_are_silent_and_finite()
     drop(files);
     // Only this test's newly created data home is removed, after native handles close.
     fs::remove_dir_all(&home)?;
-    Ok(())
+    _root_owner.finish(Ok(()))
 }

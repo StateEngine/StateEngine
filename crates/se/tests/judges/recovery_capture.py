@@ -8,10 +8,10 @@ import json
 import os
 from pathlib import Path
 import signal
-import shutil
 import tempfile
 import time
 from mail_cli import Fixture
+from directory_owner import DirectoryOwner
 
 
 def wait(predicate, detail, seconds=15):
@@ -55,6 +55,7 @@ def run_case(options, case):
                 provider_helper=Path(__file__).with_name('recovery_capture_provider.py'), log_directory='calls')
     runtime = Path(tempfile.mkdtemp(prefix='se-recovery-capture-'))
     print("fixture root (retained on failed or interrupted closure):", runtime, flush=True)
+    root_owner = DirectoryOwner(runtime)
     f.env['XDG_RUNTIME_DIR'] = str(runtime)
     f.env['TMPDIR'] = '/tmp'
     (f.root / 'routing.json').write_text(json.dumps({key: f.env[key] for key in
@@ -140,7 +141,7 @@ def run_case(options, case):
                         stream.write(b'\n')
         finally:
             f.close()
-            shutil.rmtree(runtime)
+            root_owner.remove()
     return checks
 
 

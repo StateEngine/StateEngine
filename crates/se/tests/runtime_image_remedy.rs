@@ -123,7 +123,7 @@ impl Drop for Host {
 )]
 fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts() -> Check {
     se_proc::initialize_file_creation_owner()?;
-    let root_owner = cleanup_directory::private_directory()?;
+    let root_owner = cleanup_directory::private_case_directory()?;
     let fixture = root_owner.to_path_buf();
     drop(se_proc::NativeStateFiles::create(&fixture)?);
     let image = fixture.join("multi link runtime.exe");
@@ -192,7 +192,6 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
             "refusal published a host"
         );
     }
-    root_owner.retain("retain evidence if native host launch or shutdown cannot be witnessed");
     let started = value(
         command(&installed, &home, &root, true)
             .arg("up")
@@ -223,8 +222,7 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
     );
     host.stop()?;
     drop(host);
-    fs::remove_dir_all(fixture)?;
-    Ok(())
+    root_owner.finish(Ok(()))
 }
 
 #[path = "../../test-support/executable.rs"]

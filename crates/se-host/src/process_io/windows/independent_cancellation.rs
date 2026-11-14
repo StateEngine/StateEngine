@@ -32,7 +32,7 @@ impl Fixture {
         let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
         let root = std::env::temp_dir().join(format!("se-wrapper-{}", se_types::hex_lower(&nonce)));
         fs::create_dir(&root)?;
-        let root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
+        let root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
         let root = fs::canonicalize(root)?;
         let machine = MachineId::new("independent-wrapper-cancellation")?;
         let host = HostInstanceId(nonce);
@@ -311,7 +311,10 @@ async fn trial(cancel_close: bool) -> Check {
         )
         .into());
     }
-    Ok(())
+    f.root_owner
+        .as_ref()
+        .ok_or("wrapper root owner absent")?
+        .finish(Ok(()))
 }
 /// Protects: close joins the operation accepted by a dropped reader future.
 #[test]

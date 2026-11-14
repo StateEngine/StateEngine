@@ -66,7 +66,7 @@ fn image_upgrade_child() -> Result<()> {
 }
 #[test]
 fn persisted_image_hint_detects_upgrade() -> Result<()> {
-    let _root_owner = cleanup_directory::private_directory()?;
+    let _root_owner = cleanup_directory::private_case_directory()?;
     let root = _root_owner.to_path_buf();
     let files = NativeStateFiles::create(&root)?;
     let image = root.join(if cfg!(windows) {
@@ -120,7 +120,7 @@ fn persisted_image_hint_detects_upgrade() -> Result<()> {
     fs::remove_file(image)?;
     fs::remove_file(cache_path)?;
     fs::remove_dir(root)?;
-    Ok(())
+    _root_owner.finish(Ok(()))
 }
 
 #[path = "../../test-support/executable.rs"]

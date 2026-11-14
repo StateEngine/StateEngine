@@ -68,9 +68,9 @@ struct Home(cleanup_directory::PrivateDirectory);
 impl Home {
     fn new() -> Check<Self> {
         se_proc::initialize_file_creation_owner()?;
-        let path = cleanup_directory::private_directory()?;
+        let path = cleanup_directory::private_case_directory()?;
         drop(NativeStateFiles::create(&path)?);
-        Ok(Self(path))
+        Ok(Self(path.cleanup_on_drop()))
     }
 }
 fn sid() -> Check<String> {

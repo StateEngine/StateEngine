@@ -19,6 +19,7 @@ import traceback
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'judges'))
 from mail_cli import Fixture
+from judges.directory_owner import DirectoryOwner
 
 
 def wait_for(check, description):
@@ -78,6 +79,7 @@ def endpoint(fixture):
 def run(args):
     root = Path(tempfile.mkdtemp(prefix='se-windows-ipc-rotation-'))
     print("fixture root (retained on failed or interrupted closure):", root, flush=True)
+    root_owner = DirectoryOwner(root)
     image = root / 'se.exe'
     shutil.copy2(args.se, image)
     report = {'binary_sha256': hashlib.sha256(image.read_bytes()).hexdigest(), 'fixture': str(root),
@@ -157,7 +159,7 @@ def run(args):
             pin.close()
     if not report['failures'] and not report['cleanup_errors']:
         try:
-            shutil.rmtree(root)
+            root_owner.remove()
         except OSError as error:
             report['cleanup_errors'].append('fixture removal: ' + str(error))
     report['passed'] = int(not report['failures'] and not report['cleanup_errors'])

@@ -20,7 +20,7 @@ type Check = Result<(), Box<dyn std::error::Error>>;
 struct Home(cleanup_directory::PrivateDirectory);
 impl Home {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let root = cleanup_directory::private_directory()?;
+        let root = cleanup_directory::private_case_directory()?;
         drop(NativeStateFiles::create(&root)?);
         #[cfg(unix)]
         {
@@ -28,7 +28,7 @@ impl Home {
             fs::set_permissions(&root, fs::Permissions::from_mode(0o775))?;
         }
         drop(NativeStateFiles::create(&root.join("state"))?);
-        Ok(Self(root))
+        Ok(Self(root.cleanup_on_drop()))
     }
     fn state(&self) -> PathBuf {
         self.0.join("state")

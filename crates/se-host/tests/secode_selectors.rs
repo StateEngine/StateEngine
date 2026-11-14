@@ -64,7 +64,7 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
     );
     let root = std::env::temp_dir().join(format!("sel-{}", std::process::id()));
     fs::create_dir(&root)?;
-    let _root_owner = cleanup_directory::PrivateDirectory::adopt(root.clone());
+    let _root_owner = cleanup_directory::PrivateDirectory::for_case(root.clone());
     let home = root.join("state");
     let repo = root.join("repo");
     fs::create_dir(&repo)?;
@@ -423,6 +423,6 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
         result(opened.host.close(drained, options).await)?;
         Ok::<(), Box<dyn std::error::Error>>(())
     })?;
-    fs::remove_dir_all(&root)?;
-    Ok(())
+
+    _root_owner.finish(Ok(()))
 }

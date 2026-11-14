@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from judges.directory_owner import DirectoryOwner
 
 
 def native(pid):
@@ -40,6 +41,7 @@ def main():
     args.out.mkdir(mode=0o700)
     root = Path(tempfile.mkdtemp(prefix='se-already-down-', dir=Path.home()))
     print("fixture root (retained on failed or interrupted closure):", root, flush=True)
+    root_owner = DirectoryOwner(root)
     binary = root / 'se'
     shutil.copy2(image, binary)
     env = {'HOME': str(root), 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
@@ -141,7 +143,7 @@ def main():
             failures.append('user work changed')
         if not failures:
             try:
-                shutil.rmtree(root)
+                root_owner.remove()
             except OSError as error:
                 failures.append('fixture removal: ' + str(error))
         report = {'passed': not failures, 'failures': failures, 'calls': calls,

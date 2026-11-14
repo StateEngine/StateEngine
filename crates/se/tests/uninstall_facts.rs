@@ -55,7 +55,7 @@ struct Facts {
 impl Facts {
     fn new() -> Check<Self> {
         se_proc::initialize_file_creation_owner()?;
-        let root_owner = cleanup_directory::private_directory()?;
+        let root_owner = cleanup_directory::private_case_directory()?;
         let root = root_owner.to_path_buf();
         let files = NativeStateFiles::create(&root)?;
         let removed = root.join("removed-asset");
@@ -149,7 +149,7 @@ impl Facts {
             directory,
             plan,
             effects,
-            _root_owner: root_owner,
+            _root_owner: root_owner.cleanup_on_drop(),
         })
     }
     fn recovery(&mut self) -> Check {
