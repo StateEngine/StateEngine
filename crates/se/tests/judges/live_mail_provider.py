@@ -11,6 +11,7 @@ import uuid
 import re
 import traceback
 import urllib.request
+from judge_records import write_json
 
 
 def main():
@@ -69,9 +70,9 @@ def main():
         reply = json.load(response)
         assert response.status == 200 and ("result" in reply or
                reply.get("error", {}).get("message", "").startswith("session-not-active:")), "prepared HTTP discovery failed"
-    (cwd / "provider-ready.json").write_text(json.dumps({"conversation": conversation,
+    write_json(cwd / "provider-ready.json", {"conversation": conversation,
                                                        "session_discovery": True, "http_discovery": True,
-                                                       "native_root_pid": os.getppid(), "helper_pid": os.getpid()}))
+                                                       "native_root_pid": os.getppid(), "helper_pid": os.getpid()})
     run_turns(initial, se, home, cwd, conversation, transcript)
 
 
@@ -139,7 +140,7 @@ def run_turns(initial, se, home, cwd, conversation, transcript):
                 if not marker or not owner:
                     continue
                 if "HOLD_BUSY" in body["text"]:
-                    (cwd / "provider-busy.json").write_text(json.dumps({"sequence":sequence,"message_id":row["id"]}))
+                    write_json(cwd / "provider-busy.json", {"sequence":sequence,"message_id":row["id"]})
                     with (cwd / "busy-gate").open("rb", buffering=0) as gate:
                         assert gate.read(1) == b"!"
                 sent = rpc("stateengine_msg_send", {"to":"owner","body":marker.group(0),"kind":"done","reply_to":row["id"],"idempotency_key":str(uuid.uuid4())})
@@ -150,7 +151,7 @@ def run_turns(initial, se, home, cwd, conversation, transcript):
             stream.flush()
         emit({**assistant,"session_id":conversation})
         emit({"type":"result","subtype":"success","is_error":False,"duration_ms":1,"duration_api_ms":1,"num_turns":1,"result":"Turn completed","session_id":conversation,"total_cost_usd":0,"usage":{},"uuid":str(uuid.uuid4())})
-        (cwd / "provider-idle.json").write_text(json.dumps({"sequence":sequence}))
+        write_json(cwd / "provider-idle.json", {"sequence":sequence})
 
 
 if __name__ == "__main__":

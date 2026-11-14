@@ -16,6 +16,7 @@ import tempfile
 import traceback
 
 sys.dont_write_bytecode = True
+from judge_records import wait_json
 from mail_cli import Fixture
 from recovery_capture import gone, native, wait
 from directory_owner import DirectoryOwner
@@ -63,7 +64,7 @@ else:
             assert host and host["pid"] == host_process.pid and str(f.se) in host["command"]
             pins.append(host)
             f.launch()
-            ready = json.loads((f.repo / "provider-ready.json").read_text())
+            ready = wait_json(f.repo / "provider-ready.json")
             for key in ["native_root_pid", "helper_pid"]:
                 pin = native(ready[key])
                 assert pin, "fixture provider absent before stop"

@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import time
 import traceback
+from judge_records import wait_json
 from mail_cli import Fixture
 from launch_startup import pin, exited
 
@@ -31,9 +32,8 @@ def interrupted(binary, root):
     failure = None
     try:
         marker = f.repo / 'startup-pids.json'
-        wait_for(marker.exists, 'native startup')
-        identities.extend(pin(pid) for pid in json.loads(marker.read_text()))
-        wait_for(lambda: (f.repo / 'startup-owner-probe.json').exists(), 'startup admission probe')
+        identities.extend(pin(pid) for pid in wait_json(marker))
+        wait_json(f.repo / 'startup-owner-probe.json')
         refused = f.call('--project', f.project, 'launch', f.agent, '--detach')
         text = refused.stdout + refused.stderr
         assert refused.returncode and b'--force' in text and b'No process was stopped' in text, text
@@ -46,7 +46,7 @@ def interrupted(binary, root):
         (root / 'original.stderr').write_bytes(error)
         assert first.returncode != 0, (output, error)
         assert all(exited(p) for p in identities[1:]), 'old startup has a surviving process'
-        ready = json.loads((f.repo / 'provider-ready.json').read_text())
+        ready = wait_json(f.repo / 'provider-ready.json')
         fresh = [pin(ready['native_root_pid']), pin(ready['helper_pid'])]
         identities.extend(fresh)
         replay = f.ok('--project', f.project, '--key', 'interrupted-force', 'launch', f.agent, '--detach', '--force')
@@ -79,8 +79,7 @@ def managed(binary, root):
         f.launch()
         old = f.session
         job_path = f.repo / 'force-job.json'
-        wait_for(job_path.exists, 'managed child')
-        child = json.loads(job_path.read_text())
+        child = wait_json(job_path)
         old_pins = [pin(pid) for pid in child['pids']]
         identities.extend(old_pins)
         refusal = f.call('--project', f.project, 'launch', f.agent, '--detach')
@@ -97,8 +96,7 @@ def managed(binary, root):
         assert all(exited(p) for p in old_pins), 'forced scope retains old native work'
         assert any(j['pid'] == child['pids'][-1] for j in report['jobs_stopped']), report
         assert not report.get('jobs_remaining') and not report.get('jobs_unproved'), report
-        wait_for(job_path.exists, 'successor child')
-        new = json.loads(job_path.read_text())
+        new = wait_json(job_path)
         new_pins = [pin(pid) for pid in new['pids']]
         identities.extend(new_pins)
         f.session = result['session_id']

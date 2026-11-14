@@ -1,8 +1,8 @@
 //! Saved identity and known session absence from the caller's store snapshot.
 use super::{AgentRow, AgentShow, AgentStatusOutput};
 use crate::{commit::Cx, scope, store_error::store_error};
-use se_store::{Actor, EventBody, Snapshot};
-use se_types::{Read, Result};
+use se_store::{Actor, EventBody, ProjectionRecord, Snapshot};
+use se_types::{AgentId, Read, Result};
 
 /// Saved agents in a finite principal page; never starts or resumes a process.
 pub fn page<R: Snapshot>(
@@ -19,7 +19,7 @@ pub fn page<R: Snapshot>(
     let next = principals.next().cloned();
     let mut rows = Vec::new();
     for record in principals.into_items() {
-        let agent = match record.current.body {
+        let agent = match &record.current.body {
             EventBody::PrincipalRegistered {
                 principal: Actor::Agent(agent),
                 ..
@@ -27,20 +27,25 @@ pub fn page<R: Snapshot>(
             | EventBody::PrincipalRenamed {
                 principal: Actor::Agent(agent),
                 ..
-            } => agent,
+            } => agent.clone(),
             _ => continue,
         };
         if matches!(&cx.admission.actor,Actor::Agent(bound) if bound!=&agent) {
             continue;
         }
-        let row = scope::require_present(
+        let saved = if matches!(cx.admission.actor, Actor::Human(_)) {
+            // Enumeration and row expansion share this immutable read pin.
+            from_principal(agent, record, None, cx)?
+        } else {
             show(
                 AgentShow {
                     target_agent_id: Some(agent.clone()),
                 },
                 cx,
             )?
-            .agent,
+        };
+        let row = scope::require_present(
+            saved.agent,
             "saved agent page row",
             "Read the saved agent by its exact ID in this project, then refresh the agent list.",
         )?;
@@ -65,10 +70,6 @@ pub fn page<R: Snapshot>(
     se_types::Page::new(rows, se_types::Window::new(fields)?, next)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentStatusOutput> {
     let agent = scope::working_agent(cx.admission, input.target_agent_id.as_ref(), "agent.show")?;
     // Read saved identity through the target-bound control port without granting
@@ -119,6 +120,19 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
             });
         }
     };
+    from_principal(agent, principal, controlled_profile, cx)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
+)]
+fn from_principal<R: Snapshot>(
+    agent: AgentId,
+    principal: ProjectionRecord,
+    controlled_profile: Option<Read<ProjectionRecord>>,
+    cx: &mut Cx<'_, R>,
+) -> Result<AgentStatusOutput> {
     let (name, role) = match principal.current.body {
         EventBody::PrincipalRegistered { name, role, .. } => {
             (name, (!role.is_empty()).then_some(role))

@@ -11,6 +11,7 @@ import traceback
 from pathlib import Path
 from unittest.mock import patch
 sys.dont_write_bytecode = True
+from judge_records import read_json, wait_json
 from force_relaunch_independent import Fixture, wait_for
 from launch_startup import pin, exited
 
@@ -97,8 +98,7 @@ def self_relaunch(binary, root):
         f.launch()
         old = f.session
         records = f.repo / 'self-admissions'
-        wait_for(lambda: (records / (old + '.json')).exists(), 'original scope identity')
-        original = json.loads((records / (old + '.json')).read_text())
+        original = wait_json(records / (old + '.json'))
         old_pins = [pin(pid) for pid in original['pids']]
         identities.extend(old_pins)
         rows.update(original=original, original_native=old_pins)
@@ -109,11 +109,12 @@ def self_relaunch(binary, root):
             errors = list(f.repo.glob('self-error-*.txt'))
             assert not errors, {p.name: p.read_text() for p in errors}
             rejection = f.repo / 'self-original-launch.response.json'
-            if rejection.exists():
-                value = json.loads(rejection.read_text())
+            value = read_json(rejection)
+            if value is not None:
                 assert not value.get('result', {}).get('isError') and 'error' not in value, value
             assert len(files) <= 2, 'self force started more than one successor'
-            return next((json.loads(path.read_text()) for path in files if path.stem != old), None)
+            return next((value for path in files if path.stem != old
+                         if (value := read_json(path)) is not None), None)
 
         fresh = wait_for(successor, 'successor created by the old scope actual MCP call', 35)
         new_pins = [pin(pid) for pid in fresh['pids']]
@@ -130,7 +131,7 @@ def self_relaunch(binary, root):
         replay_path = f.repo / 'self-successor-launch.response.json'
         def replay():
             successor()
-            return json.loads(replay_path.read_text()) if replay_path.exists() else None
+            return read_json(replay_path)
         reply = wait_for(replay, 'successor authenticated same-key replay', 35)
         rows['replay'] = reply
         assert 'error' not in reply and not reply['result'].get('isError'), reply

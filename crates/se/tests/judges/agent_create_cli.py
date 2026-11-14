@@ -13,6 +13,7 @@ import termios
 import time
 import uuid
 
+from judge_records import wait_json
 from mail_cli import Fixture
 
 
@@ -79,7 +80,7 @@ def launch(f, door, agent, key, task):
 def observe_child(f, receipt):
     until = time.monotonic() + 20
     while time.monotonic() < until:
-        ready = json.loads((f.repo / "provider-ready.json").read_text())
+        ready = wait_json(f.repo / "provider-ready.json")
         if ready["conversation"] == receipt["conversation_id"]:
             assert ready["session_discovery"] and ready["http_discovery"], ready
             assert ready["native_root_pid"] == receipt["process"]["pid"], (ready, receipt)
