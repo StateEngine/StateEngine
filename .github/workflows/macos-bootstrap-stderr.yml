@@ -1,0 +1,38 @@
+name: macOS bootstrap_stderr pair
+on:
+  push:
+    branches: [prime/macos-bootstrap-stderr-r1]
+permissions:
+  contents: read
+jobs:
+  run:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - side: base
+            sha: fcf67c77603948752789c6737363172b15436354
+          - side: head
+            sha: 05e332fdd055a415fe7f1859eb9875c010b2d5db
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Run bootstrap_stderr
+        shell: bash
+        run: |
+          set +e
+          ulimit -c 0
+          mkdir -p logs
+          test "$(git rev-parse HEAD)" = "${{ matrix.sha }}" || exit 2
+          cargo test --locked --all-features --target "$(rustc --print host-tuple)" -p se-proc --test bootstrap_stderr -- --nocapture > logs/bootstrap_stderr.log 2>&1
+          c=$?; echo "bootstrap_stderr exit=$c" | tee logs/summary.txt; tail -40 logs/bootstrap_stderr.log; exit $c
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: macos-bootstrap-stderr-${{ matrix.side }}
+          path: logs
