@@ -36,10 +36,12 @@ def system_root_env():
     # A PATH-less child environment that keeps the OS root variables under any runner
     # casing: Winsock refuses to initialize a child environment that lost its system
     # root (WinError 10106), and hosted runners do not guarantee the classic mixed case.
+    # The empty PATH is reserved before any parent spelling is admitted, so a lower-
+    # case or mixed-case parent path can never reach the child.
     system = {'path', 'systemroot', 'windir', 'temp', 'tmp'}
-    taken = set()
-    env = {}
-    for key, value in {**os.environ, 'PATH': ''}.items():
+    env = {'PATH': ''}
+    taken = {name.lower() for name in env}
+    for key, value in os.environ.items():
         lowered = key.lower()
         if lowered in system and lowered not in taken:
             taken.add(lowered)
