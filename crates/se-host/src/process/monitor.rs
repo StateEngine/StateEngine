@@ -1,7 +1,9 @@
 //! Lifecycle observation, capture/mail maintenance, and bounded retry wakeups.
+use super::supervisor::Job;
 use super::*;
-use crate::process::{mail, supervisor::Job};
-use std::sync::atomic::Ordering;
+use crate::client::lease::Deadline;
+use se_proc::StopObservation;
+use std::{sync::atomic::Ordering, time::Duration};
 
 impl LaunchCoordinator {
     #[expect(
