@@ -333,6 +333,13 @@ fn main() -> std::process::ExitCode {
         }
     };
     #[cfg(target_os = "macos")]
+    if let Some(result) = se_proc::atlas_git::private_entry(&args) {
+        if let Err(error) = &result {
+            eprintln!("Contained Git helper refused: {error}");
+        }
+        return std::process::ExitCode::from(if result.is_ok() { 0 } else { 126 });
+    }
+    #[cfg(target_os = "macos")]
     if let Some(result) = se_proc::process_attach_entry(&args) {
         return std::process::ExitCode::from(if result.is_ok() { 0 } else { 126 });
     }

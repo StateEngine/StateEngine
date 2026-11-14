@@ -11,19 +11,29 @@ enum HistoryRead {
 }
 pub(super) struct Plan {
     metadata: GitMetadataRegistration,
+    #[cfg(target_os = "macos")]
+    helper: PathBuf,
     overhead: u32,
 }
 impl Plan {
     pub(super) fn new(
         metadata: GitMetadataRegistration,
         profile: Option<&SqlProfile>,
+        helper: &std::path::Path,
     ) -> AtlasResult<Self> {
         let overhead = profile
             .and_then(SqlProfile::qualified_overhead_bytes)
             .ok_or_else(|| {
                 failure("Git history in the parent requires measured host SQL overhead")
             })?;
-        Ok(Self { metadata, overhead })
+        #[cfg(not(target_os = "macos"))]
+        let _ = helper;
+        Ok(Self {
+            metadata,
+            overhead,
+            #[cfg(target_os = "macos")]
+            helper: helper.to_owned(),
+        })
     }
     pub(super) fn seed(
         self,
@@ -107,7 +117,11 @@ impl Plan {
             git_identity: self.metadata.git_directory_identity,
             common_identity: self.metadata.common_directory_identity,
         };
-        let reader = match GitRepository::open(&image, &registration, &control) {
+        #[cfg(target_os = "macos")]
+        let opened = GitRepository::open_with_helper(&self.helper, &image, &registration, &control);
+        #[cfg(not(target_os = "macos"))]
+        let opened = GitRepository::open(&image, &registration, &control);
+        let reader = match opened {
             Ok(reader) => reader,
             Err(error) => {
                 return match std::fs::symlink_metadata(&control) {

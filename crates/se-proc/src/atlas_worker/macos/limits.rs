@@ -72,7 +72,7 @@ pub(super) fn watch(queue: &File, pid: u32) -> io::Result<()> {
     }
     Ok(())
 }
-pub(super) fn peak(pid: u32) -> io::Result<u64> {
+pub(crate) fn peak(pid: u32) -> io::Result<u64> {
     // SAFETY: exact aligned native POD output for one retained/unreaped process.
     let mut usage: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
     // SAFETY: documented native version and size-matched aligned writable record.

@@ -22,7 +22,7 @@ pub struct GitOutput {
     pub stderr: Vec<u8>,
 }
 impl GitRead<'_> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn arguments(&self) -> io::Result<Vec<String>> {
         let mut args = Vec::new();
         match self {
@@ -154,6 +154,8 @@ fn read_pinned(
 fn invalid(reason: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, reason.to_owned())
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod command;
 mod control;
 #[cfg(target_os = "linux")]
 mod elf;
@@ -166,3 +168,8 @@ mod repository;
 pub use repository::{
     GitCommit, GitRegistration, GitRepository, GitWindow, HistoryLimit, MAX_COMMITS, WINDOW_BYTES,
 };
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::{private_entry, read_with_helper, reconcile_pending};

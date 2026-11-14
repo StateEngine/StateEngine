@@ -85,6 +85,10 @@ impl NativeExecutablePin {
 }
 
 impl NativeExecutableInvocation {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn retained_file(&self) -> &File {
+        &self._file
+    }
     pub fn path(&self) -> &Path {
         &self.executable
     }

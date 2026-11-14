@@ -2,7 +2,7 @@ use super::*;
 use std::{
     io::Read,
     os::{fd::AsRawFd, unix::process::CommandExt},
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
 };
 struct Owned(Child, bool, crate::atlas_worker::lease::Lease);
 impl Drop for Owned {
@@ -81,44 +81,8 @@ pub(super) fn read(
     let lease = crate::atlas_worker::lease::Lease::acquire()?;
     let filesystem = super::filesystem::Filesystem::new(image, roots)?;
     let parent = std::process::id() as libc::pid_t;
-    let mut command = Command::new(image);
+    let mut command = super::command::prepare(image, control, objects, args);
     command
-        .current_dir(control)
-        .env_clear()
-        .env("HOME", control)
-        .env("XDG_CONFIG_HOME", control)
-        .env("GIT_DIR", control)
-        .env("GIT_OBJECT_DIRECTORY", objects)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_NO_LAZY_FETCH", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_NO_REPLACE_OBJECTS", "1")
-        .env("LC_ALL", "C")
-        .env("GIT_PAGER", "cat")
-        .args([
-            "--no-optional-locks",
-            "--no-replace-objects",
-            "-c",
-            "core.packedGitWindowSize=1048576",
-            "-c",
-            "core.packedGitLimit=8388608",
-            "-c",
-            "core.deltaBaseCacheLimit=1048576",
-            "-c",
-            "core.commitGraph=false",
-            "-c",
-            "core.multiPackIndex=false",
-            "-c",
-            "gc.auto=0",
-            "-c",
-            "maintenance.auto=false",
-            "-c",
-            "protocol.allow=never",
-        ])
-        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

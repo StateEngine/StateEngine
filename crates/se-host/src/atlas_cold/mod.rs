@@ -1,9 +1,9 @@
 //! One derived cold epoch. Only the native private child invokes `run_child`.
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 mod finish;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod history;
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 #[path = "history_unavailable.rs"]
 mod history;
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]

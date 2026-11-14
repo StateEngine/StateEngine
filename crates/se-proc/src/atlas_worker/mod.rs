@@ -25,8 +25,10 @@ mod diagnostics;
 pub use allocator::{
     release_pages as release_allocator_pages, reusable_arena_bytes, virtual_bytes,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) mod lease;
+#[cfg(target_os = "macos")]
+pub(crate) use macos::limits::peak as macos_peak;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]

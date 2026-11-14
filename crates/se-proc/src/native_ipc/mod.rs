@@ -258,6 +258,38 @@ pub fn observe_ipc_self_bounded(bound: &IpcIoBound) -> IpcNativeResult<NativeIpc
         windows::self_peer(bound)
     }
 }
+/// Observe one retained direct child without treating socketpair creator
+/// credentials as credentials of the process that inherited its descriptor.
+#[cfg(target_os = "macos")]
+pub(crate) fn observe_direct_child(
+    pid: u32,
+    parent: u32,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<NativeIpcPeer> {
+    bound
+        .remaining()
+        .map_err(|e| error("begin direct child proof", e))?;
+    // SAFETY: read-only native effective-user query.
+    let observed = macos::observe(pid, unsafe { libc::geteuid() }, bound)?;
+    let info = crate::macos_process::info(crate::ProcessId(pid), bound.deadline)
+        .map_err(|e| error("observe direct child parent", io::Error::other(e)))?
+        .ok_or_else(|| refuse(IpcNativeErrorCode::PeerChanged, "direct child disappeared"))?;
+    let birth = StartIdentity::Macos {
+        start_seconds: info.pbi_start_tvsec,
+        start_micros: u32::try_from(info.pbi_start_tvusec)
+            .map_err(|_| refuse(IpcNativeErrorCode::Unreadable, "invalid direct child birth"))?,
+    };
+    if info.pbi_ppid != parent || observed.started() != &birth {
+        return Err(refuse(
+            IpcNativeErrorCode::PeerChanged,
+            "native direct child relationship changed",
+        ));
+    }
+    bound
+        .remaining()
+        .map_err(|e| error("finish direct child proof", e))?;
+    Ok(observed)
+}
 fn proof_bound(timeout: std::time::Duration) -> IpcIoBound {
     IpcIoBound {
         deadline: Instant::now() + timeout,

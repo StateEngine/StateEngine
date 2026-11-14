@@ -35,6 +35,8 @@ pub struct GitWindow {
 }
 pub struct GitRepository {
     image: PathBuf,
+    #[cfg(target_os = "macos")]
+    helper: Option<PathBuf>,
     git: NativeSourceRoot,
     common: NativeSourceRoot,
     objects: NativeSourceRoot,
@@ -69,6 +71,8 @@ impl GitRepository {
             super::control::Control::create(control, head.as_ref().is_some_and(|s| s.len() == 64))?;
         Ok(Self {
             image: image.into(),
+            #[cfg(target_os = "macos")]
+            helper: None,
             git,
             common,
             objects,
@@ -76,6 +80,21 @@ impl GitRepository {
             object_fence: std::cell::RefCell::new(None),
             control: private,
         })
+    }
+    /// macOS requires a native helper that dispatches the closed Git roles.
+    #[cfg(target_os = "macos")]
+    pub fn open_with_helper(
+        helper: &Path,
+        image: &Path,
+        registration: &GitRegistration,
+        control: &Path,
+    ) -> io::Result<Self> {
+        if !helper.is_absolute() {
+            return Err(invalid("absolute native Git bootstrap helper required"));
+        }
+        let mut reader = Self::open(image, registration, control)?;
+        reader.helper = Some(helper.to_owned());
+        Ok(reader)
     }
     pub fn head(&self) -> io::Result<Option<String>> {
         resolve(&self.git, &self.common)
@@ -98,7 +117,23 @@ impl GitRepository {
             .as_ref()
             .ok_or_else(|| invalid("Git object fence was not initialized"))?;
         fence.check(&self.objects)?;
+        #[cfg(not(target_os = "macos"))]
         let output = read_pinned(
+            &self.image,
+            self.control.path(),
+            &self.objects_path,
+            [self.control.root(), &self.objects],
+            command,
+            deadline,
+        )?;
+        #[cfg(target_os = "macos")]
+        let output = super::macos::read_pinned(
+            self.helper.as_deref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "macOS Git history requires an explicitly qualified native bootstrap helper",
+                )
+            })?,
             &self.image,
             self.control.path(),
             &self.objects_path,
@@ -112,8 +147,12 @@ impl GitRepository {
         self.control.check()?;
         fence.check(&self.objects)?;
         if !output.status.success() {
+            #[cfg(target_os = "macos")]
+            let memory = "64000000-byte sampled combined physical footprint budget";
+            #[cfg(not(target_os = "macos"))]
+            let memory = "64000000-byte address-space cap";
             return Err(io::Error::other(format!(
-                "bounded Git history refused ({}, 64000000-byte address-space cap): {}; source index remains available",
+                "bounded Git history refused ({}, {memory}): {}; source index remains available",
                 output.status,
                 String::from_utf8_lossy(&output.stderr)
             )));

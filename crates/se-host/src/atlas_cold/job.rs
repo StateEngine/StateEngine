@@ -26,7 +26,7 @@ impl ColdJob {
         metadata: GitMetadataRegistration,
         profile: Option<&SqlProfile>,
     ) -> AtlasResult<Self> {
-        let history = match super::history::Plan::new(metadata, profile) {
+        let history = match super::history::Plan::new(metadata, profile, image) {
             Ok(plan) => Some(plan),
             Err(error) => {
                 request.history_unavailable = Some(error.body);
@@ -54,6 +54,14 @@ impl ColdJob {
             .transpose()?;
         if epoch != request.expected_epoch {
             return Err(failure("expected cold epoch is stale before spawn"));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let home = request.home.to_local()?;
+            let parent = home
+                .parent()
+                .ok_or_else(|| failure("Atlas home has no private parent"))?;
+            se_proc::atlas_git::reconcile_pending(parent).map_err(failure)?;
         }
         let deadline = Instant::now() + Duration::from_secs(900);
         let worker = se_proc::atlas_worker::AtlasWorker::spawn(

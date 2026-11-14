@@ -2,7 +2,11 @@
 use super::*;
 pub(super) struct Plan;
 impl Plan {
-    pub(super) fn new(_: GitMetadataRegistration, _: Option<&SqlProfile>) -> AtlasResult<Self> {
+    pub(super) fn new(
+        _: GitMetadataRegistration,
+        _: Option<&SqlProfile>,
+        _: &std::path::Path,
+    ) -> AtlasResult<Self> {
         Err(failure(
             "Contained Git history is unavailable on this platform; source indexing remains available",
         ))

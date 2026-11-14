@@ -53,6 +53,39 @@ impl Control {
             .push((name, crate::source_root::observe_file_revision(&file)?));
         self.root.check()
     }
+    #[cfg(target_os = "macos")]
+    pub(super) fn recover(path: &Path) -> io::Result<()> {
+        use std::io::Read;
+        crate::NativeStateFiles::open(path).map_err(io::Error::other)?;
+        let root = NativeSourceRoot::open(path)?;
+        let mut files = Vec::new();
+        for name in ["HEAD", "config"] {
+            if let Some(file) = root.open_relative(name)? {
+                let revision = file.revision()?;
+                let mut bytes = Vec::new();
+                file.take(257).read_to_end(&mut bytes)?;
+                let valid = if name == "HEAD" {
+                    bytes == b"ref: refs/heads/atlas-read-only\n"
+                } else {
+                    bytes == b"[core]\nrepositoryformatversion = 0\nbare = true\n"
+                        || bytes == b"[core]\nrepositoryformatversion = 1\nbare = true\n[extensions]\nobjectFormat = sha256\n"
+                };
+                if !valid {
+                    return Err(invalid(
+                        "recovered Git control content is unknown; preserve it",
+                    ));
+                }
+                files.push((name, revision));
+            }
+        }
+        let mut control = Self {
+            path: path.into(),
+            root,
+            files,
+            retired: false,
+        };
+        control.close()
+    }
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
@@ -74,6 +107,23 @@ impl Control {
     }
     pub(super) fn close(&mut self) -> io::Result<()> {
         self.check()?;
+        #[cfg(target_os = "macos")]
+        {
+            // Preserve custody and partial publication records before removing
+            // any of the control files needed to interpret a failed Git phase.
+            for entry in fs::read_dir(&self.path)? {
+                let name = entry?.file_name();
+                if !["HEAD", "config", "objects", "refs"]
+                    .iter()
+                    .any(|allowed| name == *allowed)
+                {
+                    return Err(invalid(
+                        "private Git control retains unresolved cleanup custody",
+                    ));
+                }
+            }
+            self.root.check()?;
+        }
         for (name, _) in self.files.drain(..) {
             fs::remove_file(self.path.join(name))?;
         }

@@ -8,22 +8,11 @@ use std::{
         unix::{net::UnixStream, process::CommandExt},
     },
     process::{Child, Command, ExitStatus, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
-mod limits;
-static CHILD_ACTIVE: AtomicBool = AtomicBool::new(false);
-struct Lease(bool);
-impl Drop for Lease {
-    fn drop(&mut self) {
-        if self.0 {
-            CHILD_ACTIVE.store(false, Ordering::Release);
-        }
-    }
-}
+pub(super) mod limits;
+use super::lease::Lease;
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope {
@@ -61,10 +50,7 @@ impl AtlasWorker {
                 "absolute image, bounded frame and <=15 minute deadline required",
             ));
         }
-        if CHILD_ACTIVE.swap(true, Ordering::AcqRel) {
-            return Err(invalid("previous Atlas child has not been reaped"));
-        }
-        let lease = Lease(true);
+        let lease = Lease::acquire()?;
         let peer =
             crate::native_ipc::observe_ipc_self_bounded(&bound()).map_err(io::Error::other)?;
         let envelope = Envelope {
@@ -250,6 +236,7 @@ impl AtlasWorker {
         if status.is_some() {
             self.drain_stderr()?;
             self.reaped = true;
+            self.lease.release();
         }
         Ok(status)
     }
@@ -313,6 +300,7 @@ impl AtlasWorker {
                 }
             }
             self.reaped = true;
+            self.lease.release();
         }
         Ok(())
     }
@@ -320,7 +308,7 @@ impl AtlasWorker {
 impl Drop for AtlasWorker {
     fn drop(&mut self) {
         if !self.reaped && self.cancel().is_err() {
-            self.lease.0 = false;
+            self.lease.retain_on_failed_reap();
         }
     }
 }
