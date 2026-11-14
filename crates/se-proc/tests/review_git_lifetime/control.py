@@ -58,10 +58,12 @@ def same(receipt, current):
 
 def children(pid):
     values = (ctypes.c_int * 64)()
+    ctypes.set_errno(0)
     count = NATIVE.proc_listchildpids(pid, values, ctypes.sizeof(values))
-    if count < 0 or count >= ctypes.sizeof(values):
+    cause = ctypes.get_errno()
+    if count < 0 or count >= len(values) or (count == 0 and cause not in (0, errno.ESRCH)):
         raise RuntimeError('unreadable or over-bound child inventory')
-    return list(values)[:count // ctypes.sizeof(ctypes.c_int)]
+    return list(values)[:count]
 
 
 def atomic_json(path, data):

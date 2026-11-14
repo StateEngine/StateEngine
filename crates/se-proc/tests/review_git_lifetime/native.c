@@ -27,8 +27,8 @@ static void event(const char *kind, int target) {
     if (fd < 0) _exit(92);
     dprintf(fd, "{\"kind\":\"%s\",\"actor\":%d,\"target\":%d}\n", kind, getpid(), target);
     int children[16] = {0};
-    int bytes = proc_listchildpids(getpid(), children, sizeof(children));
-    for (int i=0; i<bytes/(int)sizeof(int) && i<16; ++i) {
+    int count = proc_listchildpids(getpid(), children, sizeof(children));
+    for (int i=0; i<count && i<16; ++i) {
         struct proc_bsdinfo info = {0};
         char image[PROC_PIDPATHINFO_MAXSIZE] = {0};
         if (proc_pidinfo(children[i], PROC_PIDTBSDINFO, 1, &info, sizeof(info)) != (int)sizeof(info)) continue;
