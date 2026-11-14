@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include <fcntl.h>
 #include <stddef.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,7 +14,7 @@ extern void *__libc_realloc(void *, size_t);
 extern void __libc_free(void *);
 
 static int report = -1;
-static long owner;
+static _Atomic long owner;
 static _Thread_local int reporting;
 static struct { void *pointer; size_t bytes; } live[128];
 

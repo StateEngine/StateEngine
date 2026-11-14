@@ -1,7 +1,12 @@
+//! Allocation and pre-release erasure checks for the glibc allocator boundary.
+//!
+//! The test builds its observer with the standard C compiler already used by
+//! bundled native dependencies. It installs nothing and needs no caller-supplied
+//! environment or allocator configuration. Other platforms run wire_byte_limits.
 #![cfg(all(target_os = "linux", target_env = "gnu", feature = "listener"))]
 
 use se_host::{client::wire, *};
-use std::{error::Error, io::Write, path::PathBuf, process::Command};
+use std::{error::Error, io::Write, path::Path, process::Command};
 
 #[path = "support/ipc_fixture.rs"]
 mod fixture;
@@ -104,19 +109,27 @@ fn child(case: &str) -> Check {
 }
 
 fn observe(test: &str, case: &str) -> Result<Observation, Box<dyn Error>> {
-    let directory = std::env::temp_dir().join(format!(
-        "wire-allocation-{}-{test}-{case}",
-        std::process::id()
-    ));
-    std::fs::create_dir(&directory)?;
+    let home = fixture::Home::new()?;
+    let directory = home.0.until_success();
+    let result = observe_case(test, case, &directory);
+    directory.finish(result)
+}
+
+fn observe_case(test: &str, case: &str, directory: &Path) -> Result<Observation, Box<dyn Error>> {
     let library = directory.join("observer.so");
     let report = directory.join("report.txt");
+    let source = directory.join("observer.c");
+    std::fs::write(&source, include_bytes!("support/wire_allocator.c"))?;
     let compilation = Command::new("cc")
-        .args(["-shared", "-fPIC", "-O2", "-Wall", "-Wextra", "-Werror"])
-        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/wire_allocator.c"))
+        .args([
+            "-std=c11", "-shared", "-fPIC", "-O2", "-Wall", "-Wextra", "-Werror",
+        ])
+        .arg(source)
         .arg("-o")
         .arg(&library)
         .output()?;
+    std::fs::write(directory.join("compile.stdout"), &compilation.stdout)?;
+    std::fs::write(directory.join("compile.stderr"), &compilation.stderr)?;
     assert!(
         compilation.status.success(),
         "observer compilation: {}",
@@ -128,6 +141,8 @@ fn observe(test: &str, case: &str) -> Result<Observation, Box<dyn Error>> {
         .env("WIRE_ALLOCATOR_REPORT", &report)
         .env("LD_PRELOAD", &library)
         .output()?;
+    std::fs::write(directory.join("child.stdout"), &output.stdout)?;
+    std::fs::write(directory.join("child.stderr"), &output.stderr)?;
     let trace = std::fs::read_to_string(&report)?;
     let stdout = String::from_utf8(output.stdout)?;
     assert!(
@@ -161,9 +176,6 @@ fn observe(test: &str, case: &str) -> Result<Observation, Box<dyn Error>> {
         "live allocation escaped phase: {trace}"
     );
     println!("{case}: payload={length}, allocator={trace:?}");
-    std::fs::remove_file(report)?;
-    std::fs::remove_file(library)?;
-    std::fs::remove_dir(directory)?;
     Ok((length, events))
 }
 
@@ -245,41 +257,17 @@ fn wire_release_erases_every_allocated_byte() -> Check {
 }
 
 #[test]
-fn wire_byte_limits_refuse_without_budget_sized_storage() -> Check {
-    let test = "wire_byte_limits_refuse_without_budget_sized_storage";
+fn wire_oversize_refusal_retains_no_payload_buffer() -> Check {
+    let test = "wire_oversize_refusal_retains_no_payload_buffer";
     if delegated()? {
         return Ok(());
     }
-    let text = "é\n\"".repeat(512);
-    let expected = serde_json::to_vec(&text)?;
-    assert!(wire::encode_json(&text, 0).is_err());
-    assert!(wire::encode_json(&text, wire::MAX_FRAME_BYTES + 1).is_err());
-    assert_eq!(
-        wire::encode_json(&text, expected.len())?.as_bytes(),
-        expected
-    );
-    assert!(wire::encode_json(&text, expected.len() - 1).is_err());
-    assert!(wire::encode_frame(&text, expected.len() - 1).is_err());
-    let maximum = "x".repeat(wire::MAX_FRAME_BYTES - 2);
-    assert_eq!(
-        wire::encode_json(&maximum, wire::MAX_FRAME_BYTES)?
-            .as_bytes()
-            .len(),
-        wire::MAX_FRAME_BYTES
-    );
-    assert_eq!(
-        wire::encode_frame(&maximum, wire::MAX_FRAME_BYTES)?
-            .as_bytes()
-            .len(),
-        wire::MAX_FRAME_BYTES + 4
-    );
-    let excessive = "x".repeat(wire::MAX_FRAME_BYTES - 1);
-    assert!(wire::encode_json(&excessive, wire::MAX_FRAME_BYTES).is_err());
-    assert!(wire::encode_frame(&excessive, wire::MAX_FRAME_BYTES).is_err());
-    let (_, events) = observe(test, "over")?;
-    assert!(
-        !events.iter().any(|row| row.0 == 'A'),
-        "refused oversized JSON allocated a secret buffer: {events:?}"
-    );
+    for case in ["over", "over_frame", "error"] {
+        let (_, events) = observe(test, case)?;
+        assert!(
+            !events.iter().any(|row| row.0 == 'A'),
+            "refused JSON allocated a secret buffer: {events:?}"
+        );
+    }
     Ok(())
 }
