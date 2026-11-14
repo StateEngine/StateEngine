@@ -96,12 +96,14 @@ fn moved_project_is_diagnosed_and_reattached_with_the_recorded_git_identity() ->
             std::fs::symlink_metadata(path)
         );
     }
-    let row = doctor_check(
-        &command(home, &original, true, None)
-            .arg("doctor")
-            .output()?,
-        "project.root.Mover",
-    )?;
+    let before_move = command(home, &original, true, None)
+        .arg("doctor")
+        .output()?;
+    eprintln!(
+        "doctor before move: {}",
+        String::from_utf8_lossy(&before_move.stdout)
+    );
+    let row = doctor_check(&before_move, "project.root.Mover")?;
     assert_eq!(row["state"], "ok");
     assert_eq!(row["observed"], "1 of 1 registered roots present on disk");
     assert!(row["fix"].is_null(), "{row}");
