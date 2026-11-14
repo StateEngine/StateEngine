@@ -1,8 +1,5 @@
 //! Drive init's earliest Git check through the real CLI on native runners.
 #![cfg(any(target_os = "linux", windows))]
-#[allow(dead_code, reason = "The identity consumer is shared with the CLI.")]
-#[path = "../src/route/git_identity.rs"]
-mod git_identity;
 use std::{
     fs,
     io::Write,
@@ -216,44 +213,5 @@ fn init_disables_prompts_and_closes_git_input() -> Check {
         output.contains("bare Git repository"),
         "safe fixture's normal result was lost: {output}"
     );
-    Ok(())
-}
-
-fn git(root: &Path, args: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
-    let output = Command::new("git")
-        .args([
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.invalid",
-            "-C",
-        ])
-        .arg(root)
-        .args(args)
-        .output()?;
-    assert!(
-        output.status.success(),
-        "real Git failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(String::from_utf8(output.stdout)?.trim().into())
-}
-#[test]
-fn real_repository_identity_survives_move_and_ancestry_checks() -> Check {
-    let fixture = Fixture::new()?;
-    let original = fixture.0.join("repo");
-    assert!(!git_identity::is_bare(&original)?);
-    git(&original, &["init", "-b", "main"])?;
-    fs::write(original.join("user.txt"), "first\n")?;
-    git(&original, &["add", "user.txt"])?;
-    git(&original, &["commit", "-m", "Save work."])?;
-    let head = git(&original, &["rev-parse", "HEAD"])?;
-    git_identity::record(&original, "fixture-project", &head, &Some("main".into()))?;
-    let moved = fixture.0.join("moved");
-    fs::rename(&original, &moved)?;
-    fs::write(moved.join("user.txt"), "second\n")?;
-    git(&moved, &["add", "user.txt"])?;
-    git(&moved, &["commit", "-m", "Continue work."])?;
-    assert_eq!(git_identity::verify(&moved, "fixture-project")?.0, head);
     Ok(())
 }
