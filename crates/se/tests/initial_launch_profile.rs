@@ -10,7 +10,8 @@ mod fixture;
 #[path = "../src/grammar.rs"]
 mod grammar;
 use fixture::*;
-use se_core::{config_policy::*, ops::AnyOp};
+use se_config::config_policy::*;
+use se_core::ops::AnyOp;
 use serde_json::Value;
 use std::{fs, io::Write, process::Command};
 
