@@ -1,0 +1,76 @@
+name: Windows public startup readiness
+on:
+  push:
+    branches: [prime/startup-windows-ready-r4]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: startup-windows-ready-r4-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  observe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: windows-2025, target: x86_64-pc-windows-msvc}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 110
+    env:
+      MEASURE_TARGET: ${{ matrix.target }}
+      STARTUP_PUBLIC_READY: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: db77c5710c4d4bf781e14b829ef255dfdd95eca9
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.12'}
+      - name: Read back the retained native release archive
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          prior = root / 'original-startup-package'
+          subprocess.run(['gh', 'run', 'download', '43672343400', '-R', os.environ['GITHUB_REPOSITORY'], '-n', 'startup-package-' + os.environ['MEASURE_TARGET'], '--dir', str(prior)], check=True)
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'STARTUP_REUSE_ROOT={prior}\n')
+              output.write(f'MEASURE_ROOT={root / "startup-package"}\n')
+              output.write(f'EVIDENCE_ROOT={root / "startup-package-evidence"}\n')
+      - name: Check observer syntax
+        shell: python
+        run: |
+          import ast, pathlib
+          for path in pathlib.Path('scripts/startup_package').glob('*.py'):
+              ast.parse(path.read_text())
+      - name: Check native Windows census syntax
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/startup_package/processes.ps1'), [ref]$tokens, [ref]$errors) > $null
+          if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+      - name: Observe the byte-identical native package
+        shell: python
+        run: |
+          import os, subprocess, sys
+          subprocess.run([sys.executable, '-B', 'scripts/startup_package/reuse_native.py', os.environ['MEASURE_ROOT']], check=True)
+      - name: Collect evidence without private homes
+        if: ${{ always() }}
+        shell: python
+        run: |
+          import os, subprocess, sys
+          subprocess.run([sys.executable, '-B', 'scripts/startup_package/collect.py', os.environ['MEASURE_ROOT'], os.environ['EVIDENCE_ROOT']], check=True)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: startup-package-ready-r4-${{ matrix.target }}
+          path: ${{ runner.temp }}/startup-package-evidence
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
