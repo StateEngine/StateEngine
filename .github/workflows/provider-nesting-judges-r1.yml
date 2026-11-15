@@ -1,0 +1,282 @@
+name: Independent provider job nesting controls
+'on':
+  push:
+    branches:
+    - prime/provider-nesting-judges-r1
+  workflow_dispatch: null
+permissions:
+  contents: read
+concurrency:
+  group: provider-nesting-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  native:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arm: base
+          source: 6b30714d37b1d1ca575e811bba1fc11a633594af
+        - arm: head
+          source: 7e5465c5c166660fa1fdf7dbbf2fd9b2eb077401
+    env:
+      REVIEW_SOURCE: ${{ matrix.source }}
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.source }}
+        path: source
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: 1.97.1
+    - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+      with:
+        arch: amd64
+    - name: Register disposable hosted account
+      shell: python
+      run: 'import subprocess,sys
+
+        subprocess.run([sys.executable,''source/scripts/ci/installation_account.py'',''provision''],check=True)'
+    - name: Install exact reviewer controls
+      shell: python
+      run: "import ast,hashlib,json,os\nfrom pathlib import Path\nroot=Path(os.environ['RUNNER_TEMP'])/'provider-nesting'\n\
+        root.mkdir()\ncontrols=root/'controls'\ncontrols.mkdir()\nfiles={'native_jobs.py': '\"\"\"Reviewer-owned\
+        \ Windows job and exact process witnesses; no product hooks.\"\"\"\\nimport ctypes as C\\nfrom ctypes import\
+        \ wintypes as W\\n\\nk = C.WinDLL(\\'kernel32\\', use_last_error=True)\\nnt = C.WinDLL(\\'ntdll\\')\\nHANDLE\
+        \ = W.HANDLE\\nk.CreateJobObjectW.argtypes = [C.c_void_p, W.LPCWSTR]\\nk.CreateJobObjectW.restype = HANDLE\\\
+        nk.SetInformationJobObject.argtypes = [HANDLE, C.c_int, C.c_void_p, W.DWORD]\\nk.QueryInformationJobObject.argtypes\
+        \ = [HANDLE, C.c_int, C.c_void_p, W.DWORD, C.c_void_p]\\nk.AssignProcessToJobObject.argtypes = [HANDLE,\
+        \ HANDLE]\\nk.IsProcessInJob.argtypes = [HANDLE, HANDLE, C.POINTER(W.BOOL)]\\nk.OpenProcess.argtypes = [W.DWORD,\
+        \ W.BOOL, W.DWORD]\\nk.OpenProcess.restype = HANDLE\\nk.CloseHandle.argtypes = [HANDLE]\\nk.GetProcessTimes.argtypes\
+        \ = [HANDLE, C.c_void_p, C.c_void_p, C.c_void_p, C.c_void_p]\\nk.QueryFullProcessImageNameW.argtypes = [HANDLE,\
+        \ W.DWORD, W.LPWSTR, C.POINTER(W.DWORD)]\\nk.WaitForSingleObject.argtypes = [HANDLE, W.DWORD]\\nk.WaitForSingleObject.restype\
+        \ = W.DWORD\\nk.TerminateProcess.argtypes = [HANDLE, W.UINT]\\nnt.NtQueryInformationProcess.argtypes = [HANDLE,\
+        \ W.ULONG, C.c_void_p, W.ULONG, C.c_void_p]\\nnt.NtQueryInformationProcess.restype = C.c_long\\n\\n\\ndef\
+        \ require(ok):\\n    if not ok:\\n        raise C.WinError(C.get_last_error())\\n\\n\\nclass UnicodeString(C.Structure):\\\
+        n    _fields_ = [(\\'length\\', W.USHORT), (\\'maximum\\', W.USHORT), (\\'buffer\\', C.c_void_p)]\\n\\n\\\
+        nclass Basic(C.Structure):\\n    _fields_ = [(\\'process_time\\', C.c_longlong), (\\'job_time\\', C.c_longlong),\\\
+        n                (\\'flags\\', W.DWORD), (\\'min_ws\\', C.c_size_t), (\\'max_ws\\', C.c_size_t),\\n    \
+        \            (\\'active\\', W.DWORD), (\\'affinity\\', C.c_size_t),\\n                (\\'priority\\', W.DWORD),\
+        \ (\\'scheduling\\', W.DWORD)]\\n\\n\\nclass Extended(C.Structure):\\n    _fields_ = [(\\'basic\\', Basic),\
+        \ (\\'io\\', C.c_ulonglong * 6),\\n                (\\'process_memory\\', C.c_size_t), (\\'job_memory\\\
+        ', C.c_size_t),\\n                (\\'peak_process\\', C.c_size_t), (\\'peak_job\\', C.c_size_t)]\\n\\n\\\
+        nclass Process:\\n    def __init__(self, pid):\\n        self.pid = int(pid)\\n        self.handle = k.OpenProcess(0x1000\
+        \ | 0x100000 | 0x100 | 1, False, self.pid)\\n        require(self.handle)\\n        self.initial = self.observe()\\\
+        n\\n    def observe(self):\\n        created, exited, kernel, user = (C.c_ulonglong() for _ in range(4))\\\
+        n        require(k.GetProcessTimes(self.handle, C.byref(created), C.byref(exited),\\n                  \
+        \                C.byref(kernel), C.byref(user)))\\n        image, count = C.create_unicode_buffer(32768),\
+        \ W.DWORD(32768)\\n        require(k.QueryFullProcessImageNameW(self.handle, 0, image, C.byref(count)))\\\
+        n        buffer = C.create_string_buffer(65536)\\n        status = nt.NtQueryInformationProcess(self.handle,\
+        \ 60, buffer, len(buffer), None)\\n        if status < 0:\\n            raise RuntimeError(f\\'bounded native\
+        \ command line query failed: {status:#x}\\')\\n        value = UnicodeString.from_buffer(buffer)\\n    \
+        \    start, end = C.addressof(buffer), C.addressof(buffer) + len(buffer)\\n        assert value.length %\
+        \ 2 == 0 and start <= value.buffer <= end\\n        assert value.buffer + value.length <= end\\n       \
+        \ command = C.wstring_at(value.buffer, value.length // 2)\\n        return {\\'pid\\': self.pid, \\'creation_filetime\\\
+        ': created.value,\\n                \\'image\\': image.value, \\'command\\': command, \\'exited\\': self.exited()}\\\
+        n\\n    def exited(self):\\n        code = k.WaitForSingleObject(self.handle, 0)\\n        assert code in\
+        \ (0, 258), f\\'native process wait failed: {code}\\'\\n        return code == 0\\n\\n    def member(self,\
+        \ job=None):\\n        present = W.BOOL()\\n        require(k.IsProcessInJob(self.handle, job, C.byref(present)))\\\
+        n        return bool(present.value)\\n\\n    def emergency_stop(self, owned_path):\\n        if self.exited():\\\
+        n            return\\n        current = self.observe()\\n        assert current[\\'creation_filetime\\']\
+        \ == self.initial[\\'creation_filetime\\']\\n        assert str(owned_path).casefold() in current[\\'command\\\
+        '].casefold(), current\\n        require(k.TerminateProcess(self.handle, 91))\\n        assert k.WaitForSingleObject(self.handle,\
+        \ 10000) == 0\\n\\n    def close(self):\\n        if self.handle:\\n            require(k.CloseHandle(self.handle))\\\
+        n            self.handle = None\\n\\n\\nclass Job:\\n    def __init__(self, allow_breakaway):\\n       \
+        \ self.handle = k.CreateJobObjectW(None, None)\\n        require(self.handle)\\n        self.flags = 0x800\
+        \ if allow_breakaway else 0\\n        settings = Extended()\\n        settings.basic.flags = self.flags\\\
+        n        require(k.SetInformationJobObject(self.handle, 9, C.byref(settings), C.sizeof(settings)))\\n  \
+        \      observed = Extended()\\n        require(k.QueryInformationJobObject(self.handle, 9, C.byref(observed),\
+        \ C.sizeof(observed), None))\\n        assert observed.basic.flags == self.flags\\n\\n    def attach(self,\
+        \ process):\\n        require(k.AssignProcessToJobObject(self.handle, process.handle))\\n        assert\
+        \ process.member(self.handle)\\n\\n    def members(self):\\n        data = C.create_string_buffer(4096)\\\
+        n        require(k.QueryInformationJobObject(self.handle, 3, data, len(data), None))\\n        total, count\
+        \ = (W.DWORD * 2).from_buffer(data)\\n        assert total == count and count <= 128, \\'native membership\
+        \ exceeded its bounded census\\'\\n        values = (C.c_size_t * count).from_buffer(data, 8)\\n       \
+        \ return list(values)\\n\\n    def close(self):\\n        require(k.CloseHandle(self.handle))\\n       \
+        \ self.handle = None\\n', 'provider_output.py': '\"\"\"Protocol double: real provider streams and transcript,\
+        \ no external account.\"\"\"\\nimport json\\nimport os\\nfrom pathlib import Path\\nimport sys\\nimport\
+        \ time\\n\\nsys.dont_write_bytecode = True\\nsys.path.insert(0, str(Path(__file__).parent / \\'protocol\\\
+        '))\\nfrom mail_provider import main\\n\\n\\ndef output():\\n    repo = Path.cwd()\\n    ready = json.loads((repo\
+        \ / \\'provider-ready.json\\').read_text())\\n    conversation = ready[\\'conversation\\']\\n    transcripts\
+        \ = list((Path(os.environ[\\'HOME\\']) / \\'.claude/projects\\').glob(\\'*/*.jsonl\\'))\\n    assert len(transcripts)\
+        \ == 1\\n    message = {\\'type\\': \\'assistant\\', \\'sessionId\\': conversation, \\'uuid\\': \\'public-output-proof\\\
+        ',\\n               \\'message\\': {\\'id\\': \\'public-output-proof\\', \\'role\\': \\'assistant\\',\\\
+        n                           \\'content\\': [{\\'type\\': \\'text\\', \\'text\\': \\'nested-provider-visible\\\
+        '}]}}\\n    # Each record is real provider output, then the stream frame wakes capture.\\n    with transcripts[0].open(\\\
+        'a\\') as transcript:\\n        transcript.write(json.dumps(message) + \\'\\\\n\\')\\n        transcript.flush()\\\
+        n        os.fsync(transcript.fileno())\\n    for _ in range(120):\\n        print(json.dumps({\\'type\\\
+        ': \\'assistant\\', \\'session_id\\': conversation,\\n                          \\'message\\': message[\\\
+        'message\\']}), flush=True)\\n        (repo / \\'provider-emitted\\').write_text(\\'stdout frame emitted\\\
+        ')\\n        time.sleep(.5)\\n    raise RuntimeError(\\'outside consumer did not finish its bounded observation\\\
+        ')\\n\\n\\nmain(on_ready=output)\\n', 'provider_nesting.py': '\"\"\"Three independent public Windows provider\
+        \ consumers, with exact native custody.\"\"\"\\nimport argparse\\nimport hashlib\\nimport json\\nimport\
+        \ os\\nfrom pathlib import Path\\nimport subprocess\\nimport sys\\nimport time\\nimport traceback\\n\\nsys.dont_write_bytecode\
+        \ = True\\nfrom native_jobs import Process, Job\\n\\np = argparse.ArgumentParser(description=__doc__)\\\
+        np.add_argument(\\'--source\\', required=True, type=Path)\\np.add_argument(\\'--se\\', required=True, type=Path)\\\
+        np.add_argument(\\'--out\\', required=True, type=Path)\\na = p.parse_args()\\nassert os.name == \\'nt\\\
+        '\\na.out.mkdir(parents=True, exist_ok=False)\\nsys.path.insert(0, str(a.source.resolve() / \\'crates/se/tests/judges\\\
+        '))\\nfrom mail_cli import Fixture\\n\\n\\nclass PrivateFixture(Fixture):\\n    def call(self, *args, **kwargs):\\\
+        n        for key in list(self.env):\\n            if key.startswith((\\'OPENAI_\\', \\'ANTHROPIC_\\', \\\
+        'GITHUB_\\', \\'GH_\\', \\'GIT_\\')):\\n                self.env.pop(key)\\n        for key in (\\'XDG_CONFIG_HOME\\\
+        ', \\'XDG_CACHE_HOME\\', \\'XDG_DATA_HOME\\', \\'CODEX_HOME\\'):\\n            directory = self.root / key.lower()\\\
+        n            directory.mkdir(exist_ok=True)\\n            self.env[key] = str(directory)\\n        result\
+        \ = super().call(*args, **kwargs)\\n        (self.log_root / f\\'call-{self.calls:02}.json\\').write_text(json.dumps({\\\
+        n            \\'argv\\': list(args), \\'exit\\': result.returncode}) + \\'\\\\n\\')\\n        return result\\\
+        n\\n\\nreport = {\\'source\\': subprocess.check_output([\\'git\\', \\'rev-parse\\', \\'HEAD\\'], cwd=a.source,\\\
+        n                                           text=True).strip(),\\n          \\'image_sha256\\': hashlib.sha256(a.se.read_bytes()).hexdigest(),\
+        \ \\'cases\\': [],\\n          \\'limitations\\': [\\'Protocol double, not an installed or paid provider.\\\
+        ',\\n                          \\'Ordinary breakaway is a preservation control expected to pass both arms.\\\
+        ']}\\n\\n\\ndef save():\\n    (a.out / \\'report.json\\').write_text(json.dumps(report, indent=2) + \\'\\\
+        \\n\\')\\n\\n\\ndef wait_for(path, timeout=15, child=None):\\n    until = time.monotonic() + timeout\\n\
+        \    while not path.exists():\\n        assert child is None or child.poll() is None, \\'client ended before\
+        \ the fixture barrier\\'\\n        assert time.monotonic() < until, f\\'barrier absent: {path.name}\\'\\\
+        n        time.sleep(.025)\\n\\n\\nfor name, allow, creation_failure in [(\\'nested-public-output\\', False,\
+        \ False),\\n                                      (\\'creation-failure-public-down\\', False, True),\\n\
+        \                                      (\\'ordinary-breakaway-output\\', True, False)]:\\n    row = {\\\
+        'name\\': name, \\'passed\\': False, \\'allow_breakaway\\': allow}\\n    report[\\'cases\\'].append(row)\\\
+        n    f, job, host, launched = None, None, None, None\\n    pins = []\\n    try:\\n        f = PrivateFixture(a.se,\
+        \ a.out / name, provider_helper=Path(__file__).with_name(\\'provider_output.py\\'),\\n                 \
+        \          log_directory=\\'calls\\')\\n        image = f.root / \\'provider.exe\\'\\n        source = f.root\
+        \ / \\'provider.rs\\'\\n        code = source.read_text().replace(\\'2.1.287\\', \\'2.1.318\\')\\n     \
+        \   barrier = \\'\\'\\'let root=std::env::current_exe().unwrap().parent().unwrap().to_path_buf();\\nif root.join(\"\
+        fail-creation\").exists() {\\n std::fs::write(root.join(\"settings-barrier\"), b\"entered\").unwrap();\\\
+        n let end=std::time::Instant::now()+std::time::Duration::from_secs(15);\\n while !root.join(\"settings-release\"\
+        ).exists() { assert!(std::time::Instant::now()<end); std::thread::sleep(std::time::Duration::from_millis(10));\
+        \ }\\n}\\n\\'\\'\\'\\n        needle = \\'let mut request=String::new();std::io::stdin().read_line(&mut\
+        \ request).unwrap();\\'\\n        assert needle in code\\n        source.write_text(code.replace(needle,\
+        \ needle + \\'\\\\n\\' + barrier))\\n        built = subprocess.run([\\'rustc\\', \\'--edition=2024\\',\
+        \ str(source), \\'-o\\', str(image)],\\n                               capture_output=True, timeout=60)\\\
+        n        (f.root / \\'wrapper-build.stderr\\').write_bytes(built.stderr)\\n        assert built.returncode\
+        \ == 0\\n        row[\\'provider_image_sha256\\'] = hashlib.sha256(image.read_bytes()).hexdigest()\\n  \
+        \      for args in [(\\'launch\\', \\'--help\\'), (\\'watch\\', \\'--help\\'), (\\'down\\', \\'--help\\\
+        ')]:\\n            f.ok(*args)\\n        up = f.ok(\\'up\\')\\n        row[\\'up\\'] = up\\n        host\
+        \ = Process(up[\\'process\\'][\\'pid\\'])\\n        assert Path(host.initial[\\'image\\']).resolve() ==\
+        \ a.se.resolve(), host.initial\\n        row[\\'host_before_job\\'] = host.initial\\n        row[\\'host_previously_in_job\\\
+        '] = host.member()\\n        # Otherwise the ordinary arm could silently exercise the retry too.\\n    \
+        \    assert not row[\\'host_previously_in_job\\'], \\'detached test host did not escape the runner job\\\
+        '\\n        job = Job(allow)\\n        job.attach(host)\\n        row[\\'host_member\\'] = host.member(job.handle)\\\
+        n        row[\\'job_limit_flags\\'] = job.flags\\n        args = [\\'--project\\', f.project, \\'--key\\\
+        ', \\'independent-launch\\', \\'launch\\', f.agent,\\n                \\'--detach\\', \\'--task\\', \\'Witness\
+        \ public provider output\\']\\n        if creation_failure:\\n            (f.root / \\'fail-creation\\').write_text(\\\
+        'private fixture barrier\\')\\n        command = [str(a.se), \\'--json\\', \\'--home\\', str(f.home), *args]\\\
+        n        with (f.root / \\'launch.stdout\\').open(\\'wb\\') as out, (f.root / \\'launch.stderr\\').open(\\\
+        'wb\\') as err:\\n            launched = subprocess.Popen(command, env=f.env, stdin=subprocess.DEVNULL,\
+        \ stdout=out, stderr=err)\\n            if creation_failure:\\n                wait_for(f.root / \\'settings-barrier\\\
+        ', child=launched)\\n                # The native settings process already has this exact fixture image\
+        \ loaded.\\n                # Remove its original name before returning valid settings. Windows creation,\\\
+        n                # after stream binding, must observe the genuine missing executable.\\n               \
+        \ held = image.with_name(\\'provider-retained.exe\\')\\n                image.rename(held)\\n          \
+        \      assert not image.exists() and held.exists()\\n                row[\\'creation_barrier\\'] = {\\'original_name_absent\\\
+        ': True,\\n                    \\'retained_sha256\\': hashlib.sha256(held.read_bytes()).hexdigest()}\\n\
+        \                assert row[\\'creation_barrier\\'][\\'retained_sha256\\'] == row[\\'provider_image_sha256\\\
+        ']\\n                (f.root / \\'settings-release\\').write_text(\\'continue\\')\\n            launched.wait(timeout=50)\\\
+        n        row[\\'launch_exit\\'] = launched.returncode\\n        raw_out = (f.root / \\'launch.stdout\\').read_bytes()\\\
+        n        raw_err = (f.root / \\'launch.stderr\\').read_bytes()\\n        if creation_failure:\\n       \
+        \     assert launched.returncode != 0\\n            assert b\\'CreateProcessW\\' in raw_err and b\\'native\
+        \ launch\\' in raw_err, raw_err.decode()\\n            assert not (f.repo / \\'provider-ready.json\\').exists()\\\
+        n            row[\\'genuine_native_creation_failure\\'] = True\\n        else:\\n            assert launched.returncode\
+        \ == 0, raw_err.decode()\\n            value = json.loads(raw_out)\\n            assert value[\\'state\\\
+        '] == \\'running\\', value\\n            row[\\'launch\\'] = value\\n            f.session = value[\\'session_id\\\
+        ']\\n            wait_for(f.repo / \\'provider-ready.json\\')\\n            ready = json.loads((f.repo /\
+        \ \\'provider-ready.json\\').read_text())\\n            assert ready[\\'session_discovery\\'] and ready[\\\
+        'http_discovery\\'], ready\\n            row[\\'provider_pins\\'] = []\\n            for pid in (ready[\\\
+        'native_root_pid\\'], ready[\\'helper_pid\\']):\\n                pin = Process(pid)\\n                pins.append(pin)\\\
+        n                row[\\'provider_pins\\'].append(pin.initial | {\\'parent_job_member\\': pin.member(job.handle)})\\\
+        n            assert pins[0].member(job.handle) is not allow, row[\\'provider_pins\\']\\n            until,\
+        \ cursors, observed = time.monotonic() + 20, [], False\\n            while time.monotonic() < until:\\n\
+        \                page = f.ok(\\'watch\\', \\'--target\\', f.project + \\'/\\' + f.agent,\\n            \
+        \                \\'--once\\', \\'--wait-ms\\', \\'1000\\', \\'--cursors\\', json.dumps(cursors))\\n   \
+        \             body = page.get(\\'value\\', page)\\n                assert body.get(\\'schema\\', page.get(\\\
+        'schema\\')) or \\'records\\' in body, page\\n                observed = \\'nested-provider-visible\\' in\
+        \ json.dumps(body.get(\\'records\\', []))\\n                cursors = body[\\'cursors\\']\\n           \
+        \     if observed:\\n                    break\\n            row[\\'public_stream_marker\\'] = observed\\\
+        n            assert observed, \\'provider output never reached the public typed client stream\\'\\n    \
+        \        assert (f.repo / \\'provider-emitted\\').exists()\\n        # Do not let a successful refusal count\
+        \ as successful shutdown.\\n        down = f.call(\\'down\\')\\n        row[\\'down_exit\\'] = down.returncode\\\
+        n        assert down.returncode == 0, down.stderr.decode()\\n        value = json.loads(down.stdout)\\n\
+        \        row[\\'down\\'] = value\\n        assert value[\\'complete\\'] and value[\\'witness\\'][\\'state\\\
+        '] == \\'witnessed\\', value\\n        assert not (f.home / \\'endpoint.json\\').exists()\\n        until\
+        \ = time.monotonic() + 5\\n        while (not host.exited() or any(not pin.exited() for pin in pins)) and\
+        \ time.monotonic() < until:\\n            time.sleep(.025)\\n        row[\\'outside_exits\\'] = [host.exited(),\
+        \ *[pin.exited() for pin in pins]]\\n        row[\\'job_members_after_down\\'] = job.members()\\n      \
+        \  assert all(row[\\'outside_exits\\']) and not row[\\'job_members_after_down\\']\\n        row[\\'passed\\\
+        '] = True\\n    except BaseException:\\n        row[\\'failure\\'] = traceback.format_exc()\\n    finally:\\\
+        n        row[\\'emergency_cleanup_used\\'] = False\\n        if f is not None:\\n            try:\\n   \
+        \             if launched and launched.poll() is None:\\n                    client = Process(launched.pid)\\\
+        n                    try:\\n                        row[\\'timed_out_client\\'] = client.initial\\n    \
+        \                    client.emergency_stop(f.root)\\n                        launched.wait(timeout=10)\\\
+        n                        row[\\'emergency_cleanup_used\\'] = True\\n                    finally:\\n    \
+        \                    client.close()\\n                if host and not host.exited():\\n                \
+        \    retry = f.call(\\'down\\')\\n                    row[\\'cleanup_public_down_exit\\'] = retry.returncode\\\
+        n                for pin in [*pins, *([host] if host else [])]:\\n                    if not pin.exited():\\\
+        n                        row[\\'emergency_cleanup_used\\'] = True\\n                        pin.emergency_stop(f.root)\\\
+        n                if job:\\n                    row[\\'members_after_cleanup\\'] = job.members()\\n     \
+        \               assert not row[\\'members_after_cleanup\\'], \\'owned parent job has live custody\\'\\n\
+        \            except BaseException:\\n                row[\\'cleanup_failure\\'] = traceback.format_exc()\\\
+        n                row[\\'passed\\'] = False\\n            for pin in [*pins, *([host] if host else [])]:\\\
+        n                pin.close()\\n            if job:\\n                job.close()\\n        save()\\n   \
+        \     print(json.dumps({\\'case\\': name, \\'passed\\': row[\\'passed\\'], \\'failure\\': row.get(\\'failure\\\
+        '),\\n                          \\'cleanup_failure\\': row.get(\\'cleanup_failure\\')}), flush=True)\\n\\\
+        nreport[\\'complete\\'] = True\\nsave()\\nraise SystemExit(0 if all(row[\\'passed\\'] for row in report[\\\
+        'cases\\']) else 1)\\n'}\nhashes={'native_jobs.py': 'cca368c264082d8dddac6a53398d8b0cd686ae630df1a363cae71f4f26651529',\
+        \ 'provider_output.py': '9a676b38b347fa1fed966c97a7a96d46c3d1e1cc38fc83e5fb5e805786163817', 'provider_nesting.py':\
+        \ '70ce3b0dfbc7d25b0751864e53460e3714239d432585246969894b3d4f54d508'}\nfor name,code in files.items():\n\
+        \    assert hashlib.sha256(code.encode()).hexdigest()==hashes[name]\n    ast.parse(code)\n    (controls/name).write_text(code,encoding='utf-8',newline='')\n\
+        (root/'judges.json').write_text(json.dumps(hashes,indent=2)+'\\n')\nwith open(os.environ['GITHUB_ENV'],'a')\
+        \ as out:out.write('REVIEW_ROOT='+str(root)+'\\n')"
+    - name: Build unchanged shipping image
+      shell: python
+      run: "import hashlib,json,os,shutil,subprocess\nfrom pathlib import Path\nroot=Path(os.environ['REVIEW_ROOT']);source=Path('source').resolve()\n\
+        actual=subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()\nassert actual==os.environ['REVIEW_SOURCE']\n\
+        host=subprocess.check_output(['rustc','--print','host-tuple'],text=True).strip()\nassert host=='x86_64-pc-windows-msvc'\n\
+        expected={'mail_provider.py': '34d22d7607402de73e98d10543afce81fecddc79367bb85aece4e1342e090b3d', 'judge_records.py':\
+        \ '895a9f31bf26220f2bb18c0ce471faeb17c2ef73d987e5a2287cbbe16be57be3'}\n(root/'controls/protocol').mkdir()\n\
+        for name,digest in expected.items():\n    data=(source/'crates/se/tests/judges'/name).read_bytes()\n   \
+        \ assert hashlib.sha256(data).hexdigest()==digest\n    (root/'controls/protocol'/name).write_bytes(data)\n\
+        inputs=json.loads((source/'scripts/release/inputs.json').read_text())\nassert inputs['package']=='se' and\
+        \ inputs['features']==['remote'] and not inputs['default_features']\ncommand=['cargo','build','--release','--locked','-p','se','--no-default-features','--features','remote']\n\
+        env=dict(os.environ,CARGO_TARGET_DIR=str(root/'target'),CARGO_INCREMENTAL='0',CARGO_BUILD_JOBS='2')\nreceipt={'source':actual,'target':host,'command':command,'release_inputs':inputs,'protocol':expected,\n\
+        \         'rustc':subprocess.check_output(['rustc','-vV'],text=True)}\n(root/'inputs.json').write_text(json.dumps(receipt,indent=2)+'\\\
+        n')\nwith (root/'build.log').open('w') as out:\n    built=subprocess.run(command,cwd=source,env=env,stdout=out,stderr=subprocess.STDOUT,timeout=3600)\n\
+        assert built.returncode==0, 'shipping-image build failed; retain build.log'\n(root/'bin').mkdir()\nimage=root/'bin/se.exe';shutil.copyfile(root/'target/release/se.exe',image)\n\
+        (root/'image.json').write_text(json.dumps({'sha256':hashlib.sha256(image.read_bytes()).hexdigest(),\n  \
+        \  'size':image.stat().st_size,'source':actual},indent=2)+'\\n')"
+    - name: Run all three public native consumers
+      shell: python
+      run: "import os,subprocess,sys\nfrom pathlib import Path\nroot=Path(os.environ['REVIEW_ROOT'])\ncommand=[sys.executable,'-B',str(root/'controls/provider_nesting.py'),'--source',str(Path('source').resolve()),\n\
+        \         '--se',str(root/'bin/se.exe'),'--out',str(root/'results')]\nwith (root/'consumer.log').open('w')\
+        \ as out:\n    result=subprocess.run(command,stdout=out,stderr=subprocess.STDOUT,timeout=900)\nraise SystemExit(result.returncode)"
+    - name: Collect finite public evidence
+      if: ${{ always() }}
+      shell: python
+      run: "import hashlib,json,os,shutil\nfrom pathlib import Path\nroot=Path(os.environ['REVIEW_ROOT']);archive=root/'archive';archive.mkdir()\n\
+        for name in ['inputs.json','image.json','judges.json','build.log','consumer.log']:\n    path=root/name\n\
+        \    if path.exists():shutil.copyfile(path,archive/name)\nshutil.copytree(root/'controls',archive/'controls')\n\
+        if (root/'bin/se.exe').exists():\n    (archive/'bin').mkdir();shutil.copyfile(root/'bin/se.exe',archive/'bin/se.exe')\n\
+        report=root/'results/report.json'\nif report.exists():shutil.copyfile(report,archive/'report.json')\n# Only\
+        \ finite public command replies and fixture source are retained. Private\n# owner homes, endpoint frames,\
+        \ settings and credentials are excluded.\nfor case in ['nested-public-output','creation-failure-public-down','ordinary-breakaway-output']:\n\
+        \    directory=root/'results'/case\n    if not directory.exists():continue\n    dest=archive/case;dest.mkdir()\n\
+        \    for pattern in ['launch.stdout','launch.stderr','wrapper-build.stderr','provider.rs','calls/call-*.json',\n\
+        \                    'calls/call-*.stdout','calls/call-*.stderr']:\n        for path in directory.glob(pattern):\n\
+        \            target=dest/path.relative_to(directory);target.parent.mkdir(exist_ok=True,parents=True)\n \
+        \           shutil.copyfile(path,target)\nmanifest={str(path.relative_to(archive)):hashlib.sha256(path.read_bytes()).hexdigest()\n\
+        \          for path in archive.rglob('*') if path.is_file()}\n(archive/'sha256sums.json').write_text(json.dumps(manifest,indent=2)+'\\\
+        n')"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: provider-nesting-${{ matrix.arm }}
+        path: ${{ runner.temp }}/provider-nesting/archive
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
