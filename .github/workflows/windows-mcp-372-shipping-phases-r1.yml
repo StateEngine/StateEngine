@@ -1,0 +1,180 @@
+name: Windows public message shipping phase attribution
+'on':
+  push:
+    branches:
+    - prime/windows-mcp-372-shipping-phases-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_RELEASE_DEBUG: '0'
+  CARGO_BUILD_JOBS: '2'
+jobs:
+  observe:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 9196b28dad8bd436341c24333bdb562f23728ce8
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: windows-mcp-372-phases-v1
+        cache-on-failure: true
+    - name: Attribute two unchanged-product public MCP cohorts
+      shell: python
+      run: |
+        import os,sys
+        sys.argv = ['driver', '--out', os.path.join(os.environ['RUNNER_TEMP'], 'windows-mcp-372-shipping-phases-r1')]
+        """Observe shipping phase diagnostics without adding product instrumentation."""
+        import argparse
+        import hashlib
+        import json
+        import math
+        import os
+        from pathlib import Path
+        import platform
+        import shutil
+        import statistics
+        import subprocess
+        import time
+        import traceback
+
+        PRODUCT = '1db0f20fa543e496fa04be4f37af106a8a0bc27f'
+        PHASES = ['admission', 'submission', 'continuation']
+        OPS = ['stateengine_msg_send', 'stateengine_working_state_set']
+
+
+        def describe(sample):
+            phases = sample['diagnostics']['host_phases']
+            result = {'client_ms': sample['ms'],
+                      'host_ms': phases['admitted_to_encode_us'] / 1000,
+                      'completion_wait_ms': phases['completion_wait_us'] / 1000}
+            for phase in PHASES:
+                span = phases[phase]
+                assert span['jobs'] == 1
+                assert 'native_file_counts' not in span, 'product instrumentation was added'
+                for part in ['queue', 'work', 'resume']:
+                    result[phase + '_' + part + '_ms'] = span[part + '_us'] / 1000
+            result['host_other_ms'] = result['host_ms'] - result['completion_wait_ms'] - sum(
+                result[p + '_' + k + '_ms'] for p in PHASES for k in ['queue', 'work', 'resume'])
+            assert result['host_other_ms'] >= -0.01, 'phase accounting exceeds the host interval'
+            result['bridge_wire_ms'] = result['client_ms'] - result['host_ms']
+            assert result['bridge_wire_ms'] >= -0.01, 'host interval exceeds the client interval'
+            writer = sample['diagnostics']['write_timings']
+            result['writer_queue_ms'] = writer['queue_ms']
+            result['writer_transaction_ms'] = writer['transaction_ms']
+            result['writer_commit_ms'] = writer['commit_call_ms']
+            assert all(math.isfinite(v) for v in result.values())
+            return result
+
+
+        def analyze(report, smoke):
+            expected = {'1'} if smoke else {'1', '8'}
+            assert set(report['cohorts']) == expected
+            seen = set()
+            result = {}
+            for cohort, clients in report['cohorts'].items():
+                assert len(clients) == int(cohort)
+                for client in clients:
+                    assert not client.get('error') and not client.get('cleanup_error'), client
+                    assert client['verified_events'] == 60
+                    assert set(client['samples']) == set(OPS)
+                    for samples in client['samples'].values():
+                        assert len(samples) == 30
+                        for s in samples:
+                            assert s['key'] not in seen and s['event_id']
+                            assert s['writer']['mode'] == 'host'
+                            seen.add(s['key'])
+                operations = {}
+                for op in OPS:
+                    for client in clients:
+                        samples = sorted(client['samples'][op], key=lambda s: s['ms'])
+                        assert samples[28]['ms'] == client['p95_ms'][op]
+                    index = max(range(len(clients)), key=lambda i: clients[i]['p95_ms'][op])
+                    tail = sorted(clients[index]['samples'][op], key=lambda s: s['ms'])[28]
+                    rows = [describe(s) for c in clients for s in c['samples'][op]]
+                    operations[op] = {'count': len(rows), 'worst_client': index,
+                        'worst_client_p95_ms': tail['ms'], 'exact_tail_key': tail['key'],
+                        'exact_tail_components': describe(tail),
+                        'component_means': {k: statistics.mean(s[k] for s in rows) for k in rows[0]}}
+                result[cohort] = operations
+            assert len(seen) == (60 if smoke else 540)
+            return {'cohorts': result, 'verified_events': len(seen), 'budget_pass': report['pass']}
+
+
+        def main():
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--out', required=True)
+            parser.add_argument('--smoke', action='store_true')
+            args = parser.parse_args()
+            root = Path(args.out).resolve()
+            root.mkdir(exist_ok=False, parents=True)
+            summary = {'product': PRODUCT, 'smoke': args.smoke, 'qualified': False, 'rows': [],
+                'scope': 'Unchanged product files, public kept-open MCP, synthetic active sessions; no provider hooks or mixed capture',
+                'accounting': 'Per-request serial host components and their means are additive; writer queue/transaction overlap completion wait and commit overlaps transaction; marginal p95 values must not be added'}
+            def save():
+                (root / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
+            try:
+                source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+                summary['observer'] = source
+                assert subprocess.check_output(['git', 'rev-parse', 'HEAD^'], text=True).strip() == PRODUCT
+                paths = subprocess.check_output(['git', 'diff', '--name-only', PRODUCT, source], text=True).splitlines()
+                assert set(paths) == {'crates/se/tests/eight_writer_mcp_measurement.rs',
+                    'crates/se/tests/eight_writer_mixed/background.rs', 'crates/se/tests/kept_open_writes.py'}, paths
+                assert not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], text=True)
+                (root / 'observer.diff').write_bytes(subprocess.check_output(['git', 'diff', PRODUCT, source]))
+                (root / 'inputs.json').write_text(json.dumps({'product': PRODUCT, 'observer': source,
+                    'run': os.environ.get('GITHUB_RUN_ID'), 'publication': os.environ.get('GITHUB_SHA'),
+                    'platform': platform.platform(), 'cpu_count': os.cpu_count(),
+                    'compiler': subprocess.check_output(['rustc', '-vV'], text=True)}, indent=2) + '\n', encoding='utf-8')
+                target = 'x86_64-pc-windows-msvc' if os.name == 'nt' else 'x86_64-unknown-linux-gnu'
+                env = dict(os.environ)
+                env.pop('SE_MEASURE_MIXED', None)
+                env.pop('SE_MEASURE_COHORT', None)
+                if args.smoke:
+                    env['SE_MEASURE_COHORT'] = '1'
+                for repeat in range(1 if args.smoke else 2):
+                    dest = root / f'repeat-{repeat + 1}'
+                    dest.mkdir()
+                    command = ['cargo', 'test', '--target', target, '--release', '--all-features', '--locked',
+                               '-p', 'se', '--test', 'eight_writer_mcp_measurement', '--', '--nocapture']
+                    start = time.monotonic_ns()
+                    with (dest / 'stdout.log').open('wb') as out, (dest / 'stderr.log').open('wb') as err:
+                        process = subprocess.run(command, stdout=out, stderr=err, env=env, timeout=1800)
+                    receipt = {'argv': command, 'exit': process.returncode, 'elapsed_ns': time.monotonic_ns() - start}
+                    (dest / 'command.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+                    diagnostics = Path('target/judge-diagnostics')
+                    if diagnostics.is_dir():
+                        shutil.move(str(diagnostics), str(dest / 'judge-diagnostics'))
+                    assert process.returncode == 0, 'native public write/readback or closure failed'
+                    report = json.loads((dest / 'judge-diagnostics/mcp-writers.json').read_text(encoding='utf-8'))
+                    summary['rows'].append(analyze(report, args.smoke))
+                    save()
+                summary['qualified'] = True
+            except Exception as error:
+                summary['error'] = repr(error)
+                summary['traceback'] = traceback.format_exc()
+                summary['cleanup_unknown'] = isinstance(error, subprocess.TimeoutExpired)
+            finally:
+                save()
+                files = {p.relative_to(root).as_posix(): {'bytes': p.stat().st_size,
+                    'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in root.rglob('*') if p.is_file()}
+                (root / 'manifest.json').write_text(json.dumps({'files': files}, indent=2) + '\n', encoding='utf-8')
+            return 0 if summary['qualified'] else 1
+
+
+        if __name__ == '__main__':
+            raise SystemExit(main())
+    - name: Retain inputs, receipts, phase samples and complete manifest
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: windows-mcp-372-shipping-phases-r1
+        path: ${{ runner.temp }}/windows-mcp-372-shipping-phases-r1
+        retention-days: 14
+        if-no-files-found: error
