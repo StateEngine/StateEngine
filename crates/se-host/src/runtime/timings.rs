@@ -27,10 +27,17 @@ where
     let queued = Instant::now();
     let measured = move || {
         let entered = Instant::now();
+        #[cfg(windows)]
+        se_proc::reset_native_file_counters();
         let result = work()?;
-        Ok((result, entered, Instant::now()))
+        let finished = Instant::now();
+        #[cfg(windows)]
+        let native_file_counts = Some(se_proc::take_native_file_counters());
+        #[cfg(not(windows))]
+        let native_file_counts = None;
+        Ok((result, entered, finished, native_file_counts))
     };
-    let (result, entered, finished) = match mode {
+    let (result, entered, finished, native_file_counts) = match mode {
         Mode::Finite => {
             pool.run(BlockingClass::Foreground, deadline, measured)
                 .await?
@@ -45,6 +52,7 @@ where
             queue_us: micros(entered.duration_since(queued)),
             work_us: micros(finished.duration_since(entered)),
             resume_us: micros(returned.duration_since(finished)),
+            native_file_counts,
         },
     ))
 }

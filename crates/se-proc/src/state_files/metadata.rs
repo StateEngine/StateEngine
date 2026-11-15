@@ -37,6 +37,8 @@ impl NativeMetadataPin {
         Ok(Some(pin))
     }
     pub fn metadata(&self) -> Result<Metadata> {
+        #[cfg(windows)]
+        let _trace = super::windows::trace::Span::metadata(&self.file);
         let named = self.files.inspect_metadata(&self.path)?.ok_or_else(|| {
             failure(
                 StateFileErrorCode::SourceChanged,

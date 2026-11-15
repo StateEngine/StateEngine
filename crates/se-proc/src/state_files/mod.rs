@@ -29,6 +29,17 @@ use unix as os;
 #[cfg(windows)]
 use windows as os;
 
+#[cfg(windows)]
+#[doc(hidden)]
+pub fn reset_native_file_counters() {
+    windows::trace::reset();
+}
+#[cfg(windows)]
+#[doc(hidden)]
+pub fn take_native_file_counters() -> std::collections::BTreeMap<String, (u64, u64)> {
+    windows::trace::take()
+}
+
 /// Clear inheritance only on a newly created, held private directory. Existing
 /// IPC directories remain read-only admission checks, never implicit repairs.
 #[cfg(target_os = "macos")]
