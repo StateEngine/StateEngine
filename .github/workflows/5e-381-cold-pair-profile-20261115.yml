@@ -28,15 +28,23 @@ jobs:
             attempts: 5
             tail-bound-sec: null
     steps:
-      - name: Checkout ${{ matrix.run.name }}
+      # The judge scripts and composite actions live on this branch; the
+      # product under test is the pinned ref, checked out separately so base
+      # profiling runs a judge that main does not carry.
+      - name: Checkout judge branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ matrix.run.ref }}
 
       - name: Rust CI tools
         uses: ./.github/actions/rust
 
+      - name: Checkout product ${{ matrix.run.name }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ matrix.run.ref }}
+          path: product
+
       - name: Build se (release)
+        working-directory: product
         run: cargo build --release --locked -p se
 
       - name: Loopback sshd on 127.0.0.1:2222
@@ -75,7 +83,7 @@ jobs:
           TAIL_BOUND: ${{ matrix.run.tail-bound-sec }}
         run: |
           set -e
-          args=(--se "$GITHUB_WORKSPACE/target/release/se"
+          args=(--se "$GITHUB_WORKSPACE/product/target/release/se"
                 --output "$GITHUB_WORKSPACE/cold-pair-results/${{ matrix.run.name }}"
                 --attempts "$ATTEMPTS"
                 --identity "$HOME/.ssh/id_ed25519"
