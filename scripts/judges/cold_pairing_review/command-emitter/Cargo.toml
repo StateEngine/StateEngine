@@ -1,0 +1,11 @@
+[package]
+name="private-command-review"
+version="0.1.0"
+edition="2024"
+publish=false
+[dependencies]
+base64="=0.22.1"
+serde_json="=1.0.154"
+[features]
+head=[]
+[workspace]
