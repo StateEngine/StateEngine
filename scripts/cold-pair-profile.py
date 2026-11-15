@@ -388,8 +388,11 @@ def main():
         'slowest_attempt': attempts[times.index(max(times))]['attempt'] if times else None,
     }
     if args.tail_bound_sec is not None:
+        # A failed pairing is a tail violation, never a dropped sample.
         violations = [a['attempt'] for a in attempts
-                      if a.get('wall_sec') is not None and a['wall_sec'] > args.tail_bound_sec]
+                      if not a.get('checks', {}).get('pairing_connected')
+                      or a.get('wall_sec') is None
+                      or a['wall_sec'] > args.tail_bound_sec]
         summary['tail_bound_sec'] = args.tail_bound_sec
         summary['tail_bound_violations'] = violations
         summary['tail_bound_verdict'] = 'PASS' if not violations else 'FAIL'
