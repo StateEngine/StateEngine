@@ -1,0 +1,94 @@
+name: checkpoint-idle-regression
+on:
+  push:
+    branches: [prime/checkpoint-idle-regression-r1]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_RELEASE_DEBUG: '0'
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 186292aa52e4b562ee4f0d7343717bd305ec5a94
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          shared-key: writer-latency-linux-v1
+          cache-on-failure: true
+      - name: Build the release CLI and run retained WAL controls
+        run: |
+          target="$(rustc --print host-tuple)"
+          cargo build --target "$target" --release --all-features --locked -p se --bin se
+          cargo test --target "$target" --release --all-features --locked -p se-store --test background_checkpoint_independent --test deferred_checkpoint_independent -- --nocapture
+          mkdir -p target/idle-image
+          cp "target/$target/release/se" target/idle-image/se
+          git rev-parse HEAD > target/idle-image/source-commit.txt
+          sha256sum target/idle-image/se > target/idle-image/binary-sha256.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: checkpoint-idle-image
+          path: target/idle-image/
+          if-no-files-found: error
+  idle:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        trial: [1, 2]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 186292aa52e4b562ee4f0d7343717bd305ec5a94
+          persist-credentials: false
+      - name: Fetch the unchanged independent idle observer
+        run: |
+          git fetch --quiet origin refs/heads/5e/b7-idle-measure-20261114:refs/remotes/probe/source
+          test "$(git rev-parse refs/remotes/probe/source)" = c91738e03621bfcc96985219e767aa8754df7bb4
+          git checkout refs/remotes/probe/source -- scripts/b7_idle
+          git rev-parse refs/remotes/probe/source > idle-observer-commit.txt
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: checkpoint-idle-image
+          path: target/idle-image
+      - name: Measure a no-session host after the full settle window
+        run: |
+          chmod 700 target/idle-image/se
+          python3 -B scripts/b7_idle/probe.py --se target/idle-image/se --out idle-trial --trials-no-session 1 --trials-one-session 0 --settle 300 --measure 600 --health-timeout 90
+      - name: Enforce complete accounting and cleanup
+        run: |
+          python3 -I - <<'PY_IDLE'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('idle-trial/receipt.json').read_text())
+          trials = report['trials']
+          if len(trials) != 1 or trials[0]['error'] is not None:
+              raise SystemExit('idle trial absent or failed')
+          trial = trials[0]
+          measured = trial['measurement']
+          print(json.dumps(measured, indent=2))
+          if not (trial['cleanup']['host_gone'] and trial['cleanup']['mock_stopped']):
+              raise SystemExit('owned process cleanup unproved')
+          if not (0 <= measured['cpu_percent_one_core'] < 0.1 and 0 <= measured['wakeups_per_second'] <= 1):
+              raise SystemExit('no-session idle budget missed')
+          PY_IDLE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: checkpoint-idle-trial-${{ matrix.trial }}
+          path: |
+            idle-observer-commit.txt
+            target/idle-image/source-commit.txt
+            target/idle-image/binary-sha256.txt
+            idle-trial/
+          if-no-files-found: error
