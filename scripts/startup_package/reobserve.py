@@ -72,7 +72,7 @@ try:
         fresh_count, restart_count = (100, 101) if not traced else (20, 21)
         for index in range(fresh_count):
             for side in (('base', 'head') if index % 2 == 0 else ('head', 'base')):
-                row = dict(condition='fresh', index=index, traced=traced)
+                row = dict(condition='fresh', index=index, traced=traced, load_before=os.getloadavg())
                 receipts[side]['samples'].append(row)
                 ledger.append(dict(side=side, **row))
                 owned = []
@@ -99,7 +99,7 @@ try:
                 restart[side].commands.environment['DYLD_PRINT_STATISTICS'] = '1'
         for index in range(restart_count):
             for side in (('base', 'head') if index % 2 == 0 else ('head', 'base')):
-                row = dict(condition='restart', index=index, traced=traced)
+                row = dict(condition='restart', index=index, traced=traced, load_before=os.getloadavg())
                 receipts[side]['samples'].append(row)
                 ledger.append(dict(side=side, **row))
                 row['observation'] = sample(restart[side], traced, index)
