@@ -15,13 +15,14 @@ use fixture::*;
 #[path = "support/host_fixture.rs"]
 mod native_host;
 use native_host::{host, options, wait};
-const GROUPS: usize = 256;
+const GROUPS: usize = 1280;
+const GROUP_EVENTS: usize = 8;
 const PIPELINE: usize = 4;
 const HARD: u64 = 64 * 1024 * 1024;
 
 fn batch(f: &Fixture, index: usize) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
     let key = format!("pressure-group-{index}");
-    let bodies = (0..40)
+    let bodies = (0..GROUP_EVENTS)
         .map(|n| {
             let pattern = format!("{key}-{n}-");
             let mut body = pattern.repeat(24500usize.div_ceil(pattern.len()));
@@ -68,7 +69,7 @@ fn verify(db: &Connection, index: usize, receipt: &CommitReceipt) -> Check {
             )
         })
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-    if actual != expected || actual.len() != 40 {
+    if actual != expected || actual.len() != GROUP_EVENTS {
         return Err("outside operation membership differs from receipt".into());
     }
     Ok(())
@@ -80,8 +81,6 @@ fn measure_continuous_wal_pressure() -> Check {
     let (h, lease) = host(&f)?;
     let mut configuration = options(8)?;
     configuration.maximum_requests = NonZeroU16::new(1).ok_or("zero group limit")?;
-    configuration.resident_bytes =
-        std::num::NonZeroU32::new(8 * 1024 * 1024).ok_or("zero resident limit")?;
     let writer = h.start_writer(configuration, lease)?;
     let client = writer.client();
     let database = f.options.state_directory.join("state.db");
@@ -161,8 +160,8 @@ fn measure_continuous_wal_pressure() -> Check {
         .filter_map(|r| r["checkpoint_us"].as_u64())
         .collect();
     let maximum_pause_us = hard_pauses.iter().max().copied();
-    let report = json!({"scope":"Public host writer under continuous one-MiB groups; not MCP request latency",
-        "groups":GROUPS,"pipeline":PIPELINE,"verified_events":GROUPS*40,
+    let report = json!({"scope":"Public host writer under continuous queued groups; not MCP request latency",
+        "groups":GROUPS,"events_per_group":GROUP_EVENTS,"pipeline":PIPELINE,"verified_events":GROUPS*GROUP_EVENTS,
         "hard_cutoff_bytes":HARD,"sampled_logical_high_water_bytes":largest,
         "maximum_writer_gap_upper_us":maximum_gap_upper_us,
         "continuous_under_250ms":maximum_gap_upper_us<250_000,
@@ -178,7 +177,7 @@ fn measure_continuous_wal_pressure() -> Check {
     )?;
     println!(
         "pressure observer: {GROUPS} groups, {} verified events, {} hard checkpoints, max pause {:?} us, sampled WAL {largest} bytes, maximum writer gap upper {maximum_gap_upper_us} us",
-        GROUPS * 40,
+        GROUPS * GROUP_EVENTS,
         hard_pauses.len(),
         maximum_pause_us
     );
