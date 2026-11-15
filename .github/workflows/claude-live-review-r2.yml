@@ -1,0 +1,71 @@
+name: claude-live-review
+on:
+  push:
+    branches: [prime/claude-live-review-r2]
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  judge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 4d854aa4b8724e55b83271a24945f21cf815bf81
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: linux-live-output-inflight
+          run-id: 43667707940
+          github-token: ${{ github.token }}
+          path: baseline-package
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: linux-live-output-head
+          run-id: 43670273539
+          github-token: ${{ github.token }}
+          path: candidate-package
+      - name: Judge main through its retained native package
+        id: baseline
+        continue-on-error: true
+        run: python3 -B crates/se/tests/judges/claude_live_output_independent.py --package baseline-package --source b7a3c1c5d9d4f016b237a97c5c0d883645276eda --out "$RUNNER_TEMP/review-main"
+      - name: Judge candidate through its retained native package
+        id: candidate
+        continue-on-error: true
+        run: python3 -B crates/se/tests/judges/claude_live_output_independent.py --package candidate-package --source dc402233163766cc26ee13e4e32e0265efd32d62 --out "$RUNNER_TEMP/review-head"
+      - name: Require the behavior control and complete cleanup
+        env:
+          BASELINE: ${{ steps.baseline.outcome }}
+          CANDIDATE: ${{ steps.candidate.outcome }}
+        run: |
+          git rev-parse HEAD > judge-source.txt
+          python3 -I - <<'PY'
+          import json, os
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])
+          base=json.loads((root/'review-main/verdict.json').read_text())
+          head=json.loads((root/'review-head/verdict.json').read_text())
+          assert os.environ['BASELINE']=='failure' and os.environ['CANDIDATE']=='success'
+          assert not base['cleanup_errors'] and not head['cleanup_errors']
+          assert 'assistant output remained hidden until final result' in base['failure'],base
+          assert head['passed'] and head['failure'] is None,head
+          print('Main fails the behavior assertion; candidate passes all independent controls.')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: claude-live-independent-review
+          path: |
+            judge-source.txt
+            ${{ runner.temp }}/review-main/verdict.json
+            ${{ runner.temp }}/review-main/watch.stdout
+            ${{ runner.temp }}/review-main/watch.stderr
+            ${{ runner.temp }}/review-head/verdict.json
+            ${{ runner.temp }}/review-head/watch.stdout
+            ${{ runner.temp }}/review-head/watch.stderr
+          if-no-files-found: error
