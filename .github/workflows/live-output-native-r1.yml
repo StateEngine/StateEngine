@@ -1,0 +1,90 @@
+name: Native live output observation
+on:
+  push:
+    branches: [prime/live-output-native-r1]
+permissions:
+  contents: read
+concurrency:
+  group: live-output-native-r1-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  observe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: windows-2025, target: x86_64-pc-windows-msvc}
+          - {runner: macos-15, target: aarch64-apple-darwin}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    env:
+      MEASURE_SOURCE: 7e565de8101511b60ca97e1d39b2af216642ef71
+      MEASURE_TARGET: ${{ matrix.target }}
+      OUTPUT_BOTH_COHORTS: '1'
+      OUTPUT_RESULT_DELAY_MS: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: f0fc977370d98a8d7ec68d145ea8d7cc166866ef
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.12'}
+      - name: Initialize isolated paths and verify product source
+        id: compiler
+        shell: python
+        run: |
+          import os, pathlib, subprocess, tomllib
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          source = os.environ['MEASURE_SOURCE']
+          actual = subprocess.check_output(['git', 'rev-parse', source + '^{commit}'], text=True).strip()
+          if actual != source:
+              raise ValueError('Product source pin differs')
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'MEASURE_ROOT={root / "live-output"}\n')
+              output.write(f'EVIDENCE_ROOT={root / "live-output-evidence"}\n')
+          text = subprocess.check_output(['git', 'show', source + ':rust-toolchain.toml'], text=True)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'channel={tomllib.loads(text)["toolchain"]["channel"]}\n')
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ steps.compiler.outputs.channel }}
+          components: rust-docs, llvm-tools-preview
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        if: ${{ runner.os == 'Windows' }}
+        with: {arch: amd64}
+      - name: Check observer syntax
+        shell: python
+        run: |
+          import ast, pathlib
+          for path in pathlib.Path('scripts/live_output_observe').glob('*.py'):
+              ast.parse(path.read_text())
+      - name: Check native census syntax
+        if: ${{ runner.os == 'Windows' }}
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/live_output_observe/processes.ps1'), [ref]$tokens, [ref]$errors) > $null
+          if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+      - name: Build stripped release package and observe both output cohorts
+        shell: python
+        run: |
+          import os, subprocess, sys
+          subprocess.run([sys.executable, '-B', 'scripts/live_output_observe/build.py', os.environ['MEASURE_ROOT']], check=True)
+      - name: Collect raw output and archives without private homes
+        if: ${{ always() }}
+        shell: python
+        run: |
+          import os, subprocess, sys
+          subprocess.run([sys.executable, '-B', 'scripts/live_output_observe/collect.py', os.environ['MEASURE_ROOT'], os.environ['EVIDENCE_ROOT']], check=True)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: live-output-native-r1-${{ matrix.target }}
+          path: ${{ runner.temp }}/live-output-evidence
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
