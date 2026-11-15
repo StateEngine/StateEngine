@@ -149,3 +149,63 @@ fn image(target: &str, executable: &Path) -> Result<PathBuf> {
         )),
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod review_399_discovery {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    mod cli_renderer {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../se/src/render/error.rs"));
+    }
+    #[test]
+    fn review_399_discovery_and_render_twins() {
+        let root = std::path::PathBuf::from(std::env::var_os("REVIEW_SSH_ROOT").unwrap());
+        fs::create_dir(&root).unwrap();
+        let script = r#"#!/usr/bin/python3
+import os,json,sys
+from pathlib import Path
+r=Path(os.environ['REVIEW_SSH_ROOT']);mode=(r/'mode').read_text()
+with (r/'calls').open('a') as f:print(json.dumps({'argv':sys.argv,'pid':os.getpid(),'birth':Path('/proc/self/stat').read_text().rsplit(') ',1)[1].split()[19]}),file=f)
+first=sys.argv[-1]=='uname -sm'
+if mode=='both':sys.stderr.buffer.write(b'REVIEW_DENIED publickey\r\n')
+elif mode=='first-only' and first:sys.stderr.buffer.write(b'REVIEW_FIRST_ONLY Permission denied (publickey).\n')
+elif mode=='hostile':sys.stderr.buffer.write(b'\x1b]0;title\x07\x1b[31mREVIEW_DENIED\x1b[0m\x00\x7f\xff\n')
+elif mode=='dns':sys.stderr.buffer.write(b'ssh: Could not resolve hostname review-destination: unavailable\n')
+elif mode=='bound':sys.stderr.buffer.write(b'x'*4097)
+sys.exit(255)
+"#;
+        fs::write(root.join("ssh"), script).unwrap();
+        fs::set_permissions(root.join("ssh"), fs::Permissions::from_mode(0o700)).unwrap();
+        // The outside driver supplies this process's private executable search
+        // path before startup; this test never mutates process-global state.
+        assert_eq!(std::env::split_paths(&std::env::var_os("PATH").unwrap()).next(), Some(root.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let mut failures = Vec::new();
+        for (mode, expected, count) in [("both", "REVIEW_DENIED publickey", 2), ("hostile", "REVIEW_DENIED", 2), ("first-only", "REVIEW_FIRST_ONLY", 2), ("empty", "check the SSH destination", 2), ("dns", "could not resolve the host name", 1), ("bound", "bounded bootstrap response", 1)] {
+            fs::write(root.join("mode"), mode).unwrap();
+            fs::write(root.join("calls"), "").unwrap();
+            let error = match runtime.block_on(super::describe("review-destination", &root)) { Err(error) => error, Ok(_) => panic!("failed SSH discovery succeeded") };
+            let calls: Vec<serde_json::Value> = fs::read_to_string(root.join("calls")).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+            let mut out = Vec::new(); let mut err = Vec::new();
+            let code = cli_renderer::write(&error, &se_types::RenderCx::default(), true, &mut out, &mut err).unwrap();
+            let cli: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            let mcp = crate::mcp::error_value(&error).unwrap();
+            let message = error.body.message();
+            let closed = calls.iter().all(|call| {
+                let pid = call["pid"].as_u64().unwrap();
+                match fs::read_to_string(format!("/proc/{pid}/stat")) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+                    Ok(stat) => stat.rsplit_once(") ").unwrap().1.split_whitespace().nth(19).unwrap() != call["birth"].as_str().unwrap(),
+                    _ => false,
+                }
+            });
+            let cause = message.contains(expected);
+            let remedy = !matches!(mode, "both"|"hostile"|"first-only") || error.body.remedy(&se_types::RenderCx::default()).unwrap().text.contains("ssh review-destination true");
+            let passed = cause && remedy && calls.len() == count && closed && code != 0 && cli == mcp && message.bytes().all(|b| b == b' ' || b.is_ascii_graphic());
+            println!("REVIEW399 {}", serde_json::json!({"case":mode,"passed":passed,"cause_present":cause,"remedy_present":remedy,"calls":calls.len(),"closed":closed,"cli_mcp_envelopes_equal":cli==mcp,"cli_exit":code,"envelope":cli}));
+            if !passed { failures.push(mode); }
+        }
+        drop(runtime);
+        fs::remove_dir_all(&root).unwrap();
+        assert!(failures.is_empty(), "discovery cases failed: {failures:?}");
+    }
+}
