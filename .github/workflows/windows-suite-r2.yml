@@ -1,0 +1,50 @@
+name: Full native Windows suite
+on:
+  push:
+    branches: [prime/windows-suite-r2]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 6b30714d37b1d1ca575e811bba1fc11a633594af
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          shared-key: full-windows-suite-v1
+      - name: Register disposable runner account
+        run: python scripts/ci/installation_account.py provision
+      - name: Build shipping-default archive
+        run: cargo nextest archive --workspace --locked --archive-file tests.tar.zst
+      - name: Run every ordinary shipping-default case
+        env:
+          NEXTEST_PROFILE: ci
+        run: |
+          filter="$(python scripts/ci/custom.py filter)"
+          cargo nextest run --archive-file tests.tar.zst --extract-to . --extract-overwrite --workspace-remap "$PWD" --profile ci --no-fail-fast --no-tests fail -E "$filter"
+      - name: Run every custom harness
+        if: ${{ !cancelled() }}
+        run: python scripts/ci/custom.py run
+      - name: Retain complete outcomes
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: full-windows-suite
+          path: |
+            target/nextest/ci/junit.xml
+            target/nextest/input-judges.json
+          retention-days: 14
+          if-no-files-found: warn
