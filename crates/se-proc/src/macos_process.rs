@@ -128,6 +128,21 @@ fn absent(pid: ProcessId) -> ProcResult<ProcessRead> {
     })
 }
 
+fn image_failure(mut cause: ProcError, pid: ProcessId, birth: &StartIdentity) -> ProcError {
+    if cause.code == ProcErrorCode::IdentityUnreadable {
+        // Returned only after the surrounding BSD reads confirm this birth.
+        // Keep the native error; an unavailable image is not process absence.
+        cause.detail = Box::new(ProcErrorDetail::Identity {
+            pid,
+            expected_start: Some(birth.clone()),
+            found_start: Some(birth.clone()),
+            expected: None,
+            found: None,
+        });
+    }
+    cause
+}
+
 fn exited(pid: ProcessId, boot: BootIdentity, start: StartIdentity) -> ProcResult<ProcessRead> {
     Ok(ProcessRead::ExitedRecord {
         pid,
@@ -170,7 +185,8 @@ pub fn read_process_until(
     if state(&before)? == NativeState::ExitedAwaitingReap {
         return exited(pid, boot, expected_start);
     }
-    let first_image = image(pid, deadline);
+    let first_image =
+        image(pid, deadline).map_err(|cause| image_failure(cause, pid, &expected_start));
     let Some(after) = info(pid, deadline)? else {
         return absent(pid);
     };
@@ -190,7 +206,8 @@ pub fn read_process_until(
         return exited(pid, boot, expected_start);
     }
     let first_image = first_image?;
-    let final_image = image(pid, deadline);
+    let final_image =
+        image(pid, deadline).map_err(|cause| image_failure(cause, pid, &expected_start));
     let Some(last) = info(pid, deadline)? else {
         return absent(pid);
     };
