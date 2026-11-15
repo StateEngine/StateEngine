@@ -41,9 +41,10 @@ fn attempt(
     pid: ProcessId,
     spec: &RuntimeLaunchSpec,
 ) -> Result<RuntimeUserScope, String> {
-    lingering()?;
     // SAFETY: immutable native owner query, independent of process environment.
     let uid = unsafe { libc::geteuid() };
+    login_bound(pid, uid)?;
+    lingering()?;
     let api = symbols::Api::load().ok_or("The native user-manager library is unavailable")?;
     // Manager discovery never accepts a caller-supplied bus address.
     let address = name(&format!("unix:path=/run/user/{uid}/systemd/private"))?;
@@ -121,6 +122,25 @@ fn attempt(
             return Err("The user scope failed before bootstrap admission".into());
         }
         std::thread::sleep(Duration::from_millis(1));
+    }
+}
+fn login_bound(pid: ProcessId, uid: u32) -> Result<(), String> {
+    let text = fs::read_to_string(format!("/proc/{}/cgroup", pid.0)).map_err(|e| e.to_string())?;
+    if text.len() > 65536 {
+        return Err("The inherited cgroup fact exceeds its bound".into());
+    }
+    // Only the native user's top-level login scope calls for migration. A unit
+    // already below its user manager, or an unclassified placement, is retained.
+    let prefix = format!("0::/user.slice/user-{uid}.slice/session-");
+    let session = text
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .and_then(|tail| tail.split('/').next())
+        .and_then(|unit| unit.strip_suffix(".scope"));
+    if session.is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric())) {
+        Ok(())
+    } else {
+        Err("The inherited placement is outside an established login scope; it is preserved without claiming a lasting host lifetime".into())
     }
 }
 fn lingering() -> Result<(), String> {
