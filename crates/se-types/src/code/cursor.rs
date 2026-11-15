@@ -20,72 +20,28 @@ impl CursorKey {
         Ok(())
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(from = "(Option<i64>,)", into = "(Option<i64>,)")]
+#[derive(Clone, Debug)]
 pub struct RankingClock {
     pub now_unix_ms: Option<i64>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(try_from = "(i64, String, bool)", into = "(i64, String, bool)")]
+#[derive(Clone, Debug)]
 pub struct TextWindow {
     pub last_touch_unix_ms: i64,
     pub file: [u8; 16],
     pub has_more: bool,
 }
-impl From<(Option<i64>,)> for RankingClock {
-    fn from(value: (Option<i64>,)) -> Self {
-        Self {
-            now_unix_ms: value.0,
-        }
-    }
-}
-impl From<RankingClock> for (Option<i64>,) {
-    fn from(value: RankingClock) -> Self {
-        (value.now_unix_ms,)
-    }
-}
-impl From<TextWindow> for (i64, String, bool) {
-    fn from(value: TextWindow) -> Self {
-        (
-            value.last_touch_unix_ms,
-            encode(&value.file),
-            value.has_more,
-        )
-    }
-}
-impl TryFrom<(i64, String, bool)> for TextWindow {
-    type Error = SeError;
-    fn try_from(value: (i64, String, bool)) -> AtlasResult<Self> {
-        let file = decode(&value.1)?
-            .try_into()
-            .map_err(|_| cursor_invalid("text window file key requires sixteen bytes"))?;
-        Ok(Self {
-            last_touch_unix_ms: value.0,
-            file,
-            has_more: value.2,
-        })
-    }
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub struct CodeCursorPosition {
-    version: u8,
     mode: String,
     project: crate::ProjectId,
     root: RootId,
     epoch: CacheEpoch,
-    #[serde(with = "digest_wire")]
     query_digest: [u8; 32],
     pub last_key: CursorKey,
     pub generation_hint: Generation,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change_fence: Option<Generation>,
     /// Freeze time decay across pages, including an explicitly unknown clock.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "t")]
     pub ranking_clock: Option<RankingClock>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "w")]
     pub text_window: Option<TextWindow>,
 }
 #[path = "cursor/compact.rs"]
@@ -103,7 +59,6 @@ impl CodeCursorPosition {
             return Err(cursor_invalid("invalid query mode"));
         }
         Ok(Self {
-            version: 1,
             mode: mode.into(),
             project: index.project.clone(),
             root: index.root.clone(),
@@ -142,8 +97,7 @@ impl CodeCursorPosition {
         epoch: &CacheEpoch,
         viewer: &AtlasPrincipal,
     ) -> AtlasResult<u64> {
-        if self.version != 1
-            || &self.project != project
+        if &self.project != project
             || &self.root != root
             || &self.epoch != epoch
             || self.mode != "changes-range"
@@ -171,21 +125,15 @@ impl CodeCursorPosition {
     pub fn decode(value: &AtlasCursor) -> AtlasResult<Self> {
         use super::AtlasText;
         let bytes = decode(value.as_str())?;
-        let cursor: Self = if bytes.first() == Some(&2) {
-            let position = compact::decode(&bytes)?;
-            if compact::encode(&position)? != bytes {
-                return Err(cursor_invalid("noncanonical compact cursor"));
-            }
-            position
-        } else {
-            let position: Self = serde_json::from_slice(&bytes).map_err(cursor_invalid)?;
-            if position.version != 1
-                || serde_json::to_vec(&position).map_err(cursor_invalid)? != bytes
-            {
-                return Err(cursor_invalid("unsupported version or noncanonical JSON"));
-            }
-            position
-        };
+        if bytes.first() != Some(&2) {
+            return Err(cursor_invalid(
+                "this page link has expired, run the search again",
+            ));
+        }
+        let cursor = compact::decode(&bytes)?;
+        if compact::encode(&cursor)? != bytes {
+            return Err(cursor_invalid("noncanonical compact cursor"));
+        }
         cursor.last_key.validate()?;
         Ok(cursor)
     }
@@ -268,25 +216,6 @@ fn decode(text: &str) -> AtlasResult<Vec<u8>> {
     }
     Ok(result)
 }
-mod digest_wire {
-    use serde::{Deserialize, Deserializer, Serializer};
-    pub fn serialize<S: Serializer>(bytes: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&super::encode(bytes))
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
-        let text = String::deserialize(deserializer)?;
-        if text.len() != 43 {
-            return Err(serde::de::Error::custom(
-                "digest requires 43 canonical base64url bytes",
-            ));
-        }
-        super::decode(&text)
-            .map_err(serde::de::Error::custom)?
-            .try_into()
-            .map_err(|_| serde::de::Error::custom("digest requires exactly 32 bytes"))
-    }
-}
-
 mod key_bytes {
     use serde::{Deserialize, Deserializer, Serializer};
     pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {

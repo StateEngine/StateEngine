@@ -1,5 +1,4 @@
 //! Bounded position wire: raw hashes and UUIDs, variable-length ordering numbers.
-//! Version-one canonical JSON remains readable in the parent codec.
 use super::*;
 
 fn number(mut value: u64, out: &mut Vec<u8>) {
@@ -40,7 +39,7 @@ id!(epoch, read_epoch, CacheEpoch);
 
 pub(super) fn encode(value: &CodeCursorPosition) -> AtlasResult<Vec<u8>> {
     value.last_key.validate()?;
-    if value.version != 1 || value.mode.is_empty() || value.mode.len() > 32 {
+    if value.mode.is_empty() || value.mode.len() > 32 {
         return Err(cursor_invalid("invalid query mode"));
     }
     let mut out = vec![2];
@@ -120,7 +119,6 @@ pub(super) fn decode(value: &[u8]) -> AtlasResult<CodeCursorPosition> {
         return Err(cursor_invalid("trailing compact cursor bytes"));
     }
     Ok(CodeCursorPosition {
-        version: 1,
         mode,
         project,
         root,
