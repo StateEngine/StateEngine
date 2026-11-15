@@ -2,9 +2,12 @@
 matched process profiles of the se CLI tree and the destination session.
 
 Runs as an ordinary (non-root) user with passwordless sudo for user management.
-Each attempt gets a fresh destination user, fresh source home and fresh XDG
-directories; the image cache is absent by construction. The slowest attempt is
-retained, never dropped.
+The source side runs as the disposable OS user se381check: the product's ssh
+client reads its config from the invoking user's passwd home, so the pairing
+alias must live in a real home, and it lives in this user's, never in the
+judge's real ~/.ssh. Each attempt gets a fresh destination user, fresh source
+home and fresh XDG directories; the image cache is absent by construction.
+The slowest attempt is retained, never dropped.
 
 Usage:
   python3 cold-pair-profile.py --se /path/to/release/se --repo REPO --output DIR \
@@ -22,7 +25,6 @@ import argparse
 import json
 import os
 import pathlib
-import shutil
 import signal
 import subprocess
 import sys
@@ -34,6 +36,113 @@ def sudo(*args):
     if proc.returncode != 0:
         raise RuntimeError(f'sudo {" ".join(args)} failed: {proc.stderr.strip()}')
     return proc.stdout
+
+
+# The disposable source-side account. The product's ssh client reads its
+# config from the invoking user's passwd home (OpenSSH ignores $HOME), so
+# the pairing alias must live in a real home. It lives in this user's home,
+# never in the judge's real ~/.ssh (the 2026-11-15 harness incident lost the
+# judge's config to an in-memory save/restore that was not crash-safe). The
+# account is judge-owned and disposable: every process of its uid is one
+# this judge reaps.
+SOURCE_USER = 'se381check'
+
+
+def ensure_source_user():
+    import pwd
+    try:
+        entry = pwd.getpwnam(SOURCE_USER)
+    except KeyError:
+        sudo('useradd', '-m', '-s', '/usr/bin/bash', SOURCE_USER)
+        entry = pwd.getpwnam(SOURCE_USER)
+    sudo('install', '-d', '-m', '700', '-o', SOURCE_USER, '-g', SOURCE_USER,
+         f'{entry.pw_dir}/.ssh')
+    return entry.pw_uid, pathlib.Path(entry.pw_dir)
+
+
+def source_cmd(argv, xdg, home):
+    """A product invocation as the disposable source user. env -i wipes the
+    judge's session markers (CODEX_*, SE_*, STATEENGINE_*) that make the
+    product's owner probe refuse; the XDG set pins se state under the
+    attempt home. ssh reads this passwd home's .ssh/config, which the judge
+    stages per attempt."""
+    env = ['HOME=' + str(home),
+           'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin']
+    env.extend(f'{key}={value}' for key, value in xdg.items())
+    return ['sudo', '-n', '-u', SOURCE_USER, 'env', '-i', *env, *argv]
+
+
+def stage_repo(repo, staging):
+    """--repo must be traversable and readable by the source user. The judge
+    may run from a home chain the source user cannot enter (fleet host), in
+    which case the repo is bind-mounted into the judge-owned staging dir.
+    A worktree checkout keeps its git metadata outside the mounted path,
+    which the source user still cannot reach; that would fail init with
+    "not a git repository", so it falls back to a fresh minimal git repo,
+    which keeps init's git observation honest. Returns
+    (path, mountpoint-or-None, mode)."""
+    probe = subprocess.run(['sudo', '-n', '-u', SOURCE_USER, 'test', '-d', repo],
+                           capture_output=True)
+    if probe.returncode == 0:
+        return repo, None, 'direct'
+    if os.path.isfile(pathlib.Path(repo) / '.git'):
+        # A worktree: its gitdir is not inside the mounted path, so no mount
+        # can make it readable.
+        return _fresh_repo(staging)
+    mountpoint = str(staging / 'repo')
+    try:
+        mounts = pathlib.Path('/proc/mounts').read_text()
+    except OSError:
+        mounts = ''
+    if f' {mountpoint} ' in mounts:
+        sudo('umount', mountpoint)  # a crashed earlier run may hold it
+    sudo('install', '-d', '-m', '755', '-o', SOURCE_USER, '-g', SOURCE_USER,
+         mountpoint)
+    sudo('mount', '--bind', repo, mountpoint)
+    return mountpoint, mountpoint, 'bind-mount'
+
+
+def _fresh_repo(staging):
+    fresh = str(staging / 'repo-fresh')
+    sudo('rm', '-rf', fresh)
+    sudo('install', '-d', '-m', '700', '-o', SOURCE_USER, '-g', SOURCE_USER,
+         fresh)
+    for argv in (['git', 'init', '-q', '-b', 'main', fresh],
+                 ['git', '-C', fresh, '-c', 'user.name=se381-judge',
+                  '-c', 'user.email=se381@judge', 'commit', '-q',
+                  '--allow-empty', '-m', 'se381 judge repo']):
+        proc = subprocess.run(['sudo', '-n', '-u', SOURCE_USER, *argv],
+                              capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f'{" ".join(argv[:3])} failed: {proc.stderr.strip()}'
+            )
+    return fresh, None, 'fresh-minimal'
+
+
+def reap_uid(uid):
+    """TERM, then KILL, every process of uid; wait for the table to clear.
+    The caller owns the uid (judge-created, disposable). SIGKILL is
+    asynchronous and userdel refuses while any entry of the uid remains
+    (any state, zombies included)."""
+    report = {'term_errors': 0, 'kill_errors': 0, 'uid_gone': None}
+
+    def kill_uid(sig, field):
+        for pid in [int(pid) for pid, info in process_table().items()
+                    if info['uid'] == uid]:
+            try:
+                sudo('kill', '-s', sig, str(pid))
+            except (RuntimeError, OSError):
+                report[field] += 1  # the pid is already gone
+
+    kill_uid('TERM', 'term_errors')
+    deadline = clock() + 5
+    while clock() < deadline and any(
+            info['uid'] == uid for info in process_table().values()):
+        time.sleep(0.1)
+    kill_uid('KILL', 'kill_errors')
+    report['uid_gone'] = wait_uid_gone(uid, 30)
+    return report
 
 
 def clock():
@@ -185,22 +294,6 @@ def host_snapshot():
     return snap
 
 
-def find_destination_markers(dest_home, source_home):
-    """Edge-detect product-side phase markers in the destination home tree."""
-    markers = {}
-    try:
-        for path in pathlib.Path(dest_home).rglob('*'):
-            name = path.name
-            if name == 'remote-sessions' and path.is_dir():
-                if any(path.iterdir()):
-                    markers['dest_accept_session'] = True
-            elif name == 'se' and path.is_file() and os.access(str(path), os.X_OK):
-                markers.setdefault('dest_image', str(path))
-    except OSError:
-        pass
-    return markers
-
-
 # The product's runtime-cache prepare check (staging::prepare, Linux flavor),
 # verbatim: the destination runs it as itself, and its refusal names nothing.
 DEST_PREPARE_EXACT = (
@@ -294,12 +387,19 @@ def dest_prepare_diagnostic(outdir, dest_user, args, digest):
     return report
 
 
-def run_attempt(index, args, ssh_port, source_pub):
+def run_attempt(index, args, ssh_port, source_pub, staging, source_home,
+                source_uid, se_bin, repo_path):
     outdir = pathlib.Path(args.output) / f'attempt-{index}'
     outdir.mkdir(parents=True, exist_ok=False)
     dest_user = f'pair-{index}-{os.getuid()}'
     dest_home = f'/home/{dest_user}'
-    src_home = f'{args.output}/src-home-{index}'
+    # The source side runs as the disposable source user, in a fresh home
+    # per attempt: a reused home still holds the previous attempt's live IPC
+    # listener, which the product refuses with ipc-unavailable/AlreadyExists.
+    # Nothing under the judge's home is written.
+    src_home = f'{staging}/src-home-{index}'
+    sudo('install', '-d', '-m', '700', '-o', SOURCE_USER, '-g', SOURCE_USER,
+         src_home)
     xdg = {
         'XDG_CONFIG_HOME': f'{src_home}/xdg-config',
         'XDG_CACHE_HOME': f'{src_home}/xdg-cache',
@@ -308,8 +408,22 @@ def run_attempt(index, args, ssh_port, source_pub):
         'HOME': src_home,
     }
     for value in xdg.values():
-        pathlib.Path(value).mkdir(parents=True, exist_ok=True)
-        os.chmod(value, 0o700)
+        sudo('install', '-d', '-m', '700', '-o', SOURCE_USER, '-g', SOURCE_USER,
+             value)
+
+    # A fresh source home must be initialized like a stranger's first run;
+    # init is recorded setup, not part of the measured pairing invocation.
+    # It runs before the destination account exists, so an init failure
+    # leaks no destination user.
+    init_t0 = clock()
+    init_proc = subprocess.run(
+        source_cmd([se_bin, '--home', src_home, 'init', '--repo', repo_path],
+                   xdg, source_home),
+        capture_output=True, text=True)
+    init_sec = round(clock() - init_t0, 6)
+    if init_proc.returncode != 0:
+        raise RuntimeError(f'se init failed (exit {init_proc.returncode}): '
+                           f'{init_proc.stderr.strip()}')
 
     # Fresh destination account; sshd already running on the loopback port.
     sudo('useradd', '-m', '-s', '/usr/bin/bash', dest_user)
@@ -317,39 +431,21 @@ def run_attempt(index, args, ssh_port, source_pub):
     sudo('install', '-d', '-m', '700', '-o', dest_user, '-g', dest_user, dest_ssh)
     sudo('install', '-m', '600', '-o', dest_user, '-g', dest_user, source_pub,
          f'{dest_ssh}/authorized_keys')
-    # ssh resolves its user config from the invoking user's passwd-entry
-    # home, not from $HOME (modern OpenSSH ignores $HOME), so the alias must
-    # live there; the synthetic HOME stays only for the se state home.
-    import pwd
-    real_ssh = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir) / '.ssh'
-    real_ssh.mkdir(mode=0o700, exist_ok=True)
-    os.chmod(real_ssh, 0o700)
-    real_config = real_ssh / 'config'
-    saved_config = real_config.read_bytes() if real_config.exists() else None
-    real_config.write_text(
+    # The pairing alias in the source user's own ssh config (passwd home --
+    # OpenSSH ignores $HOME). The file is disposable: rewritten per attempt,
+    # no save/restore.
+    alias = outdir / 'source-ssh-config'
+    alias.write_text(
         f'Host pairdest\n'
         f'  HostName 127.0.0.1\n'
         f'  Port {ssh_port}\n'
         f'  User {dest_user}\n'
-        f'  IdentityFile {args.identity}\n'
+        f'  IdentityFile {staging}/.ssh/id_pair\n'
         f'  IdentitiesOnly yes\n'
         f'  StrictHostKeyChecking accept-new\n'
         f'  BatchMode yes\n')
-    os.chmod(real_config, 0o600)
-
-    se_env = dict(os.environ)
-    se_env.update(xdg)
-
-    # A fresh source home must be initialized like a stranger's first run;
-    # init is recorded setup, not part of the measured pairing invocation.
-    init_t0 = clock()
-    init_proc = subprocess.run(
-        [args.se, '--home', src_home, 'init', '--repo', args.repo],
-        env=se_env, capture_output=True, text=True)
-    init_sec = round(clock() - init_t0, 6)
-    if init_proc.returncode != 0:
-        raise RuntimeError(f'se init failed (exit {init_proc.returncode}): '
-                           f'{init_proc.stderr.strip()}')
+    sudo('install', '-m', '600', '-o', SOURCE_USER, '-g', SOURCE_USER,
+         str(alias), f'{source_home}/.ssh/config')
 
     # Sampler: child of this judge, starts before the CLI spawn.
     sampler = subprocess.Popen(
@@ -357,8 +453,10 @@ def run_attempt(index, args, ssh_port, source_pub):
          '--out', str(outdir / 'trace.jsonl'),
          '--se', args.se,
          '--dest-user', dest_user,
-         '--dest-home', dest_home],
-        env=se_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+         '--dest-home', dest_home,
+         '--source-uid', str(source_uid)],
+        env=dict(os.environ), stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL)
     time.sleep(0.2)
 
     t0 = clock()
@@ -376,8 +474,10 @@ def run_attempt(index, args, ssh_port, source_pub):
     exit_code = None
     try:
         cli_proc = subprocess.Popen(
-            [args.se, '--home', src_home, 'remote', 'add', 'pairdest', '--name', 'loop'],
-            env=se_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            source_cmd([se_bin, '--home', src_home, '--json', 'remote',
+                        'add', 'pairdest', '--name', 'loop'],
+                       xdg, source_home),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             start_new_session=True)
         try:
             stdout_text, stderr_text = cli_proc.communicate(
@@ -393,15 +493,6 @@ def run_attempt(index, args, ssh_port, source_pub):
             try:
                 stdout_text, stderr_text = cli_proc.communicate(timeout=10)
             except subprocess.SubprocessError:
-                pass
-        # The alias is no longer needed once the invocation has returned.
-        if saved_config is not None:
-            real_config.write_bytes(saved_config)
-            os.chmod(real_config, 0o600)
-        else:
-            try:
-                real_config.unlink()
-            except FileNotFoundError:
                 pass
         t1 = clock()
         attempt['wall_sec'] = round(t1 - t0, 6)
@@ -420,17 +511,26 @@ def run_attempt(index, args, ssh_port, source_pub):
         except subprocess.TimeoutExpired:
             sampler.kill()
 
+    # Source-side reap: the source user is judge-owned, so every surviving
+    # process of its uid (CLI, native host, ssh children, a detached daemon)
+    # is this judge's to clean.
+    attempt['source_teardown'] = {'source_uid': source_uid, **reap_uid(source_uid)}
+
     # Image publication witness: the destination must hold an executable copy
-    # of the exact source binary.
+    # of the exact source binary. The runtime cache dirs are 0700 for the
+    # destination user, so the readback runs through root (the judge cannot
+    # traverse them, and the destination user is removed shortly after).
     src_sha = hashlib_sha256(args.se)
     published = None
     try:
-        for path in pathlib.Path(dest_home).rglob('se'):
-            if path.is_file() and os.access(str(path), os.X_OK):
-                if hashlib_sha256(str(path)) == src_sha:
-                    published = str(path)
-                    break
-    except OSError:
+        found = sudo('find', dest_home, '-name', 'se', '-type', 'f',
+                     '-perm', '-u+x').split()
+        for path in found:
+            digest = sudo('sha256sum', path).split()[0]
+            if digest == src_sha:
+                published = path
+                break
+    except (RuntimeError, OSError):
         pass
     attempt['checks']['image_published_sha256_match'] = published is not None
     attempt['image_sha256'] = src_sha
@@ -456,20 +556,10 @@ def run_attempt(index, args, ssh_port, source_pub):
                 break
         dest_uid = teardown['dest_uid']
         if dest_uid is not None:
-            def kill_uid(sig, field):
-                for pid in [int(pid) for pid, info in process_table().items()
-                            if info['uid'] == dest_uid]:
-                    try:
-                        sudo('kill', '-s', sig, str(pid))
-                    except (RuntimeError, OSError):
-                        teardown[field] += 1  # the pid is already gone
-            kill_uid('TERM', 'term_errors')
-            deadline = clock() + 5
-            while clock() < deadline and any(
-                    info['uid'] == dest_uid for info in process_table().values()):
-                time.sleep(0.1)
-            kill_uid('KILL', 'kill_errors')
-            teardown['uid_gone_before_userdel'] = wait_uid_gone(dest_uid, 30)
+            reaped = reap_uid(dest_uid)
+            teardown['term_errors'] = reaped['term_errors']
+            teardown['kill_errors'] = reaped['kill_errors']
+            teardown['uid_gone_before_userdel'] = reaped['uid_gone']
     except OSError:
         pass
     if teardown['dest_uid'] is not None:
@@ -480,7 +570,8 @@ def run_attempt(index, args, ssh_port, source_pub):
             teardown['userdel_ok'] = False
             teardown['userdel_error'] = str(error)
     attempt['teardown'] = teardown
-    shutil.rmtree(src_home, ignore_errors=True)
+    # src_home is source-user owned; the judge cannot unlink it without root.
+    sudo('rm', '-rf', src_home)
     attempt['finished'] = clock()
     (outdir / 'attempt.json').write_text(json.dumps(attempt, indent=1) + '\n')
     return attempt
@@ -521,9 +612,45 @@ def main():
     source_pub = output / 'source.pub'
     source_pub.write_text(pub_proc.stdout)
     os.chmod(source_pub, 0o644)
+    # Stage the source side under the source user's own home: the product
+    # refuses a state home whose ancestor dirs belong to another user
+    # (LocationUnsafe), and the judge's own home chain is exactly that.
+    # The product binary and the identity may sit under a home chain the
+    # source user cannot enter, so both are copied into a chowned staging
+    # tree. A crashed earlier run's staging (unique pid suffix) is swept.
+    source_uid, source_home = ensure_source_user()
+    for name in sudo('ls', '-1', str(source_home)).split():
+        if name.startswith('381-src-staging-'):
+            sudo('rm', '-rf', str(source_home / name))
+    staging = source_home / f'381-src-staging-{os.getpid()}'
+    sudo('install', '-d', '-m', '700', '-o', SOURCE_USER, '-g', SOURCE_USER,
+         str(staging / '.ssh'))
+    se_bin = str(staging / 'se')
+    sudo('install', '-m', '755', '-o', SOURCE_USER, '-g', SOURCE_USER,
+         args.se, se_bin)
+    sudo('install', '-m', '600', '-o', SOURCE_USER, '-g', SOURCE_USER,
+         args.identity, str(staging / '.ssh' / 'id_pair'))
+    repo_path, repo_mount, repo_mode = stage_repo(args.repo, staging)
+
+    import atexit
+
+    def cleanup_run():
+        if repo_mount is not None:
+            try:
+                sudo('umount', repo_mount)
+            except (RuntimeError, OSError):
+                pass
+        try:
+            sudo('rm', '-rf', str(staging))
+        except (RuntimeError, OSError):
+            pass
+
+    atexit.register(cleanup_run)
     attempts = []
     for index in range(1, args.attempts + 1):
-        attempt = run_attempt(index, args, args.ssh_port, str(source_pub))
+        attempt = run_attempt(index, args, args.ssh_port, str(source_pub),
+                              staging, source_home, source_uid, se_bin,
+                              repo_path)
         attempts.append(attempt)
         line = (f'attempt {index}: {attempt.get("wall_sec")}s '
                 f'exit={attempt.get("exit_code")} checks={attempt["checks"]}')
@@ -537,6 +664,7 @@ def main():
     summary = {
         'issue': 381,
         'se': args.se,
+        'repo_mode': repo_mode,
         'attempts': attempts,
         'wall_sec': {'max': max(times) if times else None,
                      'median': median,

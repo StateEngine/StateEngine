@@ -135,20 +135,36 @@ def disk_snapshot():
 
 
 def destination_markers(dest_home):
+    """Edge-detect product-side phase markers in the destination home tree.
+    Runs through root: the runtime cache and session dirs are 0700 for the
+    destination user, so the judge's uid cannot traverse or stat them.
+    """
     markers = {}
     try:
         found = subprocess.run(
-            ['find', dest_home, '-name', 'se', '-type', 'f', '-o',
-             '-name', 'remote-sessions', '-type', 'd'],
-            capture_output=True, text=True, timeout=2)
+            ['sudo', '-n', 'find', dest_home, '-name', 'se', '-type', 'f',
+             '-perm', '-u+x'],
+            capture_output=True, text=True, timeout=5)
         for line in found.stdout.splitlines():
-            if line.strip() == f'{dest_home}':
-                continue
-            if os.path.basename(line) == 'remote-sessions' and os.path.isdir(line) \
-                    and any(os.scandir(line)):
-                markers['dest_accept_session'] = True
-            elif os.path.basename(line) == 'se' and os.access(line, os.X_OK):
+            line = line.strip()
+            if line and line != dest_home:
                 markers.setdefault('dest_image', line)
+                break
+        sessions = subprocess.run(
+            ['sudo', '-n', 'find', dest_home, '-name', 'remote-sessions',
+             '-type', 'd', '-mindepth', '1'],
+            capture_output=True, text=True, timeout=5)
+        for line in sessions.stdout.splitlines():
+            line = line.strip()
+            if not line or line == dest_home:
+                continue
+            inner = subprocess.run(
+                ['sudo', '-n', 'find', line, '-mindepth', '1',
+                 '-maxdepth', '1'],
+                capture_output=True, text=True, timeout=5)
+            if inner.stdout.strip():
+                markers['dest_accept_session'] = True
+                break
     except (OSError, subprocess.SubprocessError):
         pass
     return markers
@@ -159,6 +175,8 @@ def main():
     parser.add_argument('--out', required=True)
     parser.add_argument('--se', required=True)
     parser.add_argument('--dest-user', required=True)
+    parser.add_argument('--source-uid', type=int, required=True,
+                        help='uid of the disposable source user the CLI runs as')
     parser.add_argument('--dest-home', required=True)
     parser.add_argument('--interval', type=float, default=0.1)
     args = parser.parse_args()
@@ -189,7 +207,7 @@ def main():
         t = round(time.monotonic() - start, 3)
         if cli_pid is None:
             for pid, info in process_table().items():
-                if info['uid'] == os.getuid():
+                if info['uid'] == args.source_uid:
                     cmd = read_cmdline(pid)
                     if cmd and os.path.basename(cmd[0]) == 'se' \
                             and 'remote' in cmd and 'add' in cmd and 'pairdest' in cmd:
@@ -256,10 +274,17 @@ def main():
     last = {}
     d_ticks = {}
     wchan = {}
+    cli_seen_at = None
+    first_marker = {}
     with open(args.out) as handle:
         for line in handle:
             ticks_read += 1
             row = json.loads(line)
+            if cli_seen_at is None and row['cli_pid'] is not None:
+                cli_seen_at = row['t']
+            for key, value in (row.get('markers') or {}).items():
+                if value and key not in first_marker:
+                    first_marker[key] = row['t']
             for group in ('procs', 'dest'):
                 for pid, snap in row[group].items():
                     first.setdefault(pid, snap['cpu_ticks'])
@@ -271,8 +296,9 @@ def main():
                         wchan[key] = wchan.get(key, 0) + 1
     summary = {
         'ticks': ticks_read,
-        'cli_seen_at': None,
-        'first_marker': {k: None for k in ('dest_image', 'dest_accept_session')},
+        'cli_seen_at': cli_seen_at,
+        'first_marker': {k: first_marker.get(k)
+                         for k in ('dest_image', 'dest_accept_session')},
         'cpu_ticks_total': {pid: last[pid] - first.get(pid, last[pid])
                             for pid in last},
         'd_state_ticks': d_ticks,
