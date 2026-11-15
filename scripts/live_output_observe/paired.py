@@ -49,7 +49,13 @@ def main():
         env = dict(os.environ, MEASURE_SOURCE=source, OUTPUT_BUILD_ONLY='1')
         ledger['builds'][arm] = invoke('build.py', root / arm, env,
                                       root / (arm + '-build.stdout'), 6000)
-        if ledger['builds'][arm]['exit_code'] != 0:
+        if ledger['builds'][arm]['exit_code'] == 0:
+            cache = root / arm / 'target'
+            if cache.is_symlink():
+                raise ValueError('Owned compiler cache unexpectedly became a link')
+            shutil.rmtree(cache)
+            ledger['builds'][arm]['compiler_cache_removed'] = True
+        else:
             blocked = 'Previous build failed; no further work is qualified on this runner'
         save(root / 'paired.json', ledger)
     for phase, delay, order in [('immediate', '0', ('base', 'head')),
