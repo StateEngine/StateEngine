@@ -590,5 +590,8 @@ fn run(
                 return Ok(DrainedHost { host, report });
             }
         }
+        if host.engine.checkpoint_pending() {
+            status.request_copy();
+        }
     }
 }

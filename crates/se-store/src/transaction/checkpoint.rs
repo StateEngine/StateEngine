@@ -3,7 +3,7 @@
 use super::*;
 use std::sync::{Arc, Condvar, Mutex};
 
-const SOFT_FRAMES: i64 = 256;
+pub(crate) const SOFT_FRAMES: i64 = 256;
 
 #[derive(Default)]
 pub(crate) struct Schedule {

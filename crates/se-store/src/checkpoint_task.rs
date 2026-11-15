@@ -1,11 +1,8 @@
-//! Background WAL maintenance: idle checkpoints run on a dedicated connection
-//! in a dedicated thread, so checkpoint I/O never shares the writer task.
-//! PASSIVE in WAL mode does not block the writer, and a slow checkpoint must
-//! not stall appends either. The task runs when the writer goes idle after a
-//! write, which keeps the WAL far below the 64 MiB capacity cutoff instead of
-//! accumulating toward it, and does nothing at all while the host is idle.
+//! Background WAL maintenance copies new frames on a dedicated connection.
+//! The writer signals soft checkpoint debt during traffic; file resets wait
+//! for quiet. The foreground writer retains the hard capacity backstop.
 use crate::backup_context::MAX_WAL_BYTES;
-use crate::transaction::checkpoint::probe;
+use crate::transaction::checkpoint::{SOFT_FRAMES, probe};
 use crate::{error::*, *};
 use rusqlite::Connection;
 use std::{
@@ -17,7 +14,7 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-/// Require a quiet interval before checkpoint I/O; brief request gaps are traffic.
+/// Require a quiet interval before resetting the WAL file.
 const TICK: Duration = Duration::from_millis(250);
 /// Lock-contention backoff for the background connection. A busy reader
 /// defers maintenance to another quiet interval. This bounds SQLite's lock
@@ -63,21 +60,22 @@ impl State {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
-/// Receipt-visible maintenance state shared between the task and the writer.
-/// The idle flag is set by the writer around its blocking receive: the task
-/// performs checkpoint I/O only while the writer has no command in flight, so
-/// a newly arriving write can still overlap a checkpoint's native I/O. The condition
-/// pairs with that edge: the task waits on it instead of polling, and the
-/// writer notifies whenever it goes idle or the task must exit. Brief gaps
-/// between requests coalesce into one quiet interval; a settled host has no
-/// periodic maintenance wakes.
+#[derive(Default)]
+struct Wake {
+    edge: Option<Instant>,
+    copy: bool,
+}
+/// Receipt-visible maintenance state shared by the task and writer. Soft debt
+/// wakes a background copy during traffic; the latest idle edge qualifies resets
+/// only after a quiet interval. Both signals share the condition, so an idle
+/// host with no maintenance debt has no periodic wakes.
 #[derive(Clone)]
 pub(crate) struct Status {
     state: Arc<State>,
     idle: Arc<AtomicBool>,
     /// Latest idle edge, coalesced until the writer has stayed quiet for TICK.
     /// Shutdown also signals this condition so no timer delays joining.
-    notify: Arc<(Mutex<Option<Instant>>, Condvar)>,
+    notify: Arc<(Mutex<Wake>, Condvar)>,
 }
 impl Default for Status {
     fn default() -> Self {
@@ -86,7 +84,7 @@ impl Default for Status {
         Self {
             state: Arc::default(),
             idle: Arc::new(AtomicBool::new(false)),
-            notify: Arc::new((Mutex::new(None), Condvar::new())),
+            notify: Arc::new((Mutex::new(Wake::default()), Condvar::new())),
         }
     }
 }
@@ -117,8 +115,18 @@ impl Status {
             self.wake();
         }
     }
-    fn idle(&self) -> bool {
-        self.idle.load(Ordering::Acquire)
+    /// Soft debt wakes the copy path without consuming the quiet-period edge.
+    /// Multiple writes coalesce while a copy is already in progress.
+    pub(crate) fn request_copy(&self) {
+        let (lock, condvar) = &*self.notify;
+        let mut seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        seen.copy = true;
+        condvar.notify_one();
+    }
+    fn quiet(&self) -> bool {
+        let (lock, _) = &*self.notify;
+        let edge = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.idle.load(Ordering::Acquire) && edge.edge.is_none_or(|edge| edge.elapsed() >= TICK)
     }
     /// Signal the maintenance task: the writer has gone idle, or the task must
     /// stop. Cheap enough for the writer's idle edge, and lost notifications
@@ -126,10 +134,10 @@ impl Status {
     pub(crate) fn wake(&self) {
         let (lock, condvar) = &*self.notify;
         let mut seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        *seen = Some(Instant::now());
+        seen.edge = Some(Instant::now());
         condvar.notify_all();
     }
-    /// Coalesce idle edges until a quiet interval, or wake immediately on shutdown.
+    /// Wake for copy debt, a quiet reset interval, or shutdown.
     ///
     /// `cap` is the backstop for work already owed: a checkpoint that could
     /// not finish (a pinned reader) retries on the next tick, so it is passed
@@ -143,9 +151,14 @@ impl Status {
         let (lock, condvar) = &*self.notify;
         let mut seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         while !closed.load(Ordering::Acquire) {
+            if seen.copy {
+                // Retain the idle edge: copying does not qualify a file reset.
+                seen.copy = false;
+                return false;
+            }
             // An idle edge during the wait restarts the quiet interval. Only
             // retained maintenance debt uses the retry deadline without an edge.
-            let ready = seen.map(|edge| edge + TICK).or(deadline);
+            let ready = seen.edge.map(|edge| edge + TICK).or(deadline);
             match ready {
                 None => {
                     seen = condvar
@@ -166,7 +179,7 @@ impl Status {
         }
         // Consume the edge: after a successful checkpoint, a settled host
         // waits indefinitely instead of repeating maintenance on an old edge.
-        *seen = None;
+        seen.edge = None;
         closed.load(Ordering::Acquire)
     }
     fn set(&self, maint: Maint) {
@@ -335,11 +348,6 @@ fn run(
     }
 }
 fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>, status: &Status) {
-    if !status.idle() {
-        // The writer has traffic: checkpoint I/O now would fight its commits
-        // for the WAL write lock and push them past the busy timeout.
-        return;
-    }
     // The writer validates its lease before every operation; the task mirrors
     // that gate before its own I/O so a tick that outlives the writer (the
     // detached drop window) cannot touch a store that has moved on.
@@ -379,30 +387,7 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
         return;
     }
     if wal.log == wal.done && wal.log >= RESET_MIN_FRAMES {
-        // Every frame is already in the main database: the only remaining
-        // work is resetting the file, and a reset that copies no frames is
-        // fast. PASSIVE never resets a WAL it copies no frames from, so
-        // without this step a stranded WAL would keep its high-water size
-        // until the next full reset. The short backoff bounds how long a
-        // straggling write waits for it. A WAL at the 64 MiB capacity
-        // cutoff with uncopied frames deliberately falls through to the
-        // PASSIVE path below and pays for its copy in small yieldable
-        // steps: a full TRUNCATE here would copy and reset 64 MiB in one
-        // tick while holding the WAL lock, and under load that hold
-        // collides with the writer's own inline cutoff until one side
-        // exhausts its busy wait into a spurious refusal (#201). The
-        // write path stays the sole owner of the capacity cut.
-        if !status.idle() {
-            return;
-        }
-        match checkpoint(db, "TRUNCATE") {
-            Ok((_, log, _)) => status.set(if log > 0 {
-                Maint::Pending
-            } else {
-                Maint::Clear
-            }),
-            Err(error) => status.set(Maint::Failed(error)),
-        }
+        reset_when_quiet(db, status);
         return;
     }
     // Fully checkpointed and small: nothing to do, and no debt left behind.
@@ -410,25 +395,34 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
         status.set(Maint::Clear);
         return;
     }
-    if !status.idle() {
+    if wal.log < SOFT_FRAMES && !status.quiet() {
         return;
     }
     // New frames to copy: PASSIVE is the mode that never waits on a reader in
     // the WAL, reporting busy instead.
     match checkpoint(db, "PASSIVE") {
         Ok((busy, log, done)) if busy == 0 && done == log => {
-            // The copy completed fully, so reset the file to zero now instead
-            // of leaving it at its high-water size until an idle gap.
-            match checkpoint(db, "TRUNCATE") {
-                Ok((_, log, _)) => status.set(if log > 0 {
-                    Maint::Pending
-                } else {
-                    Maint::Clear
-                }),
-                Err(error) => status.set(Maint::Failed(error)),
-            }
+            reset_when_quiet(db, status);
         }
         Ok((busy, log, done)) => status.set(if busy != 0 || log > done {
+            Maint::Pending
+        } else {
+            Maint::Clear
+        }),
+        Err(error) => status.set(Maint::Failed(error)),
+    }
+}
+fn reset_when_quiet(db: &Connection, status: &Status) {
+    // Copying is safe during traffic. TRUNCATE takes the WAL write lock, so
+    // a completed copy waits for a fresh quiet check before resetting.
+    if !status.quiet() {
+        if !status.pending() {
+            status.set(Maint::Pending);
+        }
+        return;
+    }
+    match checkpoint(db, "TRUNCATE") {
+        Ok((_, log, _)) => status.set(if log > 0 {
             Maint::Pending
         } else {
             Maint::Clear
