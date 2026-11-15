@@ -178,7 +178,7 @@ fn admission_time(end: Instant, budget: QueryBudget) -> AtlasResult<()> {
     let work = budget.work - (budget.work / 4).min(Duration::from_millis(3));
     Err(se_types::SeError::new(se_types::Detail::DeadlineExceeded(
         se_types::details::DeadlineExceeded {
-            op: "Atlas candidate admission".into(),
+            op: "Atlas SQL".into(),
             deadline_ms: work.as_millis().try_into().map_err(cache_error)?,
         },
     )))
