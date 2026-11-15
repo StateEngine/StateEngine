@@ -231,7 +231,7 @@ class Routing(unittest.TestCase):
 class FinalStatus(unittest.TestCase):
     def jobs(self):
         value = {key: {"result": "success", "outputs": {}}
-                 for key in ["changes", "linux-route", "linux-box", "fmt", "clippy", "windows-clippy", "archive", "test"]}
+                 for key in ["changes", "linux-route", "linux-box", "fmt", "clippy", "windows-clippy", "archive", "test", "macos-test"]}
         value["changes"]["outputs"] = {"rust": "true", "windows": "true"}
         value["linux-route"]["outputs"] = {"route": "hosted"}
         value["linux-box"]["result"] = "skipped"
@@ -287,17 +287,19 @@ class FinalStatus(unittest.TestCase):
                     jobs["macos-test"] = {"result": status}
                     self.assert_macos_gate(jobs, False)
 
-    def test_macos_test_absent_preserves_existing_requirements(self):
+    def test_macos_test_absent_refuses_each_linux_route(self):
         for route, jobs in self.macos_routes().items():
             with self.subTest(route=route):
-                self.assert_macos_gate(jobs, True)
+                del jobs["macos-test"]
+                self.assert_macos_gate(jobs, False)
                 jobs["changes"]["result"] = "failure"
                 self.assert_macos_gate(jobs, False)
         jobs = self.jobs()
         jobs["changes"]["outputs"]["rust"] = "false"
         for name in set(jobs) - {"changes"}:
             jobs[name]["result"] = "skipped"
-        self.assert_macos_gate(jobs, True)
+        del jobs["macos-test"]
+        self.assert_macos_gate(jobs, False)
 
     def test_macos_test_rust_exemption_requires_skipped(self):
         for status in ("skipped", "success", "failure", "cancelled"):
@@ -310,7 +312,7 @@ class FinalStatus(unittest.TestCase):
                 self.assert_macos_gate(jobs, status == "skipped")
 
     def test_failed_cancelled_and_unexplained_skips_refuse(self):
-        for key in {"changes", "fmt", "clippy", "windows-clippy", "archive", "test"}:
+        for key in {"changes", "fmt", "clippy", "windows-clippy", "archive", "test", "macos-test"}:
             for status in ["failure", "cancelled", "skipped"]:
                 with self.subTest(key=key, status=status):
                     jobs = self.jobs()

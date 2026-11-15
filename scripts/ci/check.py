@@ -5,16 +5,15 @@ import sys
 
 
 def accepted(jobs):
-    expected = {"changes", "linux-route", "linux-box", "fmt", "clippy", "windows-clippy", "archive", "test"}
-    # Accept both workflow shapes while the native macOS job is being introduced.
-    if set(jobs) not in (expected, expected | {"macos-test"}) or jobs["changes"]["result"] != "success":
+    expected = {"changes", "linux-route", "linux-box", "fmt", "clippy", "windows-clippy", "archive", "test", "macos-test"}
+    if set(jobs) != expected or jobs["changes"]["result"] != "success":
         return False
     outputs = jobs["changes"].get("outputs", {})
     if outputs.get("rust") == "false":
         return all(j["result"] == "skipped" for n, j in jobs.items() if n != "changes")
     if outputs.get("rust") != "true":
         return False
-    if "macos-test" in jobs and jobs["macos-test"].get("result") != "success":
+    if jobs["macos-test"].get("result") != "success":
         return False
     routing, box = jobs["linux-route"], jobs["linux-box"]
     route = routing.get("outputs", {}).get("route", "")
