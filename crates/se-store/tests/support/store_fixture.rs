@@ -296,6 +296,8 @@ pub struct Fixture {
 }
 impl Fixture {
     pub fn new() -> Result<Self, Box<dyn Error>> {
+        // Match application startup before SQLite creates native files.
+        se_proc::initialize_file_creation_owner()?;
         let directory = directory::private_directory()?;
         let home = directory.to_path_buf();
         Self::with_home(home, Some(directory))
@@ -313,6 +315,7 @@ impl Fixture {
     /// A fixture under a caller-chosen home, for paths a platform test must
     /// distinguish by length rather than by temp-directory naming.
     pub fn at(home: PathBuf, state: PathBuf) -> Result<Self, Box<dyn Error>> {
+        se_proc::initialize_file_creation_owner()?;
         let n = serial();
         // The caller already created the protected state directory; do not
         // create a second one beside it.
