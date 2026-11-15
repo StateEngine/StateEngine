@@ -189,6 +189,11 @@ impl LaunchCoordinator {
             work.remote_live = None;
         }
         work.process = None;
+        // Native exit nudges may already have been consumed by the stop waiter.
+        // Wake a sleeping monitor to observe release, retaining a permit if it
+        // has not registered its next wait yet.
+        work.wake.event.notify_waiters();
+        work.wake.event.notify_one();
         Ok(())
     }
     pub(in crate::process) async fn retire_files(
