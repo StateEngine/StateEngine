@@ -95,7 +95,7 @@ impl Parser {
             profile,
         };
         self.worker = Some(
-            AtlasWorker::spawn(
+            AtlasWorker::spawn_bounded(
                 image,
                 &serde_json::to_vec(&request).map_err(failure)?,
                 deadline,

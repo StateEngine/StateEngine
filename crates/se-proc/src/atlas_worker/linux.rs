@@ -14,6 +14,7 @@ pub struct AtlasWorker {
     child: Child,
     channel: UnixStream,
     deadline: Instant,
+    cancellation_deadline: Option<Instant>,
     startup_error: Option<io::Error>,
     incoming: Vec<u8>,
     reaped: bool,
@@ -48,6 +49,14 @@ fn birth(pid: u32) -> io::Result<u64> {
         .map_err(|_| invalid("native birth malformed"))
 }
 impl AtlasWorker {
+    pub fn spawn(image: &Path, payload: &[u8], deadline: Instant) -> io::Result<Self> {
+        Self::spawn_with_deadline(image, payload, deadline, None)
+    }
+    /// The same worker, with cancellation inside the caller's original clock.
+    pub fn spawn_bounded(image: &Path, payload: &[u8], deadline: Instant) -> io::Result<Self> {
+        Self::spawn_with_deadline(image, payload, deadline, Some(deadline))
+    }
+
     pub fn wait_ready(&self, deadline: Instant) -> io::Result<bool> {
         let mut fd = libc::pollfd {
             fd: self.channel.as_raw_fd(),
@@ -74,7 +83,12 @@ impl AtlasWorker {
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    pub fn spawn(image: &Path, payload: &[u8], deadline: Instant) -> io::Result<Self> {
+    fn spawn_with_deadline(
+        image: &Path,
+        payload: &[u8],
+        deadline: Instant,
+        cancellation_deadline: Option<Instant>,
+    ) -> io::Result<Self> {
         if !image.is_absolute()
             || payload.len() > FRAME_BYTES
             || deadline <= Instant::now()
@@ -168,6 +182,7 @@ impl AtlasWorker {
             child,
             channel,
             deadline,
+            cancellation_deadline,
             startup_error: None,
             incoming: Vec::with_capacity(FRAME_BYTES + 4),
             reaped: false,
@@ -322,9 +337,10 @@ impl AtlasWorker {
         Ok(status)
     }
     pub fn cancel(&mut self) -> io::Result<()> {
+        let end = Instant::now() + Duration::from_millis(200);
         self.cancel_until(
-            self.deadline
-                .min(Instant::now() + Duration::from_millis(200)),
+            self.cancellation_deadline
+                .map_or(end, |bound| bound.min(end)),
         )
     }
     /// Keep exact custody until reap or the caller's existing shutdown deadline.
