@@ -7,12 +7,15 @@ import subprocess
 import sys
 
 action, path, saved = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+security = None
 if action in ('loosen', 'restore'):
     if os.name == 'nt':
         script = Path(__file__).with_name('security.ps1')
         result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-File',
                                  str(script), str(path), str(saved), action], capture_output=True)
         assert result.returncode == 0, result.stderr.decode(errors='replace')
+        if result.stdout.strip():
+            security = json.loads(result.stdout.decode('utf-8-sig'))
     elif action == 'loosen':
         saved.write_text(str(stat.S_IMODE(path.stat().st_mode)))
         os.chmod(path, stat.S_IMODE(path.stat().st_mode) | 0o044)
@@ -45,4 +48,4 @@ elif action == 'unlink':
     assert path.stat().st_nlink == 1
 else:
     raise ValueError('Unknown fixture mutation')
-print(json.dumps({'state': 'completed', 'action': action}))
+print(json.dumps({'state': 'completed', 'action': action, 'security': security}))

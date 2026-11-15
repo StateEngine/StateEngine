@@ -18,9 +18,26 @@ if ($Action -eq 'loosen') {
   $null=& icacls.exe $parent '/restore' ($Saved+'.acl') '/q'
   if ($LASTEXITCODE -ne 0) { throw 'Fixture DACL restore failed' }
   $observed=(Get-Acl -LiteralPath $Path).GetSecurityDescriptorSddlForm($sections)
+  $normalized=$false
   if ($observed -ne $expected) {
-    throw ('Exact DACL restoration was not witnessed: expected '+$expected+' observed '+$observed)
+    $before=[System.Security.AccessControl.RawSecurityDescriptor]::new($expected)
+    $after=[System.Security.AccessControl.RawSecurityDescriptor]::new($observed)
+    $auto=[int][System.Security.AccessControl.ControlFlags]::DiscretionaryAclAutoInherited
+    $protected=[int][System.Security.AccessControl.ControlFlags]::DiscretionaryAclProtected
+    if (([int]$before.ControlFlags -band $protected) -eq 0 -or
+        (([int]$after.ControlFlags -bxor [int]$before.ControlFlags) -ne $auto) -or
+        (([int]$after.ControlFlags -band $auto) -eq 0)) {
+      throw ('Restored security flags changed: expected '+$expected+' observed '+$observed)
+    }
+    # Compare in memory only: Windows may add this flag while retaining the
+    # protected ACL. Owner, group, every ACE and all other flags must match.
+    $after.SetFlags($before.ControlFlags)
+    if ($after.GetSddlForm($sections) -ne $before.GetSddlForm($sections)) {
+      throw ('Restored security access changed: expected '+$expected+' observed '+$observed)
+    }
+    $normalized=$true
   }
+  @{protected_access_restored=$true;dacl_auto_inherited_added=$normalized} | ConvertTo-Json -Compress
 } else {
   throw 'Unknown fixture security action'
 }
