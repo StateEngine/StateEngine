@@ -104,7 +104,7 @@ pub fn private_entry() -> AtlasResult<u8> {
         if matches!(
             reply,
             protocol::Reply::Working {
-                phase: protocol::Phase::Parse,
+                phase: protocol::Phase::SourceRead,
                 ..
             }
         ) {

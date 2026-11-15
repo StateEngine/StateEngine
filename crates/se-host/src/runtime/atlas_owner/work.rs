@@ -18,7 +18,7 @@ impl State {
             }
         }
         // A native parse deadline takes priority over registry scans and SQL
-        // work. The child cannot start parsing until this owner arms that clock.
+        // work. The child cannot read source until this owner arms that clock.
         if self.controller.runtime().child_parse_deadline().is_some() {
             if let Err(error) = crate::atlas_runtime::drive_child(&mut self.controller) {
                 eprintln!("Code index child cancellation pending: {error}");
