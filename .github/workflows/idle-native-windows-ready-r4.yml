@@ -1,0 +1,136 @@
+name: Windows idle census replay with startup readiness
+'on':
+  push:
+    branches:
+    - prime/idle-wrapper-379-windows-ready-r4
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+jobs:
+  observe:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: bda8e1e7a2c7905cb9b8537c35aad29e9242cb99
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Install pinned process observer
+      shell: python
+      run: 'import subprocess,sys
+
+        subprocess.run([sys.executable,''-m'',''pip'',''install'',''--disable-pip-version-check'',''psutil==7.0.0''],check=True)
+
+        '
+    - name: Authenticate retained shipping image then observe startup readiness
+      shell: python
+      run: "OBSERVER=\"import os,pathlib,json,subprocess,tempfile,time,uuid,traceback,shutil,argparse,math,hashlib,platform,psutil\\\
+        np=argparse.ArgumentParser();p.add_argument('--se',type=pathlib.Path,required=True);p.add_argument('--source',type=pathlib.Path,required=True);p.add_argument('--out',type=pathlib.Path,required=True);p.add_argument('--image-source',required=True);p.add_argument('--foreground-startup',action='store_true');p.add_argument('--samples',type=int,default=200);a=p.parse_args();assert\
+        \ a.samples>0\\nroot=a.out.resolve();root.mkdir(mode=0o700);owner=root/'owner';owner.mkdir(mode=0o700);repo=root/'repo';repo.mkdir();home=root/'state';runtime=pathlib.Path(tempfile.mkdtemp(prefix='se379-',dir='/tmp'\
+        \ if platform.system()=='Darwin' else None))\\nimage=a.se.resolve();env={k:v for k,v in os.environ.items()\
+        \ if not k.startswith(('SE_','STATEENGINE_','CODEX_','CLAUDE','ANTHROPIC_','OPENAI_','GH_','GITHUB_','GIT_'))};env.update(HOME=str(owner),USERPROFILE=str(owner),XDG_RUNTIME_DIR=str(runtime),GIT_CONFIG_NOSYSTEM='1',GIT_CONFIG_GLOBAL=str(owner/'empty-git-config'))\\\
+        nfor key in ['XDG_CONFIG_HOME','XDG_CACHE_HOME','XDG_DATA_HOME','XDG_STATE_HOME','CODEX_HOME','APPDATA','LOCALAPPDATA']:\\\
+        n d=owner/key.lower();d.mkdir(mode=0o700);env[key]=str(d)\\nreport={'image_source':a.image_source,'checkout_source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=a.source,text=True).strip(),'image_sha256':hashlib.sha256(image.read_bytes()).hexdigest(),'machine':{'cpu_count':os.cpu_count(),'kernel':platform.release(),'system':platform.system(),'architecture':platform.machine(),'observer_psutil':psutil.__version__},'limitations':['Author\
+        \ observations, not independent regression qualification.','Idle means three consecutive one-second CPU\
+        \ observations below 15 percent before and after measurement; raw samples are retained even when idle qualification\
+        \ fails.','One source repository, one saved agent, one unread message; no provider session.'],'calls':[],'censuses':[],'census_observations':[]};host=None;up_attempted=False;up_process=None;up_row=None\\\
+        n\\ndef call(args):\\n start=time.perf_counter_ns()\\n try:p=subprocess.run([str(image),'--json','--home',str(home),*args],cwd=repo,env=env,capture_output=True,timeout=120)\\\
+        n except subprocess.TimeoutExpired as error:\\n  report['calls'].append({'argv':args,'elapsed_ms':(time.perf_counter_ns()-start)/1e6,'exit':None,'failure':'public\
+        \ command timed out','stdout':(error.stdout or b'').decode(errors='replace'),'stderr':(error.stderr or b'').decode(errors='replace')});save();raise\\\
+        n elapsed=(time.perf_counter_ns()-start)/1e6;row={'argv':args,'elapsed_ms':elapsed,'exit':p.returncode,'stdout':p.stdout.decode(),'stderr':p.stderr.decode()};report['calls'].append(row);save();return\
+        \ p,json.loads(p.stdout) if p.stdout else None\\n\\ndef save():(root/'report.json').write_text(json.dumps(report,indent=2))\\\
+        ndef start_up():\\n global up_process,up_row\\n args=['up']+(['--foreground'] if a.foreground_startup else\
+        \ []);argv=[str(image),'--json','--home',str(home),*args];started=time.perf_counter_ns()\\n with (root/'up.stdout').open('wb')\
+        \ as stdout,(root/'up.stderr').open('wb') as stderr:\\n  up_process=subprocess.Popen(argv,cwd=repo,env=env,stdout=stdout,stderr=stderr)\\\
+        n report['launch']={'caller_pid':up_process.pid,'argv':argv,'mode':'readiness observed while retaining the\
+        \ exact launched process'};save()\\n deadline=time.monotonic()+120\\n while True:\\n  stdout=(root/'up.stdout').read_text(errors='replace');stderr=(root/'up.stderr').read_text(errors='replace');exit_code=up_process.poll()\\\
+        n  value=None\\n  for line in stdout.splitlines():\\n   try:candidate=json.loads(line)\\n   except json.JSONDecodeError:continue\\\
+        n   if candidate.get('schema')=='se.runtime-start/v1':value=candidate\\n  if value is not None and value.get('state')=='running':\\\
+        n   identity=psutil.Process(value['process']['pid'])\\n   assert os.path.normcase(os.path.realpath(identity.exe()))==os.path.normcase(str(image))\\\
+        n   report['launch'].update(ready=value,caller_exit_at_ready=exit_code,host_identity={'pid':identity.pid,'ppid':identity.ppid(),'birth':identity.create_time(),'image':identity.exe(),'command':identity.cmdline()})\\\
+        n   up_row={'argv':args,'elapsed_ms':(time.perf_counter_ns()-started)/1e6,'exit':exit_code,'completion':'pending\
+        \ until public shutdown' if exit_code is None else 'completed','stdout':stdout,'stderr':stderr};report['calls'].append(up_row);save()\\\
+        n   assert exit_code is None or exit_code==0,'startup caller failed after readiness'\\n   return value\\\
+        n  if exit_code is not None or time.monotonic()>=deadline:\\n   report['launch'].update(caller_exit=exit_code,stdout=stdout,stderr=stderr);save()\\\
+        n   raise RuntimeError('public startup ended without readiness' if exit_code is not None else 'public startup\
+        \ readiness timed out')\\n  time.sleep(.1)\\n\\ndef finish_up():\\n if up_process is None:return\\n exit_code=up_process.wait(timeout=30)\\\
+        n report['launch'].update(caller_final_exit=exit_code,stdout=(root/'up.stdout').read_text(errors='replace'),stderr=(root/'up.stderr').read_text(errors='replace'))\\\
+        n if up_row is not None:up_row.update(exit=exit_code,completion='completed after public shutdown',stdout=report['launch']['stdout'],stderr=report['launch']['stderr'])\\\
+        n save();assert exit_code==0,'startup caller failed'\\n\\ndef census():\\n rows=[];vanished=[];denied=[]\\\
+        n for proc in psutil.process_iter(['pid','ppid','exe','cmdline','create_time','status','name','username'],ad_value=None):\\\
+        n  info=proc.info\\n  if info['ppid'] is None:\\n   try:info['ppid']=proc.ppid()\\n   except psutil.NoSuchProcess:vanished.append(proc.pid);continue\\\
+        n   except psutil.AccessDenied:denied.append({'pid':proc.pid,'field':'ppid','name':info['name']})\\n  rows.append({'pid':proc.pid,'ppid':info['ppid'],'state':info['status'],'birth':info['create_time'],'image':info['exe'],'command':info['cmdline'],'name':info['name'],'username':info['username']})\\\
+        n ids={host} if host is not None else set();changed=True\\n while changed:\\n  before=len(ids);ids.update(x['pid']\
+        \ for x in rows if x['ppid'] in ids);changed=len(ids)!=before\\n selected=[];uncertain=[]\\n for row in\
+        \ rows:\\n  same_image=row['image'] is not None and os.path.normcase(os.path.realpath(row['image']))==os.path.normcase(str(image))\\\
+        n  same_name=row['name'] is not None and os.path.normcase(row['name'])==os.path.normcase(image.name)\\n\
+        \  if row['pid'] in ids or same_image:\\n   selected.append(row)\\n   if any(row[k] is None for k in ['ppid','image','command','birth']):uncertain.append(row)\\\
+        n  elif same_name and row['image'] is None:uncertain.append(row)\\n report['census_observations'].append({'selected':selected,'uncertain_relevant_processes':uncertain,'unreadable_parent_fields':denied,'vanished':vanished,'unreadable_foreign_images':sum(x['image']\
+        \ is None for x in rows)})\\n save()\\n relevant_denied=[row for row in rows if row['ppid'] is None and\
+        \ (row['username']==psutil.Process().username() or row['name']==image.name or row['pid']==host)]\\n assert\
+        \ not uncertain and not relevant_denied,'relevant process census is unreadable'\\n return selected\\n\\\
+        ntry:\\n for args in [['msg','send','--help'],['init','--help'],['up','--help'],['down','--help'],['status','--help'],['agent','list','--help'],['msg','inbox','--help'],['msg','list','--help']]:\\\
+        n  p,_=call(args);assert p.returncode==0\\n (repo/'source.rs').write_text('pub fn ordinary_source() -> u32\
+        \ { 1 }\\\\n')\\n for args in [['git','init','-q'],['git','add','--','source.rs'],['git','-c','user.name=Source\
+        \ fixture','-c','user.email=fixture@example.invalid','commit','-q','-m','Create source']]:subprocess.run(args,cwd=repo,env=env,capture_output=True,check=True)\\\
+        n p,value=call(['--key',str(uuid.uuid4()),'init','--repo',str(repo),'--name','Idle observation','--agent','Reader','--provider','codex']);assert\
+        \ p.returncode==0;report['project']=value['project']['id']\\n up_attempted=True;value=start_up();host=value['process']['pid'];report['host']=host\\\
+        n for _ in range(3):\\n  time.sleep(3);report['censuses'].append(census());save()\\n p,value=call(['--project',report['project'],'msg','send','Reader','Ordinary\
+        \ unread fixture message','--no-wake']);assert p.returncode==0\\n def quiet():\\n  samples=[];consecutive=0\\\
+        n  for _ in range(20):\\n   busy=psutil.cpu_percent(interval=1)/100;samples.append(busy)\\n   consecutive=consecutive+1\
+        \ if busy is not None and busy<.15 else 0\\n   if consecutive>=3:break\\n  return {'samples':samples,'eligible':consecutive>=3}\\\
+        n report['quiet_before']=quiet();report['measurements']={};report['latency_rows']=[]\\n commands=[('status',40,['status']),('agent_list',20,['agent','list']),('inbox',20,['msg','inbox','Reader']),('msg_list',20,['msg','list','--to','Reader','--all'])]\\\
+        n for label,limit,args in commands:\\n  for _ in range(5):\\n   p,value=call(['--project',report['project'],*args]);assert\
+        \ p.returncode==0 and isinstance(value,dict),report['calls'][-1]\\n for iteration in range(a.samples):\\\
+        n  for label,limit,args in commands:\\n   start=time.perf_counter_ns();p,value=call(['--project',report['project'],*args]);elapsed=(time.perf_counter_ns()-start)/1e6\\\
+        n   # Saving observer receipts occurs after return and is excluded below by the direct command timer in\
+        \ call.\\n   elapsed=report['calls'][-1]['elapsed_ms'];report['latency_rows'].append({'read':label,'iteration':iteration,'elapsed_ms':elapsed,'exit':p.returncode})\\\
+        n report['quiet_after']=quiet();qualified=report['quiet_before']['eligible'] and report['quiet_after']['eligible']\\\
+        n for label,limit,args in commands:\\n  rows=[x for x in report['latency_rows'] if x['read']==label];values=sorted(x['elapsed_ms']\
+        \ for x in rows);p95=values[math.ceil(len(values)*.95)-1];failures=[x for x in rows if x['exit']!=0]\\n\
+        \  report['measurements'][label]={'limit_ms':limit,'samples':len(rows),'p95_ms':p95,'failures':failures,'idle_qualified':qualified,'verdict':('passing'\
+        \ if p95<=limit else 'failing') if qualified and not failures else 'unmeasured','reason':None if qualified\
+        \ and not failures else ('a read failed' if failures else 'idle CPU window not established')}\\n report['final_census']=census();assert\
+        \ all(any(row['pid']==host for row in census_rows) for census_rows in [*report['censuses'],report['final_census']]),'native\
+        \ host absent from census';report['extra_wrapper_processes']=[x for x in report['final_census'] if x['pid']!=host]\\\
+        n report['observation']='completed';save()\\nexcept BaseException as error:\\n report['failure']={'type':type(error).__name__,'detail':str(error),'traceback':traceback.format_exc()};save();raise\\\
+        nfinally:\\n if up_attempted:\\n  try:\\n   p,value=call(['down']);report['down']=value;finish_up();report['after_down']=census();save();assert\
+        \ p.returncode==0 and value['complete'] and value['witness']['state']=='witnessed'\\n  except BaseException\
+        \ as error:\\n   report['shutdown_failure']={'type':type(error).__name__,'detail':str(error)};save()\\n\
+        \   if 'failure' not in report:raise\\n shutil.rmtree(runtime)\\nprint(json.dumps({'host':host,'censuses':report['censuses'],'after_down':report.get('after_down')},indent=2))\\\
+        n\"\nimport pathlib,subprocess,json,os,time,hashlib,zipfile,io,sys\nroot=pathlib.Path(os.environ['RUNNER_TEMP']);out=root/'idle379';out.mkdir();source=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip();assert\
+        \ source=='bda8e1e7a2c7905cb9b8537c35aad29e9242cb99'\nartifact_id=14152607260;expected_digest='47642b37e08ab383fd2f4c18fc2afe404889c5b73c84cbafbdc666424cf6ddbe';url='https://api.github.com/repos/StateEngine/StateEngine/actions/artifacts/'+str(artifact_id)+'/zip'\n\
+        archive=subprocess.check_output(['gh','api','repos/StateEngine/StateEngine/actions/artifacts/'+str(artifact_id)+'/zip'],timeout=120)\n\
+        assert hashlib.sha256(archive).hexdigest()==expected_digest\nwith zipfile.ZipFile(io.BytesIO(archive)) as\
+        \ z:\n manifest=json.loads(z.read('image.json'));image=z.read('se.exe')\nassert manifest['source']==source\
+        \ and manifest['sha256']==hashlib.sha256(image).hexdigest()=='2e73c5a6b1e25e66a66512575d0449d62d9f33638adf640e5c550e569587ed9d'\n\
+        shipping=out/'se.exe';shipping.write_bytes(image);(out/'image.json').write_text(json.dumps(manifest,indent=2));(out/'input-artifact.json').write_text(json.dumps({'artifact_id':artifact_id,'archive_sha256':expected_digest,'source_run':43690166626,'image_sha256':manifest['sha256']},indent=2));observer=out/'observer.py';observer.write_bytes(OBSERVER.encode('utf-8'));argv=[sys.executable,str(observer),'--se',str(shipping),'--source',str(pathlib.Path.cwd()),'--out',str(out/'observation'),'--image-source',source];start=time.monotonic_ns()\n\
+        with (out/'observe.stdout').open('w') as stdout,(out/'observe.stderr').open('w') as stderr:p=subprocess.run(argv,stdout=stdout,stderr=stderr,timeout=600)\n\
+        (out/'executions.json').write_text(json.dumps([{'source':source,'argv':argv,'exit':p.returncode,'elapsed_ns':time.monotonic_ns()-start}],indent=2));raise\
+        \ SystemExit(p.returncode)\n"
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: idle379-windows-ready-replay
+        path: '${{ runner.temp }}/idle379/*.json
+
+          ${{ runner.temp }}/idle379/*.stdout
+
+          ${{ runner.temp }}/idle379/*.stderr
+
+          ${{ runner.temp }}/idle379/observer.py
+
+          ${{ runner.temp }}/idle379/se*
+
+          ${{ runner.temp }}/idle379/observation/report.json
+
+          ${{ runner.temp }}/idle379/observation/up.stdout
+
+          ${{ runner.temp }}/idle379/observation/up.stderr'
+        if-no-files-found: error
