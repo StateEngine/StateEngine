@@ -1,0 +1,223 @@
+name: Unelevated public Windows startup diagnostic
+'on':
+  push:
+    branches:
+    - prime/windows-unelevated-r2
+permissions:
+  actions: read
+  contents: read
+jobs:
+  observe:
+    runs-on: windows-2025
+    timeout-minutes: 8
+    steps:
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Adopt authenticated baseline image and bounded observer
+      shell: python
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "import hashlib,json,os,subprocess,zipfile\nfrom pathlib import Path,PureWindowsPath\nroot=Path(os.environ['RUNNER_TEMP'])/'unelevated-startup'\n\
+        root.mkdir()\nasset={'archive_download_url': 'https://api.github.com/repos/StateEngine/StateEngine/actions/artifacts/14151995620/zip',\
+        \ 'created_at': '2026-11-15T07:16:30Z', 'digest': 'sha256:3ca10c1580ced1fbf22db6a5cd3e0e6b2636fb92756d0edf7ac1e603a1b99077',\
+        \ 'expired': False, 'expires_at': '2026-11-29T07:16:27Z', 'id': 14151995620, 'name': 'provider-nesting-base',\
+        \ 'size_in_bytes': 90303071, 'updated_at': '2026-11-15T07:16:30Z', 'url': 'https://api.github.com/repos/StateEngine/StateEngine/actions/artifacts/14151995620',\
+        \ 'workflow_run': {'head_branch': 'prime/provider-nesting-judges-r1', 'head_repository_id': 1448769537,\
+        \ 'head_sha': '60ae2534ef03228964f433c5b0e463b227ad5e32', 'id': 43687295059, 'repository_id': 1448769537}}\n\
+        image={'sha256': '0860387a929d7415cea0f97ffef136b6916ff434be4ace9644dfd305700a1582', 'size': 90208768, 'source':\
+        \ '6b30714d37b1d1ca575e811bba1fc11a633594af'}\nactual=json.loads(subprocess.check_output(['gh','api','repos/StateEngine/StateEngine/actions/artifacts/'+str(asset['id'])]))\n\
+        assert all(actual[k]==asset[k] for k in ['id','digest','size_in_bytes','name'])\narchive=root/'original.zip'\n\
+        with archive.open('wb') as out:\n subprocess.run(['gh','api','repos/StateEngine/StateEngine/actions/artifacts/'+str(asset['id'])+'/zip'],stdout=out,check=True)\n\
+        assert archive.stat().st_size==asset['size_in_bytes']\nassert 'sha256:'+hashlib.sha256(archive.read_bytes()).hexdigest()==asset['digest']\n\
+        with zipfile.ZipFile(archive) as z:\n raw=json.loads(z.read('sha256sums.json'))\n manifest={PureWindowsPath(k).as_posix():v\
+        \ for k,v in raw.items()}\n assert len(raw)==len(manifest) and set(z.namelist())==set(manifest)|{'sha256sums.json'}\n\
+        \ for name,digest in manifest.items():assert hashlib.sha256(z.read(name)).hexdigest()==digest\n assert json.loads(z.read('image.json'))==image\n\
+        \ data=z.read('bin/se.exe')\n assert len(data)==image['size'] and hashlib.sha256(data).hexdigest()==image['sha256']\n\
+        \ (root/'se.exe').write_bytes(data)\n(root/'diagnostic.py').write_text('\"\"\"Bounded public lifecycle observation\
+        \ under a verified unelevated token.\"\"\"\\nimport contextlib\\nimport ctypes as C\\nfrom ctypes import\
+        \ wintypes as W\\nimport hashlib\\nimport json\\nimport os\\nfrom pathlib import Path\\nimport subprocess\\\
+        nimport sys\\nimport time\\n\\nk = C.WinDLL(\\'kernel32\\', use_last_error=True)\\na = C.WinDLL(\\'advapi32\\\
+        ', use_last_error=True)\\nnt = C.WinDLL(\\'ntdll\\')\\nH = W.HANDLE\\nk.GetCurrentProcess.restype = H\\\
+        nk.CloseHandle.argtypes = [H]\\nk.LocalFree.argtypes = [H]\\nk.WaitForSingleObject.argtypes = [H, W.DWORD]\\\
+        nk.WaitForSingleObject.restype = W.DWORD\\nk.TerminateProcess.argtypes = [H, W.UINT]\\nk.IsProcessInJob.argtypes\
+        \ = [H, H, C.POINTER(W.BOOL)]\\nk.GetProcessTimes.argtypes = [H, C.c_void_p, C.c_void_p, C.c_void_p, C.c_void_p]\\\
+        nk.QueryFullProcessImageNameW.argtypes = [H, W.DWORD, W.LPWSTR, C.POINTER(W.DWORD)]\\nk.OpenProcess.argtypes\
+        \ = [W.DWORD, W.BOOL, W.DWORD]\\nk.OpenProcess.restype = H\\na.OpenProcessToken.argtypes = [H, W.DWORD,\
+        \ C.POINTER(H)]\\na.GetTokenInformation.argtypes = [H, C.c_int, C.c_void_p, W.DWORD, C.POINTER(W.DWORD)]\\\
+        na.SetTokenInformation.argtypes = [H, C.c_int, C.c_void_p, W.DWORD]\\na.ConvertSidToStringSidW.argtypes\
+        \ = [C.c_void_p, C.POINTER(W.LPWSTR)]\\na.ConvertStringSidToSidW.argtypes = [W.LPCWSTR, C.POINTER(C.c_void_p)]\\\
+        na.GetLengthSid.argtypes = [C.c_void_p]\\na.GetLengthSid.restype = W.DWORD\\na.CreateRestrictedToken.argtypes\
+        \ = [H, W.DWORD, W.DWORD, C.c_void_p, W.DWORD,\\n                                   C.c_void_p, W.DWORD,\
+        \ C.c_void_p, C.POINTER(H)]\\nnt.NtQueryInformationProcess.argtypes = [H, W.ULONG, C.c_void_p, W.ULONG,\
+        \ C.c_void_p]\\nnt.NtQueryInformationProcess.restype = C.c_long\\n\\n\\nclass SidAttributes(C.Structure):\\\
+        n    _fields_ = [(\\'sid\\', C.c_void_p), (\\'attributes\\', W.DWORD)]\\n\\n\\nclass Startup(C.Structure):\\\
+        n    _fields_ = [(\\'cb\\', W.DWORD), (\\'reserved\\', W.LPWSTR), (\\'desktop\\', W.LPWSTR),\\n        \
+        \        (\\'title\\', W.LPWSTR), (\\'x\\', W.DWORD), (\\'y\\', W.DWORD),\\n                (\\'xs\\', W.DWORD),\
+        \ (\\'ys\\', W.DWORD), (\\'xc\\', W.DWORD), (\\'yc\\', W.DWORD),\\n                (\\'fill\\', W.DWORD),\
+        \ (\\'flags\\', W.DWORD), (\\'show\\', W.WORD),\\n                (\\'reserved_size\\', W.WORD), (\\'reserved_bytes\\\
+        ', C.c_void_p),\\n                (\\'input\\', H), (\\'output\\', H), (\\'error\\', H)]\\n\\n\\nclass Created(C.Structure):\\\
+        n    _fields_ = [(\\'process\\', H), (\\'thread\\', H), (\\'pid\\', W.DWORD), (\\'tid\\', W.DWORD)]\\n\\\
+        n\\nclass UnicodeString(C.Structure):\\n    _fields_ = [(\\'length\\', W.USHORT), (\\'maximum\\', W.USHORT),\
+        \ (\\'buffer\\', C.c_void_p)]\\n\\n\\na.CreateProcessAsUserW.argtypes = [H, W.LPCWSTR, W.LPWSTR, C.c_void_p,\
+        \ C.c_void_p,\\n                                  W.BOOL, W.DWORD, C.c_void_p, W.LPCWSTR,\\n           \
+        \                       C.POINTER(Startup), C.POINTER(Created)]\\n\\n\\ndef require(ok, operation):\\n \
+        \   if not ok:\\n        raise C.WinError(C.get_last_error(), operation)\\n\\n\\ndef token_info(token, kind):\\\
+        n    buffer = C.create_string_buffer(65536)\\n    used = W.DWORD()\\n    require(a.GetTokenInformation(token,\
+        \ kind, buffer, len(buffer), C.byref(used)),\\n            f\\'query token class {kind}\\')\\n    assert\
+        \ 0 < used.value <= len(buffer)\\n    return buffer, used.value\\n\\n\\ndef token_dword(token, kind):\\\
+        n    value, used = W.DWORD(), W.DWORD()\\n    require(a.GetTokenInformation(token, kind, C.byref(value),\
+        \ C.sizeof(value),\\n                                  C.byref(used)), f\\'query fixed token class {kind}\\\
+        ')\\n    assert used.value == C.sizeof(value)\\n    return value.value\\n\\n\\ndef sid_text(sid):\\n   \
+        \ text = W.LPWSTR()\\n    require(a.ConvertSidToStringSidW(sid, C.byref(text)), \\'read token SID\\')\\\
+        n    try:\\n        return text.value\\n    finally:\\n        k.LocalFree(C.cast(text, H))\\n\\n\\ndef\
+        \ token_snapshot(token):\\n    user, _ = token_info(token, 1)\\n    integrity, _ = token_info(token, 25)\\\
+        n    groups, used = token_info(token, 2)\\n    count = W.DWORD.from_buffer(groups).value\\n    offset =\
+        \ C.sizeof(C.c_void_p)\\n    assert offset + count * C.sizeof(SidAttributes) <= used\\n    values = (SidAttributes\
+        \ * count).from_buffer(groups, offset)\\n    admin = [v.attributes for v in values if sid_text(v.sid) ==\
+        \ \\'S-1-5-32-544\\']\\n    restricted, _ = token_info(token, 11)\\n    return {\\'user\\': sid_text(SidAttributes.from_buffer(user).sid),\\\
+        n            \\'elevated\\': token_dword(token, 20),\\n            \\'elevation_type\\': token_dword(token,\
+        \ 18),\\n            \\'integrity\\': sid_text(SidAttributes.from_buffer(integrity).sid),\\n           \
+        \ \\'admin_group_attributes\\': admin,\\n            \\'admin_enabled\\': any(x & 4 for x in admin),\\n\
+        \            \\'restricting_sid_count\\': W.DWORD.from_buffer(restricted).value}\\n\\n\\ndef process_snapshot(handle):\\\
+        n    image, size = C.create_unicode_buffer(32768), W.DWORD(32768)\\n    require(k.QueryFullProcessImageNameW(handle,\
+        \ 0, image, C.byref(size)), \\'read exact image\\')\\n    buffer = C.create_string_buffer(65536)\\n    status\
+        \ = nt.NtQueryInformationProcess(handle, 60, buffer, len(buffer), None)\\n    assert status >= 0, f\\'exact\
+        \ command line unreadable: {status:#x}\\'\\n    value = UnicodeString.from_buffer(buffer)\\n    start, end\
+        \ = C.addressof(buffer), C.addressof(buffer) + len(buffer)\\n    assert value.length % 2 == 0 and start\
+        \ <= value.buffer <= end\\n    assert value.buffer + value.length <= end\\n    created, exited, kernel,\
+        \ user = (C.c_ulonglong() for _ in range(4))\\n    require(k.GetProcessTimes(handle, C.byref(created), C.byref(exited),\\\
+        n                              C.byref(kernel), C.byref(user)), \\'read exact birth\\')\\n    member = W.BOOL()\\\
+        n    require(k.IsProcessInJob(handle, None, C.byref(member)), \\'read exact job membership\\')\\n    token\
+        \ = H()\\n    require(a.OpenProcessToken(handle, 8, C.byref(token)), \\'read exact process token\\')\\n\
+        \    try:\\n        return {\\'image\\': image.value, \\'command\\': C.wstring_at(value.buffer, value.length\
+        \ // 2),\\n                \\'creation_filetime\\': created.value, \\'in_job\\': bool(member.value),\\n\
+        \                \\'token\\': token_snapshot(token)}\\n    finally:\\n        k.CloseHandle(token)\\n\\\
+        n\\nROOT = Path(__file__).resolve().parent\\nIMAGE = ROOT / \\'se.exe\\'\\n\\n\\ndef save(report):\\n  \
+        \  (ROOT / \\'report.json\\').write_text(json.dumps(report, indent=2) + \\'\\\\n\\')\\n\\n\\ndef controller():\\\
+        n    report = {\\'mode\\': \\'filtered-token hosted diagnostic\\', \\'calls\\': [],\\n              \\'source\\\
+        ': \\'6b30714d37b1d1ca575e811bba1fc11a633594af\\',\\n              \\'image_sha256\\': hashlib.sha256(IMAGE.read_bytes()).hexdigest(),\\\
+        n              \\'limitations\\': [\\'Hosted inherited job; not a clean interactive desktop logon.\\',\\\
+        n                              \\'No provider launch or paid-provider journey is exercised.\\']}\\n    report[\\\
+        'controller\\'] = process_snapshot(k.GetCurrentProcess())\\n    token = report[\\'controller\\'][\\'token\\\
+        ']\\n    assert token[\\'elevated\\'] == 0 and not token[\\'admin_enabled\\'], token\\n    assert int(token[\\\
+        'integrity\\'].rsplit(\\'-\\', 1)[1]) <= 8192, token\\n    assert token[\\'restricting_sid_count\\'] ==\
+        \ 0, token\\n    home, repo = ROOT / \\'home\\', ROOT / \\'repo\\'\\n    repo.mkdir()\\n    environment\
+        \ = {key: value for key, value in os.environ.items()\\n                   if not key.startswith(\\'SE_\\\
+        ') and key not in\\n                   {\\'GH_TOKEN\\', \\'GITHUB_TOKEN\\', \\'CLAUDECODE\\', \\'CODEX_THREAD_ID\\\
+        ', \\'CODEX_CI\\'}}\\n    up, host = None, None\\n\\n    def start(label, args):\\n        command = [str(IMAGE),\
+        \ \\'--home\\', str(home), \\'--json\\', *args]\\n        row = {\\'label\\': label, \\'command\\': command}\\\
+        n        report[\\'calls\\'].append(row)\\n        out = ROOT / (label + \\'.stdout\\')\\n        err =\
+        \ ROOT / (label + \\'.stderr\\')\\n        with out.open(\\'wb\\') as output, err.open(\\'wb\\') as errors:\\\
+        n            child = subprocess.Popen(command, env=environment, cwd=ROOT,\\n                           \
+        \          stdin=subprocess.DEVNULL, stdout=output, stderr=errors)\\n        row[\\'pid\\'] = child.pid\\\
+        n        return child, row\\n\\n    def finish(child, row, timeout=12):\\n        try:\\n            child.wait(timeout=timeout)\\\
+        n        except subprocess.TimeoutExpired:\\n            row[\\'timeout\\'] = timeout\\n            # Retained\
+        \ Python native handle pins our exact child; observe its full\\n            # command line and birth before\
+        \ any emergency termination.\\n            row[\\'before_emergency_stop\\'] = process_snapshot(int(child._handle))\\\
+        n            assert str(home).casefold() in row[\\'before_emergency_stop\\'][\\'command\\'].casefold()\\\
+        n            child.kill()\\n            child.wait(timeout=5)\\n            raise\\n        finally:\\n\
+        \            row[\\'exit\\'] = child.poll()\\n            save(report)\\n        return row\\n\\n    def\
+        \ call(label, args):\\n        child, row = start(label, args)\\n        finish(child, row)\\n        return\
+        \ row, (ROOT / (label + \\'.stdout\\')).read_bytes()\\n\\n    try:\\n        row, raw = call(\\'init\\',\
+        \ [\\'init\\', \\'--repo\\', str(repo)])\\n        assert row[\\'exit\\'] == 0, raw\\n        up, up_row\
+        \ = start(\\'up\\', [\\'up\\'])\\n        report[\\'up_process\\'] = process_snapshot(int(up._handle))\\\
+        n        until, observed = time.monotonic() + 30, None\\n        while time.monotonic() < until:\\n    \
+        \        row, raw = call(\\'status-\\' + str(len(report[\\'calls\\'])), [\\'status\\'])\\n            if\
+        \ row[\\'exit\\'] == 0:\\n                view = json.loads(raw)\\n                if view[\\'runtime\\\
+        '][\\'state\\'] == \\'running\\':\\n                    observed = view\\n                    break\\n \
+        \           if up.poll() is not None and up.returncode != 0:\\n                break\\n            time.sleep(.1)\\\
+        n        assert observed is not None, \\'no running host within bounded startup observation\\'\\n      \
+        \  report[\\'running_status\\'] = observed\\n        host_pid = observed[\\'runtime\\'][\\'process\\'][\\\
+        'pid\\']\\n        host = k.OpenProcess(0x1000 | 0x100000, False, host_pid)\\n        require(host, \\'pin\
+        \ published host\\')\\n        report[\\'host_pid\\'] = host_pid\\n        report[\\'host\\'] = process_snapshot(host)\\\
+        n        try:\\n            up.wait(timeout=2)\\n        except subprocess.TimeoutExpired:\\n          \
+        \  pass\\n        report[\\'up_returned_before_down\\'] = up.poll() is not None\\n        report[\\'up_exit_before_down\\\
+        '] = up.poll()\\n        report[\\'outcome\\'] = (\\'foreground\\' if host_pid == up.pid and up.poll() is\
+        \ None\\n                             else \\'detached\\' if host_pid != up.pid and up.poll() == 0\\n  \
+        \                           else \\'unexpected_lifetime\\')\\n        assert report[\\'outcome\\'] != \\\
+        'unexpected_lifetime\\'\\n        save(report)\\n        row, raw = call(\\'down\\', [\\'down\\'])\\n  \
+        \      assert row[\\'exit\\'] == 0, raw\\n        finish(up, up_row)\\n        assert k.WaitForSingleObject(host,\
+        \ 10000) == 0, \\'exact host survived public down\\'\\n        report[\\'exact_host_exit_witnessed\\'] =\
+        \ True\\n        row, raw = call(\\'status-after-down\\', [\\'status\\'])\\n        assert row[\\'exit\\\
+        '] == 0, raw\\n        report[\\'status_after_down\\'] = json.loads(raw)\\n        assert report[\\'status_after_down\\\
+        '][\\'runtime\\'][\\'state\\'] != \\'running\\'\\n        report[\\'lifecycle_completed\\'] = True\\n  \
+        \  except Exception as error:\\n        report[\\'error\\'] = repr(error)\\n        raise\\n    finally:\\\
+        n        if (home / \\'endpoint.json\\').exists():\\n            try:\\n                report[\\'cleanup_down\\\
+        '], _ = call(\\'cleanup-down\\', [\\'down\\'])\\n            except Exception as error:\\n             \
+        \   report[\\'cleanup_error\\'] = repr(error)\\n        if up is not None and up.poll() is None:\\n    \
+        \        try:\\n                finish(up, up_row, timeout=8)\\n            except Exception as error:\\\
+        n                report[\\'up_cleanup_error\\'] = repr(error)\\n        if host:\\n            report[\\\
+        'host_exited_at_cleanup\\'] = k.WaitForSingleObject(host, 0) == 0\\n            k.CloseHandle(host)\\n \
+        \       save(report)\\n\\n\\ndef launch_controller():\\n    original, selected = H(), H()\\n    require(a.OpenProcessToken(k.GetCurrentProcess(),\
+        \ 0x02000000, C.byref(original)),\\n            \\'open dedicated runner primary token\\')\\n    created\
+        \ = Created()\\n    receipt = {\\'runner\\': token_snapshot(original)}\\n    try:\\n        if receipt[\\\
+        'runner\\'][\\'elevation_type\\'] == 2:\\n            used = W.DWORD()\\n            require(a.GetTokenInformation(original,\
+        \ 19, C.byref(selected),\\n                                          C.sizeof(selected), C.byref(used)),\\\
+        n                    \\'read linked limited token\\')\\n            assert used.value == C.sizeof(selected)\\\
+        n            receipt[\\'filter\\'] = \\'native linked limited token\\'\\n        else:\\n            require(a.CreateRestrictedToken(original,\
+        \ 4, 0, None, 0, None, 0, None,\\n                                             C.byref(selected)), \\'make\
+        \ LUA filtered caller token\\')\\n            receipt[\\'filter\\'] = \\'LUA filtered token; no restricting\
+        \ SIDs\\'\\n        sid = C.c_void_p()\\n        require(a.ConvertStringSidToSidW(\\'S-1-16-8192\\', C.byref(sid)),\
+        \ \\'make medium integrity SID\\')\\n        try:\\n            label = SidAttributes(sid, 0x20)\\n    \
+        \        require(a.SetTokenInformation(selected, 25, C.byref(label),\\n                                \
+        \           C.sizeof(label) + a.GetLengthSid(sid)),\\n                    \\'lower selected token to medium\
+        \ integrity\\')\\n        finally:\\n            k.LocalFree(sid)\\n        receipt[\\'selected\\'] = token_snapshot(selected)\\\
+        n        assert receipt[\\'selected\\'][\\'elevated\\'] == 0 and not receipt[\\'selected\\'][\\'admin_enabled\\\
+        ']\\n        assert receipt[\\'selected\\'][\\'restricting_sid_count\\'] == 0\\n        environment = {key:\
+        \ value for key, value in os.environ.items()\\n                       if key not in {\\'GH_TOKEN\\', \\\
+        'GITHUB_TOKEN\\'}}\\n        block = C.create_unicode_buffer(\\'\\\\0\\'.join(f\\'{key}={value}\\' for key,\
+        \ value in\\n                                                 sorted(environment.items(), key=lambda p:\
+        \ p[0].upper())) + \\'\\\\0\\\\0\\')\\n        command = C.create_unicode_buffer(subprocess.list2cmdline(\\\
+        n            [sys.executable, str(Path(__file__).resolve()), \\'--controller\\']))\\n        startup = Startup()\\\
+        n        startup.cb = C.sizeof(startup)\\n        require(a.CreateProcessAsUserW(selected, sys.executable,\
+        \ command, None, None, False,\\n                                       0x08000400, block, str(ROOT), C.byref(startup),\\\
+        n                                       C.byref(created)), \\'launch unelevated controller\\')\\n      \
+        \  receipt[\\'controller_pid\\'] = created.pid\\n        receipt[\\'controller\\'] = process_snapshot(created.process)\\\
+        n        (ROOT / \\'token-receipt.json\\').write_text(json.dumps(receipt, indent=2) + \\'\\\\n\\')\\n  \
+        \      waited = k.WaitForSingleObject(created.process, 150000)\\n        if waited != 0:\\n            receipt[\\\
+        'timeout_observation\\'] = process_snapshot(created.process)\\n            assert str(ROOT).casefold() in\
+        \ receipt[\\'timeout_observation\\'][\\'command\\'].casefold()\\n            # Request product shutdown\
+        \ before stopping only our exact controller.\\n            with (ROOT / \\'emergency-down.stdout\\').open(\\\
+        'wb\\') as out, (ROOT / \\'emergency-down.stderr\\').open(\\'wb\\') as err:\\n                down = subprocess.Popen([str(IMAGE),\
+        \ \\'--home\\', str(ROOT / \\'home\\'), \\'down\\'],\\n                                        stdout=out,\
+        \ stderr=err)\\n                try:\\n                    down.wait(timeout=15)\\n                except\
+        \ subprocess.TimeoutExpired:\\n                    receipt[\\'emergency_down\\'] = process_snapshot(int(down._handle))\\\
+        n                    assert str(ROOT).casefold() in receipt[\\'emergency_down\\'][\\'command\\'].casefold()\\\
+        n                    down.kill()\\n                    down.wait(timeout=5)\\n            require(k.TerminateProcess(created.process,\
+        \ 92), \\'stop exact timed-out controller\\')\\n            assert k.WaitForSingleObject(created.process,\
+        \ 5000) == 0\\n            raise RuntimeError(\\'unelevated controller exceeded150 seconds\\')\\n      \
+        \  report = json.loads((ROOT / \\'report.json\\').read_text())\\n        assert report.get(\\'lifecycle_completed\\\
+        '), report\\n        print(json.dumps(report, indent=2))\\n    except Exception as error:\\n        receipt[\\\
+        'error\\'] = repr(error)\\n        raise\\n    finally:\\n        (ROOT / \\'token-receipt.json\\').write_text(json.dumps(receipt,\
+        \ indent=2) + \\'\\\\n\\')\\n        for handle in [created.thread, created.process, selected, original]:\\\
+        n            if handle:\\n                k.CloseHandle(handle)\\n\\n\\nif __name__ == \\'__main__\\':\\\
+        n    if \\'--controller\\' in sys.argv:\\n        with (ROOT / \\'controller.log\\').open(\\'w\\') as log:\\\
+        n            with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):\\n                controller()\\\
+        n    else:\\n        launch_controller()\\n',encoding='utf-8')\nreceipt={'original_run':43687295059,'asset':asset,'image':image,'rebuilt':False,\n\
+        \ 'all_original_members_verified':True,'diagnostic_sha256':hashlib.sha256((root/'diagnostic.py').read_bytes()).hexdigest()}\n\
+        (root/'reuse.json').write_text(json.dumps(receipt,indent=2)+'\\n')\n"
+    - name: Run public lifecycle as verified unelevated caller
+      shell: python
+      run: 'import os,subprocess,sys
+
+        from pathlib import Path
+
+        root=Path(os.environ[''RUNNER_TEMP''])/''unelevated-startup''
+
+        subprocess.run([sys.executable,str(root/''diagnostic.py'')],check=True)'
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: unelevated-startup-observation
+        path: '${{ runner.temp }}/unelevated-startup/*.json
+
+          ${{ runner.temp }}/unelevated-startup/*.stdout
+
+          ${{ runner.temp }}/unelevated-startup/*.stderr
+
+          ${{ runner.temp }}/unelevated-startup/*.log
+
+          ${{ runner.temp }}/unelevated-startup/diagnostic.py'
+        retention-days: 14
+        if-no-files-found: error
