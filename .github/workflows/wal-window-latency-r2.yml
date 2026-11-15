@@ -1,0 +1,114 @@
+name: Paired native endmark window latency probe
+'on':
+  push:
+    branches:
+    - prime/wal-window-latency-r2
+permissions:
+  contents: read
+jobs:
+  proof:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: linux
+          runner: ubuntu-24.04
+        - os: windows
+          runner: windows-2025
+        - os: macos
+          runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      PROBE_SOURCE: ca2d4224a2363307f1dfbc73369f8f7d1c719d10
+      PROBE_OS: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ca2d4224a2363307f1dfbc73369f8f7d1c719d10
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: wal-window-latency-r1-${{ matrix.os }}
+        cache-on-failure: true
+    - name: Measure matched eight-client writer pressure before crash qualification
+      shell: python
+      run: "\"\"\"Paired probe only: instrumented main policy versus the endmark mechanism.\"\"\"\nimport hashlib\nimport\
+        \ json\nimport os\nfrom pathlib import Path\nimport platform\nimport subprocess\nimport sys\n\nROOT = Path(os.environ['RUNNER_TEMP'])\
+        \ / 'wal-window-latency-r2'\nROOT.mkdir()\nSOURCE = os.environ['PROBE_SOURCE']\nBASE = '7b23fb01a7e16362c6d6b024e5c1801a32bda8c6'\n\
+        TEST = 'wal_window_latency'\nSCHEDULE = [('main', 'mechanism'), ('mechanism', 'main'),\n            ('main', 'mechanism'),\
+        \ ('mechanism', 'main')]\nrecord = {'source': SOURCE, 'main_base': BASE, 'os': platform.platform(),\n          'phase':\
+        \ 'paired latency probe; no product PR', 'commands': [], 'pairs': [],\n          'schedule': SCHEDULE, 'decision':\
+        \ 'ungraded',\n          'baseline': 'Same native image with window disabled; unchanged main maintenance policy plus\
+        \ identical trace observer',\n          'gate': 'Each of four pairs must improve queue and receipt p95 and preserve\
+        \ or improve completed throughput; stop at the first failed pair',\n          'limitations': ['Public host-writer\
+        \ API; no MCP/provider journey',\n                          'Frame progress comes from native WAL accounting, not\
+        \ physical page-write counts',\n                          'No memory/OS handle measurement or crash/I/O qualification\
+        \ in this phase',\n                          'Clean fresh store only; existing near-cutoff backlog is a separate unchanged\
+        \ control']}\n\ndef save():\n    (ROOT / 'provenance.json').write_text(json.dumps(record, indent=2) + '\\n', encoding='utf-8')\n\
+        \ndef call(label, argv, env=None, timeout=1200, allow_failure=False):\n    row = {'label': label, 'argv': argv, 'state':\
+        \ 'started'}\n    record['commands'].append(row)\n    save()\n    with (ROOT / (label + '.log')).open('wb') as log:\n\
+        \        try:\n            row['exit'] = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL,\n               \
+        \ stdout=log, stderr=subprocess.STDOUT, timeout=timeout).returncode\n            row['state'] = 'exited'\n       \
+        \ except BaseException as error:\n            row.update(state='exception', error=repr(error))\n            save()\n\
+        \            raise\n    save()\n    if not allow_failure:\n        assert row['exit'] == 0, label\n    return (ROOT\
+        \ / (label + '.log')).read_text(encoding='utf-8'), row['exit']\n\ndef traces(path):\n    rows = [json.loads(line)\
+        \ for line in path.read_text(encoding='utf-8').splitlines()]\n    copies, waits = [], []\n    for row in rows:\n \
+        \       if row['kind'] == 'checkpoint':\n            assert row['error'] is None and row['result'] is not None, row\n\
+        \            busy, log, done = row['result']\n            assert busy == 0, row\n            progress = (row['before_log']\
+        \ - row['before_done']\n                        if row['mode'] == 'TRUNCATE' and log == 0\n                      \
+        \  else done - row['before_done'])\n            assert progress >= 0, row\n            copies.append(dict(row, copied_frame_progress=progress))\n\
+        \        elif row['kind'] == 'producer-wait':\n            waits.append(row['elapsed_us'])\n        elif row['kind']\
+        \ == 'window-error':\n            raise AssertionError(row)\n        elif row['kind'] == 'window-copy':\n        \
+        \    assert 0 <= row['advance'] <= row['bound'] and row['done'] <= row['target'], row\n    assert len(waits) == 2560,\
+        \ len(waits)\n    return {'copy_intervals': copies, 'maximum_copy_pause_us': max((r['elapsed_us'] for r in copies),\
+        \ default=None),\n            'maximum_copied_frame_progress': max((r['copied_frame_progress'] for r in copies), default=None),\n\
+        \            'producer_window_waits_us': waits, 'maximum_producer_wait_us': max(waits),\n            'observed_wal_high_water_bytes':\
+        \ max((r['before_bytes'] for r in copies), default=None),\n            'native_reset_count': sum(r['mode'] == 'TRUNCATE'\
+        \ for r in copies)}\n\ntry:\n    identity, _ = call('source-identity', ['git', 'rev-parse', 'HEAD'])\n    assert identity.strip()\
+        \ == SOURCE\n    delta, _ = call('source-diff', ['git', 'diff', BASE, SOURCE, '--', 'crates/se-store'])\n    record['source_delta_sha256']\
+        \ = hashlib.sha256(delta.encode()).hexdigest()\n    compiler, _ = call('compiler', ['rustc', '-vV'])\n    target,\
+        \ _ = call('native-target', ['rustc', '--print', 'host-tuple'])\n    target = target.strip()\n    expected = os.environ['PROBE_OS']\n\
+        \    assert {'linux': sys.platform.startswith('linux'), 'windows': os.name == 'nt',\n            'macos': sys.platform\
+        \ == 'darwin'}[expected]\n    record.update(compiler=compiler, native_target=target)\n    args = ['--target', target,\
+        \ '--release', '--locked', '-p', 'se-store', '--test', TEST]\n    call('strict-native-clippy', ['cargo', 'clippy',\
+        \ *args, '--', '-D', 'warnings'])\n    output, _ = call('build', ['cargo', 'test', *args, '--no-run', '--message-format=json'])\n\
+        \    images = [json.loads(line)['executable'] for line in output.splitlines()\n              if line.startswith('{')\
+        \ and json.loads(line).get('reason') == 'compiler-artifact'\n              and json.loads(line).get('target', {}).get('name')\
+        \ == TEST\n              and json.loads(line).get('executable')]\n    assert len(images) == 1, images\n    image =\
+        \ Path(images[0])\n    record['native_image_sha256'] = hashlib.sha256(image.read_bytes()).hexdigest()\n    for pair,\
+        \ order in enumerate(SCHEDULE):\n        result = {'pair': pair, 'order': order, 'arms': {}}\n        record['pairs'].append(result)\n\
+        \        for arm in order:\n            label = f'pair-{pair}-{arm}'\n            env = os.environ.copy()\n      \
+        \      env['SE_WAL_WINDOW_PROBE'] = '1' if arm == 'mechanism' else '0'\n            env['SE_WAL_PROBE_TRACE'] = str(ROOT\
+        \ / (label + '-trace.jsonl'))\n            env['SE_WAL_LATENCY_OUTPUT'] = str(ROOT / (label + '-receipts.json'))\n\
+        \            _, rc = call(label, [str(image), 'eight_clients_cross_wal_pressure_without_hidden_receipts',\n      \
+        \                           '--exact', '--nocapture', '--test-threads=1'], env=env, timeout=300,\n               \
+        \                  allow_failure=True)\n            assert rc == 0, label\n            report = json.loads(Path(env['SE_WAL_LATENCY_OUTPUT']).read_text(encoding='utf-8'))\n\
+        \            assert report['completed_groups'] == report['requested_groups'] == report['exact_operations'] == 2560\n\
+        \            assert report['verified_events'] == 10240 and report['failed_rows'] == 0 and not report['errors']\n \
+        \           observation = traces(Path(env['SE_WAL_PROBE_TRACE']))\n            result['arms'][arm] = {'report': report,\
+        \ 'maintenance': observation}\n            save()\n        main = result['arms']['main']['report']\n        mechanism\
+        \ = result['arms']['mechanism']['report']\n        result['checks'] = {\n            'queue_p95_improved': mechanism['queue_p95_us']\
+        \ < main['queue_p95_us'],\n            'receipt_p95_improved': mechanism['receipt_p95_us'] < main['receipt_p95_us'],\n\
+        \            'completed_throughput_preserved': mechanism['groups_per_second'] >= main['groups_per_second']}\n    \
+        \    result['passed'] = all(result['checks'].values())\n        save()\n        if not result['passed']:\n       \
+        \     record['decision'] = 'STOP: paired p95 or completed throughput gate failed; no tuning or crash progression'\n\
+        \            break\n    else:\n        record['decision'] = 'GO: local OS latency pairs pass; global three-OS readback\
+        \ required before crash/I/O matrix'\nexcept BaseException as error:\n    record['error'] = repr(error)\n    record['decision']\
+        \ = 'STOP: incomplete probe; preserve partial receipts and all failures'\n    raise\nfinally:\n    save()\n    manifest\
+        \ = {str(p.relative_to(ROOT)).replace('\\\\', '/'): {\n        'sha256': hashlib.sha256(p.read_bytes()).hexdigest(),\
+        \ 'bytes': p.stat().st_size}\n        for p in ROOT.rglob('*') if p.is_file() and p.name != 'manifest.json'}\n   \
+        \ (ROOT / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\\n', encoding='utf-8')\n"
+    - name: Retain complete proof and failed assertions
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: wal-window-latency-r2-${{ matrix.os }}
+        path: ${{ runner.temp }}/wal-window-latency-r2
+        if-no-files-found: error
+        retention-days: 14
