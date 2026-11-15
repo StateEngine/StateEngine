@@ -1,4 +1,4 @@
-name: Independent native image revision delta
+name: Native guarded image proof head confirmation
 'on':
   push:
     branches:
@@ -8,7 +8,7 @@ permissions:
 env:
   CARGO_BUILD_JOBS: '2'
   CARGO_INCREMENTAL: '0'
-  JUDGE_SOURCE: e4acd2fa037bf2ca4520fa7d599c3f579c913edc
+  JUDGE_SOURCE: 4781a89d290f01a96859f8b28bcd7f5f5637cf30
 jobs:
   judge:
     runs-on: windows-2025
@@ -17,8 +17,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        - side: retained_gap
-          ref: bb334ddf2affddfccf5ef8ccfe242663f706acea
         - side: head
           ref: 3b6fd70af3da4c55b6fc423abf3b24cbff337c84
     env:
