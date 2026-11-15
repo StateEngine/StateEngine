@@ -136,17 +136,12 @@ fn runtime(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    // Renewal now uses the actual private CLI worker rather than parsing in
-    // this test executable. Archive builds retain the sibling candidate binary.
-    let image = if let Some(image) = std::env::var_os("SE_SELECTOR_SE") {
-        std::path::PathBuf::from(image)
-    } else {
-        let test = std::env::current_exe()?;
-        test.parent()
-            .and_then(std::path::Path::parent)
-            .ok_or("candidate binary directory absent")?
-            .join("se")
-    };
+    // Native parsing runs in the real compact CLI image supplied by CI.
+    // Missing input is a failure; a test executable cannot serve this entry.
+    let image = std::env::var_os("SE_ATLAS_WORKER_BIN")
+        .filter(|path| !path.is_empty())
+        .ok_or("SE_ATLAS_WORKER_BIN must name the compact candidate CLI image")?;
+    let image = std::path::PathBuf::from(image).canonicalize()?;
     Ok(NativeRuntime::new(
         home.to_owned(),
         image,

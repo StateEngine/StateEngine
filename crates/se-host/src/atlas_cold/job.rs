@@ -157,20 +157,27 @@ impl ColdJob {
                     if let Some(path) = path {
                         self.last_path = Some(path);
                     }
-                    if matches!(phase, protocol::Phase::Parse) {
+                    if self.parse_deadline.is_some_and(|end| Instant::now() >= end) {
+                        self.worker
+                            .cancel_until(self.cancellation_deadline())
+                            .map_err(failure)?;
+                        return Err(crate::atlas_parse::expired());
+                    }
+                    if matches!(phase, protocol::Phase::SourceRead) {
                         if self.parse_deadline.is_some() {
-                            return Err(failure("duplicate parse phase"));
+                            return Err(failure("duplicate source read phase"));
                         }
+                        // The child is still waiting for authorization. Source
+                        // I/O and native parsing share this one work allowance;
+                        // the remaining 300 ms belongs to exact cancellation.
                         let end = (Instant::now() + Duration::from_millis(200)).min(self.deadline);
                         self.parse_deadline = Some(end);
                         self.worker.send_control(b"parse", end).map_err(failure)?;
-                    } else {
-                        if self.parse_deadline.is_some_and(|end| Instant::now() >= end) {
-                            self.worker
-                                .cancel_until(self.cancellation_deadline())
-                                .map_err(failure)?;
-                            return Err(crate::atlas_parse::expired());
+                    } else if matches!(phase, protocol::Phase::Parse) {
+                        if self.parse_deadline.is_none() {
+                            return Err(failure("parse phase without source read authorization"));
                         }
+                    } else {
                         self.parse_deadline = None;
                     }
                     self.last_phase = phase;
