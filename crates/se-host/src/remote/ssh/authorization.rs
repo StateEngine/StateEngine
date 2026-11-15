@@ -161,16 +161,15 @@ async fn exchange(
     bytes: zeroize::Zeroizing<Vec<u8>>,
     deadline: std::time::Duration,
 ) -> se_types::Result<Vec<u8>> {
-    use super::{Command, Stdio, unavailable};
+    use super::{Stdio, unavailable};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut child = Command::new("ssh")
+    let mut child = super::command::client()
         .args(["-T", "-o", "BatchMode=yes"])
         .arg(&config.destination)
         .arg(&config.command)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
         .spawn()
         .map_err(|_| unavailable("cannot start protected SSH authorization"))?;
     let exchange = tokio::time::timeout(deadline, async {

@@ -5,14 +5,23 @@ use se_types::SeError;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
+pub(super) fn client() -> Command {
+    let mut command = Command::new("ssh");
+    command.kill_on_drop(true);
+    // Every caller replaces stdio. A Windows SSH login's inherited descriptor
+    // table describes the login pipes, not this child's new handles.
+    #[cfg(windows)]
+    command.env_remove("c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE");
+    command
+}
+
 pub(in crate::remote) async fn ssh(destination: &str, command: String) -> Result<(bool, Vec<u8>)> {
     validate_destination(destination)?;
-    let mut child = Command::new("ssh")
+    let mut child = client()
         .args(["-T", "-o", "BatchMode=yes", destination, &command])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
         .spawn()
         .map_err(|_| unavailable("cannot start the system SSH file-transfer client"))?;
     let stdout = child
@@ -90,7 +99,7 @@ pub(super) async fn send_image(
         .rewind()
         .await
         .map_err(|_| unavailable("cannot rewind the native image"))?;
-    let mut child = Command::new("ssh")
+    let mut child = client()
         .args([
             "-T",
             "-o",
@@ -101,7 +110,6 @@ pub(super) async fn send_image(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
         .spawn()
         .map_err(|_| unavailable("cannot start the system SSH image stream"))?;
     let input = child
