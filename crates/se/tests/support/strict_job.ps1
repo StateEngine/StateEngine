@@ -1,4 +1,4 @@
-param([string]$Se, [string]$HomePath, [string]$Out, [switch]$NoEligibleBroker)
+param([string]$Se, [string]$HomePath, [string]$Out, [switch]$NoEligibleBroker, [switch]$Foreground)
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
@@ -95,6 +95,9 @@ function Invoke-OwnedCli([string]$Verb) {
     $output = $process.StandardOutput.ReadToEndAsync()
     $errors = $process.StandardError.ReadToEndAsync()
     if (!$process.WaitForExit(15000)) {
+      $pin = Get-CimInstance Win32_Process -Filter "ProcessId=$($process.Id)"
+      if (!$pin -or !$pin.CommandLine.Contains($HomePath)) { throw 'owned timed-out client command line unreadable' }
+      [IO.File]::WriteAllText((Join-Path $Out ('timeout-' + $process.Id + '.json')), (@{pid=$process.Id;birth=$process.StartTime.ToFileTimeUtc().ToString();command=$pin.CommandLine}|ConvertTo-Json -Compress))
       $process.Kill(); $process.WaitForExit()
       throw "owned $Verb client exceeded its bound"
     }
@@ -103,19 +106,58 @@ function Invoke-OwnedCli([string]$Verb) {
 }
 $job = [StrictJobFixture]::Enter()
 try {
-  $witness = @{caller_in_job_before=[StrictJobFixture]::CallerInJob($job); privilege_removed=($null -ne $removedPrivilege); removed_privilege=$removedPrivilege; home_readable_after_restriction=$true; restricting_sids=[StrictJobFixture]::CallerRestricted(); foreground_cases=@()}
+  $witness = @{caller_in_job_before=[StrictJobFixture]::CallerInJob($job); privilege_removed=($null -ne $removedPrivilege); removed_privilege=$removedPrivilege; home_readable_after_restriction=$true; restricting_sids=[StrictJobFixture]::CallerRestricted(); foreground_cases=@(); background_cases=@()}
   foreach ($mode in @('json','plain')) {
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $Se
-    $info.Arguments = '--home "' + $HomePath.TrimEnd('\') + '" ' + $(if ($mode -eq 'json') {'--json '}) + 'up'
+    $info.Arguments = '--home "' + $HomePath.TrimEnd('\') + '" ' + $(if ($mode -eq 'json') {'--json '}) + 'up' + $(if ($Foreground) {' --foreground'})
     $info.UseShellExecute = $false
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
     $child = [System.Diagnostics.Process]::Start($info)
     $stdout = $child.StandardOutput.ReadToEndAsync()
     $stderr = $child.StandardError.ReadToEndAsync()
-    if ($NoEligibleBroker) {
-      # A working foreground fallback stays alive until this independent client
+    if ($NoEligibleBroker -and !$Foreground) {
+      $runtime = $null
+      try {
+        if (!$child.WaitForExit(30000)) { throw 'background up did not return before public down' }
+        if ($child.ExitCode -ne 0) { throw 'background up returned a refusal' }
+        $status = Invoke-OwnedCli 'status'
+        if ($status.exit -ne 0) { throw 'outside public status failed' }
+        $view = $status.stdout | ConvertFrom-Json
+        if ($view.runtime.state -ne 'running' -or $view.runtime.detachment -ne 'windows-job') {
+          throw 'caller-job lifetime was not reported by public status'
+        }
+        if ([int]$view.runtime.process.pid -eq $child.Id) { throw 'background arm silently stayed foreground' }
+        $runtime = [Diagnostics.Process]::GetProcessById([int]$view.runtime.process.pid)
+        $native = Get-CimInstance Win32_Process -Filter "ProcessId=$($runtime.Id)"
+        if (!$native -or !$native.CommandLine.Contains('--stateengine-private-runtime-bootstrap')) {
+          throw 'exact runtime command line was not observed'
+        }
+        $birth = $runtime.StartTime.ToFileTimeUtc().ToString()
+        $member = [StrictJobFixture]::InJob($runtime.Handle,$job)
+        if (!$member) { throw 'runtime escaped the exact caller job in the inherited-job arm' }
+        $stopped = Invoke-OwnedCli 'down'
+        if ($stopped.exit -ne 0) { throw 'public background down failed' }
+        $down = $stopped.stdout | ConvertFrom-Json
+        if ($down.schema -ne 'se.runtime-stop/v1' -or !$down.complete -or $down.witness.state -ne 'witnessed') {
+          throw 'public background down lacked its complete native witness'
+        }
+        if (!$runtime.WaitForExit(15000)) { throw 'exact background host survived public down' }
+        if (Test-Path -LiteralPath (Join-Path $HomePath 'endpoint.json')) { throw 'background endpoint survived public down' }
+        $witness.background_cases += @{mode=$mode; cli_pid=$child.Id; pid=$runtime.Id;
+          creation_filetime=$birth; command=$native.CommandLine;
+          in_job=$member; detachment=$view.runtime.detachment; down_exit=$stopped.exit;
+          down_complete=$down.complete; down_witness=$down.witness.state; exact_host_exited=$true; endpoint_absent=$true}
+      } finally {
+        # Baseline remains foreground: request public shutdown before returning
+        # the failed assertion, keeping the failing arm safe and reviewable.
+        if (Test-Path -LiteralPath (Join-Path $HomePath 'endpoint.json')) { $null = Invoke-OwnedCli 'down' }
+        if ($runtime) { $runtime.Dispose() }
+      }
+    }
+    if ($NoEligibleBroker -and $Foreground) {
+      # The explicit foreground consumer stays alive until this independent client
       # witnesses the same root and requests public shutdown.
       $until = [DateTime]::UtcNow.AddSeconds(30)
       $ready = $false
@@ -126,10 +168,12 @@ try {
             $view = $status.stdout | ConvertFrom-Json
             if ($view.runtime.state -eq 'running') {
               if ([int]$view.runtime.process.pid -ne $child.Id) { throw 'foreground fallback detached a different owner' }
-              $member = [StrictJobFixture]::InJob($child.Handle,[IntPtr]::Zero)
+              $member = [StrictJobFixture]::InJob($child.Handle,$job)
               if (!$member) { throw 'no-broker arm did not exercise an in-job foreground host' }
               $stopped = Invoke-OwnedCli 'down'
               if ($stopped.exit -ne 0) { throw "public foreground down failed: $($stopped.stderr)" }
+              $down = $stopped.stdout | ConvertFrom-Json
+              if (!$down.complete -or $down.witness.state -ne 'witnessed') { throw 'foreground down lacked its complete witness' }
               $witness.foreground_cases += @{mode=$mode; pid=$child.Id; creation_filetime=$child.StartTime.ToFileTimeUtc().ToString(); in_job=$member; down_exit=$stopped.exit}
               $ready = $true
               break
@@ -145,6 +189,9 @@ try {
     }
     if (!$child.WaitForExit(30000)) {
       # This exact Process object pins the CLI child created here; no name/pattern signaling.
+      $pin = Get-CimInstance Win32_Process -Filter "ProcessId=$($child.Id)"
+      if (!$pin -or !$pin.CommandLine.Contains($HomePath)) { throw 'owned timed-out startup command line unreadable' }
+      [IO.File]::WriteAllText((Join-Path $Out ('timeout-' + $child.Id + '.json')), (@{pid=$child.Id;birth=$child.StartTime.ToFileTimeUtc().ToString();command=$pin.CommandLine}|ConvertTo-Json -Compress))
       $child.Kill(); $child.WaitForExit()
       throw 'exact strict-job CLI child exceeded its original bound'
     }
@@ -155,6 +202,10 @@ try {
       $started = $stdout.Result | ConvertFrom-Json
       $runtime = [Diagnostics.Process]::GetProcessById([int]$started.process.pid)
       try {
+        $observed = Invoke-OwnedCli 'status'
+        if ($observed.exit -ne 0) { throw 'broker lifetime status was unreadable' }
+        $witness.selected_lifetime = ($observed.stdout | ConvertFrom-Json).runtime.detachment
+        $witness.runtime_in_exact_caller_job = [StrictJobFixture]::InJob($runtime.Handle,$job)
         $witness.runtime_pid = $runtime.Id
         $witness.runtime_creation_filetime = $runtime.StartTime.ToFileTimeUtc().ToString()
         $witness.runtime_outside_all_jobs = ![StrictJobFixture]::InJob($runtime.Handle,[IntPtr]::Zero)

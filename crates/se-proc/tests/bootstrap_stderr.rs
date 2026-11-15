@@ -215,6 +215,7 @@ mod judge {
         };
         #[cfg(windows)]
         if mode == "broker" {
+            eprintln!("strict job selected detachment: {observed_detachment:?}");
             require(
                 observed_detachment == Some(RuntimeDetachment::WindowsBroker),
                 "strict job did not use the broker path",

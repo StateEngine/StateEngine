@@ -113,7 +113,7 @@ impl Fixture {
         );
         Ok(Some(live.identity))
     }
-    fn run_strict(&mut self, refuse: bool) -> Result {
+    fn run_strict(&mut self, refuse: bool, foreground: bool) -> Result {
         let powershell = se_proc::windows_directory()
             .map_err(|e| format!("native Windows directory: {e:?}"))?
             .join("System32/WindowsPowerShell/v1.0/powershell.exe");
@@ -130,6 +130,9 @@ impl Fixture {
             .arg(&self.root);
         if refuse {
             command.arg("-NoEligibleBroker");
+        }
+        if foreground {
+            command.arg("-Foreground");
         }
         let output = command.output_executable()?;
         // This outside reader runs only after the strict-job shell has exited.
@@ -241,7 +244,7 @@ impl Drop for Fixture {
 #[test]
 fn eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it() -> Result {
     let mut f = Fixture::new("broker")?;
-    f.run_strict(false)?;
+    f.run_strict(false, false)?;
     let identity = f
         .host
         .as_ref()
@@ -286,9 +289,9 @@ fn eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it() -> Re
 }
 
 #[test]
-fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
+fn explicit_foreground_stays_in_caller_job_until_public_down() -> Result {
     let mut f = Fixture::new("no-broker")?;
-    f.run_strict(true)?;
+    f.run_strict(true, true)?;
     assert!(
         f.host.is_none(),
         "foreground host survived its joined public down"
@@ -301,12 +304,6 @@ fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
     for mode in ["json", "plain"] {
         let (exit, stdout, stderr) = f.result(mode)?;
         assert_eq!(exit, "0", "foreground startup/down failed: {stderr}");
-        assert!(
-            stderr.contains("starting in the foreground")
-                && stderr.contains("Keep this terminal open")
-                && stderr.contains("same home"),
-            "foreground lifetime was hidden: {stderr}"
-        );
         let observed = cases
             .iter()
             .find(|row| row["mode"] == mode)
@@ -323,6 +320,54 @@ fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
                 text.contains("Runtime running")
                     && text.contains(&format!("PID {}", observed["pid"])),
                 "wrong foreground output: {text}"
+            );
+        }
+    }
+    f.finish()
+}
+
+#[test]
+fn no_eligible_broker_returns_background_in_caller_job_and_stops_publicly() -> Result {
+    let mut f = Fixture::new("caller-job")?;
+    f.run_strict(true, false)?;
+    assert!(
+        f.host.is_none(),
+        "caller-job host survived its witnessed public down"
+    );
+    let witness: serde_json::Value = serde_json::from_slice(&fs::read(f.root.join("job.json"))?)?;
+    let cases = witness["background_cases"]
+        .as_array()
+        .ok_or("missing background cases")?;
+    assert_eq!(cases.len(), 2);
+    for mode in ["json", "plain"] {
+        let (exit, stdout, stderr) = f.result(mode)?;
+        assert_eq!(exit, "0", "background startup failed: {stderr}");
+        assert!(
+            stderr.contains("Windows may stop this background host"),
+            "caller-job lifetime hidden: {stderr}"
+        );
+        let observed = cases
+            .iter()
+            .find(|row| row["mode"] == mode)
+            .ok_or("missing mode witness")?;
+        assert_eq!(observed["in_job"], true);
+        assert_eq!(observed["detachment"], "windows-job");
+        assert_ne!(observed["cli_pid"], observed["pid"]);
+        assert_eq!(observed["down_exit"], 0);
+        assert_eq!(observed["down_complete"], true);
+        assert_eq!(observed["down_witness"], "witnessed");
+        assert_eq!(observed["exact_host_exited"], true);
+        assert_eq!(observed["endpoint_absent"], true);
+        if mode == "json" {
+            let value: serde_json::Value = serde_json::from_slice(&stdout)?;
+            assert_eq!(value["state"], "running");
+            assert_eq!(value["process"]["pid"], observed["pid"]);
+        } else {
+            let text = String::from_utf8(stdout)?;
+            assert!(
+                text.contains("Runtime running")
+                    && text.contains(&format!("PID {}", observed["pid"])),
+                "wrong background output: {text}"
             );
         }
     }
