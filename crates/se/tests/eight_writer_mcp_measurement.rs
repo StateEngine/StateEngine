@@ -135,7 +135,7 @@ fn measure_eight_mcp_writers() -> Check {
 
 async fn observe(home: &Path, clients: &[Value]) -> Check {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut child = tokio::process::Command::new("python3")
+    let mut child = tokio::process::Command::new("python")
         .arg(root.join("crates/se/tests/kept_open_writes.py"))
         .arg("--se")
         .arg(env!("CARGO_BIN_EXE_se"))
