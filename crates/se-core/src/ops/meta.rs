@@ -50,6 +50,32 @@ pub fn metadata_output(op: &AnyOp) -> Result<Option<AnyOutput>> {
                 }
                 command = reveal(command);
             }
+            // A global --project is refused by every operation without a
+            // project scope, so such help must not advertise it.
+            let accepts_project = CATALOGUE.iter().copied().any(|meta| {
+                matches!(
+                    &meta.cli,
+                    CliExposure::Leaf { path, .. }
+                        if path
+                            .iter()
+                            .copied()
+                            .zip(value.path.iter().map(String::as_str))
+                            .all(|(registered, shown)| registered == shown)
+                            && matches!(
+                                meta.scope,
+                                Scope::Project | Scope::ProjectOrAll | Scope::Session
+                            )
+                )
+            });
+            if !accepts_project {
+                command = command.mut_args(|arg| {
+                    if arg.get_id() == "project" {
+                        arg.hide(true)
+                    } else {
+                        arg
+                    }
+                });
+            }
             Ok(Some(
                 HelpOutput {
                     path: value.path.clone(),

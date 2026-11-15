@@ -363,4 +363,85 @@ mod tests {
         }
         Ok(())
     }
+    #[test]
+    fn project_refusal_on_machine_ops_explains_the_scope()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        for (leaf, command) in [("up", "se up"), ("down", "se down")] {
+            let args = ["se", leaf, "--project", "p"]
+                .into_iter()
+                .map(OsString::from)
+                .collect();
+            let Err(failure) = parse(args) else {
+                panic!("the project selector must refuse on {command}");
+            };
+            let Detail::UsageUnknownFlag(detail) = failure.error.body.detail() else {
+                panic!("the refusal must stay usage-classified for {command}");
+            };
+            assert_eq!(detail.flag, "--project");
+            assert_eq!(detail.command, command);
+            assert!(detail.reason.contains("whole machine"), "{}", detail.reason);
+            assert!(
+                detail.reason.contains("without --project"),
+                "{}",
+                detail.reason
+            );
+            let envelope = se_types::ErrorEnvelope::new(
+                failure.error.body.clone(),
+                &se_types::RenderCx::default(),
+            )?;
+            assert_eq!(
+                envelope.message(),
+                format!("`{command}` does not accept --project: {}", detail.reason)
+            );
+            assert_eq!(envelope.remedy().text, format!("Use `{command} --help`"));
+            let json = serde_json::to_string(&envelope)?;
+            assert!(json.contains("whole machine"), "{json}");
+            assert!(json.contains("without --project"), "{json}");
+        }
+        Ok(())
+    }
+    #[test]
+    fn help_advertises_project_only_where_supported()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let usage = |args: &[&str]| -> std::result::Result<String, Box<dyn std::error::Error>> {
+            let argv = std::iter::once("se")
+                .chain(args.iter().copied())
+                .map(OsString::from)
+                .collect();
+            let invocation = match parse(argv) {
+                Ok(invocation) => invocation,
+                Err(_) => return Err("help invocation must parse".into()),
+            };
+            let Some(se_core::ops::AnyOutput::MetaHelp(envelope)) =
+                ops::metadata_output(&invocation.operation)?
+            else {
+                return Err("help must produce help output".into());
+            };
+            Ok(envelope.value.usage)
+        };
+        for (args, label) in [
+            (&["help", "watch"][..], "se watch"),
+            (&["help", "up"][..], "se up"),
+            (&["help", "down"][..], "se down"),
+            (&["help", "doctor"][..], "se doctor"),
+            (&["help", "remote"][..], "se remote"),
+        ] {
+            let text = usage(args)?;
+            assert!(
+                !text.contains("--project"),
+                "{label} help must not advertise --project:\n{text}"
+            );
+        }
+        for (args, label) in [
+            (&["help", "msg", "send"][..], "se msg send"),
+            (&["--help"][..], "se"),
+        ] {
+            let text = usage(args)?;
+            assert!(
+                text.contains("--project"),
+                "{label} help keeps --project:\n{text}"
+            );
+        }
+        Ok(())
+    }
 }

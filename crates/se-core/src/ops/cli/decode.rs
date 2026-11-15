@@ -29,11 +29,15 @@ pub fn from_matches_with_key(
     ) && common.project.is_some()
         && meta.name != "meta.help"
     {
-        return Err(unknown_flag(
-            "--project",
-            meta.name,
-            "this operation has no project selector",
-        ));
+        // A machine-wide operation names its scope instead of repeating a
+        // generic selector absence, and gives the working command as typed.
+        let reason = match meta.scope {
+            Scope::Home => {
+                "this operation runs on the whole machine, not a project; run it without --project"
+            }
+            _ => "this operation has no project selector",
+        };
+        return Err(unknown_flag("--project", meta.name, reason));
     }
     if !meta.mutates() && common.key.is_some() {
         return Err(unknown_flag(
