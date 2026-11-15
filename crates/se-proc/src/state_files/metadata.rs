@@ -40,6 +40,11 @@ impl NativeMetadataPin {
         #[cfg(windows)]
         let started = std::time::Instant::now();
         #[cfg(windows)]
+        let trace_start_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("trace clock before epoch")
+            .as_micros();
+        #[cfg(windows)]
         self.files.check(&self.path)?;
         #[cfg(windows)]
         let root_before_us = started.elapsed().as_micros();
@@ -109,7 +114,11 @@ impl NativeMetadataPin {
         drop(other);
         #[cfg(windows)]
         eprintln!(
-            "native-pin-timing root_before_us={} open_us={} metadata_us={} identity_us={} root_after_us={} close_us={}",
+            "native-pin-timing pid={} start_us={} end_us={} thread={:?} root_before_us={} open_us={} metadata_us={} identity_us={} root_after_us={} close_us={}",
+            std::process::id(),
+            trace_start_us,
+            trace_start_us + started.elapsed().as_micros(),
+            std::thread::current().id(),
             root_before_us,
             opened_us - root_before_us,
             named_us - opened_us,

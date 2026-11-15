@@ -488,12 +488,27 @@ fn run(
                     ));
                     batches.push(r.batch)
                 }
-                let result = host
+                let trace_start_us = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("trace clock before epoch")
+                    .as_micros();
+                let preparation = host
                     .engine
                     .reopen(&host.reader.path, host.reader.timeout, &*lease)
                     .and_then(|_| connection::info(&host.engine.db))
-                    .and_then(|i| connection::validate_lease(&i, &*lease, LeaseMode::Host))
-                    .and_then(|_| host.engine.group(batches, false));
+                    .and_then(|i| connection::validate_lease(&i, &*lease, LeaseMode::Host));
+                let prepared_us = start.elapsed().as_micros();
+                let result = preparation.and_then(|_| host.engine.group(batches, false));
+                let keys: Vec<_> = replies.iter().map(|(_, _, _, key)| key).collect();
+                eprintln!(
+                    "writer-group-timing {}",
+                    serde_json::json!({
+                        "pid":std::process::id(),"start_us":trace_start_us,"end_us":trace_start_us+start.elapsed().as_micros(),
+                        "preparation_us":prepared_us,"total_us":start.elapsed().as_micros(),"keys":keys,"requests":count,
+                        "ok":result.is_ok(),"phases":result.as_ref().ok().map(|(_, phases)| serde_json::json!({
+                            "transaction_us":phases.transaction.as_micros(),"commit_us":phases.sync.map(|v|v.as_micros()),"checkpoint_us":phases.checkpoint.map(|v|v.as_micros())}))
+                    })
+                );
                 shared
                     .admission
                     .lock()

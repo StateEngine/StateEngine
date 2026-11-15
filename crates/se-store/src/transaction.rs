@@ -54,6 +54,11 @@ impl Engine {
             .iter()
             .map(Uncertain::from_batch)
             .collect::<Vec<_>>();
+        let trace_start = Instant::now();
+        let trace_start_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("trace clock before epoch")
+            .as_micros();
         let info = connection::info(&self.db)?;
         let batches = batches
             .into_iter()
@@ -62,7 +67,12 @@ impl Engine {
                 crate::staging::prepare(batch, &info, &self.identity)
             })
             .collect();
+        let staged_us = trace_start.elapsed().as_micros();
         let mut result = self.group_inner(batches, maintenance, coupled);
+        eprintln!(
+            "writer-prepare-timing {}",
+            serde_json::json!({"pid":std::process::id(),"start_us":trace_start_us,"staging_us":staged_us,"total_us":trace_start.elapsed().as_micros()})
+        );
         if let Err(error) = &mut result {
             stamp_busy_wait(error, self.timeout);
         }
@@ -107,7 +117,9 @@ impl Engine {
         if batches.is_empty() {
             return Ok((Vec::new(), Phases::default()));
         }
+        let trace_inner = Instant::now();
         let pressure_checkpoint = self.require_wal_capacity()?;
+        let capacity_us = trace_inner.elapsed().as_micros();
         let full = batches
             .iter()
             .filter_map(|b| b.as_ref().ok())
@@ -128,8 +140,10 @@ impl Engine {
             ));
         }
         let recorded = connection::now()?;
+        let before_begin_us = trace_inner.elapsed().as_micros();
         let started = Instant::now();
         self.db.execute_batch("BEGIN IMMEDIATE").map_err(sql)?;
+        let begin_us = started.elapsed().as_micros();
         let info = match connection::info(&self.db) {
             Ok(i) => i,
             Err(e) => {
@@ -171,6 +185,7 @@ impl Engine {
                 ));
             }
         }
+        let header_us = started.elapsed().as_micros() - begin_us;
         let mut results = Vec::with_capacity(batches.len());
         if coupled {
             first_binding::check_pair(&self.db, &batches, &info)?;
@@ -274,6 +289,10 @@ impl Engine {
             (Some(before), Some(after)) => Some(before + after),
             (before, after) => before.or(after),
         };
+        eprintln!(
+            "writer-inner-timing {}",
+            serde_json::json!({"pid":std::process::id(),"thread":format!("{:?}",std::thread::current().id()),"capacity_us":capacity_us,"before_begin_us":before_begin_us,"after_commit_us":trace_inner.elapsed().as_micros()-before_begin_us-transaction.as_micros()-sync.as_micros(),"begin_us":begin_us,"header_us":header_us,"append_us":transaction.as_micros()-begin_us-header_us,"commit_us":sync.as_micros(),"total_us":trace_inner.elapsed().as_micros()})
+        );
         for receipt in results.iter_mut().filter_map(|r| r.as_mut().ok()) {
             receipt.maintenance_pending = self.maintenance.is_some() || self.checkpoint_pending();
             receipt.maintenance_failed = self.maintenance.is_some();
