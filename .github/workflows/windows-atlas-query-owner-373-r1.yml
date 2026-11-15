@@ -1,0 +1,82 @@
+name: Windows Atlas query fixture ownership comparison
+'on':
+  push:
+    branches:
+    - prime/windows-atlas-query-owner-373-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_BUILD_JOBS: '2'
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+jobs:
+  compare:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 9b1da932b90bb68ac29c76684289c19383ddec5d
+        persist-credentials: false
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 7b23fb01a7e16362c6d6b024e5c1801a32bda8c6
+        path: source-base
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: windows-atlas-query-owner-373-v1
+        cache-on-failure: true
+    - name: Run unchanged query assertions on main and fixture correction
+      shell: python
+      run: "import hashlib,json,os,subprocess,sys\nfrom pathlib import Path\nroot=Path(os.environ['RUNNER_TEMP'])/'windows-atlas-query-owner-373-r1'\n\
+        root.mkdir(exist_ok=False)\ndriver=root/'driver.py'\ndriver.write_text('\"\"\"Run the existing native query\
+        \ consumer without changing its assertions.\"\"\"\\nimport argparse\\nimport hashlib\\nimport json\\nimport\
+        \ os\\nfrom pathlib import Path\\nimport platform\\nimport subprocess\\nimport time\\n\\nCASE = \\'five_native_reads_and_streaming_text_share_one_scoped_snapshot\\\
+        '\\n\\ndef main():\\n    parser = argparse.ArgumentParser()\\n    parser.add_argument(\\'--source\\', required=True)\\\
+        n    parser.add_argument(\\'--expected-ref\\', required=True)\\n    parser.add_argument(\\'--arm\\', choices=[\\\
+        'base\\', \\'head\\'], required=True)\\n    parser.add_argument(\\'--out\\', required=True)\\n    args =\
+        \ parser.parse_args()\\n    source = Path(args.source).resolve()\\n    out = Path(args.out).resolve()\\\
+        n    out.mkdir(parents=True, exist_ok=False)\\n    summary = {\\'arm\\': args.arm, \\'qualified\\': False}\\\
+        n    def save():\\n        (out / \\'summary.json\\').write_text(json.dumps(summary, indent=2) + \\'\\\\\
+        n\\', encoding=\\'utf-8\\')\\n    try:\\n        actual = subprocess.check_output([\\'git\\', \\'rev-parse\\\
+        ', \\'HEAD\\'], cwd=source, text=True).strip()\\n        assert actual == args.expected_ref\\n        assert\
+        \ not subprocess.check_output([\\'git\\', \\'diff\\', \\'--name-only\\', \\'HEAD\\'], cwd=source, text=True)\\\
+        n        summary.update({\\'source\\': actual, \\'platform\\': platform.platform(),\\n                 \
+        \       \\'compiler\\': subprocess.check_output([\\'rustc\\', \\'-vV\\'], text=True),\\n               \
+        \         \\'run\\': os.environ.get(\\'GITHUB_RUN_ID\\')})\\n        command = [\\'cargo\\', \\'test\\',\
+        \ \\'-p\\', \\'se-host\\', \\'--all-features\\', \\'--locked\\', \\'--test\\',\\n                   \\'atlas_query_reads\\\
+        ', \\'--\\', \\'--exact\\', CASE, \\'--nocapture\\', \\'--test-threads=1\\']\\n        start = time.monotonic()\\\
+        n        with (out / \\'stdout.log\\').open(\\'wb\\') as stdout, (out / \\'stderr.log\\').open(\\'wb\\')\
+        \ as stderr:\\n            result = subprocess.run(command, cwd=source, stdout=stdout, stderr=stderr)\\\
+        n        summary.update({\\'argv\\': command, \\'exit\\': result.returncode,\\n                        \\\
+        'elapsed_seconds\\': time.monotonic() - start})\\n        text = (out / \\'stdout.log\\').read_text(encoding=\\\
+        'utf-8\\', errors=\\'strict\\') + (out / \\'stderr.log\\').read_text(encoding=\\'utf-8\\', errors=\\'strict\\\
+        ')\\n        summary[\\'query_assertions_passed\\'] = result.returncode == 0 and \\'test result: ok. 1 passed;\
+        \ 0 failed;\\' in text\\n        summary[\\'owner_refusal_reproduced\\'] = result.returncode != 0 and \\\
+        'owner-only valid DACL required: LocationUnsafe\\' in text and \\'1 failed\\' in text\\n        summary[\\\
+        'qualified\\'] = summary[\\'query_assertions_passed\\'] if args.arm == \\'head\\' or os.name != \\'nt\\\
+        ' else summary[\\'owner_refusal_reproduced\\']\\n    except Exception as error:\\n        summary[\\'error\\\
+        '] = repr(error)\\n    finally:\\n        save()\\n        files = {p.relative_to(out).as_posix(): {\\'bytes\\\
+        ': p.stat().st_size,\\n                 \\'sha256\\': hashlib.sha256(p.read_bytes()).hexdigest()}\\n   \
+        \              for p in out.rglob(\\'*\\') if p.is_file()}\\n        (out / \\'manifest.json\\').write_text(json.dumps({\\\
+        'files\\': files}, indent=2) + \\'\\\\n\\', encoding=\\'utf-8\\')\\n    return 0 if summary[\\'qualified\\\
+        '] else 1\\n\\nif __name__ == \\'__main__\\':\\n    raise SystemExit(main())\\n',encoding='utf-8')\nrows=[]\n\
+        for arm,source,ref in [('base',Path.cwd()/'source-base','7b23fb01a7e16362c6d6b024e5c1801a32bda8c6'),('head',Path.cwd(),'9b1da932b90bb68ac29c76684289c19383ddec5d')]:\n\
+        \ code=subprocess.run([sys.executable,str(driver),'--source',str(source),'--expected-ref',ref,'--arm',arm,'--out',str(root/arm)]).returncode\n\
+        \ rows.append({'arm':arm,'driver_exit':code})\n(root/'pair.json').write_text(json.dumps(rows,indent=2)+'\\\
+        n',encoding='utf-8')\nfiles={p.relative_to(root).as_posix():{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}\
+        \ for p in root.rglob('*') if p.is_file()}\n(root/'manifest.json').write_text(json.dumps({'files':files},indent=2)+'\\\
+        n',encoding='utf-8')\nraise SystemExit(0 if all(row['driver_exit']==0 for row in rows) else 1)\n"
+    - name: Retain both outcomes and complete hash manifest
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: windows-atlas-query-owner-373-r1
+        path: ${{ runner.temp }}/windows-atlas-query-owner-373-r1
+        if-no-files-found: error
+        retention-days: 14
