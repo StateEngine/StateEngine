@@ -143,7 +143,7 @@ impl QueryReader<'_, '_, '_> {
             let mut bytes = 0;
             let mut bodies = 0;
             let mut body_omitted = 0;
-            let mut last = None;
+            let mut keys = Vec::new();
             let mut more = false;
             let mut files = Vec::<(FileId, u8)>::new();
             for candidate in collected.values {
@@ -200,13 +200,13 @@ impl QueryReader<'_, '_, '_> {
                 } else {
                     query.budget.max_bytes
                 } as usize;
-                if hit.body.is_some() && bytes + cost + size(&snapshot.index)? + 1600 > max {
+                if hit.body.is_some() && bytes + cost > max {
                     hit.body = None;
                     body_omitted += 1;
                     cost = size(&hit)?;
                 }
                 if items.len() == query.budget.max_results as usize
-                    || bytes + cost + size(&snapshot.index)? + 1600 > max
+                    || (!items.is_empty() && bytes + cost > max)
                 {
                     more = true;
                     break;
@@ -221,17 +221,28 @@ impl QueryReader<'_, '_, '_> {
                 }
                 bytes += cost;
                 items.push(hit);
-                last = Some(key);
+                let mut key = key;
+                key.integers.push(super::modes::key(mode));
+                keys.push(key);
             }
             if more && items.is_empty() {
                 return Err(capacity("Atlas search response bytes", 1, 0));
             }
+            let continuation = keys
+                .last()
+                .cloned()
+                .map(|key| {
+                    Ok::<_, se_types::SeError>(
+                        PositionCursor::new(&snapshot.index, "find", digest, key, None)?
+                            .with_ranking_time(ranking.now_unix_ms),
+                    )
+                })
+                .transpose()?;
             let next = if more {
-                let mut key = last.ok_or_else(|| cache_error("missing search continuation"))?;
-                key.integers.push(super::modes::key(mode));
                 Some(
-                    PositionCursor::new(&snapshot.index, "find", digest, key, None)?
-                        .with_ranking_time(ranking.now_unix_ms)
+                    continuation
+                        .as_ref()
+                        .ok_or_else(|| cache_error("missing search continuation"))?
                         .encode()?,
                 )
             } else {
@@ -243,7 +254,7 @@ impl QueryReader<'_, '_, '_> {
                 page: page(
                     &snapshot,
                     items,
-                    query.budget,
+                    super::search_page::staging_budget(query.budget),
                     next,
                     collected.truncated || advanced || !snapshot.negative_complete(),
                     bytes,
@@ -255,19 +266,13 @@ impl QueryReader<'_, '_, '_> {
                 bodies_omitted: body_omitted,
             };
             output.validate()?;
-            check_output(
-                snapshot.answer(Read::Present { value: output }, advanced),
-                QueryBudget {
-                    max_bytes: if query.full {
-                        query.budget.max_bytes.min(12 * 1024)
-                    } else {
-                        query.budget.max_bytes
-                    },
-                    ..query.budget
-                },
-            )
+            Ok(super::search_page::SearchPage {
+                answer: snapshot.answer(Read::Present { value: output }, advanced),
+                keys,
+                continuation,
+            })
         })?;
-        super::freshness::finish(self, answer, query.budget, end)
+        answer.finish(self, query, end)
     }
 }
 pub(super) fn materialize(
