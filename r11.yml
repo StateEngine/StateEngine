@@ -55,7 +55,7 @@ jobs:
       - name: Checkout judge
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: f125b790d28e0a532f70f70761ec396aa3b81061
+          ref: 6aea1f3b93c91e3481993d17ac10b14ecf4007e4
           path: judge
           persist-credentials: false
 
