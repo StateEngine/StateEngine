@@ -83,7 +83,7 @@ jobs:
         creates the fixture accounts\''\n    assert not os.environ.get(\''GH_TOKEN\'') and not os.environ.get(\''GITHUB_TOKEN\'')\n    deadline
         = datetime.datetime.fromisoformat(args.deadline_utc)\n    assert deadline.tzinfo is not None\n    root = args.root.resolve()\n    root.mkdir(mode=0o755,
         exist_ok=False)\n    reports = root / \''reports\''\n    reports.mkdir(mode=0o755)\n    private = root / \''private\''\n    private.mkdir(mode=0o700)\n    homes
-        = root / \''homes\''\n    homes.mkdir(mode=0o711)\n    bundle, manifest, archive = verify_archive(args.assets.resolve(),
+        = root / \''homes\''\n    homes.mkdir(mode=0o755)\n    bundle, manifest, archive = verify_archive(args.assets.resolve(),
         args.source, root / \''archive\'')\n    report = {\''source\'': args.source, \''archive\'': archive, \''qualified\'':
         False, \''commands\'': [],\n              \''accounts\'': {}, \''cleanup\'': [], \''scope\'': \''Linux-to-Linux real
         SSH cold pairing, continuation and reconnect only\'',\n              \''unqualified\'': [\''Windows source/destination\'',
@@ -103,23 +103,26 @@ jobs:
         stdin=user + \'':synthetic-only-\'' + secrets.token_hex(24) + \''\\n\'')\n            report[\''accounts\''][role]
         = {\''name\'': user, \''uid\'': account.pw_uid, \''home\'': str(home)}\n            assert not census(account.pw_uid)\n            (home
         / \''.ssh\'').mkdir(mode=0o700)\n            os.chown(home / \''.ssh\'', account.pw_uid, account.pw_gid)\n            #
-        Prove the fresh account can read and execute the actual archive before installation.\n            run([\''runuser\'',
-        \''-u\'', user, \''--\'', \''test\'', \''-r\'', str(bundle / \''install.sh\'')])\n            run([\''runuser\'',
-        \''-u\'', user, \''--\'', \''test\'', \''-x\'', str(bundle / \''se\'')])\n            command = [\''runuser\'', \''-u\'',
-        user, \''--\'', \''env\'', \''-i\'', \''HOME=\'' + str(home),\n                       \''USER=\'' + user, \''LOGNAME=\''
-        + user, \''PATH=/usr/bin:/bin\'',\n                       \''/bin/sh\'', str(bundle / \''install.sh\'')]\n            installed
-        = subprocess.run(command, cwd=home, text=True, capture_output=True, timeout=remaining(180))\n            (reports
-        / (role + \''-install.stdout\'')).write_text(installed.stdout)\n            (reports / (role + \''-install.stderr\'')).write_text(installed.stderr)\n            assert
-        installed.returncode == 0, {\''installer_exit\'': installed.returncode, \''role\'': role}\n            binaries =
-        {n: facts for n, facts in manifest[\''files\''].items()\n                        if n == \''se\'' or n.startswith(\''remote-images/\'')}\n            assert
-        len(binaries) == 4\n            for name, facts in binaries.items():\n                assert digest(home / \''.local/bin\''
-        / name) == facts[\''sha256\'']\n            install_record = home / \''.local/state/stateengine/standalone-install.json\''\n            assert
-        install_record.is_file()\n            report[\''accounts\''][role][\''installation_record_sha256\''] = digest(install_record)\n            report[\''accounts\''][role][\''installed_images\'']
-        = {n: f[\''sha256\''] for n, f in binaries.items()}\n            save()\n        source, destination = users\n        key
-        = private / \''client-key\''\n        server_key = private / \''server-key\''\n        run([\''ssh-keygen\'', \''-q\'',
-        \''-t\'', \''ed25519\'', \''-N\'', \''\'', \''-f\'', str(key)])\n        run([\''ssh-keygen\'', \''-q\'', \''-t\'',
-        \''ed25519\'', \''-N\'', \''\'', \''-f\'', str(server_key)])\n        with socket.socket() as listener:\n            listener.bind((\''127.0.0.1\'',
-        0))\n            port = listener.getsockname()[1]\n        known = private / \''known_hosts\''\n        known.write_text(\''[127.0.0.1]:\''
+        Prove the fresh account can read and execute the actual archive before installation.\n            # Native installation
+        opens ancestors for directory reads as well as traversal.\n            for ancestor in (homes, root, *root.parents):\n                run([\''runuser\'',
+        \''-u\'', user, \''--\'', \''test\'', \''-r\'', str(ancestor)])\n                run([\''runuser\'', \''-u\'', user,
+        \''--\'', \''test\'', \''-x\'', str(ancestor)])\n            run([\''runuser\'', \''-u\'', user, \''--\'', \''test\'',
+        \''-r\'', str(bundle / \''install.sh\'')])\n            run([\''runuser\'', \''-u\'', user, \''--\'', \''test\'',
+        \''-x\'', str(bundle / \''se\'')])\n            command = [\''runuser\'', \''-u\'', user, \''--\'', \''env\'', \''-i\'',
+        \''HOME=\'' + str(home),\n                       \''USER=\'' + user, \''LOGNAME=\'' + user, \''PATH=/usr/bin:/bin\'',\n                       \''/bin/sh\'',
+        str(bundle / \''install.sh\'')]\n            installed = subprocess.run(command, cwd=home, text=True, capture_output=True,
+        timeout=remaining(180))\n            (reports / (role + \''-install.stdout\'')).write_text(installed.stdout)\n            (reports
+        / (role + \''-install.stderr\'')).write_text(installed.stderr)\n            assert installed.returncode == 0, {\''installer_exit\'':
+        installed.returncode, \''role\'': role}\n            binaries = {n: facts for n, facts in manifest[\''files\''].items()\n                        if
+        n == \''se\'' or n.startswith(\''remote-images/\'')}\n            assert len(binaries) == 4\n            for name,
+        facts in binaries.items():\n                assert digest(home / \''.local/bin\'' / name) == facts[\''sha256\'']\n            install_record
+        = home / \''.local/state/stateengine/standalone-install.json\''\n            assert install_record.is_file()\n            report[\''accounts\''][role][\''installation_record_sha256\'']
+        = digest(install_record)\n            report[\''accounts\''][role][\''installed_images\''] = {n: f[\''sha256\''] for
+        n, f in binaries.items()}\n            save()\n        source, destination = users\n        key = private / \''client-key\''\n        server_key
+        = private / \''server-key\''\n        run([\''ssh-keygen\'', \''-q\'', \''-t\'', \''ed25519\'', \''-N\'', \''\'',
+        \''-f\'', str(key)])\n        run([\''ssh-keygen\'', \''-q\'', \''-t\'', \''ed25519\'', \''-N\'', \''\'', \''-f\'',
+        str(server_key)])\n        with socket.socket() as listener:\n            listener.bind((\''127.0.0.1\'', 0))\n            port
+        = listener.getsockname()[1]\n        known = private / \''known_hosts\''\n        known.write_text(\''[127.0.0.1]:\''
         + str(port) + \'' \'' + server_key.with_suffix(\''.pub\'').read_text())\n        for account in users:\n            ssh
         = Path(account.pw_dir) / \''.ssh\''\n            for name, data, mode in [(\''authorized_keys\'', key.with_suffix(\''.pub\'').read_bytes(),
         0o600),\n                                     (\''known_hosts\'', known.read_bytes(), 0o600),\n                                     (\''fixture_key\'',
