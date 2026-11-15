@@ -25,6 +25,7 @@ import argparse
 import json
 import os
 import pathlib
+import shlex
 import signal
 import subprocess
 import sys
@@ -387,6 +388,33 @@ def dest_prepare_diagnostic(outdir, dest_user, args, digest):
     return report
 
 
+def dest_probe(outdir, dest_user, args, digest, tag):
+    """r11: measure the remote session itself as the destination user over
+    the same loopback sshd the product uses: login/current shell, ambient
+    umask, pre-existing cache state, and a same-session comparison of
+    explicit-mode versus subshell-umask creation. Writes r11-probe-<tag>.txt."""
+    report = {'ran': False, 'exit': None}
+    probe = (pathlib.Path(__file__).with_name('r11-dest-prepare-probe.sh')
+             ).read_text()
+    command = ('sh -c ' + shlex.quote(probe)
+               + ' r11probe ' + shlex.quote(digest))
+    try:
+        proc = subprocess.run(
+            ['ssh', '-p', str(args.ssh_port), '-i', args.identity,
+             '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
+             '-o', 'StrictHostKeyChecking=accept-new',
+             f'{dest_user}@127.0.0.1', command],
+            capture_output=True, text=True, timeout=60)
+        report['exit'] = proc.returncode
+        (outdir / f'r11-probe-{tag}.txt').write_text(
+            f'exit={proc.returncode}\n' + proc.stdout
+            + (f'\nstderr:\n{proc.stderr}\n' if proc.stderr else ''))
+    except (subprocess.SubprocessError, OSError) as error:
+        report['error'] = str(error)
+    report['ran'] = True
+    return report
+
+
 def run_attempt(index, args, ssh_port, source_pub, staging, source_home,
                 source_uid, se_bin, repo_path):
     outdir = pathlib.Path(args.output) / f'attempt-{index}'
@@ -447,6 +475,28 @@ def run_attempt(index, args, ssh_port, source_pub, staging, source_home,
     sudo('install', '-m', '600', '-o', SOURCE_USER, '-g', SOURCE_USER,
          str(alias), f'{source_home}/.ssh/config')
 
+    # r11: the remote session's own shell/umask/cache state, measured
+    # through the product's ssh path before the first product call.
+    src_sha = hashlib_sha256(args.se)
+    pre_probe = dest_probe(outdir, dest_user, args, src_sha, 'pre')
+    if args.stop_before_pairing:
+        record = {
+            'attempt': index,
+            'se': args.se,
+            'dest_user': dest_user,
+            'stop_before_pairing': True,
+            'checks': {},
+            'init_sec': init_sec,
+            'r11_probe_pre': pre_probe,
+        }
+        (outdir / 'attempt.json').write_text(json.dumps(record, indent=1) + '\n')
+        try:
+            sudo('userdel', '-r', dest_user)
+        except (RuntimeError, OSError):
+            pass
+        sudo('rm', '-rf', src_home)
+        return record
+
     # Sampler: child of this judge, starts before the CLI spawn.
     sampler = subprocess.Popen(
         [sys.executable, str(pathlib.Path(__file__).with_name('cold-pair-sampler.py')),
@@ -467,6 +517,7 @@ def run_attempt(index, args, ssh_port, source_pub, staging, source_home,
         'started': t0,
         'checks': {},
         'init_sec': init_sec,
+        'r11_probe_pre': pre_probe,
     }
     timed_out = False
     stdout_text = ''
@@ -520,7 +571,6 @@ def run_attempt(index, args, ssh_port, source_pub, staging, source_home,
     # of the exact source binary. The runtime cache dirs are 0700 for the
     # destination user, so the readback runs through root (the judge cannot
     # traverse them, and the destination user is removed shortly after).
-    src_sha = hashlib_sha256(args.se)
     published = None
     try:
         found = sudo('find', dest_home, '-name', 'se', '-type', 'f',
@@ -540,6 +590,10 @@ def run_attempt(index, args, ssh_port, source_pub, staging, source_home,
     if not attempt['checks']['pairing_connected']:
         attempt['dest_prepare'] = dest_prepare_diagnostic(
             outdir, dest_user, args, src_sha)
+        # r11: the same session measurements after the refusal, so the
+        # product's prepare attempt is visible against the pre state.
+        attempt['r11_probe_post'] = dest_probe(
+            outdir, dest_user, args, src_sha, 'post')
 
     # Tear down the destination session by exact pid, then remove the user.
     # The kills run through sudo: the judge's own uid cannot signal the
@@ -598,6 +652,9 @@ def main():
     parser.add_argument('--ssh-port', type=int, default=2222)
     parser.add_argument('--tail-bound-sec', type=float, default=None)
     parser.add_argument('--time-limit-sec', type=float, default=120.0)
+    parser.add_argument('--stop-before-pairing', action='store_true',
+                        help='box pre-run: do setup and the r11 pre-probe, '
+                             'then stop before the pairing call')
     args = parser.parse_args()
 
     output = pathlib.Path(args.output)
