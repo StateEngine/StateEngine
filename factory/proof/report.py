@@ -17,11 +17,19 @@ SELECTIONS = {"first-hour": ("first-hour", {1, 2, 3, 4, 5}),
               "wave-2": ("rust-wave-2", {1, 2, 3, 5}),
               "remote": ("remote", {1}),
               "4": ("selected", {4})}
-# Budgets that only a native Windows run can answer. They ride on the same probes
-# as the cross-platform budgets, so they must never become required coverage: a
-# correct Linux or macOS receipt has no Windows measurement, and its honest
-# "not measured" is not a missing probe.
-PLATFORM_BUDGETS = frozenset(("B10",))
+# Budgets that only one platform can answer, and therefore only that platform's
+# rows may feed them. `B10` is a Windows full-write ceiling measured from the same
+# CLI-write samples; a Linux or macOS row carries no Windows relation, and its
+# honest "not measured" is neither a missing probe nor a vote against the Windows
+# result. Applicability lives here, in one place, because it has two consumers:
+# required-coverage validation, and the aggregation that decides a budget's state
+# from its probes. A second local exception cannot keep them in agreement.
+PLATFORM_BUDGETS = {"B10": "win32"}
+
+
+def budget_applies(budget, platform):
+    """Whether a row from `platform` may feed `budget` at all."""
+    return budget not in PLATFORM_BUDGETS or PLATFORM_BUDGETS[budget] == platform
 LABELS = {
     "B1": ("embedded A/B",), "B2": ("embedded A/B",),
     "B3": ("standalone persistent processes", "persistent processes after 1 seat(s)",
@@ -166,6 +174,11 @@ def finite_nonnegative(value):
 
 def first_hour_probe_result(budget, row, limits):
     """Validate current first-hour measurements without changing legacy receipts."""
+    # A platform-only budget is not judged from another platform's row at all;
+    # this is the same applicability the aggregation uses, so the two cannot
+    # disagree about which rows count.
+    if not budget_applies(budget, row.get("platform")):
+        return "NOT MEASURED"
     state = row.get("state")
     if (not isinstance(limits, dict) or state is not None and not isinstance(state, str)
             or state in ("unavailable", "not measured", "unreadable", "absent", "not reached")):
@@ -302,7 +315,8 @@ def invocation(inv, directory, run=None):
                     first_hour_probe_result(key, row, budget_artifact.get("limits")) != "PASS"
                     for row in budget_artifact["measurements"] if row["label"] in FIRST_HOUR_PROBES
                     for key, expected_labels in LABELS.items()
-                    if row["label"] in expected_labels and key not in PLATFORM_BUDGETS):
+                    if row["label"] in expected_labels
+                    and budget_applies(key, budget_artifact.get("platform", entry.get("platform")))):
                 budget_error = "required first-hour probe is missing a passing measurement"
                 entry["problems"].append(budget_error)
     entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification, behavior_only=behavior_only,
@@ -409,12 +423,16 @@ def summarize(run, directory):
     budgets = []
     for key, probes in slots.items():
         missing = any(gap.startswith(key + ":") for gap in gaps)
+        # A budget that only one platform answers is decided by that platform's
+        # rows alone. Rows from elsewhere are not weaker votes or missing probes:
+        # they are not evidence about this budget, so they never reach it.
+        applicable = [p for p in probes if budget_applies(key, p.get("platform"))]
         state = "NOT MEASURED"
-        if any(p["probe_result"] == "MISS" for p in probes):
+        if any(p["probe_result"] == "MISS" for p in applicable):
             state = "MISS"
-        elif not missing and probes and all(p["probe_result"] == "PASS" for p in probes):
+        elif not missing and applicable and all(p["probe_result"] == "PASS" for p in applicable):
             state = "PASS"
-        budgets.append({"id": key, "state": state, "probes": probes})
+        budgets.append({"id": key, "state": state, "probes": applicable})
     matrix = matrix_observation(run, directory)
     if matrix is not None:
         status['errors'].extend('harness matrix: ' + value for value in matrix['errors'])
