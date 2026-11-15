@@ -83,10 +83,12 @@ impl LaunchCoordinator {
                     .and_then(|binding| binding.claude.as_ref())
                 {
                     match binding.completion.take() {
-                        Ok(Some(observed_at)) => {
-                            deadline = deadline.observed_since(observed_at);
-                            state.mail.idle = true;
-                            job.mail_pending.store(true, Ordering::Release);
+                        Ok(Some(observation)) => {
+                            deadline = deadline.observed_since(observation.observed_at);
+                            state.mail.idle = observation.completed;
+                            if observation.completed {
+                                job.mail_pending.store(true, Ordering::Release);
+                            }
                             capture_pending = true;
                         }
                         Ok(None) => (),
