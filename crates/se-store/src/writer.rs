@@ -247,8 +247,7 @@ pub(crate) fn start(
     };
     let context = host.context.clone();
     let checkpoint = checkpoint_task::CheckpointTask::spawn(
-        host.reader.path.clone(),
-        host.reader.timeout,
+        host.reader.clone(),
         context.clone(),
         lease.clone(),
         host.engine.checkpoints.gate.clone(),
@@ -589,6 +588,9 @@ fn run(
                 let report = flush(&mut host, deadline, &*lease, &status)?;
                 return Ok(DrainedHost { host, report });
             }
+        }
+        if host.engine.checkpoint_pending() {
+            status.request_copy();
         }
     }
 }
