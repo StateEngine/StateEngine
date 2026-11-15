@@ -73,6 +73,8 @@ fn walk(path: &Path, create: bool) -> Result<File> {
 pub(super) fn walk_effect_parent(path: &Path) -> Result<File> {
     walk_with_private_root(path, false, false, false)
 }
+// Preparation may hold an existing search-only ancestor as its last anchor.
+// The final installation target is separately opened readably before acceptance.
 pub(super) fn walk_effect_parent_for_creation(path: &Path) -> Result<File> {
     walk_with_private_root(path, false, false, true)
 }
@@ -157,7 +159,7 @@ fn walk_with_private_root(
             &component,
             symlink,
             path,
-            index + 1 == parts.len(),
+            index + 1 == parts.len() && !sticky_final,
         )?;
         if created {
             // mkdirat's mode is already owner-only. Do not broaden a later
