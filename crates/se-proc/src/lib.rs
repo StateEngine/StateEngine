@@ -73,6 +73,8 @@ pub use state_files::{
     StateFileError, StateFileErrorCode,
 };
 #[cfg(windows)]
+pub use state_files::{reset_native_file_counters, take_native_file_counters};
+#[cfg(windows)]
 mod child_pipe;
 #[cfg(windows)]
 mod stdio;

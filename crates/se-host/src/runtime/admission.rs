@@ -256,15 +256,7 @@ impl AdmissionContext {
         finish: impl FnOnce(se_store::ReadPhase, HostedCall) -> Result<T>,
     ) -> Result<T> {
         let (peer, connection) = native;
-        let trace_started = std::time::Instant::now();
-        let trace_start_us = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .map(|value| value.as_micros());
-        let trace_operation = raw.name.clone();
-        let trace_key = raw.key.clone();
         let mut phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
-        let checkout_us = trace_started.elapsed().as_micros();
         let result = (|| {
             self.check_generation(&phase)?;
             let operation = ops::decode_operation(&raw.name, raw.arguments, raw.key.as_ref())?;
@@ -326,16 +318,10 @@ impl AdmissionContext {
                 selections,
             })
         })();
-        let admitted_us = trace_started.elapsed().as_micros();
-        let result = match result {
+        match result {
             Ok(call) => finish(phase, call),
             Err(error) => super::executor::close_read(Err(error), phase.close()),
-        };
-        eprintln!(
-            "admission-native-timing {}",
-            serde_json::json!({"pid":std::process::id(),"thread":format!("{:?}",std::thread::current().id()),"start_us":trace_start_us,"end_us":trace_start_us.map(|start| start + trace_started.elapsed().as_micros()),"operation":trace_operation,"key":trace_key,"checkout_us":checkout_us,"admit_us":admitted_us-checkout_us,"finish_us":trace_started.elapsed().as_micros()-admitted_us})
-        );
-        result
+        }
     }
     /// MCP over loopback HTTP: a current session bearer only. This transport has
     /// no owner proof, launch activation or per-call authority override (§7.3).

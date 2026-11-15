@@ -298,10 +298,7 @@ fn run(
         }
         // Reopen until the first success so a transient lock at startup costs
         // one tick, not the whole maintenance lifetime.
-        let trace = (Instant::now(), std::time::SystemTime::now());
-        let opened = crate::connection::connect(&path, true, timeout);
-        trace_interval("open", trace, opened.is_ok());
-        let db = match opened {
+        let db = match crate::connection::connect(&path, true, timeout) {
             Ok(db) => db,
             Err(error) => {
                 status.set(Maint::Failed(error));
@@ -332,11 +329,7 @@ fn run(
         // blocked, or a failure the next tick may clear. Anything else is the
         // no-op tick, and waiting for the next idle edge removes it.
         let owed = status.pending() || status.failed();
-        let finished = status.wait(&closed, owed.then_some(TICK));
-        let trace = (Instant::now(), std::time::SystemTime::now());
-        drop(db);
-        trace_interval("close", trace, true);
-        if finished {
+        if status.wait(&closed, owed.then_some(TICK)) {
             return;
         }
     }
@@ -445,33 +438,14 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
 }
 fn checkpoint(db: &Connection, mode: &str) -> StoreResult<(i64, i64, i64)> {
     let statement = format!("PRAGMA wal_checkpoint({mode})");
-    let trace = (Instant::now(), std::time::SystemTime::now());
-    let result = db
-        .query_row(statement.as_str(), [], |r| {
-            Ok((
-                crate::sql_value::value::<i64>(r, 0)?,
-                crate::sql_value::value::<i64>(r, 1)?,
-                crate::sql_value::value::<i64>(r, 2)?,
-            ))
-        })
-        .map_err(sql);
-    trace_interval(mode, trace, result.is_ok());
-    result
-}
-fn trace_interval(stage: &str, started: (Instant, std::time::SystemTime), ok: bool) {
-    let elapsed = started.0.elapsed().as_micros();
-    let wall = started
-        .1
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_micros());
-    eprintln!(
-        "background-native-timing {}",
-        serde_json::json!({
-            "pid":std::process::id(), "thread":format!("{:?}",std::thread::current().id()),
-            "stage":stage,"start_us":wall,"end_us":wall.map(|s|s+elapsed),"elapsed_us":elapsed,"ok":ok
-        })
-    );
+    db.query_row(statement.as_str(), [], |r| {
+        Ok((
+            crate::sql_value::value::<i64>(r, 0)?,
+            crate::sql_value::value::<i64>(r, 1)?,
+            crate::sql_value::value::<i64>(r, 2)?,
+        ))
+    })
+    .map_err(sql)
 }
 
 #[cfg(test)]
