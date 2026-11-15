@@ -1,0 +1,420 @@
+{
+  "format": "journey-commands/v1",
+  "implementation": "rust",
+  "path_style": "native",
+  "version_name": "stateengine",
+  "setup_source": "init",
+  "context": [
+    "--project",
+    "{project}"
+  ],
+  "actions": {
+    "init": {
+      "argv": [
+        "init",
+        "--repo",
+        "{repo}",
+        "--name",
+        "{project_name}",
+        "--agent",
+        "{agent_name}",
+        "--provider",
+        "{surface}"
+      ],
+      "context": false,
+      "model": true
+    },
+    "adopt": {
+      "argv": [
+        "init",
+        "--repo",
+        "{repo}",
+        "--name",
+        "{project_name}",
+        "--agent",
+        "{agent_name}",
+        "--provider",
+        "{surface}"
+      ],
+      "context": false,
+      "model": true
+    },
+    "adopt_session": {
+      "argv": [
+        "init",
+        "--adopt",
+        "--repo",
+        "{repo}",
+        "--name",
+        "{project_name}",
+        "--agent",
+        "{agent_name}",
+        "--provider",
+        "{surface}"
+      ],
+      "context": false,
+      "model": true
+    },
+    "setup": {
+      "argv": [
+        "status"
+      ],
+      "context": true
+    },
+    "absence": {
+      "argv": [
+        "status"
+      ],
+      "context": true
+    },
+    "status": {
+      "argv": [
+        "status"
+      ],
+      "context": true
+    },
+    "agents": {
+      "argv": [
+        "agent",
+        "list"
+      ],
+      "context": true
+    },
+    "agent_show": {
+      "argv": [
+        "agent",
+        "show",
+        "{agent_id}"
+      ],
+      "context": true
+    },
+    "create": {
+      "argv": [
+        "agent",
+        "add",
+        "{agent_name}",
+        "--provider",
+        "{surface}"
+      ],
+      "context": true,
+      "model": true
+    },
+    "launch": {
+      "argv": [
+        "launch",
+        "{agent}",
+        "--provider",
+        "{surface}"
+      ],
+      "context": true,
+      "model": true
+    },
+    "launch_headless": {
+      "argv": [
+        "launch",
+        "{agent}",
+        "--provider",
+        "{surface}",
+        "--detach"
+      ],
+      "context": true,
+      "model": true
+    },
+    "stop": {
+      "argv": [
+        "stop",
+        "{agent}"
+      ],
+      "context": true
+    },
+    "up": {
+      "argv": [
+        "up"
+      ],
+      "context": false
+    },
+    "foreground": {
+      "argv": [
+        "up",
+        "--foreground"
+      ],
+      "context": false
+    },
+    "down": {
+      "argv": [
+        "down"
+      ],
+      "context": false
+    },
+    "shutdown": {
+      "argv": [
+        "down"
+      ],
+      "context": false
+    },
+    "send": {
+      "argv": [
+        "msg",
+        "send",
+        "{to}",
+        "{body}",
+        "--kind",
+        "question"
+      ],
+      "context": true
+    },
+    "messages": {
+      "argv": [
+        "msg",
+        "list",
+        "--all",
+        "--full",
+        "--limit",
+        "100"
+      ],
+      "context": true,
+      "cursor": [
+        "--cursor",
+        "{cursor}"
+      ]
+    },
+    "inbox": {
+      "argv": [
+        "msg",
+        "inbox",
+        "{agent_id}"
+      ],
+      "context": true
+    },
+    "remove": {
+      "argv": [
+        "remove",
+        "--all"
+      ],
+      "context": false
+    },
+    "unconfigured": {
+      "argv": [
+        "status",
+        "--all"
+      ],
+      "context": false
+    },
+    "hook_stop": {
+      "argv": [
+        "hook",
+        "claude",
+        "stop"
+      ],
+      "context": true
+    },
+    "turn_history": {
+      "argv": [
+        "history",
+        "--session",
+        "{session_id}",
+        "--kind",
+        "session.turn",
+        "--limit",
+        "100"
+      ],
+      "context": true,
+      "cursor": [
+        "--cursor",
+        "{cursor}"
+      ]
+    },
+    "agent_history": {
+      "argv": [
+        "history",
+        "--agent",
+        "{agent_id}",
+        "--kind",
+        "session.turn",
+        "--limit",
+        "100"
+      ],
+      "context": true,
+      "cursor": [
+        "--cursor",
+        "{cursor}"
+      ]
+    },
+    "event": {
+      "argv": [
+        "history",
+        "--event",
+        "{event_id}"
+      ],
+      "context": true
+    }
+  },
+  "fields": {
+    "profile": {
+      "agent_id": "profile.agent_id",
+      "human_id": "profile.human_id",
+      "project": "profile.project",
+      "repo_root": "profile.repo_root",
+      "registry_root": "profile.registry_root",
+      "keys_dir": "profile.keys_dir",
+      "schema": "profile.schema"
+    },
+    "runtime": {
+      "state": "runtime.state",
+      "pid": "runtime.process.pid",
+      "generation": "runtime.generation",
+      "exe": "runtime.process.exe",
+      "host": "runtime.host",
+      "resources": "runtime.resources"
+    },
+    "agents": {
+      "items": "items",
+      "complete": "window.complete",
+      "omitted": "window.omitted.count",
+      "reason": "window.omitted.reason",
+      "next": "next"
+    },
+    "agent": {
+      "agent_id": "id",
+      "name": "name"
+    },
+    "messages": {
+      "items": "items",
+      "complete": "window.complete",
+      "omitted": "window.omitted.count",
+      "reason": "window.omitted.reason",
+      "next": "next"
+    },
+    "message": {
+      "msg_id": "id",
+      "from_seat": "from.id",
+      "to_seat": "to.id",
+      "kind": "kind",
+      "body": "body.text",
+      "body_complete": "body.complete",
+      "unreadable": "unreadable"
+    },
+    "stop": {
+      "state": "resume.state",
+      "command": "resume.command",
+      "argv": "resume.argv",
+      "conversation_id": "resume.conversation_id",
+      "complete": "complete",
+      "witness": "witness.state",
+      "remaining": "remaining",
+      "flushed": "capture.flushed",
+      "population": "population",
+      "enumeration": "enumeration"
+    },
+    "absence": {
+      "state": "project.state",
+      "checked": "project.checked",
+      "project": "removal.project.id",
+      "root": "removal.root"
+    },
+    "send": {
+      "id": "message_id",
+      "state": "state"
+    },
+    "remove": {
+      "projects": "projects",
+      "outcome": "outcome",
+      "credential_state": "machine_credential.state",
+      "credential_witness": "machine_credential.witness.state",
+      "runtime_action": "runtime.action",
+      "runtime_witness": "runtime.witness.state"
+    },
+    "remove_project": {
+      "id": "project.id",
+      "root": "project.root",
+      "outcome": "outcome",
+      "remaining": "remaining",
+      "agents": "agents_stopped",
+      "processes": "processes_stopped",
+      "credentials": "credentials_revoked",
+      "integrations": "integrations",
+      "removed": "removed"
+    },
+    "removed_path": {
+      "what": "what",
+      "path": "path"
+    },
+    "integration": {
+      "path": "path",
+      "entry": "entry",
+      "action": "action",
+      "witness": "witness.state"
+    },
+    "credential": {
+      "state": "state"
+    },
+    "stopped_process": {
+      "witness": "witness.state"
+    },
+    "writer": {
+      "mode": "writer.mode",
+      "generation": "writer.host_generation"
+    },
+    "setup": {
+      "state": "project.state",
+      "home_state": "setup.state",
+      "project": "project.value.id",
+      "root": "project.value.root"
+    },
+    "inbox": {
+      "items": "items",
+      "complete": "window.complete",
+      "omitted": "window.omitted.count",
+      "reason": "window.omitted.reason",
+      "next": "next"
+    },
+    "init": {
+      "integrations": "integrations"
+    },
+    "turn_history": {
+      "items": "items",
+      "complete": "window.complete",
+      "omitted": "window.omitted.count",
+      "reason": "window.omitted.reason",
+      "next": "next"
+    }
+  },
+  "globals": [
+    "--home",
+    "{state_home}"
+  ],
+  "schemas": {
+    "init": "se.init/v1",
+    "adopt": "se.init/v1",
+    "adopt_session": "se.init/v1",
+    "setup": "se.status/v1",
+    "status": "se.status/v1",
+    "absence": "se.status/v1",
+    "agents": "se.agent-page/v1",
+    "agent_show": "se.agent-status/v1",
+    "send": "se.message-receipt/v1",
+    "messages": "se.message-page/v1",
+    "inbox": "se.message-page/v1",
+    "stop": "se.stop/v1",
+    "create": "se.agent-receipt/v1",
+    "launch": "se.launch/v1",
+    "launch_headless": "se.launch/v1",
+    "up": "se.runtime-start/v1",
+    "down": "se.runtime-stop/v1",
+    "shutdown": "se.runtime-stop/v1",
+    "remove": "se.remove/v1",
+    "unconfigured": "se.status/v1",
+    "turn_history": "se.history-page/v1",
+    "agent_history": "se.history-page/v1",
+    "event": "se.event/v1"
+  },
+  "active_paths": [
+    "{registry_root}/launch",
+    "{registry_root}/session-pins",
+    "{registry_root}/pins",
+    "{registry_root}/credential",
+    "{keys_dir}/credential",
+    "{registry_root}/endpoint.json",
+    "{registry_root}/atlas-index"
+  ]
+}

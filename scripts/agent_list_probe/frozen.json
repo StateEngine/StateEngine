@@ -1,0 +1,12 @@
+{
+  "cli-timing.mjs": "732c38a1715660710464af9e984d5d48a107e8302358e2fc152eb6b528847e5b",
+  "platform.mjs": "eb8ef67a4268e5d47fa3f7df6caf22d23c0c7bba700612ac54df18139387113a",
+  "credential-output.mjs": "0be87fde842179d1a097ddea4b42863e2c4d2c10ed757dde24d25513fd9f2e5d",
+  "credentials.mjs": "97d8cb8c6d512f51f3b42e1d75d98e74c279a6d8c4ea2daa2a7b431924f2e4e3",
+  "commands.mjs": "97525773e7ee2ce62942dbbaf7045539239be7d808b7eae516480adff0699142",
+  "maps/rust.json": {
+    "original_sha256": "6a6a878d617b06f37718c812ddf84159a3abf74e907aefba9da890cbcf006b92",
+    "sha256": "3991e494370e95e8163b84b03f0e6dc928f5a9a6b27089e6c92c851d4b988e71",
+    "projection": "Only non-executable contract annotation removed; all command spelling and field paths unchanged."
+  }
+}
