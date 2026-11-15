@@ -20,6 +20,19 @@ else
   echo 'pre-existing .stateengine-runtime absent'
 fi
 stat -c 'home %n owner=%u mode=%a' "$HOME"
+# Default-ACL readback (issue 381): a parent default ACL determines
+# creation permissions from the requested mode instead of the umask
+# (man5 acl), defeating the umask 077 guards in the product prepare and
+# receive scripts. Named and default entries print here verbatim.
+if command -v getfacl >/dev/null 2>&1; then
+  getfacl -p "$HOME" 2>/dev/null | sed 's/^/home-acl /' || echo 'home-acl-failed'
+  if [ -e "$rt" ]; then
+    getfacl -p "$rt" 2>/dev/null | sed 's/^/cache-acl /' || echo 'cache-acl-failed'
+  fi
+else
+  echo 'getfacl-missing'
+  ls -led "$HOME" "$rt" 2>/dev/null | sed 's/^/lsled /'
+fi
 if [ "${1:-}" != "" ]; then
   if [ -e "$1" ]; then stat -c 'pre-existing-digest %n owner=%u mode=%a' "$1"; else echo 'pre-existing digest dir absent'; fi
 fi
@@ -31,7 +44,11 @@ echo "explicit-700 rc=$?"
 (umask 077 && mkdir "$pb") 2>&1
 echo "subshell-umask077 rc=$?"
 stat -c 'probe %n mode=%a' "$pa" "$pb" 2>&1
-rm -rf "$pa" "$pb"
+# The product receive pattern (umask 077, plain redirect): its resulting
+# mode is umask-derived only while no parent default ACL is present.
+(umask 077 && : > "$HOME/.r11-probe-file") 2>&1
+stat -c 'probe-file umask077-redirect mode=%a' "$HOME/.r11-probe-file" 2>&1
+rm -rf "$pa" "$pb" "$HOME/.r11-probe-file"
 sh -c '
   ambient=$(umask)
   d=/tmp/.r11-probe-sh

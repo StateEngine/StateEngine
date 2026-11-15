@@ -455,6 +455,12 @@ def run_attempt(index, args, ssh_port, source_pub, staging, source_home,
 
     # Fresh destination account; sshd already running on the loopback port.
     sudo('useradd', '-m', '-s', '/usr/bin/bash', dest_user)
+    dest_uid = None
+    for line in pathlib.Path('/etc/passwd').read_text().splitlines():
+        if line.startswith(f'{dest_user}:'):
+            dest_uid = int(line.split(':')[2])
+            break
+    assert dest_uid is not None, f'dest user {dest_user} missing from /etc/passwd'
     dest_ssh = f'{dest_home}/.ssh'
     sudo('install', '-d', '-m', '700', '-o', dest_user, '-g', dest_user, dest_ssh)
     sudo('install', '-m', '600', '-o', dest_user, '-g', dest_user, source_pub,
@@ -489,11 +495,21 @@ def run_attempt(index, args, ssh_port, source_pub, staging, source_home,
             'init_sec': init_sec,
             'r11_probe_pre': pre_probe,
         }
-        (outdir / 'attempt.json').write_text(json.dumps(record, indent=1) + '\n')
+        # Same teardown discipline as a finished attempt: reap the uid
+        # before userdel (userdel refuses while any entry remains) and
+        # record the outcome instead of swallowing it.
+        reaped = reap_uid(dest_uid)
         try:
             sudo('userdel', '-r', dest_user)
-        except (RuntimeError, OSError):
-            pass
+            userdel_ok = True
+            userdel_error = None
+        except (RuntimeError, OSError) as error:
+            userdel_ok = False
+            userdel_error = str(error)
+        record['stop_teardown'] = {
+            'dest_uid': dest_uid, **reaped,
+            'userdel_ok': userdel_ok, 'userdel_error': userdel_error}
+        (outdir / 'attempt.json').write_text(json.dumps(record, indent=1) + '\n')
         sudo('rm', '-rf', src_home)
         return record
 
