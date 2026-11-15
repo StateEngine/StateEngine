@@ -1,0 +1,74 @@
+name: Native staged HTTP close review
+'on':
+  push:
+    branches:
+    - prime/http-close-review-r1
+permissions:
+  contents: read
+jobs:
+  judge:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-24.04
+          target: x86_64-unknown-linux-gnu
+        - os: windows-2025
+          target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      NATIVE_TARGET: ${{ matrix.target }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 37a85908a392b1ecb5b8cc1b92fe1f3c15632b54
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: http-close-review-r1-${{ matrix.os }}
+    - name: Native close bounds and real HTTP admission
+      shell: python
+      run: "import hashlib,json,os,pathlib,re,subprocess,sys\nroot=pathlib.Path(os.environ['RUNNER_TEMP'])/'http-close-review-r1';root.mkdir(exist_ok=False)\n\
+        product='0c09b4f1abebf68d379db4b6f001d8e51dd63780'\njudge='37a85908a392b1ecb5b8cc1b92fe1f3c15632b54'\n\
+        paths=['crates/se-host/src/http/server.rs','crates/se-host/src/http/independent_close.rs']\n\
+        result={'product':product,'reviewer':judge,'commands':{},'scope':'Native loopback\
+        \ byte/time/shutdown controls and unchanged real HTTP admission consumer;\
+        \ no provider launch'}\ndef save():\n (root/'result.json').write_text(json.dumps(result,indent=2)+'\\\
+        n',encoding='utf-8')\ndef run(name,args):\n with (root/(name+'.stdout')).open('wb')\
+        \ as out,(root/(name+'.stderr')).open('wb') as err:\n  rc=subprocess.run(args,stdin=subprocess.DEVNULL,stdout=out,stderr=err,timeout=1800).returncode\n\
+        \ result['commands'][name]={'argv':args,'exit':rc};save()\n if rc:raise RuntimeError(name+'\
+        \ failed')\n return (root/(name+'.stdout')).read_text(encoding='utf-8',errors='strict')\n\
+        try:\n assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==judge\n\
+        \ changed=subprocess.check_output(['git','diff','--name-only',product,judge],text=True).splitlines();assert\
+        \ sorted(changed)==sorted(paths)\n for path in paths:\n  raw=pathlib.Path(path).read_bytes();(root/pathlib.Path(path).name).write_bytes(raw)\n\
+        \  expected=subprocess.check_output(['git','show',judge+':'+path]);assert\
+        \ raw.replace(b'\\r\\n',b'\\n')==expected.replace(b'\\r\\n',b'\\n')\n result['sources']={path:hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()\
+        \ for path in paths}\n target=subprocess.check_output(['rustc','--print','host-tuple'],text=True).strip();assert\
+        \ target==os.environ['NATIVE_TARGET'];result['target']=target\n result['compiler']=subprocess.check_output(['rustc','-vV'],text=True)\n\
+        \ args=['cargo','test','--target',target,'--target-dir',str(pathlib.Path(os.environ['RUNNER_TEMP'])/'close-target'),\
+        \ '--locked']\n text=run('native-close',args+['-p','se-host','--lib','--all-features','independent_close::','--','--nocapture','--test-threads=1'])\n\
+        \ assert re.search(r'test result: ok\\. 3 passed; 0 failed; 0 ignored;',text)\n\
+        \ for marker in ['CLOSE byte-cap=1064960 retained-tail=8192 response-complete=true','CLOSE\
+        \ continuing-sender-bytes=','CLOSE shutdown-pending-discard=preempted next-poll=true']:assert\
+        \ marker in text,marker\n text=run('http-consumer',args+['-p','se','--test','http_admission','public_http_admission_precedes_anonymous_and_private_routes','--','--exact','--nocapture','--test-threads=1'])\n\
+        \ assert re.search(r'test result: ok\\. 1 passed; 0 failed; 0 ignored;',text)\n\
+        \ assert 'HTTP admission: query bearer:' in text\n result['all_controls_completed']=True\n\
+        except Exception as error:\n result['error']=repr(error);raise\nfinally:\n\
+        \ save()\n manifest={str(f.relative_to(root)):{'sha256':hashlib.sha256(f.read_bytes()).hexdigest(),'bytes':f.stat().st_size}\
+        \ for f in root.rglob('*') if f.is_file() and f.name!='manifest.json'}\n (root/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\\\
+        n',encoding='utf-8')\n"
+    - name: Retain complete native review evidence
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: http-close-review-r1-${{ matrix.os }}
+        path: ${{ runner.temp }}/http-close-review-r1
+        if-no-files-found: error
+        retention-days: 14
