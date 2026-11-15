@@ -1,0 +1,120 @@
+name: Native Windows caller rendezvous witness r4
+permissions:
+  contents: read
+  actions: read
+jobs:
+  produce:
+    runs-on: windows-2025
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arm: base
+          source: 0f47ddb7ef5c30fa39de9b77cbb60d7021737c35
+        - arm: head
+          source: 7a64f4c44d987a384d073cde39fac3c6f17be022
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 8bbbdaa2fee086c7e7ff0a840842fd2c4e180ff8
+        path: controls
+        persist-credentials: false
+        sparse-checkout: crates/se/tests/review_runtime_rendezvous
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: 1.97.1
+        targets: x86_64-pc-windows-msvc
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: windows-rendezvous-${{ matrix.arm }}
+        run-id: 43724766357
+        github-token: ${{ github.token }}
+        path: prior
+    - name: Select the native C++ compiler
+      shell: pwsh
+      run: '$ErrorActionPreference=''Stop''
+
+        $where=Join-Path ${env:ProgramFiles(x86)} ''Microsoft Visual Studio\Installer\vswhere.exe''
+
+        $vs=& $where -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+
+        if($LASTEXITCODE -ne 0 -or !$vs){throw ''Native compiler installation not found''}
+
+        Import-Module (Join-Path $vs ''Common7\Tools\Microsoft.VisualStudio.DevShell.dll'')
+
+        Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments ''-arch=x64 -host_arch=x64''
+
+        # The developer shell is local to this step; compile the helper here.
+
+        $out=Join-Path $env:RUNNER_TEMP ''rendezvous-inputs''
+
+        $null=New-Item -ItemType Directory -Path $out
+
+        $cpp=(Resolve-Path ''controls/crates/se/tests/review_runtime_rendezvous/windows_pipe_peer.cpp'').Path
+
+        & cl.exe /nologo /std:c++17 /EHsc /W4 /WX $cpp "/Fe:$out\windows_pipe_peer.exe" "/Fo:$out\windows_pipe_peer.obj"
+        *> "$out\peer-build.log"
+
+        if($LASTEXITCODE -ne 0){throw ''Native pipe observer compilation failed''}
+
+        '
+    - name: Reach real init and diagnose native pipe witness
+      shell: python
+      env:
+        PRODUCT_SOURCE: ${{ matrix.source }}
+        ARM: ${{ matrix.arm }}
+      run: "import ast,hashlib,json,os,shutil,subprocess,tarfile\nfrom pathlib import Path\narm=os.environ['ARM']\n\
+        out=Path(os.environ['RUNNER_TEMP'])/'rendezvous-inputs'\ninputs=Path('prior').resolve()\ncontrols=Path('controls/crates/se/tests/review_runtime_rendezvous').resolve()\n\
+        expected={'head':'3034d2e030545269c3d16c297aac0d0c8a085d5e37c696640a7dd9309f1b457a',\n          'base':'377796e1fd8fad8766c467f1c91ef224cf151f68823c1a690b2fe75b69c3a113'}\n\
+        hashes=json.loads((inputs/'retained-files.json').read_text())\nfor name,digest in hashes.items():\n    path=Path(name)\n\
+        \    assert not path.is_absolute() and '..' not in path.parts\n    assert hashlib.sha256((inputs/path).read_bytes()).hexdigest()==digest,name\n\
+        metadata=json.loads((inputs/'build.json').read_text())\nassert metadata['source']==os.environ['PRODUCT_SOURCE']\
+        \ and metadata['arm']==arm and metadata['exit']==0\nassert hashes['se.exe']==expected[arm]\nfor name in\
+        \ ['se.exe','source-judges.tar']:shutil.copyfile(inputs/name,out/name)\nfor name in ['windows_control.py','windows_process.py','windows_peer_smoke.py','windows_pipe_peer.cpp']:\n\
+        \    if name.endswith('.py'):ast.parse((controls/name).read_text())\n    shutil.copyfile(controls/name,out/name)\n\
+        source=out/'source';source.mkdir()\nwith tarfile.open(out/'source-judges.tar') as archive:\n    for member\
+        \ in archive.getmembers():\n        path=Path(member.name)\n        assert not path.is_absolute() and '..'\
+        \ not in path.parts and (member.isdir() or member.isfile())\n    archive.extractall(source,filter='data')\n\
+        with (out/'help.log').open('w') as log:\n    subprocess.run([str(out/'se.exe'),'--help'],stdout=log,stderr=subprocess.STDOUT,check=True,timeout=20)\n\
+        private=Path(os.environ['SystemDrive']+'\\\\')/('rv-preflight-'+arm)\nwith (out/'first-call.stdout').open('w')\
+        \ as log,(out/'first-call.stderr').open('w') as err:\n    first=subprocess.run(['python','-B',str(out/'windows_control.py'),'--source',str(source),\n\
+        \        '--se',str(out/'se.exe'),'--peer',str(out/'windows_pipe_peer.exe'),'--out',str(private),\n    \
+        \    '--expect','recovered' if arm=='head' else 'refused','--first-call-only'],stdout=log,stderr=err,timeout=120)\n\
+        if (private/'first-call.json').is_file():shutil.copyfile(private/'first-call.json',out/'first-call.json')\n\
+        with (out/'peer-smoke.stdout').open('w') as log,(out/'peer-smoke.stderr').open('w') as err:\n    smoke=subprocess.run(['python','-B',str(out/'windows_peer_smoke.py'),'--peer',str(out/'windows_pipe_peer.exe'),\n\
+        \        '--out',str(out/'peer-smoke.json')],stdout=log,stderr=err,timeout=40)\nmetadata['controls']={name:hashlib.sha256((out/name).read_bytes()).hexdigest()\
+        \ for name in ['windows_control.py','windows_process.py','windows_peer_smoke.py','windows_pipe_peer.cpp']}\n\
+        metadata.update(reused_input_run=43724766357,control_source='8bbbdaa2fee086c7e7ff0a840842fd2c4e180ff8',\n\
+        \    first_product_call_exit=first.returncode,peer_smoke_exit=smoke.returncode,\n    peer_sha256=hashlib.sha256((out/'windows_pipe_peer.exe').read_bytes()).hexdigest())\n\
+        (out/'build.json').write_text(json.dumps(metadata,indent=2)+'\\n')\nnames=[p for p in out.iterdir() if p.is_file()\
+        \ and p.suffix in ['.exe','.py','.cpp','.json','.tar','.log','.stdout','.stderr']]\n(out/'retained-files.json').write_text(json.dumps({p.name:hashlib.sha256(p.read_bytes()).hexdigest()\
+        \ for p in names},indent=2)+'\\n')\nraise SystemExit(first.returncode or smoke.returncode)\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: windows-rendezvous-${{ matrix.arm }}
+        if-no-files-found: error
+        path: '${{ runner.temp }}/rendezvous-inputs/*.exe
+
+          ${{ runner.temp }}/rendezvous-inputs/*.py
+
+          ${{ runner.temp }}/rendezvous-inputs/*.cpp
+
+          ${{ runner.temp }}/rendezvous-inputs/*.json
+
+          ${{ runner.temp }}/rendezvous-inputs/*.tar
+
+          ${{ runner.temp }}/rendezvous-inputs/*.log
+
+          ${{ runner.temp }}/rendezvous-inputs/*.stdout
+
+          ${{ runner.temp }}/rendezvous-inputs/*.stderr
+
+          '
+'on':
+- push
+- workflow_dispatch
