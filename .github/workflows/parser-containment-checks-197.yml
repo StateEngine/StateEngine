@@ -1,0 +1,38 @@
+name: parser containment development checks
+on:
+  push:
+permissions:
+  contents: read
+concurrency:
+  group: parser-containment-checks-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 800ece78d4a1cf5628af133bf182dd16facdc173
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          shared-key: judge-${{ matrix.os }}-v1
+          save-if: false
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --target "$(rustc --print host-tuple)" --workspace --all-targets --all-features --locked -- -D warnings
+      - if: runner.os == 'Linux'
+        run: cargo clippy --target "$(rustc --print host-tuple)" -p se-host --no-default-features --locked -- -D warnings
+      - run: cargo test --target "$(rustc --print host-tuple)" --workspace --all-features --locked --doc
