@@ -83,7 +83,10 @@ fn evict_exclusion(path: &Path, byte: u8) -> Check {
             let external = clock_helper("probe-write", path, &[])?;
             assert_eq!(external["write_opened"], false);
             assert_eq!(external["native_error"], 32);
-            let directory = path.parent().unwrap().join(format!("eviction-{byte}"));
+            let directory = path
+                .parent()
+                .ok_or("native fixture parent absent")?
+                .join(format!("eviction-{byte}"));
             fs::create_dir(&directory)?;
             for index in 0..64 {
                 let image = directory.join(format!("image-{index}.exe"));
@@ -126,7 +129,7 @@ fn retained(mode: &str, server_selected: bool) -> Check {
     invocation.validate()?;
     let mut previous = ExecutableStamp::observe(path)?;
     assert!(previous.is_some(), "native observation is absent");
-    for byte in [b'B', b'C', b'D'] {
+    for byte in *b"BCD" {
         // A process-local proof may exclude writes until its bounded cache entry
         // is evicted. Witness that native refusal, then exercise changed bytes
         // through the same retained public consumers after exclusion ends.
