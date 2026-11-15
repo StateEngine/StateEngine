@@ -1,0 +1,103 @@
+name: PR394 native Windows metadata readback comparison
+'on':
+  push:
+    branches:
+    - prime/pr394-metadata-counters-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_RELEASE_DEBUG: '0'
+  CARGO_BUILD_JOBS: '2'
+jobs:
+  observe:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: dde29837ff517e4d514f0cbd8cfa898df2a63cf0
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: windows-mcp-372-phases-v1
+        cache-on-failure: true
+    - name: Observe protected metadata counts and real refusal controls on both sources
+      shell: python
+      run: "\"\"\"Paired native observer: keep request latencies and same-job counters distinct.\"\"\"\nfrom pathlib\
+        \ import Path\nfrom collections import Counter\nimport hashlib,json,math,os,platform,shutil,statistics,subprocess,time,traceback\n\
+        \nROOT=Path(os.environ['RUNNER_TEMP'])/'pr394-counters-r1'\nROOT.mkdir()\nSOURCES={\n 'base':{'product':'7b23fb01a7e16362c6d6b024e5c1801a32bda8c6','observer':'72e67ce671d78ee6de8ed7576093c98a76e9ea67','readbacks':8},\n\
+        \ 'head':{'product':'1db0f20fa543e496fa04be4f37af106a8a0bc27f','observer':'dde29837ff517e4d514f0cbd8cfa898df2a63cf0','readbacks':4}}\n\
+        PHASES=['admission','submission','continuation']\nOPERATIONS=['stateengine_msg_send','stateengine_working_state_set']\n\
+        rows=[]\nsummary={'sources':SOURCES,'arms':rows,'qualified':False,'cleanup_unknown':False,\n 'scope':'Same\
+        \ counters and kept-open public MCP observer on both Windows sources; synthetic active sessions, no real\
+        \ provider or mixed capture qualification. Inclusive stage times overlap and are not additive.'}\n\ndef\
+        \ save():\n (ROOT/'summary.json').write_text(json.dumps(summary,indent=2)+'\\n',encoding='utf-8')\n\ndef\
+        \ execute(dest,label,argv,timeout):\n start=time.monotonic_ns()\n result={'argv':argv,'timed_out':False}\n\
+        \ try:\n  with (dest/(label+'.stdout')).open('wb') as out,(dest/(label+'.stderr')).open('wb') as err:\n\
+        \   process=subprocess.run(argv,stdout=out,stderr=err,timeout=timeout)\n  result.update(exit=process.returncode,elapsed_ns=time.monotonic_ns()-start)\n\
+        \ except subprocess.TimeoutExpired:\n  result.update(exit=None,timed_out=True,elapsed_ns=time.monotonic_ns()-start)\n\
+        \  summary['cleanup_unknown']=True\n (dest/(label+'.json')).write_text(json.dumps(result,indent=2)+'\\n',encoding='utf-8')\n\
+        \ assert result['exit']==0,f'{label} failed; exact stdout/stderr retained'\n return result\n\ndef stats(values):\n\
+        \ assert values and all(isinstance(v,(int,float)) and math.isfinite(v) and v>=0 for v in values)\n ordered=sorted(values)\n\
+        \ return {'count':len(values),'p50':statistics.median(ordered),'p95':ordered[math.ceil(len(ordered)*.95)-1],'max':ordered[-1]}\n\
+        \ndef analyze(report,pin):\n assert set(report['cohorts'])=={'1','8'}\n total=0;seen=set();cohorts={}\n\
+        \ for cohort,clients in report['cohorts'].items():\n  assert len(clients)==int(cohort)\n  per_operation={}\n\
+        \  for operation in OPERATIONS:\n   assert all(operation in c['samples'] for c in clients)\n   samples=[sample\
+        \ for client in clients for sample in client['samples'][operation]]\n   per_operation[operation]={'worst_client_p95_ms':max(c['p95_ms'][operation]\
+        \ for c in clients),\n       'cohort_latency_ms':stats([s['ms'] for s in samples])}\n  native_requests=[];readback_requests=[];phase_counts={p:{}\
+        \ for p in PHASES}\n  for client in clients:\n   assert client['verified_events']==60 and not client.get('error')\
+        \ and not client.get('cleanup_error')\n   assert set(client['samples'])==set(OPERATIONS)\n   total+=client['verified_events']\n\
+        \   for operation,samples in client['samples'].items():\n    assert len(samples)==30\n    assert stats([s['ms']\
+        \ for s in samples])['p95']==client['p95_ms'][operation]\n    for sample in samples:\n     assert sample['key']\
+        \ not in seen and sample['event_id'] and sample['writer']['mode']=='host'\n     seen.add(sample['key']);opens=0;readbacks=0\n\
+        \     for phase in PHASES:\n      job=sample['diagnostics']['host_phases'][phase]\n      assert job['jobs']==1,'all\
+        \ counters must belong to the measured phase job'\n      counts=job['native_file_counts']\n      for values\
+        \ in counts.values():\n       assert len(values)==2 and all(isinstance(v,int) and v>=0 for v in values)\n\
+        \      assert counts['other']==[0,0] and counts['metadata-pin:handle-overflow']==[0,0]\n      handles=[v\
+        \ for k,v in counts.items() if k.startswith('metadata-pin:handle:')]\n      assert [sum(v[i] for v in handles)\
+        \ for i in [0,1]]==counts['metadata-pin']\n      expected=0 if phase=='submission' else 4\n      assert\
+        \ counts['metadata-pin'][0]==expected\n      expected=0 if phase=='submission' else pin['readbacks']\n \
+        \     assert counts['protected-readback'][0]==expected\n      opens+=counts['native-open'][0];readbacks+=counts['protected-readback'][0]\n\
+        \      for name,pair in counts.items():\n       if ':handle' not in name:\n        phase_counts[phase].setdefault(name,[]).append(pair[0])\n\
+        \     native_requests.append(opens);readback_requests.append(readbacks)\n  cohorts[cohort]={'operations':per_operation,'native_opens_per_request':stats(native_requests),\n\
+        \     'protected_readbacks_per_request':stats(readback_requests),\n     'phase_call_counts':{p:{k:{'min':min(v),'max':max(v),'histogram':dict(Counter(v))}\
+        \ for k,v in cs.items()} for p,cs in phase_counts.items()}}\n assert total==len(seen)==540\n return {'verified_events':total,'cohorts':cohorts,'latency_budget_pass':report['pass'],\n\
+        \  'counter_assertions':'all540 requests preserve4metadata checks in admission and continuation, with the\
+        \ pinned expected readbacks; submission0'}\n\ntry:\n inputs={'sources':SOURCES,'run':os.environ['GITHUB_RUN_ID'],'publication':os.environ['GITHUB_SHA'],\n\
+        \  'compiler':subprocess.check_output(['rustc','-vV'],text=True),'cpu_count':os.cpu_count(),\n  'machine':platform.machine(),'processor':platform.processor()}\n\
+        \ (ROOT/'inputs.json').write_text(json.dumps(inputs,indent=2)+'\\n',encoding='utf-8')\n # Both observers\
+        \ contain precisely the same instrumentation and independent cases.\n changed=subprocess.check_output(['git','diff','--name-only',SOURCES['base']['observer'],SOURCES['head']['observer']],text=True).splitlines()\n\
+        \ assert changed==['crates/se-proc/src/state_files/metadata.rs'],changed\n (ROOT/'product-pair.diff').write_bytes(subprocess.check_output(['git','diff',SOURCES['base']['observer'],SOURCES['head']['observer']]))\n\
+        \ for label,pin in SOURCES.items():\n  dest=ROOT/label;dest.mkdir();row={'label':label,**pin,'qualified':False};rows.append(row);save()\n\
+        \  try:\n   subprocess.run(['git','switch','--detach',pin['observer']],check=True)\n   assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==pin['observer']\n\
+        \   assert subprocess.check_output(['git','rev-parse','HEAD^'],text=True).strip()==pin['product']\n   name='crates/se-proc/src/state_files/metadata.rs'\n\
+        \   actual=Path(name).read_bytes().replace(b'        #[cfg(windows)]\\n        let _trace = super::windows::trace::Span::metadata(&self.file);\\\
+        n',b'')\n   assert actual==subprocess.check_output(['git','show',pin['product']+':'+name])\n   execute(dest,'native-refusals',['cargo','test','--target','x86_64-pc-windows-msvc','--release','--all-features','--locked','-p','se-proc','--test','state_files','--','--nocapture','--test-threads=1'],1200)\n\
+        \   native_text=(dest/'native-refusals.stdout').read_text(encoding='utf-8')\n   for case in ['metadata_pin_refuses_an_outside_process_replacement','metadata_pin_preserves_absence_hardlink_acl_and_root_refusals']:\n\
+        \    assert 'test '+case+' ... ok' in native_text,f'expected native case did not execute: {case}'\n   execute(dest,'measurement',['cargo','test','--target','x86_64-pc-windows-msvc','--release','--all-features','--locked','-p','se','--test','eight_writer_mcp_measurement','--','--nocapture'],3300)\n\
+        \   diagnostics=Path('target/judge-diagnostics')\n   assert diagnostics.is_dir()\n   shutil.move(str(diagnostics),str(dest/'judge-diagnostics'))\n\
+        \   report=json.loads((dest/'judge-diagnostics/mcp-writers.json').read_text(encoding='utf-8'))\n   row.update(analyze(report,pin))\n\
+        \   forbidden=['native-stage-timing','pooled-read-timing','admission-native-timing','blocking-native-timing','read-close-timing','background-native-timing']\n\
+        \   text=(dest/'measurement.stdout').read_text(encoding='utf-8')+(dest/'measurement.stderr').read_text(encoding='utf-8')\n\
+        \   assert not any(name+' ' in text for name in forbidden),'per-span output changes observer cost'\n   dirty=subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],text=True)\n\
+        \   assert not dirty,'observer source was changed during execution'\n   row['qualified']=True\n  except\
+        \ Exception as error:\n   row['error']=repr(error);row['traceback']=traceback.format_exc()\n   if isinstance(error,subprocess.TimeoutExpired)\
+        \ or summary['cleanup_unknown']:\n    summary['cleanup_unknown']=True\n  save()\n  if summary['cleanup_unknown']:\n\
+        \   summary['not_run']=[name for name in SOURCES if name not in {x['label'] for x in rows}]\n   break\n\
+        \ summary['qualified']=len(rows)==2 and all(row['qualified'] for row in rows) and not summary['cleanup_unknown']\n\
+        except Exception as error:\n summary['driver_error']=repr(error);summary['traceback']=traceback.format_exc()\n\
+        finally:\n save()\n files={str(p.relative_to(ROOT)):{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}\
+        \ for p in ROOT.rglob('*') if p.is_file() and p.name!='manifest.json'}\n (ROOT/'manifest.json').write_text(json.dumps({'files':files},indent=2)+'\\\
+        n',encoding='utf-8')\nraise SystemExit(0 if summary['qualified'] else 1)\n"
+    - name: Retain every command, raw outcome and complete member manifest
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: pr394-counters-r1
+        path: ${{ runner.temp }}/pr394-counters-r1
+        retention-days: 14
+        if-no-files-found: error
