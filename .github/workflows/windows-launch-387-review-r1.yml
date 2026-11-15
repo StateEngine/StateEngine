@@ -1,0 +1,99 @@
+name: Windows public launch readiness qualification
+'on':
+  push:
+    branches:
+    - prime/windows-launch-387-review-r1
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+    working-directory: product
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_BUILD_JOBS: '2'
+jobs:
+  judge:
+    runs-on: windows-2025
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arm: base
+          source: e64815b8863665fa0d6fa88fe617c5b7e33066cd
+        - arm: head
+          source: a8eb523f757e95dd7f360e2fd3b88971c2945327
+    env:
+      PRODUCT_SOURCE: ${{ matrix.source }}
+      ARM: ${{ matrix.arm }}
+      OBSERVER_CHECKOUT: ${{ github.workspace }}/observer
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.source }}
+        path: product
+        persist-credentials: false
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 2836e87c9e251d77cece6385b04b003b5030627f
+        path: observer
+        persist-credentials: false
+    - uses: ./product/.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        workspaces: product
+        shared-key: windows-launch-387-v1
+    - name: Register disposable hosted account
+      shell: python
+      run: 'from pathlib import Path
+
+        import runpy,subprocess,sys
+
+        p=Path(''scripts/ci/installation_account.py'').resolve()
+
+        identity,profile=runpy.run_path(str(p))[''account'']()
+
+        subprocess.run([sys.executable,str(p),''provision'',''--identity'',identity,''--profile'',str(profile)],check=True)
+
+        subprocess.run([sys.executable,str(p),''check''],check=True)
+
+        '
+    - name: Stage independent observer
+      shell: python
+      run: 'from pathlib import Path
+
+        import os
+
+        root=Path(os.environ[''RUNNER_TEMP''])
+
+        (root/''driver.py'').write_text("from pathlib import Path\nimport hashlib,json,os,subprocess,sys,time\n\nout=Path(os.environ[''RUNNER_TEMP''])/''windows387'';out.mkdir()\nos.environ.update(JUDGE_OUTPUT=str(out),JUDGE_PRIVATE=str(Path(os.environ[''RUNNER_TEMP''])/''windows387-private''))\ndef save(name,value):(out/name).write_text(json.dumps(value,indent=2)+''\\n'',encoding=''utf-8'')\nsave(''pins.json'',{''source'':os.environ[''PRODUCT_SOURCE''],''observer'':''2836e87c9e251d77cece6385b04b003b5030627f'',\n ''run'':os.environ[''GITHUB_RUN_ID''],''publication'':os.environ[''GITHUB_SHA''],''arm'':os.environ[''ARM''],\n ''compiler'':subprocess.check_output([''rustc'',''-vV'']).decode(''utf-8'')})\nassert subprocess.check_output([''git'',''rev-parse'',''HEAD'']).decode().strip()==os.environ[''PRODUCT_SOURCE'']\ntry:\n command=[''cargo'',''build'',''--locked'',''--target'',''x86_64-pc-windows-msvc'',''-p'',''se'',''--bin'',''se'']\n start=time.monotonic_ns()\n with (out/''build.log'').open(''wb'')
+        as log:result=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,timeout=2400)\n save(''build.json'',{''argv'':command,''exit'':result.returncode,''elapsed_ns'':time.monotonic_ns()-start})\n assert result.returncode==0,''Native development build failed''\n os.environ[''SE_IMAGE'']=str((Path.cwd()/''target/x86_64-pc-windows-msvc/debug/se.exe'').resolve())\n driver=Path(os.environ[''RUNNER_TEMP''])/''public_windows.py''\n shutil_source=Path(__file__);(out/''driver.py'').write_bytes(shutil_source.read_bytes());(out/''public_windows.py'').write_bytes(driver.read_bytes())\n with (out/''public.log'').open(''wb'') as log:result=subprocess.run([sys.executable,''-B'',str(driver)],stdout=log,stderr=subprocess.STDOUT,timeout=600)\n save(''public-command.json'',{''exit'':result.returncode})\n assert result.returncode==0,''Public Windows launch/stop qualification failed''\nfinally:\n save(''retained-files.json'',{str(p.relative_to(out)):hashlib.sha256(p.read_bytes()).hexdigest() for p
+        in out.rglob(''*'') if p.is_file()})\n",encoding=''utf-8'')
+
+        (root/''public_windows.py'').write_text(''"""Public Windows launch/stop qualification; no provider account is used."""\nfrom pathlib import Path\nfrom types import SimpleNamespace\nimport hashlib,json,os,shutil,sys,time,uuid\n\nobserver=Path(os.environ[\''OBSERVER_CHECKOUT\''])\nsys.path.insert(0,str(observer/\''scripts/live_output_observe\''))\nfrom native import Fixture as BaseFixture,NativeObserver\nfrom public_ready import PublicReady\n\nclass Fixture(BaseFixture):\n def ok(self,*args,recipient=False):\n  if args!=(\''up\'',):return super().ok(*args,recipient=recipient)\n  self.startup=PublicReady(SimpleNamespace(output=self.root,repository=self.repo),\n   [str(self.se),\''--home\'',str(self.home),\''--json\'',\''up\'',\''--foreground\''],self.env)\n  return json.loads(self.startup.wait()[\''stdout\''])\n\nout=Path(os.environ[\''JUDGE_OUTPUT\'']);out.mkdir(exist_ok=True)\nprivate=Path(os.environ[\''JUDGE_PRIVATE\'']);private.mkdir()\nimage=Path(os.environ[\''SE_IMAGE\''])\nsummary={\''source\'':os.environ[\''PRODUCT_SOURCE\''],\''arm\'':os.environ[\''ARM\''],\n
+        \''image_sha256\'':hashlib.sha256(image.read_bytes()).hexdigest(),\n \''scope\'':\''Native Windows development executable; account-free Claude protocol fixture through public CLI\'',\n \''cases\'':[]}\n\ndef save(path,value):path.write_text(json.dumps(value,indent=2)+\''\\n\'',encoding=\''utf-8\'')\ndef await_rows(watch,predicate):\n end=time.monotonic()+10\n while True:\n  rows=watch.observe()\n  if predicate(rows):return rows\n  if time.monotonic()>=end:raise AssertionError(\''Native process closure did not settle: \''+repr(rows))\n  time.sleep(.1)\n\nfor label in [\''running-stop\'',\''exit-before-ready\'']:\n dest=out/label;dest.mkdir()\n scope=private/label;scope.mkdir()\n executable=scope/\''se.exe\'';shutil.copyfile(image,executable)\n helper=None\n if label==\''exit-before-ready\'':\n  helper=scope/\''early_exit.py\''\n  helper.write_text(\''\''\''from pathlib import Path\nimport json,os,sys,time\nse,home,*args=sys.argv[1:]\nassert sys.stdin.readline()\nflag=\''--resume\''
+        if \''--resume\'' in args else \''--session-id\''\nconversation=args[args.index(flag)+1]\nPath(\''early-provider.json\'').write_text(json.dumps(dict(root=os.getppid(),helper=os.getpid(),conversation=conversation,configured_exit_code=23)),encoding=\''utf-8\'')\nprint(json.dumps(dict(type=\''system\'',subtype=\''init\'',session_id=conversation)),flush=True)\ntime.sleep(.25)\nraise SystemExit(23)\n\''\''\'',encoding=\''utf-8\'')\n row={\''case\'':label,\''failures\'':[]};f=None;watch=NativeObserver(scope,dest)\n try:\n  f=Fixture(executable,scope/\''case\'',provider_helper=helper)\n  row[\''up\'']=f.ok(\''up\'');runtime_pid=row[\''up\''][\''process\''][\''pid\'']\n  runtime=next(r for r in watch.observe(runtime_pid) if r[\''pid\'']==runtime_pid)\n  assert runtime[\''name\''].casefold()==\''se.exe\'' and Path(runtime[\''image\'']).resolve()==executable.resolve(),runtime\n  row[\''runtime_native\'']=runtime\n  if label==\''running-stop\'':\n   f.launch()\n   ready=json.loads((f.repo/\''provider-ready.json\'').read_text(encoding=\''utf-8\''))\n   row[\''ready\'']=ready\n   assert
+        ready[\''session_discovery\''] and ready[\''http_discovery\''],ready\n   before=watch.observe();row[\''running_native\'']=before\n   pids={ready[\''native_root_pid\''],ready[\''helper_pid\'']}\n   bindings={(r[\''pid\''],r[\''birth\'']) for r in before if r[\''pid\''] in pids}\n   assert {p for p,b in bindings}==pids,\''Provider identities not observed outside runtime\''\n   stop=f.ok(\''--project\'',f.project,\''stop\'',f.agent);row[\''stop\'']=stop\n   assert stop.get(\''complete\'') and stop.get(\''witness\'',{}).get(\''state\'')==\''witnessed\'',stop\n   row[\''after_stop\'']=await_rows(watch,lambda rows:not any((r[\''pid\''],r[\''birth\'']) in bindings for r in rows))\n  else:\n   key=str(uuid.uuid4());row[\''request_key\'']=key\n   started=time.monotonic_ns()\n   result=f.call(\''--key\'',key,\''--project\'',f.project,\''launch\'',f.agent,\''--detach\'',\''--task\'',\''Early provider exit qualification\'')\n   row[\''launch\'']={\''exit\'':result.returncode,\''stdout\'':result.stdout.decode(\''utf-8\''),\n    \''stderr\'':result.stderr.decode(\''utf-8\''),\''elapsed_ns\'':time.monotonic_ns()-started}\n   assert
+        result.returncode!=0,\''Exited provider reported successful launch\''\n   body=json.loads(result.stdout);body=body.get(\''error\'',body);row[\''error\'']=body\n   early=f.repo/\''early-provider.json\'';assert early.is_file(),\''Provider did not reach real init echo\''\n   row[\''provider\'']=json.loads(early.read_text(encoding=\''utf-8\''))\n   assert row[\''provider\''][\''configured_exit_code\'']==23\n   encoded=json.dumps(body)\n   row[\''new_refusal_contract\'']=(body.get(\''code\'')==\''launch-failed\''\n    and body.get(\''retry\'',{}).get(\''kind\'')==\''after_reread\''\n    and \''agent show\'' in encoded and \''original launch request key\'' in encoded)\n   if os.environ[\''ARM\'']==\''head\'':assert row[\''new_refusal_contract\''],body\n  row[\''graded\'']=True\n except BaseException as error:\n  row[\''failures\''].append(f\''{type(error).__name__}: {error}\'')\n finally:\n  if f is not None:\n   try:f.close();row[\''public_down_complete\'']=True\n   except BaseException
+        as error:row[\''failures\''].append(f\''Public down: {error}\'');row[\''public_down_complete\'']=False\n   if f.startup is not None and row.get(\''public_down_complete\''):\n    row[\''foreground_joined\'']=True\n   elif f.startup is not None:\n    try:\n     f.startup.join();row[\''foreground_joined\'']=True\n    except BaseException as error:row[\''failures\''].append(f\''Foreground join: {error}\'')\n   for p in f.log_root.glob(\''call-*.*\''):shutil.copyfile(p,dest/p.name)\n   for name in [\''public-ready.json\'',\''public-ready-final.json\'']:\n    p=f.root/name\n    if p.is_file():shutil.copyfile(p,dest/name)\n   # Runtime homes contain authentication material and are deliberately excluded.\n  try:row[\''remaining\'']=await_rows(watch,lambda rows:not rows)\n  except BaseException as error:row[\''failures\''].append(f\''Outside closure: {error}\'')\n  save(dest/\''result.json\'',row);summary[\''cases\''].append(row);save(out/\''public-summary.json\'',summary)\nraise SystemExit(any(r[\''failures\'']
+        for r in summary[\''cases\'']))\n'',encoding=''utf-8'')
+
+        '
+    - name: Build and judge public launch and stop
+      shell: python
+      run: 'from pathlib import Path
+
+        import os,subprocess,sys
+
+        subprocess.run([sys.executable,''-B'',str(Path(os.environ[''RUNNER_TEMP''])/''driver.py'')],check=True)
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: windows-launch-387-${{ matrix.arm }}
+        path: ${{ runner.temp }}/windows387
+        if-no-files-found: error
+        retention-days: 14
