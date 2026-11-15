@@ -32,12 +32,12 @@ fn executable(path: &Path) -> bool {
     if !metadata.is_file() {
         return false;
     }
-    #[unix]
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         metadata.permissions().mode() & 0o111 != 0
     }
-    #[not(unix)]
+    #[cfg(not(unix))]
     {
         true
     }
