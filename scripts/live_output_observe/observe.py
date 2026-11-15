@@ -78,7 +78,7 @@ def cohort(image, root, count=120):
         known.extend(native(pid) for pid, _ in f.processes)
         if any(row is None for row in known):
             raise ValueError('Owned process identity is absent before measurement')
-        argv = [str(image), '--home', str(f.home), '--project', f.project, '--json',
+        argv = [str(image), '--home', str(f.home), '--json',
                 'watch', '--target', f.project + '/' + f.agent, '--measure',
                 '--wait-ms', '1000', '--budget', '65536']
         watcher = subprocess.Popen(argv, cwd=f.repo, env=f.env, stdin=subprocess.DEVNULL,
