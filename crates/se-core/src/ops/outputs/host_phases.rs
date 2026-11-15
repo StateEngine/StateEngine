@@ -33,6 +33,10 @@ pub struct HostPhaseSpan {
     pub queue_us: u64,
     pub work_us: u64,
     pub resume_us: u64,
+    /// Observer only: stage -> (calls, summed inclusive microseconds). Nested
+    /// stages overlap; handle suffixes identify the retained pin within this job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_file_counts: Option<std::collections::BTreeMap<String, (u64, u64)>>,
 }
 impl HostPhaseTimings {
     /// Accumulate observed fragments of this same signal; None stays unmeasured.
@@ -51,6 +55,16 @@ impl HostPhaseTimings {
                         value.queue_us = value.queue_us.saturating_add(source.queue_us);
                         value.work_us = value.work_us.saturating_add(source.work_us);
                         value.resume_us = value.resume_us.saturating_add(source.resume_us);
+                        if let Some(counts) = source.native_file_counts {
+                            let total = value
+                                .native_file_counts
+                                .get_or_insert_with(Default::default);
+                            for (stage, (calls, elapsed)) in counts {
+                                let entry = total.entry(stage).or_default();
+                                entry.0 = entry.0.saturating_add(calls);
+                                entry.1 = entry.1.saturating_add(elapsed);
+                            }
+                        }
                     }
                     None => *target = Some(source),
                 }

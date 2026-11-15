@@ -511,3 +511,107 @@ fn independently_inherited_side_file_is_readable_without_write_access() -> Check
     assert_eq!(read(file)?, b"independent inherited bytes");
     Ok(())
 }
+
+/// Metadata and identity refer to the retained object; a later name binding refuses.
+#[cfg(windows)]
+#[test]
+fn metadata_pin_refuses_an_outside_process_replacement() -> Check {
+    use std::process::Command;
+    let home = Home::new()?;
+    let files = home.existing()?;
+    let path = home.root().join("state.db");
+    fs::write(&path, b"original")?;
+    protect(&path)?;
+    let pin = files.pin_metadata(&path)?.ok_or("metadata pin absent")?;
+    assert_eq!(pin.metadata()?.len(), 8);
+    let before = pin.identity()?;
+    let output = Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "metadata_pin_outside_replacement_child",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("SE_METADATA_REVIEW_ROOT", home.root())
+        .output()?;
+    assert!(output.status.success(), "outside replacement: {output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("outside replacement completed"));
+    let replacement = files.pin_metadata(&path)?.ok_or("replacement absent")?;
+    assert_ne!(
+        before,
+        replacement.identity()?,
+        "replacement reused file identity"
+    );
+    assert_eq!(replacement.metadata()?.len(), 8);
+    assert_eq!(fs::read(&path)?, b"replaced");
+    assert_eq!(fs::read(home.root().join("retired.db"))?, b"original");
+    assert_eq!(
+        pin.metadata()
+            .err()
+            .ok_or("replaced name was accepted")?
+            .code,
+        StateFileErrorCode::SourceChanged
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "only the parent test admits this disposable subprocess fixture"]
+fn metadata_pin_outside_replacement_child() -> Check {
+    let root = PathBuf::from(std::env::var_os("SE_METADATA_REVIEW_ROOT").ok_or("fixture absent")?);
+    assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    let path = root.join("state.db");
+    assert_eq!(fs::read(&path)?, b"original");
+    fs::rename(&path, root.join("retired.db"))?;
+    fs::write(&path, b"replaced")?;
+    protect(&path)?;
+    println!("outside replacement completed");
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn metadata_pin_preserves_absence_hardlink_acl_and_root_refusals() -> Check {
+    let home = Home::new()?;
+    let files = home.existing()?;
+    let path = home.root().join("state.db");
+    fs::write(&path, b"preserve")?;
+    protect(&path)?;
+    let pin = files.pin_metadata(&path)?.ok_or("metadata pin absent")?;
+    assert_eq!(pin.metadata()?.len(), 8);
+    assert_eq!(
+        pin.validate_path(&home.root().join("other.db"))
+            .err()
+            .ok_or("different path accepted")?
+            .code,
+        StateFileErrorCode::SourceChanged
+    );
+    fs::rename(&path, home.root().join("retired.db"))?;
+    assert_eq!(
+        pin.metadata().err().ok_or("absent name accepted")?.code,
+        StateFileErrorCode::SourceChanged
+    );
+    fs::rename(home.root().join("retired.db"), &path)?;
+    let link = home.root().join("extra-link");
+    fs::hard_link(&path, &link)?;
+    assert_eq!(
+        pin.metadata()
+            .err()
+            .ok_or("external hard link accepted")?
+            .code,
+        StateFileErrorCode::LocationUnsafe
+    );
+    fs::remove_file(&link)?;
+    acl(&path, "loosen")?;
+    assert!(pin.metadata().is_err(), "unsafe file DACL accepted");
+    protect(&path)?;
+    assert_eq!(pin.metadata()?.len(), 8);
+    acl(&home.root(), "unprotect")?;
+    assert!(pin.metadata().is_err(), "unsafe root DACL accepted");
+    protect(&home.root())?;
+    assert_eq!(pin.metadata()?.len(), 8);
+    assert_eq!(fs::read(&path)?, b"preserve");
+    Ok(())
+}

@@ -38,6 +38,8 @@ impl NativeMetadataPin {
     }
     pub fn metadata(&self) -> Result<Metadata> {
         #[cfg(windows)]
+        let _trace = super::windows::trace::Span::metadata(&self.file);
+        #[cfg(windows)]
         let (named, same) = {
             self.files.check(&self.path)?;
             // One protected handle supplies both facts. A second named open

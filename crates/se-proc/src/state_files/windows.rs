@@ -13,6 +13,7 @@ use std::{
 use windows_sys::Win32::{Foundation::*, Security::*, Storage::FileSystem::*};
 
 pub(crate) mod security;
+pub(in crate::state_files) mod trace;
 use security::{Layout, descriptor};
 fn validate_component(value: &std::ffi::OsStr, path: &Path) -> Result<()> {
     let units: Vec<_> = value.encode_wide().collect();
@@ -104,6 +105,7 @@ fn metadata(file: &File, path: &Path, directory: bool, check_security: bool) -> 
     })
 }
 fn metadata_for(file: &File, path: &Path, directory: bool, layout: Layout) -> Result<Identity> {
+    let _trace = trace::Span::new("protected-metadata");
     let identity = metadata(file, path, directory, false)?;
     security::verify_for(file, path, !directory, layout)?;
     Ok(identity)
@@ -128,6 +130,7 @@ fn open_with_layout(
     extra_access: u32,
     layout: Layout,
 ) -> Result<File> {
+    let _trace = trace::Span::new("native-open");
     let data = wide(path)?;
     let descriptor = if create {
         Some(security::descriptor_for(path, directory, layout)?)
@@ -507,6 +510,7 @@ impl Directory {
         Ok(file)
     }
     pub fn readback(&self, path: &Path, root: &Path) -> Result<Option<File>> {
+        let _trace = trace::Span::new("protected-readback");
         let _parent = match self.parent(path, root) {
             Ok(v) => v,
             Err(e)
