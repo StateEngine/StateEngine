@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import uuid
+import base64
 
 emitter, output, side = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 output.mkdir(parents=True)
@@ -18,6 +19,7 @@ root.mkdir(mode=0o700)
 payload = b'private publication content\n' * 4096
 digest = hashlib.sha256(payload).hexdigest()
 receipt = dict(side=side, platform=sys.platform, cases=[], source_files={})
+receipt['scope'] = 'Native verification and publication commands; Windows upload is a synthetic fixture and unchanged receive is recorded separately'
 
 
 def run(command, folder, label, data=None, env=None):
@@ -44,6 +46,22 @@ def harden(path):
 
 try:
     harden(root)
+    if windows:
+        # Receive is unchanged by the reviewed delta. Keep its direct native
+        # result and a reason-only diagnostic, separately from publication.
+        probe = output / 'unchanged-receive'
+        probe.mkdir()
+        for name in ('original', 'diagnostic'):
+            path = (root / ('receive-' + name)).relative_to(home).as_posix()
+            commands = json.loads(subprocess.check_output([str(emitter), path, path + '-published', digest, 'windows'], text=True))
+            command = commands['receive']
+            if name == 'diagnostic':
+                script = base64.b64decode(command.split()[-1]).decode('utf-16le')
+                needle = 'catch {if ($f) {$f.Dispose()}; exit 1}'
+                assert script.count(needle) == 1
+                script = script.replace(needle, 'catch {[Console]::Error.WriteLine($_.Exception.ToString()); if ($f) {$f.Dispose()}; exit 1}')
+                command = 'powershell.exe -NoProfile -NonInteractive -EncodedCommand ' + base64.b64encode(script.encode('utf-16le')).decode()
+            run(command, probe, name, payload)
     modes = ('fresh', 'corrupt-upload', 'matching-incumbent', 'corrupt-incumbent', 'warm-match', 'warm-corrupt')
     if not windows:
         modes += ('symlink-incumbent', 'writable-upload')
@@ -58,8 +76,14 @@ try:
         relative_upload, relative_published = (p.relative_to(home).as_posix() for p in (upload, published))
         commands = json.loads(subprocess.check_output([str(emitter), relative_upload, relative_published, digest, 'windows' if windows else 'unix'], text=True))
         (folder / 'commands.json').write_text(json.dumps(commands, indent=2) + '\n')
-        receive = run(commands['receive'], folder, 'receive', payload)
-        assert receive['exit'] == 0
+        if windows:
+            # A synthetic private upload isolates the changed verify/promote
+            # commands from the unchanged receive path's separately kept result.
+            upload.write_bytes(payload)
+            (folder / 'fixture-upload.json').write_text(json.dumps(dict(state='created', bytes=len(payload), sha256=hashlib.sha256(upload.read_bytes()).hexdigest())) + '\n')
+        else:
+            receive = run(commands['receive'], folder, 'receive', payload)
+            assert receive['exit'] == 0
         assert upload.read_bytes() == payload
         if mode == 'corrupt-upload':
             upload.write_bytes(b'wrong upload')

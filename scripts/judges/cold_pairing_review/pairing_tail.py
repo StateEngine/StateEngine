@@ -66,6 +66,7 @@ def invocation(user, home, argv, explicit_state=False):
     if explicit_state:
         env += ['XDG_CONFIG_HOME=' + str(home / '.config'), 'XDG_STATE_HOME=' + str(home / '.local/state'),
                 'XDG_DATA_HOME=' + str(home / '.local/share'), 'XDG_CACHE_HOME=' + str(home / '.cache')]
+    env += ['XDG_RUNTIME_DIR=' + str(home / 'runtime')]
     return ['sudo', '-n', '-u', user, *env, *map(str, argv)]
 
 
@@ -99,9 +100,9 @@ with socket.socket() as probe:
     port = probe.getsockname()[1]
 config = private / 'sshd_config'
 pidfile = private / 'sshd.pid'
-config.write_text(f'Port {port}\nListenAddress 127.0.0.1\nHostKey {private / "host-key"}\nPidFile {pidfile}\nPasswordAuthentication no\nPubkeyAuthentication yes\nUsePAM yes\nPermitRootLogin no\nAllowTcpForwarding yes\nAllowUsers se418*\n')
+config.write_text(f'Port {port}\nListenAddress 127.0.0.1\nHostKey {private / "host-key"}\nPidFile {pidfile}\nPasswordAuthentication no\nPubkeyAuthentication yes\nUsePAM yes\nPermitRootLogin no\nPermitUserEnvironment yes\nAllowTcpForwarding yes\nAllowUsers se418*\n')
 sudo('mkdir', '-p', '/run/sshd')
-sudo('/usr/sbin/sshd', '-f', config)
+sudo('env', '-i', 'PATH=/usr/sbin:/usr/bin:/sbin:/bin', '/usr/sbin/sshd', '-f', config)
 daemon = int(pidfile.read_text())
 daemon_cmd = sudo('cat', f'/proc/{daemon}/cmdline')['stdout']
 assert str(config) in daemon_cmd
@@ -133,14 +134,20 @@ try:
                 dest_user, dest_uid, dest_home = owned[1]
                 for user, uid, home in owned:
                     sudo('install', '-d', '-m', '700', '-o', user, '-g', user, home / '.ssh')
+                    sudo('install', '-d', '-m', '700', '-o', user, '-g', user, home / 'runtime')
                 install(private / 'client-key', source_home / '.ssh/id_pair', source_user, '600')
-                install(private / 'client-key.pub', dest_home / '.ssh/authorized_keys', dest_user, '600')
+                authorized = folder / 'authorized_keys'
+                authorized.write_text('environment="XDG_RUNTIME_DIR=' + str(dest_home / 'runtime') + '" ' + (private / 'client-key.pub').read_text())
+                install(authorized, dest_home / '.ssh/authorized_keys', dest_user, '600')
                 known = folder / 'known_hosts'
                 known.write_text(f'[{"127.0.0.1"}]:{port} {host_public[0]} {host_public[1]}\n')
                 install(known, source_home / '.ssh/known_hosts', source_user, '600')
                 alias = folder / 'ssh-config'
                 alias.write_text(f'Host pairdest\n HostName 127.0.0.1\n Port {port}\n User {dest_user}\n IdentityFile {source_home / ".ssh/id_pair"}\n IdentitiesOnly yes\n StrictHostKeyChecking yes\n BatchMode yes\n')
                 install(alias, source_home / '.ssh/config', source_user, '600')
+                checked_environment = must(invocation(source_user, source_home, ['ssh', 'pairdest', 'env']), destination=folder / 'destination-environment.json', owned_uid=source_uid)
+                remote_environment = dict(line.split('=', 1) for line in checked_environment['stdout'].splitlines() if '=' in line)
+                assert remote_environment['HOME'] == str(dest_home) and remote_environment['XDG_RUNTIME_DIR'] == str(dest_home / 'runtime')
                 image = source_home / 'se'
                 install(binary, image, source_user, '700')
                 repo = source_home / 'repository'
