@@ -24,6 +24,9 @@ def prepare(directory, image, smokes):
             inherited[key] = os.environ[key]
     smoke = Smoke(directory, None, {'id': 'claude', 'driver': 'native'}, {'provider': 'claude'},
                   inherited)
+    if sys.platform == 'win32':
+        from native_windows import Commands
+        smoke.commands = Commands(smoke.commands)
     smokes.append(smoke)  # Partial initialization must still receive closure checks.
     smoke.state = smoke.home / 'stateengine-state'
     smoke.commands.environment['SE_HOME'] = str(smoke.state)
@@ -58,7 +61,8 @@ def timed(smoke, traced):
     try:
         stdout, stderr = child.communicate(timeout=30)
     except subprocess.TimeoutExpired:
-        current = next((r for r in census() if r['pid'] == child.pid), None)
+        rows = smoke.commands.observer.census() if sys.platform == 'win32' else census()
+        current = next((r for r in rows if r['pid'] == child.pid), None)
         require(current and str(smoke.binary).casefold() in current['command'].casefold(),
                 'Timed-out owned command identity is unreadable or changed')
         child.kill()
@@ -98,8 +102,13 @@ def sample(smoke, traced, number):
     public = smoke.call(['status'], 'status')
     require(public['runtime']['process']['pid'] == pid, 'Status rediscovered another runtime')
     record['public_status'] = public['runtime']
-    record['memory'] = public['runtime'].get('resources')
-    require(isinstance(record['memory'], dict), 'Public host resource snapshot is absent')
+    runtime = public['runtime']
+    if isinstance(runtime.get('resources'), dict):
+        record['memory'] = dict(state='observed', value=runtime['resources'])
+    elif 'resources_unavailable' in runtime:
+        record['memory'] = dict(state='unavailable', reason=runtime['resources_unavailable'])
+    else:
+        record['memory'] = dict(state='absent', reason='Public status supplied no resource observation')
     if traced:
         logs = []
         record['startup_logs'] = []
