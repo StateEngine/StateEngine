@@ -1,0 +1,58 @@
+name: Linux startup waiting and durability observation
+on:
+  push:
+    branches: [prime/startup-linux-tail-r2]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: startup-linux-tail-r2-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  linux-tail-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      MEASURE_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 54b3543be626b5d0eb8cad207334a8bc4bece3f6
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.12'}
+      - name: Read back the original Linux release archive
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          prior = root / 'original-startup-package'
+          subprocess.run(['gh', 'run', 'download', '43653318293', '-R', os.environ['GITHUB_REPOSITORY'], '-n', 'linux-startup-package', '--dir', str(prior)], check=True)
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'STARTUP_REUSE_ROOT={prior}\n')
+              output.write(f'MEASURE_ROOT={root / "linux-startup-tail"}\n')
+              output.write(f'EVIDENCE_ROOT={root / "linux-startup-tail-evidence"}\n')
+      - name: Check syscall observer availability
+        run: strace -V
+      - name: Observe ownership-commit tail without changing product bytes
+        shell: python
+        run: |
+          import os, subprocess, sys
+          subprocess.run([sys.executable, '-B', 'scripts/startup_package/reuse.py', os.environ['MEASURE_ROOT']], check=True)
+      - name: Collect evidence without private homes
+        if: ${{ always() }}
+        shell: python
+        run: |
+          import os, subprocess, sys
+          subprocess.run([sys.executable, '-B', 'scripts/startup_package/collect.py', os.environ['MEASURE_ROOT'], os.environ['EVIDENCE_ROOT']], check=True)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: startup-package-linux-tail
+          path: ${{ runner.temp }}/linux-startup-tail-evidence
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
