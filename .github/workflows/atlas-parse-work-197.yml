@@ -1,0 +1,209 @@
+name: Native macOS counted parser work comparison
+permissions:
+  contents: read
+jobs:
+  native-source:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.source }}
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Read the pinned compiler
+      id: compiler
+      shell: python
+      run: 'import os,tomllib
+
+        from pathlib import Path
+
+        channel=tomllib.loads(Path(''rust-toolchain.toml'').read_text())[''toolchain''][''channel'']
+
+        with open(os.environ[''GITHUB_OUTPUT''],''a'') as output: print(''channel=''+channel,file=output)
+
+        '
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: ${{ steps.compiler.outputs.channel }}
+        components: clippy
+    - name: Observe native components through production adapters
+      shell: python
+      run: "import os,subprocess,pathlib,json,hashlib,time,shutil,tomllib\nroot=pathlib.Path(os.environ['RUNNER_TEMP']);out=root/'atlas-components';out.mkdir()\n\
+        repo=pathlib.Path.cwd();source=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()\nassert source==os.environ['EXPECTED_SOURCE']\n\
+        host=subprocess.check_output(['rustc','--print','host-tuple'],text=True).strip();assert host=='aarch64-apple-darwin'\n\
+        env=os.environ.copy();env.update(CARGO_TARGET_DIR=str(root/'component-target'),CARGO_INCREMENTAL='0',CARGO_PROFILE_DEV_DEBUG='0',CARGO_PROFILE_TEST_DEBUG='0')\n\
+        def run(label,argv,cwd=repo):\n    started=time.monotonic_ns()\n    with (out/(label+'.stdout')).open('wb') as stdout,(out/(label+'.stderr')).open('wb')\
+        \ as stderr:\n        result=subprocess.run(argv,cwd=cwd,env=env,stdout=stdout,stderr=stderr,timeout=1500)\n    (out/(label+'.json')).write_text(json.dumps({'argv':list(map(str,argv)),'exit':result.returncode,'elapsed_ns':time.monotonic_ns()-started},indent=2)+'\\\
+        n')\n    result.check_returncode()\nrun('native-clippy',['cargo','clippy','--locked','--workspace','--all-targets','--all-features','--target',host,'--keep-going','--','-D','warnings'])\n\
+        app=root/'component-observer';(app/'src').mkdir(parents=True)\n(app/'src'/'allocations.rs').write_text(r'''//! Native-sized\
+        \ allocation observations; the underlying allocator is unchanged.\nuse std::{alloc::{GlobalAlloc, Layout, System},\
+        \ ffi::c_void, sync::atomic::{AtomicUsize, Ordering}};\n#[derive(Default)]\npub struct Counts { live: AtomicUsize,\
+        \ peak: AtomicUsize }\nimpl Counts {\n    fn add(&self, n: usize) { let value=self.live.fetch_add(n,Ordering::SeqCst)+n;self.peak.fetch_max(value,Ordering::SeqCst);\
+        \ }\n    fn sub(&self, n: usize) {self.live.fetch_sub(n,Ordering::SeqCst);}\n    pub fn reset(&self) -> usize {let\
+        \ live=self.live.load(Ordering::SeqCst);self.peak.store(live,Ordering::SeqCst);live}\n    pub fn peak(&self) -> usize\
+        \ {self.peak.load(Ordering::SeqCst)}\n}\npub static RUST:Counts=Counts {live:AtomicUsize::new(0),peak:AtomicUsize::new(0)};\n\
+        pub static TREE:Counts=Counts {live:AtomicUsize::new(0),peak:AtomicUsize::new(0)};\nunsafe extern \"C\" {fn malloc_size(pointer:*const\
+        \ c_void)->usize;}\nunsafe fn bytes(pointer:*mut u8)->usize {if pointer.is_null(){0}else{unsafe{malloc_size(pointer.cast())}}}\n\
+        struct Allocator;\n#[global_allocator]\nstatic GLOBAL:Allocator=Allocator;\nunsafe impl GlobalAlloc for Allocator\
+        \ {\n    unsafe fn alloc(&self,layout:Layout)->*mut u8 {let p=unsafe{System.alloc(layout)};RUST.add(unsafe{bytes(p)});p}\n\
+        \    unsafe fn alloc_zeroed(&self,layout:Layout)->*mut u8 {let p=unsafe{System.alloc_zeroed(layout)};RUST.add(unsafe{bytes(p)});p}\n\
+        \    unsafe fn dealloc(&self,p:*mut u8,layout:Layout) {RUST.sub(unsafe{bytes(p)});unsafe{System.dealloc(p,layout)}}\n\
+        \    unsafe fn realloc(&self,p:*mut u8,layout:Layout,n:usize)->*mut u8 {let old=unsafe{bytes(p)};let q=unsafe{System.realloc(p,layout,n)};if\
+        \ !q.is_null(){RUST.sub(old);RUST.add(unsafe{bytes(q)});}q}\n}\nunsafe extern \"C\" fn allocate(n:usize)->*mut c_void\
+        \ {let p=unsafe{libc::malloc(n)};TREE.add(unsafe{bytes(p.cast())});p}\nunsafe extern \"C\" fn zeroed(n:usize,m:usize)->*mut\
+        \ c_void {let p=unsafe{libc::calloc(n,m)};TREE.add(unsafe{bytes(p.cast())});p}\nunsafe extern \"C\" fn resize(p:*mut\
+        \ c_void,n:usize)->*mut c_void {let old=unsafe{bytes(p.cast())};let q=unsafe{libc::realloc(p,n)};if !q.is_null() ||\
+        \ n==0 {TREE.sub(old);TREE.add(unsafe{bytes(q.cast())});}q}\nunsafe extern \"C\" fn free(p:*mut c_void) {TREE.sub(unsafe{bytes(p.cast())});unsafe{libc::free(p)}}\n\
+        pub fn install_tree() {unsafe{tree_sitter::set_allocator(Some(allocate),Some(zeroed),Some(resize),Some(free))}}\n\
+        ''')\n(app/'src'/'main.rs').write_text(r'''//! Development allocation observations through production SQL and watch\
+        \ adapters.\n//! A synthetic SqlProfile permits measurement only; this is not admission proof.\nmod allocations;\n\
+        mod parser;\nuse se_atlas::{cache::{connection::*, pointer, *}, model::*, scope::Scope};\nuse se_host::atlas_cache::NativeAtlasCache;\n\
+        use se_proc::{NativeSourceRoot, NativeSourceWatch, NativeWatchEvents};\nuse se_types::ProjectId;\nuse serde_json::{json,\
+        \ Value};\nuse std::{error::Error, ffi::c_int, path::PathBuf, sync::atomic::{AtomicPtr, Ordering}, time::{Duration,\
+        \ Instant, SystemTime, UNIX_EPOCH}};\ntype Check<T> = Result<T, Box<dyn Error>>;\nstatic LAST: AtomicPtr<rusqlite::ffi::sqlite3>\
+        \ = AtomicPtr::new(std::ptr::null_mut());\nunsafe extern \"C\" fn opened(db: *mut rusqlite::ffi::sqlite3, _: *mut\
+        \ *mut libc::c_char, _: *const rusqlite::ffi::sqlite3_api_routines) -> c_int {\n    LAST.store(db, Ordering::Release);\
+        \ rusqlite::ffi::SQLITE_OK\n}\nfn deadline() -> Instant { Instant::now() + Duration::from_secs(30) }\nfn error(e:\
+        \ impl std::fmt::Display) -> se_types::SeError { se_types::SeError::invalid(\"native allocation observation\", &e.to_string())\
+        \ }\nfn global(reset: bool) -> Check<(i64,i64)> {\n    let (mut now, mut peak) = (0,0);\n    let code = unsafe { rusqlite::ffi::sqlite3_status64(rusqlite::ffi::SQLITE_STATUS_MEMORY_USED,\
+        \ &mut now, &mut peak, i32::from(reset)) };\n    if code != 0 { return Err(format!(\"sqlite3_status64 returned {code}\"\
+        ).into()); }\n    Ok((now,peak))\n}\nfn sqlite_status(db: *mut rusqlite::ffi::sqlite3, operation: c_int) -> Check<i32>\
+        \ {\n    if db.is_null() { return Err(\"native SQL handle was not observed\".into()); }\n    let (mut now,mut peak)=(0,0);\n\
+        \    // The caller retains the production CacheConnection owning this handle.\n    let code=unsafe {rusqlite::ffi::sqlite3_db_status(db,\
+        \ operation, &mut now, &mut peak, 0)};\n    if code!=0 {return Err(format!(\"sqlite3_db_status returned {code}\").into());}\
+        \ Ok(now)\n}\nfn observation(label: &str, handles: &[*mut rusqlite::ffi::sqlite3]) -> Check<Value> {\n    let allocation=global(false)?;\n\
+        \    let databases=handles.iter().map(|db| -> Check<Value> { Ok(json!({\"cache_bytes\":sqlite_status(*db,rusqlite::ffi::SQLITE_DBSTATUS_CACHE_USED)?,\"\
+        schema_bytes\":sqlite_status(*db,rusqlite::ffi::SQLITE_DBSTATUS_SCHEMA_USED)?,\"statement_bytes\":sqlite_status(*db,rusqlite::ffi::SQLITE_DBSTATUS_STMT_USED)?,\"\
+        lookaside_used\":sqlite_status(*db,rusqlite::ffi::SQLITE_DBSTATUS_LOOKASIDE_USED)?})) }).collect::<Check<Vec<_>>>()?;\n\
+        \    Ok(json!({\"phase\":label,\"sqlite_current_bytes\":allocation.0,\"sqlite_high_water_bytes\":allocation.1,\"databases\"\
+        :databases,\"native_memory\":se_proc::atlas_worker::memory_usage()?}))\n}\nfn query(connection: &mut CacheConnection<'_>)\
+        \ -> Check<()> {\n    connection.read(deadline(), |sql| {\n        let mut statement=sql.prepare(\"SELECT text FROM\
+        \ names ORDER BY id\")?;\n        let mut rows=statement.query([]).map_err(error)?;\n        let mut bytes=0usize;\n\
+        \        while let Some(row)=rows.next().map_err(error)? { bytes+=row.get::<_,String>(0).map_err(error)?.len(); }\n\
+        \        if bytes<65_536 {return Err(error(\"observation did not fill the intended cache input\"));} Ok(())\n    })?;\
+        \ Ok(())\n}\nfn main() -> Check<()> {\n    let root=PathBuf::from(std::env::args_os().nth(1).ok_or(\"output home argument\
+        \ is required\")?);\n    std::fs::create_dir(&root)?;\n    use std::os::unix::fs::PermissionsExt;\n    std::fs::set_permissions(&root,std::fs::Permissions::from_mode(0o700))?;\n\
+        \    se_proc::initialize_file_creation_owner()?;\n    // The extension only observes newly opened handles. It changes\
+        \ no SQL,\n    // allocation methods, pragma, function registration or production adapter.\n    let installed=unsafe\
+        \ {rusqlite::ffi::sqlite3_auto_extension(Some(opened))};\n    if installed!=0 { return Err(format!(\"extension registration\
+        \ returned {installed}\").into()); }\n    allocations::install_tree();\n    let home=root.join(\"atlas\");let source=root.join(\"\
+        source\");std::fs::create_dir(&source)?;\n    let project=ProjectId::from_parts(1,[1;10])?;let id=RootId::from_parts(1,[2;10])?;\n\
+        \    let native=NativeSourceRoot::open(&source)?;\n    let scope=Scope::new(RootRegistration { project:project.clone(),root:id.clone(),canonical_source_root:source.clone(),cache:CacheLocation\
+        \ {directory:home.join(project.as_str()).join(id.as_str())},git_metadata:None },native.physical_identity()?)?;\n \
+        \   if let Some(language)=std::env::args().nth(2) {\n        let pattern=std::env::args().nth(3).unwrap_or_else(||\
+        \ \"names\".into());\n        let report=parser::run(scope,&source,&language,&pattern)?;\n        println!(\"{}\"\
+        ,serde_json::to_string(&report)?);std::fs::remove_dir_all(root)?;return Ok(());\n    }\n    let cache=NativeAtlasCache::create(&home,scope.clone())?;\n\
+        \    let coverage=serde_json::from_value(json!({\"discovered_files\":0,\"indexed_files\":0,\"partial_files\":0,\"\
+        deferred_files\":0,\"failed_files\":0,\"discovery_complete\":true,\"stale_files\":0,\"resolved_references\":0,\"name_only_references\"\
+        :0,\"watched_directories\":0,\"unwatched_directories\":0,\"watch_discovery_complete\":true,\"watch_stats_started\"\
+        :null,\"watch_activation_attempts\":0,\"watch_limited_activations\":0,\"reasons\":[]}))?;\n    let seed=CacheSeed\
+        \ {identity:CacheIdentity {scope,epoch:CacheEpoch::from_parts(1,[3;10])?},extractor_version:\"allocation-observer\"\
+        .into(),ignore_digest:ContentHash([0;32]),coverage,state:IndexState::Current};\n    let mut cold=CacheConnection::create(&cache,&seed,ConnectionRole::ColdWriter,&SqlProfile::contained_cold(),deadline())?;\n\
+        \    cold.write(1_000_000,deadline(),|sql| {let mut insert=sql.prepare(\"INSERT INTO names(text) VALUES(?1)\")?;for\
+        \ index in 0..1000 {insert.execute([format!(\"{index:04}-{}\",\"a\".repeat(120))]).map_err(error)?;}Ok(())})?;\n \
+        \   pointer::publish(&cache,&mut cold,None,deadline())?;drop(cold);\n    let mut rows=vec![observation(\"initialized-cold-closed\"\
+        ,&[])?];\n    let synthetic=SqlProfile::from_qualified_overhead(1)?;\n    for round in 0..10 {\n        global(true)?;\n\
+        \        let mut writer=CacheConnection::open(&cache,seed.identity.clone(),ConnectionRole::HostWriter,&synthetic,deadline())?.ok_or(\"\
+        writer absent\")?;let writer_handle=LAST.load(Ordering::Acquire);\n        rows.push(observation(&format!(\"{round}-writer-open\"\
+        ),&[writer_handle])?);query(&mut writer)?;rows.push(observation(&format!(\"{round}-writer-read\"),&[writer_handle])?);\n\
+        \        let mut reader=CacheConnection::open(&cache,seed.identity.clone(),ConnectionRole::HostReader,&synthetic,deadline())?.ok_or(\"\
+        reader absent\")?;let reader_handle=LAST.load(Ordering::Acquire);\n        rows.push(observation(&format!(\"{round}-both-open\"\
+        ),&[writer_handle,reader_handle])?);query(&mut reader)?;rows.push(observation(&format!(\"{round}-both-read\"),&[writer_handle,reader_handle])?);\n\
+        \        drop(reader);drop(writer);rows.push(observation(&format!(\"{round}-both-closed\"),&[])?);\n    }\n    let\
+        \ before=se_proc::atlas_worker::memory_usage()?;let watch=NativeSourceWatch::new()?;\n    let registration=watch.subscribe(&native,\"\
+        \")?.ok_or(\"watch root absent\")?;\n    let installed=se_proc::atlas_worker::memory_usage()?;\n    std::fs::write(source.join(\"\
+        sample.rs\"),\"pub fn before() {}\\n\")?;\n    let until=deadline();let mut events=Vec::new();let mut bytes=[0;4096];\n\
+        \    while Instant::now()<until {let count=watch.read(&mut bytes)?;if count>0 {for event in NativeWatchEvents::new(&bytes[..count])\
+        \ {events.push(format!(\"{:?}\",event?.action));}break;}std::thread::sleep(Duration::from_millis(10));}\n    if events.is_empty()\
+        \ {return Err(\"native source change produced no observer event\".into());}\n    let removed=watch.remove(registration.descriptor)?;drop(watch);\n\
+        \    let report=json!({\"schema\":\"atlas-native-components-development/v1\",\"sql_reservation\":\"synthetic admission\
+        \ for observation, not product qualification\",\"sqlite_allocator\":\"bundled SQLite native macOS allocator, native\
+        \ allocation-size status counters\",\"rows\":rows,\"watch\":{\"before\":before,\"installed\":installed,\"after_close\"\
+        :se_proc::atlas_worker::memory_usage()?,\"events\":events,\"registration_removed\":removed},\"limitations\":[\"Observed\
+        \ bounded inputs, not a universal memory bound\",\"No accepted native SQL profile or joined host/watch/query memory\
+        \ claim\",\"OS peak physical footprint is monotonic and includes observer code\",\"The open-handle observer changes\
+        \ neither allocation methods nor production SQL configuration\"]});\n    println!(\"{}\",serde_json::to_string(&report)?);\n\
+        \    drop(cache);std::fs::remove_dir_all(root)?;\n    let _=SystemTime::now().duration_since(UNIX_EPOCH)?;\n    Ok(())\n\
+        }\n''')\n(app/'src'/'parser.rs').write_text(r'''use crate::{allocations,Check};\nuse se_atlas::{lifecycle::*,model::*,parse::{ParserPlacement,ParserProfile,SemanticParser},scope::Scope};\n\
+        use se_host::atlas_source::NativeAtlasSource;\nuse serde_json::json;\nuse se_types::code::AtlasText;\nuse std::{path::Path,time::{Duration,Instant}};\n\
+        pub fn run(scope:Scope,source:&Path,language:&str,pattern:&str)->Check<serde_json::Value> {\n    let (language,extension)=match\
+        \ language {\"rust\"=>(Language::Rust,\"rs\"),\"python\"=>(Language::Python,\"py\"),\"javascript\"=>(Language::JavaScript,\"\
+        js\"),\"jsx\"=>(Language::Jsx,\"jsx\"),\"typescript\"=>(Language::TypeScript,\"ts\"),\"tsx\"=>(Language::Tsx,\"tsx\"\
+        ),_=>return Err(\"unknown measurement grammar\".into())};\n    let mut text=String::new();let mut index=0;\n    while\
+        \ text.len()<64_000 {\n        let line=match (language,pattern) {\n            (Language::Rust,\"names\")=>format!(\"\
+        pub fn item_{index}(x:u64)->u64 {{ x + 1 }}\\n\"),\n            (Language::Python,\"names\")=>format!(\"def item_{index}(x):\\\
+        n    return x + 1\\n\"),\n            (Language::JavaScript|Language::Jsx,\"names\")=>format!(\"export function item_{index}(x)\
+        \ {{ return x + 1; }}\\n\"),\n            (_,\"names\")=>format!(\"export function item_{index}(x:number):number {{\
+        \ return x + 1; }}\\n\"),\n            (_,\"comments\")=>if language==Language::Python {format!(\"# {index} {}\\n\"\
+        ,\"a\".repeat(120))}else{format!(\"/* {index} {} */\\n\",\"a\".repeat(120))},\n            (_,\"malformed\")=>\"(\
+        \ { [ invalid_token ;\\n\".into(),\n            _=>return Err(\"unknown measurement pattern\".into()),\n        };\n\
+        \        if text.len()+line.len()>65_536 {break;}text.push_str(&line);index+=1;\n    }\n    let path=RelativePath::new(format!(\"\
+        sample.{extension}\"))?;std::fs::write(source.join(path.as_str()),text.as_bytes())?;drop(text);\n    let native=NativeAtlasSource::open(scope.registration.clone(),CaseMode::Sensitive)?;\n\
+        \    let profile=ParserProfile::from_qualified_measurement(language,ParserPlacement::Incremental,65_536,32_768,8_000_000,3_000_000)?;\n\
+        \    let budget=ParseBudget {max_source_bytes:65_536,max_rows:32_768,max_work:Duration::from_millis(200),reserved_bytes:11_065_536};\n\
+        \    let mut parser=SemanticParser::new(scope,vec![profile])?;\n    let before=se_proc::atlas_worker::memory_usage()?;\n\
+        \    let rust_base=allocations::RUST.reset();let tree_base=allocations::TREE.reset();\n    let SourceRead::Bytes(snapshot)=native.read(&path,budget)?\
+        \ else{return Err(\"measurement source was not read\".into());};\n    let started=Instant::now();let parsed=parser.parse(&snapshot,language,budget);let\
+        \ elapsed=started.elapsed();\n    let rust_peak=allocations::RUST.peak();let tree_peak=allocations::TREE.peak();let\
+        \ after=se_proc::atlas_worker::memory_usage()?;\n    let (coverage,symbols,references,imports,error)=match parsed\
+        \ {\n        Ok(value)=>(Some(format!(\"{:?}\",value.coverage)),Some(value.symbols.len()),Some(value.references.len()),Some(value.imports.len()),None),\n\
+        \        Err(error)=>(None,None,None,None,Some(serde_json::to_value(error.body)?)),\n    };\n    Ok(json!({\"language\"\
+        :format!(\"{language:?}\"),\"pattern\":pattern,\"input_bytes\":snapshot.bytes.len(),\"elapsed_ms\":elapsed.as_secs_f64()*1000.0,\"\
+        coverage\":coverage,\"symbols\":symbols,\"references\":references,\"imports\":imports,\"parse_error\":error,\"proposed_max_rows\"\
+        :32_768,\"source_and_rust_increment_bytes\":rust_peak.saturating_sub(rust_base),\"tree_increment_bytes\":tree_peak.saturating_sub(tree_base),\"\
+        sum_of_separate_increment_peaks_bytes\":rust_peak.saturating_sub(rust_base)+tree_peak.saturating_sub(tree_base),\"\
+        native_before\":before,\"native_after\":after,\"proposed_reservation_bytes\":11_065_536,\"allocation_method\":\"System\
+        \ and native tree allocator functions retained; native malloc_size includes allocator rounding; atomic counters add\
+        \ observation overhead\",\"limits\":\"Finite inputs, not universal worst-case qualification; shared grammar executable\
+        \ pages are not allocator bytes\"}))\n}\n''')\n# Adapt only the new budget field; observation cases and assertions\
+        \ are unchanged.\nif 'pub max_steps:' in (repo/'crates/se-atlas/src/model.rs').read_text():\n    parser=app/'src/parser.rs'\n\
+        \    parser.write_text(parser.read_text().replace('max_work:Duration::from_millis(200),', 'max_work:Duration::from_millis(200),max_steps:4_000_000,'))\n\
+        dependencies={name:{'path':str(repo/'crates'/name)} for name in ['se-host','se-proc','se-atlas','se-types']}\nmanifest='[package]\\\
+        nname=\"atlas-component-observer\"\\nversion=\"0.0.0\"\\nedition=\"2024\"\\n[workspace]\\n[dependencies]\\n'\nfor\
+        \ name,value in dependencies.items():\n    extra=', features=[\"import\",\"remote\",\"secode\"]' if name=='se-host'\
+        \ else ''\n    manifest+=name+'={path='+json.dumps(value['path'])+extra+'}\\n'\nmanifest+='serde_json=\"=1.0.154\"\
+        \\nlibc=\"=0.2.191\"\\nrusqlite={version=\"=0.41.1\",features=[\"bundled\",\"hooks\",\"limits\",\"functions\"]}\\\
+        ntree-sitter={version=\"=0.26.13\",default-features=false,features=[\"std\"]}\\n'\nmanifest+='[patch.crates-io]\\\
+        nsecode-stateengine-api={path='+json.dumps(str(repo/'vendor/secode-stateengine-api'))+'}\\n'\nmanifest+='[profile.distribution]\\\
+        ninherits=\"release\"\\nopt-level=\"s\"\\nlto=\"thin\"\\ncodegen-units=1\\n[profile.distribution.package.libsqlite3-sys]\\\
+        nopt-level=3\\n[profile.distribution.package.sha2]\\nopt-level=3\\n[profile.distribution.package.hmac]\\nopt-level=3\\\
+        n'\n(app/'Cargo.toml').write_text(manifest);shutil.copy2(repo/'Cargo.lock',app/'Cargo.lock')\n(app/'.cargo').mkdir();shutil.copy2(repo/'.cargo/config.toml',app/'.cargo/config.toml')\n\
+        run('observer-build',['cargo','build','--manifest-path',str(app/'Cargo.toml'),'--offline','--profile','distribution','--target',host],app)\n\
+        locked=tomllib.loads((repo/'Cargo.lock').read_text())['package'];actual=tomllib.loads((app/'Cargo.lock').read_text())['package']\n\
+        expected={(p['name'],p['version'],p.get('source')) for p in locked};known_names={p['name'] for p in locked};changed=[p\
+        \ for p in actual if p['name'] in known_names and (p['name'],p['version'],p.get('source')) not in expected];assert\
+        \ not changed,changed\nimage=root/'component-target'/host/'distribution/atlas-component-observer'\n(out/'build-inputs.json').write_text(json.dumps({'source':source,'compiler':subprocess.check_output(['rustc','-vV'],text=True),'original_lock_sha256':hashlib.sha256((repo/'Cargo.lock').read_bytes()).hexdigest(),'observer_lock_sha256':hashlib.sha256((app/'Cargo.lock').read_bytes()).hexdigest(),'image_sha256':hashlib.sha256(image.read_bytes()).hexdigest(),'version_changes':changed,'profile':'distribution,\
+        \ matching source thin LTO and package speed overrides'},indent=2)+'\\n')\nshutil.copy2(app/'Cargo.toml',out/'observer-Cargo.toml');shutil.copy2(app/'Cargo.lock',out/'observer-Cargo.lock')\n\
+        results=[]\nfor round in range(3):\n    label='sql-watch-'+str(round);home=(root/(label+'-home')).resolve();run(label,[str(image),str(home)]);value=json.loads((out/(label+'.stdout')).read_text());results.append({'case':label,'result':value})\n\
+        for language in ['rust','python','javascript','jsx','typescript','tsx']:\n    for pattern in ['names','comments','malformed']:\n\
+        \        for round in range(3):\n            label='parse-'+language+'-'+pattern+'-'+str(round);home=(root/(label+'-home')).resolve();run(label,[str(image),str(home),language,pattern]);value=json.loads((out/(label+'.stdout')).read_text());results.append({'case':label,'result':value})\n\
+        (out/'observations.json').write_text(json.dumps({'source':source,'results':results,'claim':'development measurements\
+        \ only; independent native admission and public CLI source qualification remain required'},indent=2)+'\\n')\n"
+      env:
+        EXPECTED_SOURCE: ${{ matrix.source }}
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: atlas-parse-work-197-${{ matrix.label }}
+        path: ${{ runner.temp }}/atlas-components/
+        if-no-files-found: error
+        retention-days: 7
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - label: base
+          source: 32f1069d054a356cbd5095f0734f81c1adafef4c
+        - label: head
+          source: be51bb4ee8442fe984e564c42b95e8c21c340f89
+'on':
+  push:
+    branches:
+    - prime/atlas-parse-work-197-r1
+concurrency:
+  group: atlas-parse-work-197-${{ github.ref }}
+  cancel-in-progress: false
