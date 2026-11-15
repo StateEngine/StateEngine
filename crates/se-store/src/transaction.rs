@@ -130,6 +130,7 @@ impl Engine {
         let recorded = connection::now()?;
         let started = Instant::now();
         self.db.execute_batch("BEGIN IMMEDIATE").map_err(sql)?;
+        let begin_elapsed = started.elapsed();
         let info = match connection::info(&self.db) {
             Ok(i) => i,
             Err(e) => {
@@ -267,6 +268,17 @@ impl Engine {
             ));
         }
         let sync = commit.elapsed();
+        if transaction + sync >= Duration::from_millis(10) {
+            eprintln!(
+                "writer-copy-phase begin_us={} body_us={} commit_us={} end_unix_us={:?}",
+                begin_elapsed.as_micros(),
+                transaction.saturating_sub(begin_elapsed).as_micros(),
+                sync.as_micros(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_micros())
+            );
+        }
         // Post-commit accounting names the debt (or the hard-pressure
         // recovery) on this group's receipts; the background task owns the
         // idle retry, never the receipt.

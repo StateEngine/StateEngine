@@ -112,7 +112,11 @@ impl Engine {
         let hard = wal.bytes >= crate::backup_context::MAX_WAL_BYTES;
         let gate = self.checkpoints.gate.clone();
         let result = gate.acquire(self.timeout).and_then(|_permit| {
-            self.db
+            if hard {
+                eprintln!("foreground-copy-phase phase=gate elapsed_us={} end_unix_us={:?} log={} done={}", start.elapsed().as_micros(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros()), wal.log, wal.done);
+            }
+            let reset_started = Instant::now();
+            let result = self.db
                 .query_row(
                     if hard {
                         "PRAGMA wal_checkpoint(TRUNCATE)"
@@ -128,7 +132,11 @@ impl Engine {
                         ))
                     },
                 )
-                .map_err(sql)
+                .map_err(sql);
+            if hard {
+                eprintln!("foreground-copy-phase phase=checkpoint elapsed_us={} end_unix_us={:?} result={result:?}", reset_started.elapsed().as_micros(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros()));
+            }
+            result
         });
         let elapsed = start.elapsed();
         self.maintenance = match result {

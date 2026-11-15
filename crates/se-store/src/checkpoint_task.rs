@@ -311,9 +311,23 @@ fn run(
         }
         // Reopen until the first success so a transient lock at startup costs
         // one tick, not the whole maintenance lifetime.
+        let open_started = Instant::now();
         let db = match crate::connection::connect(&path, true, timeout) {
-            Ok(db) => db,
+            Ok(db) => {
+                eprintln!(
+                    "background-copy-phase phase=open elapsed_us={} end_unix_us={:?}",
+                    open_started.elapsed().as_micros(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_micros())
+                );
+                db
+            }
             Err(error) => {
+                eprintln!(
+                    "background-copy-phase phase=open-failed elapsed_us={} error={error:?}",
+                    open_started.elapsed().as_micros()
+                );
                 status.set(Maint::Failed(error));
                 if status.wait(&closed, Some(TICK)) {
                     return;
@@ -328,9 +342,23 @@ fn run(
             }
             continue;
         }
+        let gate_started = Instant::now();
         match gate.acquire(BACKOFF) {
-            Ok(_permit) => tick(&db, &context, &lease, &status),
-            Err(_) => {
+            Ok(_permit) => {
+                eprintln!(
+                    "background-copy-phase phase=gate elapsed_us={} end_unix_us={:?}",
+                    gate_started.elapsed().as_micros(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_micros())
+                );
+                tick(&db, &context, &lease, &status)
+            }
+            Err(error) => {
+                eprintln!(
+                    "background-copy-phase phase=gate-failed elapsed_us={} error={error:?}",
+                    gate_started.elapsed().as_micros()
+                );
                 // Contention leaves debt, but cannot clear a retained failure
                 // without a successful maintenance tick.
                 if !status.pending() {
@@ -345,6 +373,15 @@ fn run(
         if status.wait(&closed, owed.then_some(TICK)) {
             return;
         }
+        let close_started = Instant::now();
+        drop(db);
+        eprintln!(
+            "background-copy-phase phase=close elapsed_us={} end_unix_us={:?}",
+            close_started.elapsed().as_micros(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_micros())
+        );
     }
 }
 fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>, status: &Status) {
@@ -432,14 +469,24 @@ fn reset_when_quiet(db: &Connection, status: &Status) {
 }
 fn checkpoint(db: &Connection, mode: &str) -> StoreResult<(i64, i64, i64)> {
     let statement = format!("PRAGMA wal_checkpoint({mode})");
-    db.query_row(statement.as_str(), [], |r| {
-        Ok((
-            crate::sql_value::value::<i64>(r, 0)?,
-            crate::sql_value::value::<i64>(r, 1)?,
-            crate::sql_value::value::<i64>(r, 2)?,
-        ))
-    })
-    .map_err(sql)
+    let started = Instant::now();
+    let result = db
+        .query_row(statement.as_str(), [], |r| {
+            Ok((
+                crate::sql_value::value::<i64>(r, 0)?,
+                crate::sql_value::value::<i64>(r, 1)?,
+                crate::sql_value::value::<i64>(r, 2)?,
+            ))
+        })
+        .map_err(sql);
+    eprintln!(
+        "background-copy-phase phase=checkpoint mode={mode} elapsed_us={} end_unix_us={:?} result={result:?}",
+        started.elapsed().as_micros(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros())
+    );
+    result
 }
 
 #[cfg(test)]
