@@ -1,0 +1,77 @@
+name: writer-latency
+on:
+  push:
+    branches: [prime/writer-latency-b4-read-phase-r1]
+permissions:
+  contents: read
+concurrency:
+  group: writer-latency-${{ github.run_id }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_RELEASE_DEBUG: '0'
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows
+            runner: windows-2025
+            ref: b7a3c1c5d9d4f016b237a97c5c0d883645276eda
+          - os: windows-candidate
+            runner: windows-2025
+            ref: 25bea315184d95c0f5205eb7d36e05f6ee46a9ec
+          - os: linux
+            runner: ubuntu-24.04
+            ref: b7a3c1c5d9d4f016b237a97c5c0d883645276eda
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ matrix.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Overlay measurement sources
+        env:
+          MEASUREMENTS: 972d2e5a05439006c74989f2b57d2c8495f37c1f
+        run: |
+          git fetch --quiet origin "$MEASUREMENTS:refs/remotes/measure/tests" "refs/heads/main:refs/remotes/measure/main"
+          measured="$(git rev-parse refs/remotes/measure/tests)"
+          test "$measured" = 972d2e5a05439006c74989f2b57d2c8495f37c1f
+          echo "$measured" > measurement-commit.txt
+          fork="$(git merge-base refs/remotes/measure/main refs/remotes/measure/tests)"
+          git diff --name-only --diff-filter=AM "$fork" refs/remotes/measure/tests > "$RUNNER_TEMP/measurement-files"
+          python -I - "$RUNNER_TEMP/measurement-files" <<'PY'
+          import re, sys
+          paths = open(sys.argv[1], encoding="utf-8").read().splitlines()
+          if not paths or any(not re.match(r"^(crates/[^/]+/)?tests/", p) for p in paths):
+              sys.exit("measurement overlay must contain only tests directory changes")
+          PY
+          xargs git checkout refs/remotes/measure/tests -- < "$RUNNER_TEMP/measurement-files"
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          shared-key: writer-latency-${{ matrix.os }}-v1
+          cache-on-failure: true
+      - name: Measure release writer latency
+        run: |
+          target="$(rustc --print host-tuple)"
+          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test native_read_phase_measurement -- --nocapture
+      - name: Record source
+        if: ${{ always() }}
+        run: git rev-parse HEAD > source-commit.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: writer-read-phase-${{ matrix.os }}
+          path: |
+            source-commit.txt
+            measurement-commit.txt
+            target/judge-diagnostics/
+          if-no-files-found: error
+          retention-days: 14
