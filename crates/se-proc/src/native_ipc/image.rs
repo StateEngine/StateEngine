@@ -18,13 +18,11 @@ pub(super) struct ImageKey {
     identity: Vec<u8>,
     modified: (bool, u64, u32),
     size: u64,
-    // Unix ctime/nanoseconds, or a Windows journal revision tagged with 1.
-    // Legacy Windows clock keys used tag 0; absent revisions cannot qualify reuse.
+    // Unix ctime/nanoseconds, or Windows USN/journal-ID bits. Preserve the
+    // two-integer wire shape so older readers can decode and miss this hint.
+    // Windows tag 0 was a restorable clock; tag 1 lacked a journal instance.
     #[serde(default)]
     changed: Option<(i64, i64)>,
-    #[cfg(windows)]
-    #[serde(default)]
-    journal: Option<u64>,
 }
 #[cfg(windows)]
 mod windows {
@@ -186,9 +184,9 @@ impl ImageKey {
     pub(super) fn reusable(&self) -> bool {
         #[cfg(windows)]
         {
-            // Tag 1 is a positive journal revision; legacy file clocks used tag 0.
-            matches!(self.changed, Some((revision, 1)) if revision > 0)
-                && self.journal.is_some_and(|id| id != 0)
+            // Journal IDs are opaque bits; reserve both earlier unqualified tags.
+            matches!(self.changed, Some((revision, journal))
+                if revision > 0 && !matches!(journal, 0 | 1))
         }
         #[cfg(not(windows))]
         {
@@ -240,11 +238,9 @@ pub(super) fn key(file: &File, metadata: &std::fs::Metadata) -> IpcNativeResult<
     #[cfg(windows)]
     let revision = windows::revision(file);
     #[cfg(windows)]
-    let changed = revision.map(|(usn, _)| (usn, 1));
+    let changed = revision.map(|(usn, journal)| (usn, i64::from_le_bytes(journal.to_le_bytes())));
     let _ = file;
     Ok(ImageKey {
-        #[cfg(windows)]
-        journal: revision.map(|(_, journal)| journal),
         changed,
         identity,
         modified: match metadata
