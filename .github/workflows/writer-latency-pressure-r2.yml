@@ -1,4 +1,4 @@
-name: background-wal-copy-phases
+name: retained-wal-copy-pressure
 on:
   push:
     branches: [prime/writer-latency-b4-pressure-r2]
@@ -19,10 +19,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: linux
+            runner: ubuntu-24.04
+            cache: writer-latency-linux-v1
+            ref: 6b30714d37b1d1ca575e811bba1fc11a633594af
           - os: windows
             runner: windows-2025
             cache: writer-latency-windows-v1
-            ref: 906ca100f773a8d824a47905f0f700d38de3f63c
+            ref: 6b30714d37b1d1ca575e811bba1fc11a633594af
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
@@ -75,11 +79,39 @@ jobs:
         run: |
           target="$(rustc --print host-tuple)"
           cargo test --target "$target" --release --all-features --locked --no-fail-fast -p se-store --test background_checkpoint_independent --test deferred_checkpoint_independent -- --nocapture > checkpoint-baseline-controls.log 2>&1
+      - name: Select rejected with the same measurement overlay
+        run: |
+          git fetch --quiet origin 4b2bbba73b2c159f2a66b6105f4e6d96fa55643c:refs/remotes/measure/rejected
+          test "$(git rev-parse refs/remotes/measure/rejected)" = 4b2bbba73b2c159f2a66b6105f4e6d96fa55643c
+          git restore --source=HEAD --staged --worktree --pathspec-from-file="$RUNNER_TEMP/measurement-files"
+          git checkout --detach 4b2bbba73b2c159f2a66b6105f4e6d96fa55643c
+          xargs git checkout refs/remotes/measure/tests -- < "$RUNNER_TEMP/measurement-files"
+          git rev-parse HEAD > rejected-source.txt
+          while IFS= read -r measurement_path; do
+            git diff --exit-code refs/remotes/measure/tests -- "$measurement_path"
+          done < "$RUNNER_TEMP/measurement-files"
+      - name: Measure rejected continuous WAL pressure
+        id: rejected
+        continue-on-error: true
+        run: |
+          target="$(rustc --print host-tuple)"
+          set +e
+          python -I -c 'from pathlib import Path; Path("target/judge-diagnostics/wal-pressure.json").unlink(missing_ok=True)'
+          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-rejected.log 2>&1
+          pressure_status=$?
+          set -e
+          if [[ -f target/judge-diagnostics/wal-pressure.json ]]; then
+            mkdir -p target/pressure-rejected
+            cp target/judge-diagnostics/wal-pressure.json target/pressure-rejected/wal-pressure.json
+          fi
+          exit "$pressure_status"
       - name: Select candidate with the same measurement overlay
         run: |
-          git fetch --quiet origin 12d9b40f7570973977b8efe8e63bef4a45dc21e9:refs/remotes/measure/head
-          test "$(git rev-parse refs/remotes/measure/head)" = 12d9b40f7570973977b8efe8e63bef4a45dc21e9
-          git checkout --detach 12d9b40f7570973977b8efe8e63bef4a45dc21e9
+          git fetch --quiet origin 8da3b66b10ee763009af6f7cacfe8f00992fca0a:refs/remotes/measure/head
+          test "$(git rev-parse refs/remotes/measure/head)" = 8da3b66b10ee763009af6f7cacfe8f00992fca0a
+          git restore --source=HEAD --staged --worktree --pathspec-from-file="$RUNNER_TEMP/measurement-files"
+          git checkout --detach 8da3b66b10ee763009af6f7cacfe8f00992fca0a
+          xargs git checkout refs/remotes/measure/tests -- < "$RUNNER_TEMP/measurement-files"
           git rev-parse HEAD > candidate-source.txt
           while IFS= read -r measurement_path; do
             git diff --exit-code refs/remotes/measure/tests -- "$measurement_path"
@@ -110,26 +142,31 @@ jobs:
         env:
           BASELINE: ${{ steps.baseline.outcome }}
           CANDIDATE: ${{ steps.candidate.outcome }}
+          REJECTED: ${{ steps.rejected.outcome }}
           BASE_CONTROLS: ${{ steps.baseline_controls.outcome }}
           HEAD_CONTROLS: ${{ steps.candidate_controls.outcome }}
         run: |
           test "$BASELINE" = success
           test "$CANDIDATE" = success
+          test "$REJECTED" = success
           test "$BASE_CONTROLS" = success
           test "$HEAD_CONTROLS" = success
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}
         with:
-          name: background-wal-copy-phases-${{ matrix.os }}-paired
+          name: retained-wal-copy-pressure-${{ matrix.os }}-triple
           path: |
             checkpoint-baseline-controls.log
             checkpoint-candidate-controls.log
             pressure-baseline.log
+            pressure-rejected.log
             pressure-candidate.log
             baseline-source.txt
+            rejected-source.txt
             candidate-source.txt
             measurement-commit.txt
             target/pressure-baseline/
+            target/pressure-rejected/
             target/pressure-candidate/
           if-no-files-found: error
           retention-days: 14
