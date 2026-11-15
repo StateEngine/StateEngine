@@ -59,7 +59,7 @@ pub(in crate::remote) async fn ssh(destination: &str, command: String) -> Result
     }
 }
 
-pub(super) fn verification_error(bytes: &[u8]) -> SeError {
+pub(in crate::remote) fn verification_error(bytes: &[u8]) -> SeError {
     if let Some(mode) = std::str::from_utf8(bytes)
         .ok()
         .and_then(|text| {
@@ -78,7 +78,7 @@ pub(super) fn verification_error(bytes: &[u8]) -> SeError {
     )
 }
 
-pub(super) async fn send_image(
+pub(in crate::remote) async fn send_image(
     destination: &str,
     image: &mut super::image::Image,
     upload: &str,
