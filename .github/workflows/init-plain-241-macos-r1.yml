@@ -1,0 +1,96 @@
+name: Plain macOS fresh initialization wall times
+'on':
+  push:
+    branches:
+    - prime/init-plain-241-macos-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  actions: read
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+  PYTHONUTF8: '1'
+jobs:
+  measure:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 7b23fb01a7e16362c6d6b024e5c1801a32bda8c6
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Authenticate and reuse the prior native image
+      shell: python
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        import ast,base64,hashlib,io,json,os,stat,subprocess,zipfile
+        from pathlib import Path,PurePosixPath
+        r=Path(os.environ['RUNNER_TEMP'])/'init241-inputs';r.mkdir()
+        files={'plain.py': 'IiIiVGhpcnR5IGZyZXNoIHB1YmxpYyBpbml0aWFsaXphdGlvbiBhdHRlbXB0cywgdGltZWQgd2l0aG91dCBhbiBpbnRlcnBvc2VyLiIiIgppbXBvcnQgYXJncGFyc2UKaW1wb3J0IGhhc2hsaWIKaW1wb3J0IGpzb24KaW1wb3J0IG1hdGgKaW1wb3J0IG9zCmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAppbXBvcnQgcGxhdGZvcm0KaW1wb3J0IHNlbGVjdG9ycwppbXBvcnQgc2h1dGlsCmltcG9ydCBzaWduYWwKaW1wb3J0IHN1YnByb2Nlc3MKaW1wb3J0IHN5cwppbXBvcnQgdGltZQppbXBvcnQgdHJhY2ViYWNrCgpwYXJzZXIgPSBhcmdwYXJzZS5Bcmd1bWVudFBhcnNlcigpCmZvciBuYW1lIGluIFsnaW1hZ2UnLCAnb3V0JywgJ3NjcmF0Y2gnLCAnc291cmNlJywgJ3NvdXJjZS10cmVlJ106CiAgICBwYXJzZXIuYWRkX2FyZ3VtZW50KCctLScgKyBuYW1lLCByZXF1aXJlZD1UcnVlKQpwYXJzZXIuYWRkX2FyZ3VtZW50KCctLWNvdW50JywgdHlwZT1pbnQsIGRlZmF1bHQ9MzApCmEgPSBwYXJzZXIucGFyc2VfYXJncygpCmhlcmUgPSBQYXRoKF9fZmlsZV9fKS5yZXNvbHZlKCkucGFyZW50CmltYWdlID0gUGF0aChhLmltYWdlKS5yZXNvbHZlKHN0cmljdD1UcnVlKQpvdXQgPSBQYXRoKGEub3V0KS5yZXNvbHZlKCk7IG91dC5ta2RpcihwYXJlbnRzPVRydWUsIGV4aXN0X29rPUZhbHNlKQpzY3JhdGNoID0gUGF0aChhLnNjcmF0Y2gpLnJlc29sdmUoKTsgc2NyYXRjaC5ta2RpcihwYXJlbnRzPVRydWUsIG1vZGU9MG83MDAsIGV4aXN0X29rPUZhbHNlKQpyb3dzID0gW10KcmVwb3J0ID0gZGljdChzb3VyY2U9YS5zb3VyY2UsIHBsYXRmb3JtPXBsYXRmb3JtLnBsYXRmb3JtKCksIG1vZGU9J3BsYWluJywgcGxhbm5lZD1hLmNvdW50LAogICAgICAgICAgICAgIHJvd3M9cm93cywgY29tcGxldGU9RmFsc2UsIHBhc3NlZD1GYWxzZSwKICAgICAgICAgICAgICBsaW1pdHM9WydGcmVzaCBob21lcyBkbyBub3QgaW1wbHkgY29sZCBleGVjdXRhYmxlIG9yIGZpbGVzeXN0ZW0gY2FjaGVzLicsCiAgICAgICAgICAgICAgICAgICAgICAnV2FsbCB0aW1lIGluY2x1ZGVzIHByb2Nlc3Mgc3RhcnR1cCwgb3V0cHV0IGNhcHR1cmUgYW5kIHNjaGVkdWxpbmcuJywKICAgICAgICAgICAgICAgICAgICAgICdGaXZlIHNlY29uZHMgaXMgYW4gZXh0ZXJuYWwgY2FuY2VsbGF0aW9uIGNlaWxpbmcsIG5vdCBhIHByb2R1Y3QgdGltZW91dC4nLAogICAgICAgICAgICAgICAgICAgICAgJ05vIHN5c2NhbGwgdHJhY2VyLCBpbnRlcnBvc2VyLCBwcm92aWRlciBsYXVuY2ggb3IgbW9kZWwgYWNjb3VudCBpcyB1c2VkLiddKQoKZGVmIHNoYShwYXRoKToKICAgIHdpdGggUGF0aChwYXRoKS5vcGVuKCdyYicpIGFzIGY6CiAgICAgICAgcmV0dXJuIGhhc2hsaWIuZmlsZV9kaWdlc3QoZiwgJ3NoYTI1NicpLmhleGRpZ2VzdCgpCgpkZWYgZGlzdHJpYnV0aW9uKHZhbHVlcyk6CiAgICB2YWx1ZXMgPSBzb3J0ZWQodmFsdWVzKTsgbiA9IGxlbih2YWx1ZXMpCiAgICByZXR1cm4gZGljdChuPW4sIHA1MF9tcz0odmFsdWVzW24vLzJdIGlmIG4gJSAyIGVsc2UgKHZhbHVlc1tuLy8yLTFdK3ZhbHVlc1tuLy8yXSkvMikgaWYgbiBlbHNlIE5vbmUsCiAgICAgICAgICAgICAgICBwOTVfbXM9dmFsdWVzW21hdGguY2VpbCguOTUqbiktMV0gaWYgbiBlbHNlIE5vbmUsIG1heF9tcz12YWx1ZXNbLTFdIGlmIG4gZWxzZSBOb25lKQoKZGVmIHNhdmUoKToKICAgIHJlcG9ydFsnYXR0ZW1wdGVkJ10gPSBsZW4ocm93cykKICAgIHJlcG9ydFsncXVhbGlmaWVkJ10gPSBzdW0oYm9vbCh4LmdldCgncXVhbGlmaWVkJykpIGZvciB4IGluIHJvd3MpCiAgICByZXBvcnRbJ3dhbGxfbXMnXSA9IGRpc3RyaWJ1dGlvbihbeFsndG90YWxfbXMnXSBmb3IgeCBpbiByb3dzIGlmICd0b3RhbF9tcycgaW4geF0pCiAgICByZXBvcnRbJ292ZXJfNXMnXSA9IFtkaWN0KGluZGV4PXhbJ2luZGV4J10sIHdhbGxfbXM9eC5nZXQoJ3RvdGFsX21zJyksIGV4aXQ9eC5nZXQoJ2V4aXQnKSwKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgY2FuY2VsbGVkPXguZ2V0KCdzdXBlcnZpc29yX2NhbmNlbGxlZCcpKSBmb3IgeCBpbiByb3dzCiAgICAgICAgICAgICAgICAgICAgICAgICBpZiB4LmdldCgndG90YWxfbXMnLCAwKSA+IDUwMDAgb3IgeC5nZXQoJ3N1cGVydmlzb3JfY2FuY2VsbGVkJyldCiAgICAob3V0LydyZXBvcnQuanNvbicpLndyaXRlX3RleHQoanNvbi5kdW1wcyhyZXBvcnQsIGluZGVudD0yKSsnXG4nLCBlbmNvZGluZz0ndXRmLTgnKQoKZGVmIG1lbWJlcnMoZ3JvdXApOgogICAgcmVzdWx0ID0gc3VicHJvY2Vzcy5ydW4oWydwcycsICctd3cnLCAnLWF4bycsICdwaWQ9LHBwaWQ9LHBnaWQ9LGxzdGFydD0sY29tbWFuZD0nXSwKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGNhcHR1cmVfb3V0cHV0PVRydWUsIHRleHQ9VHJ1ZSwgZW5jb2Rpbmc9J3V0Zi04JywgY2hlY2s9VHJ1ZSkKICAgIHZhbHVlcyA9IFtdCiAgICBmb3IgbGluZSBpbiByZXN1bHQuc3Rkb3V0LnNwbGl0bGluZXMoKToKICAgICAgICBmaWVsZHMgPSBsaW5lLnNwbGl0KE5vbmUsIDgpCiAgICAgICAgaWYgbGVuKGZpZWxkcykgPT0gOSBhbmQgaW50KGZpZWxkc1syXSkgPT0gZ3JvdXA6CiAgICAgICAgICAgIHZhbHVlcy5hcHBlbmQoZGljdChwaWQ9aW50KGZpZWxkc1swXSksIGxpbmU9bGluZS5zdHJpcCgpKSkKICAgIHJldHVybiB2YWx1ZXMKCmRlZiBvYnNlcnZlZChhcmd2LCBlbnYsIGxhYmVsKToKICAgIHN0YXJ0ID0gdGltZS5tb25vdG9uaWNfbnMoKQogICAgY2hpbGQgPSBzdWJwcm9jZXNzLlBvcGVuKGFyZ3YsIHN0ZGluPXN1YnByb2Nlc3MuREVWTlVMTCwgc3Rkb3V0PXN1YnByb2Nlc3MuUElQRSwKICAgICAgICAgICAgICAgICAgICAgICAgICAgICBzdGRlcnI9c3VicHJvY2Vzcy5QSVBFLCBlbnY9ZW52LCBzdGFydF9uZXdfc2Vzc2lvbj1UcnVlKQogICAgdmFsdWUgPSBkaWN0KGFyZ3Y9YXJndiwgcGlkPWNoaWxkLnBpZCwgc3RhcnRfbnM9c3RhcnQsIHN1cGVydmlzb3JfY2FuY2VsbGVkPUZhbHNlKQogICAgc2VsZWN0b3IgPSBzZWxlY3RvcnMuRGVmYXVsdFNlbGVjdG9yKCkKICAgIG91dHB1dHMgPSB7fQogICAgZm9yIG5hbWUsIHN0cmVhbSBpbiBbKCdzdGRvdXQnLCBjaGlsZC5zdGRvdXQpLCAoJ3N0ZGVycicsIGNoaWxkLnN0ZGVycildOgogICAgICAgIG9zLnNldF9ibG9ja2luZyhzdHJlYW0uZmlsZW5vKCksIEZhbHNlKQogICAgICAgIG91dHB1dHNbbmFtZV0gPSAob3V0LyhsYWJlbCsnLicrbmFtZSkpLm9wZW4oJ3diJykKICAgICAgICBzZWxlY3Rvci5yZWdpc3RlcihzdHJlYW0sIHNlbGVjdG9ycy5FVkVOVF9SRUFELCBuYW1lKQogICAgZGVhZGxpbmUgPSBzdGFydC8xZTkrNQogICAgdHJ5OgogICAgICAgIHdoaWxlIHNlbGVjdG9yLmdldF9tYXAoKSBvciBjaGlsZC5wb2xsKCkgaXMgTm9uZToKICAgICAgICAgICAgbm93ID0gdGltZS5tb25vdG9uaWMoKQogICAgICAgICAgICBpZiBub3cgPj0gZGVhZGxpbmU6CiAgICAgICAgICAgICAgICBpZiB2YWx1ZVsnc3VwZXJ2aXNvcl9jYW5jZWxsZWQnXToKICAgICAgICAgICAgICAgICAgICB2YWx1ZVsnY2xvc3VyZV91bm9ic2VydmVkJ10gPSBUcnVlCiAgICAgICAgICAgICAgICAgICAgYnJlYWsKICAgICAgICAgICAgICAgIHZhbHVlWydzdXBlcnZpc29yX2NhbmNlbGxlZCddID0gVHJ1ZQogICAgICAgICAgICAgICAgcGlucyA9IG1lbWJlcnMoY2hpbGQucGlkKTsgdmFsdWVbJ2NhbmNlbGxlZF9wcm9jZXNzZXMnXSA9IHBpbnMKICAgICAgICAgICAgICAgIGZvciBwaW4gaW4gcmV2ZXJzZWQocGlucyk6CiAgICAgICAgICAgICAgICAgICAgaWYgcGluIGluIG1lbWJlcnMoY2hpbGQucGlkKToKICAgICAgICAgICAgICAgICAgICAgICAgdHJ5OiBvcy5raWxsKHBpblsncGlkJ10sIHNpZ25hbC5TSUdLSUxMKQogICAgICAgICAgICAgICAgICAgICAgICBleGNlcHQgUHJvY2Vzc0xvb2t1cEVycm9yOiBwYXNzCiAgICAgICAgICAgICAgICBkZWFkbGluZSA9IHRpbWUubW9ub3RvbmljKCkrMgogICAgICAgICAgICBmb3Iga2V5LCBfIGluIHNlbGVjdG9yLnNlbGVjdCguMDAyKToKICAgICAgICAgICAgICAgIGRhdGEgPSBvcy5yZWFkKGtleS5maWxlb2JqLmZpbGVubygpLCA2NTUzNikKICAgICAgICAgICAgICAgIGlmIGRhdGE6CiAgICAgICAgICAgICAgICAgICAgb3V0cHV0c1trZXkuZGF0YV0ud3JpdGUoZGF0YSkKICAgICAgICAgICAgICAgIGVsc2U6CiAgICAgICAgICAgICAgICAgICAgc2VsZWN0b3IudW5yZWdpc3RlcihrZXkuZmlsZW9iaik7IGtleS5maWxlb2JqLmNsb3NlKCkKICAgICAgICB2YWx1ZVsnZXhpdCddID0gY2hpbGQucG9sbCgpCiAgICAgICAgdmFsdWVbJ3RvdGFsX21zJ10gPSAodGltZS5tb25vdG9uaWNfbnMoKS1zdGFydCkvMWU2CiAgICAgICAgdmFsdWVbJ3BpcGVzX2Nsb3NlZCddID0gbm90IHNlbGVjdG9yLmdldF9tYXAoKQogICAgZmluYWxseToKICAgICAgICBzZWxlY3Rvci5jbG9zZSgpCiAgICAgICAgZm9yIHN0cmVhbSBpbiBbY2hpbGQuc3Rkb3V0LCBjaGlsZC5zdGRlcnJdOiBzdHJlYW0uY2xvc2UoKQogICAgICAgIGZvciBzdHJlYW0gaW4gb3V0cHV0cy52YWx1ZXMoKTogc3RyZWFtLmNsb3NlKCkKICAgIHZhbHVlWydyZW1haW5pbmdfcHJvY2Vzc2VzJ10gPSBtZW1iZXJzKGNoaWxkLnBpZCkKICAgIHJldHVybiB2YWx1ZQoKZGVmIG1haW4oKToKICAgIGFzc2VydCBhLmNvdW50ID4gMAogICAgdHJlZSA9IFBhdGgoYS5zb3VyY2VfdHJlZSkKICAgIGFjdHVhbCA9IHN1YnByb2Nlc3MuY2hlY2tfb3V0cHV0KFsnZ2l0JywgJ3Jldi1wYXJzZScsICdIRUFEJ10sIGN3ZD10cmVlLCB0ZXh0PVRydWUpLnN0cmlwKCkKICAgIGFzc2VydCBhY3R1YWwgPT0gYS5zb3VyY2UKICAgIGFzc2VydCBub3Qgc3VicHJvY2Vzcy5jaGVja19vdXRwdXQoWydnaXQnLCAnc3RhdHVzJywgJy0tcG9yY2VsYWluJywgJy0tdW50cmFja2VkLWZpbGVzPW5vJ10sIGN3ZD10cmVlKQogICAgcmVwb3J0LnVwZGF0ZShhY3R1YWxfc291cmNlPWFjdHVhbCwgaW1hZ2U9ZGljdChzaGEyNTY9c2hhKGltYWdlKSwgYnl0ZXM9aW1hZ2Uuc3RhdCgpLnN0X3NpemUpLAogICAgICAgICAgICAgICAgICBkcml2ZXJfc2hhMjU2PXNoYShoZXJlLydwbGFpbi5weScpLCBjbG9jaz0ndGltZS5tb25vdG9uaWNfbnMnKQogICAgYWxsb3dlZCA9IHsnUEFUSCcsICdVU0VSJywgJ0xPR05BTUUnLCAnTEFORycsICdMQ19BTEwnLCAnVE1QRElSJywgJ1RNUCcsICdURU1QJywgJ1NZU1RFTVJPT1QnLCAnV0lORElSJ30KICAgIGJhc2UgPSB7azp2IGZvciBrLHYgaW4gb3MuZW52aXJvbi5pdGVtcygpIGlmIGsgaW4gYWxsb3dlZH0KICAgIGJpbmFyeV9kaXIgPSBzY3JhdGNoLydiaW4nOyBiaW5hcnlfZGlyLm1rZGlyKCkKICAgIGluZXJ0ID0gaGVyZS8naW5lcnQuYyc7IGluZXJ0LndyaXRlX3RleHQoJ2ludCBtYWluKHZvaWQpIHsgcmV0dXJuIDA7IH1cbicsIGVuY29kaW5nPSd1dGYtOCcpCiAgICBjb21waWxlciA9IFsneGNydW4nLCAnY2xhbmcnXSBpZiBzeXMucGxhdGZvcm0gPT0gJ2RhcndpbicgZWxzZSBbJ2NjJ10KICAgIGZsYWdzID0gWyctaXN5c3Jvb3QnLCBzdWJwcm9jZXNzLmNoZWNrX291dHB1dChbJ3hjcnVuJywgJy0tc2hvdy1zZGstcGF0aCddLCB0ZXh0PVRydWUpLnN0cmlwKCldIGlmIHN5cy5wbGF0Zm9ybSA9PSAnZGFyd2luJyBlbHNlIFtdCiAgICBzdWJwcm9jZXNzLnJ1bihbKmNvbXBpbGVyLCAqZmxhZ3MsICctTzInLCBzdHIoaW5lcnQpLCAnLW8nLCBzdHIoYmluYXJ5X2Rpci8nZ29vc2UnKV0sIGNoZWNrPVRydWUpCiAgICByZXBvcnRbJ2luZXJ0X2hhcm5lc3Nfc2hhMjU2J10gPSBzaGEoYmluYXJ5X2Rpci8nZ29vc2UnKQogICAgYmFzZVsnUEFUSCddID0gc3RyKGJpbmFyeV9kaXIpK29zLnBhdGhzZXArYmFzZS5nZXQoJ1BBVEgnLCAnJykKICAgIHNhdmUoKQogICAgZm9yIGluZGV4IGluIHJhbmdlKDEsIGEuY291bnQrMSk6CiAgICAgICAgbGFiZWwgPSBmJ3tpbmRleDowMmR9LXBsYWluJzsgcm9vdCA9IHNjcmF0Y2gvbGFiZWw7IHJvb3QubWtkaXIobW9kZT0wbzcwMCkKICAgICAgICByZXBvc2l0b3J5ID0gcm9vdC8ncmVwb3NpdG9yeSc7IHJlcG9zaXRvcnkubWtkaXIoKQogICAgICAgIG1hcmtlciA9IHJlcG9zaXRvcnkvJ2tlZXAudHh0JzsgbWFya2VyLndyaXRlX3RleHQoJ1ByZXNlcnZlZCByZXBvc2l0b3J5IGZpeHR1cmUuXG4nLCBlbmNvZGluZz0ndXRmLTgnKQogICAgICAgIG1hcmtlcl9oYXNoID0gc2hhKG1hcmtlcik7IHN0YXRlID0gcm9vdC8nc3RhdGUnOyBvd25lciA9IHJvb3QvJ293bmVyJzsgb3duZXIubWtkaXIobW9kZT0wbzcwMCkKICAgICAgICBlbnYgPSBkaWN0KGJhc2UsIEhPTUU9c3RyKG93bmVyKSwgVVNFUlBST0ZJTEU9c3RyKG93bmVyKSkKICAgICAgICBmb3Iga2V5IGluIFsnWERHX0NPTkZJR19IT01FJywgJ1hER19DQUNIRV9IT01FJywgJ1hER19EQVRBX0hPTUUnLCAnWERHX1NUQVRFX0hPTUUnLCAnQ09ERVhfSE9NRSddOgogICAgICAgICAgICBmb2xkZXIgPSBvd25lci9rZXkubG93ZXIoKTsgZm9sZGVyLm1rZGlyKG1vZGU9MG83MDApOyBlbnZba2V5XSA9IHN0cihmb2xkZXIpCiAgICAgICAgYXNzZXJ0IG5vdCBhbnkoay5zdGFydHN3aXRoKCdEWUxEXycpIG9yIGsgaW4gWydMRF9QUkVMT0FEJywgJ0xEX0FVRElUJ10gZm9yIGsgaW4gZW52KQogICAgICAgIHJvdyA9IGRpY3QoaW5kZXg9aW5kZXgsIG1vZGU9J3BsYWluJywgb3duZXI9c3RyKG93bmVyKSwgcmVwb3NpdG9yeT1zdHIocmVwb3NpdG9yeSksIHN0YXRlPXN0cihzdGF0ZSkpCiAgICAgICAgcm93cy5hcHBlbmQocm93KTsgc2F2ZSgpCiAgICAgICAgYXJndiA9IFtzdHIoaW1hZ2UpLCAnLS1ob21lJywgc3RyKHN0YXRlKSwgJy0tanNvbicsICdpbml0JywgJy0tcmVwbycsIHN0cihyZXBvc2l0b3J5KSwKICAgICAgICAgICAgICAgICctLW5hbWUnLCAnRnJlc2ggc2V0dXAgb2JzZXJ2YXRpb24nLCAnLS1oYXJuZXNzJywgJ2dvb3NlJ10KICAgICAgICByb3cudXBkYXRlKG9ic2VydmVkKGFyZ3YsIGVudiwgbGFiZWwpKQogICAgICAgIHJvd1snY29uZmlnX3B1Ymxpc2hlZCddID0gKHN0YXRlLydjb25maWcudG9tbCcpLmlzX2ZpbGUoKQogICAgICAgIHJvd1sncmVwb3NpdG9yeV9wcmVzZXJ2ZWQnXSA9IHNoYShtYXJrZXIpID09IG1hcmtlcl9oYXNoCiAgICAgICAgdHJ5OiByb3dbJ2pzb25fdmFsaWQnXSA9IGlzaW5zdGFuY2UoanNvbi5sb2Fkcygob3V0LyhsYWJlbCsnLnN0ZG91dCcpKS5yZWFkX3RleHQoZW5jb2Rpbmc9J3V0Zi04JykpLCBkaWN0KQogICAgICAgIGV4Y2VwdCAoVmFsdWVFcnJvciwgVW5pY29kZUVycm9yKTogcm93Wydqc29uX3ZhbGlkJ10gPSBGYWxzZQogICAgICAgIHJvd1sncXVhbGlmaWVkJ10gPSAocm93WydleGl0J10gPT0gMCBhbmQgbm90IHJvd1snc3VwZXJ2aXNvcl9jYW5jZWxsZWQnXSBhbmQgcm93WydwaXBlc19jbG9zZWQnXQogICAgICAgICAgICAgICAgICAgICAgICAgICAgYW5kIHJvd1sncmVtYWluaW5nX3Byb2Nlc3NlcyddID09IFtdIGFuZCByb3dbJ2NvbmZpZ19wdWJsaXNoZWQnXQogICAgICAgICAgICAgICAgICAgICAgICAgICAgYW5kIHJvd1sncmVwb3NpdG9yeV9wcmVzZXJ2ZWQnXSBhbmQgcm93Wydqc29uX3ZhbGlkJ10pCiAgICAgICAgc2F2ZSgpOyBwcmludChqc29uLmR1bXBzKHJvdyksIGZsdXNoPVRydWUpCiAgICAgICAgaWYgcm93WydxdWFsaWZpZWQnXToKICAgICAgICAgICAgZm9yIHBhcmVudCwgZGlycywgZmlsZXMgaW4gb3Mud2Fsayhyb290LCBmb2xsb3dsaW5rcz1GYWxzZSwgb25lcnJvcj1sYW1iZGEgZXJyb3I6IChfIGZvciBfIGluICgpKS50aHJvdyhlcnJvcikpOgogICAgICAgICAgICAgICAgYXNzZXJ0IGFsbChub3QgKFBhdGgocGFyZW50KS9uYW1lKS5pc19zeW1saW5rKCkgZm9yIG5hbWUgaW4gZGlycytmaWxlcykKICAgICAgICAgICAgc2h1dGlsLnJtdHJlZShyb290KQogICAgICAgIGlmIHJvd1sncmVtYWluaW5nX3Byb2Nlc3NlcyddIG9yIG5vdCByb3dbJ3BpcGVzX2Nsb3NlZCddIG9yIHJvd1snZXhpdCddIGlzIE5vbmU6CiAgICAgICAgICAgIHJlcG9ydFsnc3RvcHBlZF9yZWFzb24nXSA9ICdPd25lZCBwcm9jZXNzIG9yIHBpcGUgY2xvc3VyZSByZW1haW5zIHVub2JzZXJ2ZWQuJwogICAgICAgICAgICByZXR1cm4gMQogICAgcmVwb3J0Wydjb21wbGV0ZSddID0gbGVuKHJvd3MpID09IGEuY291bnQKICAgIHJlcG9ydFsncGFzc2VkJ10gPSByZXBvcnRbJ2NvbXBsZXRlJ10gYW5kIGFsbCh4WydxdWFsaWZpZWQnXSBmb3IgeCBpbiByb3dzKQogICAgcmV0dXJuIDAgaWYgcmVwb3J0WydwYXNzZWQnXSBlbHNlIDEKCnRyeToKICAgIGNvZGUgPSBtYWluKCkKZXhjZXB0IEJhc2VFeGNlcHRpb24gYXMgZXJyb3I6CiAgICByZXBvcnRbJ2ZhaWx1cmUnXSA9IGRpY3QodHlwZT10eXBlKGVycm9yKS5fX25hbWVfXywgZGV0YWlsPXN0cihlcnJvciksIHRyYWNlYmFjaz10cmFjZWJhY2suZm9ybWF0X2V4YygpKQogICAgY29kZSA9IDEKZmluYWxseToKICAgIHNhdmUoKQogICAgKG91dC8nbWFuaWZlc3QuanNvbicpLndyaXRlX3RleHQoanNvbi5kdW1wcyhbZGljdChmaWxlPWYucmVsYXRpdmVfdG8ob3V0KS5hc19wb3NpeCgpLCBieXRlcz1mLnN0YXQoKS5zdF9zaXplLAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHNoYTI1Nj1zaGEoZikpIGZvciBmIGluIHNvcnRlZChvdXQucmdsb2IoJyonKSkKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBpZiBmLmlzX2ZpbGUoKSBhbmQgZi5uYW1lICE9ICdtYW5pZmVzdC5qc29uJ10sIGluZGVudD0yKSsnXG4nLCBlbmNvZGluZz0ndXRmLTgnKQpyYWlzZSBTeXN0ZW1FeGl0KGNvZGUpCg=='}
+        hashes={'plain.py': '373a770fe8e6db10304fe5b25216376035218904297051be907b2712ebffa4a6'}
+        for name,encoded in files.items():
+            data=base64.b64decode(encoded);assert hashlib.sha256(data).hexdigest()==hashes[name]
+            if name.endswith('.py'):ast.parse(data)
+            (r/name).write_bytes(data)
+        (r/'inputs.json').write_text(json.dumps(hashes,indent=2)+'\n')
+        def api(path):return subprocess.check_output(['gh','api','repos/StateEngine/StateEngine/'+path])
+        listing=json.loads(api('actions/runs/43768213254/artifacts?per_page=100'))
+        artifact=next(x for x in listing['artifacts'] if x['name']=='init241-macos-15-traced-r1')
+        raw=api('actions/artifacts/'+str(artifact['id'])+'/zip')
+        digest=hashlib.sha256(raw).hexdigest();assert artifact['digest']=='sha256:'+digest
+        assert digest=='cc4cf2c9bca18fa65a457d6f0d7b17167597d64324684550ce1c5309c396f8b9'
+        contents={};size=0
+        with zipfile.ZipFile(io.BytesIO(raw)) as z:
+            for item in z.infolist():
+                name=item.filename;p=PurePosixPath(name)
+                assert not p.is_absolute() and '..' not in p.parts and '\\' not in name and not stat.S_ISLNK(item.external_attr>>16)
+                if item.is_dir():continue
+                assert name not in contents and item.file_size<128*1024*1024
+                size+=item.file_size;assert size<512*1024*1024;contents[name]=z.read(item)
+        manifest=json.loads(contents['members.json']);assert set(manifest)==set(contents)-{'members.json'}
+        for name,digest in manifest.items():assert hashlib.sha256(contents[name]).hexdigest()==digest,name
+        build=json.loads(contents['inputs/build.json'])
+        assert build['source']=='7b23fb01a7e16362c6d6b024e5c1801a32bda8c6' and build['exit']==0 and build['target']=='aarch64-apple-darwin'
+        assert build['profile']=='distribution' and build['features']==['default','remote']
+        assert hashlib.sha256(contents['image']).hexdigest()==build['sha256']=='9da038d1476a69f2e42b21c5d33f4c3e43d7ee02450ddeec99e56b45e087d534'
+        (r/'image').write_bytes(contents['image']);(r/'image').chmod(0o700)
+        (r/'original-build.json').write_bytes(contents['inputs/build.json'])
+        build['image']=str(r/'image');(r/'build.json').write_text(json.dumps(build,indent=2)+'\n')
+        (r/'reused-image.json').write_text(json.dumps(dict(run='43768213254',artifact=artifact,authenticated_members=len(manifest),image_sha256=build['sha256']),indent=2)+'\n')
+    - name: Time thirty fresh public inits without a tracer
+      shell: python
+      run: |
+        import json,os,subprocess,sys
+        from pathlib import Path
+        r=Path(os.environ['RUNNER_TEMP'])/'init241-inputs';out=Path(os.environ['RUNNER_TEMP'])/'init241-results';homes=Path(os.environ['RUNNER_TEMP'])/'init241-homes'
+        argv=[sys.executable,'-B',str(r/'plain.py'),'--image',str(r/'image'),'--out',str(out),'--scratch',str(homes),'--source','7b23fb01a7e16362c6d6b024e5c1801a32bda8c6','--source-tree',os.environ['GITHUB_WORKSPACE'],'--count','30']
+        with (r/'consumer.stdout').open('wb') as stdout,(r/'consumer.stderr').open('wb') as stderr:p=subprocess.run(argv,stdout=stdout,stderr=stderr)
+        (r/'consumer-exit.json').write_text(json.dumps(dict(exit=p.returncode,argv=argv))+'\n',encoding='utf-8');raise SystemExit(p.returncode)
+    - name: Retain every attempt and failure
+      if: always()
+      shell: python
+      run: |
+        import hashlib,json,os,shutil
+        from pathlib import Path
+        base=Path(os.environ['RUNNER_TEMP']);r=base/'init241-inputs';out=base/'init241-retained';out.mkdir();dst=out/'inputs';dst.mkdir()
+        for name in ['plain.py','inputs.json','original-build.json','build.json','reused-image.json','consumer.stdout','consumer.stderr','consumer-exit.json']:
+            p=r/name
+            if p.is_file():shutil.copy2(p,dst/name)
+        for name in ['image','inert.c']:
+            p=r/name
+            if p.is_file():shutil.copy2(p,out/name)
+        if (base/'init241-results').exists():shutil.copytree(base/'init241-results',out/'results')
+        files=[p for p in out.rglob('*') if p.is_file()];assert all(not p.is_symlink() for p in files)
+        (out/'members.json').write_text(json.dumps({p.relative_to(out).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in files},indent=2)+'\n',encoding='utf-8')
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: init241-macos-plain-r1
+        path: ${{ runner.temp }}/init241-retained/
+        if-no-files-found: error
+        include-hidden-files: true
+        retention-days: 14
