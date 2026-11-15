@@ -213,7 +213,8 @@ impl Scope {
             if let Some(found) = live_member(expected, &root)?
                 && !live.contains(&found.identity)
             {
-                self.escaped = true;
+                self.escaped |=
+                    !matches_group(&found.identity, group, found.identity.pid == root.pid)?;
                 if live.len() == self.max_members {
                     return Err(capacity("tracked obligations", self.max_members as u64));
                 }
