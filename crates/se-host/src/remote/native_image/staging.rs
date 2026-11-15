@@ -11,7 +11,9 @@ pub(in crate::remote) fn prepare_windows(directory: &str) -> String {
     // Directories the product creates are hardened to the trusted
     // principals right after creation: inherited ACEs are dropped, never
     // relied on. A directory that already exists is only checked, never
-    // repaired.
+    // repaired. Rules take a SecurityIdentifier object: a bare SID string
+    // binds to the account-name constructor and fails translation
+    // (issue 421).
     let script = r#"$ErrorActionPreference='Stop';
 $me=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
 $trusted=@($me,'S-1-5-18','S-1-5-32-544');
@@ -21,7 +23,7 @@ function Harden($p) {
 try {
 $a=Get-Acl -LiteralPath $p;
 $a.SetAccessRuleProtection($true,$false);
-foreach ($sid in @($me,'S-1-5-18','S-1-5-32-544')) { $a.SetAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))) };
+foreach ($sid in @($me,'S-1-5-18','S-1-5-32-544')) { $a.SetAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule([Security.Principal.SecurityIdentifier]$sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))) };
 Set-Acl -LiteralPath $p -AclObject $a
 } catch { Refuse 'harden-failed' $p }
 }

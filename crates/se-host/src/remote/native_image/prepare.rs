@@ -461,9 +461,11 @@ mod tests {
         let decoded = String::from_utf16(&units).expect("utf16");
         assert!(decoded.contains("SetAccessRuleProtection"));
         assert!(decoded.contains("FullControl"));
+        assert!(decoded.contains("FileSystemAccessRule([Security.Principal.SecurityIdentifier]$sid"));
         let windows = staging::prepare_windows(".stateengine-runtime/abc");
         assert!(windows.contains("SetAccessRuleProtection"));
         assert!(windows.contains("ContainerInherit,ObjectInherit"));
+        assert!(windows.contains("FileSystemAccessRule([Security.Principal.SecurityIdentifier]$sid"));
         assert!(windows.contains("Refuse 'harden-failed'"));
         assert!(!windows.contains("$reason:"));
     }
