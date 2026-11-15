@@ -1,0 +1,452 @@
+name: Windows installed remote SSH regression
+'on':
+  push:
+    branches:
+    - prime/r5-windows-installed-r1
+permissions:
+  contents: read
+  actions: read
+jobs:
+  regression:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      EXPECTED_SOURCE: 3b68277f87f16e85139bb804db5f9e6f19812ca6
+      ARCHIVE_RUN: '43666516231'
+    steps:
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Read authenticated archive provenance and download complete distribution
+      shell: python
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: 'import json, os, pathlib, subprocess
+
+        root=pathlib.Path(os.environ[''RUNNER_TEMP''])
+
+        run=os.environ[''ARCHIVE_RUN'']; expected=os.environ[''EXPECTED_SOURCE'']
+
+        r=json.loads(subprocess.check_output([''gh'',''api'',''repos/''+os.environ[''GITHUB_REPOSITORY'']+''/actions/runs/''+run],text=True))
+
+        assert r[''head_sha'']==expected and r[''event'']==''workflow_dispatch'' and r[''conclusion'']==''success'', r
+
+        (root/''r5-release-provenance.json'').write_text(json.dumps({''id'':r[''id''],''head_sha'':r[''head_sha''],''event'':r[''event''],''conclusion'':r[''conclusion''],''workflow_path'':r[''path'']},indent=2)+''\n'')
+
+        subprocess.run([''gh'',''run'',''download'',run,''-R'',os.environ[''GITHUB_REPOSITORY''],''-n'',''release-assets'',''--dir'',str(root/''r5-release-assets'')],check=True)
+
+        '
+    - name: Materialize bounded native account and service fixture
+      shell: python
+      run: "from pathlib import Path\nimport ast, os\nroot=Path(os.environ['RUNNER_TEMP'])/'r5-windows-controller'\nroot.mkdir(exist_ok=False)\n\
+        files={'accounts.py': '\"\"\"Native profiles and private ACLs for exact newly created fixture accounts.\"\"\"\\nimport\
+        \ ctypes\\nfrom ctypes import wintypes as W\\nimport json\\nfrom pathlib import Path\\nimport secrets\\nimport time\\\
+        nimport winreg\\nfrom native import powershell, quote\\n\\nU = ctypes.WinDLL(\\'userenv\\', use_last_error=True)\\\
+        nU.CreateProfile.argtypes = [W.LPCWSTR, W.LPCWSTR, W.LPWSTR, W.DWORD]\\nU.CreateProfile.restype = ctypes.c_long\\\
+        nU.DeleteProfileW.argtypes = [W.LPCWSTR, W.LPCWSTR, W.LPCWSTR]\\nU.DeleteProfileW.restype = W.BOOL\\nPROFILE_KEY =\
+        \ \\'SOFTWARE/Microsoft/Windows NT/CurrentVersion/ProfileList/\\'.replace(\\'/\\', chr(92))\\n\\n\\ndef create(role):\\\
+        n    name = \\'r5\\' + role[0] + secrets.token_hex(4)\\n    # Generated only in the disposable machine; never returned,\
+        \ logged or uploaded.\\n    script = \"$password=ConvertTo-SecureString (\\'Synthetic-only!\\'+[Guid]::NewGuid().ToString(\\\
+        'N\\')) -AsPlainText -Force; \"\\n    script += \"$u=New-LocalUser -Name \" + quote(name) + \" -Password $password\
+        \ -AccountNeverExpires -PasswordNeverExpires; \"\\n    script += \"ConvertTo-Json @{name=$u.Name;sid=$u.SID.Value}\
+        \ -Compress\"\\n    value = json.loads(powershell(script))\\n    assert value[\\'name\\'] == name and value[\\'sid\\\
+        '].startswith(\\'S-1-5-21-\\')\\n    return dict(value, role=role, profile=None)\\n\\n\\ndef configure_groups(account):\\\
+        n    script = \"$u=Get-LocalUser -Name \" + quote(account[\\'name\\']) + \"; if($u.SID.Value -ne \" + quote(account[\\\
+        'sid\\']) + \"){throw \\'fixture SID changed\\'}; \"\\n    script += \"if(-not @(Get-LocalGroupMember -SID \\'S-1-5-32-545\\\
+        ' | Where-Object {$_.SID.Value -eq $u.SID.Value}).Count){Add-LocalGroupMember -SID \\'S-1-5-32-545\\' -Member $u};\
+        \ \"\\n    script += \"$g=Get-LocalGroup -Name \\'OpenSSH Users\\' -ErrorAction SilentlyContinue; if($g){Add-LocalGroupMember\
+        \ -Group $g -Member $u}; \"\\n    script += \"if(@(Get-LocalGroupMember -SID \\'S-1-5-32-544\\' | Where-Object {$_.SID.Value\
+        \ -eq $u.SID.Value}).Count){throw \\'fixture account must not be an administrator\\'}\"\\n    powershell(script)\\\
+        n\\n\\ndef create_profile(account):\\n    output = ctypes.create_unicode_buffer(32768)\\n    result = U.CreateProfile(account[\\\
+        'sid\\'], account[\\'name\\'], output, len(output))\\n    if result < 0:\\n        raise OSError(result, \\'CreateProfile\
+        \ failed for the exact fixture SID\\')\\n    profile = Path(output.value)\\n    account[\\'profile\\'] = str(profile)\\\
+        n    assert profile.is_absolute() and profile.name.lower() == account[\\'name\\'].lower()\\n    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,\
+        \ PROFILE_KEY + account[\\'sid\\']) as key:\\n        registered, _ = winreg.QueryValueEx(key, \\'ProfileImagePath\\\
+        ')\\n    assert Path(registered).resolve() == profile.resolve()\\n    return profile\\n\\n\\ndef private_acl(path,\
+        \ owner):\\n    path = Path(path)\\n    kind = \\'DirectorySecurity\\' if path.is_dir() else \\'FileSecurity\\'\\\
+        n    inherit = \"\\'ContainerInherit,ObjectInherit\\',\\'None\\',\" if path.is_dir() else \\'\\'\\n    script = \"\
+        $a=[Security.AccessControl.\" + kind + \"]::new();$a.SetAccessRuleProtection($true,$false); \"\\n    script += \"\
+        $a.SetOwner([Security.Principal.SecurityIdentifier]::new(\" + quote(owner) + \")); \"\\n    for sid in dict.fromkeys((owner,\
+        \ \\'S-1-5-18\\', \\'S-1-5-32-544\\')):\\n        script += \"$a.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new(\"\
+        \ + quote(sid) + \"),\\'FullControl\\',\" + inherit + \"\\'Allow\\')); \"\\n    script += \"Set-Acl -LiteralPath \"\
+        \ + quote(path) + \" -AclObject $a\"\\n    powershell(script)\\n\\n\\ndef remove(account):\\n    current = json.loads(powershell(\"\
+        $u=Get-LocalUser -Name \" + quote(account[\\'name\\']) + \"; ConvertTo-Json @{name=$u.Name;sid=$u.SID.Value} -Compress\"\
+        ))\\n    assert current[\\'sid\\'] == account[\\'sid\\'] and current[\\'name\\'] == account[\\'name\\']\\n    profile\
+        \ = account.get(\\'profile\\')\\n    if not profile:\\n        try:\\n            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,\
+        \ PROFILE_KEY + account[\\'sid\\']) as key:\\n                profile, _ = winreg.QueryValueEx(key, \\'ProfileImagePath\\\
+        ')\\n            assert Path(profile).is_absolute() and Path(profile).name.lower() == account[\\'name\\'].lower()\\\
+        n        except FileNotFoundError:\\n            pass\\n    result = {\\'name\\': account[\\'name\\'], \\'sid\\':\
+        \ account[\\'sid\\'], \\'profile\\': profile}\\n    if profile:\\n        end = time.monotonic() + 30\\n        attempts\
+        \ = []\\n        while True:\\n            ok = U.DeleteProfileW(account[\\'sid\\'], None, None)\\n            error\
+        \ = 0 if ok else ctypes.get_last_error()\\n            attempts.append({\\'ok\\': bool(ok), \\'native_error\\': error})\\\
+        n            if ok or time.monotonic() >= end:\\n                break\\n            time.sleep(1)\\n        result[\\\
+        'profile_delete_attempts\\'] = attempts\\n        assert ok, {\\'profile_deletion_failed\\': result}\\n        assert\
+        \ not Path(profile).exists(), \\'Deleted fixture profile directory still exists\\'\\n        try:\\n            with\
+        \ winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, PROFILE_KEY + account[\\'sid\\']):\\n                raise AssertionError(\\\
+        'Deleted fixture profile registry entry still exists\\')\\n        except FileNotFoundError:\\n            pass\\\
+        n    powershell(\"Remove-LocalUser -Name \" + quote(account[\\'name\\']) + \"; if(Get-LocalUser -Name \" + quote(account[\\\
+        'name\\']) + \" -ErrorAction SilentlyContinue){throw \\'fixture account survived deletion\\'}\")\\n    result[\\'removed\\\
+        '] = True\\n    return result\\n', 'install.py': '\"\"\"Native fixture installer; copy into the isolated venue and\
+        \ run during admission.\\n\\nThis invokes the archive\\'s own installer and independently reads installed images.\\\
+        nIt performs no VM or container management and never selects a different home.\\n\"\"\"\\nfrom pathlib import Path,\
+        \ PurePosixPath\\nimport argparse\\nimport ctypes\\nimport datetime\\nimport hashlib\\nimport json\\nimport os\\nimport\
+        \ subprocess\\nimport sys\\nimport tarfile\\nimport uuid\\nimport zipfile\\n\\n\\ndef digest(path):\\n    with path.open(\\\
+        'rb\\') as stream:\\n        return hashlib.file_digest(stream, \\'sha256\\').hexdigest()\\n\\n\\ndef known_folder(folder):\\\
+        n    # The token\\'s native known-folder lookup must agree with installer inputs.\\n    class Guid(ctypes.Structure):\\\
+        n        _fields_ = [(\\'bytes\\', ctypes.c_ubyte * 16)]\\n    guid = Guid((ctypes.c_ubyte * 16).from_buffer_copy(uuid.UUID(folder).bytes_le))\\\
+        n    result = ctypes.c_wchar_p()\\n    get = ctypes.windll.shell32.SHGetKnownFolderPath\\n    get.argtypes = [ctypes.POINTER(Guid),\
+        \ ctypes.c_uint32, ctypes.c_void_p,\\n                    ctypes.POINTER(ctypes.c_wchar_p)]\\n    get.restype = ctypes.c_long\\\
+        n    status = get(ctypes.byref(guid), 0, None, ctypes.byref(result))\\n    if status != 0:\\n        raise OSError(status,\
+        \ \\'Native known-folder lookup failed\\')\\n    try:\\n        return Path(result.value)\\n    finally:\\n      \
+        \  free = ctypes.windll.ole32.CoTaskMemFree\\n        free.argtypes = [ctypes.c_void_p]\\n        free.restype = None\\\
+        n        free(ctypes.cast(result, ctypes.c_void_p))\\n\\n\\ndef native_install_paths():\\n    if sys.platform == \\\
+        'win32\\':\\n        profile = known_folder(\\'5E6C858F-0E22-4760-9AFE-EA3317B67173\\')\\n        local = known_folder(\\\
+        'F1B32785-6FBA-4FCF-9D55-7B8E7F157091\\')\\n        assert Path(os.environ[\\'USERPROFILE\\']).resolve() == profile.resolve()\\\
+        n        assert Path(os.environ[\\'LOCALAPPDATA\\']).resolve() == local.resolve()\\n        root = local / \\'StateEngine\\\
+        '\\n        return profile, root / \\'bin\\', root\\n    import pwd\\n    account = pwd.getpwuid(os.geteuid())\\n\
+        \    assert account.pw_uid != 0, \\'Linux fixture must be the actual non-root SSH user\\'\\n    profile = Path(account.pw_dir)\\\
+        n    assert Path(os.environ[\\'HOME\\']).resolve() == profile.resolve()\\n    assert not os.environ.get(\\'XDG_STATE_HOME\\\
+        '), \\'Use the native account default\\'\\n    return profile, profile / \\'.local/bin\\', profile / \\'.local/state/stateengine\\\
+        '\\n\\n\\ndef safe_name(name):\\n    path = PurePosixPath(name)\\n    assert not path.is_absolute() and \\'..\\' not\
+        \ in path.parts and \\'\\\\\\\\\\' not in name\\n    assert path.parts and \\':\\' not in path.parts[0]\\n    return\
+        \ path\\n\\n\\ndef unpack(archive, destination):\\n    destination.mkdir(mode=0o700, exist_ok=False)\\n    if zipfile.is_zipfile(archive):\\\
+        n        with zipfile.ZipFile(archive) as container:\\n            names = set()\\n            for member in container.infolist():\\\
+        n                assert member.filename not in names, \\'duplicate archive member\\'\\n                names.add(member.filename)\\\
+        n                safe_name(member.filename)\\n                mode = member.external_attr >> 16\\n               \
+        \ assert mode & 0o170000 != 0o120000, \\'archive symlink refused\\'\\n            container.extractall(destination)\\\
+        n    else:\\n        with tarfile.open(archive, \\'r:gz\\') as container:\\n            names = set()\\n         \
+        \   for member in container.getmembers():\\n                assert member.name not in names, \\'duplicate archive\
+        \ member\\'\\n                names.add(member.name)\\n                safe_name(member.name)\\n                assert\
+        \ member.isfile() or member.isdir(), \\'archive link/device refused\\'\\n            container.extractall(destination,\
+        \ filter=\\'data\\')\\n    children = list(destination.iterdir())\\n    assert len(children) == 1 and children[0].is_dir()\\\
+        n    return children[0]\\n\\n\\ndef main():\\n    parser = argparse.ArgumentParser()\\n    parser.add_argument(\\\
+        '--archive\\', required=True, type=Path)\\n    parser.add_argument(\\'--sha256\\', required=True)\\n    parser.add_argument(\\\
+        '--source\\', required=True)\\n    parser.add_argument(\\'--evidence\\', required=True, type=Path)\\n    args = parser.parse_args()\\\
+        n    now = datetime.datetime.now(datetime.timezone.utc)\\n    assert sys.platform == \\'win32\\', \\'Hosted native\
+        \ Windows installer only\\'\\n    assert not any(os.environ.get(k) for k in (\\'SE_HOME\\', \\'STATEENGINE_HOME\\\
+        '))\\n    assert digest(args.archive) == args.sha256, \\'archive identity changed\\'\\n    profile, binary_root, data\
+        \ = native_install_paths()\\n    assert not (data / \\'standalone-install.json\\').exists(), \\'Preserve an incumbent\\\
+        '\\n    assert not (binary_root / (\\'se.exe\\' if sys.platform == \\'win32\\' else \\'se\\')).exists()\\n    args.evidence.mkdir(mode=0o700,\
+        \ exist_ok=False)\\n    bundle = unpack(args.archive, args.evidence / \\'archive\\')\\n    manifest = json.loads((bundle\
+        \ / \\'manifest.json\\').read_text())\\n    assert manifest[\\'source_commit\\'] == args.source\\n    assert manifest[\\\
+        'variant\\'] == \\'standalone\\' and manifest[\\'trust\\'] == \\'unsigned\\'\\n    assert manifest[\\'target\\'] ==\
+        \ \\'x86_64-pc-windows-msvc\\'\\n    for name, facts in manifest[\\'files\\'].items():\\n        safe_name(name)\\\
+        n        path = bundle / name\\n        assert path.stat().st_size == facts[\\'bytes\\'] and digest(path) == facts[\\\
+        'sha256\\']\\n    build = json.loads((bundle / \\'build.json\\').read_text())\\n    assert build[\\'source_commit\\\
+        '] == args.source and build[\\'profile\\'] == \\'distribution\\'\\n    assert \\'remote\\' in build[\\'features\\\
+        ']\\n    if sys.platform == \\'win32\\':\\n        command = [\\'powershell.exe\\', \\'-NoLogo\\', \\'-NoProfile\\\
+        ', \\'-NonInteractive\\',\\n                   \\'-ExecutionPolicy\\', \\'Bypass\\', \\'-File\\', str(bundle / \\\
+        'install.ps1\\')]\\n    else:\\n        command = [\\'/bin/sh\\', str(bundle / \\'install.sh\\')]\\n    with (args.evidence\
+        \ / \\'install.stdout\\').open(\\'w\\') as out, \\\\\\n            (args.evidence / \\'install.stderr\\').open(\\\
+        'w\\') as err:\\n        result = subprocess.run(command, cwd=profile, stdout=out, stderr=err, timeout=180)\\n   \
+        \ report = {\\'source\\': args.source, \\'archive_sha256\\': args.sha256,\\n              \\'native_profile\\': str(profile),\
+        \ \\'binary_root\\': str(binary_root),\\n              \\'data\\': str(data), \\'install_exit\\': result.returncode,\
+        \ \\'installed\\': {}}\\n    (args.evidence / \\'installation.json\\').write_text(json.dumps(report, indent=2) + \\\
+        '\\\\n\\')\\n    assert result.returncode == 0, \\'Archive-local installer failed; preserve its result\\'\\n    record\
+        \ = data / \\'standalone-install.json\\'\\n    assert record.is_file()\\n    # Installation records contain custody\
+        \ metadata, not provider credentials.\\n    (args.evidence / \\'standalone-install.json\\').write_bytes(record.read_bytes())\\\
+        n    selected = {k: v for k, v in manifest[\\'files\\'].items()\\n                if k.startswith(\\'remote-images/\\\
+        ') or k in (\\'se\\', \\'se.exe\\')}\\n    assert len(selected) == 4, \\'Complete native distribution plus three companions\\\
+        '\\n    for name, facts in selected.items():\\n        installed = binary_root / name\\n        assert installed.stat().st_size\
+        \ == facts[\\'bytes\\']\\n        observed = digest(installed)\\n        assert observed == facts[\\'sha256\\'], \\\
+        'Installed payload changed: \\' + name\\n        report[\\'installed\\'][name] = {\\'sha256\\': observed, \\'bytes\\\
+        ': facts[\\'bytes\\']}\\n    report.update(record_sha256=digest(record), qualified=True,\\n                  completed_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())\\\
+        n    (args.evidence / \\'installation.json\\').write_text(json.dumps(report, indent=2) + \\'\\\\n\\')\\n    print(json.dumps(report,\
+        \ indent=2))\\n\\n\\nif __name__ == \\'__main__\\':\\n    main()\\n', 'native.py': '\"\"\"Outside Windows process\
+        \ observations for the disposable SSH fixture.\"\"\"\\nimport base64\\nimport ctypes\\nfrom ctypes import wintypes\
+        \ as W\\nimport hashlib\\nimport json\\nfrom pathlib import Path\\nimport subprocess\\n\\nPS = str(Path(\\'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe\\\
+        '))\\nK = ctypes.WinDLL(\\'kernel32\\', use_last_error=True)\\nK.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]\\\
+        nK.OpenProcess.restype = W.HANDLE\\nK.CloseHandle.argtypes = [W.HANDLE]\\nK.GetProcessTimes.argtypes = [W.HANDLE,\
+        \ *([ctypes.POINTER(W.FILETIME)] * 4)]\\nK.WaitForSingleObject.argtypes = [W.HANDLE, W.DWORD]\\nK.WaitForSingleObject.restype\
+        \ = W.DWORD\\nK.IsProcessInJob.argtypes = [W.HANDLE, W.HANDLE, ctypes.POINTER(W.BOOL)]\\nK.TerminateProcess.argtypes\
+        \ = [W.HANDLE, W.UINT]\\n\\n\\ndef enable_fixture_privileges():\\n    class LUID(ctypes.Structure):\\n        _fields_\
+        \ = [(\\'low\\', W.DWORD), (\\'high\\', W.LONG)]\\n    class ENTRY(ctypes.Structure):\\n        _fields_ = [(\\'luid\\\
+        ', LUID), (\\'attributes\\', W.DWORD)]\\n    class PRIVILEGES(ctypes.Structure):\\n        _fields_ = [(\\'count\\\
+        ', W.DWORD), (\\'entry\\', ENTRY)]\\n    api = ctypes.WinDLL(\\'advapi32\\', use_last_error=True)\\n    api.OpenProcessToken.argtypes\
+        \ = [W.HANDLE, W.DWORD, ctypes.POINTER(W.HANDLE)]\\n    api.LookupPrivilegeValueW.argtypes = [W.LPCWSTR, W.LPCWSTR,\
+        \ ctypes.POINTER(LUID)]\\n    api.AdjustTokenPrivileges.argtypes = [W.HANDLE, W.BOOL, ctypes.POINTER(PRIVILEGES),\
+        \ W.DWORD, W.LPVOID, W.LPVOID]\\n    token = W.HANDLE()\\n    if not api.OpenProcessToken(W.HANDLE(-1), 0x20 | 0x8,\
+        \ ctypes.byref(token)):\\n        raise ctypes.WinError(ctypes.get_last_error())\\n    enabled = []\\n    try:\\n\
+        \        for name in (\\'SeBackupPrivilege\\', \\'SeRestorePrivilege\\', \\'SeDebugPrivilege\\'):\\n            value\
+        \ = PRIVILEGES(count=1)\\n            if not api.LookupPrivilegeValueW(None, name, ctypes.byref(value.entry.luid)):\\\
+        n                raise ctypes.WinError(ctypes.get_last_error())\\n            value.entry.attributes = 2\\n      \
+        \      ctypes.set_last_error(0)\\n            ok = api.AdjustTokenPrivileges(token, False, ctypes.byref(value), 0,\
+        \ None, None)\\n            error = ctypes.get_last_error()\\n            if not ok or error:\\n                raise\
+        \ ctypes.WinError(error)\\n            enabled.append(name)\\n    finally:\\n        assert K.CloseHandle(token)\\\
+        n    return enabled\\n\\n\\ndef quote(value):\\n    return \"\\'\" + str(value).replace(\"\\'\", \"\\'\\'\") + \"\\\
+        '\"\\n\\n\\ndef encoded(script):\\n    return base64.b64encode(script.encode(\\'utf-16le\\')).decode()\\n\\n\\ndef\
+        \ powershell(script, timeout=30):\\n    wrapped = \"$ErrorActionPreference=\\'Stop\\'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);\
+        \ \" + script\\n    result = subprocess.run([PS, \\'-NoLogo\\', \\'-NoProfile\\', \\'-NonInteractive\\',\\n      \
+        \                       \\'-EncodedCommand\\', encoded(wrapped)], capture_output=True,\\n                        \
+        \    encoding=\\'utf-8\\', timeout=timeout)\\n    if result.returncode:\\n        raise RuntimeError({\\'operation\\\
+        ': \\'fixture PowerShell\\', \\'exit\\': result.returncode,\\n                            \\'stdout\\': result.stdout,\
+        \ \\'stderr\\': result.stderr})\\n    return result.stdout.strip()\\n\\n\\ndef digest(path):\\n    with Path(path).open(\\\
+        'rb\\') as stream:\\n        return hashlib.file_digest(stream, \\'sha256\\').hexdigest()\\n\\n\\ndef times(handle):\\\
+        n    output = [W.FILETIME() for _ in range(4)]\\n    if not K.GetProcessTimes(handle, *[ctypes.byref(x) for x in output]):\\\
+        n        raise ctypes.WinError(ctypes.get_last_error())\\n    return {\\'creation_filetime\\': (output[0].dwHighDateTime\
+        \ << 32) | output[0].dwLowDateTime,\\n            \\'exit_filetime\\': (output[1].dwHighDateTime << 32) | output[1].dwLowDateTime}\\\
+        n\\n\\ndef process(pid):\\n    handle = K.OpenProcess(0x1000 | 0x100000, False, pid)\\n    if not handle:\\n     \
+        \   error = ctypes.get_last_error()\\n        return {\\'state\\': \\'absent\\' if error == 87 else \\'unreadable\\\
+        ', \\'pid\\': pid,\\n                \\'operation\\': \\'OpenProcess\\', \\'native_error\\': error}\\n    try:\\n\
+        \        value = times(handle)\\n        member = W.BOOL()\\n        if not K.IsProcessInJob(handle, None, ctypes.byref(member)):\\\
+        n            raise ctypes.WinError(ctypes.get_last_error())\\n        waited = K.WaitForSingleObject(handle, 0)\\\
+        n        assert waited in (0, 258), {\\'WaitForSingleObject\\': waited}\\n        return dict(value, state=\\'present\\\
+        ', pid=pid, signalled=waited == 0,\\n                    in_any_job=bool(member.value))\\n    except OSError as error:\\\
+        n        return {\\'state\\': \\'unreadable\\', \\'pid\\': pid, \\'error\\': str(error)}\\n    finally:\\n       \
+        \ assert K.CloseHandle(handle)\\n\\n\\ndef census(sids):\\n    wanted = \\',\\'.join(quote(sid) for sid in sids)\\\
+        n    script = \"$wanted=@(\" + wanted + \"); $rows=@(); $unknown=@(); \"\\n    script += \"foreach($p in @(Get-CimInstance\
+        \ Win32_Process)) { if($p.ProcessId -le 4){continue}; \"\\n    script += \"try {$o=Invoke-CimMethod -InputObject $p\
+        \ -MethodName GetOwnerSid -ErrorAction Stop; \"\\n    script += \"if($o.ReturnValue -eq 0){if($o.Sid -in $wanted){$rows\
+        \ += [ordered]@{pid=[int]$p.ProcessId;parent=[int]$p.ParentProcessId;sid=$o.Sid;command=$p.CommandLine;image=$p.ExecutablePath}}}\
+        \ \"\\n    script += \"elseif(Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue){$unknown += [ordered]@{pid=[int]$p.ProcessId;owner_return=$o.ReturnValue;image=$p.ExecutablePath}}}\
+        \ \"\\n    script += \"catch {if(Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue){$unknown += [ordered]@{pid=[int]$p.ProcessId;error=$_.Exception.Message}}}};\
+        \ \"\\n    script += \"ConvertTo-Json -InputObject ([ordered]@{rows=@($rows);unreadable_owners=@($unknown)}) -Depth\
+        \ 5 -Compress\"\\n    result = json.loads(powershell(script))\\n    assert isinstance(result[\\'rows\\'], list) and\
+        \ isinstance(result[\\'unreadable_owners\\'], list)\\n    for row in result[\\'rows\\']:\\n        row[\\'native\\\
+        '] = process(row[\\'pid\\'])\\n    return result\\n\\n\\ndef exact(pid):\\n    script = \"$p=Get-CimInstance Win32_Process\
+        \ -Filter \\'ProcessId=\" + str(int(pid)) + \"\\'; \"\\n    script += \"if($null -eq $p){ConvertTo-Json @{state=\\\
+        'absent\\'}}else{ConvertTo-Json @{state=\\'present\\';pid=[int]$p.ProcessId;command=$p.CommandLine;image=$p.ExecutablePath}\
+        \ -Compress}\"\\n    row = json.loads(powershell(script))\\n    if row[\\'state\\'] == \\'present\\':\\n        row[\\\
+        'native\\'] = process(pid)\\n    return row\\n\\n\\ndef same(before, after):\\n    return (before.get(\\'state\\')\
+        \ == after.get(\\'state\\') == \\'present\\'\\n            and before[\\'pid\\'] == after[\\'pid\\'] and before[\\\
+        'command\\'] == after[\\'command\\']\\n            and before[\\'image\\'] == after[\\'image\\']\\n            and\
+        \ before[\\'native\\'][\\'creation_filetime\\'] == after[\\'native\\'][\\'creation_filetime\\'])\\n\\n\\ndef stop(observed):\\\
+        n    current = exact(observed[\\'pid\\'])\\n    if current[\\'state\\'] == \\'absent\\':\\n        return current\\\
+        n    assert same(observed, current), {\\'refused_changed_instance\\': current}\\n    handle = K.OpenProcess(0x1000\
+        \ | 0x100000 | 1, False, observed[\\'pid\\'])\\n    if not handle:\\n        raise ctypes.WinError(ctypes.get_last_error())\\\
+        n    try:\\n        assert times(handle)[\\'creation_filetime\\'] == observed[\\'native\\'][\\'creation_filetime\\\
+        ']\\n        assert K.TerminateProcess(handle, 0)\\n        assert K.WaitForSingleObject(handle, 10000) == 0, \\'Exact\
+        \ owned process did not terminate\\'\\n    finally:\\n        assert K.CloseHandle(handle)\\n    return process(observed[\\\
+        'pid\\'])\\n', 'regression.py': '\"\"\"Hosted Windows-to-Windows SSH development regression in two fresh accounts.\"\
+        \"\"\\nimport argparse\\nimport datetime\\nimport json\\nimport os\\nfrom pathlib import Path\\nimport secrets\\nimport\
+        \ shutil\\nimport socket\\nimport subprocess\\nimport sys\\nimport time\\nfrom concurrent.futures import ThreadPoolExecutor\\\
+        nimport accounts\\nimport native\\nfrom ssh_service import Service\\n\\n\\ndef main():\\n    parser = argparse.ArgumentParser()\\\
+        n    parser.add_argument(\\'--assets\\', required=True, type=Path)\\n    parser.add_argument(\\'--root\\', required=True,\
+        \ type=Path)\\n    parser.add_argument(\\'--deadline-utc\\', required=True)\\n    args = parser.parse_args()\\n  \
+        \  assert sys.platform == \\'win32\\' and not os.environ.get(\\'GH_TOKEN\\') and not os.environ.get(\\'GITHUB_TOKEN\\\
+        ')\\n    deadline = datetime.datetime.fromisoformat(args.deadline_utc)\\n    assert deadline.tzinfo is not None\\\
+        n    root = args.root.resolve()\\n    root.mkdir(exist_ok=False)\\n    reports = root/\\'reports\\'\\n    reports.mkdir()\\\
+        n    private = root/\\'private\\'\\n    private.mkdir()\\n    accounts.private_acl(private, \\'S-1-5-32-544\\')\\\
+        n    report = {\\'qualified\\': False, \\'phase\\': \\'archive provenance\\', \\'commands\\': [],\\n             \
+        \ \\'accounts\\': [], \\'cleanup\\': [], \\'census\\': [],\\n              \\'scope\\': \\'Windows-to-Windows installed-distribution\
+        \ cold SSH, list, reconnect and shutdown\\',\\n              \\'unqualified\\': [\\'Linux direction pairs\\', \\'real\
+        \ providers\\', \\'remote launch/output/send/watch\\',\\n                              \\'four full-journey timings\\\
+        ', \\'alternate SSH shell\\', \\'native VM\\', \\'macOS\\']}\\n    users = []\\n    service = None\\n    child = None\\\
+        n    executor = ThreadPoolExecutor(max_workers=1)\\n\\n    def save():\\n        (reports/\\'result.json\\').write_text(json.dumps(report,\
+        \ indent=2) + \\'\\\\n\\')\\n\\n    def remaining(maximum):\\n        left = (deadline-datetime.datetime.now(datetime.timezone.utc)).total_seconds()\\\
+        n        assert left > 0, \\'Fixture work deadline expired; cleanup only\\'\\n        return min(left, maximum)\\\
+        n\\n    def census(label):\\n        value = native.census([u[\\'sid\\'] for u in users])\\n        value.update(label=label,\
+        \ utc=datetime.datetime.now(datetime.timezone.utc).isoformat())\\n        report[\\'census\\'].append(value)\\n  \
+        \      assert not value[\\'unreadable_owners\\'], {\\'native_account_census_unreadable\\': value}\\n        assert\
+        \ all(r[\\'native\\'][\\'state\\'] != \\'unreadable\\' for r in value[\\'rows\\'])\\n        return value\\n\\n  \
+        \  try:\\n        admin = native.powershell(\"$p=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent());\
+        \ $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)\")\\n        assert admin == \\'True\\', \\\
+        'Hosted fixture needs the runner administrator\\'\\n        report[\\'native_privileges\\'] = native.enable_fixture_privileges()\\\
+        n        release = json.loads((args.assets/\\'release.json\\').read_text())\\n        source_commit = \\'3b68277f87f16e85139bb804db5f9e6f19812ca6\\\
+        '\\n        assert release[\\'source_commit\\'] == source_commit\\n        package = release[\\'packages\\'][\\'x86_64-pc-windows-msvc\\\
+        ']\\n        archive = args.assets/package[\\'file\\']\\n        assert package[\\'sha256\\'] == \\'c2b5f960df7e9a2986366f4ebc65dbe801b556adda39dae976c76161d433ba8d\\\
+        '\\n        assert archive.stat().st_size == package[\\'bytes\\'] and native.digest(archive) == package[\\'sha256\\\
+        ']\\n        report.update(source=source_commit, archive=package)\\n        report[\\'phase\\'] = \\'native profile\
+        \ create/delete preflight\\'\\n        canary = accounts.create(\\'profile\\')\\n        users.append(canary)\\n \
+        \       report[\\'accounts\\'].append(canary)\\n        save()\\n        accounts.create_profile(canary)\\n      \
+        \  assert not census(\\'profile-canary\\')[\\'rows\\']\\n        report[\\'profile_preflight\\'] = accounts.remove(canary)\\\
+        n        users.remove(canary)\\n        report[\\'accounts\\'].remove(canary)\\n        report[\\'phase\\'] = \\'fresh\
+        \ native accounts\\'\\n        for role in (\\'source\\', \\'destination\\'):\\n            user = accounts.create(role)\\\
+        n            users.append(user)\\n            report[\\'accounts\\'].append(user)\\n            save()\\n        \
+        \    accounts.configure_groups(user)\\n            profile = accounts.create_profile(user)\\n            for name\
+        \ in (\\'.ssh\\', \\'r5-fixture\\'):\\n                path = profile/name\\n                path.mkdir(exist_ok=False)\\\
+        n                accounts.private_acl(path, user[\\'sid\\'])\\n            work = profile/\\'r5-fixture\\'\\n    \
+        \        for name in (\\'install.py\\',):\\n                path = work/name\\n                shutil.copyfile(Path(__file__).parent/name,\
+        \ path)\\n                accounts.private_acl(path, user[\\'sid\\'])\\n            path = work/\\'distribution.zip\\\
+        '\\n            shutil.copyfile(archive, path)\\n            accounts.private_acl(path, user[\\'sid\\'])\\n      \
+        \  assert not census(\\'new-accounts\\')[\\'rows\\']\\n        source, destination = users\\n        key = private/\\\
+        'client-key\\'\\n        server_key = private/\\'server-key\\'\\n        keygen = str(Path(os.environ[\\'WINDIR\\\
+        '])/\\'System32/OpenSSH/ssh-keygen.exe\\')\\n        assert Path(keygen).is_file(), \\'Hosted step unavailable: built-in\
+        \ OpenSSH client is absent\\'\\n        for path in (key, server_key):\\n            subprocess.run([keygen, \\'-q\\\
+        ', \\'-t\\', \\'ed25519\\', \\'-N\\', \\'\\', \\'-f\\', str(path)],\\n                           check=True, capture_output=True,\
+        \ timeout=30)\\n            accounts.private_acl(path, \\'S-1-5-32-544\\')\\n        with socket.socket() as listener:\\\
+        n            listener.bind((\\'127.0.0.1\\', 0))\\n            port = listener.getsockname()[1]\\n        known =\
+        \ private/\\'known_hosts\\'\\n        known.write_text(\\'[127.0.0.1]:\\' + str(port) + \\' \\' + server_key.with_suffix(\\\
+        '.pub\\').read_text())\\n        accounts.private_acl(known, \\'S-1-5-32-544\\')\\n        for user in users:\\n \
+        \           ssh = Path(user[\\'profile\\'])/\\'.ssh\\'\\n            path = ssh/\\'authorized_keys\\'\\n         \
+        \   path.write_bytes(key.with_suffix(\\'.pub\\').read_bytes())\\n            accounts.private_acl(path, user[\\'sid\\\
+        '])\\n        source_ssh = Path(source[\\'profile\\'])/\\'.ssh\\'\\n        for name, data in [(\\'fixture_key\\',\
+        \ key.read_bytes()), (\\'known_hosts\\', known.read_bytes())]:\\n            path = source_ssh/name\\n           \
+        \ path.write_bytes(data)\\n            accounts.private_acl(path, source[\\'sid\\'])\\n        config = source_ssh/\\\
+        'config\\'\\n        config.write_text(\\'Host fixture-destination\\\\n HostName 127.0.0.1\\\\n Port \\'+str(port)+\\\
+        '\\\\n User \\'+destination[\\'name\\']\\n                          +\\'\\\\n BatchMode yes\\\\n StrictHostKeyChecking\
+        \ yes\\\\n IdentitiesOnly yes\\\\n IdentityAgent none\\\\n\\'\\n                          +\\' IdentityFile \\'+str(source_ssh/\\\
+        'fixture_key\\').replace(\\'\\\\\\\\\\',\\'/\\')\\n                          +\\'\\\\n UserKnownHostsFile \\'+str(source_ssh/\\\
+        'known_hosts\\').replace(\\'\\\\\\\\\\',\\'/\\')+\\'\\\\n\\')\\n        accounts.private_acl(config, source[\\'sid\\\
+        '])\\n        config = private/\\'sshd_config\\'\\n        config.write_text(\\'Port \\'+str(port)+\\'\\\\nListenAddress\
+        \ 127.0.0.1\\\\nHostKey \\'+str(server_key).replace(\\'\\\\\\\\\\',\\'/\\')\\n                          +\\'\\\\nAllowUsers\
+        \ \\'+source[\\'name\\']+\\' \\'+destination[\\'name\\']\\n                          +\\'\\\\nAuthorizedKeysFile .ssh/authorized_keys\\\
+        \\nPubkeyAuthentication yes\\\\nPasswordAuthentication no\\\\n\\'\\n                          +\\'KbdInteractiveAuthentication\
+        \ no\\\\nStrictModes yes\\\\nAllowTcpForwarding local\\\\nGatewayPorts no\\\\nLogLevel VERBOSE\\\\n\\')\\n       \
+        \ accounts.private_acl(config, \\'S-1-5-32-544\\')\\n        report[\\'phase\\'] = \\'built-in SSH service\\'\\n \
+        \       service = Service(config)\\n        report[\\'service\\'] = service.start()\\n        save()\\n        ssh\
+        \ = str(Path(os.environ[\\'WINDIR\\'])/\\'System32/OpenSSH/ssh.exe\\')\\n        ssh_args = [ssh, \\'-F\\', \\'NUL\\\
+        ', \\'-i\\', str(key), \\'-p\\', str(port), \\'-oBatchMode=yes\\',\\n                    \\'-oIdentitiesOnly=yes\\\
+        ', \\'-oIdentityAgent=none\\', \\'-oStrictHostKeyChecking=yes\\',\\n                    \\'-oUserKnownHostsFile=\\\
+        '+str(known), \\'-oConnectTimeout=10\\']\\n\\n        def invoke(role, label, script, *, structured=True, success=True,\
+        \ observe=False):\\n            nonlocal child\\n            user = source if role == \\'source\\' else destination\\\
+        n            wrapper = \"[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $ErrorActionPreference=\\'Stop\\\
+        '; \" + script\\n            remote = \\'powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand \\' + native.encoded(wrapper)\\\
+        n            row = {\\'label\\': label, \\'role\\': role, \\'started_utc\\': datetime.datetime.now(datetime.timezone.utc).isoformat()}\\\
+        n            report[\\'commands\\'].append(row)\\n            started = time.monotonic()\\n            samples = []\\\
+        n            pending = None\\n            with (reports/(label+\\'.stdout\\')).open(\\'wb\\') as stdout, (reports/(label+\\\
+        '.stderr\\')).open(\\'wb\\') as stderr:\\n                child = subprocess.Popen([*ssh_args, user[\\'name\\']+\\\
+        '@127.0.0.1\\', remote],\\n                                         stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr)\\\
+        n                row[\\'ssh_pid\\'] = child.pid\\n                row[\\'ssh_start\\'] = native.times(int(child._handle))\\\
+        n                until = time.monotonic()+remaining(180)\\n                while child.poll() is None:\\n        \
+        \            if observe and pending is None:\\n                        pending = executor.submit(native.census, [u[\\\
+        'sid\\'] for u in users])\\n                    if pending is not None and pending.done():\\n                    \
+        \    samples.append(pending.result())\\n                        pending = None\\n                    if time.monotonic()\
+        \ >= until:\\n                        owned = native.exact(child.pid)\\n                        assert owned[\\'native\\\
+        '][\\'creation_filetime\\'] == row[\\'ssh_start\\'][\\'creation_filetime\\']\\n                        native.stop(owned)\\\
+        n                        child.wait(timeout=10)\\n                        raise TimeoutError(\\'Exact owned SSH consumer\
+        \ deadline: \\'+label)\\n                    time.sleep(0.05)\\n                row.update(exit=child.returncode,\
+        \ elapsed_seconds=time.monotonic()-started,\\n                           ssh_end=native.times(int(child._handle)),\
+        \ ssh_reaped=True)\\n                if pending is not None:\\n                    samples.append(pending.result(timeout=30))\\\
+        n                child = None\\n            if observe:\\n                (reports/(label+\\'-processes.json\\')).write_text(json.dumps(samples,\
+        \ indent=2)+\\'\\\\n\\')\\n            save()\\n            assert (row[\\'exit\\']==0) == success, {\\'public_consumer_failed\\\
+        ': row}\\n            if structured:\\n                channel = \\'stdout\\' if success else \\'stderr\\'\\n    \
+        \            row[\\'response_channel\\'] = channel\\n                value = json.loads((reports/(label+\\'.\\'+channel)).read_text(encoding=\\\
+        'utf-8\\'))\\n                assert (value.get(\\'schema\\') != \\'se.error/v1\\') == success\\n                if\
+        \ not success:\\n                    assert value[\\'code\\']==\\'capability-invalid\\' and value[\\'exit\\']==row[\\\
+        'exit\\']\\n                    assert \\'disconnected\\' in value[\\'detail\\'][\\'reason\\'] and value.get(\\'remedy\\\
+        ')\\n                    assert not (reports/(label+\\'.stdout\\')).read_bytes().strip()\\n                return\
+        \ value\\n            return row\\n\\n        def se(role, label, arguments, **kwargs):\\n            user = source\
+        \ if role == \\'source\\' else destination\\n            executable = Path(user[\\'local_app\\'])/\\'StateEngine/bin/se.exe\\\
+        '\\n            command = \\'& \\'+native.quote(executable)+\\' \\'+ \\' \\'.join(native.quote(a) for a in arguments)+\\\
+        '; exit $LASTEXITCODE\\'\\n            return invoke(role, label, command, **kwargs)\\n\\n        report[\\'phase\\\
+        '] = \\'actual native profile readback and installs\\'\\n        for role, user in zip((\\'source\\',\\'destination\\\
+        '), users):\\n            script = \"$u=[Security.Principal.WindowsIdentity]::GetCurrent(); ConvertTo-Json @{sid=$u.User.Value;profile=[Environment]::GetFolderPath(\\\
+        'UserProfile\\');local_app=[Environment]::GetFolderPath(\\'LocalApplicationData\\')} -Compress\"\\n            value\
+        \ = invoke(role, role+\\'-profile\\', script)\\n            assert value[\\'sid\\']==user[\\'sid\\'] and Path(value[\\\
+        'profile\\']).resolve()==Path(user[\\'profile\\']).resolve()\\n            user[\\'local_app\\'] = value[\\'local_app\\\
+        ']\\n            assert not (Path(value[\\'local_app\\'])/\\'StateEngine/standalone-install.json\\').exists()\\n \
+        \           work = Path(user[\\'profile\\'])/\\'r5-fixture\\'\\n            command = \\'& \\'+native.quote(sys.executable)+\\\
+        ' -B \\'+native.quote(work/\\'install.py\\')+\\' --archive \\'+native.quote(work/\\'distribution.zip\\')+\\' --sha256\
+        \ \\'+package[\\'sha256\\']+\\' --source \\'+source_commit+\\' --evidence \\'+native.quote(work/\\'installation\\\
+        ')+\\'; exit $LASTEXITCODE\\'\\n            try:\\n                invoke(role, role+\\'-install\\', command)\\n \
+        \           finally:\\n                for name in (\\'installation.json\\', \\'install.stdout\\', \\'install.stderr\\\
+        '):\\n                    diagnostic = work/\\'installation\\'/name\\n                    if diagnostic.is_file():\\\
+        n                        shutil.copyfile(diagnostic, reports/(role+\\'-\\'+name))\\n            install = json.loads((work/\\\
+        'installation/installation.json\\').read_text())\\n            assert install[\\'qualified\\'] is True and len(install[\\\
+        'installed\\'])==4\\n            user[\\'installation\\'] = install\\n            shutil.copyfile(work/\\'installation/installation.json\\\
+        ', reports/(role+\\'-installation.json\\'))\\n            for name, argv in [(\\'help\\',[\\'--help\\']),(\\'add-help\\\
+        ',[\\'remote\\',\\'add\\',\\'--help\\']),\\n                               (\\'list-help\\',[\\'remote\\',\\'list\\\
+        ',\\'--help\\']),(\\'disconnect-help\\',[\\'remote\\',\\'disconnect\\',\\'--help\\']),\\n                        \
+        \       (\\'init-help\\',[\\'init\\',\\'--help\\']),(\\'down-help\\',[\\'down\\',\\'--help\\'])]:\\n             \
+        \   se(role, role+\\'-\\'+name, argv, structured=False)\\n        report[\\'phase\\'] = \\'cold Windows pairing\\\
+        '\\n        work = Path(source[\\'profile\\'])/\\'r5-work\\'\\n        work.mkdir()\\n        accounts.private_acl(work,\
+        \ source[\\'sid\\'])\\n        se(\\'source\\', \\'source-init\\', [\\'--json\\',\\'init\\',\\'--repo\\',str(work),\\\
+        '--name\\',\\'ssh-regression\\'])\\n        before = census(\\'before-pair\\')\\n        assert not [r for r in before[\\\
+        'rows\\'] if r[\\'sid\\']==destination[\\'sid\\']]\\n        assert not (Path(destination[\\'profile\\'])/\\'.stateengine-runtime\\\
+        ').exists()\\n        se(\\'source\\', \\'pair\\', [\\'--json\\',\\'remote\\',\\'add\\',\\'fixture-destination\\',\\\
+        '--name\\',\\'fixture\\'], observe=True)\\n        after = census(\\'after-pair\\')\\n        hosts = [r for r in\
+        \ after[\\'rows\\'] if r[\\'sid\\']==destination[\\'sid\\'] and \\'--stateengine-private-runtime-bootstrap\\' in (r[\\\
+        'command\\'] or \\'\\')]\\n        assert len(hosts)==1\\n        host = hosts[0]\\n        assert host[\\'native\\\
+        '][\\'state\\']==\\'present\\' and not host[\\'native\\'][\\'signalled\\'] and not host[\\'native\\'][\\'in_any_job\\\
+        ']\\n        assert native.digest(host[\\'image\\'])==destination[\\'installation\\'][\\'installed\\'][\\'se.exe\\\
+        '][\\'sha256\\']\\n        pair = next(c for c in report[\\'commands\\'] if c[\\'label\\']==\\'pair\\')\\n       \
+        \ assert host[\\'native\\'][\\'creation_filetime\\'] <= pair[\\'ssh_end\\'][\\'exit_filetime\\']\\n        report[\\\
+        'destination_after_source_exit\\'] = host\\n        se(\\'source\\', \\'continue\\', [\\'--json\\',\\'remote\\',\\\
+        'list\\',\\'--host\\',\\'fixture\\'])\\n        se(\\'source\\', \\'disconnect\\', [\\'--json\\',\\'remote\\',\\'disconnect\\\
+        ',\\'--name\\',\\'fixture\\'])\\n        se(\\'source\\', \\'disconnected-refusal\\', [\\'--json\\',\\'remote\\',\\\
+        'list\\',\\'--host\\',\\'fixture\\'], success=False)\\n        se(\\'source\\', \\'reconnect\\', [\\'--json\\',\\\
+        'remote\\',\\'add\\',\\'fixture-destination\\',\\'--name\\',\\'fixture\\'])\\n        se(\\'source\\', \\'continued-after-reconnect\\\
+        ', [\\'--json\\',\\'remote\\',\\'list\\',\\'--host\\',\\'fixture\\'])\\n        assert native.same(host, native.exact(host[\\\
+        'pid\\']))\\n        report[\\'phase\\'] = \\'ordinary shutdown\\'\\n        se(\\'destination\\', \\'destination-down\\\
+        ', [\\'--json\\',\\'down\\'])\\n        se(\\'source\\', \\'source-down\\', [\\'--json\\',\\'down\\'])\\n        end\
+        \ = time.monotonic()+remaining(20)\\n        while True:\\n            quiet = census(\\'after-down\\')\\n       \
+        \     if not quiet[\\'rows\\'] or time.monotonic()>=end:\\n                break\\n            time.sleep(0.2)\\n\
+        \        assert not quiet[\\'rows\\'], \\'Fixture-owned account processes survived ordinary shutdown\\'\\n       \
+        \ report[\\'qualified\\'] = True\\n    except Exception as error:\\n        report[\\'error\\'] = repr(error)\\n \
+        \       raise\\n    finally:\\n        try:\\n            if child is not None:\\n                if child.poll()\
+        \ is None:\\n                    observed = native.exact(child.pid)\\n                    if observed[\\'state\\']\
+        \ != \\'absent\\':\\n                        native.stop(observed)\\n                child.wait(timeout=10)\\n   \
+        \         executor.shutdown(wait=True, cancel_futures=True)\\n        except Exception as error:\\n            report[\\\
+        'qualified\\'] = False\\n            report[\\'cleanup\\'].append({\\'owned_consumer_cleanup_error\\': repr(error)})\\\
+        n        # Recovery never turns a failed product or cleanup path green.\\n        try:\\n            value = census(\\\
+        'cleanup-before\\') if users else {\\'rows\\': []}\\n            for row in value[\\'rows\\']:\\n                if\
+        \ row[\\'native\\'][\\'state\\']==\\'present\\' and not row[\\'native\\'][\\'signalled\\']:\\n                   \
+        \ report[\\'cleanup\\'].append({\\'forced_owned_birth\\': row, \\'after\\': native.stop(row)})\\n                \
+        \    report[\\'qualified\\'] = False\\n        except Exception as error:\\n            report[\\'qualified\\'] =\
+        \ False\\n            report[\\'cleanup\\'].append({\\'census_recovery_error\\': repr(error)})\\n        if service\
+        \ is not None:\\n            try:\\n                report[\\'service_after\\'] = service.close()\\n            except\
+        \ Exception as error:\\n                report[\\'qualified\\'] = False\\n                report[\\'cleanup\\'].append({\\\
+        'service_cleanup_error\\': repr(error)})\\n        for user in reversed(users):\\n            try:\\n            \
+        \    quiet = census(\\'before-account-delete\\')\\n                assert not [r for r in quiet[\\'rows\\'] if r[\\\
+        'sid\\']==user[\\'sid\\']]\\n                report[\\'cleanup\\'].append(accounts.remove(user))\\n            except\
+        \ Exception as error:\\n                report[\\'qualified\\'] = False\\n                report[\\'cleanup\\'].append({\\\
+        'account\\': user[\\'name\\'], \\'cleanup_error\\': repr(error)})\\n        report[\\'completed_utc\\'] = datetime.datetime.now(datetime.timezone.utc).isoformat()\\\
+        n        save()\\n    assert report[\\'qualified\\'], \\'Windows regression or cleanup failed\\'\\n    print(json.dumps({\\\
+        'qualified\\': True, \\'source\\': report[\\'source\\'], \\'reports\\': str(reports)}))\\n\\n\\nif __name__ == \\\
+        '__main__\\':\\n    main()\\n', 'ssh_service.py': '\"\"\"Temporarily configure an idle built-in SSH service in a disposable\
+        \ runner.\"\"\"\\nimport json\\nimport os\\nfrom pathlib import Path\\nimport subprocess\\nimport time\\nfrom native\
+        \ import exact, powershell, quote, stop\\n\\n\\nclass Service:\\n    def __init__(self, config):\\n        self.config\
+        \ = Path(config)\\n        self.before = None\\n        self.owned = None\\n        self.changed = False\\n      \
+        \  self.shell = None\\n\\n    @staticmethod\\n    def query():\\n        return json.loads(powershell(\"$s=Get-CimInstance\
+        \ Win32_Service -Filter \\\\\"Name=\\'sshd\\'\\\\\"; if($null -eq $s){ConvertTo-Json @{state=\\'absent\\'}}else{ConvertTo-Json\
+        \ @{state=$s.State;pid=[int]$s.ProcessId;image_path=$s.PathName;start_mode=$s.StartMode} -Compress}\"))\\n\\n    def\
+        \ start(self):\\n        binary = Path(os.environ[\\'WINDIR\\'])/\\'System32/OpenSSH/sshd.exe\\'\\n        if not\
+        \ binary.is_file():\\n            powershell(\"Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null\"\
+        , timeout=180)\\n        assert binary.is_file(), \\'Hosted step unavailable: built-in OpenSSH server is absent\\\
+        '\\n        self.before = self.query()\\n        assert self.before[\\'state\\'] == \\'Stopped\\' and self.before[\\\
+        'pid\\'] == 0, \\'Preserve an incumbent SSH service\\'\\n        self.shell = powershell(\"$p=Get-ItemProperty -Path\
+        \ HKLM:\\\\\\\\SOFTWARE\\\\\\\\OpenSSH -Name DefaultShell -ErrorAction SilentlyContinue; ConvertTo-Json @{default_shell=$p.DefaultShell}\
+        \ -Compress\")\\n        command = \\'\"\\' + str(binary) + \\'\" -f \"\\' + str(self.config) + \\'\"\\'\\n      \
+        \  subprocess.run([\\'sc.exe\\', \\'config\\', \\'sshd\\', \\'binPath=\\', command], check=True, capture_output=True)\\\
+        n        self.changed = True\\n        self.command = command\\n        subprocess.run([str(binary), \\'-t\\', \\\
+        '-f\\', str(self.config)], check=True, capture_output=True)\\n        subprocess.run([\\'sc.exe\\', \\'start\\', \\\
+        'sshd\\'], check=True, capture_output=True)\\n        end = time.monotonic() + 30\\n        while time.monotonic()\
+        \ < end:\\n            row = self.query()\\n            if row[\\'pid\\']:\\n                observed = exact(row[\\\
+        'pid\\'])\\n                assert observed[\\'state\\'] == \\'present\\' and str(self.config) in observed[\\'command\\\
+        ']\\n                assert Path(observed[\\'image\\']).resolve() == binary.resolve()\\n                self.owned\
+        \ = observed\\n            if row[\\'state\\'] == \\'Running\\' and self.owned:\\n                return {\\'before\\\
+        ': self.before, \\'owned\\': self.owned,\\n                        \\'default_shell\\': json.loads(self.shell), \\\
+        'config\\': str(self.config)}\\n            time.sleep(0.2)\\n        raise RuntimeError(\\'Hosted step unavailable:\
+        \ built-in SSH service did not become ready\\')\\n\\n    def close(self):\\n        if not self.changed:\\n      \
+        \      return {\\'state\\': \\'unchanged\\'}\\n        row = self.query()\\n        if row[\\'pid\\']:\\n        \
+        \    observed = self.owned or exact(row[\\'pid\\'])\\n            assert row[\\'pid\\'] == observed[\\'pid\\'] and\
+        \ str(self.config) in observed[\\'command\\']\\n            stopped = stop(observed)\\n            assert stopped[\\\
+        'state\\'] == \\'absent\\' or (stopped[\\'state\\'] == \\'present\\' and stopped[\\'signalled\\'])\\n        end =\
+        \ time.monotonic() + 15\\n        while time.monotonic() < end:\\n            row = self.query()\\n            if\
+        \ row[\\'state\\'] == \\'Stopped\\' and row[\\'pid\\'] == 0:\\n                break\\n            time.sleep(0.2)\\\
+        n        assert row[\\'state\\'] == \\'Stopped\\' and row[\\'pid\\'] == 0\\n        subprocess.run([\\'sc.exe\\',\
+        \ \\'config\\', \\'sshd\\', \\'binPath=\\', self.before[\\'image_path\\']], check=True, capture_output=True)\\n  \
+        \      final = self.query()\\n        assert final == self.before, {\\'service_restore_mismatch\\': final, \\'before\\\
+        ': self.before}\\n        shell = powershell(\"$p=Get-ItemProperty -Path HKLM:\\\\\\\\SOFTWARE\\\\\\\\OpenSSH -Name\
+        \ DefaultShell -ErrorAction SilentlyContinue; ConvertTo-Json @{default_shell=$p.DefaultShell} -Compress\")\\n    \
+        \    assert shell == self.shell, \\'SSH shell selection changed during the fixture\\'\\n        return {\\'state\\\
+        ': \\'restored\\', \\'service\\': final,\\n                \\'owned_process_after\\': exact(self.owned[\\'pid\\'])\
+        \ if self.owned else {\\'state\\': \\'not observed\\'}}\\n'}\nfor name,body in files.items():\n    ast.parse(body,filename=name)\n\
+        \    (root/name).write_text(body,encoding='utf-8')\n"
+    - name: Run installed Windows source and destination through real SSH logons
+      shell: python
+      run: 'import datetime,os,pathlib,subprocess,sys
+
+        root=pathlib.Path(''C:/r5-windows-ssh-''+os.environ[''GITHUB_RUN_ID''])
+
+        controller=pathlib.Path(os.environ[''RUNNER_TEMP''])/''r5-windows-controller''
+
+        assert not os.environ.get(''GH_TOKEN'') and not os.environ.get(''GITHUB_TOKEN'')
+
+        deadline=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(minutes=20)).isoformat()
+
+        subprocess.run([sys.executable,''-B'',str(controller/''regression.py''),''--assets'',str(pathlib.Path(os.environ[''RUNNER_TEMP''])/''r5-release-assets''),''--root'',str(root),''--deadline-utc'',deadline],check=True)
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: r5-windows-installed-regression
+        path: 'C:/r5-windows-ssh-${{ github.run_id }}/reports
+
+          ${{ runner.temp }}/r5-release-provenance.json
+
+          ${{ runner.temp }}/r5-windows-controller'
+        if-no-files-found: error
+        retention-days: 7
