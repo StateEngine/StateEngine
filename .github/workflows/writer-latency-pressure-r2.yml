@@ -67,9 +67,9 @@ jobs:
 
         '
     - name: Select candidate with the same measurement overlay
-      run: "git fetch --quiet origin bd015d85d006b91a8c5ee1aa0306df1fa388e9aa:refs/remotes/measure/head\ntest \"$(git rev-parse\
-        \ refs/remotes/measure/head)\" = bd015d85d006b91a8c5ee1aa0306df1fa388e9aa\ngit restore --source=HEAD --staged --worktree\
-        \ --pathspec-from-file=\"$RUNNER_TEMP/measurement-files\"\ngit checkout --detach bd015d85d006b91a8c5ee1aa0306df1fa388e9aa\n\
+      run: "git fetch --quiet origin 2f13d820944a698e425a9dca068dc7f8383fcbb7:refs/remotes/measure/head\ntest \"$(git rev-parse\
+        \ refs/remotes/measure/head)\" = 2f13d820944a698e425a9dca068dc7f8383fcbb7\ngit restore --source=HEAD --staged --worktree\
+        \ --pathspec-from-file=\"$RUNNER_TEMP/measurement-files\"\ngit checkout --detach 2f13d820944a698e425a9dca068dc7f8383fcbb7\n\
         xargs git checkout refs/remotes/measure/tests -- < \"$RUNNER_TEMP/measurement-files\"\ngit rev-parse HEAD > candidate-source.txt\n\
         while IFS= read -r measurement_path; do\n  git diff --exit-code refs/remotes/measure/tests -- \"$measurement_path\"\
         \ndone < \"$RUNNER_TEMP/measurement-files\"\n"
