@@ -359,6 +359,14 @@ fn validate_connection(
             StoreErrorCode::Unreadable,
             "background maintenance database is absent under retained native custody",
         )),
+        se_types::Read::Unreadable { source, reason, .. } => Err(fail(
+            StoreErrorCode::Unreadable,
+            format!("background maintenance database is unreadable at {source}: {reason}"),
+        )),
+        se_types::Read::Unknown { what } => Err(fail(
+            StoreErrorCode::Unreadable,
+            format!("background maintenance database protection is unknown: {what}"),
+        )),
     }
 }
 fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>, status: &Status) {
