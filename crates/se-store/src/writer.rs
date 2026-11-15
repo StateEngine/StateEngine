@@ -583,11 +583,9 @@ fn run(
             Command::Drain(deadline) => {
                 // The report reads the task status, so the task must be dead
                 // first: no tick can then move Pending between the writer's
-                // final checkpoint and the read. With no live task, the
-                // writer's result is the whole truth. The join itself may
-                // spend the caller's remaining drain deadline; an exhausted
-                // budget then surfaces as Busy from the final flush below.
-                checkpoint.join();
+                // final checkpoint and the read. A missed deadline returns an
+                // error instead of a host with a live maintenance connection.
+                checkpoint.join(deadline)?;
                 let report = flush(&mut host, deadline, &*lease, &status)?;
                 return Ok(DrainedHost { host, report });
             }

@@ -222,8 +222,29 @@ impl CheckpointTask {
         // otherwise drop would wait out an indefinite wait.
         self.status.wake();
     }
-    pub(crate) fn join(mut self) {
+    pub(crate) fn join(mut self, deadline: Instant) -> StoreResult<()> {
         self.signal();
+        while self
+            .handle
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                let mut error = fail(
+                    StoreErrorCode::Busy,
+                    "Background store maintenance did not stop within the drain deadline; storage closure is unproved.",
+                );
+                error.remedy = se_types::Remedy {
+                    text: "Preserve the data home and resolve the storage delay, then restart the runtime process to recreate the maintenance task. For an embedded runtime, restart its owning application.".into(),
+                    command: None,
+                };
+                // Drop signals the worker again. Its connection and lease stay
+                // owned by that worker; no clean host is returned to the caller.
+                return Err(error);
+            };
+            // Never enter the unbounded native join while the thread is live.
+            std::thread::park_timeout(remaining.min(Duration::from_millis(1)));
+        }
         if let Some(handle) = self.handle.take() {
             // A panicked task must read as Failed, never as a clean join:
             // once it is dead the drain report is the last word on the WAL,
@@ -247,6 +268,7 @@ impl CheckpointTask {
                 self.status.set(Maint::Failed(error));
             }
         }
+        Ok(())
     }
 }
 impl Drop for CheckpointTask {
@@ -427,14 +449,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn join_records_a_panicked_task_as_failed() {
+    fn join_records_a_panicked_task_as_failed() -> StoreResult<()> {
         let status = Status::default();
         let task = CheckpointTask {
             handle: Some(std::thread::spawn(|| panic!("planted checkpoint panic"))),
             closed: Arc::new(AtomicBool::new(false)),
             status: status.clone(),
         };
-        task.join();
+        task.join(Instant::now() + Duration::from_secs(2))?;
         assert!(
             status.failed(),
             "a dead task must read as Failed, never Clear"
@@ -455,5 +477,6 @@ mod tests {
             "the maintenance remedy must name a working step, got: {}",
             error.remedy.text
         );
+        Ok(())
     }
 }
