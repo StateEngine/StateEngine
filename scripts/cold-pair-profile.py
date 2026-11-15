@@ -14,6 +14,8 @@ Outputs (under DIR):
   attempt-<n>/trace.jsonl   one sampling tick per line
   attempt-<n>/attempt.json  phase markers, per-process aggregates, checks
   attempt-<n>/cli.stdout, attempt-<n>/cli.stderr
+  attempt-<n>/dest-prepare-diagnostic.txt
+                            named prepare result; failed attempts only
   summary.json              all attempts, max/median, tail-bound verdict
 """
 import argparse
@@ -126,6 +128,19 @@ def process_table():
     return table
 
 
+def wait_uid_gone(dest_uid, bound_sec):
+    """Wait until no process entry of dest_uid remains in any state,
+    zombies included. SIGKILL is asynchronous and userdel refuses while any
+    entry remains; return False when the bound expires."""
+    deadline = clock() + bound_sec
+    while True:
+        if not any(info['uid'] == dest_uid for info in process_table().values()):
+            return True
+        if clock() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
 def tree_from(root_pid):
     table = process_table()
     children = {}
@@ -184,6 +199,99 @@ def find_destination_markers(dest_home, source_home):
     except OSError:
         pass
     return markers
+
+
+# The product's runtime-cache prepare check (staging::prepare, Linux flavor),
+# verbatim: the destination runs it as itself, and its refusal names nothing.
+DEST_PREPARE_EXACT = (
+    'uid=$(id -u) && for p in . .stateengine-runtime '
+    '.stateengine-runtime/@DIGEST@; do\n'
+    'if ! test -d "$p"; then (umask 077 && mkdir "$p") || test -d "$p" '
+    '|| exit 1; fi\n'
+    'if test -L "$p"; then exit 1; fi\n'
+    'owner=$(stat -c %u "$p") && mode=$(stat -c %a "$p") || exit 1\n'
+    'test "$owner" = "$uid" && test "$((0$mode & 022))" -eq 0 || exit 1\n'
+    'done')
+
+# The same predicates, one named line each, no early exit, plus the session
+# CWD: a CWD that is not the destination home fails the first path at once.
+DEST_PREPARE_NAMED = '''uid=$(id -u)
+fail=0
+for p in . .stateengine-runtime .stateengine-runtime/@DIGEST@; do
+  if [ ! -d "$p" ]; then
+    mkdir_detail=$( (umask 077 && mkdir "$p") 2>&1 )
+    if [ -d "$p" ]; then
+      printf 'created p=%s\\n' "$p"
+    else
+      printf 'FAIL mkdir p=%s detail=%s\\n' "$p" "$mkdir_detail"
+      fail=1; continue
+    fi
+  fi
+  if [ -L "$p" ]; then
+    printf 'FAIL symlink p=%s\\n' "$p"; fail=1; continue
+  fi
+  if ! owner=$(stat -c %u "$p"); then
+    printf 'FAIL stat p=%s\\n' "$p"; fail=1; continue
+  fi
+  if ! mode=$(stat -c %a "$p"); then
+    printf 'FAIL stat p=%s\\n' "$p"; fail=1; continue
+  fi
+  if [ "$owner" != "$uid" ]; then
+    printf 'FAIL owner p=%s owner=%s uid=%s mode=%s\\n' "$p" "$owner" "$uid" "$mode"
+    fail=1; continue
+  fi
+  if [ "$((0$mode & 022))" -ne 0 ]; then
+    printf 'FAIL group-or-other-writable p=%s owner=%s uid=%s mode=%s\\n' "$p" "$owner" "$uid" "$mode"
+    fail=1; continue
+  fi
+  printf 'OK p=%s owner=%s mode=%s\\n' "$p" "$owner" "$mode"
+done
+printf 'cwd=%s\\n' "$(pwd)"
+printf 'home=%s\\n' "$HOME"
+exit "$fail"
+'''
+
+
+def dest_prepare_diagnostic(outdir, dest_user, args, digest):
+    """A failed pairing's cache refusal names no check; run the product's
+    exact prepare check as the destination user over the loopback sshd,
+    then the same predicates one named line each."""
+    report = {'ran': False, 'exact_exit': None, 'named_exit': None,
+              'failures': [], 'cwd': None, 'home': None}
+
+    def run_remote(script):
+        return subprocess.run(
+            ['ssh', '-p', str(args.ssh_port), '-i', args.identity,
+             '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
+             '-o', 'StrictHostKeyChecking=accept-new',
+             f'{dest_user}@127.0.0.1', script],
+            capture_output=True, text=True, timeout=60)
+
+    try:
+        exact = run_remote(DEST_PREPARE_EXACT.replace('@DIGEST@', digest))
+        report['exact_exit'] = exact.returncode
+        if exact.stderr.strip():
+            report['exact_stderr'] = exact.stderr.strip()
+    except (subprocess.SubprocessError, OSError) as error:
+        report['exact_error'] = str(error)
+    try:
+        named = run_remote(DEST_PREPARE_NAMED.replace('@DIGEST@', digest))
+        report['named_exit'] = named.returncode
+        lines = named.stdout.splitlines()
+        for line in lines:
+            if line.startswith('FAIL '):
+                report['failures'].append(line)
+            elif line.startswith('cwd='):
+                report['cwd'] = line.split('=', 1)[1]
+            elif line.startswith('home='):
+                report['home'] = line.split('=', 1)[1]
+        (outdir / 'dest-prepare-diagnostic.txt').write_text(
+            f'exact_exit={report["exact_exit"]}\nnamed_exit='
+            f'{report["named_exit"]}\n' + '\n'.join(lines) + '\n')
+    except (subprocess.SubprocessError, OSError) as error:
+        report['named_error'] = str(error)
+    report['ran'] = True
+    return report
 
 
 def run_attempt(index, args, ssh_port, source_pub):
@@ -327,34 +435,51 @@ def run_attempt(index, args, ssh_port, source_pub):
     attempt['checks']['image_published_sha256_match'] = published is not None
     attempt['image_sha256'] = src_sha
 
+    # A failed pairing's refusal names no check; run the product's own
+    # prepare check as the destination user and name the failing predicate.
+    if not attempt['checks']['pairing_connected']:
+        attempt['dest_prepare'] = dest_prepare_diagnostic(
+            outdir, dest_user, args, src_sha)
+
     # Tear down the destination session by exact pid, then remove the user.
+    # The kills run through sudo: the judge's own uid cannot signal the
+    # destination user's processes (EPERM, previously swallowed silently).
+    # SIGKILL is asynchronous and userdel refuses while any entry of the uid
+    # remains (any state, zombies included), so wait for the table to clear.
+    teardown = {'dest_uid': None, 'term_errors': 0, 'kill_errors': 0,
+                'uid_gone_before_userdel': None,
+                'userdel_ok': None, 'userdel_error': None}
     try:
-        dest_uid = None
         for line in pathlib.Path('/etc/passwd').read_text().splitlines():
             if line.startswith(f'{dest_user}:'):
-                dest_uid = int(line.split(':')[2])
+                teardown['dest_uid'] = int(line.split(':')[2])
                 break
+        dest_uid = teardown['dest_uid']
         if dest_uid is not None:
-            victims = [int(pid) for pid, info in process_table().items()
-                       if info['uid'] == dest_uid]
-            for pid in victims:
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+            def kill_uid(sig, field):
+                for pid in [int(pid) for pid, info in process_table().items()
+                            if info['uid'] == dest_uid]:
+                    try:
+                        sudo('kill', '-s', sig, str(pid))
+                    except (RuntimeError, OSError):
+                        teardown[field] += 1  # the pid is already gone
+            kill_uid('TERM', 'term_errors')
             deadline = clock() + 5
             while clock() < deadline and any(
                     info['uid'] == dest_uid for info in process_table().values()):
                 time.sleep(0.1)
-            for pid in [int(pid) for pid, info in process_table().items()
-                        if info['uid'] == dest_uid]:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            kill_uid('KILL', 'kill_errors')
+            teardown['uid_gone_before_userdel'] = wait_uid_gone(dest_uid, 30)
     except OSError:
         pass
-    sudo('userdel', '-r', dest_user)
+    if teardown['dest_uid'] is not None:
+        try:
+            sudo('userdel', '-r', dest_user)
+            teardown['userdel_ok'] = True
+        except RuntimeError as error:
+            teardown['userdel_ok'] = False
+            teardown['userdel_error'] = str(error)
+    attempt['teardown'] = teardown
     shutil.rmtree(src_home, ignore_errors=True)
     attempt['finished'] = clock()
     (outdir / 'attempt.json').write_text(json.dumps(attempt, indent=1) + '\n')
@@ -400,8 +525,12 @@ def main():
     for index in range(1, args.attempts + 1):
         attempt = run_attempt(index, args, args.ssh_port, str(source_pub))
         attempts.append(attempt)
-        print(f'attempt {index}: {attempt.get("wall_sec")}s '
-              f'exit={attempt.get("exit_code")} checks={attempt["checks"]}', flush=True)
+        line = (f'attempt {index}: {attempt.get("wall_sec")}s '
+                f'exit={attempt.get("exit_code")} checks={attempt["checks"]}')
+        prep = attempt.get('dest_prepare') or {}
+        if prep.get('failures'):
+            line += f' dest_prepare={"; ".join(prep["failures"])}'
+        print(line, flush=True)
     times = [a['wall_sec'] for a in attempts if a.get('wall_sec') is not None]
     times_sorted = sorted(times)
     median = times_sorted[len(times_sorted) // 2] if times_sorted else None
@@ -413,14 +542,22 @@ def main():
                      'median': median,
                      'min': min(times) if times else None,
                      'all': times},
-        'slowest_attempt': attempts[times.index(max(times))]['attempt'] if times else None,
+         'slowest_attempt': attempts[times.index(max(times))]['attempt'] if times else None,
     }
+    summary['teardown_failures'] = [
+        a['attempt'] for a in attempts
+        if a.get('teardown', {}).get('dest_uid') is not None
+        and a.get('teardown', {}).get('userdel_ok') is not True]
     if args.tail_bound_sec is not None:
-        # A failed pairing is a tail violation, never a dropped sample.
-        violations = [a['attempt'] for a in attempts
-                      if not a.get('checks', {}).get('pairing_connected')
-                      or a.get('wall_sec') is None
-                      or a['wall_sec'] > args.tail_bound_sec]
+        # A failed pairing or a failed teardown is a tail violation, never a
+        # dropped sample.
+        def violated(a):
+            if a['attempt'] in summary['teardown_failures']:
+                return True
+            return (not a.get('checks', {}).get('pairing_connected')
+                    or a.get('wall_sec') is None
+                    or a['wall_sec'] > args.tail_bound_sec)
+        violations = [a['attempt'] for a in attempts if violated(a)]
         summary['tail_bound_sec'] = args.tail_bound_sec
         summary['tail_bound_violations'] = violations
         summary['tail_bound_verdict'] = 'PASS' if not violations else 'FAIL'
