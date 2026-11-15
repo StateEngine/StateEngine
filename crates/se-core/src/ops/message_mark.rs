@@ -132,7 +132,7 @@ fn row<S: Snapshot>(cx: &mut Cx<'_, S>, record: MessageRecord) -> Result<Message
         scope::COMMITTED_READ_RECOVERY,
     )?;
     Ok(MessageRow {
-        channel_reply: super::message::channel_reply(cx.read, &record.message)?,
+        channel_reply: super::message::channel_reply(cx, &record.message, &record.recipient)?,
         remote_reply: super::message::remote_reply_from(&from, &record.message),
         id: record.message,
         event_id: record.event,
