@@ -38,7 +38,11 @@ impl NativeMetadataPin {
     }
     pub fn metadata(&self) -> Result<Metadata> {
         #[cfg(windows)]
+        let started = std::time::Instant::now();
+        #[cfg(windows)]
         self.files.check(&self.path)?;
+        #[cfg(windows)]
+        let root_before_us = started.elapsed().as_micros();
         // Reuse one protected Windows handle for metadata and file identity.
         #[cfg(windows)]
         let other = self
@@ -53,9 +57,13 @@ impl NativeMetadataPin {
                 )
             })?;
         #[cfg(windows)]
+        let opened_us = started.elapsed().as_micros();
+        #[cfg(windows)]
         let named = other
             .metadata()
             .map_err(|e| io_error("inspect named database metadata", &self.path, e))?;
+        #[cfg(windows)]
+        let named_us = started.elapsed().as_micros();
         #[cfg(unix)]
         let named = self.files.inspect_metadata(&self.path)?.ok_or_else(|| {
             failure(
@@ -92,7 +100,23 @@ impl NativeMetadataPin {
             a.volume == b.volume && a.file == b.file
         };
         #[cfg(windows)]
+        let identity_us = started.elapsed().as_micros();
+        #[cfg(windows)]
         self.files.check(&self.path)?;
+        #[cfg(windows)]
+        let root_after_us = started.elapsed().as_micros();
+        #[cfg(windows)]
+        drop(other);
+        #[cfg(windows)]
+        eprintln!(
+            "native-pin-timing root_before_us={} open_us={} metadata_us={} identity_us={} root_after_us={} close_us={}",
+            root_before_us,
+            opened_us - root_before_us,
+            named_us - opened_us,
+            identity_us - named_us,
+            root_after_us - identity_us,
+            started.elapsed().as_micros() - root_after_us,
+        );
         if !same {
             return Err(failure(
                 StateFileErrorCode::SourceChanged,
