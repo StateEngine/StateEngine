@@ -294,6 +294,11 @@ fn run(
         }
         // Reopen until the first success so a transient lock at startup costs
         // one tick, not the whole maintenance lifetime.
+        let trace_connect_start = Instant::now();
+        let trace_connect_wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_micros();
         let db = match crate::connection::connect(&path, true, timeout) {
             Ok(db) => db,
             Err(error) => {
@@ -304,6 +309,10 @@ fn run(
                 continue;
             }
         };
+        eprintln!(
+            "checkpoint-connect-timing {}",
+            serde_json::json!({"pid":std::process::id(),"thread":format!("{:?}",std::thread::current().id()),"start_us":trace_connect_wall,"total_us":trace_connect_start.elapsed().as_micros()})
+        );
         if let Err(error) = db.busy_timeout(BACKOFF) {
             status.set(Maint::Failed(sql(error)));
             if status.wait(&closed, Some(TICK)) {
@@ -433,15 +442,26 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
     }
 }
 fn checkpoint(db: &Connection, mode: &str) -> StoreResult<(i64, i64, i64)> {
+    let trace_start = Instant::now();
+    let trace_wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock before epoch")
+        .as_micros();
     let statement = format!("PRAGMA wal_checkpoint({mode})");
-    db.query_row(statement.as_str(), [], |r| {
-        Ok((
-            crate::sql_value::value::<i64>(r, 0)?,
-            crate::sql_value::value::<i64>(r, 1)?,
-            crate::sql_value::value::<i64>(r, 2)?,
-        ))
-    })
-    .map_err(sql)
+    let result = db
+        .query_row(statement.as_str(), [], |r| {
+            Ok((
+                crate::sql_value::value::<i64>(r, 0)?,
+                crate::sql_value::value::<i64>(r, 1)?,
+                crate::sql_value::value::<i64>(r, 2)?,
+            ))
+        })
+        .map_err(sql);
+    eprintln!(
+        "checkpoint-mode-timing {}",
+        serde_json::json!({"pid":std::process::id(),"thread":format!("{:?}",std::thread::current().id()),"mode":mode,"start_us":trace_wall,"end_us":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock before epoch").as_micros(),"total_us":trace_start.elapsed().as_micros(),"result":result.as_ref().ok(),"error":result.as_ref().err().map(|e|format!("{e:?}"))})
+    );
+    result
 }
 
 #[cfg(test)]
