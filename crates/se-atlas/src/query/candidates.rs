@@ -122,7 +122,7 @@ pub(super) fn collect(
             }
             let cost = key.len() + tie.len() + 160;
             resident += cost;
-            output.values.push(Candidate {
+            let candidate = Candidate {
                 kind,
                 rowid,
                 tier: plan.tier,
@@ -136,14 +136,16 @@ pub(super) fn collect(
                 precomputed_last,
                 lexical: if bm25 < 0.0 { -bm25 } else { 0.0 },
                 related: false,
+            };
+            let position = output.values.partition_point(|old| {
+                old.tier
+                    .cmp(&candidate.tier)
+                    .then(candidate.precomputed_last.cmp(&old.precomputed_last))
+                    .then(old.tie.cmp(&candidate.tie))
+                    .then(old.key.cmp(&candidate.key))
+                    .is_le()
             });
-            output.values.sort_by(|a, b| {
-                a.tier
-                    .cmp(&b.tier)
-                    .then(b.precomputed_last.cmp(&a.precomputed_last))
-                    .then(a.tie.cmp(&b.tie))
-                    .then(a.key.cmp(&b.key))
-            });
+            output.values.insert(position, candidate);
             while output.values.len() > 128 || resident > 24576 {
                 let old = output
                     .values
@@ -154,6 +156,7 @@ pub(super) fn collect(
             }
         }
     }
+    let mut activity = crate::rank::ActivityReader::new(sql)?;
     for candidate in &mut output.values {
         let tag = match candidate.kind {
             Kind::Symbol => "symbol",
@@ -161,8 +164,7 @@ pub(super) fn collect(
             Kind::Record => "record",
             Kind::Commit => "commit",
         };
-        candidate.activity = crate::rank::activity(
-            sql,
+        candidate.activity = activity.read(
             tag,
             &candidate.key,
             crate::rank::ActivityQuery {
