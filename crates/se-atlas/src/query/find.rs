@@ -269,7 +269,6 @@ impl QueryReader<'_, '_, '_> {
                 text: None,
                 bodies_omitted: body_omitted,
             };
-            output.validate()?;
             Ok(super::search_page::SearchPage {
                 answer: snapshot.answer(Read::Present { value: output }, advanced),
                 keys,

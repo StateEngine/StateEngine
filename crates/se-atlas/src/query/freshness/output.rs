@@ -33,7 +33,6 @@ impl<T: Verified + Serialize> Verified for Page<T> {
 impl Verified for SearchResults {
     fn verify(mut self, verifier: &mut Verifier<'_, '_, '_, '_>) -> AtlasResult<Self> {
         self.page = self.page.verify(verifier)?;
-        self.validate()?;
         Ok(self)
     }
 }
