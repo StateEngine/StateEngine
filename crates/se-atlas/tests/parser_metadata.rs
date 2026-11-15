@@ -1,7 +1,13 @@
 //! Parser algorithm inputs only. Capacity values here are NOT native RSS
 //! qualification, and never activate an incremental production profile.
-use super::*;
-use crate::lifecycle::{FileIdentity, RevisionTrust};
+use se_atlas::{
+    errors::AtlasResult,
+    lifecycle::{AtlasParser, FileIdentity, RevisionTrust, SourceSnapshot},
+    model::*,
+    parse::{ParserPlacement, ParserProfile, SemanticParser},
+    scope::Scope,
+};
+use std::time::Duration;
 fn scope() -> AtlasResult<Scope> {
     let project = se_types::ProjectId::from_parts(1, [1; 10])?;
     let root = RootId::from_parts(1, [2; 10])?;

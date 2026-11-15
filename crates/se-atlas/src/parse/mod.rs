@@ -233,6 +233,3 @@ fn failure(path: &RelativePath, language: Language, reason: String) -> se_types:
         },
     ))
 }
-
-#[cfg(test)]
-mod tests;
