@@ -1,4 +1,5 @@
 """Skip work only for a proved unaffected diff; any detection failure runs it."""
+import argparse
 import json
 import os
 from pathlib import Path
@@ -53,19 +54,42 @@ def windows_affected(event, name):
     return not paths or not all(NOT_WINDOWS.fullmatch(path) for path in paths)
 
 
-def main():
+# Remote feature tests consume these crates and their shared Rust dependencies.
+REMOTE_INPUTS = (
+    "crates/se-host/", "crates/se-remote/", "crates/se-remote-cli/",
+    "crates/se-config/", "crates/se-types/", "crates/se-core/", "crates/se-store/",
+    "crates/se-proc/", "crates/se-atlas", "crates/se/",
+    ".cargo/", ".github/", "scripts/ci/",
+)
+
+
+def remote_affected(event, name):
+    paths = changed_paths(event, name)
+    return not paths or any(path.startswith(REMOTE_INPUTS) or path in {
+        "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "crates/se/Cargo.toml",
+    } for path in paths)
+
+
+def main(remote_only=False):
     try:
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-        run = affected(event, os.environ["GITHUB_EVENT_NAME"])
-        windows = windows_affected(event, os.environ["GITHUB_EVENT_NAME"])
+        if remote_only:
+            run = remote_affected(event, os.environ["GITHUB_EVENT_NAME"])
+        else:
+            run = affected(event, os.environ["GITHUB_EVENT_NAME"])
+            windows = windows_affected(event, os.environ["GITHUB_EVENT_NAME"])
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-        print(f"Change detection unavailable; running all Rust checks: {error}")
+        selected = "remote feature tests" if remote_only else "all Rust checks"
+        print(f"Change detection unavailable; running {selected}: {error}")
         run = windows = True
-    lines = f"rust={str(run).lower()}\nwindows={str(windows).lower()}\n"
+    lines = (f"remote={str(run).lower()}\n" if remote_only else
+             f"rust={str(run).lower()}\nwindows={str(windows).lower()}\n")
     print(lines, end="")
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         output.write(lines)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--remote-only", action="store_true")
+    main(remote_only=parser.parse_args().remote_only)

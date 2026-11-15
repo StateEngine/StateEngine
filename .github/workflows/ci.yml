@@ -50,6 +50,7 @@ jobs:
     outputs:
       rust: ${{ steps.detect.outputs.rust }}
       windows: ${{ steps.detect.outputs.windows }}
+      remote: ${{ steps.remote.outputs.remote }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -60,6 +61,9 @@ jobs:
       - name: Detect changes (unresolved diffs run everything)
         id: detect
         run: python -I scripts/ci/changes.py
+      - name: Detect remote feature inputs (unresolved diffs run them)
+        id: remote
+        run: python3 -I scripts/ci/changes.py --remote-only
 
   linux-route:
     permissions: {}
@@ -408,7 +412,7 @@ jobs:
     if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.job == 'macos') && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test, macos-test]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -419,3 +423,27 @@ jobs:
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: python -I scripts/ci/check.py
+      # Keep this in the required job so both Linux runner routes execute it.
+      # A missing output from the base revision also runs these tests.
+      - name: Check out the remote test source
+        if: ${{ needs.changes.outputs.rust != 'false' && needs.changes.outputs.remote != 'false' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: remote-tests
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+        if: ${{ needs.changes.outputs.rust != 'false' && needs.changes.outputs.remote != 'false' }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        if: ${{ needs.changes.outputs.rust != 'false' && needs.changes.outputs.remote != 'false' }}
+        with:
+          shared-key: hosted-remote-tests-v1
+          workspaces: remote-tests -> target
+      - name: Run host and remote tests with the remote feature
+        if: ${{ needs.changes.outputs.rust != 'false' && needs.changes.outputs.remote != 'false' }}
+        working-directory: remote-tests
+        run: |
+          started=$SECONDS
+          trap 'code=$?; echo "Remote feature compile and tests: $((SECONDS - started)) seconds (exit $code)" >> "$GITHUB_STEP_SUMMARY"' EXIT
+          target="$(rustc --print host-tuple)"
+          filter="$(python3 scripts/ci/custom.py filter)"
+          cargo nextest run --target "$target" -p se-host -p se-remote --features remote --locked --profile ci -E "$filter"
