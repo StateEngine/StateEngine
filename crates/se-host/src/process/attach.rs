@@ -1,3 +1,4 @@
+use super::readiness::refused;
 use super::*;
 use super::{launch::Work, launch_util::call};
 use crate::{HarnessAttach, HarnessRequest, client::lease::Deadline};
@@ -206,17 +207,28 @@ impl LaunchCoordinator {
                     let native = self.native.clone();
                     let owner = owner.clone();
                     let path = path.clone();
+                    let agent = plan.agent.id.clone();
+                    let observed_until = readiness.at();
                     pin = self
                         .store
                         .pool
                         .run_owned(&readiness, move || {
-                            let observed = native
-                                .observe(&owner)
-                                .map_err(|e| error("Claude transcript process witness", e))?;
+                            let observed =
+                                native.observe_until(&owner, observed_until).map_err(|e| {
+                                    refused(
+                                        &agent,
+                                        "Claude transcript process witness",
+                                        format!("{e:?}"),
+                                    )
+                                })?;
                             if !matches!(observed.root, se_proc::ProcessObservation::Live(_)) {
-                                return Err(error(
+                                return Err(refused(
+                                    &agent,
                                     "Claude transcript readiness",
-                                    "provider exited before creating its transcript",
+                                    format!(
+                                        "provider exited before creating its transcript: {:?}",
+                                        observed.root
+                                    ),
                                 ));
                             }
                             se_proc::NativeSourcePin::open(&path)
@@ -246,7 +258,8 @@ impl LaunchCoordinator {
                     .await?;
             }
             let mut pin = pin.ok_or_else(|| {
-                error(
+                refused(
+                    &plan.agent.id,
                     "provider transcript readiness",
                     "the provider has not created its transcript",
                 )
@@ -280,19 +293,25 @@ impl LaunchCoordinator {
         // Re-read the native pinned instance after the async provider handshake.
         // An already-exited provider cannot be published as running.
         let native = self.native.clone();
+        let agent = plan.agent.id.clone();
+        let observed_until = deadline.at();
         let observation = self
             .store
             .pool
             .run_owned(deadline, move || {
                 native
-                    .observe(&owner)
-                    .map_err(|e| error("readiness process witness", e))
+                    .observe_until(&owner, observed_until)
+                    .map_err(|e| refused(&agent, "readiness process witness", format!("{e:?}")))
             })
             .await?;
         if !matches!(observation.root, se_proc::ProcessObservation::Live(_)) {
-            return Err(se_core::scope::unreadable(
+            return Err(refused(
+                &plan.agent.id,
                 "provider readiness",
-                "provider exited before C3 publication",
+                format!(
+                    "provider exited before publication as running: {:?}",
+                    observation.root
+                ),
             ));
         }
         let stored = native_record::identity(
@@ -315,6 +334,8 @@ impl LaunchCoordinator {
             changed.as_mut().enable();
             work.wake.require_startup()?;
             let native = self.native.clone();
+            let agent = plan.agent.id.clone();
+            let observed_until = deadline.at();
             let owner = work
                 .process
                 .clone()
@@ -323,15 +344,23 @@ impl LaunchCoordinator {
                 .store
                 .pool
                 .run_owned(deadline, move || {
-                    native
-                        .observe(&owner)
-                        .map_err(|e| error("credential readiness process witness", e))
+                    native.observe_until(&owner, observed_until).map_err(|e| {
+                        refused(
+                            &agent,
+                            "credential readiness process witness",
+                            format!("{e:?}"),
+                        )
+                    })
                 })
                 .await?;
             if !matches!(observed.root, se_proc::ProcessObservation::Live(_)) {
-                return Err(error(
+                return Err(refused(
+                    &plan.agent.id,
                     "credential readiness",
-                    "provider exited before verified first use; no credential was activated",
+                    format!(
+                        "provider exited before verified first use; no credential was activated: {:?}",
+                        observed.root
+                    ),
                 ));
             }
             let proof = self.proofs.wait(&plan.session, deadline);

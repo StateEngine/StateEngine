@@ -247,7 +247,11 @@ impl LaunchCoordinator {
                             Ok(()) => { owned.settled.store(true,Ordering::Release); coordinator.activity.send_modify(|count| *count=count.saturating_sub(1)); original.body }
                             Err(cleanup) => {
                                 state.cleanup_failure = Some(cleanup.body.clone());
-                                se_core::scope::unreadable("launch failed with retained cleanup", &format!("launch={original}; cleanup={cleanup}; retry the original request identity to inspect its retained custody")).body
+                                if matches!(original.body.detail(), se_types::Detail::LaunchFailed(_)) {
+                                    super::readiness::refused(&owned.target.1, "provider readiness with retained cleanup", format!("launch={original}; cleanup remains unproved: {cleanup}")).body
+                                } else {
+                                    se_core::scope::unreadable("launch failed with retained cleanup", &format!("launch={original}; cleanup={cleanup}; retry the original request identity to inspect its retained custody")).body
+                                }
                             }
                         };
                         owned.ready.send_replace(Some(Err(failure)));
