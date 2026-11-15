@@ -200,7 +200,7 @@ def run_client(binary, home, client, samples, barrier, report):
                         raise ValueError("working-state revision did not advance once")
                     revision = next_revision
                 rows.append({"ms": elapsed, "event_id": receipt["event_id"], "key": key,
-                             "writer": receipt["writer"]})
+                             "writer": receipt["writer"], "diagnostics": receipt.get("diagnostics")})
                 receipts.append((name, arguments, receipt, hashlib.sha256(body.encode()).hexdigest()))
         # A separate bridge reads every immutable event outside the writing connection.
         reader = Rpc(binary, home, client["capability"])
