@@ -5,7 +5,15 @@ use se_types::SeError;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-pub(in crate::remote) async fn ssh(destination: &str, command: String) -> Result<(bool, Vec<u8>)> {
+/// One fixed SSH command: the exit status, bounded stdout, and a sanitized
+/// tail of the client's stderr. The tail keeps a refusal from hiding the
+/// cause (issue 381: "remote platform discovery failed" over a refused key).
+pub(in crate::remote) struct SshOutcome {
+    pub success: bool,
+    pub stdout: Vec<u8>,
+    pub stderr_tail: String,
+}
+pub(in crate::remote) async fn ssh(destination: &str, command: String) -> Result<SshOutcome> {
     validate_destination(destination)?;
     let mut child = Command::new("ssh")
         .args(["-T", "-o", "BatchMode=yes", destination, &command])
@@ -26,7 +34,7 @@ pub(in crate::remote) async fn ssh(destination: &str, command: String) -> Result
     let result = timeout(Duration::from_secs(25), async {
         let mut bytes = Vec::new();
         let mut stdout = stdout.take(65537);
-        tokio::try_join!(
+        let (_, stderr_tail) = tokio::try_join!(
             async {
                 stdout
                     .read_to_end(&mut bytes)
@@ -44,7 +52,11 @@ pub(in crate::remote) async fn ssh(destination: &str, command: String) -> Result
             .wait()
             .await
             .map_err(|_| unavailable("SSH completion could not be observed"))?;
-        Ok((status.success(), bytes))
+        Ok(SshOutcome {
+            success: status.success(),
+            stdout: bytes,
+            stderr_tail,
+        })
     })
     .await;
     match result {
@@ -121,7 +133,7 @@ pub(super) async fn send_image(
     let started = std::time::Instant::now();
     let result = {
         let transfer = async {
-            tokio::try_join!(
+            let ((), (), _) = tokio::try_join!(
                 copy_image(&mut image.file, input, expected, &streamed),
                 drain(output, 65536),
                 read_errors(destination, errors)

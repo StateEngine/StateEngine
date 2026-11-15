@@ -101,7 +101,7 @@ async fn cached_image(destination: &str, image: &super::image::Image) -> Result<
             staging::prepare(&image.directory(), true, false),
         )
         .await?
-        .0
+        .success
         {
             return Err(unsafe_cache());
         }
@@ -110,9 +110,9 @@ async fn cached_image(destination: &str, image: &super::image::Image) -> Result<
             staging::verify(&image.remote(), &image.digest, true, false),
         )
         .await?
-        .0);
+        .success);
     }
-    let (cached, detail) = ssh(
+    let outcome = ssh(
         destination,
         image_commands::cached(
             &image.directory(),
@@ -122,6 +122,7 @@ async fn cached_image(destination: &str, image: &super::image::Image) -> Result<
         ),
     )
     .await?;
+    let (cached, detail) = (outcome.success, &outcome.stdout);
     if !detail.starts_with(image_commands::CACHE_PREPARED) {
         return Err(unsafe_cache());
     }
@@ -134,36 +135,38 @@ async fn publish_image(destination: &str, image: &super::image::Image, upload: &
         let _published = ssh(destination, staging::publish(upload, &image.remote(), true)).await?;
         verify_image(destination, image, &image.remote()).await?;
         return match ssh(destination, staging::remove(upload, true)).await {
-            Ok((true, _)) => Ok(()),
+            Ok(outcome) if outcome.success => Ok(()),
             _ => Err(cleanup_incomplete()),
         };
     }
-    let (verified, detail) = ssh(
+    let outcome = ssh(
         destination,
         image_commands::publish(upload, &image.remote(), &image.digest, image.apple),
     )
     .await?;
+    let (verified, detail) = (outcome.success, &outcome.stdout);
     if verified {
         return Ok(());
     }
-    if image_commands::has_marker(&detail, image_commands::CLEANUP_FAILED)
-        && !image_commands::has_marker(&detail, image_commands::VERIFY_FAILED)
+    if image_commands::has_marker(detail, image_commands::CLEANUP_FAILED)
+        && !image_commands::has_marker(detail, image_commands::VERIFY_FAILED)
     {
         return Err(cleanup_incomplete());
     }
-    Err(super::command::verification_error(&detail))
+    Err(super::command::verification_error(detail))
 }
 
 async fn verify_image(destination: &str, image: &super::image::Image, path: &str) -> Result<()> {
-    let (verified, detail) = ssh(
+    let outcome = ssh(
         destination,
         staging::verify(path, &image.digest, image.windows, image.apple),
     )
     .await?;
+    let (verified, detail) = (outcome.success, &outcome.stdout);
     if verified {
         Ok(())
     } else {
-        Err(super::command::verification_error(&detail))
+        Err(super::command::verification_error(detail))
     }
 }
 

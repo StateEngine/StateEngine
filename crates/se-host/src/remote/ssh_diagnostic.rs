@@ -7,7 +7,7 @@ use tokio::{io::AsyncReadExt, process::ChildStderr, sync::watch, task::JoinHandl
 pub(super) async fn read_errors(
     destination: &str,
     reader: impl tokio::io::AsyncRead + Unpin,
-) -> Result<()> {
+) -> Result<String> {
     let mut reader = reader.take(4097);
     let mut bytes = Vec::new();
     loop {
@@ -33,9 +33,35 @@ pub(super) async fn read_errors(
             })));
         }
         if count == 0 {
-            return Ok(());
+            return Ok(sanitized_stderr_tail(&bytes));
         }
     }
+}
+
+/// Bounded, sanitized view of the local SSH client's stderr for a refusal:
+/// the last non-empty line, printable ASCII only, length-capped. It is the
+/// client's own verdict ("Permission denied (publickey).", "Connection
+/// refused"), never a product claim; everything else in stderr is discarded.
+pub(super) fn sanitized_stderr_tail(bytes: &[u8]) -> String {
+    const MAX: usize = 160;
+    for line in bytes.split(|byte| *byte == b'\n').rev() {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let cleaned: String = line
+            .iter()
+            .filter(|byte| **byte == b' ' || byte.is_ascii_graphic())
+            .map(|byte| *byte as char)
+            .collect();
+        let cleaned = cleaned.trim().to_string();
+        if cleaned.is_empty() {
+            continue;
+        }
+        // An overlong line keeps its end: the client states the verdict last.
+        if cleaned.len() <= MAX {
+            return cleaned;
+        }
+        return cleaned[cleaned.len() - MAX..].to_string();
+    }
+    String::new()
 }
 
 #[derive(Clone, Copy, Default)]
@@ -144,6 +170,90 @@ impl Drop for Diagnostics {
     fn drop(&mut self) {
         if let Some(task) = &self.task {
             task.abort();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_errors, sanitized_stderr_tail};
+    use se_types::Detail;
+
+    #[test]
+    fn tail_is_the_last_non_empty_line() {
+        let bytes = b"Warning: Permanently added '127.0.0.1' (ED25519) to the list of known hosts.\nuser@host: Permission denied (publickey).\n";
+        assert_eq!(
+            sanitized_stderr_tail(bytes),
+            "user@host: Permission denied (publickey)."
+        );
+    }
+
+    #[test]
+    fn tail_strips_carriage_returns() {
+        let bytes = b"line one\r\nuser@host: Permission denied (publickey).\r\n";
+        assert_eq!(
+            sanitized_stderr_tail(bytes),
+            "user@host: Permission denied (publickey)."
+        );
+    }
+
+    #[test]
+    fn tail_keeps_only_printable_ascii() {
+        let bytes = b"ssh: connect to host \xc3\xa9xample port 22: Connection refused";
+        let tail = sanitized_stderr_tail(bytes);
+        assert!(
+            tail.bytes()
+                .all(|byte| byte == b' ' || (0x21..=0x7e).contains(&byte)),
+            "{tail:?}"
+        );
+        assert!(tail.contains("Connection refused"), "{tail:?}");
+    }
+
+    #[test]
+    fn tail_keeps_the_end_of_an_overlong_line() {
+        let line = "a".repeat(300);
+        let bytes = format!("prefix\n{line}").into_bytes();
+        let tail = sanitized_stderr_tail(&bytes);
+        assert_eq!(tail.len(), 160);
+        assert!(tail.chars().all(|character| character == 'a'));
+    }
+
+    #[test]
+    fn tail_is_empty_without_readable_lines() {
+        assert_eq!(sanitized_stderr_tail(b""), "");
+        assert_eq!(sanitized_stderr_tail(b"\n\r\n"), "");
+        assert_eq!(sanitized_stderr_tail(b"\xff\xfe"), "");
+    }
+
+    #[tokio::test]
+    async fn read_errors_returns_the_sanitized_tail() {
+        let bytes = b"user@host: Permission denied (publickey).\n";
+        let tail = match read_errors("dest", tokio::io::BufReader::new(&bytes[..])).await {
+            Ok(tail) => tail,
+            Err(error) => panic!("read_errors refused: {error:?}"),
+        };
+        assert_eq!(tail, "user@host: Permission denied (publickey).");
+    }
+
+    #[tokio::test]
+    async fn read_errors_still_refuses_hostname_diagnostics() {
+        let bytes =
+            b"ssh: Could not resolve hostname pairdest: Temporary failure in name resolution\n";
+        let error = match read_errors("pairdest", tokio::io::BufReader::new(&bytes[..])).await {
+            Ok(_) => panic!("read_errors accepted a hostname refusal"),
+            Err(error) => error,
+        };
+        match error.body.detail() {
+            Detail::ListenerUnavailable(detail) => {
+                assert!(
+                    detail
+                        .reason
+                        .contains("could not resolve the host name for pairdest"),
+                    "{}",
+                    detail.reason
+                );
+            }
+            other => panic!("expected listener-unavailable, got {other:?}"),
         }
     }
 }
