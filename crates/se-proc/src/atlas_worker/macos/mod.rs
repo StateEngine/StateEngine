@@ -402,10 +402,10 @@ impl WorkerChannel {
     pub fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
         write_frame(&mut self.0, bytes)
     }
-    /// Parsing starts only after its owner arms the external phase clock.
-    pub fn await_parse(&mut self) -> io::Result<()> {
-        if read_frame(&mut self.0)? != b"parse" {
-            return Err(invalid("parent parse authorization absent"));
+    /// Source reading starts only after its owner arms the shared file clock.
+    pub fn await_source_read(&mut self) -> io::Result<()> {
+        if read_frame(&mut self.0)? != b"source" {
+            return Err(invalid("parent source read authorization absent"));
         }
         Ok(())
     }

@@ -125,6 +125,14 @@ mod native {
                 &atlas_cold::protocol::Reply::Working {
                     job: request.job,
                     path: Some(se_types::code::RelativePath::new("good.js")?),
+                    phase: atlas_cold::protocol::Phase::SourceRead,
+                },
+            )?)?;
+            channel.await_source_read()?;
+            channel.send(&serde_json::to_vec(
+                &atlas_cold::protocol::Reply::Working {
+                    job: request.job,
+                    path: Some(se_types::code::RelativePath::new("good.js")?),
                     phase: atlas_cold::protocol::Phase::Parse,
                 },
             )?)?;

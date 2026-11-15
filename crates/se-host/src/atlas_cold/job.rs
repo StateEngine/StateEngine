@@ -172,7 +172,7 @@ impl ColdJob {
                         // the remaining 300 ms belongs to exact cancellation.
                         let end = (Instant::now() + Duration::from_millis(200)).min(self.deadline);
                         self.parse_deadline = Some(end);
-                        self.worker.send_control(b"parse", end).map_err(failure)?;
+                        self.worker.send_control(b"source", end).map_err(failure)?;
                     } else if matches!(phase, protocol::Phase::Parse) {
                         if self.parse_deadline.is_none() {
                             return Err(failure("parse phase without source read authorization"));
