@@ -234,7 +234,7 @@ fn zz_journal_removed_after_warming() -> Check {
         volume.len() == 2 && volume.as_bytes()[0].is_ascii_alphabetic() && volume.ends_with(':')
     );
     let status = std::process::Command::new("fsutil.exe")
-        .args(["usn", "deletejournal", "/d", &volume])
+        .args(["usn", "deletejournal", "/n", &volume])
         .status()?;
     assert!(status.success());
     let mut writer = OpenOptions::new().read(true).write(true).open(&path)?;
@@ -253,6 +253,137 @@ fn zz_journal_removed_after_warming() -> Check {
     );
     eprintln!(
         "DELTA journal-removed warm_digest_invalidated=true unavailable_full_hash_verified=true"
+    );
+    Ok(())
+}
+fn native_usn(file: &File) -> Check<i64> {
+    let mut buffer = [0u64; 512];
+    let mut returned = 0u32;
+    if unsafe {
+        windows_sys::Win32::System::IO::DeviceIoControl(
+            file.as_raw_handle(),
+            0x900eb,
+            std::ptr::null(),
+            0,
+            buffer.as_mut_ptr().cast(),
+            4096,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let bytes =
+        unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), returned as usize) };
+    let major = u16::from_le_bytes(bytes.get(4..6).ok_or("short native record")?.try_into()?);
+    let offset = match major {
+        2 => 24,
+        3 => 40,
+        _ => return Err("unsupported native USN record".into()),
+    };
+    Ok(i64::from_le_bytes(
+        bytes
+            .get(offset..offset + 8)
+            .ok_or("short native USN")?
+            .try_into()?,
+    ))
+}
+fn journal_id(volume: &str) -> Check<u64> {
+    let file = OpenOptions::new()
+        .access_mode(0x80000000)
+        .open(format!(r"\\.\{volume}"))?;
+    let mut output = [0u64; 16];
+    let mut returned = 0u32;
+    if unsafe {
+        windows_sys::Win32::System::IO::DeviceIoControl(
+            file.as_raw_handle(),
+            0x900f4,
+            std::ptr::null(),
+            0,
+            output.as_mut_ptr().cast(),
+            128,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    assert!(returned >= 56);
+    Ok(output[0])
+}
+fn journal_command(volume: &str, create: bool) -> Check {
+    let args = if create {
+        vec!["usn", "createjournal", "m=8388608", "a=1048576", volume]
+    } else {
+        vec!["usn", "deletejournal", "/n", volume]
+    };
+    assert!(
+        std::process::Command::new("fsutil.exe")
+            .args(args)
+            .status()?
+            .success()
+    );
+    Ok(())
+}
+#[test]
+fn zy_journal_recreated_with_colliding_positive_usn() -> Check {
+    let path = fixture("journal-recreated")?;
+    fs::write(&path, vec![b'A'; 4096])?;
+    let clock = basic(&File::open(&path)?)?;
+    let volume = std::env::var("DELTA_VOLUME")?;
+    assert!(
+        volume.len() == 2 && volume.as_bytes()[0].is_ascii_alphabetic() && volume.ends_with(':')
+    );
+    let mut observations = Vec::new();
+    for byte in [b'A', b'B'] {
+        journal_command(&volume, false)?;
+        journal_command(&volume, true)?;
+        let instance = journal_id(&volume)?;
+        // Replay identical same-file record shapes in each fresh journal.
+        // Two separately closed writes put the file at a positive USN.
+        for _ in 0..2 {
+            let mut file = OpenOptions::new().read(true).write(true).open(&path)?;
+            rewrite(&mut file, &vec![byte; 4096], &clock)?;
+        }
+        let held = File::open(&path)?;
+        let revision = native_usn(&held)?;
+        assert!(
+            revision > 0,
+            "collision fixture did not reach a positive USN"
+        );
+        let key = serde_json::to_value(image::key(&held, &held.metadata()?)?)?;
+        observations.push((instance, revision, key, digest(&path)?));
+        if byte == b'A' {
+            assert_eq!(
+                image::hash_image(File::open(&path)?, &bound())?,
+                digest(&path)?
+            );
+        }
+    }
+    let first = &observations[0];
+    let second = &observations[1];
+    eprintln!(
+        "DELTA recreated-journal first_instance={} second_instance={} first_usn={} second_usn={} first_key={} second_key={}",
+        first.0, second.0, first.1, second.1, first.2, second.2
+    );
+    for field in ["identity", "modified", "size"] {
+        assert_eq!(
+            first.2[field], second.2[field],
+            "collision fixture changed {field}"
+        );
+    }
+    assert_ne!(first.0, second.0, "journal was not recreated");
+    assert_eq!(
+        first.1, second.1,
+        "COLLISION_NOT_EXERCISED: no equal native USN"
+    );
+    assert_ne!(first.3, second.3, "changed bytes were not exercised");
+    assert_eq!(
+        image::hash_image(File::open(&path)?, &bound())?,
+        second.3,
+        "recreated journal reused an old generation digest"
     );
     Ok(())
 }

@@ -187,11 +187,21 @@ fn exercise(reader: &str) -> Check {
         .append(true)
         .open(&image)?
         .write_all(b"independent-native-proof-A")?;
-    let old = digest(&image)?;
-    child(&image, &home, reader, "publish", old, old)?;
-    let clock = rewrite_and_restore_clocks(&image)?;
-    // Model a legacy protected key while preserving the real old digest and
-    // native identity. The current proof must reject clock-only reuse.
+    let original = digest(&image)?;
+    let generationless = std::env::var("PROOF_LEGACY_MODE").as_deref() == Ok("generationless");
+    let old = if generationless {
+        Sha256::from_bytes([0x5a; 32])
+    } else {
+        original
+    };
+    child(&image, &home, reader, "publish", old, original)?;
+    let clock = if generationless {
+        0
+    } else {
+        rewrite_and_restore_clocks(&image)?
+    };
+    // Clock keys retain the old measured digest after a same-file rewrite.
+    // Generation-less keys carry a sentinel to witness forbidden reuse.
     let mut hints = 0;
     for entry in fs::read_dir(&home)? {
         let entry = entry?;
@@ -200,13 +210,20 @@ fn exercise(reader: &str) -> Check {
         }
         let mut value: serde_json::Value = serde_json::from_slice(&fs::read(entry.path())?)?;
         if let Some(key) = value.get_mut("image") {
-            key["changed"] = serde_json::json!([clock, 0]);
+            if generationless {
+                key.as_object_mut()
+                    .ok_or("image key is not an object")?
+                    .remove("journal");
+                value["digest"] = serde_json::to_value(old)?;
+            } else {
+                key["changed"] = serde_json::json!([clock, 0]);
+            }
             fs::write(entry.path(), serde_json::to_vec(&value)?)?;
             hints += 1;
         }
     }
     assert!(hints > 0, "no protected legacy hint was exercised");
-    eprintln!("LEGACY_KEYS reader={reader} hints={hints} tag=0");
+    eprintln!("LEGACY_KEYS reader={reader} hints={hints} generationless={generationless}");
     let actual = digest(&image)?;
     assert_ne!(old, actual);
     child(&image, &home, reader, "cold", old, actual)?;
