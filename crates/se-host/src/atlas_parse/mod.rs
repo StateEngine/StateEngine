@@ -68,9 +68,11 @@ impl Parser {
             .as_ref()
             .ok_or_else(|| failure("installed Atlas worker image absent"))?;
         // Keep termination and exact reap inside the original source step.
-        let work_end = deadline
-            .checked_sub(Duration::from_millis(50))
-            .unwrap_or(deadline);
+        let work_end = (Instant::now() + budget.max_work).min(
+            deadline
+                .checked_sub(Duration::from_millis(50))
+                .unwrap_or(deadline),
+        );
         if work_end <= Instant::now() {
             return Err(expired());
         }
@@ -133,7 +135,7 @@ impl Parser {
         }
         // Neither a reply nor a timeout grants success before exact reap.
         match (self.close(deadline), result) {
-            (Ok(()), result) => result,
+            (Ok(()), result) => outcome(result, source, snapshot, language, deadline),
             (Err(close), Err(error)) => Err(close.with_cause(error)),
             (Err(close), Ok(_)) => Err(close),
         }
@@ -144,4 +146,37 @@ pub(crate) fn expired() -> SeError {
         op: "Atlas parse attempt".into(),
         deadline_ms: 500,
     }))
+}
+
+#[cfg(target_os = "linux")]
+// A completed cancellation is a finite file refusal, not an endless retry of
+// the same unparseable revision. No late child row survives into this result.
+fn outcome(
+    result: AtlasResult<ParsedFile>,
+    source: &Source,
+    snapshot: &SourceSnapshot,
+    language: Language,
+    deadline: Instant,
+) -> AtlasResult<ParsedFile> {
+    match result {
+        Err(error)
+            if Instant::now() < deadline
+                && matches!(error.body.detail(),
+            Detail::DeadlineExceeded(detail) if detail.op == "Atlas parse attempt") =>
+        {
+            Ok(ParsedFile {
+                file: source.scope.file_id(&snapshot.path),
+                language,
+                content_hash: snapshot.content_hash,
+                coverage: FileCoverage::Deferred {
+                    reason: CoverageReason::ParseWorkLimit,
+                },
+                symbols: Vec::new(),
+                imports: Vec::new(),
+                references: Vec::new(),
+                scopes: Vec::new(),
+            })
+        }
+        result => result,
+    }
 }
