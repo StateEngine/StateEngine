@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import socket
 import time
+import traceback
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'crates/se/tests/judges'))
 import mail_provider
 
@@ -52,4 +53,9 @@ def produce():
 
 
 if __name__ == '__main__':
-    mail_provider.main(produce)
+    try:
+        mail_provider.main(produce)
+    except Exception:
+        with (Path.cwd() / 'provider-error.txt').open('w') as log:
+            traceback.print_exc(file=log)
+        raise

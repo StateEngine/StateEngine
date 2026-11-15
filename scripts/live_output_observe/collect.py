@@ -12,7 +12,7 @@ for directory, children, files in os.walk(root):
                    and not name.endswith('.symbols')]
     for name in files:
         source = Path(directory) / name
-        if source.suffix in ('.json', '.jsonl', '.log', '.stdout', '.stderr', '.patch', '.rs') or name.endswith(('.tar.gz', '.zip')):
+        if name == 'provider-error.txt' or source.suffix in ('.json', '.jsonl', '.log', '.stdout', '.stderr', '.patch', '.rs') or name.endswith(('.tar.gz', '.zip')):
             target = destination / source.relative_to(root)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)
