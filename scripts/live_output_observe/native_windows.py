@@ -1,9 +1,7 @@
-"""Startup-only native-image census and directly joined public command handles.
+"""Native private-image and provider-family census, bound to process births.
 
-This fixture starts no providers or transport helpers. Both CLI and runtime use
-its private se.exe; the census also tracks every observed descendant by birth.
-Unrelated unreadable command lines are not runtime evidence. An unreadable image
-that could be this fixture, or unreadable retained custody, still refuses.
+Private image paths and retained birth identities delimit the fixture family.
+Unrelated command lines are excluded; unreadable retained identities refuse.
 """
 import json
 import ntpath
@@ -74,41 +72,3 @@ class ImageObserver:
             self.known.add((row['pid'], row['birth']))
             selected.append(row)
         return selected
-
-
-class Commands:
-    def __init__(self, previous):
-        self.output, self.home, self.repository = previous.output, previous.home, previous.repository
-        self.environment = previous.environment
-        self.observer = ImageObserver(self.home, self.output)
-        self.sequence = 0
-
-    def run(self, argv, label, terminal=False, timeout=180):
-        require(not terminal, 'Startup observation requires explicit noninteractive commands')
-        argv = list(map(str, argv))
-        self.sequence += 1
-        prefix = self.output / f'{self.sequence:04d}-{label}'
-        started = time.monotonic()
-        failure = None
-        with prefix.with_suffix('.stdout').open('xb') as out, prefix.with_suffix('.stderr').open('xb') as err:
-            child = subprocess.Popen(argv, cwd=self.repository, env=self.environment,
-                                     stdin=subprocess.DEVNULL, stdout=out, stderr=err)
-            while child.poll() is None:
-                if out.tell() + err.tell() > 8 * 1024**2 or time.monotonic()-started >= timeout:
-                    failure = 'Owned command exceeded output or time bound'
-                    current = next((r for r in self.observer.census() if r['pid'] == child.pid), None)
-                    require(current and current['command'] == subprocess.list2cmdline(argv),
-                            'Timed-out owned command line is unreadable or changed')
-                    # Popen retains the exact native process handle, not a name
-                    # or a newly opened PID that could refer to a replacement.
-                    child.kill()
-                    child.wait(timeout=10)
-                    break
-                time.sleep(.05)
-            code = child.wait(timeout=1)
-        save(prefix.with_suffix('.json'), dict(argv=argv, exit=code, failure=failure,
-             elapsed_seconds=time.monotonic()-started))
-        require(code == 0 and failure is None, label + ' failed; retained command evidence is available')
-        require(sum(prefix.with_suffix(s).stat().st_size for s in ('.stdout','.stderr')) <= 8 * 1024**2,
-                label + ' exceeded its output bound')
-        return prefix.with_suffix('.stdout').read_text(encoding='utf-8')
