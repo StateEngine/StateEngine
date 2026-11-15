@@ -24,7 +24,7 @@ import traceback
 import urllib.request
 
 sys.dont_write_bytecode = True
-from judge_records import wait_json
+from judge_records import wait_json, write_json
 from mail_cli import Fixture
 from recovery_capture import gone, native, wait
 from directory_owner import DirectoryOwner
@@ -57,8 +57,8 @@ def provider():
         headers={**server["headers"], "Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=20) as response:
         assert response.status == 200
-    (repo / "provider-ready.json").write_text(json.dumps({"conversation": conversation,
-        "native_root_pid": os.getppid(), "helper_pid": os.getpid()}))
+    write_json(repo / "provider-ready.json", {"conversation": conversation,
+        "native_root_pid": os.getppid(), "helper_pid": os.getpid()})
 
 def compile_provider(f):
     source = f.root / "provider.rs"

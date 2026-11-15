@@ -155,11 +155,12 @@ fn fault_child_fixture() -> Check {
         std::thread::sleep(Duration::from_millis(5));
     }
     std::fs::write(
-        root.join("ready.json"),
+        root.join("ready.tmp"),
         serde_json::to_vec(
             &json!({"pid":std::process::id(),"tid":tid.to_str().ok_or("non-UTF8 tid")?,"database":f.options.state_directory.join("state.db")}),
         )?,
     )?;
+    std::fs::rename(root.join("ready.tmp"), root.join("ready.json"))?;
     wait_path(&root.join("go"))?;
     let mut results = Vec::new();
     if mode == "before" {
@@ -190,7 +191,8 @@ fn fault_child_fixture() -> Check {
     if mode == "checkpoint" {
         // The receipt precedes idle maintenance. Keep its original fields and
         // let the external syscall tracer observe the later checkpoint fault.
-        std::fs::write(root.join("returned.json"), serde_json::to_vec(&returned)?)?;
+        std::fs::write(root.join("returned.tmp"), serde_json::to_vec(&returned)?)?;
+        std::fs::rename(root.join("returned.tmp"), root.join("returned.json"))?;
         // The outside tracer releases this barrier only after observing the
         // intended checkpoint write; elapsed time does not prove maintenance.
         wait_path(&root.join("checkpoint-observed"))?;
