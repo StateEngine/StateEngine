@@ -137,6 +137,11 @@ def announce_venue(root: Path):
         return []
     lines = [f"- NOT RUN {package}::{binary}::{test}: {BREAKAWAY_VENUE}"
              for package, binary, test in BREAKAWAY_TESTS]
+    # The log is the other place a reader looks, and the archived-test step never
+    # reads input-judges.json, so the same names go to stderr as well.
+    for package, binary, test in BREAKAWAY_TESTS:
+        print(f"NOT RUN {package}::{binary}::{test}: {BREAKAWAY_VENUE}",
+              file=sys.stderr, flush=True)
     report = root / "target/nextest/input-judges.json"
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(json.dumps({"schema": "ci-input-judges/v1", "not_run": [
