@@ -22,11 +22,14 @@ def main(root):
     smokes = {arm: [] for arm in arms}
     failures = {}
     ledger = []
+    timing = ('Unlogged time to flushed public running JSON; foreground return time unavailable with reason'
+              if os.environ.get('STARTUP_PUBLIC_READY') == '1'
+              else 'Unlogged public up command return')
     for arm in arms:
         images[arm] = json.loads((root/arm/'image.json').read_text())
         receipts[arm] = dict(result='NOT RUN', image=images[arm], samples=[], cleanup=[],
             qualification='Startup-only alternating base/head observation on one native runner; cached file pages, not cold disk; no providers',
-            timing='Unlogged public up command return; logged diagnostics kept separate; restart index zero excluded',
+            timing=timing + '; logged diagnostics kept separate; restart index zero excluded',
             source=sources[arm])
 
     def persist():
