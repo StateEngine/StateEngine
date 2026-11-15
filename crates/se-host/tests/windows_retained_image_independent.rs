@@ -1,6 +1,6 @@
 #![cfg(all(windows, feature = "listener"))]
 //! Retained public consumers must reread images without native qualification.
-use se_host::harness::secode_image::Images;
+use se_host::secode_image::Images;
 use se_proc::{NativeExecutablePin, NativeStateFiles, native_ipc::ExecutableStamp};
 use std::{
     fs::{self, File, OpenOptions},
