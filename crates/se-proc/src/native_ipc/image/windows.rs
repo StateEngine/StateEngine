@@ -10,6 +10,9 @@ use windows_sys::Win32::{
     System::{IO::DeviceIoControl, Ioctl::FSCTL_READ_FILE_USN_DATA},
 };
 
+#[repr(align(8))]
+struct RecordBuffer([u8; 4096]);
+
 /// Reopen the exact retained file object, never its possibly replaced pathname.
 /// Denying write sharing excludes a live writer whose repeated writes may share
 /// one journal record. Failure leaves the caller on its bounded full-hash path.
@@ -36,18 +39,18 @@ pub(super) fn pin(file: &File) -> Option<File> {
 /// coalesced revision as reusable. Zero and unsupported journals also miss.
 pub(super) fn revision(file: &File) -> Option<i64> {
     let pin = pin(file)?;
-    let mut output = [0u8; 4096];
+    let mut output = RecordBuffer([0; 4096]);
     let mut returned = 0;
     // SAFETY: retained file handle, no input/overlapped operation, and a writable
-    // bounded byte buffer whose exact size accompanies its pointer.
+    // aligned bounded byte buffer whose exact size accompanies its pointer.
     if unsafe {
         DeviceIoControl(
             pin.as_raw_handle(),
             FSCTL_READ_FILE_USN_DATA,
             ptr::null(),
             0,
-            output.as_mut_ptr().cast(),
-            output.len() as u32,
+            output.0.as_mut_ptr().cast(),
+            output.0.len() as u32,
             &mut returned,
             ptr::null_mut(),
         )
@@ -55,7 +58,7 @@ pub(super) fn revision(file: &File) -> Option<i64> {
     {
         return None;
     }
-    let bytes = output.get(..returned as usize)?;
+    let bytes = output.0.get(..returned as usize)?;
     let length = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?) as usize;
     let major = u16::from_le_bytes(bytes.get(4..6)?.try_into().ok()?);
     let offset = match major {
