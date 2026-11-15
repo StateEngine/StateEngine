@@ -384,46 +384,54 @@ jobs:
         'account\\': user[\\'name\\'], \\'cleanup_error\\': repr(error)})\\n        report[\\'completed_utc\\'] = datetime.datetime.now(datetime.timezone.utc).isoformat()\\\
         n        save()\\n    assert report[\\'qualified\\'], \\'Windows regression or cleanup failed\\'\\n    print(json.dumps({\\\
         'qualified\\': True, \\'source\\': report[\\'source\\'], \\'reports\\': str(reports)}))\\n\\n\\nif __name__ == \\\
-        '__main__\\':\\n    main()\\n', 'ssh_service.py': '\"\"\"Temporarily configure an idle built-in SSH service in a disposable\
-        \ runner.\"\"\"\\nimport json\\nimport os\\nfrom pathlib import Path\\nimport subprocess\\nimport time\\nfrom native\
-        \ import exact, powershell, quote, stop\\n\\n\\nclass Service:\\n    def __init__(self, config):\\n        self.config\
-        \ = Path(config)\\n        self.before = None\\n        self.owned = None\\n        self.changed = False\\n      \
-        \  self.shell = None\\n\\n    @staticmethod\\n    def query():\\n        return json.loads(powershell(\"$s=Get-CimInstance\
-        \ Win32_Service -Filter \\\\\"Name=\\'sshd\\'\\\\\"; if($null -eq $s){ConvertTo-Json @{state=\\'absent\\'}}else{ConvertTo-Json\
-        \ @{state=$s.State;pid=[int]$s.ProcessId;image_path=$s.PathName;start_mode=$s.StartMode} -Compress}\"))\\n\\n    def\
-        \ start(self):\\n        binary = Path(os.environ[\\'WINDIR\\'])/\\'System32/OpenSSH/sshd.exe\\'\\n        if not\
-        \ binary.is_file():\\n            powershell(\"Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null\"\
-        , timeout=180)\\n        assert binary.is_file(), \\'Hosted step unavailable: built-in OpenSSH server is absent\\\
-        '\\n        self.before = self.query()\\n        assert self.before[\\'state\\'] == \\'Stopped\\' and self.before[\\\
-        'pid\\'] == 0, \\'Preserve an incumbent SSH service\\'\\n        self.shell = powershell(\"$p=Get-ItemProperty -Path\
-        \ HKLM:\\\\\\\\SOFTWARE\\\\\\\\OpenSSH -Name DefaultShell -ErrorAction SilentlyContinue; ConvertTo-Json @{default_shell=$p.DefaultShell}\
-        \ -Compress\")\\n        command = \\'\"\\' + str(binary) + \\'\" -f \"\\' + str(self.config) + \\'\"\\'\\n      \
-        \  subprocess.run([\\'sc.exe\\', \\'config\\', \\'sshd\\', \\'binPath=\\', command], check=True, capture_output=True)\\\
-        n        self.changed = True\\n        self.command = command\\n        subprocess.run([str(binary), \\'-t\\', \\\
-        '-f\\', str(self.config)], check=True, capture_output=True)\\n        subprocess.run([\\'sc.exe\\', \\'start\\', \\\
-        'sshd\\'], check=True, capture_output=True)\\n        end = time.monotonic() + 30\\n        while time.monotonic()\
-        \ < end:\\n            row = self.query()\\n            if row[\\'pid\\']:\\n                observed = exact(row[\\\
+        '__main__\\':\\n    main()\\n', 'ssh_service.py': '\"\"\"An exact newly registered service using the built-in SSH\
+        \ server image.\"\"\"\\nimport json\\nimport os\\nfrom pathlib import Path\\nimport secrets\\nimport subprocess\\\
+        nimport time\\nfrom native import exact, powershell, quote, same, stop\\n\\n\\ndef run(command, timeout=30):\\n  \
+        \  value = subprocess.run(command, capture_output=True, text=True, timeout=timeout)\\n    if value.returncode:\\n\
+        \        raise RuntimeError({\\'service_command\\': command, \\'exit\\': value.returncode,\\n                    \
+        \        \\'stdout\\': value.stdout, \\'stderr\\': value.stderr})\\n    return value\\n\\n\\nclass Service:\\n   \
+        \ def __init__(self, config):\\n        self.config = Path(config)\\n        self.name = \\'r5-sshd-\\' + secrets.token_hex(8)\\\
+        n        self.before = None\\n        self.incumbent = None\\n        self.owned = None\\n        self.created = False\\\
+        n        self.shell = None\\n\\n    @staticmethod\\n    def query(name):\\n        assert name == \\'sshd\\' or (name.startswith(\\\
+        'r5-sshd-\\') and name[8:].isalnum())\\n        script = \"$s=Get-CimInstance Win32_Service -Filter \" + quote(\"\
+        Name=\\'\"+name+\"\\'\") + \"; \"\\n        script += \"if($null -eq $s){ConvertTo-Json @{state=\\'absent\\'}}else{ConvertTo-Json\
+        \ @{state=$s.State;pid=[int]$s.ProcessId;image_path=$s.PathName;start_mode=$s.StartMode} -Compress}\"\\n        return\
+        \ json.loads(powershell(script))\\n\\n    @staticmethod\\n    def shell_selection():\\n        return powershell(\"\
+        $p=Get-ItemProperty -Path HKLM:\\\\\\\\SOFTWARE\\\\\\\\OpenSSH -Name DefaultShell -ErrorAction SilentlyContinue; ConvertTo-Json\
+        \ @{default_shell=$p.DefaultShell} -Compress\")\\n\\n    def start(self):\\n        binary = Path(os.environ[\\'WINDIR\\\
+        '])/\\'System32/OpenSSH/sshd.exe\\'\\n        assert binary.is_file(), \\'Hosted step unavailable: built-in OpenSSH\
+        \ server image is absent\\'\\n        self.before = self.query(\\'sshd\\')\\n        if self.before.get(\\'pid\\'):\\\
+        n            self.incumbent = exact(self.before[\\'pid\\'])\\n            assert self.incumbent[\\'state\\'] == \\\
+        'present\\'\\n        self.shell = self.shell_selection()\\n        assert self.query(self.name)[\\'state\\'] == \\\
+        'absent\\', \\'Preserve an incumbent service name\\'\\n        command = \\'\"\\' + str(binary) + \\'\" -f \"\\' +\
+        \ str(self.config) + \\'\"\\'\\n        run([str(binary), \\'-t\\', \\'-f\\', str(self.config)])\\n        run([\\\
+        'sc.exe\\', \\'create\\', self.name, \\'type=\\', \\'own\\', \\'start=\\', \\'demand\\',\\n             \\'obj=\\\
+        ', \\'LocalSystem\\', \\'binPath=\\', command])\\n        self.created = True\\n        run([\\'sc.exe\\', \\'start\\\
+        ', self.name], timeout=45)\\n        end = time.monotonic() + 30\\n        while time.monotonic() < end:\\n      \
+        \      row = self.query(self.name)\\n            if row.get(\\'pid\\'):\\n                observed = exact(row[\\\
         'pid\\'])\\n                assert observed[\\'state\\'] == \\'present\\' and str(self.config) in observed[\\'command\\\
         ']\\n                assert Path(observed[\\'image\\']).resolve() == binary.resolve()\\n                self.owned\
-        \ = observed\\n            if row[\\'state\\'] == \\'Running\\' and self.owned:\\n                return {\\'before\\\
-        ': self.before, \\'owned\\': self.owned,\\n                        \\'default_shell\\': json.loads(self.shell), \\\
-        'config\\': str(self.config)}\\n            time.sleep(0.2)\\n        raise RuntimeError(\\'Hosted step unavailable:\
-        \ built-in SSH service did not become ready\\')\\n\\n    def close(self):\\n        if not self.changed:\\n      \
-        \      return {\\'state\\': \\'unchanged\\'}\\n        row = self.query()\\n        if row[\\'pid\\']:\\n        \
-        \    observed = self.owned or exact(row[\\'pid\\'])\\n            assert row[\\'pid\\'] == observed[\\'pid\\'] and\
-        \ str(self.config) in observed[\\'command\\']\\n            stopped = stop(observed)\\n            assert stopped[\\\
-        'state\\'] == \\'absent\\' or (stopped[\\'state\\'] == \\'present\\' and stopped[\\'signalled\\'])\\n        end =\
-        \ time.monotonic() + 15\\n        while time.monotonic() < end:\\n            row = self.query()\\n            if\
-        \ row[\\'state\\'] == \\'Stopped\\' and row[\\'pid\\'] == 0:\\n                break\\n            time.sleep(0.2)\\\
-        n        assert row[\\'state\\'] == \\'Stopped\\' and row[\\'pid\\'] == 0\\n        subprocess.run([\\'sc.exe\\',\
-        \ \\'config\\', \\'sshd\\', \\'binPath=\\', self.before[\\'image_path\\']], check=True, capture_output=True)\\n  \
-        \      final = self.query()\\n        assert final == self.before, {\\'service_restore_mismatch\\': final, \\'before\\\
-        ': self.before}\\n        shell = powershell(\"$p=Get-ItemProperty -Path HKLM:\\\\\\\\SOFTWARE\\\\\\\\OpenSSH -Name\
-        \ DefaultShell -ErrorAction SilentlyContinue; ConvertTo-Json @{default_shell=$p.DefaultShell} -Compress\")\\n    \
-        \    assert shell == self.shell, \\'SSH shell selection changed during the fixture\\'\\n        return {\\'state\\\
-        ': \\'restored\\', \\'service\\': final,\\n                \\'owned_process_after\\': exact(self.owned[\\'pid\\'])\
-        \ if self.owned else {\\'state\\': \\'not observed\\'}}\\n'}\nfor name,body in files.items():\n    ast.parse(body,filename=name)\n\
-        \    (root/name).write_text(body,encoding='utf-8')\n"
+        \ = observed\\n            if row[\\'state\\'] == \\'Running\\' and self.owned:\\n                return {\\'stock_before\\\
+        ': self.before, \\'stock_process\\': self.incumbent,\\n                        \\'fixture_service\\': self.name, \\\
+        'owned\\': self.owned,\\n                        \\'default_shell\\': json.loads(self.shell), \\'config\\': str(self.config)}\\\
+        n            time.sleep(0.2)\\n        raise RuntimeError(\\'Hosted step unavailable: separate SSH service did not\
+        \ become ready\\')\\n\\n    def close(self):\\n        result = {\\'stock_before\\': self.before, \\'fixture_service\\\
+        ': self.name}\\n        if self.created:\\n            row = self.query(self.name)\\n            if row.get(\\'pid\\\
+        '):\\n                observed = self.owned or exact(row[\\'pid\\'])\\n                assert row[\\'pid\\'] == observed[\\\
+        'pid\\'] and str(self.config) in observed[\\'command\\']\\n                stopped = stop(observed)\\n           \
+        \     assert stopped[\\'state\\'] == \\'absent\\' or (stopped[\\'state\\'] == \\'present\\' and stopped[\\'signalled\\\
+        '])\\n            end = time.monotonic() + 15\\n            while time.monotonic() < end:\\n                row =\
+        \ self.query(self.name)\\n                if row[\\'state\\'] == \\'Stopped\\' and row[\\'pid\\'] == 0:\\n       \
+        \             break\\n                time.sleep(0.2)\\n            assert row[\\'state\\'] == \\'Stopped\\' and row[\\\
+        'pid\\'] == 0\\n            run([\\'sc.exe\\', \\'delete\\', self.name])\\n            assert self.query(self.name)[\\\
+        'state\\'] == \\'absent\\', \\'Owned service survived deletion\\'\\n            result[\\'fixture_state\\'] = \\'deleted\\\
+        '\\n            result[\\'owned_process_after\\'] = exact(self.owned[\\'pid\\']) if self.owned else {\\'state\\':\
+        \ \\'not observed\\'}\\n        else:\\n            result[\\'fixture_state\\'] = \\'not created\\'\\n        if self.before\
+        \ is not None:\\n            result[\\'stock_after\\'] = self.query(\\'sshd\\')\\n            assert result[\\'stock_after\\\
+        '] == self.before, \\'Stock SSH service changed during the fixture\\'\\n            if self.incumbent:\\n        \
+        \        assert same(self.incumbent, exact(self.incumbent[\\'pid\\']))\\n        if self.shell is not None:\\n   \
+        \         assert self.shell_selection() == self.shell, \\'SSH shell selection changed during the fixture\\'\\n   \
+        \     return result\\n'}\nfor name,body in files.items():\n    ast.parse(body,filename=name)\n    (root/name).write_text(body,encoding='utf-8')\n"
     - name: Run installed Windows source and destination through real SSH logons
       shell: python
       run: 'import datetime,os,pathlib,subprocess,sys
