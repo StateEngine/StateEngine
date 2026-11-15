@@ -58,8 +58,8 @@ impl ConnectionRole {
 /// Measured upper bound from native SQL/allocator qualification, not an estimate
 /// or a request-supplied flag. Until that witness exists the host must not admit
 /// the profile. Two page caches, statement allowances and one query arena reserve
-/// 262144 bytes; measured connection/SQLite overhead shares the 600 KB SQL
-/// reservation. The extra 100 KB comes from the coalesced queue, not the total.
+/// 262144 bytes; measured connection/SQLite overhead shares the 694384-byte SQL
+/// reservation. Transfers from the queue and allocator slack preserve the total.
 #[derive(Clone, Debug)]
 pub struct SqlProfile {
     overhead: u32,
@@ -83,7 +83,7 @@ impl SqlProfile {
     pub fn qualified_overhead_bytes(&self) -> Option<u32> {
         (!self.cold_only).then_some(self.overhead)
     }
-    /// Cold-window reservation, not evidence of the host's 600 KB SQL share.
+    /// Cold-window reservation, not evidence of the host's SQL share.
     /// External validation may use it only outside the steady host read path.
     pub fn contained_cold() -> Self {
         Self {
