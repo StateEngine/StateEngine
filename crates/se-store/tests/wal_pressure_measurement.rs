@@ -50,8 +50,8 @@ fn wal(db: &Connection) -> Result<(i64, i64, u64), Box<dyn std::error::Error>> {
     if log < 0 || done < 0 || done > log {
         return Err("invalid external WAL accounting".into());
     }
-    let page: u64 = db.query_row("PRAGMA page_size", [], |r| r.get(0))?;
-    Ok((log, done, u64::try_from(log)? * (page + 24) + 32))
+    let page: u32 = db.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+    Ok((log, done, u64::try_from(log)? * (u64::from(page) + 24) + 32))
 }
 fn verify(db: &Connection, index: usize, receipt: &CommitReceipt) -> Check {
     let key = format!("pressure-group-{index}");
