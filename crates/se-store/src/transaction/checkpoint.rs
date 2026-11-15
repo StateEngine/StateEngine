@@ -131,15 +131,22 @@ impl Engine {
                 .map_err(sql)
         });
         let elapsed = start.elapsed();
-        self.maintenance = match result {
-            Ok((0, log, done)) if log == done && (!hard || log == 0) => None,
-            Ok(_) => Some(fail(
-                StoreErrorCode::Busy,
-                "committed checkpoint has pending frames",
-            )),
-            Err(error) => Some(error),
+        let (maintenance, pending) = match result {
+            // PASSIVE can stop at an older reader without failing. Keep that
+            // debt explicit; only the hard cutoff requires complete recovery.
+            Ok((0, log, done)) if !hard => (None, log != done),
+            Ok((0, 0, 0)) => (None, false),
+            Ok(_) => (
+                Some(fail(
+                    StoreErrorCode::Busy,
+                    "committed checkpoint has pending frames",
+                )),
+                true,
+            ),
+            Err(error) => (Some(error), true),
         };
-        self.checkpoints.pending = self.maintenance.is_some();
+        self.maintenance = maintenance;
+        self.checkpoints.pending = pending;
         Some(elapsed)
     }
     pub(crate) fn require_wal_capacity(&mut self) -> StoreResult<Option<Duration>> {
