@@ -17,6 +17,11 @@ SELECTIONS = {"first-hour": ("first-hour", {1, 2, 3, 4, 5}),
               "wave-2": ("rust-wave-2", {1, 2, 3, 5}),
               "remote": ("remote", {1}),
               "4": ("selected", {4})}
+# Budgets that only a native Windows run can answer. They ride on the same probes
+# as the cross-platform budgets, so they must never become required coverage: a
+# correct Linux or macOS receipt has no Windows measurement, and its honest
+# "not measured" is not a missing probe.
+PLATFORM_BUDGETS = frozenset(("B10",))
 LABELS = {
     "B1": ("embedded A/B",), "B2": ("embedded A/B",),
     "B3": ("standalone persistent processes", "persistent processes after 1 seat(s)",
@@ -296,7 +301,8 @@ def invocation(inv, directory, run=None):
             if isinstance(budget, dict) and budget.get("passed") is True and any(
                     first_hour_probe_result(key, row, budget_artifact.get("limits")) != "PASS"
                     for row in budget_artifact["measurements"] if row["label"] in FIRST_HOUR_PROBES
-                    for key, expected_labels in LABELS.items() if row["label"] in expected_labels):
+                    for key, expected_labels in LABELS.items()
+                    if row["label"] in expected_labels and key not in PLATFORM_BUDGETS):
                 budget_error = "required first-hour probe is missing a passing measurement"
                 entry["problems"].append(budget_error)
     entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification, behavior_only=behavior_only,
