@@ -57,7 +57,7 @@ impl ColdJob {
             return Err(failure("expected cold epoch is stale before spawn"));
         }
         let deadline = Instant::now() + Duration::from_secs(900);
-        let worker = se_proc::atlas_worker::AtlasWorker::spawn(
+        let worker = se_proc::atlas_worker::AtlasWorker::spawn_bounded(
             image,
             &serde_json::to_vec(&request).map_err(failure)?,
             deadline,
@@ -107,7 +107,11 @@ impl ColdJob {
         self.worker.readiness_fd()
     }
     pub fn cancel(&mut self) -> AtlasResult<()> {
-        self.worker.cancel().map_err(failure)
+        self.worker
+            .cancel_until(
+                (Instant::now() + Duration::from_millis(200)).min(self.cancellation_deadline()),
+            )
+            .map_err(failure)
     }
     /// Shutdown lends its remaining host budget to exact native cancellation.
     pub fn cancel_until(&mut self, deadline: Instant) -> AtlasResult<()> {
