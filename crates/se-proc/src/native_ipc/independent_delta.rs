@@ -328,6 +328,83 @@ fn journal_command(volume: &str, create: bool) -> Check {
     );
     Ok(())
 }
+fn guard_expected() -> bool {
+    std::env::var("DELTA_EXPECT_GUARD").as_deref() == Ok("1")
+}
+fn write_exclusion(path: &Path) -> Check {
+    let opened = OpenOptions::new().read(true).write(true).open(path);
+    if guard_expected() {
+        let error = opened.expect_err("post-proof writer was not excluded");
+        assert_eq!(error.raw_os_error(), Some(32), "unexpected native refusal");
+    } else {
+        drop(opened?);
+    }
+    Ok(())
+}
+#[test]
+fn zx_process_local_guard_lifetime_and_eviction() -> Check {
+    let volume = std::env::var("DELTA_VOLUME")?;
+    journal_command(&volume, false)?;
+    let path = fixture("guard-lifetime")?;
+    fs::write(&path, vec![b'A'; 4096])?;
+    let clock = basic(&File::open(&path)?)?;
+    let original = digest(&path)?;
+    for _ in 0..3 {
+        assert_eq!(image::hash_image(File::open(&path)?, &bound())?, original);
+        write_exclusion(&path)?;
+    }
+    for index in 0..64 {
+        let other = path.with_file_name(format!("eviction-{index}.bin"));
+        fs::write(&other, vec![b'E'; 4096])?;
+        assert_eq!(
+            image::hash_image(File::open(&other)?, &bound())?,
+            digest(&other)?
+        );
+    }
+    let mut writer = OpenOptions::new().read(true).write(true).open(&path)?;
+    rewrite(&mut writer, &vec![b'B'; 4096], &clock)?;
+    drop(writer);
+    let changed = digest(&path)?;
+    assert_ne!(original, changed);
+    assert_eq!(image::hash_image(File::open(&path)?, &bound())?, changed);
+    write_exclusion(&path)?;
+    eprintln!(
+        "GUARD lifetime expected={} repeated_proofs=3 native_write_denied={} eviction_entries=64 eviction_released=true changed_digest_verified=true",
+        guard_expected(),
+        guard_expected()
+    );
+    journal_command(&volume, true)?;
+    Ok(())
+}
+#[test]
+fn zx_process_local_guard_path_replacement() -> Check {
+    let volume = std::env::var("DELTA_VOLUME")?;
+    journal_command(&volume, false)?;
+    let path = fixture("guard-replacement")?;
+    fs::write(&path, vec![b'A'; 4096])?;
+    let original = digest(&path)?;
+    assert_eq!(image::hash_image(File::open(&path)?, &bound())?, original);
+    let first = File::open(&path)?;
+    let old_key = serde_json::to_value(image::key(&first, &first.metadata()?)?)?;
+    let old = path.with_file_name("original.bin");
+    fs::rename(&path, &old)?;
+    fs::write(&path, vec![b'B'; 4096])?;
+    let selected = File::open(&path)?;
+    let new_key = serde_json::to_value(image::key(&selected, &selected.metadata()?)?)?;
+    assert_ne!(old_key["identity"], new_key["identity"]);
+    let actual = digest(&path)?;
+    assert_ne!(original, actual);
+    assert_eq!(image::hash_image(selected, &bound())?, actual);
+    write_exclusion(&old)?;
+    write_exclusion(&path)?;
+    eprintln!(
+        "GUARD replacement expected={} distinct_native_identity=true selected_new_digest=true both_objects_write_denied={}",
+        guard_expected(),
+        guard_expected()
+    );
+    journal_command(&volume, true)?;
+    Ok(())
+}
 #[test]
 fn zy_journal_recreated_with_colliding_positive_usn() -> Check {
     let path = fixture("journal-recreated")?;

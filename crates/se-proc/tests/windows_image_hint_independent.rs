@@ -189,6 +189,7 @@ fn exercise(reader: &str) -> Check {
         .write_all(b"independent-native-proof-A")?;
     let original = digest(&image)?;
     let generationless = std::env::var("PROOF_LEGACY_MODE").as_deref() == Ok("generationless");
+    let unavailable = std::env::var("PROOF_LEGACY_MODE").as_deref() == Ok("unavailable");
     let old = if generationless {
         Sha256::from_bytes([0x5a; 32])
     } else {
@@ -210,6 +211,12 @@ fn exercise(reader: &str) -> Check {
         }
         let mut value: serde_json::Value = serde_json::from_slice(&fs::read(entry.path())?)?;
         if let Some(key) = value.get_mut("image") {
+            if unavailable {
+                assert!(key["changed"].is_null(), "disk hint unexpectedly qualified");
+                eprintln!(
+                    "UNAVAILABLE_DISK_HINT reader={reader} native_key_null=true fresh_process=true"
+                );
+            }
             if generationless {
                 assert!(
                     key["changed"].is_array(),

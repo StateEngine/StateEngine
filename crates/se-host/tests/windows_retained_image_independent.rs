@@ -75,6 +75,29 @@ fn edit(path: &Path, before: &serde_json::Value, byte: u8) -> Check {
     assert_eq!(after["bytes"], 4096);
     Ok(())
 }
+fn evict_exclusion(path: &Path, byte: u8) -> Check {
+    match OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => drop(file),
+        Err(error) => {
+            assert_eq!(error.raw_os_error(), Some(32), "unexpected write refusal");
+            let external = clock_helper("probe-write", path, &[])?;
+            assert_eq!(external["write_opened"], false);
+            assert_eq!(external["native_error"], 32);
+            let directory = path.parent().unwrap().join(format!("eviction-{byte}"));
+            fs::create_dir(&directory)?;
+            for index in 0..64 {
+                let image = directory.join(format!("image-{index}.exe"));
+                let mut bytes = vec![b'E'; 4096];
+                bytes[..2].copy_from_slice(b"MZ");
+                fs::write(&image, bytes)?;
+                assert!(ExecutableStamp::observe(&image)?.is_some());
+            }
+            drop(OpenOptions::new().read(true).write(true).open(path)?);
+            eprintln!("RETAINED_GUARD byte={byte} native_write_denied=32 eviction_released=true");
+        }
+    }
+    Ok(())
+}
 fn retained(mode: &str, server_selected: bool) -> Check {
     journal(true)?;
     let name = format!("retained-{mode}-{server_selected}");
@@ -104,6 +127,10 @@ fn retained(mode: &str, server_selected: bool) -> Check {
     let mut previous = ExecutableStamp::observe(path)?;
     assert!(previous.is_some(), "native observation is absent");
     for byte in [b'B', b'C', b'D'] {
+        // A process-local proof may exclude writes until its bounded cache entry
+        // is evicted. Witness that native refusal, then exercise changed bytes
+        // through the same retained public consumers after exclusion ends.
+        evict_exclusion(path, byte)?;
         // The external fixture edits bytes while our writer, when requested,
         // stays retained across all observations and all three rewrites.
         edit(path, &before, byte)?;
