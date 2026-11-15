@@ -3,37 +3,10 @@
 use se_host::secode_image::Images;
 use se_proc::{NativeExecutablePin, NativeStateFiles, native_ipc::ExecutableStamp};
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{Seek, SeekFrom, Write},
-    os::windows::io::AsRawHandle,
+    fs::{self, OpenOptions},
     path::{Path, PathBuf},
     process::Command,
 };
-#[repr(C)]
-struct BasicInfo {
-    created: i64,
-    accessed: i64,
-    modified: i64,
-    changed: i64,
-    attributes: u32,
-}
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    #[link_name = "GetFileInformationByHandleEx"]
-    fn get_file_information(
-        handle: *mut std::ffi::c_void,
-        class: i32,
-        output: *mut std::ffi::c_void,
-        size: u32,
-    ) -> i32;
-    #[link_name = "SetFileInformationByHandle"]
-    fn set_file_information(
-        handle: *mut std::ffi::c_void,
-        class: i32,
-        input: *mut std::ffi::c_void,
-        size: u32,
-    ) -> i32;
-}
 type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
 fn journal(create: bool) -> Check {
     let volume = std::env::var("DELTA_VOLUME")?;
@@ -68,47 +41,38 @@ fn package(name: &str) -> Check<(PathBuf, PathBuf)> {
     }
     Ok((cli, server))
 }
-fn clocks(file: &File) -> Check<BasicInfo> {
-    let mut value: BasicInfo = unsafe { std::mem::zeroed() };
-    if unsafe {
-        get_file_information(
-            file.as_raw_handle(),
-            0,
-            (&mut value as *mut BasicInfo).cast(),
-            std::mem::size_of::<BasicInfo>() as u32,
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    Ok(value)
+fn clock_helper(mode: &str, path: &Path, args: &[String]) -> Check<serde_json::Value> {
+    let helper = std::env::var_os("DELTA_CLOCK_HELPER").ok_or("native fixture helper absent")?;
+    let output = Command::new(helper)
+        .arg(mode)
+        .arg(path)
+        .args(args)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "native clock fixture failed: {output:?}"
+    );
+    Ok(serde_json::from_slice(&output.stdout)?)
 }
-fn edit(file: &mut File, before: &BasicInfo, byte: u8) -> Check {
-    file.seek(SeekFrom::Start(4095))?;
-    file.write_all(&[byte])?;
-    file.sync_all()?;
-    let mut restore = BasicInfo {
-        created: 0,
-        accessed: 0,
-        modified: before.modified,
-        changed: before.changed,
-        attributes: 0,
-    };
-    if unsafe {
-        set_file_information(
-            file.as_raw_handle(),
-            0,
-            (&mut restore as *mut BasicInfo).cast(),
-            std::mem::size_of::<BasicInfo>() as u32,
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let after = clocks(file)?;
-    assert_eq!(before.modified, after.modified);
-    assert_eq!(before.changed, after.changed);
-    assert_eq!(file.metadata()?.len(), 4096);
+fn edit(path: &Path, before: &serde_json::Value, byte: u8) -> Check {
+    let after = clock_helper(
+        "rewrite",
+        path,
+        &[
+            before["modified"]
+                .as_i64()
+                .ok_or("mtime absent")?
+                .to_string(),
+            before["changed"]
+                .as_i64()
+                .ok_or("change time absent")?
+                .to_string(),
+            byte.to_string(),
+        ],
+    )?;
+    assert_eq!(before["modified"], after["modified"]);
+    assert_eq!(before["changed"], after["changed"]);
+    assert_eq!(after["bytes"], 4096);
     Ok(())
 }
 fn retained(mode: &str, server_selected: bool) -> Check {
@@ -116,7 +80,7 @@ fn retained(mode: &str, server_selected: bool) -> Check {
     let name = format!("retained-{mode}-{server_selected}");
     let (cli, server) = package(&name)?;
     let path: &Path = if server_selected { &server } else { &cli };
-    let before = clocks(&File::open(path)?)?;
+    let before = clock_helper("read", path, &[])?;
     let mut held = None;
     match mode {
         "unavailable" => journal(false)?,
@@ -140,12 +104,9 @@ fn retained(mode: &str, server_selected: bool) -> Check {
     let mut previous = ExecutableStamp::observe(path)?;
     assert!(previous.is_some(), "native observation is absent");
     for byte in [b'B', b'C', b'D'] {
-        if let Some(file) = held.as_mut() {
-            edit(file, &before, byte)?;
-        } else {
-            let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-            edit(&mut file, &before, byte)?;
-        }
+        // The external fixture edits bytes while our writer, when requested,
+        // stays retained across all observations and all three rewrites.
+        edit(path, &before, byte)?;
         assert_eq!(
             fs::read(path)?[4095],
             byte,
