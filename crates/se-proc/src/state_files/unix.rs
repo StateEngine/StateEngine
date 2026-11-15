@@ -4,6 +4,7 @@ mod acl;
 mod ancestors;
 #[cfg(target_os = "macos")]
 mod created_acl;
+use ancestors::open_component;
 #[cfg(target_os = "macos")]
 pub(super) use created_acl::clear as clear_created_acl;
 #[path = "effects/unix.rs"]
@@ -75,23 +76,9 @@ pub(super) fn walk_effect_parent(path: &Path) -> Result<File> {
 pub(super) fn walk_effect_parent_for_creation(path: &Path) -> Result<File> {
     walk_with_private_root(path, false, false, true)
 }
-/// Open one walked component, preferring a readable directory descriptor.
-///
-/// A shared-but-traversable ancestor (`0711`) grants search without reading its
-/// contents, and `O_RDONLY` demands the latter. An ancestor is only ever used as
-/// an `openat`/`fstatat` anchor, so a read-open refused for permission falls back
-/// to a traversal-only descriptor where the platform can express one. Asking for
-/// read first keeps every descriptor this walk creates in, inspects or syncs
-/// fully capable; the fallback covers only an ancestor the account cannot read.
-///
-/// macOS has no traversal-only directory descriptor equivalent to `O_PATH`, so
-/// this fallback is Linux-only and macOS keeps its existing refusal.
-/// Make a new directory entry durable through its parent.
-///
-/// A traversal-only fallback parent was read-refused, so it cannot be fsynced and
-/// a new entry inside it would not be durable. Refuse by name rather than claim a
-/// synced install.
-fn sync_parent(parent: &File, traversal_only: bool, path: &Path) -> Result<()> {
+/// A created entry is durable only through a parent that can be synced. The
+/// traversal-only fallback was read-refused; refuse by name rather than claim it.
+fn durable_parent(parent: &File, traversal_only: bool, path: &Path) -> Result<()> {
     #[cfg(target_os = "linux")]
     if traversal_only {
         return Err(io_error(
@@ -107,44 +94,6 @@ fn sync_parent(parent: &File, traversal_only: bool, path: &Path) -> Result<()> {
         .map_err(|e| io_error("sync newly created directory parent", path, e))
 }
 
-fn open_component(
-    parent: std::os::fd::RawFd,
-    component: &std::ffi::CStr,
-    symlink: bool,
-    path: &Path,
-    leaf: bool,
-) -> Result<(File, bool)> {
-    let access = |access: i32| {
-        // SAFETY: held parent and one component; only an inspected trusted system
-        // ancestor may be followed. Final and newly owned components never are.
-        unsafe {
-            libc::openat(
-                parent,
-                component.as_ptr(),
-                access
-                    | libc::O_DIRECTORY
-                    | libc::O_CLOEXEC
-                    | if symlink { 0 } else { libc::O_NOFOLLOW },
-            )
-        }
-    };
-    let read = access(libc::O_RDONLY);
-    if read >= 0 {
-        let next = owned(read, "open native directory", path)?;
-        return Ok((next, false));
-    }
-    let first = io::Error::last_os_error();
-    #[cfg(target_os = "linux")]
-    if first.kind() == io::ErrorKind::PermissionDenied && !leaf {
-        // Not the leaf: an anchor we may hold without reading. O_PATH still
-        // supports fstatat and openat, which is all an ancestor is used for.
-        let raw = access(libc::O_PATH);
-        if raw >= 0 {
-            return Ok((owned(raw, "open native directory", path)?, true));
-        }
-    }
-    Err(io_error("open native directory", path, first))
-}
 fn walk_with_private_root(
     path: &Path,
     create: bool,
@@ -221,13 +170,6 @@ fn walk_with_private_root(
         if symlink && (private || (link.st_uid != 0 && link.st_uid != user)) {
             return Err(unsafe_path("untrusted or private-directory symlink", path));
         }
-        // A shared-but-traversable ancestor (`0711`) grants search without
-        // reading its contents, and `O_RDONLY` demands the latter. The walk only
-        // ever uses an ancestor FD as an `openat`/`fstatat` anchor, so a refused
-        // read-open falls back to a traversal-only descriptor where the platform
-        // can express one. Asking for read first keeps every FD that this walk
-        // creates in, inspects or syncs fully capable; the fallback only ever
-        // covers an ancestor the account cannot read.
         let (next, traversal_only) = open_component(
             parent.as_raw_fd(),
             &component,
@@ -245,7 +187,7 @@ fn walk_with_private_root(
                     path,
                 ));
             }
-            sync_parent(&parent, traversal_only, path)?;
+            durable_parent(&parent, traversal_only, path)?;
         }
         if private {
             metadata(&next, &traversed, true)?;

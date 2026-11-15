@@ -212,3 +212,42 @@ fn sole_primary_member(_gid: libc::gid_t, path: &Path) -> Result<bool> {
         path,
     ))
 }
+
+/// Open one walked component, preferring a readable directory descriptor.
+///
+/// A `0711` ancestor grants search, not listing, and `O_RDONLY` demands both; an
+/// ancestor is only an anchor, so a permission refusal falls back to traversal-only
+/// (Linux only: macOS has no `O_PATH`).
+pub(super) fn open_component(
+    parent: std::os::fd::RawFd,
+    component: &std::ffi::CStr,
+    symlink: bool,
+    path: &Path,
+    leaf: bool,
+) -> Result<(File, bool)> {
+    // SAFETY: held parent and one component; only an inspected trusted system
+    // ancestor may be followed. Final and newly owned components never are.
+    let open = |access: i32| unsafe {
+        libc::openat(
+            parent,
+            component.as_ptr(),
+            access
+                | libc::O_DIRECTORY
+                | libc::O_CLOEXEC
+                | if symlink { 0 } else { libc::O_NOFOLLOW },
+        )
+    };
+    let read = open(libc::O_RDONLY);
+    if read >= 0 {
+        return Ok((owned(read, "open native directory", path)?, false));
+    }
+    let first = io::Error::last_os_error();
+    #[cfg(target_os = "linux")]
+    if first.kind() == io::ErrorKind::PermissionDenied
+        && !leaf
+        && let raw @ 0.. = open(libc::O_PATH)
+    {
+        return Ok((owned(raw, "open native directory", path)?, true));
+    }
+    Err(io_error("open native directory", path, first))
+}
