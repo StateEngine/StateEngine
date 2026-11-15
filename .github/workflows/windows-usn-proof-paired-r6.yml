@@ -1,0 +1,105 @@
+name: Native Windows guarded journal proof comparison
+on:
+  push:
+    branches: [prime/windows-usn-proof-paired-r6]
+permissions:
+  contents: read
+concurrency:
+  group: windows-usn-proof-paired-r6-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  compare:
+    strategy:
+      fail-fast: false
+      matrix:
+        journal: [default, active]
+    runs-on: windows-2025
+    timeout-minutes: 240
+    env:
+      MEASURE_TARGET: x86_64-pc-windows-msvc
+      STARTUP_PUBLIC_READY: '1'
+      STARTUP_MEASURE_PEER: '1'
+      STARTUP_BASE: 737bee8caf03e17d2a61e21594d7b0285d6619dc
+      STARTUP_HEAD: a050e69e596b4484289d0c15671c8d0283ccce1a
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 568667b344a7c567328cb2c51badad98b5a47758
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.12'}
+      - name: Initialize isolated paths and verify source pins
+        id: compiler
+        shell: python
+        run: |
+          import os, pathlib, subprocess, tomllib
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          for key in ('STARTUP_BASE', 'STARTUP_HEAD'):
+              source = os.environ[key]
+              actual = subprocess.check_output(['git', 'rev-parse', source + '^{commit}'], text=True).strip()
+              if actual != source:
+                  raise ValueError('Product source pin differs')
+          subprocess.run(['git', 'merge-base', '--is-ancestor', os.environ['STARTUP_BASE'], os.environ['STARTUP_HEAD']], check=True)
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'MEASURE_ROOT={root / "startup-paired"}\n')
+              output.write(f'EVIDENCE_ROOT={root / "startup-paired-evidence"}\n')
+          text = subprocess.check_output(['git', 'show', os.environ['STARTUP_HEAD'] + ':rust-toolchain.toml'], text=True)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'channel={tomllib.loads(text)["toolchain"]["channel"]}\n')
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ steps.compiler.outputs.channel }}
+          components: rust-docs, llvm-tools-preview
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with: {arch: amd64}
+      - name: Check observer syntax
+        shell: python
+        run: |
+          import ast, pathlib
+          for path in pathlib.Path('scripts/startup_package').glob('*.py'):
+              ast.parse(path.read_text())
+      - name: Check native census syntax
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/startup_package/processes.ps1'), [ref]$tokens, [ref]$errors) > $null
+          if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+      - name: Build and compare on the default native volume
+        if: ${{ matrix.journal == 'default' }}
+        shell: python
+        run: |
+          import os, subprocess, sys
+          subprocess.run([sys.executable, '-B', 'scripts/startup_package/paired.py', os.environ['MEASURE_ROOT']], check=True)
+      - name: Build and compare on a private active-journal NTFS volume
+        if: ${{ matrix.journal == 'active' }}
+        shell: python
+        run: |
+          import base64, hashlib, os, pathlib, subprocess, sys
+          payload=base64.b64decode('IiIiTWVhc3VyZSBwYWlyZWQgcHVibGljIHN0YXJ0dXAgb24gYSBwcml2YXRlIGFjdGl2ZS1qb3VybmFsIE5URlMgdm9sdW1lLiIiIgppbXBvcnQganNvbgppbXBvcnQgb3MKZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCByZQppbXBvcnQgc3VicHJvY2VzcwppbXBvcnQgc3lzCgpyb290PVBhdGgob3MuZW52aXJvblsnUlVOTkVSX1RFTVAnXSkvJ3Vzbi1jb3N0LWFjdGl2ZS1yMicKcm9vdC5ta2RpcihleGlzdF9vaz1GYWxzZSkKaW1hZ2U9cm9vdC8nam91cm5hbC52aGQnCmlmIG5vdCByZS5mdWxsbWF0Y2gocidbQS1aYS16MC05XzpcXCAuLV0rJyxzdHIoaW1hZ2UpKToKICAgIHJhaXNlIFZhbHVlRXJyb3IoJ1VuZXhwZWN0ZWQgdGVtcG9yYXJ5IHBhdGgnKQpsZXR0ZXI9bmV4dCgoYyBmb3IgYyBpbiAnWllYV1ZVVFNSUVAnIGlmIG5vdCBQYXRoKGMrJzovJykuZXhpc3RzKCkpLE5vbmUpCmlmIGxldHRlciBpcyBOb25lOnJhaXNlIFZhbHVlRXJyb3IoJ05vIHVudXNlZCBwcml2YXRlIGRyaXZlIGxldHRlcicpCnZvbHVtZT1sZXR0ZXIrJzonCnJlY2VpcHQ9ZGljdChzY29wZT0nYXV0aG9yIHBhaXJlZCBwZXJmb3JtYW5jZSBvYnNlcnZhdGlvbiwgbm90IGEgcHJvZHVjdCBqdWRnZScsY29tbWFuZHM9e30pCgpkZWYgcnVuKG5hbWUsYXJndik6CiAgICByZXN1bHQ9c3VicHJvY2Vzcy5ydW4oYXJndixjYXB0dXJlX291dHB1dD1UcnVlLHRleHQ9VHJ1ZSxlcnJvcnM9J3JlcGxhY2UnLHRpbWVvdXQ9MTA4MDAgaWYgbmFtZT09J3BhaXJlZCcgZWxzZSAxODApCiAgICAocm9vdC8obmFtZSsnLnN0ZG91dCcpKS53cml0ZV90ZXh0KHJlc3VsdC5zdGRvdXQpCiAgICAocm9vdC8obmFtZSsnLnN0ZGVycicpKS53cml0ZV90ZXh0KHJlc3VsdC5zdGRlcnIpCiAgICByZWNlaXB0Wydjb21tYW5kcyddW25hbWVdPWRpY3QoZXhpdD1yZXN1bHQucmV0dXJuY29kZSkKICAgIChyb290Lyd2b2x1bWUtcmVjZWlwdC5qc29uJykud3JpdGVfdGV4dChqc29uLmR1bXBzKHJlY2VpcHQsaW5kZW50PTIpKydcbicpCiAgICByZXN1bHQuY2hlY2tfcmV0dXJuY29kZSgpCiAgICByZXR1cm4gcmVzdWx0LnN0ZG91dAoKY3JlYXRlPXJvb3QvJ2NyZWF0ZS50eHQnCmNyZWF0ZS53cml0ZV90ZXh0KGYnY3JlYXRlIHZkaXNrIGZpbGU9IntpbWFnZX0iIG1heGltdW09MzI3NjggdHlwZT1leHBhbmRhYmxlXG5zZWxlY3QgdmRpc2sgZmlsZT0ie2ltYWdlfSJcbmF0dGFjaCB2ZGlza1xuY3JlYXRlIHBhcnRpdGlvbiBwcmltYXJ5XG5mb3JtYXQgZnM9bnRmcyBsYWJlbD1Qcm9vZkNvc3QgcXVpY2tcbmFzc2lnbiBsZXR0ZXI9e2xldHRlcn1cbmV4aXRcbicpCnZlcmlmeT1yb290Lyd2ZXJpZnkucHMxJwp2ZXJpZnkud3JpdGVfdGV4dCgncGFyYW0oW3N0cmluZ10kSW1hZ2VQYXRoLFtzdHJpbmddJExldHRlcilcbiRFcnJvckFjdGlvblByZWZlcmVuY2U9IlN0b3AiXG4kaW1hZ2U9R2V0LURpc2tJbWFnZSAtSW1hZ2VQYXRoICRJbWFnZVBhdGhcbmlmICghJGltYWdlLkF0dGFjaGVkKSB7dGhyb3cgIlByaXZhdGUgaW1hZ2UgaXMgbm90IGF0dGFjaGVkIn1cbiRwYXJ0aXRpb25zPUAoJGltYWdlIHwgR2V0LURpc2sgfCBHZXQtUGFydGl0aW9uIHwgV2hlcmUtT2JqZWN0IHskXy5Ecml2ZUxldHRlciAtZXEgJExldHRlcn0pXG5pZiAoJHBhcnRpdGlvbnMuQ291bnQgLW5lIDEpIHt0aHJvdyAiUHJpdmF0ZSB2b2x1bWUgaWRlbnRpdHkgZGlmZmVycyJ9XG4kdm9sdW1lPSRwYXJ0aXRpb25zWzBdIHwgR2V0LVZvbHVtZVxuaWYgKCR2b2x1bWUuRmlsZVN5c3RlbSAtbmUgIk5URlMiIC1vciAkdm9sdW1lLkZpbGVTeXN0ZW1MYWJlbCAtbmUgIlByb29mQ29zdCIpIHt0aHJvdyAiUHJpdmF0ZSBmaWxlc3lzdGVtIGRpZmZlcnMifVxuJHZvbHVtZSB8IFNlbGVjdC1PYmplY3QgRHJpdmVMZXR0ZXIsRmlsZVN5c3RlbSxGaWxlU3lzdGVtTGFiZWwsVW5pcXVlSWQgfCBDb252ZXJ0VG8tSnNvbiAtQ29tcHJlc3NcbicpCnRyeToKICAgIHJ1bignY3JlYXRlJyxbJ2Rpc2twYXJ0JywnL3MnLHN0cihjcmVhdGUpXSkKICAgIGlkZW50aXR5PWpzb24ubG9hZHMocnVuKCd2ZXJpZnknLFsncG93ZXJzaGVsbCcsJy1Ob1Byb2ZpbGUnLCctRmlsZScsc3RyKHZlcmlmeSksJy1JbWFnZVBhdGgnLHN0cihpbWFnZSksJy1MZXR0ZXInLGxldHRlcl0pKQogICAgcmVjZWlwdFsnaWRlbnRpdHknXT1pZGVudGl0eQogICAgcnVuKCdqb3VybmFsLWNyZWF0ZScsWydmc3V0aWwnLCd1c24nLCdjcmVhdGVqb3VybmFsJywnbT04Mzg4NjA4JywnYT0xMDQ4NTc2Jyx2b2x1bWVdKQogICAgcnVuKCdqb3VybmFsLWJlZm9yZScsWydmc3V0aWwnLCd1c24nLCdxdWVyeWpvdXJuYWwnLHZvbHVtZV0pCiAgICBkYXRhPVBhdGgodm9sdW1lKycvJykvJ3N0YXJ0dXAtcGFpcmVkJwogICAgdHJ5OgogICAgICAgIHJ1bigncGFpcmVkJyxbc3lzLmV4ZWN1dGFibGUsJy1CJywnc2NyaXB0cy9zdGFydHVwX3BhY2thZ2UvcGFpcmVkLnB5JyxzdHIoZGF0YSldKQogICAgICAgIHBhaXJlZD1qc29uLmxvYWRzKChkYXRhLydwYWlyZWQtcmVjZWlwdC5qc29uJykucmVhZF90ZXh0KCkpCiAgICAgICAgaWYgcGFpcmVkWydmYWlsdXJlcyddOnJhaXNlIFZhbHVlRXJyb3IoJ0NvbXBhcmlzb24gcmV0YWluZWQgZmFpbGVkIGNvbnN1bWVycycpCiAgICAgICAgcmVjZWlwdFsnY29tcGFyaXNvbl9jb21wbGV0ZWQnXT1UcnVlCiAgICBmaW5hbGx5OgogICAgICAgIGlmIGRhdGEuZXhpc3RzKCk6CiAgICAgICAgICAgIHJ1bignY29sbGVjdCcsW3N5cy5leGVjdXRhYmxlLCctQicsJ3NjcmlwdHMvc3RhcnR1cF9wYWNrYWdlL2NvbGxlY3QucHknLHN0cihkYXRhKSxvcy5lbnZpcm9uWydFVklERU5DRV9ST09UJ11dKQogICAgcnVuKCdqb3VybmFsLWFmdGVyJyxbJ2ZzdXRpbCcsJ3VzbicsJ3F1ZXJ5am91cm5hbCcsdm9sdW1lXSkKZmluYWxseToKICAgIGRldGFjaD1yb290LydkZXRhY2gudHh0JwogICAgZGV0YWNoLndyaXRlX3RleHQoZidzZWxlY3QgdmRpc2sgZmlsZT0ie2ltYWdlfSJcbmRldGFjaCB2ZGlza1xuZXhpdFxuJykKICAgIHJ1bignZGV0YWNoJyxbJ2Rpc2twYXJ0JywnL3MnLHN0cihkZXRhY2gpXSkKICAgIHN0YXRlPWpzb24ubG9hZHMocnVuKCd2ZXJpZnktZGV0YWNoZWQnLFsncG93ZXJzaGVsbCcsJy1Ob1Byb2ZpbGUnLCctQ29tbWFuZCcsZiJHZXQtRGlza0ltYWdlIC1JbWFnZVBhdGggJ3tpbWFnZX0nIHwgU2VsZWN0LU9iamVjdCBBdHRhY2hlZCB8IENvbnZlcnRUby1Kc29uIC1Db21wcmVzcyJdKSkKICAgIGlmIHN0YXRlWydBdHRhY2hlZCddOnJhaXNlIFZhbHVlRXJyb3IoJ1ByaXZhdGUgZGlzayBkZXRhY2ggaXMgdW53aXRuZXNzZWQnKQogICAgcmVjZWlwdFsnZGV0YWNoZWQnXT1UcnVlCiAgICAocm9vdC8ndm9sdW1lLXJlY2VpcHQuanNvbicpLndyaXRlX3RleHQoanNvbi5kdW1wcyhyZWNlaXB0LGluZGVudD0yKSsnXG4nKQogICAgIyBPbmx5IHRoaXMgZHJpdmVyLWNyZWF0ZWQgZXhhY3QgZmlsZSBpcyByZW1vdmVkLCBhZnRlciBvdXRzaWRlIGRldGFjaCByZWFkYmFjay4KICAgIGlmIGltYWdlLmV4aXN0cygpIGFuZCByZWNlaXB0LmdldCgnY29tcGFyaXNvbl9jb21wbGV0ZWQnKTppbWFnZS51bmxpbmsoKQpwcmludChqc29uLmR1bXBzKHJlY2VpcHQpLGZsdXNoPVRydWUpCmlmIG5vdCByZWNlaXB0LmdldCgnY29tcGFyaXNvbl9jb21wbGV0ZWQnKToKICAgIHJhaXNlIFZhbHVlRXJyb3IoJ0NvbXBhcmlzb24gZGlkIG5vdCBjb21wbGV0ZScpCg==')
+          if hashlib.sha256(payload).hexdigest() != 'c565946b77f83efc55b7dd8ca52b3e1d2d5e5802ee2feb5eac2ee864969c8f37':
+              raise ValueError('Private-volume driver differs')
+          script=pathlib.Path(os.environ['RUNNER_TEMP'])/'usn-cost-active-r2.py'
+          script.write_bytes(payload)
+          subprocess.run([sys.executable,'-B',script],check=True)
+      - name: Collect archives and raw observations without private homes
+        if: ${{ always() && matrix.journal == 'default' }}
+        shell: python
+        run: |
+          import os, subprocess, sys
+          subprocess.run([sys.executable, '-B', 'scripts/startup_package/collect.py', os.environ['MEASURE_ROOT'], os.environ['EVIDENCE_ROOT']], check=True)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: windows-usn-proof-paired-r6-${{ matrix.journal }}
+          path: |
+            ${{ runner.temp }}/startup-paired-evidence
+            ${{ runner.temp }}/usn-cost-active-r2/*.json
+            ${{ runner.temp }}/usn-cost-active-r2/*.stdout
+            ${{ runner.temp }}/usn-cost-active-r2/*.stderr
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
