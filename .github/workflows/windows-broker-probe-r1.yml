@@ -1,0 +1,90 @@
+name: Windows token broker development probe
+on:
+  push:
+    branches: [prime/windows-broker-probe-r1]
+permissions: {}
+jobs:
+  probe:
+    runs-on: windows-2025
+    timeout-minutes: 3
+    steps:
+      - name: Observe explicit-token process job membership
+        shell: pwsh
+        run: |
+          Add-Type @'
+          using System;
+          using System.Text;
+          using System.Runtime.InteropServices;
+          public static class NativeProbe {
+            [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+            public struct Startup {
+              public int cb;
+              public string reserved, desktop, title;
+              public int x, y, width, height, charsX, charsY, fill, flags;
+              public short show, reservedBytes;
+              public IntPtr reservedPointer, input, output, error;
+            }
+            [StructLayout(LayoutKind.Sequential)]
+            public struct Created {
+              public IntPtr process, thread;
+              public uint pid, tid;
+            }
+            [DllImport("advapi32.dll", SetLastError=true)]
+            public static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+            [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+            public static extern bool CreateProcessWithTokenW(IntPtr token, uint logon, string application,
+              StringBuilder command, uint flags, IntPtr environment, string cwd, ref Startup startup, out Created created);
+            [DllImport("kernel32.dll", SetLastError=true)]
+            public static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool member);
+            [DllImport("kernel32.dll", SetLastError=true)]
+            public static extern uint WaitForSingleObject(IntPtr process, uint milliseconds);
+            [DllImport("kernel32.dll", SetLastError=true)]
+            public static extern bool CloseHandle(IntPtr handle);
+          }
+          '@
+          $token = [IntPtr]::Zero
+          $created = [NativeProbe+Created]::new()
+          $childToken = [IntPtr]::Zero
+          $application = Join-Path ([Environment]::SystemDirectory) 'cmd.exe'
+          $command = [Text.StringBuilder]::new(('"{0}" /d /c ping -n 8 127.0.0.1 >nul' -f $application))
+          $startup = [NativeProbe+Startup]::new()
+          $startup.cb = [Runtime.InteropServices.Marshal]::SizeOf($startup)
+          try {
+            if (-not [NativeProbe]::OpenProcessToken([IntPtr](-1), 11, [ref]$token)) {
+              throw "OpenProcessToken failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+            }
+            $callerInJob = $false
+            if (-not [NativeProbe]::IsProcessInJob([IntPtr](-1), [IntPtr]::Zero, [ref]$callerInJob)) {
+              throw "caller membership unreadable: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+            }
+            $ok = [NativeProbe]::CreateProcessWithTokenW($token, 0, $application, $command, 0x08000000,
+              [IntPtr]::Zero, $env:RUNNER_TEMP, [ref]$startup, [ref]$created)
+            $creationError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            if (-not $ok) { throw "CreateProcessWithTokenW failed: $creationError" }
+            $childInJob = $true
+            if (-not [NativeProbe]::IsProcessInJob($created.process, [IntPtr]::Zero, [ref]$childInJob)) {
+              throw "child membership unreadable: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+            }
+            if (-not [NativeProbe]::OpenProcessToken($created.process, 8, [ref]$childToken)) {
+              throw "child token unreadable: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+            }
+            $caller = [Security.Principal.WindowsIdentity]::new($token)
+            $child = [Security.Principal.WindowsIdentity]::new($childToken)
+            $sameUser = $caller.User.Value -eq $child.User.Value
+            $observed = Get-CimInstance Win32_Process -Filter "ProcessId=$($created.pid)"
+            if (-not $observed) { throw 'exact helper command line unreadable' }
+            Write-Output "helper pid=$($created.pid); command=$($observed.CommandLine)"
+            Write-Output "caller_in_job=$callerInJob; child_in_job=$childInJob; same_user=$sameUser"
+            $wait = [NativeProbe]::WaitForSingleObject($created.process, 20000)
+            if ($wait -ne 0) { throw "helper did not witness exit: $wait" }
+            Write-Output 'helper exact handle witnessed exited'
+            if ($childInJob -or -not $sameUser) { throw 'explicit-token helper did not establish a same-user detached context' }
+          } finally {
+            if ($childToken -ne [IntPtr]::Zero) { [void][NativeProbe]::CloseHandle($childToken) }
+            if ($created.thread -ne [IntPtr]::Zero) { [void][NativeProbe]::CloseHandle($created.thread) }
+            if ($created.process -ne [IntPtr]::Zero) {
+              [void][NativeProbe]::WaitForSingleObject($created.process, 20000)
+              [void][NativeProbe]::CloseHandle($created.process)
+            }
+            if ($token -ne [IntPtr]::Zero) { [void][NativeProbe]::CloseHandle($token) }
+          }
