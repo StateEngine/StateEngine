@@ -1,0 +1,121 @@
+name: Independent feature-enabled SSH refusal review
+'on':
+  push:
+    branches:
+    - prime/ssh-refusal-399-correction-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arm: base
+          observer: 11666b85841ac9826a029c0c38f4911972bc93d4
+          product: 717dcab0b87e9be3207a22906af3a3a22dac6704
+        - arm: head
+          observer: eda7de442fceaec0283a372f3536b6dceb36249d
+          product: d6ea62299d0ae4f19bf35ba8e74ec277ed1d5d59
+    env:
+      REVIEW_ARM: ${{ matrix.arm }}
+      REVIEW_OBSERVER: ${{ matrix.observer }}
+      REVIEW_PRODUCT: ${{ matrix.product }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.observer }}
+        path: source
+        persist-credentials: false
+        fetch-depth: 2
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Read pinned compiler
+      id: compiler
+      shell: python
+      run: 'import os,tomllib
+
+        from pathlib import Path
+
+        channel=tomllib.loads(Path(''source/rust-toolchain.toml'').read_text())[''toolchain''][''channel'']
+
+        with open(os.environ[''GITHUB_OUTPUT''],''a'') as f:print(''channel=''+channel,file=f)
+
+        '
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: ${{ steps.compiler.outputs.channel }}
+        components: rust-docs, llvm-tools-preview
+    - name: Exercise feature-enabled native consumers
+      shell: python
+      run: 'from pathlib import Path
+
+        import subprocess,sys
+
+        source=''"""Independent hosted feature-enabled SSH refusal controls; no real remote access."""\nfrom
+        pathlib import Path\nimport ctypes,hashlib,json,os,signal,subprocess,sys,time,traceback,uuid\nROOT=Path.cwd();SOURCE=ROOT/\''source\'';OUT=ROOT/\''review-results\'';OUT.mkdir();SCRATCH=Path(os.environ[\''RUNNER_TEMP\''])/\''ssh-review-399\'';SCRATCH.mkdir()\nARM=os.environ[\''REVIEW_ARM\''];PIN=os.environ[\''REVIEW_OBSERVER\''];PRODUCT=os.environ[\''REVIEW_PRODUCT\'']\nallow={\''PATH\'',\''HOME\'',\''USER\'',\''LOGNAME\'',\''LANG\'',\''LC_ALL\'',\''RUSTUP_HOME\'',\''TMPDIR\'',\''TMP\'',\''TEMP\'',\''SYSTEMROOT\'',\''WINDIR\''}\nENV={k:v
+        for k,v in os.environ.items() if k in allow};ENV.update(CARGO_TARGET_DIR=str(SCRATCH/\''target\''),CARGO_INCREMENTAL=\''0\'',CARGO_BUILD_JOBS=\''2\'',RUSTUP_AUTO_INSTALL=\''0\'')\nreport={\''arm\'':ARM,\''observer\'':PIN,\''product\'':PRODUCT,\''features\'':[\''remote\''],\''phases\'':[],\''cases\'':[],\''limits\'':[\''Feature-enabled
+        Linux source and public CLI controls only.\'',\''MCP error-envelope parity is exercised by the
+        real MCP formatter; pairing is a CLI-only native Owner control, not an MCP data operation.\'',\''No
+        real remote access, providers, credentials, native Windows or macOS qualification.\'']}\ndef sha(p):\n
+        with p.open(\''rb\'') as f:return hashlib.file_digest(f,\''sha256\'').hexdigest()\ndef save():(OUT/\''report.json\'').write_text(json.dumps(report,indent=2)+\''\\n\'')\ndef
+        invoke(name,argv,env=ENV,cwd=SOURCE,timeout=1800):\n row={\''name\'':name,\''argv\'':[str(x) for
+        x in argv]};report[\''phases\''].append(row);save();start=time.monotonic()\n with (OUT/(name+\''.stdout\'')).open(\''wb\'')
+        as out,(OUT/(name+\''.stderr\'')).open(\''wb\'') as err:\n  try:row[\''exit\'']=subprocess.run(argv,cwd=cwd,env=env,stdin=subprocess.DEVNULL,stdout=out,stderr=err,timeout=timeout).returncode\n  except
+        subprocess.TimeoutExpired:row.update(exit=None,ungraded=\''command timed out\'')\n row[\''seconds\'']=time.monotonic()-start;save();return
+        row\n\ndef native(pid):\n try:\n  p=Path(\''/proc\'')/str(pid);f=(p/\''stat\'').read_text().rsplit(\'')
+        \'',1)[1].split()\n  return {\''pid\'':pid,\''birth\'':f[19],\''state\'':f[0],\''argv\'':(p/\''cmdline\'').read_bytes().split(b\''\\0\'')[:-1]}\n
+        except (FileNotFoundError,ProcessLookupError):return None\n\ndef gone(pin):\n now=native(pin[\''pid\'']);return
+        now is None or now[\''birth\'']!=pin[\''birth\''] or now[\''state\'']==\''Z\''\n\ndef public_cli(image):\n
+        # Only the native fixture\''s own descendants become joinable to this driver.\n if ctypes.CDLL(None,use_errno=True).prctl(36,1,0,0,0)!=0:raise
+        OSError(\''subreaper unavailable\'')\n script=(SOURCE/\''crates/se-host/src/remote/native_image/distribution.rs\'').read_text().split(\''let
+        script = r#"\'',1)[1].split(\''"#;\'',1)[0]\n for mode in [\''both\'',\''hostile\'',\''first-only\'',\''empty\'']:\n  root=SCRATCH/(\''cli-\''+mode);root.mkdir();repo=root/\''project\'';repo.mkdir();home=root/\''state\'';fake=root/\''fake\'';fake.mkdir()\n  (fake/\''ssh\'').write_text(script);(fake/\''ssh\'').chmod(0o700);(fake/\''mode\'').write_text(mode);(fake/\''calls\'').write_text(\''\'')\n  env={**ENV,\''PATH\'':str(fake)+os.pathsep+ENV[\''PATH\''],\''REVIEW_SSH_ROOT\'':str(fake)}\n  prefix=[str(image),\''--home\'',str(home),\''--json\''];case={\''mode\'':mode,\''calls\'':[],\''passed\'':False};report[\''cases\''].append(case);save();pins=[]\n  try:\n   for
+        verb in [\''init\'',\''remote\'']:\n    help_row=invoke(mode+\''-\''+verb+\''-help\'',[str(image),verb,\''--help\''],env,repo,30)\n    assert
+        help_row[\''exit\'']==0,\''help unavailable\''\n   init=invoke(mode+\''-init\'',[*prefix,\''--key\'',str(uuid.uuid4()),\''init\'',\''--repo\'',str(repo),\''--name\'',\''SSH
+        refusal review\'',\''--agent\'',\''Worker\'',\''--provider\'',\''codex\''],env,repo,60)\n   assert
+        init[\''exit\'']==0,\''init did not complete\''\n   up=invoke(mode+\''-up\'',[*prefix,\''up\''],env,repo,60)\n   assert
+        up[\''exit\'']==0,\''host startup did not complete\''\n   value=json.loads((OUT/(mode+\''-up.stdout\'')).read_text());pin=native(value[\''process\''][\''pid\'']);assert
+        pin is not None;pins.append(pin)\n   pair=invoke(mode+\''-remote-add\'',[*prefix,\''remote\'',\''add\'',\''review-destination\'',\''--name\'',\''blocked\''],env,repo,90)\n   value=json.loads((OUT/(mode+\''-remote-add.stdout\'')).read_text());case[\''response\'']=value\n   calls=[json.loads(x)
+        for x in (fake/\''calls\'').read_text().splitlines()];case[\''calls\'']=calls\n   expected={\''both\'':\''REVIEW_DENIED
+        publickey\'',\''hostile\'':\''REVIEW_DENIED\'',\''first-only\'':\''REVIEW_FIRST_ONLY\'',\''empty\'':\''check
+        the SSH destination\''}[mode]\n   case[\''cause_present\'']=expected in json.dumps(value);case[\''refused\'']=pair[\''exit\'']
+        not in [None,0] and value.get(\''code\'')==\''listener-unavailable\'';case[\''ssh_closed\'']=all(gone(x)
+        for x in calls)\n   case[\''passed\'']=case[\''refused\''] and case[\''cause_present\''] and len(calls)==2
+        and case[\''ssh_closed\'']\n  except Exception as e:case[\''ungraded\'']={\''type\'':type(e).__name__,\''detail\'':str(e),\''traceback\'':traceback.format_exc()}\n  finally:\n   down=invoke(mode+\''-down\'',[*prefix,\''down\''],env,repo,60);case[\''down_exit\'']=down[\''exit\'']\n   case[\''outside_host_closed\'']=all(gone(pin)
+        for pin in pins)\n   # A truthful failed journey retains its failure even when cleanup succeeds.\n   case[\''passed\'']
+        &= down[\''exit\'']==0 and case[\''outside_host_closed\''];save()\n   for pin in pins:\n    now=native(pin[\''pid\''])\n    if
+        now and now[\''birth\'']==pin[\''birth\''] and now[\''argv\'']==pin[\''argv\''] and not gone(pin):\n     os.kill(pin[\''pid\''],signal.SIGKILL)\n   while
+        True:\n    try:\n     pid,_=os.waitpid(-1,os.WNOHANG)\n     if pid==0:break\n    except ChildProcessError:break\ntry:\n
+        assert subprocess.check_output([\''git\'',\''rev-parse\'',\''HEAD\''],cwd=SOURCE,text=True).strip()==PIN\n
+        assert subprocess.check_output([\''git\'',\''rev-parse\'',\''HEAD^\''],cwd=SOURCE,text=True).strip()==PRODUCT\n
+        report[\''observer_source_sha256\'']=sha(Path(__file__));report[\''rustc\'']=subprocess.check_output([\''rustc\'',\''-vV\''],cwd=SOURCE,env=ENV,text=True);save()\n
+        fake=SCRATCH/\''unit-ssh\''\n unit=invoke(\''feature-unit\'',[\''cargo\'',\''test\'',\''--target\'',\''x86_64-unknown-linux-gnu\'',\''-p\'',\''se-host\'',\''--lib\'',\''--features\'',\''remote\'',\''--locked\'',\''review_399\'',\''--\'',\''--nocapture\'',\''--test-threads=1\''],{**ENV,\''REVIEW_SSH_ROOT\'':str(fake),\''PATH\'':str(fake)+os.pathsep+ENV[\''PATH\'']})\n
+        lines=(OUT/\''feature-unit.stdout\'').read_text(errors=\''replace\'').splitlines()\n report[\''unit_observations\'']=[json.loads(line.split(\''REVIEW399
+        \'',1)[1]) for line in lines if \''REVIEW399 \'' in line]\n report[\''unit_compiled_and_exercised\'']=len(report[\''unit_observations\''])==11\n
+        save()\n build=invoke(\''cli-build\'',[\''cargo\'',\''build\'',\''--target\'',\''x86_64-unknown-linux-gnu\'',\''-p\'',\''se\'',\''--bin\'',\''se\'',\''--features\'',\''remote\'',\''--locked\''])\n
+        if build[\''exit\'']==0:\n  image=SCRATCH/\''target/x86_64-unknown-linux-gnu/debug/se\'';report[\''image_sha256\'']=sha(image);public_cli(image)\n
+        else:report[\''public_cli_ungraded\'']=\''feature-enabled binary build failed\''\n report[\''passed\'']=report[\''unit_compiled_and_exercised\'']
+        and unit[\''exit\'']==0 and len(report[\''cases\''])==4 and all(x[\''passed\''] for x in report[\''cases\''])\nexcept
+        BaseException as e:report.update(passed=False,failure={\''type\'':type(e).__name__,\''detail\'':str(e),\''traceback\'':traceback.format_exc()});save()\nfinally:\n
+        save();files=[{\''file\'':p.relative_to(OUT).as_posix(),\''bytes\'':p.stat().st_size,\''sha256\'':sha(p)}
+        for p in sorted(OUT.rglob(\''*\'')) if p.is_file() and p.name!=\''manifest.json\''];(OUT/\''manifest.json\'').write_text(json.dumps(files,indent=2)+\''\\n\'')\nprint(json.dumps({k:report.get(k)
+        for k in [\''arm\'',\''passed\'',\''unit_compiled_and_exercised\'',\''unit_observations\'',\''cases\'',\''failure\'']},indent=2))\nraise
+        SystemExit(0 if report.get(\''passed\'') else 1)\n''
+
+        p=Path(''independent-review.py'');p.write_text(source)
+
+        raise SystemExit(subprocess.run([sys.executable,str(p)]).returncode)
+
+        '
+    - name: Retain all attempted controls
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: ssh-refusal-399-${{ matrix.arm }}-correction-r1
+        path: review-results
+        if-no-files-found: error
+        retention-days: 7
