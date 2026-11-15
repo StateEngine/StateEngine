@@ -1,0 +1,110 @@
+name: Fresh Git option phase comparison
+'on':
+  push:
+    branches:
+    - prime/status-git-options-389-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  observe:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - windows-2025
+        - macos-15
+    steps:
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Install process observer
+      shell: python
+      run: 'import subprocess,sys
+
+        subprocess.run([sys.executable,''-m'',''pip'',''install'',''--disable-pip-version-check'',''psutil==7.0.0''],check=True)
+
+        '
+    - name: Compare fresh Git options on one runner
+      shell: python
+      run: 'OBSERVER=''"""Author phase observations only; this does not qualify public status latency."""\nimport
+        argparse, hashlib, json, math, os, pathlib, platform, statistics, subprocess, time\nimport psutil\n\np =
+        argparse.ArgumentParser()\np.add_argument(\''--out\'', type=pathlib.Path, required=True)\np.add_argument(\''--samples\'',
+        type=int, default=200)\na = p.parse_args()\nroot = a.out.resolve(); root.mkdir(mode=0o700)\nowner = root/\''owner\'';
+        owner.mkdir(mode=0o700)\nenv = {k:v for k,v in os.environ.items() if not k.startswith((\''GIT_\'', \''GH_\'',
+        \''GITHUB_\'', \''SE_\'', \''STATEENGINE_\'', \''CODEX_\'', \''CLAUDE\'', \''ANTHROPIC_\'', \''OPENAI_\''))}\nenv.update(HOME=str(owner),
+        USERPROFILE=str(owner), GIT_CONFIG_NOSYSTEM=\''1\'', GIT_CONFIG_GLOBAL=str(owner/\''empty-config\''), GIT_CONFIG_SYSTEM=str(owner/\''empty-system-config\''))\nvariants
+        = [\''current\'', \''optional_locks_default\'', \''no_ahead_behind\'', \''untracked_off\'', \''untracked_cache\'',
+        \''cache_no_ahead\'', \''native_header_only\'']\nreport = {\''purpose\'':\''Phase comparison, not public
+        command latency or a product implementation.\'', \''machine\'':{\''system\'':platform.system(), \''release\'':platform.release(),
+        \''cpu_count\'':os.cpu_count()}, \''samples\'':a.samples, \''observer_sha256\'':hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
+        \''setup\'':[], \''rows\'':[], \''windows\'':[], \''limitations\'':[\''Native-header-only is a controlled
+        loose-ref fixture read, not a general Git reader and supplies no dirty fact.\'', \''Untracked-off is diagnostic
+        and cannot preserve untracked-only dirtiness.\'', \''The current product already disables optional locks.\'',
+        \''Full subprocess completion is measured; production can stop at the first dirty entry.\'', \''No public
+        status budget can be inferred by adding these percentiles to other phases.\'']}\ndef save(): (root/\''report.json\'').write_text(json.dumps(report,
+        indent=2), encoding=\''utf-8\'')\ndef git(repo, args, *, locks=\''0\'', input=None):\n    e=dict(env)\n    if
+        locks is not None:e[\''GIT_OPTIONAL_LOCKS\'']=locks\n    started=time.perf_counter_ns()\n    try:\n        result=subprocess.run([\''git\'',\''-c\'',\''core.fsmonitor=false\'',\''-C\'',str(repo),*args],
+        env=e, input=input, capture_output=True, timeout=30)\n        return {\''elapsed_ms\'':(time.perf_counter_ns()-started)/1e6,
+        \''exit\'':result.returncode, \''stdout\'':result.stdout.decode(\''utf-8\''), \''stderr\'':result.stderr.decode(\''utf-8\'')}\n    except
+        subprocess.TimeoutExpired as error:\n        return {\''elapsed_ms\'':(time.perf_counter_ns()-started)/1e6,
+        \''exit\'':None, \''stdout\'':(error.stdout or b\''\'').decode(errors=\''replace\''), \''stderr\'':(error.stderr
+        or b\''\'').decode(errors=\''replace\''), \''failure\'':\''timeout\''}\ndef setup(repo,args,**kwargs):\n    row=git(repo,args,**kwargs);
+        report[\''setup\''].append({\''repo\'':repo.name,\''argv\'':args,**row}); save(); assert row[\''exit\'']==0,row\n    return
+        row[\''stdout\''].strip()\ndef quiet():\n    samples=[]; consecutive=0\n    for _ in range(20):\n        busy=psutil.cpu_percent(interval=1)/100;
+        samples.append(busy)\n        consecutive=consecutive+1 if busy<.15 else 0\n        if consecutive==3:break\n    return
+        {\''samples\'':samples,\''eligible\'':consecutive==3}\nrepos={}\nfor variant in variants:\n    repo=root/variant;
+        repo.mkdir(); repos[variant]=repo\n    setup(repo,[\''init\'',\''-q\'',\''--initial-branch=trunk\''])\n    (repo/\''source.rs\'').write_text(\''pub
+        fn ordinary_source() -> u32 { 1 }\\n\'')\n    setup(repo,[\''add\'',\''--\'',\''source.rs\''])\n    setup(repo,[\''-c\'',\''user.name=Source
+        fixture\'',\''-c\'',\''user.email=fixture@example.invalid\'',\''commit\'',\''-q\'',\''-m\'',\''Create source\''])\n    if
+        variant in (\''untracked_cache\'',\''cache_no_ahead\''):\n        setup(repo,[\''config\'',\''core.untrackedCache\'',\''true\''])\n        setup(repo,[\''status\'',\''--porcelain=v2\'',\''--branch\''],locks=None)\nreport[\''git_version\'']=setup(repos[\''current\''],[\''--version\''])\ndef
+        sample(variant, state, iteration, expected):\n    repo=repos[variant]\n    if variant==\''native_header_only\'':\n        started=time.perf_counter_ns()\n        spelling=(repo/\''.git/HEAD\'').read_text().strip()\n        if
+        spelling.startswith(\''ref: \''):\n            ref=spelling[5:]; oid=(repo/\''.git\''/ref).read_text().strip();
+        branch=ref.removeprefix(\''refs/heads/\'')\n        else:oid=spelling; branch=None\n        row={\''elapsed_ms\'':(time.perf_counter_ns()-started)/1e6,\''exit\'':0,\''head\'':oid,\''branch\'':branch,\''dirty\'':None,\''semantic_complete\'':False,\''header_matches\'':oid==expected[\''head\'']
+        and branch==\''trunk\''}\n    else:\n        flags=[\''status\'',\''--porcelain=v2\'',\''--branch\'']\n        if
+        variant in (\''no_ahead_behind\'',\''cache_no_ahead\''):flags+=[\''--no-ahead-behind\'']\n        if variant==\''untracked_off\'':flags+=[\''--untracked-files=no\'']\n        row=git(repo,
+        flags, locks=None if variant==\''optional_locks_default\'' else \''0\'')\n        lines=row[\''stdout\''].splitlines();
+        headers=dict(line[2:].split(\'' \'',1) for line in lines if line.startswith(\''# \''))\n        dirty=any(not
+        line.startswith(\''# \'') for line in lines)\n        row.update(head=headers.get(\''branch.oid\''),branch=headers.get(\''branch.head\''),dirty=dirty,semantic_complete=row[\''exit\'']==0
+        and headers.get(\''branch.oid\'')==expected[\''head\''] and headers.get(\''branch.head\'')==\''trunk\''
+        and dirty==expected[\''dirty\''])\n    report[\''rows\''].append({\''variant\'':variant,\''state\'':state,\''iteration\'':iteration,\''expected\'':expected,**row})\nfor
+        state in [\''clean\'',\''tracked_dirty\'',\''untracked_only\'',\''diverged\'']:\n    expected={}\n    for
+        variant,repo in repos.items():\n        if state==\''tracked_dirty\'':(repo/\''source.rs\'').write_text(\''pub
+        fn ordinary_source() -> u32 { 2 }\\n\'')\n        if state==\''untracked_only\'':\n            (repo/\''source.rs\'').write_text(\''pub
+        fn ordinary_source() -> u32 { 1 }\\n\'')\n            (repo/\''untracked.txt\'').write_text(\''Untracked
+        fixture\\n\'')\n        if state==\''diverged\'':\n            (repo/\''untracked.txt\'').unlink()\n            initial=setup(repo,[\''rev-parse\'',\''HEAD\'']);tree=setup(repo,[\''rev-parse\'',\''HEAD^{tree}\''])\n            common=[\''-c\'',\''user.name=Source
+        fixture\'',\''-c\'',\''user.email=fixture@example.invalid\'',\''commit-tree\'',tree,\''-p\'',initial]\n            local=setup(repo,[*common,\''-m\'',\''Local
+        source\'']);remote=setup(repo,[*common,\''-m\'',\''Remote source\''])\n            setup(repo,[\''update-ref\'',\''refs/heads/trunk\'',local]);setup(repo,[\''update-ref\'',\''refs/remotes/origin/trunk\'',remote])\n            setup(repo,[\''config\'',\''remote.origin.fetch\'',\''+refs/heads/*:refs/remotes/origin/*\''])\n            setup(repo,[\''config\'',\''branch.trunk.remote\'',\''origin\'']);setup(repo,[\''config\'',\''branch.trunk.merge\'',\''refs/heads/trunk\''])\n        expected[variant]={\''head\'':setup(repo,[\''rev-parse\'',\''HEAD\'']),\''dirty\'':state
+        in (\''tracked_dirty\'',\''untracked_only\'')}\n    for i in range(-5,0):\n        for variant in variants:sample(variant,state,i,expected[variant])\n    before=quiet();save()\n    for
+        i in range(a.samples):\n        # Rotate ordering to spread drift across variants on this same runner.\n        for
+        j in range(len(variants)):\n            variant=variants[(i+j)%len(variants)];sample(variant,state,i,expected[variant])\n        if
+        i%10==0:save()\n    after=quiet();report[\''windows\''].append({\''state\'':state,\''before\'':before,\''after\'':after});save()\nreport[\''summary\'']=[]\nfor
+        state in [\''clean\'',\''tracked_dirty\'',\''untracked_only\'',\''diverged\'']:\n    window=next(x for x
+        in report[\''windows\''] if x[\''state\'']==state)\n    for variant in variants:\n        rows=[x for x
+        in report[\''rows\''] if x[\''variant\'']==variant and x[\''state\'']==state and x[\''iteration\'']>=0]\n        values=sorted(x[\''elapsed_ms\'']
+        for x in rows)\n        report[\''summary\''].append({\''variant\'':variant,\''state\'':state,\''samples\'':len(rows),\''median_ms\'':statistics.median(values),\''p95_ms\'':values[math.ceil(len(values)*.95)-1],\''idle_qualified\'':window[\''before\''][\''eligible\'']
+        and window[\''after\''][\''eligible\''],\''process_failures\'':sum(x[\''exit\'']!=0 for x in rows),\''semantic_complete\'':all(x[\''semantic_complete\'']
+        for x in rows)})\nsave()\nassert all(x[\''exit\'']==0 for x in report[\''rows\'']), \''Failed reads remain
+        in report\''\nassert all(x[\''header_matches\''] for x in report[\''rows\''] if x[\''variant\'']==\''native_header_only\'')\nassert
+        all(x[\''semantic_complete\''] for x in report[\''summary\''] if x[\''variant\''] not in (\''untracked_off\'',\''native_header_only\''))\nassert
+        not next(x for x in report[\''summary\''] if x[\''variant\'']==\''untracked_off\'' and x[\''state\'']==\''untracked_only\'')[\''semantic_complete\'']\nprint(json.dumps(report[\''summary\''],indent=2))\n''
+
+        import os,pathlib,subprocess,sys,json,time,hashlib
+
+        out=pathlib.Path(os.environ[''RUNNER_TEMP''])/''git389'';out.mkdir();observer=out/''observer.py'';observer.write_bytes(OBSERVER.encode(''utf-8''));argv=[sys.executable,str(observer),''--out'',str(out/''observed''),''--samples'',''200''];start=time.monotonic_ns()
+
+        with (out/''observe.stdout'').open(''w'',encoding=''utf-8'') as stdout,(out/''observe.stderr'').open(''w'',encoding=''utf-8'')
+        as stderr:p=subprocess.run(argv,stdout=stdout,stderr=stderr,timeout=900)
+
+        (out/''executions.json'').write_text(json.dumps([{''argv'':argv,''source'':None,''observer_sha256'':hashlib.sha256(observer.read_bytes()).hexdigest(),''exit'':p.returncode,''elapsed_ns'':time.monotonic_ns()-start}],indent=2),encoding=''utf-8'');assert
+        p.returncode==0
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: git389-${{ matrix.os }}
+        path: ${{ runner.temp }}/git389
+        if-no-files-found: warn
