@@ -33,7 +33,7 @@ pub(super) fn collect(
         } else {
             identities.push((seed.kind, seed.rowid, false));
         }
-        for (kind, id) in neighbors(sql, seed, &mut output.truncated, end)? {
+        for (kind, id) in neighbors(sql, seed, &mut output.truncated, end, query.budget)? {
             if !identities.iter().any(|(k, i, _)| *k == kind && *i == id) {
                 if identities.len() == 256 {
                     output.truncated = true;
@@ -42,17 +42,11 @@ pub(super) fn collect(
                 identities.push((kind, id, true));
             }
         }
-        if crate::clock::now() >= end {
-            output.truncated = true;
-            break;
-        }
+        super::candidates::admission_time(end, query.budget)?;
     }
     let mut resident = 0;
     for (kind, rowid, related) in identities {
-        if crate::clock::now() >= end {
-            output.truncated = true;
-            break;
-        }
+        super::candidates::admission_time(end, query.budget)?;
         if !allowed(sql, kind, rowid, query)? {
             continue;
         }
@@ -165,6 +159,7 @@ fn neighbors(
     seed: &Candidate,
     limited: &mut bool,
     end: Instant,
+    budget: QueryBudget,
 ) -> AtlasResult<Vec<(Kind, i64)>> {
     let mut output = Vec::new();
     let mut files = Vec::new();
@@ -245,7 +240,8 @@ fn neighbors(
             *limited = true;
             continue;
         }
-        if output.len() >= 256 || crate::clock::now() >= end {
+        super::candidates::admission_time(end, budget)?;
+        if output.len() >= 256 {
             *limited = true;
             break;
         }

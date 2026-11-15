@@ -62,10 +62,7 @@ impl Pool {
             if !matches!(plan.kind, Kind::Symbol | Kind::File) {
                 continue;
             }
-            if crate::clock::now() >= end {
-                pool.truncated = true;
-                break;
-            }
+            super::candidates::admission_time(end, query.budget)?;
             let (condition, _) = plan
                 .sql
                 .split_once(" WHERE ")
@@ -114,10 +111,7 @@ impl Pool {
                 if !bm25.is_finite() || bm25 > 0.0 {
                     return Err(cache_error("invalid source metadata BM25 score"));
                 }
-                if crate::clock::now() >= end {
-                    pool.truncated = true;
-                    break;
-                }
+                super::candidates::admission_time(end, query.budget)?;
                 if plan.kind == Kind::Symbol && plan.tier == 2 {
                     let (_, name) = super::candidates::metadata(sql, plan.kind, rowid)?;
                     if !crate::rank::split_matches(&name, query.query.as_str()) {
