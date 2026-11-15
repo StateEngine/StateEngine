@@ -23,6 +23,8 @@ use se_types::{
 };
 use sha2::{Digest, Sha256};
 use std::time::Duration;
+#[path = "init/provenance.rs"]
+pub(super) mod provenance;
 #[path = "init/repository.rs"]
 mod repository;
 
@@ -147,6 +149,7 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
         !recovered_changes.is_empty(),
     )?;
     let files = &lease.files;
+    provenance::resumable(files)?;
     let observed = match &before {
         setup::Setup::Absent(_) => owner::observe(&[])?,
         setup::Setup::Present(reader) => owner::from_inventory(&owner::inventory(reader, files)?)?,
@@ -192,7 +195,9 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
         }
         setup::Setup::Absent(_) => {
             super::identity::initialize_machine(files)?;
-            super::credential::initialize(files)?;
+            super::credential::initialize_before_publish(files, |secret| {
+                provenance::prepare(files, secret)
+            })?;
         }
     }
     let options = StoreOptions {
@@ -215,18 +220,20 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
             Read::Unknown { what } => return Err(scope::unreadable("setup store", &what)),
         };
     lease.identity.store = Some(store.info().map_err(|e| store_error(&e))?.id);
-    let result = registration::finish(
-        cx,
-        registration::Plan {
-            input: &input,
-            repository: &repository,
-            configuration: &configuration,
-        },
-        &observed,
-        &mut store,
-        &lease,
-        recovered_changes,
-    );
+    let result = provenance::complete(files, &store).and_then(|()| {
+        registration::finish(
+            cx,
+            registration::Plan {
+                input: &input,
+                repository: &repository,
+                configuration: &configuration,
+            },
+            &observed,
+            &mut store,
+            &lease,
+            recovered_changes,
+        )
+    });
     let closed = store.close().map_err(|e| store_error(&e));
     match result {
         Ok(mut value) => {
