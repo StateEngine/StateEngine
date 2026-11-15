@@ -359,11 +359,54 @@ jobs:
         if: ${{ always() }}
         run: echo 'macOS compile cache exact hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
 
+  macos-test:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' }}
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: hosted-macos-tests-v1
+      - name: Register the disposable runner account
+        run: |
+          identity="$(id -u)"
+          profile="$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')"
+          sudo python3 scripts/ci/installation_account.py provision --identity "$identity" --profile "$profile"
+          python3 scripts/ci/installation_account.py check
+      - name: Compile native macOS shipping-default archive
+        id: archive
+        run: |
+          # Explicit target keeps target linker flags off host compiler plugins.
+          target="$(rustc --print host-tuple)"
+          cargo nextest archive --target "$target" --workspace --locked --archive-file tests.tar.zst
+      - name: Run every ordinary shipping-default case
+        run: |
+          filter="$(python3 scripts/ci/custom.py filter)"
+          cargo nextest run --archive-file tests.tar.zst --extract-to . --extract-overwrite \
+            --workspace-remap "$PWD" --profile ci --no-fail-fast --no-tests fail -E "$filter"
+      - name: Run every custom harness after ordinary execution
+        if: ${{ !cancelled() && steps.archive.outcome == 'success' }}
+        run: python3 scripts/ci/custom.py run
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: results-macos-15
+          path: |
+            target/nextest/ci/junit.xml
+            target/nextest/input-judges.json
+          retention-days: 3
+          if-no-files-found: warn
+
   # Required: strict Clippy (Windows too when the diff can affect it) and Linux archive/tests.
   check:
     name: check
     if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.job == 'macos') && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
-    needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test]
+    needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test, macos-test]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
