@@ -20,7 +20,7 @@ jobs:
       matrix:
         include:
           - side: baseline
-            ref: b7a3c1c5d9d4f016b237a97c5c0d883645276eda
+            ref: 737bee8caf03e17d2a61e21594d7b0285d6619dc
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
@@ -31,15 +31,15 @@ jobs:
           persist-credentials: false
       - name: Overlay measurement sources
         env:
-          MEASUREMENTS: seat-5d/eight-writer-measurement-20261115
+          MEASUREMENTS: 0cfea8966b0a549025fa87216b4512d5221840ad
         run: |
-          git fetch --quiet origin "275e369a7081d4c382f0f0f09e610397dbca918a:refs/remotes/measure/tests" "refs/heads/main:refs/remotes/measure/main"
+          git fetch --quiet origin "0cfea8966b0a549025fa87216b4512d5221840ad:refs/remotes/measure/tests" "refs/heads/main:refs/remotes/measure/main"
           measured="$(git rev-parse refs/remotes/measure/tests)"
-          test "$measured" = 275e369a7081d4c382f0f0f09e610397dbca918a
+          test "$measured" = 0cfea8966b0a549025fa87216b4512d5221840ad
           echo "$measured" > measurement-commit.txt
           fork="$(git merge-base refs/remotes/measure/main refs/remotes/measure/tests)"
           git diff --name-only --diff-filter=AM "$fork" refs/remotes/measure/tests > "$RUNNER_TEMP/measurement-files"
-          python3 -I - "$RUNNER_TEMP/measurement-files" <<'PY'
+          python -I - "$RUNNER_TEMP/measurement-files" <<'PY'
           import re, sys
           paths = open(sys.argv[1], encoding="utf-8").read().splitlines()
           if not paths or any(not re.match(r"^(crates/[^/]+/)?tests/", p) for p in paths):
@@ -58,19 +58,19 @@ jobs:
           git rev-parse HEAD > baseline-source.txt
           target="$(rustc --print host-tuple)"
           set +e
-          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se --test eight_writer_mcp_measurement -- --nocapture
+          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se --test eight_writer_mcp_measurement -- --nocapture > mcp-baseline.log 2>&1
           measurement_status=$?
-          cargo test --target "$target" --release --locked -p se-proc --test native_metadata_measurement -- --nocapture
-          native_status=$?
-          if [[ "$native_status" != 0 ]]; then measurement_status="$native_status"; fi
+          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-baseline.log 2>&1
+          pressure_status=$?
+          if [[ "$pressure_status" != 0 ]]; then measurement_status="$pressure_status"; fi
           set -e
           if [[ -d target/judge-diagnostics ]]; then mv target/judge-diagnostics target/judge-baseline; fi
           exit "$measurement_status"
       - name: Select candidate with the same measurement overlay
         run: |
-          git fetch --quiet origin 25bea315184d95c0f5205eb7d36e05f6ee46a9ec:refs/remotes/measure/head
-          test "$(git rev-parse refs/remotes/measure/head)" = 25bea315184d95c0f5205eb7d36e05f6ee46a9ec
-          git checkout --detach 25bea315184d95c0f5205eb7d36e05f6ee46a9ec
+          git fetch --quiet origin 906ca100f773a8d824a47905f0f700d38de3f63c:refs/remotes/measure/head
+          test "$(git rev-parse refs/remotes/measure/head)" = 906ca100f773a8d824a47905f0f700d38de3f63c
+          git checkout --detach 906ca100f773a8d824a47905f0f700d38de3f63c
           git rev-parse HEAD > candidate-source.txt
           while IFS= read -r measurement_path; do
             git diff --exit-code refs/remotes/measure/tests -- "$measurement_path"
@@ -81,18 +81,18 @@ jobs:
         run: |
           target="$(rustc --print host-tuple)"
           set +e
-          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se --test eight_writer_mcp_measurement -- --nocapture
+          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se --test eight_writer_mcp_measurement -- --nocapture > mcp-candidate.log 2>&1
           measurement_status=$?
-          cargo test --target "$target" --release --locked -p se-proc --test native_metadata_measurement -- --nocapture
-          native_status=$?
-          if [[ "$native_status" != 0 ]]; then measurement_status="$native_status"; fi
+          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-candidate.log 2>&1
+          pressure_status=$?
+          if [[ "$pressure_status" != 0 ]]; then measurement_status="$pressure_status"; fi
           set -e
           if [[ -d target/judge-diagnostics ]]; then mv target/judge-diagnostics target/judge-candidate; fi
           exit "$measurement_status"
-      - name: Run retained Windows file and pooled-read controls
+      - name: Run retained background and pressure controls
         run: |
           target="$(rustc --print host-tuple)"
-          cargo test --target "$target" --release --all-features --locked --no-fail-fast -p se-proc --test state_files -p se-store --test read_pool_independent -- --nocapture
+          cargo test --target "$target" --release --all-features --locked --no-fail-fast -p se-store --test background_checkpoint_independent --test deferred_checkpoint_independent -- --nocapture > checkpoint-controls.log 2>&1
       - name: Preserve failed observer verdicts
         if: ${{ always() }}
         env:
@@ -104,8 +104,13 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}
         with:
-          name: writer-latency-windows-metadata-paired
+          name: writer-latency-windows-quiet-paired
           path: |
+            mcp-baseline.log
+            mcp-candidate.log
+            pressure-baseline.log
+            pressure-candidate.log
+            checkpoint-controls.log
             baseline-source.txt
             candidate-source.txt
             measurement-commit.txt
