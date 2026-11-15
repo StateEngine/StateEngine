@@ -1,6 +1,10 @@
 //! Image staging is a native CLI stage, outside the short pairing IPC request.
-use super::command::ssh;
-use super::*;
+use super::staging;
+use super::transactions as image_commands;
+use super::{Image, describe};
+use crate::remote::channel::unavailable;
+use crate::remote::ssh::command::{ssh, verification_error};
+use se_types::Result;
 use std::{
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
@@ -38,7 +42,7 @@ pub async fn prepare_image(
         total_bytes: None,
         elapsed_ms: 0,
     })?;
-    let image = super::image::describe(destination, distribution).await?;
+    let image = describe(destination, distribution).await?;
     if cancelled.load(Ordering::Acquire) {
         return Err(unavailable("remote image preparation was cancelled"));
     }
@@ -107,7 +111,7 @@ fn cleanup_incomplete() -> se_types::SeError {
     )
 }
 
-async fn cached_image(destination: &str, image: &super::image::Image) -> Result<bool> {
+async fn cached_image(destination: &str, image: &Image) -> Result<bool> {
     // Windows retains its existing encoded commands. Nesting their encodings
     // inside a batch can exceed the native command interpreter's length bound.
     if image.windows {
@@ -144,7 +148,7 @@ async fn cached_image(destination: &str, image: &super::image::Image) -> Result<
     Ok(cached)
 }
 
-async fn publish_image(destination: &str, image: &super::image::Image, upload: &str) -> Result<()> {
+async fn publish_image(destination: &str, image: &Image, upload: &str) -> Result<()> {
     if image.windows {
         verify_image(destination, image, upload).await?;
         let _published = ssh(destination, staging::publish(upload, &image.remote(), true)).await?;
@@ -168,10 +172,10 @@ async fn publish_image(destination: &str, image: &super::image::Image, upload: &
     {
         return Err(cleanup_incomplete());
     }
-    Err(super::command::verification_error(detail))
+    Err(verification_error(detail))
 }
 
-async fn verify_image(destination: &str, image: &super::image::Image, path: &str) -> Result<()> {
+async fn verify_image(destination: &str, image: &Image, path: &str) -> Result<()> {
     let outcome = ssh(
         destination,
         staging::verify(path, &image.digest, image.windows, image.apple),
@@ -181,7 +185,7 @@ async fn verify_image(destination: &str, image: &super::image::Image, path: &str
     if verified {
         Ok(())
     } else {
-        Err(super::command::verification_error(detail))
+        Err(verification_error(detail))
     }
 }
 

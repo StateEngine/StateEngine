@@ -4,7 +4,7 @@ pub(super) use crate::ssh_transport::close;
 pub(in crate::remote) use crate::ssh_transport::command as ssh;
 use se_types::SeError;
 
-pub(super) fn verification_error(bytes: &[u8]) -> SeError {
+pub(in crate::remote) fn verification_error(bytes: &[u8]) -> SeError {
     if let Some(mode) = std::str::from_utf8(bytes)
         .ok()
         .and_then(|text| {
