@@ -112,6 +112,48 @@ sys.exit(0 if (info.BasicLimitInformation.LimitFlags & MASK) == 0 else 1)
         return False
 
 
+def venue_exclusions():
+    """Exact nextest selectors this venue cannot exercise, and why.
+
+    Kept separate from `unavailable`, which answers a feature-mode question. This
+    one answers a machine question and is therefore consulted in every mode.
+    """
+    if not breakaway_venue_required():
+        return []
+    return [f"(package(={package}) & binary(={binary}) & test(={test}))"
+            for package, binary, test in BREAKAWAY_TESTS]
+
+
+def announce_venue(root: Path):
+    """Name this venue's excluded tests where a reader will actually see them.
+
+    A filter that drops tests silently is the failure mode this exists to prevent.
+    GitHub exposes GITHUB_STEP_SUMMARY to every step, including the archived-test
+    path that never reads input-judges.json, so the named reason is appended there
+    when present. Without it the caller still gets the same lines on stderr.
+    """
+    excluded = venue_exclusions()
+    if not excluded:
+        return []
+    lines = [f"- NOT RUN {package}::{binary}::{test}: {BREAKAWAY_VENUE}"
+             for package, binary, test in BREAKAWAY_TESTS]
+    report = root / "target/nextest/input-judges.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(json.dumps({"schema": "ci-input-judges/v1", "not_run": [
+        {"judge": f"{package}::{binary}::{test}", "status": "not_run",
+         "missing_inputs": [BREAKAWAY_VENUE]}
+        for package, binary, test in BREAKAWAY_TESTS]}, indent=2) + "\n")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        try:
+            with open(summary, "a", encoding="utf-8") as output:
+                output.write("Tests not run in this venue (not passes, not failures):\n")
+                output.write("\n".join(lines) + "\n")
+        except OSError:
+            pass
+    return excluded
+
+
 def unavailable(root: Path):
     excluded = []
     records = []
@@ -126,11 +168,12 @@ def unavailable(root: Path):
             label += "::" + test
         excluded.append(selector + ")")
         records.append({"judge": label, "status": "not_run", "missing_inputs": missing})
-    if breakaway_venue_required():
+    venue = venue_exclusions()
+    if venue:
+        excluded.extend(venue)
         for package, binary, test in BREAKAWAY_TESTS:
             # Exactly this test, not its whole binary: the rest of that binary is
             # ordinary coverage and must keep running.
-            excluded.append(f"(package(={package}) & binary(={binary}) & test(={test}))")
             records.append({"judge": f"{package}::{binary}::{test}", "status": "not_run",
                             "missing_inputs": [BREAKAWAY_VENUE]})
             print(f"NOT RUN {package}::{binary}::{test}: {BREAKAWAY_VENUE}",

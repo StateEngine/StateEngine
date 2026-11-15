@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import tomllib
-from input_judges import unavailable
+from input_judges import announce_venue, unavailable
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -23,6 +23,13 @@ def custom_targets():
 def filterset(all_features=False):
     terms = [f"(package(={key.split('::')[0]}) & binary(={key.split('::')[1]}))"
              for key in custom_targets()]
+    # Two different questions. A missing external input is only assessable in the
+    # feature mode that declares it, so that half stays tied to --all-features. A
+    # venue fact — this machine's job denies breakaway — is true in every feature
+    # mode, and gating it on the flag would leave the shipping-default build
+    # running tests that cannot possibly pass. The workflow skips this step
+    # entirely for smoke, so smoke selection is unaffected.
+    terms.extend(announce_venue(ROOT))
     if all_features:
         terms.extend(unavailable(ROOT))
     return "not (" + " or ".join(terms) + ")" if terms else "all()"
