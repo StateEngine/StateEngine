@@ -1,7 +1,7 @@
 //! First-creation provenance is retired before the store can acquire history.
 use crate::route::{credential, files::Files};
 use se_core::{scope, store_error::store_error};
-use se_store::{ReadStore, SqliteDirect, StateFiles};
+use se_store::{StateFiles, StoreInfo};
 use se_types::{Detail, Read, Result, SeError, Secret, details};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -120,7 +120,7 @@ pub(in crate::route) fn prepare(files: &Files, secret: &Secret) -> Result<()> {
 
 /// The receipt can outlive a crash only while the database has no events.
 /// Retire it durably before the first owner/project registration is admitted.
-pub(in crate::route) fn complete(files: &Files, store: &SqliteDirect) -> Result<()> {
+pub(in crate::route) fn complete(files: &Files, info: &StoreInfo) -> Result<()> {
     let Some((_, digest)) = read(files)? else {
         return Ok(());
     };
@@ -129,7 +129,7 @@ pub(in crate::route) fn complete(files: &Files, store: &SqliteDirect) -> Result<
             "the pending first initialization has no credential",
         ));
     }
-    if store.info().map_err(|e| store_error(&e))?.head.is_some() {
+    if info.head.is_some() {
         return Err(conflict(
             "a pending first-init receipt conflicts with recorded history",
         ));

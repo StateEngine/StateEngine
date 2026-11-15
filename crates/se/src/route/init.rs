@@ -217,8 +217,9 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
             }
             Read::Unknown { what } => return Err(scope::unreadable("setup store", &what)),
         };
-    lease.identity.store = Some(store.info().map_err(|e| store_error(&e))?.id);
-    let result = first_init::complete(files, &store).and_then(|()| {
+    let info = store.info().map_err(|e| store_error(&e))?;
+    lease.identity.store = Some(info.id.clone());
+    let result = first_init::complete(files, &info).and_then(|()| {
         registration::finish(
             cx,
             registration::Plan {
