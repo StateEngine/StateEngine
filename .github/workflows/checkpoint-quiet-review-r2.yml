@@ -1,0 +1,61 @@
+name: Independent quiet checkpoint review
+on:
+  push:
+    branches: [prime/checkpoint-quiet-review-r2]
+permissions:
+  contents: read
+concurrency:
+  group: checkpoint-quiet-review-r2-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  judge:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_TERM_COLOR: never
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 01e75105b0d83ce513705396812715bf146caca0
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.12'}
+      - name: Verify pins and read compiler
+        id: compiler
+        shell: python
+        run: |
+          import os, subprocess, tomllib
+          for source in ('737bee8caf03e17d2a61e21594d7b0285d6619dc', '906ca100f773a8d824a47905f0f700d38de3f63c'):
+              actual = subprocess.check_output(['git', 'rev-parse', source + '^{commit}'], text=True).strip()
+              if source != actual:
+                  raise ValueError('Product source pin differs')
+          text = subprocess.check_output(['git', 'show', '906ca100f773a8d824a47905f0f700d38de3f63c:rust-toolchain.toml'], text=True)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'channel={tomllib.loads(text)["toolchain"]["channel"]}\n')
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ steps.compiler.outputs.channel }}
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        if: ${{ runner.os == 'Windows' }}
+        with: {arch: amd64}
+      - name: Judge base and candidate with the same independent controls
+        shell: python
+        run: |
+          import os, pathlib, subprocess, sys
+          subprocess.run([sys.executable, '-B', 'scripts/checkpoint_quiet_review.py', str(pathlib.Path(os.environ['RUNNER_TEMP']) / 'quiet-review')], check=True)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: checkpoint-quiet-review-r2-${{ matrix.runner }}
+          path: |
+            ${{ runner.temp }}/quiet-review/receipt.json
+            ${{ runner.temp }}/quiet-review/*.log
+          if-no-files-found: error
+          retention-days: 14
