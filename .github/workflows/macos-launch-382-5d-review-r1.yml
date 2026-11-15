@@ -1,0 +1,103 @@
+name: Independent native launch readiness controls
+'on':
+  push:
+    branches:
+    - prime/macos-launch-382-5d-review-r1
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+    working-directory: product
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_BUILD_JOBS: '2'
+jobs:
+  judge:
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arm: base
+          source: bda8e1e7a2c7905cb9b8537c35aad29e9242cb99
+        - arm: head
+          source: 6fa72f37928db40c98de8238d9a39d92d2b21d66
+    env:
+      PRODUCT_SOURCE: ${{ matrix.source }}
+      ARM: ${{ matrix.arm }}
+      OBSERVER_CHECKOUT: ${{ github.workspace }}/observer
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.source }}
+        path: product
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 2836e87c9e251d77cece6385b04b003b5030627f
+        path: observer
+        persist-credentials: false
+    - uses: ./product/.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        workspaces: product -> ../target
+        shared-key: macos-launch-5d-382-v1
+    - name: Register disposable hosted account
+      shell: python
+      run: 'from pathlib import Path
+
+        import runpy,subprocess,sys
+
+        p=Path(''scripts/ci/installation_account.py'').resolve()
+
+        identity,profile=runpy.run_path(str(p))[''account'']()
+
+        subprocess.run([''sudo'',sys.executable,str(p),''provision'',''--identity'',identity,''--profile'',str(profile)],check=True)
+
+        subprocess.run([sys.executable,str(p),''check''],check=True)
+
+        '
+    - name: Stage independent drivers
+      shell: python
+      run: 'from pathlib import Path
+
+        import os
+
+        root=Path(os.environ[''RUNNER_TEMP''])
+
+        (root/''run_controls.py'').write_text(''"""Keep native witnesses, negative arms and cleanup distinct."""\nfrom pathlib import Path\nimport hashlib,json,os,shutil,subprocess,sys,time\nproduct=Path.cwd();root=Path(os.environ[\''RUNNER_TEMP\'']);out=root/\''independent382\'';out.mkdir()\nsource=os.environ[\''PRODUCT_SOURCE\''];judge=\''ac81be37aa15518b960c9b609ef23393e16504e0\''\npaths=[\''crates/se-proc/tests/macos_settling_independent.rs\'',\''crates/se-proc/tests/support/independent_settling.c\'',\''crates/se-proc/tests/support/macos_runtime/provider.rs\'']\ndef save(name,value): (out/name).write_text(json.dumps(value,indent=2)+\''\\n\'')\ndef run(name,argv,env=None,timeout=1200):\n start=time.monotonic_ns()\n with (out/(name+\''.log\'')).open(\''wb\'') as log:r=subprocess.run(argv,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=timeout)\n value={\''argv\'':argv,\''exit\'':r.returncode,\''elapsed_ns\'':time.monotonic_ns()-start};save(name+\''.json\'',value);return value\nassert
+        subprocess.check_output([\''git\'',\''rev-parse\'',\''HEAD\''],text=True).strip()==source\nsubprocess.run([\''git\'',\''fetch\'',\''--quiet\'',\''origin\'',judge],check=True)\nhashes={}\nfor p in paths:\n value=subprocess.check_output([\''git\'',\''show\'',judge+\'':\''+p]);Path(p).parent.mkdir(parents=True,exist_ok=True);Path(p).write_bytes(value)\n hashes[p]=hashlib.sha256(value).hexdigest();shutil.copyfile(p,out/Path(p).name)\nsave(\''pins.json\'',{\''product\'':source,\''reviewer\'':judge,\''files\'':hashes,\''observer\'':\''2836e87c9e251d77cece6385b04b003b5030627f\'',\''native_host\'':subprocess.check_output([\''rustc\'',\''--print\'',\''host-tuple\''],text=True).strip(),\''compiler\'':subprocess.check_output([\''rustc\'',\''-vV\''],text=True),\''run\'':os.environ[\''GITHUB_RUN_ID\''],\''publication\'':os.environ[\''GITHUB_SHA\'']})\nassert subprocess.check_output([\''rustc\'',\''--print\'',\''host-tuple\''],text=True).strip()==\''aarch64-apple-darwin\''\nenv=dict(os.environ,CARGO_TARGET_DIR=str(root/\''target\''),CARGO_BUILD_JOBS=\''2\'',CARGO_INCREMENTAL=\''0\'')\nr=run(\''build-helper\'',[\''cargo\'',\''build\'',\''--locked\'',\''-p\'',\''se\'',\''--bin\'',\''se\''],env);assert
+        r[\''exit\'']==0,\''helper build failed before execution\''\nhelper=root/\''target/debug/se\'';env[\''SE_MACOS_HELPER\'']=str(helper)\nr=run(\''build-tests\'',[\''cargo\'',\''test\'',\''--locked\'',\''-p\'',\''se-proc\'',\''--test\'',\''macos_settling_independent\'',\''--no-run\'',\''--message-format=json\''],env);assert r[\''exit\'']==0,\''native tests failed to compile\''\nmessages=[]\nfor line in (out/\''build-tests.log\'').read_text().splitlines():\n try:messages.append(json.loads(line))\n except ValueError:pass\nbinaries=[Path(m[\''executable\'']) for m in messages if m.get(\''reason\'')==\''compiler-artifact\'' and m.get(\''target\'',{}).get(\''name\'')==\''macos_settling_independent\'' and m.get(\''executable\'')]\nassert len(binaries)==1\nlibrary=root/\''independent-settling.dylib\''\nr=run(\''build-interposer\'',[\''/usr/bin/cc\'',\''-std=c11\'',\''-dynamiclib\'',\''-Wall\'',\''-Wextra\'',\''-Werror\'',paths[1],\''-o\'',str(library),\''-lproc\'']);assert r[\''exit\'']==0\nfixtures=root/\''native-fixtures\'';fixtures.mkdir()\ncase_env=dict(env,DYLD_INSERT_LIBRARIES=str(library),SE_SETTLING_CONTROL=str(root/\''independent-arm\''),TMPDIR=str(fixtures))\nnames=[\''same_birth_exec_between_image_reads_settles\'',\''exec_after_group_enumeration_has_no_duplicate_birth\'',\''transient_descendant_esrch_settles\'',\''stateless_image_error_is_not_absence\'',\''root_image_error_and_access_denial_refuse_promptly\'',\''persistent_descendant_esrch_keeps_original_bound\'']\nrows=[]\nfor
+        name in names:\n row=run(name,[str(binaries[0]),\''--exact\'',\''independent_\''+name,\''--nocapture\''],case_env,90);row[\''case\'']=name;rows.append(row);save(\''native-results.json\'',rows)\n# Retain native receipts rather than fixture images or authority-bearing homes.\nfor p in fixtures.rglob(\''*.json\''):\n destination=out/\''native-receipts\''/p.relative_to(fixtures);destination.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,destination)\npublic=root/\''public-failure\'';public_env=dict(env,PUBLIC_FAILURE_OUTPUT=str(public),SETTLING_LIBRARY=str(library),SE_SETTLING_CONTROL=str(root/\''independent-arm\''))\nrow=run(\''public-failure\'',[sys.executable,\''-B\'',str(root/\''public_failure.py\'')],public_env,240)\nfor p in public.iterdir():\n if p.is_file() and p.suffix in (\''.json\'',\''.jsonl\'',\''.stdout\'',\''.stderr\'',\''.py\''):\n  destination=out/\''public\''/p.name;destination.parent.mkdir(exist_ok=True);shutil.copyfile(p,destination)\npublic_result=json.loads((public/\''result.json\'').read_text())\nif
+        os.environ[\''ARM\'']==\''head\'':\n assert all(r[\''exit\'']==0 for r in rows),\''native control failed\''\n assert row[\''exit\'']==0 and public_result.get(\''graded\'') is True,\''public refusal control failed\''\nelse:\n assert all(r[\''exit\'']==0 for r in rows[3:5]),\''baseline safety controls failed\''\n assert all(rows[i][\''exit\'']==101 for i in [0,1,2,5]),\''baseline did not witness expected regressions\''\n assert \''INDEPENDENT_NATIVE_EXEC\'' in (out/(names[0]+\''.log\'')).read_text() and \''INDEPENDENT_EXEC before=\'' in (out/(names[0]+\''.log\'')).read_text(),\''missing actual baseline exec witness\''\n assert \''INDEPENDENT_NATIVE_EXEC\'' in (out/(names[1]+\''.log\'')).read_text(),\''missing actual baseline enumeration exec witness\''\n assert public_result[\''provider_inits\''] and len(public_result[\''provider_inits\''])==1\n assert all(json.loads(r[\''stdout\''])[\''code\'']==\''source-unreadable\'' for r in public_result[\''calls\'']),\''baseline public failure
+        was unrelated\''\n assert public_result[\''public_down_complete\''] and not public_result[\''remaining\''],\''baseline public cleanup failed\''\nsave(\''grade.json\'',{\''passed\'':True,\''arm\'':os.environ[\''ARM\''],\''native_cases\'':len(rows),\''helper_sha256\'':hashlib.sha256(helper.read_bytes()).hexdigest(),\''test_sha256\'':hashlib.sha256(binaries[0].read_bytes()).hexdigest(),\''library_sha256\'':hashlib.sha256(library.read_bytes()).hexdigest()})\n'')
+
+        (root/''public_failure.py'').write_text(''"""Independent public refusal from witnessed native root unreadability after init."""\nfrom pathlib import Path\nimport hashlib,json,os,shutil,subprocess,sys,time,uuid\nfrom types import SimpleNamespace\nobserver=Path(os.environ[\''OBSERVER_CHECKOUT\''])\nsys.path.insert(0,str(observer/\''scripts/live_output_observe\''))\nfrom native import Fixture as BaseFixture,NativeObserver\nfrom public_ready import PublicReady\nclass Fixture(BaseFixture):\n def ok(self,*args,recipient=False):\n  if args!=(\''up\'',):return super().ok(*args,recipient=recipient)\n  self.startup=PublicReady(SimpleNamespace(output=self.root,repository=self.repo),[str(self.se),\''--home\'',str(self.home),\''--json\'',\''up\'',\''--foreground\''],self.env)\n  return json.loads(self.startup.wait()[\''stdout\''])\nout=Path(os.environ[\''PUBLIC_FAILURE_OUTPUT\'']);out.mkdir()\nimage=Path(os.environ[\''SE_MACOS_HELPER\'']);private=out/\''se\'';shutil.copyfile(image,private);private.chmod(0o500)\nhelper=out/\''init_only_provider.py\''\nhelper.write_text(\''\''\''import
+        json,os,sys,time\nfrom pathlib import Path\nse,home,*args=sys.argv[1:]\nassert sys.stdin.readline()\nflag="--resume" if "--resume" in args else "--session-id"\nconversation=args[args.index(flag)+1]\nwith (Path.cwd()/"init-observations.jsonl").open("a") as f:\n f.write(json.dumps(dict(pid=os.getpid(),root=os.getppid(),conversation=conversation))+"\\\\n")\nPath(CONTROL_PATH).write_text("1001 "+str(os.getppid())+" 3 1\\\\n"+str(Path.cwd())+"\\\\n")\nprint(json.dumps(dict(type="system",subtype="init",session_id=conversation)),flush=True)\nwhile True:time.sleep(.1)\n\''\''\''.replace(\''CONTROL_PATH\'',repr(os.environ[\''SE_SETTLING_CONTROL\''])))\nreceipt={\''source\'':os.environ[\''PRODUCT_SOURCE\''],\''image_sha256\'':hashlib.sha256(image.read_bytes()).hexdigest(),\''scope\'':\''Native development image; real public launch with account-free protocol fixture, native root image access denied after the real init echo\'',\''failures\'':[]}\nf=Fixture(private,out/\''case\'',provider_helper=helper)\nf.env={k:v
+        for k,v in f.env.items() if k in (\''HOME\'',\''USERPROFILE\'',\''PATH\'',\''LANG\'',\''SHELL\'',\''TMPDIR\'',\''TMP\'',\''TEMP\'') or k.startswith(\''XDG_\'')}\nf.env.update(DYLD_INSERT_LIBRARIES=os.environ[\''SETTLING_LIBRARY\''],SE_SETTLING_CONTROL=os.environ[\''SE_SETTLING_CONTROL\''])\nwatch=NativeObserver(out,out)\ntry:\n up=f.ok(\''up\'');watch.observe(up[\''process\''][\''pid\'']);receipt[\''up\'']=up\n args=(\''--key\'',str(uuid.uuid4()),\''--project\'',f.project,\''launch\'',f.agent,\''--detach\'',\''--task\'',\''Independent missing transcript control\'')\n calls=[]\n for replay in range(2):\n  start=time.monotonic_ns();r=f.call(*args);elapsed=time.monotonic_ns()-start\n  row={\''exit\'':r.returncode,\''stdout\'':r.stdout.decode(),\''stderr\'':r.stderr.decode(),\''elapsed_ns\'':elapsed};calls.append(row)\n  receipt[\''calls\'']=calls\n  if replay==0:Path(os.environ[\''SE_SETTLING_CONTROL\'']).unlink(missing_ok=True)\n  (out/\''result.json\'').write_text(json.dumps(receipt,indent=2)+\''\\n\'')\n
+        phases=[json.loads(line) for line in (f.repo/\''init-observations.jsonl\'').read_text().splitlines()]\n receipt[\''provider_inits\'']=phases\n assert len(phases)==1,\''original request replay executed another provider\''\n for row in calls:\n  assert row[\''exit\'']!=0,\''native root unreadability reported launch success\''\n  body=json.loads(row[\''stdout\'']);row[\''error\'']=body\n  if \''error\'' in body:body=body[\''error\'']\n  assert body[\''code\'']==\''launch-failed\'',body\n  assert body[\''retry\''][\''kind\'']==\''after_reread\'',body\n  assert \''proc_pidpath\'' in json.dumps(body) and \''IdentityUnreadable\'' in json.dumps(body),body\n  assert \''agent show\'' in json.dumps(body) and \''original launch request\'' in json.dumps(body),body\n receipt[\''graded\'']=True\nexcept BaseException as e:\n receipt[\''failures\''].append(f\''{type(e).__name__}: {e}\'')\nfinally:\n Path(os.environ[\''SE_SETTLING_CONTROL\'']).unlink(missing_ok=True)\n try:f.close();receipt[\''public_down_complete\'']=True\n
+        except BaseException as e:receipt[\''failures\''].append(f\''Public down: {e}\'');receipt[\''public_down_complete\'']=False\n if f.startup is not None:\n  try:f.startup.join();receipt[\''foreground_joined\'']=True\n  except BaseException as e:receipt[\''failures\''].append(f\''Foreground join: {e}\'')\n until=time.monotonic()+10\n remaining=watch.observe()\n while remaining and time.monotonic()<until:time.sleep(.02);remaining=watch.observe()\n receipt[\''remaining\'']=remaining\n if remaining:receipt[\''failures\''].append(\''Owned process remains after down\'')\n for p in f.log_root.glob(\''call-*.*\''):shutil.copyfile(p,out/p.name)\n for name in (\''public-ready.json\'',\''public-ready-final.json\''):\n  p=f.root/name\n  if p.exists():shutil.copyfile(p,out/name)\n if (f.repo/\''init-observations.jsonl\'').exists():shutil.copyfile(f.repo/\''init-observations.jsonl\'',out/\''init-observations.jsonl\'')\n (out/\''result.json\'').write_text(json.dumps(receipt,indent=2)+\''\\n\'')\nraise
+        SystemExit(bool(receipt[\''failures\'']))\n'')
+
+        '
+    - name: Exercise native runtime and public launch refusal
+      shell: python
+      run: 'from pathlib import Path
+
+        import os,subprocess,sys
+
+        subprocess.run([sys.executable,''-B'',str(Path(os.environ[''RUNNER_TEMP''])/''run_controls.py'')],check=True)
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: macos-launch-5d-${{ matrix.arm }}
+        path: ${{ runner.temp }}/independent382
+        if-no-files-found: error
+        retention-days: 14
