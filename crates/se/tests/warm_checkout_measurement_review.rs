@@ -149,7 +149,6 @@ async fn observe(home: &Path, clients: &[Value]) -> Check {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
         .spawn()?;
     let mut input = child.stdin.take().ok_or("observer input absent")?;
     input
