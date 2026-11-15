@@ -70,7 +70,6 @@ fn same_birth_descendant_exec_settles_without_duplicate_obligations() -> Check {
     let fault = arm("exec-once", before.identity.pid)?;
     let result = runtime.observe_until(&launched.process, fixture::until());
     drop(fault);
-    let observed = result.map_err(error)?;
     let after = native::read_pin(&home.0, "child")?;
     assert_eq!(before.identity.pid, after.identity.pid);
     assert_eq!(before.identity.boot, after.identity.boot);
@@ -78,6 +77,11 @@ fn same_birth_descendant_exec_settles_without_duplicate_obligations() -> Check {
     assert_ne!(before.identity.image, after.identity.image);
     assert!(native::live(&after)?);
     assert_eq!(calls()?, 1);
+    json(
+        control()?.join("transition.json"),
+        &serde_json::json!({"before":before.identity,"after":after.identity}),
+    )?;
+    let observed = result.map_err(error)?;
     assert_eq!(
         observed
             .scope
@@ -112,6 +116,10 @@ fn persistent_descendant_esrch_stays_unknown_and_keeps_original_bound() -> Check
         cause.native.as_ref().and_then(|n| n.code),
         Some(i64::from(libc::ESRCH))
     );
+    json(
+        control()?.join("bounded-error.json"),
+        &serde_json::json!({"elapsed_ms":elapsed.as_millis(),"cause":format!("{cause:?}"),"calls":calls()?}),
+    )?;
     assert!(
         calls()? >= 2,
         "same-birth descendant was not freshly reobserved"

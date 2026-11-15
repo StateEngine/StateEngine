@@ -62,6 +62,15 @@ for arm,revision in [('base',BASE),('head',HEAD)]:
                 if observed['state']=='record' and same and observed['status']!=5:raise RuntimeError('Original owned native process remains; stop this dependent path')
                 custody.append({'expected':identity,'actual':observed})
             shutil.copytree(home,case/'native-home-evidence',ignore=shutil.ignore_patterns('next-child','host-only-descriptor'))
+        if arm=='base' and not base_pass:
+            if name.startswith('same_birth'):
+                transition=json.loads((case/'transition.json').read_text())
+                before,after=transition['before'],transition['after']
+                assert before['pid']==after['pid'] and before['start']==after['start'] and before['boot']==after['boot'] and before['image']!=after['image']
+                assert 'IdentityChanged' in (root/(arm+'-'+name+'.stderr')).read_text()
+            else:
+                bounded=json.loads((case/'bounded-error.json').read_text())
+                assert bounded['calls']==1 and 'IdentityUnreadable' in bounded['cause']
         passed=code==0;expected=arm=='head' or base_pass
         row['cases'].append({'name':name,'exit':code,'passed':passed,'expected_pass':expected,'custody':custody});save()
         if home is None:raise RuntimeError('Fixture stopped before owning a native scope')
