@@ -189,6 +189,7 @@ def main():
     for name in ('source', 'se', 'peer', 'out'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--expect', choices=('refused', 'recovered'), required=True)
+    parser.add_argument('--first-call-only', action='store_true')
     args = parser.parse_args()
     assert os.name == 'nt', 'Native Windows is required'
     args.se, args.peer = args.se.resolve(strict=True), args.peer.resolve(strict=True)
@@ -211,6 +212,14 @@ def main():
                 self.env[key] = str(private)
             return super().call(*arguments, **options)
 
+    if args.first_call_only:
+        # This preflight reaches the same real init and compiler setup used by
+        # every case, without claiming runtime behavior under a hosted job.
+        f = Fixture(args.se, args.out / 'first-call')
+        record = {'product_init_completed': True, 'fixture_calls': f.calls,
+                  'runtime_behavior_exercised': False}
+        (args.out / 'first-call.json').write_text(json.dumps(record, indent=2) + '\n')
+        return 0
     reports = []
     for label, held in [('crash-window-1', False), ('crash-window-2', False), ('held-owner', True)]:
         reports.append(trial(args, label, held, Fixture, Native, PausedParent, Process))

@@ -7,6 +7,12 @@
 #include <cwchar>
 #include <string>
 
+static void json_string(const std::wstring& value) {
+    std::putchar('"');
+    for (wchar_t ch : value) std::printf("\\u%04x", static_cast<unsigned int>(ch));
+    std::putchar('"');
+}
+
 struct Handle {
     HANDLE value = nullptr;
     ~Handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
@@ -43,16 +49,13 @@ int wmain(int argc, wchar_t** argv) {
     }
     HPSSWALK marker = nullptr;
     error = PssWalkMarkerCreate(nullptr, &marker);
-    DWORD walked = 0, duplicates_failed = 0, matches = 0;
+    DWORD walked = 0, duplicates_failed = 0, matches = 0, pipes = 0;
+    std::printf("{\"pipe_observations\":[");
     if (!error) {
         PSS_HANDLE_ENTRY entry{};
         while ((error = PssWalkSnapshot(snapshot, PSS_WALK_HANDLES, marker,
                                        &entry, static_cast<DWORD>(sizeof(entry)))) == ERROR_SUCCESS) {
             if (++walked > 16384) { error = ERROR_BUFFER_OVERFLOW; break; }
-            if (!(entry.Flags & PSS_HANDLE_HAVE_NAME) ||
-                !entry.ObjectName || !entry.ObjectNameLength) continue;
-            const std::wstring name(entry.ObjectName, entry.ObjectNameLength / sizeof(wchar_t));
-            if (_wcsicmp(name.c_str(), argv[5]) != 0) continue;
             Handle copy;
             if (!DuplicateHandle(process.value, entry.Handle, GetCurrentProcess(),
                                  &copy.value, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
@@ -60,14 +63,25 @@ int wmain(int argc, wchar_t** argv) {
                 continue;
             }
             if (GetFileType(copy.value) != FILE_TYPE_PIPE) continue;
+            const bool named = (entry.Flags & PSS_HANDLE_HAVE_NAME) &&
+                               entry.ObjectName && entry.ObjectNameLength;
+            const std::wstring name = named ? std::wstring(entry.ObjectName,
+                                      entry.ObjectNameLength / sizeof(wchar_t)) : L"";
             ULONG pid = 0;
-            if (GetNamedPipeClientProcessId(copy.value, &pid) && pid == client) ++matches;
+            const BOOL identified = GetNamedPipeClientProcessId(copy.value, &pid);
+            const DWORD peer_error = identified ? ERROR_SUCCESS : GetLastError();
+            if (pipes++) std::putchar(',');
+            std::printf("{\"handle\":%llu,\"name_valid\":%s,\"name\":",
+                        reinterpret_cast<unsigned long long>(entry.Handle), named ? "true" : "false");
+            json_string(name);
+            std::printf(",\"client\":%lu,\"peer_error\":%lu}", pid, peer_error);
+            if (identified && pid == client && named && _wcsicmp(name.c_str(), argv[5]) == 0) ++matches;
         }
     }
     // Every duplicate and snapshot is gone before the caller crashes the owner.
     const DWORD marker_error = marker ? PssWalkMarkerFree(marker) : ERROR_SUCCESS;
     const DWORD free_error = PssFreeSnapshot(GetCurrentProcess(), snapshot);
-    std::printf("{\"owner\":%lu,\"client\":%lu,\"owner_birth\":%llu,"
+    std::printf("],\"owner\":%lu,\"client\":%lu,\"owner_birth\":%llu,"
                 "\"handles_walked\":%lu,\"duplicates_failed\":%lu,\"matches\":%lu,"
                 "\"walk_error\":%lu,\"marker_free_error\":%lu,\"snapshot_free_error\":%lu}\n",
                 owner, client, observed, walked, duplicates_failed, matches,
