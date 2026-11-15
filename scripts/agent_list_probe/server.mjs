@@ -17,7 +17,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     try { readFacts(t.product.command_map, 'agents', JSON.parse(sample.stdout)); }
     catch (error) { sample.error = error.message; }
   }
-  process.stdout.write(JSON.stringify({ ...sample, exit: sample.code,
+  process.stdout.write(JSON.stringify({ ...sample, error: sample.error ?? null, exit: sample.code,
     argv, unresolved: [...t.unresolved] }) + '\n');
 }
 if (t.unresolved.size) throw Error('Nightly probe has an unresolved child');

@@ -88,6 +88,7 @@ def main():
                 pair = dict(index=index)
                 order = ('python', 'nightly') if index % 2 == 0 else ('nightly', 'python')
                 pair['order'] = order
+                record['samples'].append(pair)
                 for method in order:
                     if method == 'python':
                         sample = timed(smoke, ['agent', 'list'])
@@ -96,11 +97,11 @@ def main():
                         server.stdin.flush()
                         sample = receive(server)
                         require(sample['unresolved'] == [], 'Nightly child did not close')
+                    pair[method] = sample
+                    save(output/'result.json', record)
                     value = validate(sample, smoke, 1, 'codex', saved)
                     require(value['items'][0]['provider_activity']['state'] == 'absent',
                             'Never-launched nightly cohort became a runtime-observation cohort')
-                    pair[method] = sample
-                record['samples'].append(pair)
                 save(output/'result.json', record)
             record['observer_exit'] = stop_server(server)
             require(record['observer_exit'] == 0, 'Nightly observer failed to join cleanly')
