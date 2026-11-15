@@ -7,7 +7,7 @@ directories; the image cache is absent by construction. The slowest attempt is
 retained, never dropped.
 
 Usage:
-  python3 cold-pair-profile.py --se /path/to/release/se --output DIR \
+  python3 cold-pair-profile.py --se /path/to/release/se --repo REPO --output DIR \
       --attempts N [--ssh-port 2222] [--tail-bound-sec X] [--time-limit-sec 120]
 
 Outputs (under DIR):
@@ -227,6 +227,17 @@ def run_attempt(index, args, ssh_port, source_pub):
     se_env = dict(os.environ)
     se_env.update(xdg)
 
+    # A fresh source home must be initialized like a stranger's first run;
+    # init is recorded setup, not part of the measured pairing invocation.
+    init_t0 = clock()
+    init_proc = subprocess.run(
+        [args.se, '--home', src_home, 'init', '--repo', args.repo],
+        env=se_env, capture_output=True, text=True)
+    init_sec = round(clock() - init_t0, 6)
+    if init_proc.returncode != 0:
+        raise RuntimeError(f'se init failed (exit {init_proc.returncode}): '
+                           f'{init_proc.stderr.strip()}')
+
     # Sampler: child of this judge, starts before the CLI spawn.
     sampler = subprocess.Popen(
         [sys.executable, str(pathlib.Path(__file__).with_name('cold-pair-sampler.py')),
@@ -244,6 +255,7 @@ def run_attempt(index, args, ssh_port, source_pub):
         'dest_user': dest_user,
         'started': t0,
         'checks': {},
+        'init_sec': init_sec,
     }
     timed_out = False
     stdout_text = ''
@@ -347,6 +359,8 @@ def hashlib_sha256(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--se', required=True)
+    parser.add_argument('--repo', required=True,
+                        help='repo path for se init of the fresh source home')
     parser.add_argument('--output', required=True)
     parser.add_argument('--attempts', type=int, required=True)
     parser.add_argument('--identity', required=True,
