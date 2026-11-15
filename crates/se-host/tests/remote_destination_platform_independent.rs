@@ -108,6 +108,35 @@ fn cases() -> Vec<Case> {
             target: None,
             ..windows
         },
+        // An interrupted or failed SSH command can leave plausible stdout.
+        // Its text alone must not become a successful Unix discovery receipt.
+        Case {
+            name: "failed_linux_uname",
+            uname: "Linux x86_64\n",
+            uname_ok: false,
+            architecture: "",
+            architecture_ok: false,
+            target: None,
+            ..windows
+        },
+        Case {
+            name: "failed_darwin_arm_uname",
+            uname: "Darwin arm64\n",
+            uname_ok: false,
+            architecture: "",
+            architecture_ok: false,
+            target: None,
+            ..windows
+        },
+        Case {
+            name: "failed_darwin_intel_uname",
+            uname: "Darwin x86_64\n",
+            uname_ok: false,
+            architecture: "",
+            architecture_ok: false,
+            target: None,
+            ..windows
+        },
     ]
 }
 
