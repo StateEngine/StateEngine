@@ -3,7 +3,7 @@ use rusqlite::{Connection, OpenFlags};
 use se_store::*;
 use serde_json::{Value, json};
 use std::{
-    num::{NonZeroU16, NonZeroU32},
+    num::NonZeroU16,
     sync::{Arc, Barrier},
     time::{Duration, Instant},
 };
@@ -14,8 +14,8 @@ use fixture::*;
 mod native_host;
 use native_host::{host, options, wait};
 const CLIENTS: usize = 8;
-const GROUPS: usize = 1280;
-const EVENTS: usize = 8;
+const GROUPS: usize = 2560;
+const EVENTS: usize = 4;
 
 fn batch(f: &Fixture, index: usize) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
     let key = format!("window-group-{index}");
@@ -117,8 +117,6 @@ fn eight_clients_cross_wal_pressure_without_hidden_receipts() -> Check {
     let (h, lease) = host(&f)?;
     let mut config = options(16)?;
     config.maximum_requests = NonZeroU16::new(1).ok_or("group limit")?;
-    // Eight simultaneous 196 kB requests need room beyond the old four-request load.
-    config.resident_bytes = NonZeroU32::new(4 * 1024 * 1024).ok_or("resident")?;
     let writer = h.start_writer(config, lease)?;
     let clock = Instant::now();
     let barrier = Arc::new(Barrier::new(CLIENTS + 1));
