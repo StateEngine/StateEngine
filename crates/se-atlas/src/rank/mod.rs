@@ -1,7 +1,7 @@
 //! Rank version 4 follows §1.5. Weights change only against the independent benchmark.
 mod identifiers;
 use crate::{
-    cache::connection::SqlView,
+    cache::connection::{BudgetStatement, SqlView},
     errors::{AtlasResult, cache_error},
     query::RecordReader,
 };
@@ -23,14 +23,55 @@ pub struct ActivityQuery<'a> {
     pub records: &'a dyn RecordReader,
     pub now: Option<i64>,
 }
+const TOUCHES: &str = "SELECT touch_kind,actor,at_unix_ms,source_record FROM touches WHERE target_kind=?1 AND target_key=?2 ORDER BY at_unix_ms DESC,ordinal DESC LIMIT 10";
+const INBOUND: &str =
+    "SELECT inbound_resolved FROM activity WHERE target_kind=?1 AND target_key=?2";
+
+/// Reuse only prepared SQL, never viewer-dependent scores or authority reads.
+pub(crate) struct ActivityReader<'a, 'c> {
+    sql: &'a SqlView<'c>,
+    touches: BudgetStatement<'a>,
+    inbound: BudgetStatement<'a>,
+}
+impl<'a, 'c> ActivityReader<'a, 'c> {
+    pub(crate) fn new(sql: &'a SqlView<'c>) -> AtlasResult<Self> {
+        Ok(Self {
+            sql,
+            touches: sql.prepare(TOUCHES)?,
+            inbound: sql.prepare(INBOUND)?,
+        })
+    }
+    pub(crate) fn read(
+        &mut self,
+        kind: &str,
+        key: &[u8],
+        query: ActivityQuery<'_>,
+    ) -> AtlasResult<Activity> {
+        let activity = touch_activity(self.sql, &mut self.touches, kind, key, query)?;
+        inbound_activity(&mut self.inbound, kind, key, activity)
+    }
+}
+
 pub fn activity(
     sql: &SqlView<'_>,
     kind: &str,
     key: &[u8],
     query: ActivityQuery<'_>,
 ) -> AtlasResult<Activity> {
-    let mut stmt=sql.prepare("SELECT touch_kind,actor,at_unix_ms,source_record FROM touches WHERE target_kind=?1 AND target_key=?2 ORDER BY at_unix_ms DESC,ordinal DESC LIMIT 10")?;
-    let mut rows = stmt.query(params![kind, key]).map_err(cache_error)?;
+    let mut touches = sql.prepare(TOUCHES)?;
+    let activity = touch_activity(sql, &mut touches, kind, key, query)?;
+    let mut inbound = sql.prepare(INBOUND)?;
+    inbound_activity(&mut inbound, kind, key, activity)
+}
+
+fn touch_activity(
+    sql: &SqlView<'_>,
+    statement: &mut BudgetStatement<'_>,
+    kind: &str,
+    key: &[u8],
+    query: ActivityQuery<'_>,
+) -> AtlasResult<Activity> {
+    let mut rows = statement.query(params![kind, key]).map_err(cache_error)?;
     let mut activity = Activity::default();
     while let Some(row) = rows.next().map_err(cache_error)? {
         let touch: String = row.get(0).map_err(cache_error)?;
@@ -96,9 +137,16 @@ pub fn activity(
             });
         }
     }
-    let mut stmt = sql
-        .prepare("SELECT inbound_resolved FROM activity WHERE target_kind=?1 AND target_key=?2")?;
-    let mut rows = stmt.query(params![kind, key]).map_err(cache_error)?;
+    Ok(activity)
+}
+
+fn inbound_activity(
+    statement: &mut BudgetStatement<'_>,
+    kind: &str,
+    key: &[u8],
+    mut activity: Activity,
+) -> AtlasResult<Activity> {
+    let mut rows = statement.query(params![kind, key]).map_err(cache_error)?;
     if let Some(row) = rows.next().map_err(cache_error)? {
         let count: i64 = row.get(0).map_err(cache_error)?;
         if count < 0 {

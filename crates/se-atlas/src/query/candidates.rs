@@ -191,6 +191,7 @@ fn rank(
     snapshot: &Snapshot,
     query: &FindQuery,
 ) -> AtlasResult<()> {
+    let mut activity = crate::rank::ActivityReader::new(sql)?;
     for candidate in &mut output.values {
         let tag = match candidate.kind {
             Kind::Symbol => "symbol",
@@ -198,8 +199,7 @@ fn rank(
             Kind::Record => "record",
             Kind::Commit => "commit",
         };
-        candidate.activity = crate::rank::activity(
-            sql,
+        candidate.activity = activity.read(
             tag,
             &candidate.key,
             crate::rank::ActivityQuery {
