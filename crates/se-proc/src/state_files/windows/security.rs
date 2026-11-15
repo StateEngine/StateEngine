@@ -31,6 +31,7 @@ struct User {
 }
 impl User {
     fn current(path: &Path) -> Result<Self> {
+        let _trace = super::trace::Span::new("security-token");
         let mut raw = ptr::null_mut();
         // SAFETY: native current-process pseudo handle and writable token output.
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
@@ -300,6 +301,7 @@ pub(in crate::state_files) fn verify_for(
     inherited_from_protected_parent: bool,
     layout: Layout,
 ) -> Result<()> {
+    let _trace = super::trace::Span::new("security-verify");
     let user = User::current(path)?;
     let descriptor = security(file, path, true)?;
     let control = descriptor

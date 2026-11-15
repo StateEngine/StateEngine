@@ -120,16 +120,27 @@ impl ReadPhase {
     /// physically; a host admission phase may return its idle connection to its pool.
     /// Early errors and unwinding also drop the connection and its transaction.
     pub fn close(self) -> StoreResult<()> {
+        let trace_started = std::time::Instant::now();
+        let trace_start_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|value| value.as_micros());
         self.db
             .execute_batch("ROLLBACK")
             .map_err(|e| context(sql(e), &self.path, StoreIoStage::ReadSnapshot))?;
-        match self.recycle {
+        let rollback_us = trace_started.elapsed().as_micros();
+        let result = match self.recycle {
             Some(recycle) => recycle.release(self.db),
             None => self
                 .db
                 .close()
                 .map_err(|(_, e)| context(sql(e), &self.path, StoreIoStage::ReadSnapshot)),
-        }
+        };
+        eprintln!(
+            "read-close-timing {}",
+            serde_json::json!({"pid":std::process::id(),"thread":format!("{:?}",std::thread::current().id()),"start_us":trace_start_us,"rollback_us":rollback_us,"release_us":trace_started.elapsed().as_micros()-rollback_us,"total_us":trace_started.elapsed().as_micros()})
+        );
+        result
     }
 
     pub(crate) fn finish<T>(self, result: StoreResult<T>) -> StoreResult<T> {

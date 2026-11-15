@@ -27,8 +27,21 @@ where
     let queued = Instant::now();
     let measured = move || {
         let entered = Instant::now();
-        let result = work()?;
-        Ok((result, entered, Instant::now()))
+        let wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_micros());
+        let result = work();
+        let finished = Instant::now();
+        eprintln!(
+            "blocking-native-timing {}",
+            serde_json::json!({
+                "pid":std::process::id(),"thread":format!("{:?}",std::thread::current().id()),
+                "start_us":wall,"end_us":wall.map(|s|s+finished.duration_since(entered).as_micros()),
+                "elapsed_us":finished.duration_since(entered).as_micros(),"ok":result.is_ok()
+            })
+        );
+        result.map(|result| (result, entered, finished))
     };
     let (result, entered, finished) = match mode {
         Mode::Finite => {

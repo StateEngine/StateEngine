@@ -64,6 +64,11 @@ impl ReadPhasePool {
     /// Native identity, fresh BEGIN and header validation occur on every checkout.
     /// The returned phase is synchronous and cannot cross an external await.
     pub fn read_phase(&self) -> StoreResult<ReadPhase> {
+        let trace_started = std::time::Instant::now();
+        let trace_start_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|value| value.as_micros());
         let reader = &self.0.reader;
         let slot = reader.slots.acquire()?;
         let (idle, identity) = {
@@ -83,14 +88,22 @@ impl ReadPhasePool {
             (state.idle.pop(), identity)
         };
         identity.validate(&reader.path)?;
+        let first_us = trace_started.elapsed().as_micros();
         let db = match idle {
             Some(db) => db,
             None => reader.connect()?,
         };
+        let connected_us = trace_started.elapsed().as_micros();
         identity.validate(&reader.path)?;
+        let second_us = trace_started.elapsed().as_micros();
         let mut phase = reader.read_phase_on(slot, db)?;
+        let snapshot_us = trace_started.elapsed().as_micros();
         // Recheck after SQLite established its fresh snapshot as well.
         identity.validate(&reader.path)?;
+        eprintln!(
+            "pooled-read-timing {}",
+            serde_json::json!({"pid":std::process::id(),"thread":format!("{:?}",std::thread::current().id()),"start_us":trace_start_us,"first_us":first_us,"connect_us":connected_us-first_us,"second_us":second_us-connected_us,"snapshot_us":snapshot_us-second_us,"last_us":trace_started.elapsed().as_micros()-snapshot_us,"total_us":trace_started.elapsed().as_micros()})
+        );
         phase.recycle = Some(Recycle {
             pool: self.clone(),
             identity,
