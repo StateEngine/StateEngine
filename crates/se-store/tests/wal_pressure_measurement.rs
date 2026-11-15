@@ -100,12 +100,14 @@ fn measure_continuous_wal_pressure() -> Check {
         if index < GROUPS {
             let prepared = batch(&f, index)?;
             let submitted_us = clock.elapsed().as_micros();
-            pending.push_back((index, submitted_us, client.submit(prepared)?));
+            let completion = client.submit(prepared)?;
+            let submitted_by_us = clock.elapsed().as_micros();
+            pending.push_back((index, submitted_us, submitted_by_us, completion));
         }
         if index < PIPELINE - 1 {
             continue;
         }
-        let (index, submitted_us, completion) =
+        let (index, submitted_us, submitted_by_us, completion) =
             pending.pop_front().ok_or("pipeline ended early")?;
         let receipt = wait(completion)??;
         let returned_us = clock.elapsed().as_micros();
@@ -120,8 +122,10 @@ fn measure_continuous_wal_pressure() -> Check {
             return Err("pressure groups were combined despite their configured limit".into());
         }
         let writer_start = submitted_us + timing.queue.as_micros();
+        let writer_start_upper = submitted_by_us + timing.queue.as_micros();
         if let Some(previous) = previous_finish_lower {
-            maximum_gap_upper_us = maximum_gap_upper_us.max(writer_start.saturating_sub(previous));
+            maximum_gap_upper_us =
+                maximum_gap_upper_us.max(writer_start_upper.saturating_sub(previous));
         }
         let checkpoint_us = timing.checkpoint.map(|d| d.as_micros());
         previous_finish_lower = Some(
@@ -138,7 +142,7 @@ fn measure_continuous_wal_pressure() -> Check {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
         };
-        rows.push(json!({"index":index,"submitted_us":submitted_us,"returned_us":returned_us,
+        rows.push(json!({"index":index,"submitted_us":submitted_us,"submitted_by_us":submitted_by_us,"returned_us":returned_us,
             "queue_us":timing.queue.as_micros(),"transaction_us":timing.transaction.as_micros(),
             "commit_us":timing.commit_sync.as_micros(),"checkpoint_us":checkpoint_us,
             "wal_log":log,"wal_done":done,"sampled_wal_bytes":bytes,
