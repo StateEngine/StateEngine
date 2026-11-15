@@ -1,4 +1,4 @@
-name: writer-latency
+name: hard-cut-attribution
 on:
   push:
     branches: [prime/writer-latency-b4-pressure-r2]
@@ -22,11 +22,11 @@ jobs:
           - os: linux
             runner: ubuntu-24.04
             cache: writer-latency-linux-v1
-            ref: 737bee8caf03e17d2a61e21594d7b0285d6619dc
+            ref: 906ca100f773a8d824a47905f0f700d38de3f63c
           - os: windows
             runner: windows-2025
             cache: writer-latency-windows-v1
-            ref: 737bee8caf03e17d2a61e21594d7b0285d6619dc
+            ref: 906ca100f773a8d824a47905f0f700d38de3f63c
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
@@ -75,9 +75,9 @@ jobs:
           exit "$pressure_status"
       - name: Select candidate with the same measurement overlay
         run: |
-          git fetch --quiet origin 906ca100f773a8d824a47905f0f700d38de3f63c:refs/remotes/measure/head
-          test "$(git rev-parse refs/remotes/measure/head)" = 906ca100f773a8d824a47905f0f700d38de3f63c
-          git checkout --detach 906ca100f773a8d824a47905f0f700d38de3f63c
+          git fetch --quiet origin 09bb0720f11428ca1282bde803e0262c7c18f360:refs/remotes/measure/head
+          test "$(git rev-parse refs/remotes/measure/head)" = 09bb0720f11428ca1282bde803e0262c7c18f360
+          git checkout --detach 09bb0720f11428ca1282bde803e0262c7c18f360
           git rev-parse HEAD > candidate-source.txt
           while IFS= read -r measurement_path; do
             git diff --exit-code refs/remotes/measure/tests -- "$measurement_path"
@@ -108,7 +108,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}
         with:
-          name: writer-latency-pressure-${{ matrix.os }}-paired
+          name: hard-cut-attribution-${{ matrix.os }}-paired
           path: |
             pressure-baseline.log
             pressure-candidate.log
