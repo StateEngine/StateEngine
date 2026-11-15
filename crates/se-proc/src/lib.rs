@@ -82,6 +82,8 @@ pub use child_pipe::NativeChildPipe;
 pub use error::*;
 pub use identity::*;
 pub use launch::*;
+#[cfg(target_os = "linux")]
+mod user_manager;
 #[cfg(target_os = "macos")]
 pub use owner_probe::observe_boot_id;
 pub use owner_probe::{
@@ -91,6 +93,8 @@ pub use owner_probe::{
 pub use ownership::*;
 #[cfg(windows)]
 pub use stdio::*;
+#[cfg(target_os = "linux")]
+pub use user_manager::runtime_user_scope_empty;
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod bootstrap;

@@ -5,6 +5,21 @@ pub(in crate::bootstrap) use super::{
     settle_launcher, verify_image, write,
 };
 use std::ptr;
+pub(in crate::bootstrap) fn background_lifetime(
+    child: &Child,
+    spec: &RuntimeLaunchSpec,
+) -> RuntimeLifetime {
+    let Some(pid) = child.launcher else {
+        return RuntimeLifetime::default();
+    };
+    match crate::user_manager::pin_launcher(pid) {
+        Ok(pin) => crate::user_manager::admit(&pin, ProcessId(pid as u32), spec),
+        Err(error) => RuntimeLifetime {
+            user_scope: None,
+            session_reason: Some(error.to_string()),
+        },
+    }
+}
 pub(in crate::bootstrap) fn receive_hello(
     child: &mut Child,
     events: &mut File,

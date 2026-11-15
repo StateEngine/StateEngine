@@ -39,6 +39,8 @@ pub struct RuntimeView {
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detachment: Option<HostDetachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detachment_notice: Option<String>,
     pub host: Option<String>,
     pub process: Option<ProcessView>,
     pub generation: Option<u64>,

@@ -115,6 +115,7 @@ pub(crate) struct Parent {
     deadline: Instant,
     identity: Option<ProcessIdentity>,
     detachment: RuntimeDetachment,
+    lifetime: RuntimeLifetime,
     commit_sent: bool,
     released: bool,
     diagnostics: diagnostics::Capture,
@@ -361,6 +362,7 @@ impl NativeProcessApi for NativeProcessRuntime {
                 deadline: spec.deadline,
                 identity: None,
                 detachment,
+                lifetime: RuntimeLifetime::default(),
                 commit_sent: false,
                 released: false,
                 diagnostics,
@@ -370,6 +372,13 @@ impl NativeProcessApi for NativeProcessRuntime {
             child.state.identity = os::initial_identity(&child.state.native, &spec.machine)?;
             if let Some(cause) = creation_error {
                 return Err(cause);
+            }
+            #[cfg(target_os = "linux")]
+            {
+                child.state.lifetime = os::background_lifetime(&child.state.native, &spec);
+                if child.state.lifetime.user_scope.is_some() {
+                    child.state.detachment = RuntimeDetachment::UserManagerUnit;
+                }
             }
             frame_write(&mut plan, &encoded, spec.deadline)?;
             drop(plan);
@@ -399,6 +408,11 @@ impl NativeProcessApi for NativeProcessRuntime {
                 child.state.identity = Some(observed.clone());
             }
             os::verify_image(&child.state.native, &spec.executable, &observed)?;
+            #[cfg(target_os = "linux")]
+            if let Some(scope) = &child.state.lifetime.user_scope {
+                crate::user_manager::verify(scope, observed.pid, spec.deadline)
+                    .map_err(|reason| input("native runtime user scope", &reason))?;
+            }
             os::settle_launcher(&mut child.state.native, spec.deadline)?;
             let mut pinned = [0; 17];
             pinned[0] = b'P';
@@ -414,7 +428,7 @@ impl NativeProcessApi for NativeProcessRuntime {
         })();
         match result {
             Ok(identity) => Ok(RuntimeLaunch {
-                detachment,
+                detachment: child.state.detachment,
                 child,
                 identity,
             }),
@@ -471,6 +485,7 @@ impl NativeProcessApi for NativeProcessRuntime {
             }
             Ok(RuntimeReady {
                 detachment: child.state.detachment,
+                lifetime: child.state.lifetime.clone(),
                 identity: identity.clone(),
                 host: proof.host,
             })
