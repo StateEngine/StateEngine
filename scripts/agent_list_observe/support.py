@@ -77,8 +77,12 @@ def timed(smoke, arguments):
 
 def prepare(directory, image, provider, dirty, smokes, side, count):
     directory.mkdir(mode=0o700)
+    inherited = dict(os.environ)
+    system_names = {'systemroot', 'windir', 'comspec'}
+    settings = dict(provider=provider, environment=[
+        name for name in inherited if name.casefold() in system_names])
     smoke = Fixture(directory, None, {'id': provider, 'driver': 'native'},
-                    {'provider': provider}, dict(os.environ))
+                    settings, inherited)
     smokes[side] = smoke
     smoke.commands.observer = NativeObserver(smoke.home, directory)
     smoke.state = smoke.home / 'stateengine-state'
