@@ -17,9 +17,9 @@ pub mod channels;
 pub mod client;
 pub mod remote;
 #[cfg(feature = "remote")]
-mod ssh_transport;
-#[cfg(feature = "remote")]
 mod return_mail;
+#[cfg(feature = "remote")]
+mod ssh_transport;
 #[cfg(test)]
 #[path = "../../test-support/directory.rs"]
 mod test_directory;
