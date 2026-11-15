@@ -1,14 +1,18 @@
-//! Stream results are coalesced wakeups only. Captured bodies and vendor turn
+//! Stream observations are coalesced wakeups only. Captured bodies and vendor turn
 //! identities still come exclusively from the retained transcript pin.
 use super::*;
 use std::{sync::Weak, time::Instant};
 use tokio::sync::Notify;
 
 pub(crate) const MAX_LINE: usize = 4 * 1024 * 1024;
+pub(crate) struct Observation {
+    pub observed_at: Instant,
+    pub completed: bool,
+}
 #[derive(Default)]
 pub(crate) struct Completion {
     progress: Mutex<crate::harness::progress::Progress>,
-    pending: Mutex<Option<Instant>>,
+    pending: Mutex<Option<Observation>>,
     wake: Mutex<Option<Weak<Notify>>>,
     failure: Mutex<Option<se_types::ErrorBody>>,
 }
@@ -43,8 +47,11 @@ impl Completion {
                 if frame.kind != "result" {
                     if frame.session_id.as_deref() == Some(conversation.as_str()) {
                         self.progress.lock().map_err(|_| poisoned())?.event();
+                        if frame.kind == "assistant" {
+                            return Ok(Some(false));
+                        }
                     }
-                    return Ok(false);
+                    return Ok(None);
                 }
                 if frame.session_id.as_deref() != Some(conversation.as_str()) {
                     return Err(SeError::invalid(
@@ -60,21 +67,28 @@ impl Completion {
                     },
                     false,
                 );
-                Ok(true)
+                Ok(Some(true))
             });
-        match result {
-            Ok(false) => return,
-            Ok(true) => (),
+        let completed = match result {
+            Ok(None) => return,
+            Ok(Some(completed)) => completed,
             Err(error) => {
                 self.fail(error);
                 return;
             }
-        }
-        self.nudge(observed_at);
+        };
+        self.nudge(observed_at, completed);
     }
-    fn nudge(&self, observed_at: Instant) {
+    fn nudge(&self, observed_at: Instant, completed: bool) {
         if let Ok(mut pending) = self.pending.lock() {
-            *pending = Some(pending.map_or(observed_at, |old| old.min(observed_at)));
+            let observed_at = pending
+                .as_ref()
+                .map_or(observed_at, |old| old.observed_at.min(observed_at));
+            // Preserve the earliest capture clock and the latest turn state.
+            *pending = Some(Observation {
+                observed_at,
+                completed,
+            });
         }
         if let Ok(wake) = self.wake.lock()
             && let Some(wake) = wake.as_ref().and_then(Weak::upgrade)
@@ -89,7 +103,7 @@ impl Completion {
         if let Ok(mut failure) = self.failure.lock() {
             *failure = Some(error.body);
         }
-        self.nudge(Instant::now());
+        self.nudge(Instant::now(), true);
     }
     pub(crate) fn arm(&self, wake: &Arc<Notify>) -> Result<()> {
         *self.wake.lock().map_err(|_| poisoned())? = Some(Arc::downgrade(wake));
@@ -98,7 +112,7 @@ impl Completion {
         }
         Ok(())
     }
-    pub(crate) fn take(&self) -> Result<Option<Instant>> {
+    pub(crate) fn take(&self) -> Result<Option<Observation>> {
         let pending = self.pending.lock().map_err(|_| poisoned())?.take();
         if let Some(error) = self.failure.lock().map_err(|_| poisoned())?.take() {
             return Err(error.into());
