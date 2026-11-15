@@ -1,14 +1,18 @@
 //! Preserve source adoption where the contained Git reader is not available.
 use super::*;
+#[cfg(target_os = "macos")]
+pub(super) fn unavailable() -> SeError {
+    SeError::new(se_types::Detail::AtlasHistoryUnavailable(
+        se_types::details::AtlasHistoryUnavailable {
+            platform: "macOS".into(),
+        },
+    ))
+}
 pub(super) struct Plan;
 impl Plan {
     pub(super) fn new(_: GitMetadataRegistration, _: Option<&SqlProfile>) -> AtlasResult<Self> {
         #[cfg(target_os = "macos")]
-        return Err(SeError::new(se_types::Detail::AtlasHistoryUnavailable(
-            se_types::details::AtlasHistoryUnavailable {
-                platform: "macOS".into(),
-            },
-        )));
+        return Err(unavailable());
         #[cfg(not(target_os = "macos"))]
         Err(failure(
             "Contained Git history is unavailable on this platform; source indexing remains available",

@@ -40,6 +40,13 @@ impl ColdJob {
         request: protocol::Request,
         history: Option<super::history::Plan>,
     ) -> AtlasResult<Self> {
+        // The platform limitation also applies to a source without registered
+        // Git metadata; its lack of commit rows must not imply complete history.
+        #[cfg(target_os = "macos")]
+        let request = protocol::Request {
+            history_unavailable: Some(super::history::unavailable().body),
+            ..request
+        };
         request.validate()?;
         let source = request.source()?;
         let cache = NativeAtlasCache::open(&request.home.to_local()?, source.scope.clone())?;
