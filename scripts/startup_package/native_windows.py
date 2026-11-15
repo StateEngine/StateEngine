@@ -52,8 +52,9 @@ class ImageObserver:
                     'Public startup PID is outside the private runtime image scope')
             self.known.add((pid, row['birth']))
         while True:
-            parents = {r['pid'] for r in rows if (r['pid'], r['birth']) in self.known}
-            descendants = {(r['pid'], r['birth']) for r in rows if r['parent'] in parents}
+            parents = {r['pid']: r['birth'] for r in rows if (r['pid'], r['birth']) in self.known}
+            descendants = {(r['pid'], r['birth']) for r in rows if r['parent'] in parents
+                           and (not r['birth'] or r['birth'] >= parents[r['parent']])}
             require(all(birth for _, birth in descendants), 'Descendant native birth is unreadable')
             if descendants.issubset(self.known):
                 break

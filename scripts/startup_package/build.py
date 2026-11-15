@@ -165,8 +165,9 @@ def main():
     save(output / 'image.json', dict(image=str(image), sha256=digest(image), bytes=image.stat().st_size,
         source=source, archive=dict(path=str(archive), bytes=archive.stat().st_size,
                                    sha256=assembled['sha256']), stripping=build['stripping']))
-    subprocess.run([sys.executable, '-B', Path(__file__).with_name('observe.py'), output],
-                   cwd=ROOT, check=True, timeout=5400)
+    if os.environ.get('STARTUP_BUILD_ONLY') != '1':
+        subprocess.run([sys.executable, '-B', Path(__file__).with_name('observe.py'), output],
+                       cwd=ROOT, check=True, timeout=5400)
     facts['load_after'] = os.getloadavg() if hasattr(os, 'getloadavg') else None
     save(output / 'environment.json', facts)
 

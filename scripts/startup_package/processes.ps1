@@ -6,8 +6,10 @@ $known = @{}
 foreach ($binding in $request.known) { $known[([string]$binding.pid + '|' + $binding.birth)] = $true }
 $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
 $family = [Collections.Generic.HashSet[int]]::new()
+$births = @{}
 $prefix = [string]$request.home + '\'
 foreach ($process in $processes) {
+    $births[[int]$process.ProcessId] = $process.CreationDate
     $birth = if ($process.CreationDate) { $process.CreationDate.ToUniversalTime().ToString('o') } else { '' }
     $retained = $known.ContainsKey(([string]$process.ProcessId + '|' + $birth))
     $private = $process.ExecutablePath -and $process.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
@@ -16,7 +18,11 @@ foreach ($process in $processes) {
 do {
     $changed = $false
     foreach ($process in $processes) {
-        if ($family.Contains([int]$process.ParentProcessId) -and $family.Add([int]$process.ProcessId)) { $changed = $true }
+        # Parent PIDs outlive their original parent in native snapshots. An
+        # older process cannot descend from a newer reuse of that parent PID.
+        $parentBirth = $births[[int]$process.ParentProcessId]
+        $possibleChild = -not $process.CreationDate -or -not $parentBirth -or $process.CreationDate -ge $parentBirth
+        if ($family.Contains([int]$process.ParentProcessId) -and $possibleChild -and $family.Add([int]$process.ProcessId)) { $changed = $true }
     }
 } while ($changed)
 $rows = @($processes | ForEach-Object {
