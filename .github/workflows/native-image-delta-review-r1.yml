@@ -8,7 +8,7 @@ permissions:
 env:
   CARGO_BUILD_JOBS: '2'
   CARGO_INCREMENTAL: '0'
-  JUDGE_SOURCE: bdc428a4d042969ae4daaa60ad687e3b2633ad0f
+  JUDGE_SOURCE: 7ef799c365c9ed6885afc54d6346ac26f210590e
 jobs:
   judge:
     runs-on: windows-2025
