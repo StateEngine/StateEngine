@@ -43,6 +43,9 @@ jobs:
         run: |
           set -e
           mkdir -p /tmp/se381-sshd
+          # This runner image does not pre-create sshd's privilege separation dir.
+          sudo mkdir -p /run/sshd
+          sudo chmod 755 /run/sshd
           sudo ssh-keygen -t ed25519 -N '' -f /tmp/se381-sshd/host_key -q
           sudo /usr/sbin/sshd \
             -p 2222 \
