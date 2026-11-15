@@ -245,6 +245,70 @@ class FinalStatus(unittest.TestCase):
             jobs[key]["result"] = "skipped"
         self.assertTrue(check.accepted(jobs))
 
+    def macos_routes(self):
+        hosted = self.jobs()
+        box = self.jobs()
+        box["linux-route"]["outputs"]["route"] = "box"
+        box["linux-box"] = {"result": "success", "outputs": {
+            "status": "passed", "windows": "passed"}}
+        for name in ("fmt", "clippy", "archive", "test", "windows-clippy"):
+            box[name]["result"] = "skipped"
+        fallback = self.jobs()
+        fallback["linux-route"]["outputs"]["route"] = "box"
+        fallback["linux-box"] = {"result": "success", "outputs": {
+            "status": "unavailable"}}
+        route_failure = self.jobs()
+        route_failure["linux-route"] = {"result": "failure", "outputs": {}}
+        windows_exempt = self.jobs()
+        windows_exempt["changes"]["outputs"]["windows"] = "false"
+        windows_exempt["windows-clippy"]["result"] = "skipped"
+        return {"hosted": hosted, "box": box, "fallback": fallback,
+                "route_failure": route_failure, "windows_exempt": windows_exempt}
+
+    def assert_macos_gate(self, jobs, expected):
+        result = subprocess.run(
+            [sys.executable, str(Path(check.__file__).resolve())],
+            env={**os.environ, "RESULTS": json.dumps(jobs)},
+            capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0 if expected else 1,
+                         result.stdout + result.stderr)
+        self.assertIs(check.accepted(jobs), expected)
+
+    def test_macos_test_success_passes_each_linux_route(self):
+        for route, jobs in self.macos_routes().items():
+            with self.subTest(route=route):
+                jobs["macos-test"] = {"result": "success"}
+                self.assert_macos_gate(jobs, True)
+
+    def test_macos_test_non_success_refuses_each_linux_route(self):
+        for route, jobs in self.macos_routes().items():
+            for status in ("failure", "cancelled", "skipped"):
+                with self.subTest(route=route, status=status):
+                    jobs["macos-test"] = {"result": status}
+                    self.assert_macos_gate(jobs, False)
+
+    def test_macos_test_absent_preserves_existing_requirements(self):
+        for route, jobs in self.macos_routes().items():
+            with self.subTest(route=route):
+                self.assert_macos_gate(jobs, True)
+                jobs["changes"]["result"] = "failure"
+                self.assert_macos_gate(jobs, False)
+        jobs = self.jobs()
+        jobs["changes"]["outputs"]["rust"] = "false"
+        for name in set(jobs) - {"changes"}:
+            jobs[name]["result"] = "skipped"
+        self.assert_macos_gate(jobs, True)
+
+    def test_macos_test_rust_exemption_requires_skipped(self):
+        for status in ("skipped", "success", "failure", "cancelled"):
+            with self.subTest(status=status):
+                jobs = self.jobs()
+                jobs["changes"]["outputs"]["rust"] = "false"
+                for name in set(jobs) - {"changes"}:
+                    jobs[name]["result"] = "skipped"
+                jobs["macos-test"] = {"result": status}
+                self.assert_macos_gate(jobs, status == "skipped")
+
     def test_failed_cancelled_and_unexplained_skips_refuse(self):
         for key in {"changes", "fmt", "clippy", "windows-clippy", "archive", "test"}:
             for status in ["failure", "cancelled", "skipped"]:
