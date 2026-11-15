@@ -173,9 +173,16 @@ fn serve(
     if let Some(log) = &mut phases {
         log.note("Native host executable verification started");
     }
-    let peer = se_proc::native_ipc::observe_ipc_self().map_err(|e| {
-        se_core::scope::unreadable("native host self", &e.to_string()).with_cause(e)
-    })?;
+    let proof_bound = deadline(Duration::from_secs(30))?;
+    se_proc::native_ipc::restore_current_image_cache(&home, &proof_bound.native_bound()).map_err(
+        |error| {
+            se_core::scope::unreadable("native host executable cache", &error.to_string())
+                .with_cause(error)
+        },
+    )?;
+    let peer = se_proc::native_ipc::observe_ipc_self_bounded(&proof_bound.native_bound()).map_err(
+        |e| se_core::scope::unreadable("native host self", &e.to_string()).with_cause(e),
+    )?;
     let epoch = HostEpoch {
         owner: ProcessInstance::from_observation(ProcessFields {
             machine: identity.process.machine,

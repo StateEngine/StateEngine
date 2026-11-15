@@ -181,6 +181,35 @@ pub fn restore_image_cache(
 ) -> IpcNativeResult<ImageCacheRead> {
     restore(root, NAME, expected, bound)
 }
+/// Restore the host's prior hint only for this unchanged native executable.
+/// Startup has no endpoint yet. The retained file key selects the hint; the
+/// subsequent native self/peer observation still rechecks that exact key.
+pub fn restore_current_image_cache(
+    root: &Path,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<ImageCacheRead> {
+    bound
+        .remaining()
+        .map_err(|e| error("restore current executable cache deadline", e))?;
+    let files = NativeStateFiles::open(root)
+        .map_err(|e| error("pin executable cache home", std::io::Error::other(e)))?;
+    let Some(entry) = read_entry(&files, NAME)? else {
+        return Ok(ImageCacheRead::Absent);
+    };
+    let path = std::env::current_exe().map_err(|e| error("locate current executable", e))?;
+    let held = File::open(path).map_err(|e| error("pin current executable", e))?;
+    let metadata = held
+        .metadata()
+        .map_err(|e| error("read current executable metadata", e))?;
+    if !metadata.is_file() || key(&held, &metadata)? != entry.image {
+        return Ok(ImageCacheRead::Stale);
+    }
+    bound
+        .remaining()
+        .map_err(|e| error("finish current executable cache restore", e))?;
+    remember(entry.image, entry.digest)?;
+    Ok(ImageCacheRead::Current)
+}
 /// Restore only the separate uploaded-image hint. A changed native file key
 /// misses exactly as for the host hint; callers must still authenticate IPC.
 pub fn restore_remote_image_cache(
@@ -201,8 +230,21 @@ fn restore(
         .map_err(|e| error("restore executable cache deadline", e))?;
     let files = NativeStateFiles::open(root)
         .map_err(|e| error("pin executable cache home", std::io::Error::other(e)))?;
-    let Some(bytes) = read(&files, name)? else {
+    let Some(entry) = read_entry(&files, name)? else {
         return Ok(ImageCacheRead::Absent);
+    };
+    bound
+        .remaining()
+        .map_err(|e| error("finish executable cache restore", e))?;
+    if entry.digest != expected {
+        return Ok(ImageCacheRead::Stale);
+    };
+    remember(entry.image, entry.digest)?;
+    Ok(ImageCacheRead::Current)
+}
+fn read_entry(files: &NativeStateFiles, name: &str) -> IpcNativeResult<Option<Entry>> {
+    let Some(bytes) = read(files, name)? else {
+        return Ok(None);
     };
     let entry: Entry = serde_json::from_slice(&bytes).map_err(|e| {
         error(
@@ -216,12 +258,5 @@ fn restore(
             "unsupported protected executable cache schema",
         ));
     }
-    bound
-        .remaining()
-        .map_err(|e| error("finish executable cache restore", e))?;
-    if entry.digest != expected {
-        return Ok(ImageCacheRead::Stale);
-    };
-    remember(entry.image, entry.digest)?;
-    Ok(ImageCacheRead::Current)
+    Ok(Some(entry))
 }
