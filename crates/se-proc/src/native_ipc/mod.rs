@@ -301,3 +301,7 @@ fn current_uid() -> u32 {
 pub(crate) fn local_socket_credentials(channel: BorrowedIpc<'_>) -> IpcNativeResult<(u32, u32)> {
     macos::credentials(channel)
 }
+
+#[cfg(all(test, windows))]
+#[path = "independent_delta.rs"]
+mod independent_delta;
