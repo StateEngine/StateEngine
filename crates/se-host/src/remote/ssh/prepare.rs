@@ -57,7 +57,21 @@ pub async fn prepare_image(
         se_types::hex_lower(&crate::remote::session::entropy::<16>()?)
     );
     let result = async {
-        super::command::send_image(destination, &image, &upload, cancelled, progress).await?;
+        crate::ssh_transport::upload(
+            destination,
+            &image.path,
+            &upload,
+            cancelled,
+            &mut |elapsed| {
+                progress(ImageProgress {
+                    stage: ImageStage::Uploading,
+                    bytes_streamed: None,
+                    total_bytes: Some(image.expected),
+                    elapsed_ms: elapsed.as_millis().try_into().unwrap_or(u64::MAX),
+                })
+            },
+        )
+        .await?;
         if cancelled.load(Ordering::Acquire) {
             return Err(unavailable(
                 "remote image preparation was cancelled before publication",

@@ -1,5 +1,5 @@
 //! Bounded local SSH diagnostics become actionable transport refusals.
-use super::channel::unavailable;
+use super::unavailable;
 use se_types::{Detail, Result, SeError, details};
 use std::time::Duration;
 use tokio::{io::AsyncReadExt, process::ChildStderr, sync::watch, task::JoinHandle};
@@ -44,13 +44,13 @@ struct Observation {
     ended: bool,
 }
 
-pub(super) struct Diagnostics {
+pub(crate) struct Diagnostics {
     observation: watch::Receiver<Observation>,
     task: Option<JoinHandle<std::io::Result<()>>>,
 }
 
 impl Diagnostics {
-    pub(super) fn start(mut stderr: ChildStderr) -> Self {
+    pub(crate) fn start(mut stderr: ChildStderr) -> Self {
         let (sender, observation) = watch::channel(Observation::default());
         let task = tokio::spawn(async move {
             // Preserve only a short overlap for a refusal split across reads.
@@ -87,7 +87,7 @@ impl Diagnostics {
         }
     }
 
-    pub(super) async fn forwarding_refusal(&mut self, port: u16) -> Option<SeError> {
+    pub(crate) async fn forwarding_refusal(&mut self, port: u16) -> Option<SeError> {
         // SSH writes the refusal before closing the forwarded socket. Allow its
         // reader to catch up only on a failed transport, never on the happy path.
         let wait = async {
@@ -120,7 +120,7 @@ impl Diagnostics {
         )))
     }
 
-    pub(super) async fn close(&mut self) -> Result<()> {
+    pub(crate) async fn close(&mut self) -> Result<()> {
         if let Some(task) = &mut self.task {
             // Keep the handle in self while awaiting: cancellation must leave
             // Drop able to abort the reader rather than detach it.
