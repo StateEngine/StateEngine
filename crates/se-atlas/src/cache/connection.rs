@@ -483,22 +483,6 @@ fn configure_limits(
         ));
     }
     let _qualified_overhead = profile.overhead;
-    if !profile.cold_only {
-        // SAFETY: this connection is exclusively held during configuration, before
-        // statements or lookaside allocations are created; zero disables the pool.
-        let status = unsafe {
-            rusqlite::ffi::sqlite3_db_config(
-                db.handle(),
-                rusqlite::ffi::SQLITE_DBCONFIG_LOOKASIDE,
-                std::ptr::null_mut::<std::ffi::c_void>(),
-                0_i32,
-                0_i32,
-            )
-        };
-        if status != rusqlite::ffi::SQLITE_OK {
-            return Err(cache_error("SQL lookaside configuration refused"));
-        }
-    }
     super::path_scope::register(db)?;
     db.set_prepared_statement_cache_capacity(0);
     for (limit, value) in [
