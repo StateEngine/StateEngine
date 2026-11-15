@@ -19,6 +19,7 @@ pub(super) struct Child {
     pid: ProcessId,
     image: File,
     broker_context: Option<broker::Context>,
+    inherited_job: bool,
 }
 fn fail(api: &str, cause: io::Error) -> ProcError {
     native(ProcErrorCode::LaunchFailed, api, cause)
@@ -371,7 +372,7 @@ pub(super) fn initial_identity(
         .process
         .as_ref()
         .ok_or_else(|| input("runtime creation", "native custody absent"))?;
-    broker::outside_job(process.as_raw_handle())?;
+    broker::verify_job(process.as_raw_handle(), child.inherited_job)?;
     if let Some(expected) = &child.broker_context
         && broker::context(process.as_raw_handle())? != *expected
     {

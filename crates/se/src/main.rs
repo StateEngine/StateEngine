@@ -184,8 +184,6 @@ pub fn run(
         drop(stderr);
         return foreground::run(&context, common.json, common.quiet);
     }
-    #[cfg(windows)]
-    let foreground_fallback = matches!(&operation, AnyOp::RuntimeUp(_));
     let atlas_presentation = operation.atlas_options().cloned();
     let result = {
         let mut diagnostic = |message: &str| {
@@ -195,21 +193,6 @@ pub fn run(
         dispatch(&context, operation, &mut diagnostic)
             .map_err(|error| route::setup::with_recovery_remedy(error, &context.home))
     };
-    #[cfg(windows)]
-    if foreground_fallback
-        && result
-            .as_ref()
-            .is_err_and(|error| error.code() == se_types::Code::JobBreakawayRefused)
-    {
-        writeln!(
-            stderr,
-            "Windows prevented detached startup; starting in the foreground. Keep this terminal open; use se down with the same home from another terminal to stop the host."
-        )?;
-        stderr.flush()?;
-        drop(stdout);
-        drop(stderr);
-        return foreground::run(&context, common.json, common.quiet);
-    }
     let setup_remedy = route::setup::InitRemedy {
         home: &context.home,
         workspace: &context.cwd,

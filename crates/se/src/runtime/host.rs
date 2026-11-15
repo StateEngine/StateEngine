@@ -88,8 +88,8 @@ fn invalid(expected: &str) -> SeError {
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn native_error(error: se_proc::ProcError) -> SeError {
     if error.code == se_proc::ProcErrorCode::BreakawayDenied {
-        // The runtime must outlive its caller. Keep the native refusal instead
-        // of retrying inside the job or misreporting a state-directory problem.
+        // Native startup exhausted the authorized launch modes. Keep the refusal
+        // instead of reporting a state-directory problem or entering foreground.
         return SeError::new(se_types::Detail::JobBreakawayRefused(
             se_types::details::JobBreakawayRefused {
                 parent: format!("caller process PID {}", std::process::id()),

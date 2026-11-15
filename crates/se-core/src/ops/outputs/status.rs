@@ -31,6 +31,7 @@ pub struct ResourceSample {
 pub enum HostDetachment {
     WindowsBreakaway,
     WindowsBroker,
+    WindowsJob,
     UserManagerUnit,
     SessionOnly,
 }

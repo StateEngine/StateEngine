@@ -41,6 +41,8 @@ struct Frame {
     handles: [u64; 2],
     #[cfg(windows)]
     broker: Option<ProcessIdentity>,
+    #[cfg(windows)]
+    inherited_job: bool,
 }
 /// Native self observation with the host's protected, persisted machine ID.
 /// Machine identity is never invented from hostname, hardware or a new UUID.
@@ -329,6 +331,8 @@ impl NativeProcessApi for NativeProcessRuntime {
                 handles: [0; 2],
                 #[cfg(windows)]
                 broker: None,
+                #[cfg(windows)]
+                inherited_job: false,
             })
         };
         let frame = before().map_err(|error| {

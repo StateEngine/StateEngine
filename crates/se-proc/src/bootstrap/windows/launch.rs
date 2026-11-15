@@ -18,6 +18,12 @@ pub(in crate::bootstrap) fn spawn(
         .process
         .as_ref()
         .ok_or_else(|| input("runtime creation", "native custody absent"))?;
+    if created.detachment == RuntimeDetachment::WindowsJob {
+        if let Err(error) = broker::verify_job(process.as_raw_handle(), true) {
+            created.error.get_or_insert(error);
+        }
+        return Ok(created);
+    }
     if let Err(error) = broker::outside_job(process.as_raw_handle()) {
         if error.code != ProcErrorCode::BreakawayDenied
             || created.detachment != RuntimeDetachment::WindowsBreakaway
@@ -62,6 +68,8 @@ fn spawn_attempt(
     require_broker: bool,
 ) -> ProcResult<Created> {
     check(spec.deadline)?;
+    frame.broker = None;
+    frame.inherited_job = false;
     let image = crate::windows_native::open_image(&spec.executable, false).map_err(|e| {
         let mut error = fail("pin runtime executable", e.source);
         error.detail = Box::new(ProcErrorDetail::Executable {
@@ -88,7 +96,7 @@ fn spawn_attempt(
     let direct = if require_broker {
         None
     } else {
-        match create(spec, frame, &sources, None) {
+        match create(spec, frame, &sources, None, false) {
             Ok(attempt) => Some(attempt),
             Err(error) if error.code == ProcErrorCode::BreakawayDenied => None,
             Err(error) => return Err(error),
@@ -96,15 +104,31 @@ fn spawn_attempt(
     };
     let (attempt, detachment, broker_context) = match direct {
         Some(attempt) => (attempt, RuntimeDetachment::WindowsBreakaway, None),
-        None => {
-            let broker = broker::Broker::find(&spec.machine, spec.deadline)?;
-            frame.broker = Some(broker.identity.clone());
-            (
-                create(spec, frame, &sources, Some(&broker))?,
-                RuntimeDetachment::WindowsBroker,
-                Some(broker.context.clone()),
-            )
-        }
+        None => match broker::Broker::find(&spec.machine, spec.deadline) {
+            Ok(broker) => {
+                frame.broker = Some(broker.identity.clone());
+                (
+                    create(spec, frame, &sources, Some(&broker), false)?,
+                    RuntimeDetachment::WindowsBroker,
+                    Some(broker.context.clone()),
+                )
+            }
+            Err(error) if error.code == ProcErrorCode::BreakawayDenied => {
+                // Keep the caller's native token and explicit private handles.
+                // This mode returns to the caller without claiming job escape.
+                // SAFETY: immutable current-process pseudo handle.
+                if !broker::in_job(unsafe { GetCurrentProcess() })? {
+                    return Err(error);
+                }
+                frame.inherited_job = true;
+                (
+                    create(spec, frame, &sources, None, true)?,
+                    RuntimeDetachment::WindowsJob,
+                    None,
+                )
+            }
+            Err(error) => return Err(error),
+        },
     };
     let Attempt {
         process,
@@ -118,6 +142,7 @@ fn spawn_attempt(
             pid,
             image,
             broker_context,
+            inherited_job: frame.inherited_job,
         },
         events,
         authorization: authorize,
@@ -144,6 +169,7 @@ fn create(
     frame: &mut Frame,
     sources: &[HANDLE; 5],
     broker: Option<&broker::Broker>,
+    inherited_job: bool,
 ) -> ProcResult<Attempt> {
     let local = if broker.is_none() {
         sources
@@ -228,7 +254,7 @@ fn create(
             ptr::null(),
             ptr::null(),
             1,
-            (if broker.is_none() {
+            (if broker.is_none() && !inherited_job {
                 CREATE_BREAKAWAY_FROM_JOB
             } else {
                 0
@@ -257,12 +283,19 @@ fn create(
     }
     if created == 0 {
         return Err(native(
-            if cause.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+            if cause.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32)
+                && broker.is_none()
+                && !inherited_job
+            {
                 ProcErrorCode::BreakawayDenied
             } else {
                 ProcErrorCode::LaunchFailed
             },
-            "create detached runtime outside caller jobs",
+            if inherited_job {
+                "create background runtime in caller job"
+            } else {
+                "create detached runtime outside caller jobs"
+            },
             cause,
         ));
     }
@@ -317,8 +350,11 @@ pub(in crate::bootstrap) fn receive() -> ProcResult<(Frame, File, File, File, In
             _ => return Err(input_error()),
         }
     }
+    if frame.inherited_job && frame.broker.is_some() {
+        return Err(input_error());
+    }
     // SAFETY: immutable current-process pseudo handle for the native membership query.
-    broker::outside_job(unsafe { GetCurrentProcess() })?;
+    broker::verify_job(unsafe { GetCurrentProcess() }, frame.inherited_job)?;
     let expected_sid = crate::windows_native::process_sid(parent.as_raw_handle())
         .map_err(|e| fail(e.operation, e.source))?;
     // SAFETY: immutable current-process pseudo handle for native token observation.

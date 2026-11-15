@@ -179,6 +179,17 @@ fn report_started(
     bound: &Deadline,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<()> {
+    if matches!(origin, StartupOrigin::Explicit)
+        && started.ready.detachment == se_proc::RuntimeDetachment::WindowsJob
+    {
+        diagnostic(
+            "Windows may stop this background host when the terminal or tool that started it ends.",
+        )
+        .map_err(|error| {
+            se_core::scope::unreadable("runtime lifetime notice", &error.to_string())
+                .with_cause(error)
+        })?;
+    }
     if matches!(origin, StartupOrigin::Explicit) {
         super::process::from_identity(&started.ready.identity, bound)?;
     }

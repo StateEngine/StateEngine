@@ -4,7 +4,7 @@
 use super::*;
 use windows_sys::Win32::System::JobObjects::IsProcessInJob;
 
-fn in_job(process: HANDLE) -> ProcResult<bool> {
+pub(super) fn in_job(process: HANDLE) -> ProcResult<bool> {
     let mut member = 0;
     // SAFETY: retained query-capable process and writable BOOL; null means any job.
     if unsafe { IsProcessInJob(process, ptr::null_mut(), &mut member) } == 0 {
@@ -20,6 +20,18 @@ pub(super) fn outside_job(process: HANDLE) -> ProcResult<()> {
                 field: "runtime detachment".into(),
                 reason: "native process is still inside a Windows job".into(),
             },
+        ));
+    }
+    Ok(())
+}
+pub(super) fn verify_job(process: HANDLE, inherited: bool) -> ProcResult<()> {
+    if !inherited {
+        return outside_job(process);
+    }
+    if !in_job(process)? {
+        return Err(input(
+            "runtime job inheritance",
+            "the native child did not retain its expected caller job",
         ));
     }
     Ok(())

@@ -220,6 +220,8 @@ pub struct RuntimeReady {
 pub enum RuntimeDetachment {
     WindowsBreakaway,
     WindowsBroker,
+    /// A background child retains the lifetime limits of its caller's Windows job.
+    WindowsJob,
     UserManagerUnit,
     /// A new Unix session, without claiming escape from external containment.
     SessionOnly {

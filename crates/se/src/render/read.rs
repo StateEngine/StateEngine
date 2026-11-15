@@ -63,6 +63,15 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             "Host: runs as a session process and stops when this login session ends"
         )?;
     }
+    if matches!(
+        value.runtime.detachment.as_ref(),
+        Some(HostDetachment::WindowsJob)
+    ) {
+        writeln!(
+            out,
+            "Host: Windows may stop it when the terminal or tool that started it ends"
+        )?;
+    }
     if let Some(process) = &value.runtime.process {
         writeln!(
             out,

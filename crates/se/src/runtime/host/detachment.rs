@@ -73,6 +73,10 @@ pub(super) fn publish(
             detachment: HostDetachment::WindowsBreakaway,
             inherited_cgroup: None,
         },
+        se_proc::RuntimeDetachment::WindowsJob => DetachmentObservation {
+            detachment: HostDetachment::WindowsJob,
+            inherited_cgroup: None,
+        },
         se_proc::RuntimeDetachment::UserManagerUnit => DetachmentObservation {
             detachment: HostDetachment::UserManagerUnit,
             inherited_cgroup: None,
