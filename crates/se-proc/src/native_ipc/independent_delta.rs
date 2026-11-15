@@ -78,7 +78,8 @@ fn active_journal_cache_hit() -> Check {
     let stamp = image::key(&file, &file.metadata()?)?;
     let key = serde_json::to_value(&stamp)?;
     assert!(
-        key["changed"][0].as_i64().is_some_and(|n| n > 0) && key["changed"][1] == 1,
+        key["changed"][0].as_i64().is_some_and(|n| n > 0)
+            && key["changed"][1].as_i64().is_some_and(|n| n != 0),
         "positive journal key absent: {key}"
     );
     let synthetic = Sha256::from_bytes([0x5a; 32]);

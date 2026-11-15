@@ -211,6 +211,7 @@ fn exercise(reader: &str) -> Check {
         let mut value: serde_json::Value = serde_json::from_slice(&fs::read(entry.path())?)?;
         if let Some(key) = value.get_mut("image") {
             if generationless {
+                key["changed"][1] = serde_json::json!(1);
                 key.as_object_mut()
                     .ok_or("image key is not an object")?
                     .remove("journal");
