@@ -22,6 +22,7 @@ fn bound() -> IpcIoBound {
     }
 }
 fn fixture(name: &str) -> Check<PathBuf> {
+    crate::initialize_file_creation_owner()?;
     let root = PathBuf::from(std::env::var_os("DELTA_ROOT").ok_or("private root absent")?);
     let path = root.join(name);
     fs::create_dir(&path)?;
