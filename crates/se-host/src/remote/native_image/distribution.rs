@@ -31,6 +31,7 @@ pub(in crate::remote) async fn describe(destination: &str, distribution: &Path) 
     // Probe fixed commands, not caller-controlled shell fragments. Neither probe
     // mutates the remote host or stops an incompatible incumbent.
     let probe = ssh(destination, "uname -sm".into()).await?;
+    let first_tail = probe.stderr_tail;
     let (unix, platform) = (probe.success, probe.stdout);
     let platform = String::from_utf8(platform)
         .map_err(|_| unavailable("SSH platform response is not UTF-8"))?;
@@ -61,7 +62,10 @@ pub(in crate::remote) async fn describe(destination: &str, distribution: &Path) 
                     "remote operating system or architecture is unsupported: {named}"
                 )));
             } else {
-                return Err(discovery_failure(destination, &probe.stderr_tail));
+                return Err(discovery_failure(
+                    destination,
+                    reported_discovery_cause(&first_tail, &probe.stderr_tail),
+                ));
             }
         }
     };
@@ -111,6 +115,18 @@ pub(in crate::remote) async fn describe(destination: &str, distribution: &Path) 
         windows: windows_image,
         apple: target.ends_with("apple-darwin"),
     })
+}
+
+/// The SSH client stderr tail a discovery refusal should name: the
+/// fallback probe's, when it names a cause, otherwise the first probe's
+/// (a failed `uname -sm` that reported the real verdict, such as a
+/// permission denial, while the fallback said nothing).
+fn reported_discovery_cause<'a>(first: &'a str, fallback: &'a str) -> &'a str {
+    if fallback.is_empty() {
+        first
+    } else {
+        fallback
+    }
 }
 
 /// A discovery refusal names the SSH client's own verdict when the client
@@ -164,5 +180,31 @@ fn image(target: &str, executable: &Path) -> Result<PathBuf> {
         Err(_) => Err(unavailable(
             "the matching native remote image cannot be inspected",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reported_discovery_cause;
+
+    #[test]
+    fn keeps_the_first_cause_when_the_fallback_is_silent() {
+        assert_eq!(
+            reported_discovery_cause("Permission denied (publickey).", ""),
+            "Permission denied (publickey).",
+        );
+    }
+
+    #[test]
+    fn prefers_the_fallback_cause_when_it_names_one() {
+        assert_eq!(
+            reported_discovery_cause("first cause", "fallback cause"),
+            "fallback cause",
+        );
+    }
+
+    #[test]
+    fn stays_empty_when_both_probes_said_nothing() {
+        assert_eq!(reported_discovery_cause("", ""), "");
     }
 }
