@@ -73,6 +73,7 @@ impl State {
 /// periodic maintenance wakes.
 #[derive(Clone)]
 pub(crate) struct Status {
+    pub(crate) window: Option<Arc<crate::wal_window_probe::Window>>,
     state: Arc<State>,
     idle: Arc<AtomicBool>,
     /// Latest idle edge, coalesced until the writer has stayed quiet for TICK.
@@ -84,6 +85,7 @@ impl Default for Status {
         // Busy until the writer proves the channel empty: a fresh host has
         // startup traffic, and the hard cutoff stays the fail-safe meanwhile.
         Self {
+            window: None,
             state: Arc::default(),
             idle: Arc::new(AtomicBool::new(false)),
             notify: Arc::new((Mutex::new(None), Condvar::new())),
@@ -124,6 +126,9 @@ impl Status {
     /// stop. Cheap enough for the writer's idle edge, and lost notifications
     /// never matter because the task re-reads the real flags after waking.
     pub(crate) fn wake(&self) {
+        if let Some(window) = &self.window {
+            window.wake();
+        }
         let (lock, condvar) = &*self.notify;
         let mut seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         *seen = Some(Instant::now());
@@ -169,7 +174,7 @@ impl Status {
         *seen = None;
         closed.load(Ordering::Acquire)
     }
-    fn set(&self, maint: Maint) {
+    pub(crate) fn set(&self, maint: Maint) {
         *self.state.lock() = maint;
     }
 }
@@ -191,7 +196,10 @@ impl CheckpointTask {
         lease: Arc<dyn RuntimeLease>,
         gate: crate::transaction::checkpoint::Gate,
     ) -> StoreResult<Self> {
-        let status = Status::default();
+        let mut status = Status::default();
+        if std::env::var_os("SE_WAL_WINDOW_PROBE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            status.window = Some(Arc::new(crate::wal_window_probe::Window::default()));
+        }
         let closed = Arc::new(AtomicBool::new(false));
         let (task_status, task_closed) = (status.clone(), closed.clone());
         let handle = std::thread::Builder::new()
@@ -289,6 +297,10 @@ fn run(
     status: Status,
     gate: crate::transaction::checkpoint::Gate,
 ) {
+    if let Some(window) = &status.window {
+        window.run((&path, timeout), &context, &lease, &closed, &gate, &status);
+        return;
+    }
     if status.wait(&closed, None) {
         return;
     }
@@ -437,15 +449,7 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
     }
 }
 fn checkpoint(db: &Connection, mode: &str) -> StoreResult<(i64, i64, i64)> {
-    let statement = format!("PRAGMA wal_checkpoint({mode})");
-    db.query_row(statement.as_str(), [], |r| {
-        Ok((
-            crate::sql_value::value::<i64>(r, 0)?,
-            crate::sql_value::value::<i64>(r, 1)?,
-            crate::sql_value::value::<i64>(r, 2)?,
-        ))
-    })
-    .map_err(sql)
+    crate::wal_probe_trace::checkpoint(db, mode, "idle-worker")
 }
 
 #[cfg(test)]

@@ -253,6 +253,7 @@ pub(crate) fn start(
         lease.clone(),
         host.engine.checkpoints.gate.clone(),
     )?;
+    host.engine.checkpoints.window = checkpoint.status().window.clone();
     let thread = std::thread::Builder::new()
         .name("se-store-writer".into())
         .spawn(move || run(host, options, lease, receiver, shared, checkpoint))
@@ -475,6 +476,15 @@ fn run(
                         Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                     }
                 }
+                let window_started = Instant::now();
+                let mut window_ready = status.window.as_ref().map_or(Ok(()), |window| {
+                    window.before_group(&host.engine.db, host.reader.timeout)
+                });
+                window_ready =
+                    window_ready.and(crate::wal_probe_trace::record(serde_json::json!({
+                        "kind":"producer-wait", "elapsed_us":window_started.elapsed().as_micros(),
+                        "mechanism":status.window.is_some()
+                    })));
                 let start = Instant::now();
                 let count = group.len();
                 let mut replies = Vec::new();
@@ -488,12 +498,13 @@ fn run(
                     ));
                     batches.push(r.batch)
                 }
-                let result = host
-                    .engine
-                    .reopen(&host.reader.path, host.reader.timeout, &*lease)
-                    .and_then(|_| connection::info(&host.engine.db))
-                    .and_then(|i| connection::validate_lease(&i, &*lease, LeaseMode::Host))
-                    .and_then(|_| host.engine.group(batches, false));
+                let result = window_ready.and_then(|_| {
+                    host.engine
+                        .reopen(&host.reader.path, host.reader.timeout, &*lease)
+                        .and_then(|_| connection::info(&host.engine.db))
+                        .and_then(|i| connection::validate_lease(&i, &*lease, LeaseMode::Host))
+                        .and_then(|_| host.engine.group(batches, false))
+                });
                 shared
                     .admission
                     .lock()

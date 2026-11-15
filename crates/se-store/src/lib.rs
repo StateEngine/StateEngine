@@ -8,6 +8,8 @@ mod backup;
 mod backup_context;
 pub mod channel;
 mod checkpoint_task;
+mod wal_probe_trace;
+mod wal_window_probe;
 mod codec;
 mod completion;
 mod connection;

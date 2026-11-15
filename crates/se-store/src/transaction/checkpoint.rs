@@ -9,6 +9,7 @@ const SOFT_FRAMES: i64 = 256;
 pub(crate) struct Schedule {
     pending: bool,
     pub gate: Gate,
+    pub window: Option<Arc<crate::wal_window_probe::Window>>,
 }
 /// SQLite does not invoke the busy handler when another checkpoint owns its
 /// checkpoint lock. Coordinate our two connections before entering SQLite;
@@ -112,23 +113,11 @@ impl Engine {
         let hard = wal.bytes >= crate::backup_context::MAX_WAL_BYTES;
         let gate = self.checkpoints.gate.clone();
         let result = gate.acquire(self.timeout).and_then(|_permit| {
-            self.db
-                .query_row(
-                    if hard {
-                        "PRAGMA wal_checkpoint(TRUNCATE)"
-                    } else {
-                        "PRAGMA wal_checkpoint(PASSIVE)"
-                    },
-                    [],
-                    |r| {
-                        Ok((
-                            crate::sql_value::value::<i64>(r, 0)?,
-                            crate::sql_value::value::<i64>(r, 1)?,
-                            crate::sql_value::value::<i64>(r, 2)?,
-                        ))
-                    },
-                )
-                .map_err(sql)
+            crate::wal_probe_trace::checkpoint(
+                &self.db,
+                if hard { "TRUNCATE" } else { "PASSIVE" },
+                "inline-writer",
+            )
         });
         let elapsed = start.elapsed();
         self.maintenance = match result {
@@ -159,6 +148,11 @@ impl Engine {
         Ok(elapsed)
     }
     pub(crate) fn checkpoint_due(&mut self) -> Option<Duration> {
+        if let Some(window) = &self.checkpoints.window
+            && let Err(error) = window.committed(&self.db, &self.path, self.timeout)
+        {
+            self.maintenance = Some(error);
+        }
         let wal = match self.wal() {
             Ok(wal) => wal,
             Err(error) => {
