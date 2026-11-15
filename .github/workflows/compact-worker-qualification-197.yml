@@ -1,0 +1,99 @@
+name: compact parser worker qualification
+on:
+  push:
+permissions:
+  contents: read
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+jobs:
+  atlas-worker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # The native parser's address cap also applies while loading this image.
+      # Build the real CLI separately; a debug test image cannot fit that cap.
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: s
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: 1320384602376d91606df07b87b1aa21f2135b49
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: hosted-atlas-worker-release-s-v1
+      - name: Build the compact native worker input without LTO
+        run: |
+          target="$(rustc --print host-tuple)"
+          mkdir -p .atlas-worker
+          started="$SECONDS"
+          cargo build --target "$target" --release --package se --bin se --no-default-features --locked
+          echo "Worker build wall time = $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
+          cp "target/$target/release/se" .atlas-worker/se
+          git rev-parse HEAD > .atlas-worker/source.txt
+          sha256sum .atlas-worker/se > .atlas-worker/sha256.txt
+      - name: Verify startup under the unchanged native address cap
+        run: |
+          python3 -I - <<'PY_STARTUP'
+          from pathlib import Path
+          import resource, subprocess
+          image = Path('.atlas-worker/se').resolve(strict=True)
+          def limits():
+              resource.setrlimit(resource.RLIMIT_AS, (96_000_000, 96_000_000))
+          result = subprocess.run([str(image), '--help'], preexec_fn=limits,
+                                  capture_output=True, timeout=10, check=True)
+          if not result.stdout:
+              raise RuntimeError('compact worker produced no help output')
+          print(f'Worker image: {image.stat().st_size} bytes; startup fits 96000000-byte address cap')
+          PY_STARTUP
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: atlas-worker-linux
+          path: .atlas-worker/
+          include-hidden-files: true
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  consumers:
+    needs: atlas-worker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SE_ATLAS_WORKER_BIN: ${{ github.workspace }}/.atlas-worker/se
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 1320384602376d91606df07b87b1aa21f2135b49
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          shared-key: judge-linux-v1
+          save-if: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: atlas-worker-linux
+          path: .atlas-worker
+      - name: Exercise native consumers with the required compact image
+        shell: bash
+        run: |
+          chmod 700 "$SE_ATLAS_WORKER_BIN"
+          target="$(rustc --print host-tuple)"
+          mkdir -p retained
+          git rev-parse HEAD > retained/source.txt
+          cargo nextest run --target "$target" --workspace --all-features --locked --profile ci --no-fail-fast \
+            -E 'package(se-atlas) or (package(se-host) and binary(/^atlas_/)) or binary(structure_guardrails)' > retained/consumers.log 2>&1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: compact-worker-consumers
+          path: |
+            retained
+            target/nextest/ci/junit.xml
+          retention-days: 7
+          if-no-files-found: error
