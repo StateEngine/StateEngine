@@ -88,6 +88,56 @@ pub struct CodeCursorPosition {
     #[serde(rename = "w")]
     pub text_window: Option<TextWindow>,
 }
+// Tuple wire keeps repeated opaque continuations small. The domain object and
+// the legacy canonical object representation retain their existing semantics.
+#[derive(Serialize, Deserialize)]
+struct CompactPosition(
+    u8,
+    String,
+    crate::ProjectId,
+    RootId,
+    CacheEpoch,
+    #[serde(with = "digest_wire")] [u8; 32],
+    CursorKey,
+    Generation,
+    Option<Generation>,
+    Option<RankingClock>,
+    Option<TextWindow>,
+);
+impl From<&CodeCursorPosition> for CompactPosition {
+    fn from(value: &CodeCursorPosition) -> Self {
+        Self(
+            2,
+            value.mode.clone(),
+            value.project.clone(),
+            value.root.clone(),
+            value.epoch.clone(),
+            value.query_digest,
+            value.last_key.clone(),
+            value.generation_hint,
+            value.change_fence,
+            value.ranking_clock.clone(),
+            value.text_window.clone(),
+        )
+    }
+}
+impl From<CompactPosition> for CodeCursorPosition {
+    fn from(value: CompactPosition) -> Self {
+        Self {
+            version: 1,
+            mode: value.1,
+            project: value.2,
+            root: value.3,
+            epoch: value.4,
+            query_digest: value.5,
+            last_key: value.6,
+            generation_hint: value.7,
+            change_fence: value.8,
+            ranking_clock: value.9,
+            text_window: value.10,
+        }
+    }
+}
 impl CodeCursorPosition {
     pub fn new(
         index: &IndexSummary,
@@ -160,7 +210,7 @@ impl CodeCursorPosition {
     }
     pub fn encode(&self) -> AtlasResult<AtlasCursor> {
         self.last_key.validate()?;
-        let bytes = serde_json::to_vec(self).map_err(cursor_invalid)?;
+        let bytes = serde_json::to_vec(&CompactPosition::from(self)).map_err(cursor_invalid)?;
         if bytes.len() > 3072 {
             return Err(cursor_invalid("decoded cursor exceeds 3072 bytes"));
         }
@@ -169,10 +219,21 @@ impl CodeCursorPosition {
     pub fn decode(value: &AtlasCursor) -> AtlasResult<Self> {
         use super::AtlasText;
         let bytes = decode(value.as_str())?;
-        let cursor: Self = serde_json::from_slice(&bytes).map_err(cursor_invalid)?;
-        if cursor.version != 1 || serde_json::to_vec(&cursor).map_err(cursor_invalid)? != bytes {
-            return Err(cursor_invalid("unsupported version or noncanonical JSON"));
-        }
+        let cursor: Self = if bytes.first() == Some(&b'[') {
+            let compact: CompactPosition =
+                serde_json::from_slice(&bytes).map_err(cursor_invalid)?;
+            if compact.0 != 2 || serde_json::to_vec(&compact).map_err(cursor_invalid)? != bytes {
+                return Err(cursor_invalid("unsupported version or noncanonical JSON"));
+            }
+            compact.into()
+        } else {
+            let legacy: Self = serde_json::from_slice(&bytes).map_err(cursor_invalid)?;
+            if legacy.version != 1 || serde_json::to_vec(&legacy).map_err(cursor_invalid)? != bytes
+            {
+                return Err(cursor_invalid("unsupported version or noncanonical JSON"));
+            }
+            legacy
+        };
         cursor.last_key.validate()?;
         Ok(cursor)
     }

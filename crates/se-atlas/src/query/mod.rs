@@ -18,6 +18,7 @@ pub mod refs;
 mod related;
 pub mod resume;
 mod rows;
+mod search_page;
 mod source_metadata;
 mod target;
 mod text;
