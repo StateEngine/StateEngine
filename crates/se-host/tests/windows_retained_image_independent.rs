@@ -1,7 +1,7 @@
 #![cfg(all(windows, feature = "listener"))]
 //! Retained public consumers must reread images without native qualification.
 use se_host::harness::secode_image::Images;
-use se_proc::{NativeStateFiles, native_ipc::ExecutableStamp};
+use se_proc::{NativeExecutablePin, NativeStateFiles, native_ipc::ExecutableStamp};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Seek, SeekFrom, Write},
@@ -131,7 +131,14 @@ fn retained(mode: &str, server_selected: bool) -> Check {
     images.validate()?;
     if mode == "removed" {
         journal(false)?;
+        // Losing qualification alone must still accept the unchanged bytes.
+        images.validate()?;
     }
+    let pin = NativeExecutablePin::open(path)?.ok_or("native image is absent")?;
+    let invocation = pin.prepare()?;
+    invocation.validate()?;
+    let mut previous = ExecutableStamp::observe(path)?;
+    assert!(previous.is_some(), "native observation is absent");
     for byte in [b'B', b'C', b'D'] {
         if let Some(file) = held.as_mut() {
             edit(file, &before, byte)?;
@@ -148,12 +155,20 @@ fn retained(mode: &str, server_selected: bool) -> Check {
             images.validate().is_err(),
             "RETAINED_IMAGE_STALE_ACCEPT mode={mode} server={server_selected} byte={byte}"
         );
+        let current = ExecutableStamp::observe(path)?;
         assert!(
-            ExecutableStamp::observe(path)?.is_none(),
-            "unqualified image returned a reusable stamp"
+            current.is_some() && current != previous,
+            "fresh native stamp did not detect changed bytes"
         );
+        assert!(
+            invocation.validate().is_err(),
+            "creation custody accepted changed bytes"
+        );
+        let mut fresh = Images::open(&cli)?;
+        fresh.validate()?;
+        previous = current;
         eprintln!(
-            "RETAINED_IMAGE mode={mode} server={server_selected} byte={byte} stale_refused=true stamp_unavailable=true clocks_restored=true"
+            "RETAINED_IMAGE mode={mode} server={server_selected} byte={byte} stale_refused=true stamp_drift=true invocation_refused=true fresh_validation=true clocks_restored=true"
         );
     }
     drop(held);
