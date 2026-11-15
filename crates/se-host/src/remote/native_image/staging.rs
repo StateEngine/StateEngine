@@ -3,35 +3,57 @@
 pub(in crate::remote) fn receive(path: &str, windows: bool) -> String {
     if windows {
         powershell(&format!(
-            "$ErrorActionPreference='Stop'; $f=$null; try {{$p=Join-Path $HOME '{path}'; $f=[IO.File]::Open($p,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); [Console]::OpenStandardInput().CopyTo($f); $f.Flush($true); $f.Dispose(); exit 0}} catch {{if ($f) {{$f.Dispose()}}; exit 1}}"
+            "$ErrorActionPreference='Stop'; $f=$null; try {{$p=Join-Path $HOME '{path}'; $f=[IO.File]::Open($p,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); [Console]::OpenStandardInput().CopyTo($f); $f.Flush($true); $f.Dispose(); $a=[IO.File]::GetAccessControl($p); $a.SetAccessRuleProtection($true,$false); $me=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; foreach ($sid in @($me,'S-1-5-18','S-1-5-32-544')) {{ $a.SetAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','None','None','Allow'))) }}; [IO.File]::SetAccessControl($p,$a); exit 0}} catch {{if ($f) {{$f.Dispose()}}; exit 1}}"
         ))
     } else {
-        format!("umask 077; set -C; cat > {path}")
+        // The mode is set after creation, never inherited: a parent default
+        // ACL determines creation permissions from the requested mode
+        // instead of the umask, so umask 077 alone leaves a group-writable
+        // upload that the later verification refuses. The chmod follows a
+        // complete stream only; set -C keeps a partial stream from
+        // overwriting an incumbent or from becoming executable.
+        format!("umask 077; set -C; cat > {path} && chmod 700 {path}")
     }
 }
 pub(in crate::remote) fn prepare_windows(directory: &str) -> String {
     // Refusals print one fixed marker line naming the failing check and
     // the path; the caller parses it. Unhandled errors still exit
     // nonzero without a marker, which the caller reports generally.
+    // Variables are ${}-delimited: an unbraced $name directly before a
+    // colon parses as a drive-qualified reference and fails the whole
+    // script. foreign-owner carries the owner SID as a trailing field so
+    // both platform producers share one schema.
+    // Directories the product creates are hardened to the trusted
+    // principals right after creation: inherited ACEs are dropped, never
+    // relied on. A directory that already exists is only checked, never
+    // repaired.
     let script = r#"$ErrorActionPreference='Stop';
 $me=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
 $trusted=@($me,'S-1-5-18','S-1-5-32-544');
 $writes=[Security.AccessControl.FileSystemRights] 'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership';
-function Refuse($reason,$p){ Write-Output "image-cache-refused:$reason:$p"; exit 1 }
+function Refuse($reason,$p,$extra){ if ($extra) { Write-Output "image-cache-refused:${reason}:${p}:${extra}" } else { Write-Output "image-cache-refused:${reason}:${p}" }; exit 1 }
+function Harden($p) {
+try {
+$a=Get-Acl -LiteralPath $p;
+$a.SetAccessRuleProtection($true,$false);
+foreach ($sid in @($me,'S-1-5-18','S-1-5-32-544')) { $a.SetAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))) };
+Set-Acl -LiteralPath $p -AclObject $a
+} catch { Refuse 'harden-failed' $p }
+}
 function Check($p) {
 $i=Get-Item -LiteralPath $p -Force;
-if (-not $i.PSIsContainer -or ($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) {Refuse 'unsafe-path' $p};
+if (-not $i.PSIsContainer -or ($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) {Refuse 'unsafe-path' $p $null};
 $a=Get-Acl -LiteralPath $p;
 $o=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;
-if ($o -notin $trusted) {Refuse 'foreign-owner' $p};
+if ($o -notin $trusted) {Refuse 'foreign-owner' $p $o};
 foreach ($r in $a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
-if ($r.AccessControlType -eq 'Allow' -and ($r.FileSystemRights -band $writes) -and $r.IdentityReference.Value -notin ($trusted+@('S-1-3-0'))) {Refuse 'foreign-write-access' $p}
+if ($r.AccessControlType -eq 'Allow' -and ($r.FileSystemRights -band $writes) -and $r.IdentityReference.Value -notin ($trusted+@('S-1-3-0'))) {Refuse 'foreign-write-access' $p $null}
 }
 }
 Check $HOME;
 foreach ($d in @('.stateengine-runtime','@DIR@')) {
 $p=Join-Path $HOME $d;
-if (-not (Test-Path -LiteralPath $p)) {New-Item -ItemType Directory -Path $p | Out-Null};
+if (-not (Test-Path -LiteralPath $p)) { New-Item -ItemType Directory -Path $p | Out-Null; Harden $p };
 Check $p
 }; exit 0"#;
     script.replace("@DIR@", directory)
@@ -54,7 +76,7 @@ pub(in crate::remote) fn prepare(directory: &str, windows: bool, apple: bool) ->
 if ! test -d "$p"; then
 mkdir -m 700 "$p" || test -d "$p" || {{ printf 'image-cache-refused:create-failed:%s\n' "$p"; exit 1; }}
 cm=$({stat} {mode} "$p") || {{ printf 'image-cache-refused:mode-confirm:%s\n' "$p"; exit 1; }}
-if test "$((0$cm))" -ne 700; then chmod 700 "$p" || {{ printf 'image-cache-refused:mode-confirm:%s\n' "$p"; exit 1; }}; fi
+if test "$((0$cm))" -ne 0700; then chmod 700 "$p" || {{ printf 'image-cache-refused:mode-confirm:%s\n' "$p"; exit 1; }}; fi
 fi
 if test -L "$p"; then printf 'image-cache-refused:symlink:%s\n' "$p"; exit 1; fi
 owner=$({stat} %u "$p") && mode=$({stat} {mode} "$p") || {{ printf 'image-cache-refused:stat-failed:%s\n' "$p"; exit 1; }}

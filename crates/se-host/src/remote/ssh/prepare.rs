@@ -174,10 +174,17 @@ fn unsafe_cache() -> se_types::SeError {
 
 /// A refused prepare names the failing check and the destination path on a
 /// fixed marker line; anything else stays the general unsafe-cache refusal.
+/// foreign-owner carries a trailing owner field on both platforms (uid on
+/// Unix, SID on Windows); group-or-other-writable carries a trailing mode.
+/// Paths are positional and may contain colons (Windows drive letters), so
+/// only the single trailing extra splits off.
 pub(in crate::remote) fn cache_refusal(detail: &[u8]) -> Option<se_types::SeError> {
     let line = detail
         .split(|byte| *byte == b'\n')
         .find_map(|line| line.strip_prefix(b"image-cache-refused:"))?;
+    // Windows producers end lines with CRLF; drop the carriage return
+    // before the positional split, or the trailing field keeps it.
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
     let text = String::from_utf8_lossy(line);
     let fields: Vec<&str> = text.split(':').collect();
     let reason = fields.first().copied()?;
@@ -213,8 +220,8 @@ pub(in crate::remote) fn cache_refusal(detail: &[u8]) -> Option<se_types::SeErro
             format!("verify that {path} exists as a directory readable by the destination account, then retry with the original machine name"),
         ),
         ("foreign-owner", Some(owner)) => (
-            format!("the runtime path {path} is owned by account uid {owner} instead of the destination account"),
-            format!("restore {path} to the destination account with chown, or remove it if it is not in use, then retry with the original machine name"),
+            format!("the runtime path {path} is owned by account {owner} instead of the destination account"),
+            format!("restore {path} to the destination account (chown on Unix, take ownership on Windows), or remove it if it is not in use, then retry with the original machine name"),
         ),
         ("group-or-other-writable", Some(mode)) => (
             format!("the runtime path {path} has mode {mode}, which permits group or other writes"),
@@ -246,6 +253,7 @@ pub(in crate::remote) fn cache_refusal(detail: &[u8]) -> Option<se_types::SeErro
 )]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn listener_detail(error: &se_types::SeError) -> &se_types::details::ListenerUnavailable {
@@ -275,9 +283,37 @@ mod tests {
         )
         .expect("marker line must parse");
         let detail = listener_detail(&refusal);
-        assert!(detail.reason.contains("uid 1003"));
+        assert!(detail.reason.contains("1003"));
         assert!(detail.reason.contains("/home/u/.stateengine-runtime/abc"));
         assert!(detail.next_step.contains("chown"));
+        assert!(detail.next_step.contains("take ownership"));
+    }
+
+    #[test]
+    fn cache_refusal_keeps_the_full_windows_path_with_owner() {
+        let refusal = cache_refusal(
+            b"image-cache-refused:foreign-owner:C:\\Users\\sample\\.stateengine-runtime:S-1-5-21-1234-5678-9012-1001\r\n",
+        )
+        .expect("windows marker line must parse");
+        let detail = listener_detail(&refusal);
+        assert!(
+            detail
+                .reason
+                .contains("C:\\Users\\sample\\.stateengine-runtime")
+        );
+        assert!(detail.reason.contains("S-1-5-21-1234-5678-9012-1001"));
+        assert!(detail.next_step.contains("take ownership"));
+    }
+
+    #[test]
+    fn cache_refusal_accepts_crlf_line_endings() {
+        let refusal = cache_refusal(
+            b"image-cache-refused:group-or-other-writable:.stateengine-runtime:775\r\n",
+        )
+        .expect("crlf marker line must parse");
+        let detail = listener_detail(&refusal);
+        assert!(detail.reason.contains(".stateengine-runtime"));
+        assert!(detail.reason.contains("775"));
     }
 
     #[test]
@@ -300,9 +336,15 @@ mod tests {
         assert!(apple.contains("stat -f"));
         let windows = staging::prepare_windows(".stateengine-runtime/abc");
         assert!(windows.contains("image-cache-refused:"));
+        // Unbraced $name before a colon is a drive-qualified reference in
+        // PowerShell; the emitted script must stay in the braced form.
+        assert!(windows.contains("${reason}:${p}"));
+        assert!(!windows.contains("$reason:"));
+        assert!(windows.contains("Refuse 'foreign-owner' $p $o"));
         assert!(!windows.contains("throw '"));
     }
 
+    #[cfg(unix)]
     fn run_prepare(home: &std::path::Path) -> std::process::Output {
         let script = staging::prepare(".stateengine-runtime/deadbeef", false, false);
         std::process::Command::new("bash")
@@ -362,5 +404,38 @@ mod tests {
             stdout.contains("image-cache-refused:group-or-other-writable:.stateengine-runtime:775"),
             "stdout: {stdout}"
         );
+    }
+
+    #[test]
+    fn staged_upload_and_windows_staging_get_explicit_modes() {
+        use base64::Engine as _;
+        // Unix: the upload's mode is set after creation, never inherited.
+        // A parent default ACL would otherwise defeat the umask 077 guard.
+        let unix = staging::receive(".stateengine-runtime/abc.upload", false);
+        assert!(unix.contains("umask 077; set -C; cat > "));
+        assert!(unix.ends_with("&& chmod 700 .stateengine-runtime/abc.upload"));
+        // publish still fixes the staged file before the atomic link.
+        let publish = staging::publish("u.upload", ".stateengine-runtime/abc", false);
+        assert!(publish.contains("chmod 700 u.upload"));
+        // Windows: the staged file and product-created directories carry an
+        // explicit trusted-principal ACL instead of an inherited one.
+        let encoded = staging::receive("abc.upload", true);
+        let b64 = encoded.split(' ').next_back().expect("encoded command");
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .expect("b64");
+        // -EncodedCommand is UTF-16LE, not UTF-8.
+        let units: Vec<u16> = raw
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let decoded = String::from_utf16(&units).expect("utf16");
+        assert!(decoded.contains("SetAccessRuleProtection"));
+        assert!(decoded.contains("FullControl"));
+        let windows = staging::prepare_windows(".stateengine-runtime/abc");
+        assert!(windows.contains("SetAccessRuleProtection"));
+        assert!(windows.contains("ContainerInherit,ObjectInherit"));
+        assert!(windows.contains("Refuse 'harden-failed'"));
+        assert!(!windows.contains("$reason:"));
     }
 }
