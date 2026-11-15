@@ -12,7 +12,7 @@ for directory, children, files in os.walk(root):
                    and not name.endswith('.symbols')]
     for name in files:
         source = Path(directory) / name
-        if source.suffix in ('.json', '.log', '.stdout', '.stderr', '.sha256') or name.endswith(('.tar.gz', '.zip')):
+        if source.suffix in ('.json', '.log', '.stdout', '.stderr', '.sha256') or name.endswith(('.tar.gz', '.zip')) or name.startswith('syscalls-'):
             target = destination / source.relative_to(root)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, target)

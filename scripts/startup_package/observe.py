@@ -50,10 +50,8 @@ def timed(smoke, traced):
         env['SE_STARTUP_LOG'] = '1'
     if os.environ.get('STARTUP_SYSCALL_TRACE') == '1':
         require(sys.platform == 'linux', 'Syscall diagnostics require Linux')
-        sequence = len(list(smoke.output.glob('syscalls-*.log')))
-        argv = ['strace', '-ttt', '-T', '-yy', '-o', str(smoke.output / f'syscalls-{sequence}.log'),
-                '-e', 'trace=fsync,fdatasync,futex,poll,ppoll,clock_nanosleep,recvmsg,sendmsg',
-                '-e', 'raw=recvmsg,sendmsg', *argv]
+        from syscalls import capture
+        return capture(smoke, argv, env)
     started = time.perf_counter_ns()
     child = subprocess.Popen(argv, cwd=smoke.repository, env=env, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -80,6 +78,9 @@ def stop(smoke, label):
             and isinstance(stopped.get('stops'), list)
             and all(row.get('complete') is True for row in stopped['stops']),
             'Down has no complete witnessed closure')
+    if os.environ.get('STARTUP_SYSCALL_TRACE') == '1':
+        from syscalls import join
+        join(smoke)
     outside = smoke.commands.observer.observe()
     require(outside == [], 'Runtime survived witnessed down')
     return dict(down=stopped, outside=outside)
