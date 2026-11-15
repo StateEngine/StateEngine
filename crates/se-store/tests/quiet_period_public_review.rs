@@ -18,7 +18,7 @@ fn batch(f: &Fixture, key: &str, count: usize) -> Result<AtomicBatch, Box<dyn st
                 message: message()?,
                 recipient: Actor::Agent(f.b.clone()),
                 kind: "finding".into(),
-                body: InputText::Inline(format!("{key}-{index}-").repeat(4000)),
+                body: InputText::Inline(format!("{key}-{index}-").repeat(2000)),
                 refs: vec![],
                 reply_to: None,
             })

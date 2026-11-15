@@ -54,7 +54,7 @@ def main():
             retained=['--test', 'background_checkpoint_independent', '--test', 'deferred_checkpoint_independent'])
         for label, arguments in commands.items():
             argv = ['cargo', 'test', '--target', target, '--release', '--locked',
-                    '--all-features', '-p', 'se-store', *arguments,
+                    '--all-features', '--no-fail-fast', '-p', 'se-store', *arguments,
                     '--', '--show-output', '--test-threads=1']
             log = output / f'{side}-{label}.log'
             with log.open('wb') as stream:
