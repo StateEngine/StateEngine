@@ -1,0 +1,111 @@
+name: PR 403 hosted Windows receive and harden verification
+on:
+  push:
+    branches: [prime/pr403-421-windows-r1]
+permissions:
+  contents: read
+concurrency:
+  group: pr403-421-windows-r1-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: a5e466a82987a51edd51156a0968435c91b43a63
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.12'}
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with: {toolchain: '1.97.1'}
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with: {arch: amd64}
+      - name: Inject review harness (not product code)
+        shell: python
+        run: |
+          import base64, os, pathlib
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / '421review'
+          root.mkdir()
+          harness = base64.b64decode("Ly8gUmV2aWV3IGhhcm5lc3MgZm9yIGlzc3VlIDQyMSAvIFBSIDQwMy4gSW5qZWN0ZWQgYnkgdGhlIHJldmlldyByZWNpcGU7Ci8vIG5vdCBwcm9kdWN0IGNvZGUuIEl0IGNvbXBpbGVzIHRoZSBwaW5uZWQgcHJvZHVjdCdzIHN0YWdpbmcucnMgdmVyYmF0aW0KLy8gYW5kIHByaW50cyB0aGUgZXhhY3QgZGVzdGluYXRpb24tc2lkZSBjb21tYW5kcyB0aGUgcHJvZHVjdCB3b3VsZCBydW4sCi8vIGZvciBhIGZpeGVkIHBhdGggbGF5b3V0IGFuZCBhIGRpZ2VzdCBzdXBwbGllZCB2aWEgRU1JVDQyMV9ESUdFU1QuCiMhW2NmZyh3aW5kb3dzKV0KCm1vZCByZW1vdGUgewogICAgcHViIG1vZCBuYXRpdmVfaW1hZ2UgewogICAgICAgICNbcGF0aCA9ICIuLi9zcmMvcmVtb3RlL25hdGl2ZV9pbWFnZS9zdGFnaW5nLnJzIl0KICAgICAgICBtb2Qgc3RhZ2luZzsKICAgIH0KCiAgICBwdWIgZm4gY29tbWFuZHMoZGlnZXN0OiAmc3RyKSAtPiBWZWM8KCYnc3RhdGljIHN0ciwgU3RyaW5nKT4gewogICAgICAgIGxldCBkaXIgPSAiLnN0YXRlZW5naW5lLXJ1bnRpbWUvNDIxcmV2aWV3IjsKICAgICAgICBsZXQgdXBsb2FkID0gZm9ybWF0ISgie2Rpcn0vNDIxYWJjLnVwbG9hZCIpOwogICAgICAgIGxldCBwdWJsaXNoZWQgPSBmb3JtYXQhKCJ7ZGlyfS80MjFhYmMiKTsKICAgICAgICB2ZWMhWwogICAgICAgICAgICAoInByZXBhcmUiLCBuYXRpdmVfaW1hZ2U6OnN0YWdpbmc6OnByZXBhcmUoZGlyLCB0cnVlLCBmYWxzZSkpLAogICAgICAgICAgICAoInByZXBhcmVfYWdhaW4iLCBuYXRpdmVfaW1hZ2U6OnN0YWdpbmc6OnByZXBhcmUoZGlyLCB0cnVlLCBmYWxzZSkpLAogICAgICAgICAgICAoInJlY2VpdmUiLCBuYXRpdmVfaW1hZ2U6OnN0YWdpbmc6OnJlY2VpdmUoJnVwbG9hZCwgdHJ1ZSkpLAogICAgICAgICAgICAoCiAgICAgICAgICAgICAgICAidmVyaWZ5X3VwbG9hZCIsCiAgICAgICAgICAgICAgICBuYXRpdmVfaW1hZ2U6OnN0YWdpbmc6OnZlcmlmeSgmdXBsb2FkLCBkaWdlc3QsIHRydWUsIGZhbHNlKSwKICAgICAgICAgICAgKSwKICAgICAgICAgICAgKAogICAgICAgICAgICAgICAgInB1Ymxpc2giLAogICAgICAgICAgICAgICAgbmF0aXZlX2ltYWdlOjpzdGFnaW5nOjpwdWJsaXNoKCZ1cGxvYWQsICZwdWJsaXNoZWQsIHRydWUpLAogICAgICAgICAgICApLAogICAgICAgICAgICAoCiAgICAgICAgICAgICAgICAidmVyaWZ5X3B1Ymxpc2hlZCIsCiAgICAgICAgICAgICAgICBuYXRpdmVfaW1hZ2U6OnN0YWdpbmc6OnZlcmlmeSgmcHVibGlzaGVkLCBkaWdlc3QsIHRydWUsIGZhbHNlKSwKICAgICAgICAgICAgKSwKICAgICAgICAgICAgKCJyZW1vdmUiLCBuYXRpdmVfaW1hZ2U6OnN0YWdpbmc6OnJlbW92ZSgmdXBsb2FkLCB0cnVlKSksCiAgICAgICAgXQogICAgfQp9CgojW3Rlc3RdCmZuIGVtaXQ0MjEoKSB7CiAgICBsZXQgZGlnZXN0ID0gc3RkOjplbnY6OnZhcigiRU1JVDQyMV9ESUdFU1QiKS5leHBlY3QoIkVNSVQ0MjFfRElHRVNUIGVudiIpOwogICAgZm9yIChuYW1lLCBjb21tYW5kKSBpbiByZW1vdGU6OmNvbW1hbmRzKCZkaWdlc3QpIHsKICAgICAgICBwcmludGxuISgiRU1JVDQyMSB7bmFtZX0ge2NvbW1hbmR9Iik7CiAgICB9Cn0K")
+          judge = base64.b64decode("IiIiUFIgNDAzIC8gaXNzdWUgNDIxIGhvc3RlZCBXaW5kb3dzIHJlY2VpdmUgKyBoYXJkZW4ganVkZ2UuCgpFeGVjdXRlcyB0aGUgZXhhY3QgZGVzdGluYXRpb24tc2lkZSBjb21tYW5kcyBlbWl0dGVkIGJ5IHRoZSBwaW5uZWQgcHJvZHVjdApzb3VyY2UgKGNvbW1hbmRzLmpzb24sIHByb2R1Y2VkIGJ5IHRoZSBpbmplY3RlZCBlbWl0IHRlc3QgdGhhdCBjb21waWxlcyB0aGUKcGlubmVkIHN0YWdpbmcucnMgdmVyYmF0aW0pIGFnYWluc3QgYSBmcmVzaCBkZXN0aW5hdGlvbiBob21lLCB0aGVuIHJlYWRzIHRoZQpyZXN1bHRpbmcgQUNMcyBiYWNrIGZyb20gb3V0c2lkZSB0aGUgd3JpdGVyLgoKSGFybmVzcyBib3VuZGFyeSAoZGlzY2xvc2VkKTogdGhlIGRlc3RpbmF0aW9uIGhvbWUgaXMgcHJvdmlzaW9uZWQgYnkgdGhpcwpqdWRnZSB3aXRoIHRoZSB0cnVzdGVkLXByaW5jaXBhbCBEQUNMIHRoZSBwcm9kdWN0J3MgYWNjb3VudCBpbnN0YWxsCnByb3ZpZGVzLCBhbmQgY29tbWFuZHMgcnVuIG5hdGl2ZWx5OyB0aGUgU1NIIHRyYW5zcG9ydCBpcyB1bmNoYW5nZWQgYnkgdGhlCmRlbHRhLiBFdmVyeXRoaW5nIGZyb20gcHJlcGFyZSB0aHJvdWdoIHJlbW92ZSBpcyBwcm9kdWN0LWVtaXR0ZWQgdGV4dC4KIiIiCmltcG9ydCBqc29uCmltcG9ydCBvcwppbXBvcnQgc2h1dGlsCmltcG9ydCBzdWJwcm9jZXNzCmltcG9ydCBzeXMKaW1wb3J0IHV1aWQKZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpQQVRURVJOID0gJ3N0YXRlZW5naW5lLXByNDAzLTQyMS1wcml2YXRlLWltYWdlXG4nCgoKZGVmIHBzKHNjcmlwdCwgZW52PU5vbmUsIGRhdGE9Tm9uZSwgdGltZW91dD0xODApOgogICAgYXJndiA9IFsncG93ZXJzaGVsbC5leGUnLCAnLU5vUHJvZmlsZScsICctTm9uSW50ZXJhY3RpdmUnLAogICAgICAgICAgICAnLUV4ZWN1dGlvblBvbGljeScsICdCeXBhc3MnLCAnLUNvbW1hbmQnLCBzY3JpcHRdCiAgICBlID0gZGljdChvcy5lbnZpcm9uKQogICAgaWYgZW52OgogICAgICAgIGUudXBkYXRlKGVudikKICAgIHIgPSBzdWJwcm9jZXNzLnJ1bihhcmd2LCBlbnY9ZSwgaW5wdXQ9ZGF0YSwgY2FwdHVyZV9vdXRwdXQ9VHJ1ZSwgdGltZW91dD10aW1lb3V0KQogICAgcmV0dXJuIGRpY3QoZXhpdD1yLnJldHVybmNvZGUsCiAgICAgICAgICAgICAgICBzdGRvdXQ9ci5zdGRvdXQuZGVjb2RlKGVycm9ycz0ncmVwbGFjZScpLAogICAgICAgICAgICAgICAgc3RkZXJyPXIuc3RkZXJyLmRlY29kZShlcnJvcnM9J3JlcGxhY2UnKSkKCgpkZWYgbWFpbigpOgogICAgcm9vdCA9IFBhdGgob3MuZW52aXJvblsnSlVER0U0MjFfUk9PVCddKQogICAgcm9vdC5ta2RpcihwYXJlbnRzPVRydWUsIGV4aXN0X29rPVRydWUpCiAgICBjb21tYW5kcyA9IGpzb24ubG9hZHMoKHJvb3QgLyAnY29tbWFuZHMuanNvbicpLnJlYWRfdGV4dCgpKQogICAgZXhwZWN0ZWQgPSBzZXQoY29tbWFuZHMpCiAgICBhc3NlcnQgZXhwZWN0ZWQgPT0geydwcmVwYXJlJywgJ3ByZXBhcmVfYWdhaW4nLCAncmVjZWl2ZScsICd2ZXJpZnlfdXBsb2FkJywKICAgICAgICAgICAgICAgICAgICAgICAgJ3B1Ymxpc2gnLCAndmVyaWZ5X3B1Ymxpc2hlZCcsICdyZW1vdmUnfSwgZXhwZWN0ZWQKICAgIHBheWxvYWQgPSAocm9vdCAvICdwYXlsb2FkLmJpbicpLnJlYWRfYnl0ZXMoKQogICAgZGlnZXN0ID0gKHJvb3QgLyAnZGlnZXN0LnR4dCcpLnJlYWRfdGV4dCgpLnN0cmlwKCkKICAgIGltcG9ydCBoYXNobGliCiAgICBhc3NlcnQgaGFzaGxpYi5zaGEyNTYocGF5bG9hZCkuaGV4ZGlnZXN0KCkgPT0gZGlnZXN0CgogICAgYmFzZSA9IFBhdGguaG9tZSgpIC8gKCdzZTQyMXJldmlldy0nICsgdXVpZC51dWlkNCgpLmhleFs6MTJdKQogICAgaG9tZSA9IGJhc2UgLyAnaG9tZScKICAgIGhvbWUubWtkaXIocGFyZW50cz1UcnVlKQogICAgcmVjZWlwdCA9IGRpY3QocGxhdGZvcm09c3lzLnBsYXRmb3JtLCBob21lPXN0cihob21lKSwgc3RlcHM9W10sIHJlYWRiYWNrPVtdKQogICAgdHJ1c3RlZF9leHRyYSA9IFsnUy0xLTUtMTgnLCAnUy0xLTUtMzItNTQ0J10KCiAgICBkZWYgZGVzdF9lbnYoKToKICAgICAgICByZXR1cm4gZGljdChVU0VSUFJPRklMRT1zdHIoaG9tZSksIEhPTUVEUklWRT1zdHIoaG9tZSlbOjJdLAogICAgICAgICAgICAgICAgICAgIEhPTUVQQVRIPXN0cihob21lKVsyOl0sIEhPTUU9c3RyKGhvbWUpKQoKICAgIGRlZiBydW4obmFtZSwgZGF0YT1Ob25lLCB3YW50PTApOgogICAgICAgIHIgPSBwcyhjb21tYW5kc1tuYW1lXSwgZW52PWRlc3RfZW52KCksIGRhdGE9ZGF0YSkKICAgICAgICByZWNlaXB0WydzdGVwcyddLmFwcGVuZChkaWN0KHN0ZXA9bmFtZSwgZXhpdD1yWydleGl0J10sIHdhbnQ9d2FudCwKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHN0ZG91dD1yWydzdGRvdXQnXVstMjAwMDpdLCBzdGRlcnI9clsnc3RkZXJyJ11bLTIwMDA6XSkpCiAgICAgICAgYXNzZXJ0IHJbJ2V4aXQnXSA9PSB3YW50LCAobmFtZSwgcikKCiAgICBkZWYgcmVhZGJhY2sobGFiZWwsIHJlbHMpOgogICAgICAgIGl0ZW1zID0gW10KICAgICAgICBmb3IgcmVsIGluIHJlbHM6CiAgICAgICAgICAgIHAgPSBob21lIC8gcmVsCiAgICAgICAgICAgIGFzc2VydCBwLmV4aXN0cygpLCAobGFiZWwsIHJlbCkKICAgICAgICAgICAgcSA9IHN0cihwKQogICAgICAgICAgICBzY3JpcHQgPSAoCiAgICAgICAgICAgICAgICAiJEVycm9yQWN0aW9uUHJlZmVyZW5jZT0nU3RvcCc7IgogICAgICAgICAgICAgICAgIiRhPUdldC1BY2wgLUxpdGVyYWxQYXRoICclcyc7IgogICAgICAgICAgICAgICAgIiRhY2VzPSRhLkdldEFjY2Vzc1J1bGVzKCR0cnVlLCRmYWxzZSxbU2VjdXJpdHkuUHJpbmNpcGFsLlNlY3VyaXR5SWRlbnRpZmllcl0pIHwiCiAgICAgICAgICAgICAgICAiIEZvckVhY2gtT2JqZWN0IHsgQHtzaWQ9JF8uSWRlbnRpdHlSZWZlcmVuY2UuVmFsdWU7IHR5cGU9JF8uQWNjZXNzQ29udHJvbFR5cGUuVG9TdHJpbmcoKTsiCiAgICAgICAgICAgICAgICAiIHJpZ2h0cz1baW50XSRfLkZpbGVTeXN0ZW1SaWdodHM7IGluaGVyaXQ9JF8uSW5oZXJpdGFuY2VGbGFncy5Ub1N0cmluZygpOyIKICAgICAgICAgICAgICAgICIgcHJvcGFnYXRlPSRfLlByb3BhZ2F0aW9uRmxhZ3MuVG9TdHJpbmcoKX0gfTsiCiAgICAgICAgICAgICAgICAiQHtvd25lcj0kYS5HZXRPd25lcihbU2VjdXJpdHkuUHJpbmNpcGFsLlNlY3VyaXR5SWRlbnRpZmllcl0pLlZhbHVlOyIKICAgICAgICAgICAgICAgICIgcHJvdGVjdGVkPSRhLklzUHJvdGVjdGVkOyBzZGRsPSRhLlNkZGw7IGFjZXM9JGFjZXN9IgogICAgICAgICAgICAgICAgIiB8IENvbnZlcnRUby1Kc29uIC1EZXB0aCA0IgogICAgICAgICAgICApICUgcQogICAgICAgICAgICByID0gcHMoc2NyaXB0LCBlbnY9ZGVzdF9lbnYoKSkKICAgICAgICAgICAgYXNzZXJ0IHJbJ2V4aXQnXSA9PSAwLCAobGFiZWwsIHJlbCwgcikKICAgICAgICAgICAgcm93ID0ganNvbi5sb2FkcyhyWydzdGRvdXQnXSkKICAgICAgICAgICAgcm93WydwYXRoJ10gPSByZWwKICAgICAgICAgICAgaXRlbXMuYXBwZW5kKHJvdykKICAgICAgICAgICAgcmVjZWlwdFsncmVhZGJhY2snXS5hcHBlbmQoZGljdChsYWJlbD1sYWJlbCwgKipyb3cpKQogICAgICAgIHJldHVybiBpdGVtcwoKICAgIGRlZiBtZSgpOgogICAgICAgIHIgPSBwcygiW1NlY3VyaXR5LlByaW5jaXBhbC5XaW5kb3dzSWRlbnRpdHldOjpHZXRDdXJyZW50KCkuVXNlci5WYWx1ZSIsIGVudj1kZXN0X2VudigpKQogICAgICAgIGFzc2VydCByWydleGl0J10gPT0gMAogICAgICAgIHJldHVybiByWydzdGRvdXQnXS5zdHJpcCgpCgogICAgbWVfc2lkID0gbWUoKQogICAgdHJ1c3RlZCA9IHttZV9zaWR9IHwgc2V0KHRydXN0ZWRfZXh0cmEpCgogICAgIyBQcmVjb25kaXRpb246IHRydXN0ZWQtb25seSBEQUNMIG9uIHRoZSBkZXN0aW5hdGlvbiBob21lLCBtaXJyb3JpbmcgdGhlCiAgICAjIHByb2R1Y3QncyBhY2NvdW50IGluc3RhbGw7IHRoaXMganVkZ2UgaXMgdGhlIG9ubHkgd3JpdGVyIGJlZm9yZSBwcmVwYXJlLgogICAgcHJlID0gKAogICAgICAgICIkRXJyb3JBY3Rpb25QcmVmZXJlbmNlPSdTdG9wJzsiCiAgICAgICAgIiRtZT1bU2VjdXJpdHkuUHJpbmNpcGFsLldpbmRvd3NJZGVudGl0eV06OkdldEN1cnJlbnQoKS5Vc2VyLlZhbHVlOyIKICAgICAgICAiZm9yZWFjaCgkcCBpbiBAKCclKGJhc2UpcycsJyUoaG9tZSlzJykpeyIKICAgICAgICAiJGE9R2V0LUFjbCAtTGl0ZXJhbFBhdGggJHA7IgogICAgICAgICIkYS5TZXRBY2Nlc3NSdWxlUHJvdGVjdGlvbigkdHJ1ZSwkZmFsc2UpOyIKICAgICAgICAiZm9yZWFjaCgkcyBpbiBAKCRtZSwnUy0xLTUtMTgnLCdTLTEtNS0zMi01NDQnKSl7IgogICAgICAgICIkYS5TZXRBY2Nlc3NSdWxlKFtTZWN1cml0eS5BY2Nlc3NDb250cm9sLkZpbGVTeXN0ZW1BY2Nlc3NSdWxlXTo6bmV3KCIKICAgICAgICAiW1NlY3VyaXR5LlByaW5jaXBhbC5TZWN1cml0eUlkZW50aWZpZXJdJHMsJ0Z1bGxDb250cm9sJywnQ29udGFpbmVySW5oZXJpdCxPYmplY3RJbmhlcml0JywnTm9uZScsJ0FsbG93JykpfTsiCiAgICAgICAgIlNldC1BY2wgLUxpdGVyYWxQYXRoICRwIC1BY2xPYmplY3QgJGF9IgogICAgKSAlIGRpY3QoYmFzZT1zdHIoYmFzZSksIGhvbWU9c3RyKGhvbWUpKQogICAgciA9IHBzKHByZSwgZW52PWRlc3RfZW52KCkpCiAgICBhc3NlcnQgclsnZXhpdCddID09IDAsIHIKCiAgICAjIDEuIHByZXBhcmU6IGNoZWNrcyB0aGUgaG9tZSwgY3JlYXRlcyArIGhhcmRlbnMgYm90aCBwcm9kdWN0IGRpcmVjdG9yaWVzLgogICAgcnVuKCdwcmVwYXJlJykKICAgIGRpcnMgPSByZWFkYmFjaygnYWZ0ZXItcHJlcGFyZScsCiAgICAgICAgICAgICAgICAgICAgWycuc3RhdGVlbmdpbmUtcnVudGltZScsICcuc3RhdGVlbmdpbmUtcnVudGltZS80MjFyZXZpZXcnXSkKICAgIGZvciByb3cgaW4gZGlyczoKICAgICAgICBhc3NlcnQgcm93Wydvd25lciddID09IG1lX3NpZCwgcm93CiAgICAgICAgYXNzZXJ0IHJvd1sncHJvdGVjdGVkJ10gaXMgVHJ1ZSwgcm93CiAgICAgICAgYXNzZXJ0IGxlbihyb3dbJ2FjZXMnXSkgPT0gMywgcm93CiAgICAgICAgZm9yIGFjZSBpbiByb3dbJ2FjZXMnXToKICAgICAgICAgICAgYXNzZXJ0IGFjZVsndHlwZSddID09ICdBbGxvdycsIHJvdwogICAgICAgICAgICBhc3NlcnQgYWNlWydzaWQnXSBpbiB0cnVzdGVkLCByb3cKICAgICAgICAgICAgYXNzZXJ0ICdDb250YWluZXJJbmhlcml0JyBpbiBhY2VbJ2luaGVyaXQnXSBhbmQgJ09iamVjdEluaGVyaXQnIGluIGFjZVsnaW5oZXJpdCddLCByb3cKICAgICAgICAgICAgYXNzZXJ0IGFjZVsncmlnaHRzJ10gPT0gMHgxRjAxRkYsIHJvdwogICAgIyAyLiBwcmVwYXJlIGFnYWluOiBhbiBleGlzdGluZyBkaXJlY3RvcnkgaXMgb25seSBjaGVja2VkLCBuZXZlciByZXBhaXJlZC4KICAgIHJ1bigncHJlcGFyZV9hZ2FpbicpCiAgICAjIDMuIHJlY2VpdmU6IHN0cmVhbXMgdGhlIHBheWxvYWQgdGhyb3VnaCB0aGUgcHJvZHVjdCBjb21tYW5kLCBmaXhlZCBBQ0wuCiAgICBydW4oJ3JlY2VpdmUnLCBkYXRhPXBheWxvYWQpCiAgICB1cCA9IHJlYWRiYWNrKCdhZnRlci1yZWNlaXZlJywgWycuc3RhdGVlbmdpbmUtcnVudGltZS80MjFyZXZpZXcvNDIxYWJjLnVwbG9hZCddKVswXQogICAgYXNzZXJ0IHVwWydvd25lciddID09IG1lX3NpZCwgdXAKICAgIGFzc2VydCB1cFsncHJvdGVjdGVkJ10gaXMgVHJ1ZSwgdXAKICAgIGFzc2VydCBsZW4odXBbJ2FjZXMnXSkgPT0gMywgdXAKICAgIGZvciBhY2UgaW4gdXBbJ2FjZXMnXToKICAgICAgICBhc3NlcnQgYWNlWyd0eXBlJ10gPT0gJ0FsbG93JywgdXAKICAgICAgICBhc3NlcnQgYWNlWydzaWQnXSBpbiB0cnVzdGVkLCB1cAogICAgICAgIGFzc2VydCAnQ29udGFpbmVySW5oZXJpdCcgbm90IGluIGFjZVsnaW5oZXJpdCddIGFuZCAnT2JqZWN0SW5oZXJpdCcgbm90IGluIGFjZVsnaW5oZXJpdCddLCB1cAogICAgICAgIGFzc2VydCBhY2VbJ3JpZ2h0cyddID09IDB4MUYwMUZGLCB1cAogICAgIyA0LiB0cmFuc2FjdGlvbjogdmVyaWZ5IHVwbG9hZCwgcHVibGlzaCwgdmVyaWZ5IHB1Ymxpc2hlZCwgcmVtb3ZlIHVwbG9hZC4KICAgIHJ1bigndmVyaWZ5X3VwbG9hZCcpCiAgICBydW4oJ3B1Ymxpc2gnKQogICAgYXNzZXJ0IG5vdCAoaG9tZSAvICcuc3RhdGVlbmdpbmUtcnVudGltZS80MjFyZXZpZXcvNDIxYWJjLnVwbG9hZCcpLmV4aXN0cygpCiAgICBwdWIgPSByZWFkYmFjaygnYWZ0ZXItcHVibGlzaCcsIFsnLnN0YXRlZW5naW5lLXJ1bnRpbWUvNDIxcmV2aWV3LzQyMWFiYyddKVswXQogICAgYXNzZXJ0IHB1Ylsnb3duZXInXSA9PSBtZV9zaWQsIHB1YgogICAgYXNzZXJ0IHB1YlsncHJvdGVjdGVkJ10gaXMgVHJ1ZSwgcHViCiAgICBhc3NlcnQgbGVuKHB1YlsnYWNlcyddKSA9PSAzLCBwdWIKICAgIGZvciBhY2UgaW4gcHViWydhY2VzJ106CiAgICAgICAgYXNzZXJ0IGFjZVsndHlwZSddID09ICdBbGxvdycgYW5kIGFjZVsnc2lkJ10gaW4gdHJ1c3RlZCwgcHViCiAgICAgICAgYXNzZXJ0IGFjZVsncmlnaHRzJ10gPT0gMHgxRjAxRkYsIHB1YgogICAgcnVuKCdyZW1vdmUnKQogICAgaG9tZV9yZWFkID0gcmVhZGJhY2soJ2ZpbmFsLWhvbWUnLCBbJy4nXSlbMF0KICAgIGFzc2VydCBob21lX3JlYWRbJ3Byb3RlY3RlZCddIGlzIFRydWUgYW5kIGxlbihob21lX3JlYWRbJ2FjZXMnXSkgPT0gMywgaG9tZV9yZWFkCiAgICByZWNlaXB0WydxdWFsaWZpZWQnXSA9IFRydWUKICAgIHNodXRpbC5ybXRyZWUoYmFzZSkKICAgIHJlY2VpcHRbJ2Rlc3RpbmF0aW9uX3JlbW92ZWQnXSA9IG5vdCBiYXNlLmV4aXN0cygpCiAgICBvdXQgPSByb290IC8gJ3JlY2VpcHQuanNvbicKICAgIG91dC53cml0ZV90ZXh0KGpzb24uZHVtcHMocmVjZWlwdCwgaW5kZW50PTIpICsgJ1xuJykKICAgIHByaW50KGpzb24uZHVtcHMoZGljdChxdWFsaWZpZWQ9cmVjZWlwdFsncXVhbGlmaWVkJ10sIHN0ZXBzPWxlbihyZWNlaXB0WydzdGVwcyddKSwKICAgICAgICAgICAgICAgICAgICAgICAgICByZWNlaXB0PXN0cihvdXQpKSkpCgoKaWYgX19uYW1lX18gPT0gJ19fbWFpbl9fJzoKICAgIG1haW4oKQo=")
+          (pathlib.Path('crates/se-host/tests') / 'zz421_review_emit.rs').write_bytes(harness)
+          (root / 'judge421.py').write_bytes(judge)
+      - name: Verify the pin and prepare the payload
+        shell: python
+        run: |
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / '421review'
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert head == 'a5e466a82987a51edd51156a0968435c91b43a63', head
+          base = 'crates/se-host/src/remote/native_image/'
+          files = {base + n: hashlib.sha256(pathlib.Path(base + n).read_bytes()).hexdigest()
+                   for n in ('staging.rs', 'prepare.rs', 'transactions.rs')}
+          files['crates/se-host/src/remote/ssh/bootstrap.rs'] = hashlib.sha256(pathlib.Path('crates/se-host/src/remote/ssh/bootstrap.rs').read_bytes()).hexdigest()
+          files['harness/crates/se-host/tests/zz421_review_emit.rs'] = hashlib.sha256(pathlib.Path('crates/se-host/tests/zz421_review_emit.rs').read_bytes()).hexdigest()
+          files['harness/judge421.py'] = hashlib.sha256((root / 'judge421.py').read_bytes()).hexdigest()
+          (root / 'provenance.json').write_text(json.dumps(dict(head=head, files=files), indent=2) + '\n')
+          payload = b'stateengine-pr403-421-private-image\n' * 100000
+          (root / 'payload.bin').write_bytes(payload)
+          digest = hashlib.sha256(payload).hexdigest()
+          (root / 'digest.txt').write_text(digest + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+              out.write('JUDGE421_ROOT=' + str(root) + '\n')
+              out.write('EMIT421_DIGEST=' + digest + '\n')
+      - name: Emit the exact product commands from the pinned source
+        shell: python
+        run: |
+          import json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['JUDGE421_ROOT'])
+          log = root / 'emit.log'
+          with log.open('xb') as fh:
+              r = subprocess.run(['cargo', 'test', '-p', 'se-host', '--test', 'zz421_review_emit',
+                                  '--features', 'remote', '--', '--nocapture'],
+                                 stdout=fh, stderr=subprocess.STDOUT, timeout=2400)
+          lines = [l for l in log.read_text(errors='replace').splitlines() if l.startswith('EMIT421 ')]
+          assert r.returncode == 0 and len(lines) == 7, (r.returncode, len(lines))
+          commands = {}
+          for line in lines:
+              parts = line.split(' ', 2)
+              name, command = parts[1], parts[2]
+              assert name not in commands, name
+              commands[name] = command
+          (root / 'commands.json').write_text(json.dumps(commands, indent=2) + '\n')
+          print('emitted:', ', '.join(commands))
+      - name: Run the receive and harden judge
+        shell: python
+        run: |
+          import json, os, pathlib, subprocess, sys
+          root = pathlib.Path(os.environ['JUDGE421_ROOT'])
+          subprocess.run([sys.executable, '-B', str(root / 'judge421.py')], check=True, timeout=1800)
+          receipt = json.loads((root / 'receipt.json').read_text())
+          assert receipt['qualified'] and receipt['destination_removed']
+          print('receipt qualified; steps:', [s['step'] + '=' + str(s['exit']) for s in receipt['steps']])
+      - name: Collect complete evidence without credentials or build caches
+        if: ${{ always() }}
+        shell: python
+        run: |
+          import hashlib, json, os, pathlib, shutil
+          root = pathlib.Path(os.environ['JUDGE421_ROOT'])
+          export = pathlib.Path(os.environ['RUNNER_TEMP']) / '421review-export'
+          export.mkdir()
+          for name in ('provenance.json', 'commands.json', 'emit.log', 'payload.bin', 'digest.txt',
+                       'judge421.py', 'receipt.json'):
+              source = root / name
+              if source.exists():
+                  shutil.copyfile(source, export / name)
+          manifest = {p.relative_to(export).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                      for p in export.rglob('*') if p.is_file()}
+          (export / 'manifest.json').write_text(json.dumps(dict(files=manifest), indent=2) + '\n')
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: pr403-421-windows-r1-windows
+          path: ${{ runner.temp }}/421review-export
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
