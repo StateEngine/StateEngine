@@ -1,0 +1,97 @@
+name: Public staged HTTP close base and fix
+'on':
+  push:
+    branches:
+    - prime/public-http-close-pair-r1
+permissions:
+  contents: read
+jobs:
+  judge:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: ubuntu-24.04
+          target: x86_64-unknown-linux-gnu
+          side: base
+          source: 7b23fb01a7e16362c6d6b024e5c1801a32bda8c6
+        - os: ubuntu-24.04
+          target: x86_64-unknown-linux-gnu
+          side: head
+          source: 0c09b4f1abebf68d379db4b6f001d8e51dd63780
+        - os: windows-2025
+          target: x86_64-pc-windows-msvc
+          side: base
+          source: 7b23fb01a7e16362c6d6b024e5c1801a32bda8c6
+        - os: windows-2025
+          target: x86_64-pc-windows-msvc
+          side: head
+          source: 0c09b4f1abebf68d379db4b6f001d8e51dd63780
+        - os: macos-15
+          target: aarch64-apple-darwin
+          side: base
+          source: 7b23fb01a7e16362c6d6b024e5c1801a32bda8c6
+        - os: macos-15
+          target: aarch64-apple-darwin
+          side: head
+          source: 0c09b4f1abebf68d379db4b6f001d8e51dd63780
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      NATIVE_TARGET: ${{ matrix.target }}
+      PRODUCT_SOURCE: ${{ matrix.source }}
+      PRODUCT_SIDE: ${{ matrix.side }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.source }}
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: http-close-public-pair-r1-${{ matrix.os }}-${{ matrix.side }}
+    - name: Read early refusal before completing a split body
+      shell: python
+      run: "import hashlib,json,os,pathlib,re,subprocess\nroot=pathlib.Path(os.environ['RUNNER_TEMP'])/'public-close-pair-r1';root.mkdir(exist_ok=False)\n\
+        product=os.environ['PRODUCT_SOURCE'];side=os.environ['PRODUCT_SIDE'];reviewer='e9dd266e2769692ea49894968e3727964c8726ae'\n\
+        path='crates/se/tests/http_close_independent.rs'\nresult={'source':product,'reviewer':reviewer,'side':side,'commands':{},'scope':'Real\
+        \ public CLI host plus raw loopback HTTP split-body refusals, twenty attempts\
+        \ per arm; no private close helper'}\ndef save():\n (root/'result.json').write_text(json.dumps(result,indent=2)+'\\\
+        n',encoding='utf-8')\ndef run(name,args):\n with (root/(name+'.stdout')).open('wb')\
+        \ as out,(root/(name+'.stderr')).open('wb') as err:\n  rc=subprocess.run(args,stdin=subprocess.DEVNULL,stdout=out,stderr=err,timeout=1800).returncode\n\
+        \ result['commands'][name]={'argv':args,'exit':rc};save()\n return rc,(root/(name+'.stdout')).read_text(encoding='utf-8',errors='strict')\n\
+        try:\n assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==product\n\
+        \ assert not pathlib.Path(path).exists()\n raw=subprocess.check_output(['git','show',reviewer+':'+path]);pathlib.Path(path).write_bytes(raw);(root/'http_close_independent.rs').write_bytes(raw)\n\
+        \ result['fixture_sha256']=hashlib.sha256(raw).hexdigest()\n target=subprocess.check_output(['rustc','--print','host-tuple'],text=True).strip();assert\
+        \ target==os.environ['NATIVE_TARGET'];result['target']=target\n result['compiler']=subprocess.check_output(['rustc','-vV'],text=True)\n\
+        \ args=['cargo','test','--target',target,'--target-dir',str(pathlib.Path(os.environ['RUNNER_TEMP'])/'close-pair-target'),'--locked','-p','se','--test','http_close_independent']\n\
+        \ rc,text=run('build',args+['--no-run']);assert rc==0\n rc,text=run('public-close',args+['public_early_refusal_survives_split_body_twenty_times','--','--exact','--nocapture','--test-threads=1'])\n\
+        \ lines=re.findall(r'^PUBLIC_CLOSE iteration=(\\d+) (.*)$',text,re.M);assert\
+        \ len(lines)==20 and [int(i) for i,_ in lines]==list(range(1,21))\n result['cases']=[{'iteration':int(i),'observation':s,'passed':s.startswith('early-status=400\
+        \ complete-body=true')} for i,s in lines]\n passed=sum(x['passed'] for x in\
+        \ result['cases']);result['passed']=passed;result['failed']=20-passed\n assert\
+        \ f'PUBLIC_CLOSE summary attempted=20 passed={passed} failed={20-passed} outside-host-exit=true'\
+        \ in text\n err=(root/'public-close.stderr').read_text(encoding='utf-8',errors='strict');assert\
+        \ 'retaining exact runtime fixture host' not in err and 'retaining failed\
+        \ runtime fixture' not in err\n if side=='base':\n  assert rc==101 and passed==0\
+        \ and re.search(r'test result: FAILED\\. 0 passed; 1 failed;',text)\n  for\
+        \ c in result['cases']:assert any(k in c['observation'] for k in ['ConnectionReset','BrokenPipe','ConnectionAborted']),c\n\
+        \ else:\n  assert side=='head' and rc==0 and passed==20 and re.search(r'test\
+        \ result: ok\\. 1 passed; 0 failed;',text)\n assert not subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],text=True).strip()\n\
+        \ result['paired_expectation_qualified']=True;save()\nexcept Exception as\
+        \ error:\n result['error']=repr(error);raise\nfinally:\n save();manifest={str(f.relative_to(root)):{'sha256':hashlib.sha256(f.read_bytes()).hexdigest(),'bytes':f.stat().st_size}\
+        \ for f in root.rglob('*') if f.is_file() and f.name!='manifest.json'}\n (root/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\\\
+        n',encoding='utf-8')\n"
+    - name: Retain all native outcomes
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: public-close-pair-r1-${{ matrix.os }}-${{ matrix.side }}
+        path: ${{ runner.temp }}/public-close-pair-r1
+        if-no-files-found: error
+        retention-days: 14
