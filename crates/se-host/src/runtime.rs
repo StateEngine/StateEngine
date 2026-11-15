@@ -128,3 +128,6 @@ pub use atlas_owner::NativeAtlasQualification;
 
 #[cfg(feature = "listener")]
 mod local_client;
+
+#[cfg(all(test, feature = "listener", any(target_os = "linux", windows)))]
+mod review_checkpoint_tests;
