@@ -1,0 +1,54 @@
+name: Independent cold macOS source build and release image
+'on':
+  push:
+    branches:
+    - prime/cold-macos-340-review-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  review:
+    runs-on: macos-15
+    timeout-minutes: 100
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 7b23fb01a7e16362c6d6b024e5c1801a32bda8c6
+        path: base
+        persist-credentials: false
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: a9e8991598b0062972ffdf895999820decb28738
+        path: head
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Read pinned compiler
+      id: compiler
+      shell: python
+      run: |
+        import os,tomllib
+        from pathlib import Path
+        channel=tomllib.loads(Path('head/rust-toolchain.toml').read_text())['toolchain']['channel']
+        with open(os.environ['GITHUB_OUTPUT'],'a') as f:print('channel='+channel,file=f)
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: ${{ steps.compiler.outputs.channel }}
+        components: rust-docs, llvm-tools-preview
+    - name: Run independently owned cold build controls
+      shell: python
+      run: |
+        from pathlib import Path
+        import subprocess,sys
+        source='"""Independent cold-build and shipped-image controls; native macOS only."""\nfrom pathlib import Path\nimport hashlib,json,os,platform,re,shutil,struct,subprocess,sys,time,tomllib,traceback\nROOT=Path.cwd();RESULTS=ROOT/\'review-results\';RESULTS.mkdir()\nBASE=\'7b23fb01a7e16362c6d6b024e5c1801a32bda8c6\';HEAD=\'a9e8991598b0062972ffdf895999820decb28738\'\nSCRATCH=Path(os.environ[\'RUNNER_TEMP\'])/\'cold-build-340\';SCRATCH.mkdir();CARGO=SCRATCH/\'cargo-home\';CARGO.mkdir()\nallow={\'PATH\',\'HOME\',\'USER\',\'LOGNAME\',\'SHELL\',\'TMPDIR\',\'TMP\',\'TEMP\',\'LANG\',\'LC_ALL\',\'RUSTUP_HOME\',\'SYSTEMROOT\',\'WINDIR\'}\nENV={k:v for k,v in os.environ.items() if k in allow};ENV.update(CARGO_HOME=str(CARGO),RUSTUP_HOME=os.environ.get(\'RUSTUP_HOME\',str(Path.home()/\'.rustup\')),CARGO_INCREMENTAL=\'0\',RUSTUP_AUTO_INSTALL=\'0\',LANG=\'C.UTF-8\')\nchannel=tomllib.loads((ROOT/\'head/rust-toolchain.toml\').read_text())[\'toolchain\'][\'channel\']\ncompiler=subprocess.check_output([\'rustc\',\'+\'+channel,\'-vV\'],cwd=ROOT/\'head\',env=ENV,text=True);target=re.search(r\'^host: (.+)$\',compiler,re.M).group(1)\nassert platform.system()==\'Darwin\' and target.endswith(\'apple-darwin\')\nreport={\'base\':BASE,\'head\':HEAD,\'compiler\':compiler,\'native_target\':target,\'platform\':platform.platform(),\'judge_sha256\':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),\'phases\':[],\'limits\':[\'Native cold source-build and release-image qualification only; no installation or provider-session claim.\',\'Cargo registry downloads may be shared; every compiled target directory starts empty and no dependency seed is restored.\',\'Dependency seed archives are not uploaded; their actual generated key sidecars are retained.\']}\ndef save():(RESULTS/\'report.json\').write_text(json.dumps(report,indent=2)+\'\\n\')\ndef sha(p):\n with p.open(\'rb\') as stream:return hashlib.file_digest(stream,\'sha256\').hexdigest()\ndef git(source,*args):return subprocess.check_output([\'git\',\'-C\',str(source),*args],env=ENV,text=True).strip()\ndef invoke(arm,label,args,target_dir,source):\n evidence=RESULTS/(arm+\'-\'+label);evidence.mkdir();target_dir.mkdir();assert list(target_dir.iterdir())==[]\n row={\'arm\':arm,\'phase\':label,\'source_commit\':git(source,\'rev-parse\',\'HEAD\'),\'argv\':[str(x) for x in args],\'target_dir\':str(target_dir),\'initial_target_entries\':[],\'restore_seed\':False,\'stdout\':(evidence/\'stdout.log\').relative_to(RESULTS).as_posix(),\'stderr\':(evidence/\'stderr.log\').relative_to(RESULTS).as_posix()};report[\'phases\'].append(row);save()\n start=time.monotonic()\n try:\n  with (evidence/\'stdout.log\').open(\'wb\') as stdout,(evidence/\'stderr.log\').open(\'wb\') as stderr:\n   completed=subprocess.run(args,cwd=source,env={**ENV,\'CARGO_TARGET_DIR\':str(target_dir)},stdout=stdout,stderr=stderr,timeout=2100)\n  row[\'exit\']=completed.returncode\n except subprocess.TimeoutExpired:\n  row[\'exit\']=None;row[\'failure\']=\'build timed out; not graded\'\n row[\'elapsed_seconds\']=time.monotonic()-start;row[\'target_dir_nonempty_after\']=bool(list(target_dir.iterdir()));save();return row,evidence\n\ndef macho(path):\n with path.open(\'rb\') as stream:\n  header=stream.read(32);assert len(header)==32 and header[:4]==b\'\\xcf\\xfa\\xed\\xfe\',\'Expected a thin 64-bit little-endian Mach-O image\'\n  cpu,_,filetype,ncmds,sizeofcmds=struct.unpack_from(\'<IIIII\',header,4);assert filetype==2 and cpu in [0x01000007,0x0100000C]\n  assert sizeofcmds<=1024*1024\n  data=header+stream.read(sizeofcmds)\n start=32;end=start+sizeofcmds;assert end==len(data) and end<=path.stat().st_size and ncmds<=sizeofcmds//8;offset=start;commands=[]\n for _ in range(ncmds):\n  command,size=struct.unpack_from(\'<II\',data,offset);assert size>=8 and offset+size<=end;commands.append(command);offset+=size\n assert offset==end\n return {\'bytes\':path.stat().st_size,\'sha256\':sha(path),\'cpu\':cpu,\'filetype\':filetype,\'load_commands\':commands,\'lc_uuid_present\':0x1B in commands}\n\ntry:\n pins={\'base\':BASE,\'head\':HEAD}\n for arm,pin in pins.items():\n  source=ROOT/arm;assert git(source,\'rev-parse\',\'HEAD\')==pin and not git(source,\'status\',\'--porcelain\',\'--untracked-files=all\')\n  (RESULTS/(arm+\'-cargo-config.toml\')).write_bytes((source/\'.cargo/config.toml\').read_bytes())\n # Expected negative control first; its failure must not skip the candidate.\n for arm,pin in pins.items():\n  source=ROOT/arm;row,evidence=invoke(arm,\'plain\',[\'cargo\',\'build\',\'-p\',\'se\',\'--locked\'],SCRATCH/(arm+\'-plain-target\'),source)\n  text=(evidence/\'stderr.log\').read_text(errors=\'replace\');row[\'e0463\']=\'error[E0463]\' in text;row[\'passed\']=(row[\'exit\'] not in [None,0] and row[\'e0463\']) if arm==\'base\' else row[\'exit\']==0\n  row[\'command_has_explicit_target\']=\'--target\' in row[\'argv\'];assert not row[\'command_has_explicit_target\'];save()\n # The real source release entry always supplies the native target itself.\n for arm,pin in pins.items():\n  source=ROOT/arm;output=SCRATCH/(arm+\'-release-output\');seed=SCRATCH/(arm+\'-dependencies.tar.gz\')\n  args=[sys.executable,\'-B\',\'scripts/release/build.py\',\'--target\',target,\'--out\',str(output),\'--target-dir\',str(SCRATCH/(arm+\'-release-target\')),\'--seed-out\',str(seed)]\n  row,evidence=invoke(arm,\'release\',args,SCRATCH/(arm+\'-release-target\'),source)\n  if row[\'exit\']==0:\n   manifest=json.loads((output/\'build.json\').read_text());assert manifest[\'source_commit\']==pin and manifest[\'target\']==target and manifest[\'profile\']==\'distribution\' and manifest[\'fresh_target\'] is True\n   assert manifest[\'target_freshness\'][\'workspace\']==manifest[\'target_freshness\'][\'dependencies\']==\'fresh\'\n   sidecar=Path(str(seed)+\'.key.json\');key=json.loads(sidecar.read_text());assert key[\'schema\']==\'se.release-build-seed/v1\' and key[\'key\'][\'target\']==target and key[\'key\'][\'profile\']==\'distribution\'\n   assert key[\'archive_sha256\']==sha(seed)\n   assert key[\'key\'][\'rustflags\']==manifest[\'rustflags\']\n   shutil.copyfile(output/\'se\',evidence/\'se\');shutil.copyfile(output/\'build.json\',evidence/\'build.json\');shutil.copyfile(sidecar,evidence/\'seed-key.json\')\n   image=macho(evidence/\'se\');assert manifest[\'files\'][\'se\']==image[\'sha256\'];assert not image[\'lc_uuid_present\']\n   row.update(macho=image,rustflags=manifest[\'rustflags\'],seed_key_rustflags=key[\'key\'][\'rustflags\'],seed_key_sha256=hashlib.sha256(json.dumps(key[\'key\'],sort_keys=True).encode()).hexdigest(),explicit_target=target,passed=True)\n   # The optional seed was a real output, not a restored build input.\n   seed.unlink()\n  else:row[\'passed\']=False\n  save()\n phases={(p[\'arm\'],p[\'phase\']):p for p in report[\'phases\']};base=phases[(\'base\',\'release\')];head=phases[(\'head\',\'release\')]\n if base.get(\'passed\') and head.get(\'passed\'):\n  expected=[\'-C\',\'link-arg=-Wl,-no_uuid\'];assert base[\'rustflags\']==head[\'rustflags\']==expected;assert base[\'seed_key_rustflags\']==head[\'seed_key_rustflags\']==expected\n  report[\'release_properties\']={\'uuid_suppression_preserved\':True,\'same_seed_key_flags\':True,\'flags\':expected,\'full_seed_keys_equal\':base[\'seed_key_sha256\']==head[\'seed_key_sha256\'],\'release_image_hashes_equal\':base[\'macho\'][\'sha256\']==head[\'macho\'][\'sha256\']}\n report[\'passed\']=len(phases)==4 and all(p.get(\'passed\') is True for p in phases.values()) and bool(report.get(\'release_properties\'))\n save()\nexcept BaseException as error:\n report[\'failure\']={\'type\':type(error).__name__,\'detail\':str(error),\'traceback\':traceback.format_exc()};report[\'passed\']=False;save()\nfinally:\n files=[]\n for p in RESULTS.rglob(\'*\'):\n  if p.is_file() and p.name!=\'manifest.json\':files.append({\'file\':p.relative_to(RESULTS).as_posix(),\'bytes\':p.stat().st_size,\'sha256\':sha(p)})\n (RESULTS/\'manifest.json\').write_text(json.dumps(files,indent=2)+\'\\n\')\nprint(json.dumps({\'passed\':report.get(\'passed\'),\'phases\':[{k:v for k,v in p.items() if k in [\'arm\',\'phase\',\'exit\',\'e0463\',\'passed\',\'elapsed_seconds\']} for p in report[\'phases\']],\'release_properties\':report.get(\'release_properties\'),\'failure\':report.get(\'failure\')},indent=2))\nraise SystemExit(0 if report.get(\'passed\') else 1)\n'
+        p=Path("independent-judge.py");p.write_bytes(source.encode("utf-8"))
+        subprocess.run([sys.executable,str(p)],check=True)
+    - name: Retain raw controls and native images
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: cold-macos-340-review-r1
+        path: review-results
+        if-no-files-found: error
+        retention-days: 7
