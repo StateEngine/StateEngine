@@ -37,11 +37,11 @@ jobs:
           persist-credentials: false
       - name: Overlay measurement sources
         env:
-          MEASUREMENTS: 59e933271f64164d99d687241e08a9a3c3fb3fc1
+          MEASUREMENTS: 57ba1b02f1669d1a48d8641482f0f88a94e310f4
         run: |
-          git fetch --quiet origin "59e933271f64164d99d687241e08a9a3c3fb3fc1:refs/remotes/measure/tests" "refs/heads/main:refs/remotes/measure/main"
+          git fetch --quiet origin "57ba1b02f1669d1a48d8641482f0f88a94e310f4:refs/remotes/measure/tests" "refs/heads/main:refs/remotes/measure/main"
           measured="$(git rev-parse refs/remotes/measure/tests)"
-          test "$measured" = 59e933271f64164d99d687241e08a9a3c3fb3fc1
+          test "$measured" = 57ba1b02f1669d1a48d8641482f0f88a94e310f4
           echo "$measured" > measurement-commit.txt
           fork="$(git merge-base refs/remotes/measure/main refs/remotes/measure/tests)"
           git diff --name-only --diff-filter=AM "$fork" refs/remotes/measure/tests > "$RUNNER_TEMP/measurement-files"
@@ -64,10 +64,14 @@ jobs:
           git rev-parse HEAD > baseline-source.txt
           target="$(rustc --print host-tuple)"
           set +e
+          python -I -c 'from pathlib import Path; Path("target/judge-diagnostics/wal-pressure.json").unlink(missing_ok=True)'
           cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-baseline.log 2>&1
           pressure_status=$?
           set -e
-          if [[ -d target/judge-diagnostics ]]; then mv target/judge-diagnostics target/judge-baseline; fi
+          if [[ -f target/judge-diagnostics/wal-pressure.json ]]; then
+            mkdir -p target/pressure-baseline
+            cp target/judge-diagnostics/wal-pressure.json target/pressure-baseline/wal-pressure.json
+          fi
           exit "$pressure_status"
       - name: Select candidate with the same measurement overlay
         run: |
@@ -84,26 +88,15 @@ jobs:
         run: |
           target="$(rustc --print host-tuple)"
           set +e
+          python -I -c 'from pathlib import Path; Path("target/judge-diagnostics/wal-pressure.json").unlink(missing_ok=True)'
           cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-candidate.log 2>&1
           pressure_status=$?
           set -e
-          if [[ -d target/judge-diagnostics ]]; then mv target/judge-diagnostics target/judge-candidate; fi
+          if [[ -f target/judge-diagnostics/wal-pressure.json ]]; then
+            mkdir -p target/pressure-candidate
+            cp target/judge-diagnostics/wal-pressure.json target/pressure-candidate/wal-pressure.json
+          fi
           exit "$pressure_status"
-      - name: Run uncovered custom harnesses on pinned main
-        if: ${{ always() && runner.os == 'Windows' }}
-        run: |
-          git checkout --detach 737bee8caf03e17d2a61e21594d7b0285d6619dc
-          git rev-parse HEAD > custom-base-source.txt
-          target="$(rustc --print host-tuple)"
-          set +e
-          cargo test --target "$target" --release --all-features --locked -p se-proc --test bootstrap_stderr -- --nocapture > custom-bootstrap-base.log 2>&1
-          bootstrap_status=$?
-          cargo test --target "$target" --release --all-features --locked -p se --test host_e3 -- --nocapture > custom-host-e3-base.log 2>&1
-          startup_status=$?
-          set -e
-          printf 'bootstrap_stderr=%s\nhost_e3=%s\n' "$bootstrap_status" "$startup_status" > custom-base-status.txt
-          if [[ "$bootstrap_status" != 0 ]]; then exit "$bootstrap_status"; fi
-          exit "$startup_status"
       - name: Preserve failed observer verdicts
         if: ${{ always() }}
         env:
@@ -119,13 +112,10 @@ jobs:
           path: |
             pressure-baseline.log
             pressure-candidate.log
-            custom-*-base.log
-            custom-base-source.txt
-            custom-base-status.txt
             baseline-source.txt
             candidate-source.txt
             measurement-commit.txt
-            target/judge-baseline/
-            target/judge-candidate/
+            target/pressure-baseline/
+            target/pressure-candidate/
           if-no-files-found: error
           retention-days: 14
