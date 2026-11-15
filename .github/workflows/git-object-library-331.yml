@@ -1,0 +1,147 @@
+name: Git object library design measurements
+on: [push, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: b1d82b307791b95d2c8332852555490041ca1b5a
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Read pinned compiler
+        id: compiler
+        shell: python
+        run: |
+          import os,tomllib
+          from pathlib import Path
+          channel=tomllib.loads(Path('rust-toolchain.toml').read_text())['toolchain']['channel']
+          with open(os.environ['GITHUB_OUTPUT'],'a') as output: print('channel='+channel,file=output)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ steps.compiler.outputs.channel }}
+      - name: Measure external library with no product changes
+        shell: python
+        run: |
+          SOURCE='b1d82b307791b95d2c8332852555490041ca1b5a'
+          MANIFEST='[package]\nname = "git-object-measurement"\nversion = "0.0.0"\nedition = "2024"\npublish = false\n\n[features]\nobjects = ["dep:gix"]\n\n[dependencies]\ngix = { version = "=0.90.0", default-features = false, features = ["sha1", "sha256"], optional = true }\nlibc = "=0.2.191"\nserde_json = "=1.0.154"\n\n[profile.distribution]\ninherits = "release"\nopt-level = "s"\nlto = "fat"\ncodegen-units = 1\nstrip = "symbols"\n'
+          RUST='//! External design measurement, without product integration or admission claims.\nuse std::{error::Error, io::{self, Write}, time::Instant};\ntype Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;\nfn peak_rss() -> Result<u64> {\n    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();\n    // SAFETY: getrusage initializes the valid, aligned out parameter on success.\n    if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {return Err(io::Error::last_os_error().into());}\n    // SAFETY: successful getrusage initialized usage above.\n    let bytes = unsafe { usage.assume_init() }.ru_maxrss as u64;\n    Ok(if cfg!(target_os="macos") {bytes} else {bytes*1024})\n}\nfn pause_opened(open_ns:u128) -> Result<()> {\n    println!("{}", serde_json::json!({"phase":"opened","pid":std::process::id(),"open_ns":open_ns,"peak_rss_bytes":peak_rss()?}));\n    io::stdout().flush()?;\n    let mut line=String::new();if io::stdin().read_line(&mut line)?==0 {return Err("observer disappeared".into());} Ok(())\n}\n#[cfg(feature="objects")]\nmod objects {\n    use super::*;\n    use std::collections::{BTreeMap,BTreeSet};\n    type Item=(bool,String,gix::ObjectId);\n    fn entries(repo:&gix::Repository, id:Option<gix::ObjectId>) -> Result<BTreeMap<Vec<u8>,Item>> {\n        let mut out=BTreeMap::new();\n        if let Some(id)=id {let tree=repo.find_tree(id)?;\n            for entry in tree.iter() {let e=entry?;let name:&[u8]=e.filename().as_ref();\n                out.insert(name.to_vec(),(e.mode().is_tree(),format!("{:o}",e.mode()),e.object_id()));\n                if out.len()>100_000 {return Err("measurement tree entry bound reached".into());}\n            }\n        } Ok(out)\n    }\n    fn diff(repo:&gix::Repository, a:Option<gix::ObjectId>, b:Option<gix::ObjectId>, prefix:&[u8], depth:usize, paths:&mut BTreeSet<Vec<u8>>) -> Result<()> {\n        if a==b {return Ok(());} if depth>64 {return Err("measurement tree depth bound reached".into());}\n        let left=entries(repo,a)?;let right=entries(repo,b)?;\n        for name in left.keys().chain(right.keys()).collect::<BTreeSet<_>>() {\n            let a=left.get(name);let b=right.get(name);if a==b {continue;}\n            let mut path=prefix.to_vec();path.extend(name);\n            let at=a.is_some_and(|e|e.0);let bt=b.is_some_and(|e|e.0);\n            if at || bt {let mut nested=path.clone();nested.push(b\'/\');\n                diff(repo,a.filter(|e|e.0).map(|e|e.2),b.filter(|e|e.0).map(|e|e.2),&nested,depth+1,paths)?;\n            }\n            if a.is_some_and(|e|!e.0) || b.is_some_and(|e|!e.0) {paths.insert(path);}\n            if paths.len()>100_000 {return Err("measurement changed-path bound reached".into());}\n        } Ok(())\n    }\n    pub fn run(args:&[String]) -> Result<()> {\n        let started=Instant::now();\n        let mut repo=gix::open_opts(&args[1],gix::open::Options::isolated())?;\n        repo.object_cache_size(None);\n        pause_opened(started.elapsed().as_nanos())?;\n        let work=Instant::now();let mut id=gix::ObjectId::from_hex(args[2].as_bytes())?;\n        let mut history=Vec::new();\n        for _ in 0..128 {let commit=repo.find_commit(id)?;\n            // Decode commit metadata as well as parent links; no blob reads.\n            let decoded=commit.decode()?;let _=(&decoded.message,&decoded.author);\n            history.push(id.to_string());\n            if let Some(parent)=commit.parent_ids().next() {id=parent.detach();} else {break;}\n        }\n        let history_ns=work.elapsed().as_nanos();let work=Instant::now();\n        let left=repo.find_commit(gix::ObjectId::from_hex(args[3].as_bytes())?)?.tree_id()?.detach();\n        let right=repo.find_commit(gix::ObjectId::from_hex(args[2].as_bytes())?)?.tree_id()?.detach();\n        let mut paths=BTreeSet::new();diff(&repo,Some(left),Some(right),b"",0,&mut paths)?;\n        let diff_ns=work.elapsed().as_nanos();\n        let paths_hex:Vec<String>=paths.iter().map(|p|p.iter().map(|b|format!("{b:02x}")).collect()).collect();\n        println!("{}",serde_json::json!({"phase":"complete","history":history,"paths_hex":paths_hex,"history_ns":history_ns,"tree_diff_ns":diff_ns,"peak_rss_bytes":peak_rss()?})); Ok(())\n    }\n}\nfn main() -> Result<()> {\n    let args:Vec<String>=std::env::args().collect();\n    #[cfg(feature="objects")] {objects::run(&args)?;}\n    #[cfg(not(feature="objects"))] {let _=(&args,Instant::now());pause_opened(0)?;println!("{}",serde_json::json!({"phase":"complete","peak_rss_bytes":peak_rss()?}));}\n    Ok(())\n}\n'
+          import os, sys, json, subprocess, pathlib, time, hashlib, shutil, select, statistics, platform, re
+          repo=pathlib.Path.cwd();root=pathlib.Path(os.environ['RUNNER_TEMP']);out=root/'git-object-measurements';out.mkdir(exist_ok=True)
+          app=root/'git-object-measurement';(app/'src').mkdir(parents=True,exist_ok=True)
+          env=os.environ.copy();env.update(CARGO_TARGET_DIR=str(root/'git-object-target'),CARGO_INCREMENTAL='0')
+          for key in list(env):
+              if key.startswith('GIT_'):env.pop(key)
+          env['GIT_CONFIG_NOSYSTEM']='1';env['GIT_CONFIG_GLOBAL']=os.devnull
+
+          def run(label,argv,cwd=repo,timeout=1200):
+              started=time.monotonic_ns()
+              with (out/(label+'.stdout')).open('wb') as stdout,(out/(label+'.stderr')).open('wb') as stderr:
+                  p=subprocess.run(argv,cwd=cwd,env=env,stdout=stdout,stderr=stderr,timeout=timeout)
+              (out/(label+'.json')).write_text(json.dumps({'argv':list(map(str,argv)),'exit':p.returncode,'elapsed_ns':time.monotonic_ns()-started},indent=2)+'\n')
+              p.check_returncode();return (out/(label+'.stdout')).read_bytes()
+          def git(*args,cwd=repo):return subprocess.check_output(['git',*args],cwd=cwd,env=env)
+          def text(*args):return git(*args).decode().strip()
+          source=text('rev-parse','HEAD');assert source==SOURCE
+          host=subprocess.check_output(['rustc','--print','host-tuple'],text=True).strip()
+          (app/'Cargo.toml').write_text(MANIFEST);(app/'src'/'main.rs').write_text(RUST)
+          run('resolve',['cargo','generate-lockfile'],app)
+          run('baseline-build',['cargo','build','--locked','--profile','distribution','--target',host],app)
+          built=root/'git-object-target'/host/'distribution'/'git-object-measurement';empty=out/'baseline-image';shutil.copy2(built,empty)
+          run('library-build',['cargo','build','--locked','--profile','distribution','--target',host,'--features','objects'],app)
+          library=out/'library-image';shutil.copy2(built,library)
+          metadata=json.loads(run('cargo-metadata',['cargo','metadata','--locked','--format-version','1','--filter-platform',host,'--features','objects'],app))
+          active={n['id']:n for n in metadata['resolve']['nodes']}
+          packages=[{'name':p['name'],'version':p['version'],'license':p['license'],'source':p['source'],'repository':p['repository'],'features':active[p['id']]['features'],'targets':[{k:t.get(k) for k in ['name','kind']} for t in p['targets']]} for p in metadata['packages'] if p['id'] in active and p['source']]
+          (out/'dependency-licenses.json').write_text(json.dumps(packages,indent=2)+'\n')
+          for name in ['Cargo.toml','Cargo.lock']:shutil.copy2(app/name,out/name)
+          shutil.copy2(app/'src'/'main.rs',out/'main.rs')
+          run('pack-repository',['git','repack','-ad'])
+          # This is process-cold only. Clone/build/repack have already touched the OS cache.
+          base=text('rev-parse','HEAD~32');head=source
+          packdir=repo/'.git'/'objects'/'pack'
+          manifest={'source':source,'host':host,'platform':platform.platform(),'compiler':subprocess.check_output(['rustc','-Vv'],text=True),'git':text('--version'),'history_count':int(text('rev-list','--count','HEAD')),'first_parent_count':int(text('rev-list','--first-parent','--count','HEAD')),'tracked_files':len(git('ls-tree','-rz','--name-only','HEAD').split(b'\0'))-1,'packs':[{'name':p.name,'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in sorted(packdir.glob('*')) if p.suffix in ['.pack','.idx']],'object_format':text('rev-parse','--show-object-format'),'diff_base':base,'profile':{'opt-level':'s','lto':'fat','codegen-units':1,'strip':'symbols'},'cold_definition':'fresh process; OS page cache not evicted; opened RSS sampled before object work; Linux native time supervisor prevents Python fork RSS inheritance','images':{p.name:{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in [empty,library]}}
+          (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+
+          class ObservedProcess(subprocess.Popen):
+              # Preserve wait status and the kernel's final per-process RSS high-water mark.
+              def _try_wait(self, wait_flags):
+                  pid,status,usage=os.wait4(self.pid,wait_flags)
+                  if pid:
+                      self.final_peak_rss_bytes=int(usage.ru_maxrss)*(1 if sys.platform=='darwin' else 1024)
+                  return pid,status
+
+          def observe(label,image,directory,head,base):
+              with (out/(label+'.stderr')).open('w') as stderr:
+                  argv=[str(image),str(directory),head,base]
+                  if sys.platform=='linux':argv=['/usr/bin/time','-v','-o',str(out/(label+'.native-time')),*argv]
+                  process=ObservedProcess(argv,env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=stderr,text=True)
+                  ready,_,_=select.select([process.stdout],[],[],60)
+                  if not ready:process.kill();process.wait();raise RuntimeError('opening measurement timed out')
+                  opened=process.stdout.readline(65537)
+                  if not opened or len(opened)>65536:process.kill();process.wait();raise RuntimeError('missing/bounded opened checkpoint')
+                  try:
+                      opened=json.loads(opened);assert opened['phase']=='opened'
+                      rss_text=subprocess.check_output(['ps','-o','rss=','-p',str(opened['pid'])],text=True).strip()
+                      assert rss_text and rss_text.isdigit();rss=int(rss_text)*1024
+                      rest,_=process.communicate(input='\n',timeout=60)
+                  except BaseException:
+                      process.kill();process.wait();raise
+                  if process.returncode:raise RuntimeError(f'{label}: exit {process.returncode}')
+                  completed=json.loads(rest);assert completed['phase']=='complete'
+                  assert hasattr(process,'final_peak_rss_bytes'),'native exit resource observation missing'
+                  native_peak=process.final_peak_rss_bytes
+                  if sys.platform=='linux':
+                      match=re.search(r'Maximum resident set size \(kbytes\):\s*(\d+)',(out/(label+'.native-time')).read_text())
+                      assert match,'native GNU time peak RSS missing'
+                      native_peak=int(match.group(1))*1024
+                  result={'native_exit_peak_rss_bytes':native_peak,'outer_launcher_peak_rss_bytes':process.final_peak_rss_bytes,'opened':opened,'cold_opened_current_rss_bytes':rss,'completed':completed,'exit':process.returncode}
+                  (out/(label+'.json')).write_text(json.dumps(result,indent=2)+'\n');return result
+
+          def expected(directory,head,base):
+              history=git('rev-list','--first-parent','--max-count=128',head,cwd=directory).decode().splitlines()
+              paths=[p.hex() for p in git('diff-tree','-r','--no-commit-id','--no-renames','--name-only','-z',base,head,cwd=directory).split(b'\0') if p]
+              return history,sorted(set(paths))
+          expected_history,expected_paths=expected(repo,head,base)
+          observations=[]
+          for i in range(11):
+              observed=observe(f'library-real-{i:02}',library,repo,head,base)
+              assert observed['completed']['history']==expected_history,'first-parent mismatch'
+              assert observed['completed']['paths_hex']==expected_paths,'tree-diff mismatch'
+              observations.append(observed)
+          empty_observations=[observe(f'baseline-{i:02}',empty,repo,head,base) for i in range(3)]
+          # Compatibility observations only, not independent product acceptance tests.
+          for fmt in ['sha1','sha256']:
+              fixture=root/('fixture-'+fmt);run(fmt+'-init',['git','init','--object-format='+fmt,str(fixture)])
+              for i in range(3):
+                  (fixture/'entry.txt').write_text('line\n'*i+'last\n');run(fmt+f'-add-{i}',['git','add','entry.txt'],fixture)
+                  run(fmt+f'-commit-{i}',['git','-c','user.name=Test','-c','user.email=test@example.invalid','commit','-qm','fixture'],fixture)
+              fhead=git('rev-parse','HEAD',cwd=fixture).decode().strip();fbase=git('rev-parse','HEAD~2',cwd=fixture).decode().strip();eh,ep=expected(fixture,fhead,fbase)
+              for packed in [False,True]:
+                  if packed:run(fmt+'-repack',['git','repack','-ad'],fixture)
+                  observation=observe(fmt+('-packed' if packed else '-loose'),library,fixture,fhead,fbase)
+                  assert observation['completed']['history']==eh and observation['completed']['paths_hex']==ep
+
+          def dist(values):
+              v=sorted(values);return {'first':values[0],'min':v[0],'median':statistics.median(v),'max':v[-1],'n':len(v)}
+          summary={'library_real':{'cold_opened_rss_bytes':dist([v['cold_opened_current_rss_bytes'] for v in observations]),'peak_rss_bytes':dist([v['native_exit_peak_rss_bytes'] for v in observations]),'open_ns':dist([v['opened']['open_ns'] for v in observations]),'history_ns':dist([v['completed']['history_ns'] for v in observations]),'tree_diff_ns':dist([v['completed']['tree_diff_ns'] for v in observations]),'history_commits':len(expected_history),'changed_paths':len(expected_paths),'exact_native_git_comparisons':len(observations)},'baseline':{'cold_opened_rss_bytes':dist([v['cold_opened_current_rss_bytes'] for v in empty_observations]),'peak_rss_bytes':dist([v['native_exit_peak_rss_bytes'] for v in empty_observations])},'release_linked_byte_delta':library.stat().st_size-empty.stat().st_size,'compatibility':'SHA-1 and SHA-256, loose and packed, exact first-parent IDs and tree-diff paths matched native Git; author observations only','limits':'no product integration; no malformed, pathname-replacement or cancellation acceptance; observed RSS is not a resource ceiling; no disk-cold claim'}
+          (out/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+          print(json.dumps(summary,indent=2))
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: git-object-library-${{ matrix.os }}
+          path: ${{ runner.temp }}/git-object-measurements/
+          retention-days: 7
+          if-no-files-found: error
