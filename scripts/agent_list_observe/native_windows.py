@@ -91,10 +91,20 @@ $read = Get-Acl -LiteralPath $env:SE_OBSERVE_STATE_HOME
 @{owner=$read.Owner;protected=$read.AreAccessRulesProtected;sddl=$read.Sddl} | ConvertTo-Json -Compress
 """
     env = dict(environment, SE_OBSERVE_STATE_HOME=str(path))
-    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', code],
-                            env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
-    save(output / 'private-state-home.json', dict(exit=result.returncode,
-         stdout=result.stdout, stderr=result.stderr))
+    started = time.monotonic()
+    try:
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', code],
+                                env=env, capture_output=True, text=True, encoding='utf-8', timeout=120)
+    except subprocess.TimeoutExpired as error:
+        def decoded(value):
+            return value.decode('utf-8', errors='replace') if isinstance(value, bytes) else (value or '')
+        save(output / 'private-state-home.json', dict(exit=None, timed_out=True,
+             seconds=time.monotonic() - started, stdout=decoded(error.stdout), stderr=decoded(error.stderr),
+             stdout_hex=error.stdout.hex() if isinstance(error.stdout, bytes) else None,
+             stderr_hex=error.stderr.hex() if isinstance(error.stderr, bytes) else None))
+        raise
+    save(output / 'private-state-home.json', dict(exit=result.returncode, timed_out=False,
+         seconds=time.monotonic() - started, stdout=result.stdout, stderr=result.stderr))
     require(result.returncode == 0, 'Native private state creation failed: ' + result.stderr)
     native = json.loads(result.stdout)
     require(native['protected'] is True and native['owner'] and native['sddl'],
