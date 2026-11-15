@@ -85,7 +85,9 @@ fn measure_eight_mcp_writers() -> Check {
         settings.limits.sessions = positive(8)?;
         settings.limits.active_connections = positive(64)?;
         settings.limits.preauth_connections = positive(32)?;
-        settings.limits.blocking_jobs = positive(8)?;
+        settings.limits.blocking_jobs = se_config::config_policy::ConfigFile::default()
+            .runtime
+            .resolve_blocking_jobs(std::thread::available_parallelism().ok())?;
         settings.limits.session_notice_ids = positive(128)?;
         settings.limits.aggregate_notice_ids = positive(4096)?;
         let mut host =
