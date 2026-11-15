@@ -1,0 +1,57 @@
+name: Build Linux login-lifetime baseline
+'on':
+  push:
+    branches:
+    - prime/linux-login-baseline-r1
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_BUILD_JOBS: '2'
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 7b23fb01a7e16362c6d6b024e5c1801a32bda8c6
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+    - name: Build unchanged current main CLI
+      shell: python
+      run: 'from pathlib import Path
+
+        import os,subprocess,sys
+
+        p=Path(os.environ[''RUNNER_TEMP''])/''build_baseline.py''
+
+        p.write_text(''"""Build an unmodified current-main Linux CLI for a native SSH diagnostic."""\nimport hashlib\nimport
+        json\nimport os\nfrom pathlib import Path\nimport shutil\nimport subprocess\nimport time\n\nroot = Path(os.environ[\''RUNNER_TEMP\''])
+        / \''linux-login-baseline\''\nroot.mkdir()\nsource = \''7b23fb01a7e16362c6d6b024e5c1801a32bda8c6\''\nassert
+        subprocess.check_output([\''git\'', \''rev-parse\'', \''HEAD\''], text=True).strip() == source\nassert not
+        subprocess.check_output([\''git\'', \''status\'', \''--porcelain\''])\ncommand = [\''cargo\'', \''build\'',
+        \''--locked\'', \''-p\'', \''se\'', \''--bin\'', \''se\'']\nrecord = {\''source\'': source, \''argv\'':
+        command, \''profile\'': \''development, unchanged workspace defaults\'',\n          \''run\'': os.environ[\''GITHUB_RUN_ID\''],
+        \''publication\'': os.environ[\''GITHUB_SHA\''],\n          \''compiler\'': subprocess.check_output([\''rustc\'',
+        \''-vV\''], text=True)}\nstarted = time.monotonic_ns()\ntry:\n    with (root / \''build.log\'').open(\''wb\'')
+        as log:\n        result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=2400)\n    record.update(exit=result.returncode,
+        elapsed_ns=time.monotonic_ns() - started)\n    assert result.returncode == 0\n    shutil.copyfile(\''target/debug/se\'',
+        root / \''se\'')\n    record.update(image_sha256=hashlib.sha256((root / \''se\'').read_bytes()).hexdigest(),\n                  image_bytes=(root
+        / \''se\'').stat().st_size)\n    shutil.copyfile(__file__, root / \''build_baseline.py\'')\nfinally:\n    (root
+        / \''build.json\'').write_text(json.dumps(record, indent=2) + \''\\n\'')\n    hashes = {str(p.relative_to(root)):
+        hashlib.sha256(p.read_bytes()).hexdigest()\n              for p in root.rglob(\''*\'') if p.is_file()}\n    (root
+        / \''sha256sums.json\'').write_text(json.dumps(hashes, indent=2) + \''\\n\'')\n'',encoding=''utf-8'',newline='''')
+
+        subprocess.run([sys.executable,''-B'',str(p)],check=True)
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: linux-login-baseline
+        path: ${{ runner.temp }}/linux-login-baseline
+        if-no-files-found: error
+        retention-days: 14
