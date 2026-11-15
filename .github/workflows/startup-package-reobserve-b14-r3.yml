@@ -1,0 +1,100 @@
+name: Repeat exact native macOS startup packages
+on:
+  push:
+    branches: [prime/startup-package-reobserve-b14-r3]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: startup-package-reobserve-b14-r3-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      MEASURE_TARGET: aarch64-apple-darwin
+      STARTUP_PUBLIC_READY: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 65a3b059a7b8ba752b386e63d16f045564e1c1ad
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.12'}
+      - name: Verify observer and fetch byte-authenticated retained archives
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import ast, hashlib, json, os, pathlib, platform, subprocess, zipfile
+          assert platform.machine() == 'arm64', 'Native arm64 macOS runner required'
+          actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert actual == '65a3b059a7b8ba752b386e63d16f045564e1c1ad'
+          assert not subprocess.check_output(['git', 'status', '--porcelain'], text=True).strip()
+          for directory in ('scripts/startup_package', 'scripts/harness_matrix'):
+              for path in pathlib.Path(directory).glob('*.py'):
+                  ast.parse(path.read_text())
+          temp = pathlib.Path(os.environ['RUNNER_TEMP'])
+          prior = temp / 'startup-prior'
+          prior.mkdir()
+          archive = prior / 'api.zip'
+          metadata = json.loads(subprocess.check_output(['gh', 'api', 'repos/StateEngine/StateEngine/actions/artifacts/14181932172'], text=True))
+          expected = 'sha256:5c87c610dcc54d260b7dc92b9c71d42bac728f4563a331c4e9361b6504c08e08'
+          assert metadata['digest'] == expected and metadata['workflow_run']['id'] == 43761618128
+          with archive.open('xb') as output:
+              subprocess.run(['gh', 'api', 'repos/StateEngine/StateEngine/actions/artifacts/14181932172/zip'], stdout=output, check=True, timeout=300)
+          with archive.open('rb') as stream:
+              assert 'sha256:' + hashlib.file_digest(stream, 'sha256').hexdigest() == expected
+          selected = []
+          with zipfile.ZipFile(archive) as package:
+              members = package.infolist()
+              assert len(members) <= 10000
+              for member in members:
+                  path = pathlib.PurePosixPath(member.filename)
+                  assert not path.is_absolute() and '..' not in path.parts
+                  if len(path.parts) < 2 or path.parts[0] not in ('base', 'head'):
+                      continue
+                  if path.parts[1] == 'build.json' or path.parts[1] == 'archive':
+                      assert not member.is_dir() and member.file_size < 128 * 1024**2
+                      destination = prior / member.filename
+                      destination.parent.mkdir(parents=True, exist_ok=True)
+                      destination.write_bytes(package.read(member))
+                      selected.append(dict(path=member.filename, bytes=member.file_size, sha256=hashlib.sha256(destination.read_bytes()).hexdigest()))
+          assert len(selected) == 4
+          proof = dict(prior_run=43761618128, api_zip_sha256=expected, selected=selected,
+              observer=actual, platform=platform.platform(), machine=platform.machine(),
+              fixture_files={p.as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for directory in ('scripts/startup_package', 'scripts/harness_matrix') for p in pathlib.Path(directory).glob('*.py')})
+          (prior / 'reuse-provenance.json').write_text(json.dumps(proof, indent=2) + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'MEASURE_ROOT={temp / "startup-reobserve"}\n')
+              output.write(f'PRIOR_ROOT={prior}\n')
+              output.write(f'EVIDENCE_ROOT={temp / "startup-reobserve-evidence"}\n')
+      - name: Observe one hundred alternating fresh and restart starts per arm
+        shell: python
+        run: |
+          import os, pathlib, shutil, subprocess, sys
+          root = pathlib.Path(os.environ['MEASURE_ROOT'])
+          try:
+              subprocess.run([sys.executable, '-B', 'scripts/startup_package/reobserve.py', str(root), os.environ['PRIOR_ROOT']], check=True, timeout=3600)
+          finally:
+              if root.exists():
+                  shutil.copyfile(pathlib.Path(os.environ['PRIOR_ROOT']) / 'reuse-provenance.json', root / 'reuse-provenance.json')
+      - name: Collect complete raw observations and archive identities
+        if: ${{ always() }}
+        shell: python
+        run: |
+          import hashlib, json, os, pathlib, subprocess, sys
+          root = pathlib.Path(os.environ['MEASURE_ROOT'])
+          export = pathlib.Path(os.environ['EVIDENCE_ROOT'])
+          subprocess.run([sys.executable, '-B', 'scripts/startup_package/collect.py', str(root), str(export)], check=True)
+          files = {p.relative_to(export).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in export.rglob('*') if p.is_file()}
+          (export / 'complete-manifest.json').write_text(json.dumps(dict(files=files), indent=2) + '\n')
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: startup-package-reobserve-b14-r3
+          path: ${{ runner.temp }}/startup-reobserve-evidence
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
