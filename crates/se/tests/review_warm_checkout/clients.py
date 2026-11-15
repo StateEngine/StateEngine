@@ -33,7 +33,7 @@ class Rpc:
         self.errors = bytearray()
         self.error_bytes = 0
         env = {k: v for k, v in os.environ.items()
-               if not k.startswith(("SE_", "STATEENGINE_", "SECODE_"))
+               if not k.startswith(("SE_", "STATEENGINE_", "SECODE_", "OPENAI_", "ANTHROPIC_", "GH_", "GITHUB_"))
                and k not in ("CLAUDECODE", "CODEX_THREAD_ID", "CODEX_CI")}
         started = time.perf_counter_ns()
         self.expected_command = [binary, "--home", home, "mcp", "--stdio"]
@@ -146,6 +146,8 @@ class Rpc:
             pass
         try:
             self.process.wait(timeout=5)
+            if self.process.returncode != 0:
+                raise RuntimeError("owned MCP bridge returned a failed exit")
         except subprocess.TimeoutExpired:
             # This Popen is unreaped and owned here; its PID cannot have been reused.
             from terminate_owned import terminate
@@ -232,6 +234,7 @@ def run_client(binary, home, client, samples, barrier, report, minimum_phase_sec
                 if replay[field] != original[field]:
                     raise ValueError(f"{kind} replay changed original {field}")
             # current_revision may truthfully report the later working-state head.
+        report["replay_verified"] = 2
     except Exception as error:
         report["error"] = str(error)
         if barrier:
@@ -240,6 +243,7 @@ def run_client(binary, home, client, samples, barrier, report, minimum_phase_sec
         if rpc:
             try:
                 rpc.close()
+                report["bridge_exit"] = rpc.process.returncode
             except Exception as error:
                 report["cleanup_error"] = str(error)
             report["stderr"] = bytes(rpc.errors).decode(errors="replace")
