@@ -4,6 +4,7 @@ mod acl;
 mod ancestors;
 #[cfg(target_os = "macos")]
 mod created_acl;
+use ancestors::open_component;
 #[cfg(target_os = "macos")]
 pub(super) use created_acl::clear as clear_created_acl;
 #[path = "effects/unix.rs"]
@@ -151,21 +152,12 @@ fn walk_with_private_root(
         if symlink && (private || (link.st_uid != 0 && link.st_uid != user)) {
             return Err(unsafe_path("untrusted or private-directory symlink", path));
         }
-        // SAFETY: held parent and one component; only an inspected trusted system
-        // ancestor may be followed. Final and newly owned components never are.
-        let next = owned(
-            unsafe {
-                libc::openat(
-                    parent.as_raw_fd(),
-                    component.as_ptr(),
-                    libc::O_RDONLY
-                        | libc::O_DIRECTORY
-                        | libc::O_CLOEXEC
-                        | if symlink { 0 } else { libc::O_NOFOLLOW },
-                )
-            },
-            "open native directory",
+        let next = open_component(
+            parent.as_raw_fd(),
+            &component,
+            symlink,
             path,
+            index + 1 == parts.len(),
         )?;
         if created {
             // mkdirat's mode is already owner-only. Do not broaden a later
