@@ -43,6 +43,10 @@ class ProbeContext:
     def __init__(self, platform):
         self.platform = platform
 
+    def __repr__(self):
+        # Never let a context print its way into a report or a diagnostic.
+        return f"ProbeContext({self.platform!r})"
+
     def applies(self, budget):
         """Whether this context's rows may feed `budget` at all."""
         if budget not in PLATFORM_BUDGETS:
@@ -270,6 +274,12 @@ def first_hour_probe_result(budget, row, limits, context=None):
 
 
 def invocation(inv, directory, run=None):
+    """Summarize one invocation.
+
+    The returned entry is emitted verbatim into report.json, so it may only hold
+    JSON values. The applicability context is deliberately *not* stored on it;
+    `invocation_context()` rebuilds it from the same verified receipt platform.
+    """
     mode, expected = SELECTIONS.get(inv.get("selection"), ("unsupported", set(range(1, 6))))
     entry = {**inv, "mode": mode, "expected": sorted(expected), "results": [],
              "receipt_complete": False, "journeys": {}, "outcome": "UNKNOWN", "problems": [],
@@ -357,10 +367,7 @@ def invocation(inv, directory, run=None):
                 budget_error = "required first-hour probe is missing a passing measurement"
                 entry["problems"].append(budget_error)
     entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification, behavior_only=behavior_only,
-                 receipt_complete=budget_error is None and cleanup_known and qualified,
-                 # The one value this invocation's rows are judged against; kept
-                 # so summarize() never reconstructs a second one.
-                 context=context)
+                 receipt_complete=budget_error is None and cleanup_known and qualified)
     code = inv.get("exit")
     # Judge exit 1 includes budget misses. Journey verdicts depend only on
     # witnessed behavior and their own cleanup, with receipt identity intact.
@@ -382,6 +389,16 @@ def invocation(inv, directory, run=None):
     else:
         entry["outcome"] = "PASS"
     return entry
+
+
+def invocation_context(entry):
+    """The applicability context for one summarized invocation.
+
+    Derived from the platform `invocation()` already verified against the receipt.
+    It is a judgement input, never a report value: keeping it out of the entry is
+    what lets the entry be JSON-serialized unchanged.
+    """
+    return ProbeContext(entry.get("platform"))
 
 
 def summarize(run, directory):
@@ -441,7 +458,7 @@ def summarize(run, directory):
                 if not isinstance(row, dict) or row.get("label") not in labels:
                     continue
                 numeric = budget_numbers(budget, row)
-                slot_context = entry["context"]
+                slot_context = invocation_context(entry)
                 slots[budget].append({"output": entry["output"], "surface": entry["surface"],
                     "platform": entry.get("platform"), "context": slot_context,
                     "label": row["label"], "numbers": numeric,
@@ -454,8 +471,8 @@ def summarize(run, directory):
     # A budget that no invocation could answer in this run is a named gap only
     # when some invocation was eligible to answer it. Asking for a Windows number
     # from a Linux-only run would be a gap the run could never close.
-    eligible = {key: any(entry["context"].applies(key) for entry in entries
-                         if entry.get("context") is not None and entry.get("receipt_complete"))
+    eligible = {key: any(invocation_context(entry).applies(key) for entry in entries
+                         if entry.get("receipt_complete"))
                 for key in LABELS}
     gaps = [f"{key}: {label}" for key, labels in LABELS.items() for label in labels
             if eligible[key]
