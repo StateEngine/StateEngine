@@ -170,12 +170,15 @@ jobs:
         == 0, {\''failed_public_consumer\'': label, \''exit\'': row[\''exit\'']}\n            else:\n                assert
         row[\''exit\''] != 0, \''Disconnected remote call unexpectedly succeeded\''\n            if observe:\n                assert
         row[\''destination_host_before_source_exit\''] is not None, \''No destination host birth was observed before the original
-        SSH consumer exited\''\n            if structured:\n                value = json.loads((reports / (label + \''.stdout\'')).read_text())\n                assert
-        (value.get(\''schema\'') != \''se.error/v1\'') == require_success, {\''unexpected_envelope\'': label, \''value\'':
-        value}\n                if not require_success:\n                    assert value.get(\''code\'') and value.get(\''exit\'')
-        == row[\''exit\'']\n                    assert value.get(\''remedy\''), \''A structured refusal must carry its remedy\''\n                return
-        value\n            return row\n\n        for role in (\''source\'', \''destination\''):\n            for name, argv
-        in [(\''help\'', [\''--help\'']), (\''remote-add-help\'', [\''remote\'', \''add\'', \''--help\'']),\n                               (\''remote-list-help\'',
+        SSH consumer exited\''\n            if structured:\n                channel = \''stdout\'' if require_success else
+        \''stderr\''\n                row[\''response_channel\''] = channel\n                value = json.loads((reports /
+        (label + \''.\'' + channel)).read_text())\n                assert (value.get(\''schema\'') != \''se.error/v1\'') ==
+        require_success, {\''unexpected_envelope\'': label, \''value\'': value}\n                if not require_success:\n                    assert
+        value.get(\''code\'') == \''capability-invalid\'' and value.get(\''exit\'') == row[\''exit\'']\n                    assert
+        \''disconnected\'' in value[\''detail\''][\''reason\'']\n                    assert not (reports / (label + \''.stdout\'')).read_text().strip()\n                    assert
+        value.get(\''remedy\''), \''A structured refusal must carry its remedy\''\n                return value\n            return
+        row\n\n        for role in (\''source\'', \''destination\''):\n            for name, argv in [(\''help\'', [\''--help\'']),
+        (\''remote-add-help\'', [\''remote\'', \''add\'', \''--help\'']),\n                               (\''remote-list-help\'',
         [\''remote\'', \''list\'', \''--help\'']),\n                               (\''remote-disconnect-help\'', [\''remote\'',
         \''disconnect\'', \''--help\'']),\n                               (\''init-help\'', [\''init\'', \''--help\'']), (\''down-help\'',
         [\''down\'', \''--help\''])]:\n                command(role, role + \''-\'' + name, argv, structured=False)\n        work
