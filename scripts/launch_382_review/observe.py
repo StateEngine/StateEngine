@@ -3,6 +3,7 @@ import hashlib,json,os,shutil,subprocess,sys
 from pathlib import Path
 from public_failure import run as public_failure
 SOURCE=Path(__file__).resolve().parents[2]
+OBSERVER=Path(os.environ['SE382_OBSERVER']).resolve()
 BASE='bda8e1e7a2c7905cb9b8537c35aad29e9242cb99'
 HEAD='6fa72f37928db40c98de8238d9a39d92d2b21d66'
 CASES={
@@ -23,11 +24,12 @@ def command(args,cwd,env,log,timeout=2400):
     return result.returncode
 native=subprocess.check_output(['rustc','--print','host-tuple'],text=True).strip()
 assert native=='aarch64-apple-darwin'
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=OBSERVER,text=True).strip()=='844fac50c7aae28f8a40afb7ef2be3cb2fc2d331'
 library=root/'boundary.dylib';outside=root/'outside'
 subprocess.run(['/usr/bin/cc','-std=c11','-dynamiclib','-Wall','-Wextra','-Werror',str(SOURCE/'crates/se-proc/tests/support/launch_382_review/interpose.c'),'-o',str(library),'-lproc'],check=True)
 subprocess.run(['/usr/bin/cc','-std=c11','-Wall','-Wextra','-Werror',str(SOURCE/'scripts/launch_382_review/outside.c'),'-o',str(outside),'-lproc'],check=True)
 overlays=['crates/se-proc/tests/launch_382_review.rs','crates/se-proc/tests/support/macos_runtime/provider.rs','crates/se-proc/tests/support/launch_382_review/interpose.c']
-summary['inputs']={'judge_source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=SOURCE,text=True).strip(),'native_host':native,'library_sha256':digest(library),'outside_sha256':digest(outside),'overlay_sha256':{p:digest(SOURCE/p) for p in overlays}}
+summary['inputs']={'observer_source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=OBSERVER,text=True).strip(),'judge_source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=SOURCE,text=True).strip(),'native_host':native,'library_sha256':digest(library),'outside_sha256':digest(outside),'overlay_sha256':{p:digest(SOURCE/p) for p in overlays}}
 save()
 for arm,revision in [('base',BASE),('head',HEAD)]:
     checkout=root/('source-'+arm)
@@ -63,7 +65,7 @@ for arm,revision in [('base',BASE),('head',HEAD)]:
         passed=code==0;expected=arm=='head' or base_pass
         row['cases'].append({'name':name,'exit':code,'passed':passed,'expected_pass':expected,'custody':custody});save()
         if home is None:raise RuntimeError('Fixture stopped before owning a native scope')
-    public=public_failure(image,SOURCE,root/(arm+'-public-failure'),library)
+    public=public_failure(image,OBSERVER,root/(arm+'-public-failure'),library)
     row['public_failure']=public;save()
     # Builds and every owned process are joined before releasing our compiler cache.
     shutil.rmtree(target)
