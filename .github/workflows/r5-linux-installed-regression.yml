@@ -88,8 +88,8 @@ jobs:
         False, \''commands\'': [],\n              \''accounts\'': {}, \''cleanup\'': [], \''scope\'': \''Linux-to-Linux real
         SSH cold pairing, continuation and reconnect only\'',\n              \''unqualified\'': [\''Windows source/destination\'',
         \''real providers\'', \''remote launch/output/send/watch\'',\n                              \''four full-journey remote
-        timings\'', \''macOS\'']}\n    users = []\n    daemon = None\n    child = None\n\n    def save():\n        (reports
-        / \''result.json\'').write_text(json.dumps(report, indent=2) + \''\\n\'')\n\n    def remaining(maximum):\n        left
+        timings\'', \''Linux PAM sessions\'', \''macOS\'']}\n    users = []\n    daemon = None\n    child = None\n\n    def
+        save():\n        (reports / \''result.json\'').write_text(json.dumps(report, indent=2) + \''\\n\'')\n\n    def remaining(maximum):\n        left
         = (deadline - datetime.datetime.now(datetime.timezone.utc)).total_seconds()\n        assert left > 0, \''Fixture deadline
         expired; remaining work is cleanup only\''\n        return min(maximum, left)\n\n    def owned_stop(observed):\n        current
         = birth(observed[\''pid\''])\n        if not executing(current):\n            assert current[\''state\''] != \''unreadable\'',
@@ -136,7 +136,7 @@ jobs:
         {port}\\nListenAddress 127.0.0.1\\nHostKey {server_key}\\n\''\n                          f\''PidFile {private / "sshd.pid"}\\nAllowUsers
         {source.pw_name} {destination.pw_name}\\n\''\n                          \''AuthorizedKeysFile .ssh/authorized_keys\\nPasswordAuthentication
         no\\n\''\n                          \''KbdInteractiveAuthentication no\\nPubkeyAuthentication yes\\nAuthenticationMethods
-        publickey\\n\''\n                          \''UsePAM yes\\nStrictModes yes\\nPermitRootLogin no\\nAllowTcpForwarding
+        publickey\\n\''\n                          \''UsePAM no\\nStrictModes yes\\nPermitRootLogin no\\nAllowTcpForwarding
         local\\n\''\n                          \''GatewayPorts no\\nX11Forwarding no\\nPrintMotd no\\nLogLevel VERBOSE\\n\'')\n        Path(\''/run/sshd\'').mkdir(exist_ok=True)\n        run([\''/usr/sbin/sshd\'',
         \''-t\'', \''-f\'', str(config)])\n        daemon_log = (reports / \''sshd.stderr\'').open(\''w\'')\n        daemon
         = subprocess.Popen([\''/usr/sbin/sshd\'', \''-D\'', \''-e\'', \''-f\'', str(config)],\n                                  stdin=subprocess.DEVNULL,
@@ -165,21 +165,21 @@ jobs:
         elapsed_seconds=time.monotonic() - started,\n                           ssh_reaped=True, ssh_after=birth(child.pid))\n                child
         = None\n            if observe:\n                (reports / (label + \''-processes.json\'')).write_text(json.dumps(samples,
         indent=2) + \''\\n\'')\n                native = [r for sample in samples for r in sample[\''destination_processes\'']\n                          if
-        executing(r) and \''--stateengine-private-runtime-bootstrap\'' in r[\''command\'']]\n                assert native,
-        \''No destination host birth was observed before the original SSH consumer exited\''\n                row[\''destination_host_before_source_exit\'']
-        = native[-1]\n            save()\n            if require_success:\n                assert row[\''exit\''] == 0, {\''failed_public_consumer\'':
-        label, \''exit\'': row[\''exit\'']}\n            else:\n                assert row[\''exit\''] != 0, \''Disconnected
-        remote call unexpectedly succeeded\''\n            if structured:\n                value = json.loads((reports / (label
-        + \''.stdout\'')).read_text())\n                assert (value.get(\''schema\'') != \''se.error/v1\'') == require_success,
-        {\''unexpected_envelope\'': label, \''value\'': value}\n                if not require_success:\n                    assert
-        value.get(\''code\'') and value.get(\''exit\'') == row[\''exit\'']\n                    assert value.get(\''remedy\''),
-        \''A structured refusal must carry its remedy\''\n                return value\n            return row\n\n        for
-        role in (\''source\'', \''destination\''):\n            for name, argv in [(\''help\'', [\''--help\'']), (\''remote-add-help\'',
-        [\''remote\'', \''add\'', \''--help\'']),\n                               (\''remote-list-help\'', [\''remote\'',
-        \''list\'', \''--help\'']),\n                               (\''remote-disconnect-help\'', [\''remote\'', \''disconnect\'',
-        \''--help\'']),\n                               (\''init-help\'', [\''init\'', \''--help\'']), (\''down-help\'', [\''down\'',
-        \''--help\''])]:\n                command(role, role + \''-\'' + name, argv, structured=False)\n        work = Path(source.pw_dir)
-        / \''work\''\n        work.mkdir(mode=0o700)\n        os.chown(work, source.pw_uid, source.pw_gid)\n        command(\''source\'',
+        executing(r) and \''--stateengine-private-runtime-bootstrap\'' in r[\''command\'']]\n                row[\''destination_host_before_source_exit\'']
+        = native[-1] if native else None\n            save()\n            if require_success:\n                assert row[\''exit\'']
+        == 0, {\''failed_public_consumer\'': label, \''exit\'': row[\''exit\'']}\n            else:\n                assert
+        row[\''exit\''] != 0, \''Disconnected remote call unexpectedly succeeded\''\n            if observe:\n                assert
+        row[\''destination_host_before_source_exit\''] is not None, \''No destination host birth was observed before the original
+        SSH consumer exited\''\n            if structured:\n                value = json.loads((reports / (label + \''.stdout\'')).read_text())\n                assert
+        (value.get(\''schema\'') != \''se.error/v1\'') == require_success, {\''unexpected_envelope\'': label, \''value\'':
+        value}\n                if not require_success:\n                    assert value.get(\''code\'') and value.get(\''exit\'')
+        == row[\''exit\'']\n                    assert value.get(\''remedy\''), \''A structured refusal must carry its remedy\''\n                return
+        value\n            return row\n\n        for role in (\''source\'', \''destination\''):\n            for name, argv
+        in [(\''help\'', [\''--help\'']), (\''remote-add-help\'', [\''remote\'', \''add\'', \''--help\'']),\n                               (\''remote-list-help\'',
+        [\''remote\'', \''list\'', \''--help\'']),\n                               (\''remote-disconnect-help\'', [\''remote\'',
+        \''disconnect\'', \''--help\'']),\n                               (\''init-help\'', [\''init\'', \''--help\'']), (\''down-help\'',
+        [\''down\'', \''--help\''])]:\n                command(role, role + \''-\'' + name, argv, structured=False)\n        work
+        = Path(source.pw_dir) / \''work\''\n        work.mkdir(mode=0o700)\n        os.chown(work, source.pw_uid, source.pw_gid)\n        command(\''source\'',
         \''source-init\'', [\''--json\'', \''init\'', \''--repo\'', str(work), \''--name\'', \''ssh-regression\''])\n        cold
         = census(destination.pw_uid)\n        assert not any(executing(r) for r in cold)\n        assert not (Path(destination.pw_dir)
         / \''.stateengine-runtime\'').exists()\n        report[\''destination_before_pair\''] = cold\n        command(\''source\'',
@@ -209,7 +209,13 @@ jobs:
         home.is_symlink()\n                shutil.rmtree(home)\n                report[\''cleanup\''].append({\''account\'':
         account.pw_name, \''removed\'': True,\n                                          \''final_processes\'': remaining_rows})\n            except
         Exception as error:\n                report[\''qualified\''] = False\n                report[\''cleanup\''].append({\''account\'':
-        account.pw_name, \''error\'': repr(error)})\n        if daemon is not None:\n            try:\n                owned_stop(daemon_birth)\n                daemon.wait(timeout=10)\n                report[\''sshd_after\'']
+        account.pw_name, \''error\'': repr(error)})\n        if daemon is not None:\n            try:\n                # sshd
+        changes its process title. Re-read the exact owned child,\n                # retaining its original PID/birth/UID
+        and native executable.\n                current = birth(daemon.pid)\n                assert current[\''state\''] ==
+        \''present\'' and daemon.poll() is None\n                assert all(current[k] == daemon_birth[k] for k in (\''pid\'',
+        \''start\'', \''uid\''))\n                assert Path(\''/proc\'', str(daemon.pid), \''exe\'').resolve() == Path(\''/usr/sbin/sshd\'').resolve()\n                expected
+        = \''/usr/sbin/sshd -D -e -f \'' + str(config)\n                assert current[\''command\''].startswith((expected,
+        \''sshd: \'' + expected))\n                report[\''sshd_before_stop\''] = current\n                owned_stop(current)\n                daemon.wait(timeout=10)\n                report[\''sshd_after\'']
         = birth(daemon.pid)\n                assert report[\''sshd_after\''][\''state\''] == \''absent\''\n            except
         Exception as error:\n                report[\''qualified\''] = False\n                report[\''cleanup\''].append({\''sshd_error\'':
         repr(error)})\n        report[\''completed_utc\''] = datetime.datetime.now(datetime.timezone.utc).isoformat()\n        save()\n    assert
