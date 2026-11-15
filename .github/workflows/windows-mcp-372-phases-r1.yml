@@ -1,4 +1,4 @@
-name: Windows MCP write phase attribution
+name: Windows MCP protected validation counters
 'on':
   push:
     branches:
@@ -19,7 +19,7 @@ jobs:
     steps:
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       with:
-        ref: 2a721a4083c1caf04e7ee5a2ef20ad0d825f0693
+        ref: 2c07576631f37d6b74480b83263c8b4b0d0ace57
         fetch-depth: 0
         persist-credentials: false
     - uses: ./.github/actions/rust
@@ -35,10 +35,36 @@ jobs:
 
         p=Path(os.environ[''RUNNER_TEMP''])/''mcp372-driver.py''
 
-        p.write_text("from pathlib import Path\nimport hashlib,json,os,platform,shutil,subprocess,time\nproduct=Path.cwd();out=Path(os.environ[''RUNNER_TEMP''])/''mcp372'';out.mkdir()\nbase=''269bb9aeb410374a2f7465583fd5fc334466ad39'';trace=''2a721a4083c1caf04e7ee5a2ef20ad0d825f0693''\ninputs={''product_base'':''e64815b8863665fa0d6fa88fe617c5b7e33066cd'',''observer'':''972d2e5a05439006c74989f2b57d2c8495f37c1f'',''base'':base,''trace'':trace,''cpu_count'':os.cpu_count(),''machine'':platform.machine(),''processor'':platform.processor(),''compiler'':subprocess.check_output([''rustc'',''-vV''],text=True),''run'':os.environ[''GITHUB_RUN_ID''],''publication'':os.environ[''GITHUB_SHA''],''scope'':''Unmodified/traced release test pair on one hosted Windows runner; active synthetic sessions and kept-open public MCP clients, no real paid provider or mixed capture qualification''}\n(out/''inputs.json'').write_text(json.dumps(inputs,indent=2)+''\\n'',encoding=''utf-8'')\nrows=[]\nfor label,source in
-        [(''base'',base),(''trace'',trace)]:\n subprocess.run([''git'',''switch'',''--detach'',source],check=True)\n assert subprocess.check_output([''git'',''rev-parse'',''HEAD''],text=True).strip()==source\n dest=out/label;dest.mkdir()\n command=[''cargo'',''test'',''--target'',''x86_64-pc-windows-msvc'',''--release'',''--locked'',''--all-features'',''-p'',''se'',''--test'',''eight_writer_mcp_measurement'',''--'',''--nocapture'']\n start=time.monotonic_ns()\n with (dest/''measurement.log'').open(''wb'') as log:r=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,timeout=3300)\n receipt={''source'':source,''argv'':command,''exit'':r.returncode,''elapsed_ns'':time.monotonic_ns()-start}\n (dest/''command.json'').write_text(json.dumps(receipt,indent=2)+''\\n'',encoding=''utf-8'')\n if (product/''target/judge-diagnostics'').exists():\n  shutil.move(product/''target/judge-diagnostics'',dest/''judge-diagnostics'')\n assert r.returncode==0,''build or public write/readback/closure failed''\n
-        report=json.loads((dest/''judge-diagnostics/mcp-writers.json'').read_text(encoding=''utf-8''))\n assert set(report[''cohorts''])=={''1'',''8''}\n verified=0;worst={}\n for cohort,clients in report[''cohorts''].items():\n  assert len(clients)==int(cohort)\n  worst[cohort]={}\n  for client in clients:\n   assert client[''verified_events'']==60 and not client.get(''error'') and not client.get(''cleanup_error'')\n   assert sum(len(a) for a in client[''samples''].values())==60\n   verified+=client[''verified_events'']\n  for operation in [''stateengine_msg_send'',''stateengine_working_state_set'']:\n   worst[cohort][operation]=max(c[''p95_ms''][operation] for c in clients)\n assert verified==540\n if label==''trace'':\n  text=(dest/''measurement.log'').read_text(encoding=''utf-8'')\n  assert (dest/''measurement.log'').stat().st_size<=256*1024**2,''full retained trace exceeds analysis bound; no prefix grading''\n  counts={name:text.count(name+'' '') for name in [''native-stage-timing'',''pooled-read-timing'',''admission-native-timing'',''blocking-native-timing'',''read-close-timing'',''background-native-timing'']}\n  assert
-        all(counts[n]>0 for n in counts if n!=''background-native-timing''),''native stages were not exercised''\n  (dest/''trace-counts.json'').write_text(json.dumps(counts,indent=2)+''\\n'',encoding=''utf-8'')\n rows.append({''label'':label,''source'':source,''verified_events'':verified,''worst_client_p95_ms'':worst,''budget_pass'':report[''pass''],''scope'':''Trace adds overhead; budget misses remain measured and are not converted to run failures''})\n (out/''summary.json'').write_text(json.dumps(rows,indent=2)+''\\n'',encoding=''utf-8'')\n# Exact raw logs are retained; these hashes detect accidental later analysis edits.\nfiles={str(p.relative_to(out)):hashlib.sha256(p.read_bytes()).hexdigest() for p in out.rglob(''*'') if p.is_file()}\n(out/''retained-files.json'').write_text(json.dumps(files,indent=2)+''\\n'',encoding=''utf-8'')\n",encoding=''utf-8'')
+        p.write_text("from pathlib import Path\nimport hashlib,json,os,platform,shutil,subprocess,time\nproduct=Path.cwd();out=Path(os.environ[''RUNNER_TEMP''])/''mcp372'';out.mkdir()\nbase=''269bb9aeb410374a2f7465583fd5fc334466ad39'';trace=''2c07576631f37d6b74480b83263c8b4b0d0ace57''\ninputs={''product_base'':''e64815b8863665fa0d6fa88fe617c5b7e33066cd'',''observer'':''972d2e5a05439006c74989f2b57d2c8495f37c1f'',''base'':base,''trace'':trace,''cpu_count'':os.cpu_count(),''machine'':platform.machine(),''processor'':platform.processor(),''compiler'':subprocess.check_output([''rustc'',''-vV''],text=True),''run'':os.environ[''GITHUB_RUN_ID''],''publication'':os.environ[''GITHUB_SHA''],''scope'':''Unmodified/counter-instrumented
+        release test pair on one hosted Windows runner; active synthetic sessions and kept-open public MCP clients, no real
+        paid provider or mixed capture qualification''}\n(out/''inputs.json'').write_text(json.dumps(inputs,indent=2)+''\\n'',encoding=''utf-8'')\nrows=[]\nfor
+        label,source in [(''base'',base),(''trace'',trace)]:\n subprocess.run([''git'',''switch'',''--detach'',source],check=True)\n
+        assert subprocess.check_output([''git'',''rev-parse'',''HEAD''],text=True).strip()==source\n dest=out/label;dest.mkdir()\n
+        command=[''cargo'',''test'',''--target'',''x86_64-pc-windows-msvc'',''--release'',''--locked'',''--all-features'',''-p'',''se'',''--test'',''eight_writer_mcp_measurement'',''--'',''--nocapture'']\n
+        start=time.monotonic_ns()\n with (dest/''measurement.log'').open(''wb'') as log:r=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,timeout=3300)\n
+        receipt={''source'':source,''argv'':command,''exit'':r.returncode,''elapsed_ns'':time.monotonic_ns()-start}\n (dest/''command.json'').write_text(json.dumps(receipt,indent=2)+''\\n'',encoding=''utf-8'')\n
+        if (product/''target/judge-diagnostics'').exists():\n  shutil.move(product/''target/judge-diagnostics'',dest/''judge-diagnostics'')\n
+        assert r.returncode==0,''build or public write/readback/closure failed''\n report=json.loads((dest/''judge-diagnostics/mcp-writers.json'').read_text(encoding=''utf-8''))\n
+        assert set(report[''cohorts''])=={''1'',''8''}\n verified=0;worst={}\n for cohort,clients in report[''cohorts''].items():\n  assert
+        len(clients)==int(cohort)\n  worst[cohort]={}\n  for client in clients:\n   assert client[''verified_events'']==60
+        and not client.get(''error'') and not client.get(''cleanup_error'')\n   assert sum(len(a) for a in client[''samples''].values())==60\n   verified+=client[''verified_events'']\n  for
+        operation in [''stateengine_msg_send'',''stateengine_working_state_set'']:\n   worst[cohort][operation]=max(c[''p95_ms''][operation]
+        for c in clients)\n assert verified==540\n if label==''trace'':\n  count_rows=0\n  for clients in report[''cohorts''].values():\n   for
+        client in clients:\n    for samples in client[''samples''].values():\n     for sample in samples:\n      for phase
+        in [''admission'',''submission'',''continuation'']:\n       job=sample[''diagnostics''][''host_phases''][phase]\n       assert
+        job[''jobs'']==1,''counter fragments must name their measured job''\n       counts=job[''native_file_counts'']\n       assert
+        isinstance(counts,dict) and counts\n       for key,pair in counts.items():\n        assert len(pair)==2 and all(isinstance(v,int)
+        and v>=0 for v in pair)\n       assert counts[''other'']==[0,0] and counts[''metadata-pin:handle-overflow'']==[0,0]\n       handles=[pair
+        for name,pair in counts.items() if name.startswith(''metadata-pin:handle:'')]\n       assert [sum(pair[i] for pair
+        in handles) for i in [0,1]]==counts[''metadata-pin'']\n       if phase in [''admission'',''continuation'']:assert
+        counts[''metadata-pin''][0]>0\n      count_rows+=1\n  assert count_rows==540\n  text=(dest/''measurement.log'').read_text(encoding=''utf-8'')\n  assert
+        not any(name+'' '' in text for name in [''native-stage-timing'',''pooled-read-timing'',''admission-native-timing'',''blocking-native-timing'',''read-close-timing'',''background-native-timing'']),''per-span
+        logging remains enabled''\n  (dest/''counter-receipt.json'').write_text(json.dumps({''public_rows_with_counters'':count_rows,''scope'':''Each
+        public reply contains same-job stage (calls,inclusive_us) counters; stages overlap and are not additive; no per-span
+        output''},indent=2)+''\\n'',encoding=''utf-8'')\n rows.append({''label'':label,''source'':source,''verified_events'':verified,''worst_client_p95_ms'':worst,''budget_pass'':report[''pass''],''scope'':''Counters
+        may add overhead; paired baseline calibrates it; budget misses remain measured''})\n (out/''summary.json'').write_text(json.dumps(rows,indent=2)+''\\n'',encoding=''utf-8'')\n#
+        Exact raw logs are retained; these hashes detect accidental later analysis edits.\nfiles={str(p.relative_to(out)):hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in out.rglob(''*'') if p.is_file()}\n(out/''retained-files.json'').write_text(json.dumps(files,indent=2)+''\\n'',encoding=''utf-8'')\n",encoding=''utf-8'')
 
         '
     - name: Observe baseline and native phases sequentially
