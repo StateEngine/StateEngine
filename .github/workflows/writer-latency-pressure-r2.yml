@@ -1,4 +1,4 @@
-name: background-wal-copy
+name: background-wal-copy-phases
 on:
   push:
     branches: [prime/writer-latency-b4-pressure-r2]
@@ -19,10 +19,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: linux
-            runner: ubuntu-24.04
-            cache: writer-latency-linux-v1
-            ref: 906ca100f773a8d824a47905f0f700d38de3f63c
           - os: windows
             runner: windows-2025
             cache: writer-latency-windows-v1
@@ -73,11 +69,17 @@ jobs:
             cp target/judge-diagnostics/wal-pressure.json target/pressure-baseline/wal-pressure.json
           fi
           exit "$pressure_status"
+      - name: Run baseline retained checkpoint and pressure controls
+        id: baseline_controls
+        continue-on-error: true
+        run: |
+          target="$(rustc --print host-tuple)"
+          cargo test --target "$target" --release --all-features --locked --no-fail-fast -p se-store --test background_checkpoint_independent --test deferred_checkpoint_independent -- --nocapture > checkpoint-baseline-controls.log 2>&1
       - name: Select candidate with the same measurement overlay
         run: |
-          git fetch --quiet origin 4b2bbba73b2c159f2a66b6105f4e6d96fa55643c:refs/remotes/measure/head
-          test "$(git rev-parse refs/remotes/measure/head)" = 4b2bbba73b2c159f2a66b6105f4e6d96fa55643c
-          git checkout --detach 4b2bbba73b2c159f2a66b6105f4e6d96fa55643c
+          git fetch --quiet origin 12d9b40f7570973977b8efe8e63bef4a45dc21e9:refs/remotes/measure/head
+          test "$(git rev-parse refs/remotes/measure/head)" = 12d9b40f7570973977b8efe8e63bef4a45dc21e9
+          git checkout --detach 12d9b40f7570973977b8efe8e63bef4a45dc21e9
           git rev-parse HEAD > candidate-source.txt
           while IFS= read -r measurement_path; do
             git diff --exit-code refs/remotes/measure/tests -- "$measurement_path"
@@ -97,24 +99,31 @@ jobs:
             cp target/judge-diagnostics/wal-pressure.json target/pressure-candidate/wal-pressure.json
           fi
           exit "$pressure_status"
-      - name: Run retained checkpoint and pressure controls
+      - name: Run candidate retained checkpoint and pressure controls
+        id: candidate_controls
+        continue-on-error: true
         run: |
           target="$(rustc --print host-tuple)"
-          cargo test --target "$target" --release --all-features --locked --no-fail-fast -p se-store --test background_checkpoint_independent --test deferred_checkpoint_independent -- --nocapture > checkpoint-controls.log 2>&1
+          cargo test --target "$target" --release --all-features --locked --no-fail-fast -p se-store --test background_checkpoint_independent --test deferred_checkpoint_independent -- --nocapture > checkpoint-candidate-controls.log 2>&1
       - name: Preserve failed observer verdicts
         if: ${{ always() }}
         env:
           BASELINE: ${{ steps.baseline.outcome }}
           CANDIDATE: ${{ steps.candidate.outcome }}
+          BASE_CONTROLS: ${{ steps.baseline_controls.outcome }}
+          HEAD_CONTROLS: ${{ steps.candidate_controls.outcome }}
         run: |
           test "$BASELINE" = success
           test "$CANDIDATE" = success
+          test "$BASE_CONTROLS" = success
+          test "$HEAD_CONTROLS" = success
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}
         with:
-          name: background-wal-copy-${{ matrix.os }}-paired
+          name: background-wal-copy-phases-${{ matrix.os }}-paired
           path: |
-            checkpoint-controls.log
+            checkpoint-baseline-controls.log
+            checkpoint-candidate-controls.log
             pressure-baseline.log
             pressure-candidate.log
             baseline-source.txt
