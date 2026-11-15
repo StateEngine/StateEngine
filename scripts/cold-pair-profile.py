@@ -393,8 +393,15 @@ def main():
         summary['tail_bound_sec'] = args.tail_bound_sec
         summary['tail_bound_violations'] = violations
         summary['tail_bound_verdict'] = 'PASS' if not violations else 'FAIL'
+    connected = [a['attempt'] for a in attempts
+                 if a.get('checks', {}).get('pairing_connected')]
+    summary['connected_attempts'] = connected
     (output / 'summary.json').write_text(json.dumps(summary, indent=1) + '\n')
     print(json.dumps({k: v for k, v in summary.items() if k != 'attempts'}, indent=1))
+    if not connected:
+        print('refusal: no attempt completed a connected pairing; the run '
+              'measured nothing and cannot judge the tail', file=sys.stderr)
+        return 2
     return 0
 
 
