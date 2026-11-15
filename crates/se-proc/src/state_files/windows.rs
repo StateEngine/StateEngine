@@ -128,6 +128,25 @@ fn open_with_layout(
     extra_access: u32,
     layout: Layout,
 ) -> Result<File> {
+    open_with_access(
+        path,
+        directory,
+        create,
+        write,
+        extra_access,
+        layout,
+        GENERIC_READ,
+    )
+}
+fn open_with_access(
+    path: &Path,
+    directory: bool,
+    create: bool,
+    write: bool,
+    extra_access: u32,
+    layout: Layout,
+    read_access: u32,
+) -> Result<File> {
     let data = wide(path)?;
     let descriptor = if create {
         Some(security::descriptor_for(path, directory, layout)?)
@@ -158,7 +177,7 @@ fn open_with_layout(
     let raw = unsafe {
         CreateFileW(
             data.as_ptr(),
-            GENERIC_READ | READ_CONTROL | if write { GENERIC_WRITE } else { 0 } | extra_access,
+            read_access | READ_CONTROL | if write { GENERIC_WRITE } else { 0 } | extra_access,
             share,
             attributes.as_ref().map_or(ptr::null(), |a| a as *const _),
             if create { CREATE_NEW } else { OPEN_EXISTING },
@@ -507,6 +526,18 @@ impl Directory {
         Ok(file)
     }
     pub fn readback(&self, path: &Path, root: &Path) -> Result<Option<File>> {
+        self.readback_with_access(path, root, GENERIC_READ)
+    }
+    /// Apply the same path and protection checks without requesting file data.
+    pub fn pin_metadata(&self, path: &Path, root: &Path) -> Result<Option<File>> {
+        self.readback_with_access(path, root, FILE_READ_ATTRIBUTES)
+    }
+    fn readback_with_access(
+        &self,
+        path: &Path,
+        root: &Path,
+        read_access: u32,
+    ) -> Result<Option<File>> {
         let _parent = match self.parent(path, root) {
             Ok(v) => v,
             Err(e)
@@ -518,7 +549,15 @@ impl Directory {
             }
             Err(e) => return Err(e),
         };
-        let file = match open(&self.absolute(path, root)?, false, false, false) {
+        let file = match open_with_access(
+            &self.absolute(path, root)?,
+            false,
+            false,
+            false,
+            0,
+            self.layout,
+            read_access,
+        ) {
             Ok(file) => file,
             Err(e)
                 if e.source

@@ -22,7 +22,7 @@ impl NativeMetadataPin {
             return Ok(None);
         };
         #[cfg(windows)]
-        let Some(file) = files.directory.readback(path, &files.root)? else {
+        let Some(file) = files.directory.pin_metadata(path, &files.root)? else {
             return Ok(None);
         };
         let pin = Self {
@@ -37,6 +37,26 @@ impl NativeMetadataPin {
         Ok(Some(pin))
     }
     pub fn metadata(&self) -> Result<Metadata> {
+        #[cfg(windows)]
+        self.files.check(&self.path)?;
+        // Reuse one protected Windows handle for metadata and file identity.
+        #[cfg(windows)]
+        let other = self
+            .files
+            .directory
+            .pin_metadata(&self.path, &self.files.root)?
+            .ok_or_else(|| {
+                failure(
+                    StateFileErrorCode::SourceChanged,
+                    "database name disappeared",
+                    &self.path,
+                )
+            })?;
+        #[cfg(windows)]
+        let named = other
+            .metadata()
+            .map_err(|e| io_error("inspect named database metadata", &self.path, e))?;
+        #[cfg(unix)]
         let named = self.files.inspect_metadata(&self.path)?.ok_or_else(|| {
             failure(
                 StateFileErrorCode::SourceChanged,
@@ -65,23 +85,14 @@ impl NativeMetadataPin {
         };
         #[cfg(windows)]
         let same = {
-            let other = self
-                .files
-                .directory
-                .readback(&self.path, &self.files.root)?
-                .ok_or_else(|| {
-                    failure(
-                        StateFileErrorCode::SourceChanged,
-                        "database name disappeared",
-                        &self.path,
-                    )
-                })?;
             let a = crate::observe_file_revision(&self.file)
                 .map_err(|e| io_error("inspect retained database identity", &self.path, e))?;
             let b = crate::observe_file_revision(&other)
                 .map_err(|e| io_error("inspect named database identity", &self.path, e))?;
             a.volume == b.volume && a.file == b.file
         };
+        #[cfg(windows)]
+        self.files.check(&self.path)?;
         if !same {
             return Err(failure(
                 StateFileErrorCode::SourceChanged,
