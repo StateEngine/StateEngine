@@ -66,8 +66,26 @@ fn tracked_child() -> Check {
         root.join("pin-child.json"),
         &native::pin(ProcessId(std::process::id()))?,
     )?;
+    if std::env::var_os("SE_INDEPENDENT_AFTER_EXEC").is_some() {
+        fs::write(root.join("exec-complete"), b"new native image")?;
+    }
     let mut escaped = false;
     loop {
+        if root.join("exec-child").exists() {
+            use std::os::unix::process::CommandExt;
+            fs::remove_file(root.join("exec-child"))?;
+            let cause = Command::new(root.join("next-image"))
+                .args([
+                    "--exact",
+                    "fixture::provider::tracked_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("SE_INDEPENDENT_AFTER_EXEC", "1")
+                .env_remove("DYLD_INSERT_LIBRARIES")
+                .exec();
+            return Err(cause.into());
+        }
         if !escaped && root.join("escape").exists() {
             // SAFETY: this exact fixture child moves itself, never another process.
             if unsafe { libc::setsid() } < 0 {
