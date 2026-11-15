@@ -348,11 +348,17 @@ mod tests {
         let unix = staging::prepare(".stateengine-runtime/abc", false, false);
         assert!(unix.contains("mkdir -m 700"));
         assert!(!unix.contains("umask 077 && mkdir"));
+        // The mode confirm compares the stat string, never an octal
+        // literal in test(): 0700 parses as decimal 700 in sh and bash,
+        // which would chmod an already-correct directory.
+        assert!(unix.contains("test \"$cm\" != 700"));
+        assert!(!unix.contains("-ne 0700"));
         assert!(unix.contains("image-cache-refused:create-failed:"));
         assert!(unix.contains("image-cache-refused:group-or-other-writable:"));
         let apple = staging::prepare(".stateengine-runtime/abc", false, true);
         assert!(apple.contains("mkdir -m 700"));
         assert!(apple.contains("stat -f"));
+        assert!(apple.contains("test \"$cm\" != 700"));
         let windows = staging::prepare_windows(".stateengine-runtime/abc");
         assert!(windows.contains("image-cache-refused:"));
         // Unbraced $name before a colon is a drive-qualified reference in

@@ -61,7 +61,7 @@ pub(in crate::remote) fn prepare(directory: &str, windows: bool, apple: bool) ->
 if ! test -d "$p"; then
 mkdir -m 700 "$p" || test -d "$p" || {{ printf 'image-cache-refused:create-failed:%s\n' "$p"; exit 1; }}
 cm=$({stat} {mode} "$p") || {{ printf 'image-cache-refused:mode-confirm:%s\n' "$p"; exit 1; }}
-if test "$((0$cm))" -ne 0700; then chmod 700 "$p" || {{ printf 'image-cache-refused:mode-confirm:%s\n' "$p"; exit 1; }}; fi
+if test "$cm" != 700; then chmod 700 "$p" || {{ printf 'image-cache-refused:mode-confirm:%s\n' "$p"; exit 1; }}; fi
 fi
 if test -L "$p"; then printf 'image-cache-refused:symlink:%s\n' "$p"; exit 1; fi
 owner=$({stat} %u "$p") && mode=$({stat} {mode} "$p") || {{ printf 'image-cache-refused:stat-failed:%s\n' "$p"; exit 1; }}
