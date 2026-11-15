@@ -113,12 +113,15 @@ fn pre_init_command_names_setup_and_resolved_home() -> Check {
 #[cfg(any(target_os = "linux", windows))]
 #[test]
 fn uninstall_verifies_live_host_shutdown_before_removing_files() -> Check {
+    eprintln!("uninstall phase: account prerequisite");
     installation_account::require()?;
+    eprintln!("uninstall phase: account verified, waiting for fixture mutex");
     let _serial = RUNTIME
         .lock()
         .map_err(|_| "runtime fixture mutex poisoned")?;
     se_proc::initialize_file_creation_owner()?;
     for json in [true, false] {
+        eprintln!("uninstall phase: begin case json={json}");
         uninstall_live_host(json)?;
     }
     Ok(())
@@ -141,6 +144,7 @@ fn uninstall_live_host(json: bool) -> Check {
     });
     std::fs::copy(env!("CARGO_BIN_EXE_se"), &host_image)?;
     let binary = host_image.as_path();
+    eprintln!("uninstall phase: public init");
     let initialized = checked(
         command(binary, home, true)
             .arg("init")
@@ -177,7 +181,9 @@ fn uninstall_live_host(json: bool) -> Check {
     let record = home.join("standalone-install.json");
     files.publish_no_replace(&stage.path, &record)?;
     // Keep an independent CLI image for outside history readback and error cleanup.
+    eprintln!("uninstall phase: starting host");
     let host = RunningHost::start(binary, home)?;
+    eprintln!("uninstall phase: host start returned");
     assert!(host.live()?);
     let store = match se_store::SqliteFactory::open_reader(&f.options)? {
         Read::Present { value } => value,
@@ -211,6 +217,7 @@ fn uninstall_live_host(json: bool) -> Check {
     let before = history()?;
     let before_items = before["items"].as_array().ok_or("history items missing")?;
     assert!(!before_items.is_empty(), "fixture must retain real history");
+    eprintln!("uninstall phase: public uninstall");
     let output = terminal_uninstall(&installed, home, json)?;
     let printed = format!(
         "{}{}",

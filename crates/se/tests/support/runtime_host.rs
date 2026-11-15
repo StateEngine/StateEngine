@@ -54,7 +54,9 @@ impl RunningHost {
         result
     }
     fn start_observed(image: &Path, home: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        eprintln!("runtime host phase: before public up");
         checked(command(image, home, true).arg("up").output_executable()?)?;
+        eprintln!("runtime host phase: public up returned");
         let endpoint = se_host::client::endpoint::decode_endpoint(&std::fs::read(
             home.join("endpoint.json"),
         )?)?;
