@@ -1,6 +1,7 @@
-//! Bounded executable proofs, cached only by stable native file identity,
-//! modification/change times and size. A pathname is never a cache identity.
-//! Native change time invalidates same-inode rewrites even when mtime is restored;
+//! Bounded executable proofs. Unix reuse requires stable native file identity,
+//! modification/change times and size. Windows proofs always read the bytes:
+//! a writer can restore its file clocks. A pathname is never a cache identity.
+//! Unix change time invalidates same-inode rewrites even when mtime is restored;
 //! it is not a qualified persistent journal or protection against hostile same-user mutation.
 use super::*;
 use sha2::{Digest, Sha256 as Hasher};
@@ -125,6 +126,12 @@ pub(super) fn hash_image(mut file: std::fs::File, bound: &IpcIoBound) -> IpcNati
         .remaining()
         .map_err(|e| error("executable cache deadline", e))?;
     let stamp = key(&file, &before)?;
+    // Windows writers can restore both file clocks. Even a protected persisted
+    // hint therefore cannot qualify unchanged bytes; every native observer must
+    // take the bounded full-content proof below on that platform.
+    #[cfg(windows)]
+    let cached: Option<Sha256> = None;
+    #[cfg(not(windows))]
     let cached = {
         let cache = cache().lock().map_err(|_| {
             refuse(
