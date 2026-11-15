@@ -104,7 +104,7 @@ def stage_repo(repo, staging):
 
 def _fresh_repo(staging):
     fresh = str(staging / 'repo-fresh')
-    sudo('rm', '-rf', fresh)
+    sudo('rm', '-rf', '--one-file-system', fresh)
     sudo('install', '-d', '-m', '700', '-o', SOURCE_USER, '-g', SOURCE_USER,
          fresh)
     for argv in (['git', 'init', '-q', '-b', 'main', fresh],
@@ -118,6 +118,30 @@ def _fresh_repo(staging):
                 f'{" ".join(argv[:3])} failed: {proc.stderr.strip()}'
             )
     return fresh, None, 'fresh-minimal'
+
+
+def remove_unmounted(path):
+    """Delete a tree only while nothing under it is still mounted.
+
+    A bind-mounted repo under staging (or a crashed run's leftover
+    mount) would otherwise be root-deleted through the mount: the
+    rm would follow the mountpoint and delete the real repo. The
+    /proc/mounts check is the primary refusal; --one-file-system is
+    the backstop, so even a mount that appears after the check is
+    never descended into and its mountpoint directory survives.
+    """
+    path = str(path)
+    try:
+        mounts = pathlib.Path('/proc/mounts').read_text()
+    except OSError:
+        mounts = ''
+    prefix = path.rstrip('/') + '/'
+    for line in mounts.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and (parts[1] == path or
+                                parts[1].startswith(prefix)):
+            raise RuntimeError(f'{parts[1]} is still mounted under {path}')
+    sudo('rm', '-rf', '--one-file-system', path)
 
 
 def reap_uid(uid):
@@ -571,7 +595,7 @@ def run_attempt(index, args, ssh_port, source_pub, staging, source_home,
             teardown['userdel_error'] = str(error)
     attempt['teardown'] = teardown
     # src_home is source-user owned; the judge cannot unlink it without root.
-    sudo('rm', '-rf', src_home)
+    sudo('rm', '-rf', '--one-file-system', src_home)
     attempt['finished'] = clock()
     (outdir / 'attempt.json').write_text(json.dumps(attempt, indent=1) + '\n')
     return attempt
@@ -621,7 +645,13 @@ def main():
     source_uid, source_home = ensure_source_user()
     for name in sudo('ls', '-1', str(source_home)).split():
         if name.startswith('381-src-staging-'):
-            sudo('rm', '-rf', str(source_home / name))
+            try:
+                remove_unmounted(source_home / name)
+            except (RuntimeError, OSError) as error:
+                # A crashed run's mount survives: name it and never
+                # delete under it; the fresh pid suffix cannot collide.
+                print(f'refusal: old staging not swept: {error}',
+                      file=sys.stderr)
     staging = source_home / f'381-src-staging-{os.getpid()}'
     sudo('install', '-d', '-m', '700', '-o', SOURCE_USER, '-g', SOURCE_USER,
          str(staging / '.ssh'))
@@ -641,9 +671,13 @@ def main():
             except (RuntimeError, OSError):
                 pass
         try:
-            sudo('rm', '-rf', str(staging))
-        except (RuntimeError, OSError):
-            pass
+            remove_unmounted(staging)
+        except (RuntimeError, OSError) as error:
+            # A mount that survives the umount is never deleted out
+            # from under: leave the tree in place and name it on the
+            # run log.
+            print(f'refusal: staging not removed: {error}',
+                  file=sys.stderr)
 
     atexit.register(cleanup_run)
     attempts = []
