@@ -267,9 +267,9 @@ impl Engine {
             ));
         }
         let sync = commit.elapsed();
-        // Post-commit accounting names the debt (or the hard-pressure
-        // recovery) on this group's receipts; the background task owns the
-        // idle retry, never the receipt.
+        // Post-commit maintenance includes small PASSIVE copies and hard
+        // pressure recovery in this group's receipts; the background task
+        // owns quiet resets and retries, never the committed outcome.
         let checkpoint = match (pressure_checkpoint, self.checkpoint_due()) {
             (Some(before), Some(after)) => Some(before + after),
             (before, after) => before.or(after),

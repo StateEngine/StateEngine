@@ -171,11 +171,10 @@ impl Engine {
             return self.run_checkpoint(&wal);
         }
         if wal.log >= SOFT_FRAMES && wal.log > wal.done {
-            // Name the debt on this receipt. Direct/bootstrap connections have
-            // no idle worker, so their close path or hard-pressure check
-            // performs the maintenance; a host writer's background task owns
-            // the retry.
-            self.defer_checkpoint();
+            // Copy small debts on this connection between transactions. The
+            // receipt includes this I/O; the idle task still owns quiet resets
+            // and retries, while the hard cutoff bounds pinned-reader growth.
+            return self.run_checkpoint(&wal);
         } else {
             self.checkpoints.pending = false;
             if wal.log <= wal.done {
