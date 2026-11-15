@@ -112,7 +112,32 @@ impl Engine {
         let hard = wal.bytes >= crate::backup_context::MAX_WAL_BYTES;
         let gate = self.checkpoints.gate.clone();
         let result = gate.acquire(self.timeout).and_then(|_permit| {
-            self.db
+            if hard {
+                eprintln!(
+                    "hard-cut-phase phase=gate elapsed_us={} log={} done={}",
+                    start.elapsed().as_micros(),
+                    wal.log,
+                    wal.done
+                );
+                let copy_started = Instant::now();
+                let copy = self
+                    .db
+                    .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |r| {
+                        Ok((
+                            crate::sql_value::value::<i64>(r, 0)?,
+                            crate::sql_value::value::<i64>(r, 1)?,
+                            crate::sql_value::value::<i64>(r, 2)?,
+                        ))
+                    })
+                    .map_err(sql);
+                eprintln!(
+                    "hard-cut-phase phase=copy elapsed_us={} result={copy:?}",
+                    copy_started.elapsed().as_micros()
+                );
+            }
+            let reset_started = Instant::now();
+            let result = self
+                .db
                 .query_row(
                     if hard {
                         "PRAGMA wal_checkpoint(TRUNCATE)"
@@ -128,7 +153,14 @@ impl Engine {
                         ))
                     },
                 )
-                .map_err(sql)
+                .map_err(sql);
+            if hard {
+                eprintln!(
+                    "hard-cut-phase phase=reset elapsed_us={} result={result:?}",
+                    reset_started.elapsed().as_micros()
+                );
+            }
+            result
         });
         let elapsed = start.elapsed();
         self.maintenance = match result {
