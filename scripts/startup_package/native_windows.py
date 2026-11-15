@@ -46,6 +46,9 @@ class ImageObserver:
             row = next((r for r in rows if r['pid'] == pid), None)
             require(row and row['birth'] and row['image'] and row['command'],
                     'Owned runtime native identity is unreadable')
+            require(normalized(row['image']).startswith(self.home + '\\')
+                    and row['name'].casefold() == 'se.exe',
+                    'Public startup PID is outside the private runtime image scope')
             self.known.add((pid, row['birth']))
         while True:
             parents = {r['pid'] for r in rows if (r['pid'], r['birth']) in self.known}
