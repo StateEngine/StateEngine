@@ -258,7 +258,11 @@ impl QueryReader<'_, '_, '_> {
                     next,
                     collected.truncated || advanced || !snapshot.negative_complete(),
                     bytes,
-                    query.next.as_ref(),
+                    previous
+                        .as_ref()
+                        .map(PositionCursor::encode)
+                        .transpose()?
+                        .as_ref(),
                 )?,
                 truncated_candidates: if collected.truncated { None } else { Some(0) },
                 full: query.full,

@@ -512,7 +512,11 @@ impl QueryReader<'_, '_, '_> {
                 next,
                 range_incomplete || advanced || !snapshot.negative_complete(),
                 bytes,
-                query.next.as_ref(),
+                previous
+                    .as_ref()
+                    .map(PositionCursor::encode)
+                    .transpose()?
+                    .as_ref(),
             )?,
             truncated_candidates: if more_window || metadata_pool.truncated {
                 None
