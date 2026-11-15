@@ -89,6 +89,8 @@ def main(root):
                             if r['condition'] == condition and r['traced'] == traced
                             and (condition != 'restart' or r['index'] > 0)]
                     value = dict(wall=summary(r['ms'] for r in rows))
+                    if os.environ.get('STARTUP_MEASURE_PEER') == '1':
+                        value['peer_status'] = summary(r['peer_status']['ms'] for r in rows)
                     if traced:
                         import statistics
                         value['native_verification'] = summary(r['native_verification']['verification_ms'] for r in rows)

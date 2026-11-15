@@ -107,7 +107,11 @@ def sample(smoke, traced, number):
     pid = started['process']['pid']
     processes = smoke.commands.observer.observe(pid)
     record['outside_process'] = next(row for row in processes if row['pid'] == pid)
-    public = smoke.call(['status'], 'status')
+    if os.environ.get('STARTUP_MEASURE_PEER') == '1':
+        from peer_timing import observe
+        public, record['peer_status'] = observe(smoke, number)
+    else:
+        public = smoke.call(['status'], 'status')
     require(public['runtime']['process']['pid'] == pid, 'Status rediscovered another runtime')
     record['public_status'] = public['runtime']
     runtime = public['runtime']
