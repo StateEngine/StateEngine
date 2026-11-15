@@ -136,12 +136,12 @@ def run(executable, out):
         sent = f.mail("send", f.agent, "hold-mail-until-result")
         time.sleep(.3)
         received = f.repo / "received-input.jsonl"
-        assert not received.exists() or "hold-mail-until-result" not in received.read_text(), \
+        assert not received.exists() or sent["message_id"] not in received.read_text(), \
             "assistant frame incorrectly made the turn idle"
         (f.repo / "finish-turn").touch()
         wait_file(f.repo / "result-streamed")
         end = time.monotonic() + 10
-        while not received.exists() or "hold-mail-until-result" not in received.read_text():
+        while not received.exists() or sent["message_id"] not in received.read_text():
             assert time.monotonic() < end, "final result did not release queued mail"
             time.sleep(.01)
         assert sent["message_id"] in received.read_text(), "provider offer omitted the committed mail"
