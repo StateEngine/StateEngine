@@ -103,6 +103,13 @@ impl WorkerChannel {
             .set_bound(bound(Instant::now() + Duration::from_secs(2)));
         write_frame(&mut self.0, bytes)
     }
+    /// Parsing starts only after its owner arms the external phase clock.
+    pub fn await_parse(&mut self) -> io::Result<()> {
+        if read_frame(&mut self.0)? != b"parse" {
+            return Err(invalid("parent parse authorization absent"));
+        }
+        Ok(())
+    }
     pub fn await_reap(&mut self) -> io::Result<()> {
         self.0
             .set_bound(bound(Instant::now() + Duration::from_secs(2)));

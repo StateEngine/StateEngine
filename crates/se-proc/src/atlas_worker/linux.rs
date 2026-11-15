@@ -99,7 +99,7 @@ impl AtlasWorker {
             return Err(invalid("cold envelope exceeds 65536 bytes"));
         }
         let (channel, child_channel) = UnixStream::pair()?;
-        channel.set_write_timeout(Some(Duration::from_secs(2)))?;
+        channel.set_write_timeout(Some(deadline.saturating_duration_since(Instant::now())))?;
         let fd = child_channel.as_raw_fd();
         let (diagnostics, stderr) = super::diagnostics::Diagnostics::pipe()?;
         let mut command = Command::new(image);
@@ -177,7 +177,7 @@ impl AtlasWorker {
             _parent: parent,
         };
         worker.birth_ticks = birth(worker.child.id())?;
-        write_frame(&mut worker.channel, &encoded)?;
+        worker.send_control(&encoded, deadline)?;
         worker.channel.set_nonblocking(true)?;
         Ok(worker)
     }
@@ -271,13 +271,30 @@ impl AtlasWorker {
             }
         }
     }
+    /// Send only on the retained private channel, borrowing the caller's clock.
+    pub fn send_control(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<()> {
+        let remaining = deadline
+            .min(self.deadline)
+            .saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Atlas control deadline elapsed",
+            ));
+        }
+        self.channel.set_nonblocking(false)?;
+        self.channel.set_write_timeout(Some(remaining))?;
+        let result = write_frame(&mut self.channel, bytes);
+        self.channel.set_nonblocking(true)?;
+        result
+    }
     pub fn acknowledge_completion(&mut self) -> io::Result<()> {
         self.observe_memory()?;
-        self.channel.set_nonblocking(false)?;
-        self.channel
-            .set_write_timeout(Some(Duration::from_millis(200)))?;
-        write_frame(&mut self.channel, b"reap")?;
-        self.channel.set_nonblocking(true)
+        self.send_control(
+            b"reap",
+            self.deadline
+                .min(Instant::now() + Duration::from_millis(200)),
+        )
     }
     pub fn stderr_report(&mut self) -> String {
         self.diagnostics.report()
@@ -292,7 +309,10 @@ impl AtlasWorker {
         Ok(status)
     }
     pub fn cancel(&mut self) -> io::Result<()> {
-        self.cancel_until(Instant::now() + Duration::from_millis(200))
+        self.cancel_until(
+            self.deadline
+                .min(Instant::now() + Duration::from_millis(200)),
+        )
     }
     /// Keep exact custody until reap or the caller's existing shutdown deadline.
     pub fn cancel_until(&mut self, deadline: Instant) -> io::Result<()> {
@@ -393,6 +413,13 @@ impl WorkerChannel {
     }
     pub fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
         write_frame(&mut self.0, bytes)
+    }
+    /// Parsing starts only after its owner arms the external phase clock.
+    pub fn await_parse(&mut self) -> io::Result<()> {
+        if read_frame(&mut self.0)? != b"parse" {
+            return Err(invalid("parent parse authorization absent"));
+        }
+        Ok(())
     }
     pub fn await_reap(&mut self) -> io::Result<()> {
         if read_frame(&mut self.0)? != b"reap" {

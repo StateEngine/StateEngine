@@ -8,6 +8,7 @@ pub struct ColdJob {
     expected: Option<Vec<u8>>,
     history: Option<super::history::Plan>,
     deadline: Instant,
+    parse_deadline: Option<Instant>,
     completion: Option<IndexSummary>,
     completed: u64,
     discovered: u64,
@@ -68,6 +69,7 @@ impl ColdJob {
             expected,
             history,
             deadline,
+            parse_deadline: None,
             completion: None,
             completed: 0,
             discovered: 0,
@@ -82,9 +84,19 @@ impl ColdJob {
     pub(crate) fn discovered_files(&self) -> u64 {
         self.discovered
     }
+    pub fn next_deadline(&self) -> Instant {
+        self.parse_deadline
+            .unwrap_or(self.deadline)
+            .min(self.deadline)
+    }
+    pub fn cancellation_deadline(&self) -> Instant {
+        self.parse_deadline.map_or(self.deadline, |end| {
+            (end + Duration::from_millis(300)).min(self.deadline)
+        })
+    }
     pub fn wait_ready(&mut self, deadline: Instant) -> AtlasResult<bool> {
         self.worker
-            .wait_ready(deadline)
+            .wait_ready(deadline.min(self.next_deadline()))
             .map_err(|error| self.native_failure(error))
     }
     #[cfg(unix)]
@@ -121,6 +133,12 @@ impl ColdJob {
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
     pub fn poll(&mut self) -> AtlasResult<Option<IndexSummary>> {
+        if self.parse_deadline.is_some_and(|end| Instant::now() >= end) {
+            self.worker
+                .cancel_until(self.cancellation_deadline())
+                .map_err(failure)?;
+            return Err(crate::atlas_parse::expired());
+        }
         while let Some(bytes) = self
             .worker
             .receive()
@@ -135,6 +153,22 @@ impl ColdJob {
                     }
                     if let Some(path) = path {
                         self.last_path = Some(path);
+                    }
+                    if matches!(phase, protocol::Phase::Parse) {
+                        if self.parse_deadline.is_some() {
+                            return Err(failure("duplicate parse phase"));
+                        }
+                        let end = (Instant::now() + Duration::from_millis(200)).min(self.deadline);
+                        self.parse_deadline = Some(end);
+                        self.worker.send_control(b"parse", end).map_err(failure)?;
+                    } else {
+                        if self.parse_deadline.is_some_and(|end| Instant::now() >= end) {
+                            self.worker
+                                .cancel_until(self.cancellation_deadline())
+                                .map_err(failure)?;
+                            return Err(crate::atlas_parse::expired());
+                        }
+                        self.parse_deadline = None;
                     }
                     self.last_phase = phase;
                 }

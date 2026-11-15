@@ -20,7 +20,7 @@ pub(super) fn file(
     source: &Source,
     connection: &mut CacheConnection<'_>,
     policy: &AtlasPolicy,
-    profiles: &[ParserProfile],
+    parser: &mut crate::atlas_parse::Parser,
     path: &RelativePath,
     mode: Mode,
     deadline: Instant,
@@ -29,7 +29,7 @@ pub(super) fn file(
     timely(deadline)?;
     let language = se_atlas::policy::language(path);
     let mut budget = policy.parse;
-    let profile = language.and_then(|language| profiles.iter().find(|p| p.language == language));
+    let profile = language.and_then(|language| parser.profile(language));
     if let Some(profile) = profile {
         // Reject an oversized source from its native identity before allocating
         // a body that the qualified parser cannot admit.
@@ -169,12 +169,11 @@ pub(super) fn file(
                     .map(|_| ())
                 });
             };
-            let mut parser = SemanticParser::new(source.scope.clone(), profiles.to_vec())?;
             budget.max_work = budget
                 .max_work
                 .min(deadline.saturating_duration_since(se_atlas::clock::now()));
             timely(deadline)?;
-            let mut parsed = match parser.parse(&snapshot, language, budget) {
+            let mut parsed = match parser.parse(source, &snapshot, language, budget, deadline) {
                 Ok(parsed) => parsed,
                 // These are finite failures of this file's parser attempt, not
                 // failures of the controller, cache or source-scope boundary.
@@ -223,7 +222,7 @@ pub(super) fn eligible_file(
     source: &Source,
     connection: &mut CacheConnection<'_>,
     policy: &AtlasPolicy,
-    profiles: &[ParserProfile],
+    parser: &mut crate::atlas_parse::Parser,
     path: &RelativePath,
     mode: Mode,
     deadline: Instant,
@@ -231,7 +230,7 @@ pub(super) fn eligible_file(
     let parent = path.as_str().rsplit_once('/').map_or("", |p| p.0);
     let rules = ignore::Rules::load(source, policy, parent, deadline)?;
     if rules.eligible(path.as_str(), false, policy, deadline)? {
-        file(source, connection, policy, profiles, path, mode, deadline)?;
+        file(source, connection, policy, parser, path, mode, deadline)?;
         return Ok(true);
     }
     connection.write(WAL, deadline, |sql| {

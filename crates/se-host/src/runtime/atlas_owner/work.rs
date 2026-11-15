@@ -140,6 +140,11 @@ impl State {
                     end
                 }
             };
+            let end = self
+                .controller
+                .runtime()
+                .child_deadline()
+                .map_or(end, |phase| end.min(phase));
             let wait = end.saturating_duration_since(Instant::now());
             delay = Some(delay.map_or(wait, |old| old.min(wait)));
             if let Some(fd) = self.controller.runtime().child_readiness_fd() {

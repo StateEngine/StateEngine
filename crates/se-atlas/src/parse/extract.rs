@@ -1,7 +1,6 @@
 use super::{budget::Arena, imports, syntax::*};
 use crate::{errors::AtlasResult, lifecycle::*, model::*, scope::Scope};
 use se_types::code::AtlasText;
-use std::time::Instant;
 use tree_sitter::{Node, Tree};
 
 struct Frame {
@@ -21,7 +20,6 @@ pub(super) fn extract(
     snapshot: &SourceSnapshot,
     language: Language,
     tree: &Tree,
-    deadline: Instant,
     mut arena: Arena,
 ) -> AtlasResult<ParsedFile> {
     let file = scope.file_id(&snapshot.path);
@@ -96,10 +94,6 @@ pub(super) fn extract(
     let mut depth = 0usize;
     loop {
         let node = cursor.node();
-        if crate::clock::now() >= deadline {
-            reasons.push(CoverageReason::ParseWorkLimit);
-            break;
-        }
         if depth >= 128 {
             reasons.push(CoverageReason::ResultLimit);
             break;
@@ -131,12 +125,7 @@ pub(super) fn extract(
                 let id = scope.child_symbol_id(file, parent, &kind, name, ordinal);
                 let name = arena.text(name)?;
                 let doc_line = arena.text(doc_line(node, &snapshot.bytes))?;
-                let Some(signature_hash) =
-                    signature(node, declaration.body, &snapshot.bytes, deadline)
-                else {
-                    reasons.push(CoverageReason::ParseWorkLimit);
-                    break;
-                };
+                let signature_hash = signature(node, declaration.body, &snapshot.bytes);
                 let export_alias = if default_export(node, &snapshot.bytes) && name != "default" {
                     Some(arena.text("default")?)
                 } else {
@@ -250,11 +239,6 @@ pub(super) fn extract(
                 break;
             }
             if !cursor.goto_parent() {
-                if crate::clock::now() >= deadline
-                    && !reasons.contains(&CoverageReason::ParseWorkLimit)
-                {
-                    reasons.push(CoverageReason::ParseWorkLimit)
-                }
                 if !reasons.is_empty() {
                     parsed.coverage = FileCoverage::Partial { reasons }
                 }

@@ -90,7 +90,7 @@ impl AtlasWorker {
         }
         let lease = Lease(true);
         let peer = crate::native_ipc::observe_ipc_self_bounded(&bound(
-            Instant::now() + Duration::from_secs(2),
+            deadline.min(Instant::now() + Duration::from_secs(2)),
         ))
         .map_err(io::Error::other)?;
         let se_types::StartIdentity::Windows { creation_filetime } = peer.started() else {
@@ -109,8 +109,7 @@ impl AtlasWorker {
         }
         let job = limits::create()?;
         let (channel, child_channel) =
-            NativePipeStream::worker_pair(bound(Instant::now() + Duration::from_secs(2)))
-                .map_err(io::Error::other)?;
+            NativePipeStream::worker_pair(bound(deadline)).map_err(io::Error::other)?;
         let (stderr, child_stderr) = NativePipeStream::worker_stderr().map_err(io::Error::other)?;
         let process = spawn::start(image, &job, &child_channel, &child_stderr)?;
         // Child-table references are independent after successful creation.
@@ -236,13 +235,25 @@ impl AtlasWorker {
             self.incoming.extend_from_slice(&bytes[..count]);
         }
     }
+    /// Send only on the retained private channel, borrowing the caller's clock.
+    pub fn send_control(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<()> {
+        let deadline = deadline.min(self.deadline);
+        if deadline <= Instant::now() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Atlas control deadline elapsed",
+            ));
+        }
+        self.channel.set_bound(bound(deadline));
+        write_frame(&mut self.channel, bytes)
+    }
     pub fn acknowledge_completion(&mut self) -> io::Result<()> {
         self.observe_memory()?;
-        self.channel.set_bound(bound(
+        self.send_control(
+            b"reap",
             self.deadline
                 .min(Instant::now() + Duration::from_millis(200)),
-        ));
-        write_frame(&mut self.channel, b"reap")
+        )
     }
     pub fn try_reap(&mut self) -> io::Result<Option<ExitStatus>> {
         // SAFETY: original retained kernel process handle; no PID lookup or reuse.
@@ -308,7 +319,10 @@ impl AtlasWorker {
         Ok(())
     }
     pub fn cancel(&mut self) -> io::Result<()> {
-        self.cancel_until(Instant::now() + Duration::from_millis(200))
+        self.cancel_until(
+            self.deadline
+                .min(Instant::now() + Duration::from_millis(200)),
+        )
     }
     /// Keep exact custody until reap or the caller's existing shutdown deadline.
     pub fn cancel_until(&mut self, deadline: Instant) -> io::Result<()> {
