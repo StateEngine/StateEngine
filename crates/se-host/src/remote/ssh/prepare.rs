@@ -20,8 +20,8 @@ pub enum ImageStage {
 pub struct ImageProgress {
     pub stage: ImageStage,
     /// Bytes transferred by the owned client, not a remote publication receipt.
-    /// Batch SFTP reports zero until completion.
-    pub bytes_streamed: u64,
+    /// None while batch SFTP has no completed transfer receipt.
+    pub bytes_streamed: Option<u64>,
     pub total_bytes: Option<u64>,
     pub elapsed_ms: u64,
 }
@@ -34,7 +34,7 @@ pub async fn prepare_image(
 ) -> Result<()> {
     progress(ImageProgress {
         stage: ImageStage::Discovering,
-        bytes_streamed: 0,
+        bytes_streamed: Some(0),
         total_bytes: None,
         elapsed_ms: 0,
     })?;
@@ -45,7 +45,7 @@ pub async fn prepare_image(
     if cached_image(destination, &image).await? {
         progress(ImageProgress {
             stage: ImageStage::Cached,
-            bytes_streamed: 0,
+            bytes_streamed: Some(0),
             total_bytes: Some(image.expected),
             elapsed_ms: 0,
         })?;
@@ -65,7 +65,7 @@ pub async fn prepare_image(
         }
         progress(ImageProgress {
             stage: ImageStage::Verifying,
-            bytes_streamed: image.expected,
+            bytes_streamed: Some(image.expected),
             total_bytes: Some(image.expected),
             elapsed_ms: 0,
         })?;
@@ -80,7 +80,7 @@ pub async fn prepare_image(
     }
     progress(ImageProgress {
         stage: ImageStage::Ready,
-        bytes_streamed: image.expected,
+        bytes_streamed: Some(image.expected),
         total_bytes: Some(image.expected),
         elapsed_ms: 0,
     })?;

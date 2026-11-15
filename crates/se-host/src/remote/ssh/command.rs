@@ -161,9 +161,8 @@ pub(super) async fn send_image(
                     }
                     if let Err(error) = progress(ImageProgress {
                         stage: ImageStage::Uploading,
-                        // Batch SFTP has no byte-progress receipt. Report zero until
-                        // its successful exit, rather than inventing streamed bytes.
-                        bytes_streamed: 0,
+                        // Batch SFTP has no intermediate byte-progress receipt.
+                        bytes_streamed: None,
                         total_bytes: Some(expected),
                         elapsed_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
                     }) { break Err(error); }
