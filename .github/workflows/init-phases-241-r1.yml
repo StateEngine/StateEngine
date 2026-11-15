@@ -1,0 +1,342 @@
+name: Observe fresh init protected setup phases
+'on':
+  push:
+    branches:
+    - prime/init-phases-241-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  CARGO_TERM_COLOR: never
+jobs:
+  observe:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-24.04
+        - macos-15
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 7b23fb01a7e16362c6d6b024e5c1801a32bda8c6
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: init241-phases-distribution-v1
+    - name: Stage content-free calibrated native observer
+      shell: python
+      run: 'from pathlib import Path
+
+        import os
+
+        root=Path(os.environ[''RUNNER_TEMP''])/''init241''/''evidence''
+
+        root.mkdir(parents=True)
+
+        files={''observe.c'': ''#define _GNU_SOURCE\n#include <dlfcn.h>\n#include <errno.h>\n#include
+        <fcntl.h>\n#include <limits.h>\n#include <stdarg.h>\n#include <stdint.h>\n#include <stdatomic.h>\n#include
+        <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <sys/file.h>\n#include <time.h>\n#include
+        <unistd.h>\n#ifdef __APPLE__\n#include <mach-o/dyld-interposing.h>\n#define WRAP(name) observed_##name\n#define
+        INTERPOSE(name) DYLD_INTERPOSE(observed_##name, name)\n#else\n#define WRAP(name) name\n#define
+        INTERPOSE(name)\n#endif\n\n/* Measurement-only preload. Never records paths, buffers or credential
+        bytes. */\nstatic int trace_fd = -1;\nstatic char root[PATH_MAX];\nstatic _Thread_local int nested;\nstatic
+        _Atomic uint64_t sequence;\nstatic int (*native_open)(const char *, int, ...);\nstatic int (*native_openat)(int,
+        const char *, int, ...);\nstatic int (*native_fcntl)(int, int, ...);\nstatic ssize_t (*native_write)(int,
+        const void *, size_t);\nstatic uint64_t ns(void) {\n    struct timespec t;\n    clock_gettime(CLOCK_MONOTONIC,
+        &t);\n    return (uint64_t)t.tv_sec * 1000000000ULL + (uint64_t)t.tv_nsec;\n}\n__attribute__((constructor))
+        static void initialize(void) {\n    nested = 1;\n    native_open = dlsym(RTLD_NEXT, "open");\n    native_openat
+        = dlsym(RTLD_NEXT, "openat");\n    native_fcntl = dlsym(RTLD_NEXT, "fcntl");\n    native_write
+        = dlsym(RTLD_NEXT, "write");\n    const char *r = getenv("INIT241_ROOT"), *p = getenv("INIT241_TRACE");\n    if
+        (r && p && strlen(r) < sizeof(root)) {\n        strcpy(root, r);\n        trace_fd = native_open(p,
+        O_WRONLY | O_CREAT | O_APPEND, 0600);\n    }\n    nested = 0;\n}\nstatic int fd_path(int fd, char
+        *p) {\n#ifdef __APPLE__\n    return native_fcntl(fd, F_GETPATH, p) == 0;\n#else\n    char link[64];\n    snprintf(link,
+        sizeof(link), "/proc/self/fd/%d", fd);\n    ssize_t n = readlink(link, p, PATH_MAX - 1);\n    if
+        (n < 0) return 0;\n    p[n] = 0;\n    return 1;\n#endif\n}\nstatic const char *kind(const char
+        *p) {\n    size_t n = strlen(root);\n    if (!n || strncmp(root, p, n) || (p[n] && p[n] != \''/\''))
+        return NULL;\n    const char *leaf = strrchr(p, \''/\'');\n    leaf = leaf ? leaf + 1 : p;\n    if
+        (!strcmp(leaf, "credential")) return "credential";\n    if (!strcmp(leaf, "runtime.lock")) return
+        "runtime_lock";\n    size_t length = strlen(leaf);\n    if (length >= 8 && !strcmp(leaf + length
+        - 8, "-journal")) return "journal";\n    if (length >= 4 && !strcmp(leaf + length - 4, "-wal"))
+        return "wal";\n    return "state";\n}\nstatic const char *fd_kind(int fd) {\n    char path[PATH_MAX];\n    return
+        fd_path(fd, path) ? kind(path) : NULL;\n}\nstatic const char *at_kind(int dir, const char *path)
+        {\n    if (*path == \''/\'') return kind(path);\n    char full[PATH_MAX], parent[PATH_MAX];\n    if
+        (dir == AT_FDCWD) {\n        if (!getcwd(parent, sizeof(parent))) return NULL;\n    } else if
+        (!fd_path(dir, parent)) return NULL;\n    if (snprintf(full, sizeof(full), "%s/%s", parent, path)
+        >= (int)sizeof(full)) return NULL;\n    return kind(full);\n}\nstatic void record(uint64_t id,
+        const char *phase, const char *op, const char *k,\n                   uint64_t begin, uint64_t
+        end, long result, int error) {\n    if (trace_fd < 0 || !k) return;\n    char line[256];\n    int
+        n = snprintf(line, sizeof(line), "%s\\t%d\\t%llu\\t%s\\t%s\\t%llu\\t%llu\\t%ld\\t%d\\n",\n                     phase,
+        getpid(), (unsigned long long)id, op, k, (unsigned long long)begin,\n                     (unsigned
+        long long)end, result, error);\n    if (n > 0 && n < (int)sizeof(line)) native_write(trace_fd,
+        line, (size_t)n);\n}\n#define BEGIN(op, k) uint64_t id=atomic_fetch_add(&sequence,1)+1; record(id,"begin",
+        op, k, ns(), 0, 0, 0); uint64_t begin = ns()\n#define END(op, k, result) do { int saved = errno;
+        uint64_t end = ns(); \\\n    record(id,"end", op, k, begin, end, (long)result, result < 0 ? saved
+        : 0); errno = saved; } while (0)\n\nint WRAP(open)(const char *path, int flags, ...) {\n    if
+        (!native_open) native_open = dlsym(RTLD_NEXT, "open");\n    mode_t mode = 0;\n    if (flags &
+        O_CREAT) { va_list a; va_start(a, flags); mode = (mode_t)va_arg(a, int); va_end(a); }\n    if
+        (nested || trace_fd < 0) return native_open(path, flags, mode);\n    nested = 1; const char *k
+        = at_kind(AT_FDCWD, path); BEGIN("open", k);\n    int result = native_open(path, flags, mode);
+        END("open", k, result); nested = 0; return result;\n}\nINTERPOSE(open);\nint WRAP(openat)(int
+        dir, const char *path, int flags, ...) {\n    if (!native_openat) native_openat = dlsym(RTLD_NEXT,
+        "openat");\n    mode_t mode = 0;\n    if (flags & O_CREAT) { va_list a; va_start(a, flags); mode
+        = (mode_t)va_arg(a, int); va_end(a); }\n    if (nested || trace_fd < 0) return native_openat(dir,
+        path, flags, mode);\n    nested = 1; const char *k = at_kind(dir, path); BEGIN("openat", k);\n    int
+        result = native_openat(dir, path, flags, mode); END("openat", k, result); nested = 0; return result;\n}\nINTERPOSE(openat);\n#ifndef
+        __APPLE__\nint open64(const char *path, int flags, ...) {\n    static int (*real)(const char*,int,...);
+        if (!real) real=dlsym(RTLD_NEXT,"open64");\n    mode_t mode=0;\n    if (flags&O_CREAT) { va_list
+        a; va_start(a,flags); mode=(mode_t)va_arg(a,int); va_end(a); }\n    if (nested || trace_fd<0)
+        return real(path,flags,mode);\n    nested=1; const char *k=at_kind(AT_FDCWD,path); BEGIN("open64",k);\n    int
+        result=real(path,flags,mode); END("open64",k,result); nested=0; return result;\n}\nint openat64(int
+        dir, const char *path, int flags, ...) {\n    static int (*real)(int,const char*,int,...); if
+        (!real) real=dlsym(RTLD_NEXT,"openat64");\n    mode_t mode=0;\n    if (flags&O_CREAT) { va_list
+        a; va_start(a,flags); mode=(mode_t)va_arg(a,int); va_end(a); }\n    if (nested || trace_fd<0)
+        return real(dir,path,flags,mode);\n    nested=1; const char *k=at_kind(dir,path); BEGIN("openat64",k);\n    int
+        result=real(dir,path,flags,mode); END("openat64",k,result); nested=0; return result;\n}\n#endif\n\n#define
+        SYNC_WRAPPER(name) \\\nint WRAP(name)(int fd) { \\\n    static int (*real)(int); if (!real) real
+        = dlsym(RTLD_NEXT, #name); \\\n    if (nested || trace_fd < 0) return real(fd); \\\n    nested
+        = 1; const char *k = fd_kind(fd); BEGIN(#name, k); \\\n    int result = real(fd); END(#name, k,
+        result); nested = 0; return result; \\\n} INTERPOSE(name)\nSYNC_WRAPPER(fsync);\n#ifndef __APPLE__\nSYNC_WRAPPER(fdatasync);\n#endif\n\n#define
+        PWRITE_WRAPPER(name) \\\nssize_t WRAP(name)(int fd, const void *data, size_t size, off_t offset)
+        { \\\n    static ssize_t (*real)(int,const void*,size_t,off_t); if (!real) real=dlsym(RTLD_NEXT,#name);
+        \\\n    if (nested || trace_fd < 0) return real(fd,data,size,offset); \\\n    nested=1; const
+        char *k=fd_kind(fd); BEGIN(#name,k); \\\n    ssize_t result=real(fd,data,size,offset); END(#name,k,result);
+        nested=0; return result; \\\n} INTERPOSE(name)\nPWRITE_WRAPPER(pwrite);\n#ifndef __APPLE__\nPWRITE_WRAPPER(pwrite64);\n#endif\nssize_t
+        WRAP(write)(int fd, const void *data, size_t size) {\n    if (!native_write) native_write = dlsym(RTLD_NEXT,"write");\n    if
+        (nested || trace_fd < 0) return native_write(fd,data,size);\n    nested=1; const char *k=fd_kind(fd);
+        BEGIN("write",k);\n    ssize_t result=native_write(fd,data,size); END("write",k,result); nested=0;
+        return result;\n}\nINTERPOSE(write);\nint WRAP(flock)(int fd, int operation) {\n    static int
+        (*real)(int,int); if (!real) real=dlsym(RTLD_NEXT,"flock");\n    if (nested || trace_fd < 0) return
+        real(fd,operation);\n    nested=1; const char *k=fd_kind(fd);\n    const char *op=(operation&LOCK_UN)
+        ? "unlock" : (operation&LOCK_EX) ? "lock_exclusive" : "lock_shared";\n    BEGIN(op,k);\n    int
+        result=real(fd,operation); END(op,k,result); nested=0; return result;\n}\nINTERPOSE(flock);\n\n#ifdef
+        __APPLE__\n/* The setup uses pointer commands for SQLite locking and integer descriptor\n * flags;
+        these are forwarded with their original ABI types. Unknown commands\n * are recorded so the measurement
+        cannot silently claim complete coverage. */\nint observed_fcntl(int fd, int command, ...) {\n    if
+        (!native_fcntl) native_fcntl=dlsym(RTLD_NEXT,"fcntl");\n    va_list a; va_start(a,command); uintptr_t
+        value=0; int known=1;\n    int no_argument=command==F_GETFD || command==F_GETFL || command==F_GETOWN
+        || command==F_FULLFSYNC;\n    int integer_argument=command==F_SETFD || command==F_SETFL || command==F_SETOWN
+        || command==F_DUPFD || command==F_DUPFD_CLOEXEC;\n    int pointer_argument=command==F_GETLK ||
+        command==F_SETLK || command==F_SETLKW || command==F_GETPATH;\n#ifdef F_BARRIERFSYNC\n    no_argument
+        |= command==F_BARRIERFSYNC;\n#endif\n#ifdef F_GETNOSIGPIPE\n    no_argument |= command==F_GETNOSIGPIPE;\n#endif\n#ifdef
+        F_NOCACHE\n    integer_argument |= command==F_NOCACHE;\n#endif\n#ifdef F_RDAHEAD\n    integer_argument
+        |= command==F_RDAHEAD;\n#endif\n#ifdef F_PREALLOCATE\n    pointer_argument |= command==F_PREALLOCATE;\n#endif\n#ifdef
+        F_RDADVISE\n    pointer_argument |= command==F_RDADVISE;\n#endif\n    if (no_argument) {}\n    else
+        if (integer_argument) value=(uintptr_t)va_arg(a,int);\n    else if (pointer_argument) value=(uintptr_t)va_arg(a,void*);\n    else
+        { known=0; value=(uintptr_t)va_arg(a,void*); }\n    va_end(a);\n    if (nested || trace_fd<0)
+        return native_fcntl(fd,command,value);\n    nested=1; const char *k=fd_kind(fd); char unknown[48];\n    snprintf(unknown,sizeof(unknown),"fcntl_unknown_%d",command);\n    const
+        char *op=command==F_FULLFSYNC ? "fullfsync" : known ? "fcntl" : unknown; BEGIN(op,k);\n    int
+        result=native_fcntl(fd,command,value); END(op,k,result); nested=0; return result;\n}\nINTERPOSE(fcntl);\n#endif\n'',
+        ''calibrate.c'': ''#include <fcntl.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <sys/file.h>\n#include
+        <unistd.h>\nint main(void) {\n    char path[4096]; const char *root=getenv("INIT241_ROOT");\n    snprintf(path,sizeof(path),"%s/credential",root);\n    if
+        (open(path,O_RDONLY)!=-1) return 1;\n    snprintf(path,sizeof(path),"%s/runtime.lock",root);\n    int
+        lock=open(path,O_CREAT|O_RDWR,0600);\n    if(lock<0 || flock(lock,LOCK_EX|LOCK_NB)) return 2;\n    snprintf(path,sizeof(path),"%s/calibration-journal",root);\n    int
+        journal=open(path,O_CREAT|O_RDWR,0600);\n    if(journal<0 || pwrite(journal,"x",1,0)!=1 || fsync(journal))
+        return 3;\n#ifdef __APPLE__\n    if(fcntl(journal,F_FULLFSYNC)) return 4;\n#endif\n    if(flock(lock,LOCK_UN))
+        return 5;\n    close(journal);close(lock);return 0;\n}\n'', ''run.py'': ''"""Fresh public init
+        observations; native metadata timings contain no file contents."""\nfrom pathlib import Path\nimport
+        argparse, hashlib, json, math, os, platform, selectors, shutil\nimport signal, subprocess, sys,
+        time, traceback\n\np = argparse.ArgumentParser()\np.add_argument(\''--image\'', required=True)\np.add_argument(\''--out\'',
+        required=True)\np.add_argument(\''--scratch\'', required=True)\np.add_argument(\''--source\'',
+        required=True)\np.add_argument(\''--source-tree\'')\np.add_argument(\''--count\'', type=int, default=50)\na
+        = p.parse_args()\nHERE = Path(__file__).resolve().parent\nIMAGE = Path(a.image).resolve(strict=True)\nOUT
+        = Path(a.out).resolve(); OUT.mkdir(exist_ok=False, parents=True)\nSCRATCH = Path(a.scratch).resolve();
+        SCRATCH.mkdir(exist_ok=False, parents=True)\nos.chmod(SCRATCH, 0o700)\nMAC = sys.platform == \''darwin\''\nLIBRARY
+        = HERE / (\''observe.dylib\'' if MAC else \''observe.so\'')\nBASE = {k: v for k, v in os.environ.items()
+        if k in {\n    \''PATH\'', \''HOME\'', \''USER\'', \''LOGNAME\'', \''LANG\'', \''LC_ALL\'', \''RUSTUP_HOME\'',\n    \''CARGO_HOME\'',
+        \''TMPDIR\'', \''TMP\'', \''TEMP\'', \''SYSTEMROOT\'', \''WINDIR\''}}\nBASE[\''PATH\''] = str(SCRATCH
+        / \''bin\'') + os.pathsep + BASE.get(\''PATH\'', \''\'')\nrows = []\nreport = {\''source\'': a.source,
+        \''platform\'': platform.platform(), \''planned_traced\'': a.count,\n          \''observer_sha256\'':
+        {}, \''rows\'': rows, \''complete\'': False,\n          \''limits\'': [\''Native operation wall
+        times include scheduling and interposition overhead.\'',\n                     \''Lock timing
+        covers native lock attempts; it is not the whole protected-setup phase.\'',\n                     \''The
+        lock-to-first-journal interval is observed spacing, not one blocking syscall.\'',\n                     \''Fifty
+        fresh state homes do not mean fifty cold executable or filesystem caches.\'',\n                     \''Five
+        seconds is the external observation ceiling, not a product timeout.\'',\n                     \''No
+        provider is launched and no normal-account credential is copied or read.\'']}\n\ndef sha(path):\n    with
+        Path(path).open(\''rb\'') as f: return hashlib.file_digest(f, \''sha256\'').hexdigest()\n\ndef
+        save():\n    (OUT / \''report.json\'').write_text(json.dumps(report, indent=2) + \''\\n\'')\n\ndef
+        context():\n    value = {\''wall_time_ns\'': time.time_ns(), \''logical_cpus\'': os.cpu_count(),\n             \''loadavg\'':
+        list(os.getloadavg()), \''available_bytes\'': shutil.disk_usage(SCRATCH).free}\n    if sys.platform
+        == \''linux\'':\n        try:\n            fields = dict(line.split(\'':\'', 1) for line in Path(\''/proc/meminfo\'').read_text().splitlines())\n            value[\''memory_available_bytes\'']
+        = int(fields[\''MemAvailable\''].split()[0]) * 1024\n            value[\''io_pressure\''] = Path(\''/proc/pressure/io\'').read_text()\n        except
+        (OSError, ValueError, KeyError) as e: value[\''context_error\''] = str(e)\n    return value\n\ndef
+        members(group):\n    result = subprocess.run([\''ps\'', \''-ww\'', \''-axo\'', \''pid=,ppid=,pgid=,lstart=,command=\''],\n                            capture_output=True,
+        text=True, check=True)\n    values = []\n    for line in result.stdout.splitlines():\n        f
+        = line.split(None, 8)\n        if len(f) == 9 and int(f[2]) == group:\n            values.append({\''pid\'':
+        int(f[0]), \''line\'': line.strip()})\n    return values\n\ndef observed(argv, env, label, ceiling=5):\n    start
+        = time.monotonic_ns()\n    child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,\n                             stderr=subprocess.PIPE,
+        env=env, start_new_session=True)\n    value = {\''argv\'': [str(x) for x in argv], \''pid\'':
+        child.pid, \''start_ns\'': start,\n             \''first_stdout_ms\'': None, \''first_stderr_ms\'':
+        None, \''supervisor_cancelled\'': False}\n    selector = selectors.DefaultSelector()\n    files
+        = {}\n    for name, stream in [(\''stdout\'', child.stdout), (\''stderr\'', child.stderr)]:\n        os.set_blocking(stream.fileno(),
+        False)\n        files[name] = (OUT / (label + \''.\'' + name)).open(\''wb\'')\n        selector.register(stream,
+        selectors.EVENT_READ, name)\n    until = start / 1e9 + ceiling\n    try:\n        while selector.get_map():\n            if
+        time.monotonic() >= until and child.poll() is None:\n                value[\''supervisor_cancelled\'']
+        = True\n                pins = members(child.pid); value[\''cancelled_processes\''] = pins\n                if
+        sys.platform == \''linux\'':\n                    for name in [\''wchan\'', \''syscall\'', \''schedstat\'',
+        \''io\'']:\n                        try: value[name] = (Path(\''/proc\'') / str(child.pid) / name).read_text()\n                        except
+        OSError as error: value[name] = {\''unreadable\'': str(error)}\n                # Every signalled
+        pid belongs to the new session and has an\n                # independently read full command/birth
+        line immediately before use.\n                for pin in reversed(pins):\n                    now
+        = members(child.pid)\n                    if pin in now:\n                        try: os.kill(pin[\''pid\''],
+        signal.SIGKILL)\n                        except ProcessLookupError: pass\n                until
+        = time.monotonic() + 2\n            elif time.monotonic() >= until:\n                value[\''pipe_close_unobserved\'']
+        = True\n                break\n            for key, _ in selector.select(0.02):\n                data
+        = os.read(key.fileobj.fileno(), 65536)\n                if data:\n                    field =
+        \''first_\'' + key.data + \''_ms\''\n                    if value[field] is None: value[field]
+        = (time.monotonic_ns() - start) / 1e6\n                    files[key.data].write(data)\n                else:\n                    selector.unregister(key.fileobj)\n                    key.fileobj.close()\n        value[\''exit\'']
+        = child.wait(timeout=2)\n    finally:\n        selector.close()\n        for f in files.values():
+        f.close()\n    value[\''total_ms\''] = (time.monotonic_ns() - start) / 1e6\n    value[\''remaining_processes\'']
+        = members(child.pid)\n    return value\n\ndef trace(path, pid):\n    records = []\n    if not
+        path.is_file(): return {\''state\'': \''absent\''}, []\n    for line in path.read_text().splitlines():\n        f
+        = line.split(\''\\t\'')\n        if len(f) != 9: raise ValueError(\''malformed native trace row\'')\n        phase,
+        process, ident, op, kind, begin, end, result, error = f\n        if int(process) == pid:\n            records.append({\''phase\'':
+        phase, \''id\'': int(ident), \''op\'': op, \''kind\'': kind,\n                            \''start_ns\'':
+        int(begin), \''end_ns\'': int(end),\n                            \''result\'': int(result), \''errno\'':
+        int(error)})\n    starts = {x[\''id\'']: x for x in records if x[\''phase\''] == \''begin\''}\n    ends
+        = [x for x in records if x[\''phase\''] == \''end\'']\n    assert len(starts) == len([x for x
+        in records if x[\''phase\''] == \''begin\''])\n    assert len({x[\''id\''] for x in ends}) ==
+        len(ends)\n    for row in ends:\n        first = starts[row[\''id\'']]\n        assert all(first[k]
+        == row[k] for k in [\''op\'', \''kind\''])\n        assert first[\''start_ns\''] <= row[\''start_ns\'']
+        <= row[\''end_ns\'']\n    pending = [v for k, v in starts.items() if k not in {x[\''id\''] for
+        x in ends}]\n    return {\''state\'': \''readable\'', \''rows\'': len(records), \''completed_calls\'':
+        len(ends),\n            \''pending\'': pending, \''unknown_fcntl\'': [x for x in ends if x[\''op\''].startswith(\''fcntl_unknown\'')]},
+        ends\n\ndef distribution(values):\n    values = sorted(values)\n    if not values: return {\''n\'':
+        0, \''median\'': None, \''p95\'': None, \''max\'': None}\n    middle = len(values) // 2\n    median
+        = values[middle] if len(values) % 2 else (values[middle - 1] + values[middle]) / 2\n    return
+        {\''n\'': len(values), \''median\'': median,\n            \''p95\'': values[math.ceil(len(values)
+        * 0.95) - 1], \''max\'': values[-1]}\n\ndef phases(calls):\n    locks = [x for x in calls if x[\''kind\'']
+        == \''runtime_lock\'' and x[\''op\''] == \''lock_exclusive\'']\n    lookups = [x for x in calls
+        if x[\''kind\''] == \''credential\'' and x[\''op\''].startswith(\''open\'')]\n    journals = [x
+        for x in calls if x[\''kind\''] == \''journal\'' and x[\''op\''] in [\''pwrite\'', \''pwrite64\'',
+        \''write\'']]\n    syncs = [x for x in calls if x[\''op\''] in [\''fsync\'', \''fdatasync\'',
+        \''fullfsync\'']]\n    duration = lambda x: (x[\''end_ns\''] - x[\''start_ns\'']) / 1e6\n    first_lock
+        = min(locks, key=lambda x: x[\''start_ns\'']) if locks else None\n    first_journal = min(journals,
+        key=lambda x: x[\''start_ns\'']) if journals else None\n    return {\''lock_calls_total_ms\'':
+        sum(map(duration, locks)) if locks else None,\n            \''credential_lookup_total_ms\'': sum(map(duration,
+        lookups)) if lookups else None,\n            \''first_journal_write_call_ms\'': duration(first_journal)
+        if first_journal else None,\n            \''lock_to_first_journal_ms\'': (first_journal[\''start_ns\'']
+        - first_lock[\''end_ns\'']) / 1e6\n                if first_journal and first_lock else None,\n            \''sync_calls_total_ms\'':
+        sum(map(duration, syncs)) if syncs else None,\n            \''sync_call_max_ms\'': max(map(duration,
+        syncs)) if syncs else None,\n            \''sync_calls\'': len(syncs), \''lock_calls\'': len(locks),
+        \''credential_lookups\'': len(lookups),\n            \''journal_write_calls\'': len(journals)}\n\ndef
+        traced_env(root, path):\n    env = dict(BASE, INIT241_ROOT=str(root), INIT241_TRACE=str(path))\n    env[\''DYLD_INSERT_LIBRARIES\''
+        if MAC else \''LD_PRELOAD\''] = str(LIBRARY)\n    return env\n\ndef main():\n    source_tree =
+        Path(a.source_tree) if a.source_tree else Path(json.loads((HERE / \''source-binding.json\'').read_text())[\''tree\''])\n    actual
+        = subprocess.check_output([\''git\'', \''rev-parse\'', \''HEAD\''], cwd=source_tree, text=True).strip()\n    assert
+        actual == a.source\n    assert not subprocess.check_output([\''git\'', \''status\'', \''--porcelain\'',
+        \''--untracked-files=no\''], cwd=source_tree)\n    report[\''actual_source\''] = actual\n    report[\''compiler\'']
+        = subprocess.check_output([\''rustc\'', \''-vV\''], cwd=source_tree, text=True)\n    report[\''image\'']
+        = {\''sha256\'': sha(IMAGE), \''bytes\'': IMAGE.stat().st_size}\n    for name in [\''observe.c\'',
+        \''calibrate.c\'', \''run.py\'']:\n        report[\''observer_sha256\''][name] = sha(HERE / name)\n    compile_lib
+        = [\''cc\'', \''-O2\'', \''-Wall\'', \''-Wextra\'', \''-Werror\'',\n                   *([\''-dynamiclib\'']
+        if MAC else [\''-shared\'', \''-fPIC\'']),\n                   str(HERE / \''observe.c\''), \''-o\'',
+        str(LIBRARY), *([] if MAC else [\''-ldl\''])]\n    subprocess.run(compile_lib, check=True)\n    subprocess.run([\''cc\'',
+        \''-O2\'', str(HERE / \''calibrate.c\''), \''-o\'', str(HERE / \''calibrate\'')], check=True)\n    report[\''native_compiler\'']
+        = subprocess.check_output([\''cc\'', \''--version\''], text=True)\n    report[\''observer_binaries_sha256\'']
+        = {str(path.name): sha(path) for path in [LIBRARY, HERE / \''calibrate\'']}\n    calibrate = SCRATCH
+        / \''calibration\''; calibrate.mkdir(mode=0o700)\n    cp = observed([str(HERE / \''calibrate\'')],
+        traced_env(calibrate, OUT / \''calibration.tsv\''), \''calibration\'')\n    receipt, calls = trace(OUT
+        / \''calibration.tsv\'', cp[\''pid\''])\n    metrics = phases(calls)\n    assert cp[\''exit\'']
+        == 0 and not cp[\''supervisor_cancelled\''] and not cp[\''remaining_processes\'']\n    assert
+        receipt[\''state\''] == \''readable\'' and not receipt[\''pending\''] and not receipt[\''unknown_fcntl\'']\n    assert
+        all(metrics[k] is not None for k in [\''lock_calls_total_ms\'', \''credential_lookup_total_ms\'',\n                                              \''first_journal_write_call_ms\'',
+        \''sync_calls_total_ms\''])\n    if MAC: assert any(x[\''op\''] == \''fullfsync\'' for x in calls)\n    report[\''calibration\'']
+        = {\''command\'': cp, \''trace\'': receipt, \''phases\'': metrics}\n    binary_dir = SCRATCH /
+        \''bin\''; binary_dir.mkdir()\n    inert = HERE / \''inert.c\''; inert.write_text(\''int main(void)
+        { return 0; }\\n\'')\n    subprocess.run([\''cc\'', \''-O2\'', str(inert), \''-o\'', str(binary_dir
+        / \''goose\'')], check=True)\n    help_result = subprocess.run([str(IMAGE), \''init\'', \''--help\''],
+        env=BASE, capture_output=True)\n    (OUT / \''init-help.txt\'').write_bytes(help_result.stdout
+        + help_result.stderr)\n    assert help_result.returncode == 0\n    save()\n    for index in range(a.count):\n        #
+        Five plain controls, spaced among the fifty observed setups.\n        for mode in ([\''plain\'',
+        \''traced\''] if index % 10 == 0 else [\''traced\'']):\n            label = f\''{index + 1:02d}-{mode}\'';
+        root = SCRATCH / label; root.mkdir(mode=0o700)\n            repository = root / \''repository\'';
+        repository.mkdir()\n            marker = repository / \''keep.txt\''; marker.write_text(\''Preserved
+        repository fixture.\\n\'')\n            marker_hash = sha(marker)\n            state = root /
+        \''state\''; trace_path = OUT / (label + \''.tsv\'')\n            env = traced_env(root, trace_path)
+        if mode == \''traced\'' else BASE\n            row = {\''index\'': index + 1, \''mode\'': mode,
+        \''context_before\'': context()}\n            rows.append(row); save()\n            argv = [str(IMAGE),
+        \''--home\'', str(state), \''--json\'', \''init\'', \''--repo\'', str(repository),\n                    \''--name\'',
+        \''Fresh setup observation\'', \''--harness\'', \''goose\'']\n            result = observed(argv,
+        env, label)\n            row.update(result); row[\''context_after\''] = context()\n            row[\''config_published\'']
+        = (state / \''config.toml\'').is_file()\n            row[\''repository_preserved\''] = sha(marker)
+        == marker_hash\n            row[\''file_metadata\''] = []\n            if state.is_dir():\n                for
+        f in state.iterdir():\n                    stat = f.lstat()\n                    row[\''file_metadata\''].append({\''leaf\'':
+        f.name, \''bytes\'': stat.st_size, \''mtime_ns\'': stat.st_mtime_ns})\n            if mode ==
+        \''traced\'':\n                row[\''trace\''], calls = trace(trace_path, result[\''pid\''])\n                row[\''phases\'']
+        = phases(calls)\n                row[\''phase_coverage\''] = (row[\''trace\''][\''state\''] ==
+        \''readable\'' and\n                    not row[\''trace\''][\''pending\''] and not row[\''trace\''][\''unknown_fcntl\'']
+        and\n                    all(row[\''phases\''][k] is not None for k in [\''lock_calls_total_ms\'',\n                        \''credential_lookup_total_ms\'',
+        \''first_journal_write_call_ms\'', \''sync_calls_total_ms\'']))\n            else: row[\''phase_coverage\'']
+        = None\n            row[\''qualified\''] = (row[\''exit\''] == 0 and not row[\''supervisor_cancelled\'']
+        and\n                not row[\''remaining_processes\''] and row[\''config_published\''] and row[\''repository_preserved\'']
+        and\n                (mode == \''plain\'' or row[\''phase_coverage\'']))\n            row[\''json_output\'']
+        = None\n            if row[\''exit\''] == 0:\n                try: row[\''json_output\''] = {\''valid\'':
+        isinstance(json.loads((OUT / (label + \''.stdout\'')).read_text()), dict)}\n                except
+        ValueError: row[\''json_output\''] = {\''valid\'': False}\n                row[\''qualified\'']
+        &= row[\''json_output\''][\''valid\'']\n            save()\n            print(json.dumps({k: row[k]
+        for k in [\''index\'', \''mode\'', \''exit\'', \''total_ms\'', \''qualified\'', \''phase_coverage\'']}),
+        flush=True)\n            if row[\''qualified\'']:\n                # Fixtures are owned and fresh;
+        never traverse a link while removing.\n                assert not any(x.is_symlink() for x in
+        root.rglob(\''*\''))\n                shutil.rmtree(root)\n            if row[\''remaining_processes\'']
+        or row.get(\''pipe_close_unobserved\''):\n                report[\''stopped_reason\''] = \''Process/pipe
+        closure unobserved; remaining requests not run.\''\n                return 1\n            if mode
+        == \''traced\'' and not row[\''phase_coverage\'']:\n                report[\''stopped_reason\'']
+        = \''Native timing coverage incomplete; remaining requests not run.\''\n                return
+        1\n    traced = [x for x in rows if x[\''mode\''] == \''traced\'']\n    report[\''complete\'']
+        = len(traced) == a.count\n    report[\''qualified_traced\''] = sum(x[\''qualified\''] for x in
+        traced)\n    report[\''supervisor_cancelled\''] = sum(x[\''supervisor_cancelled\''] for x in traced)\n    report[\''total_ms\'']
+        = {mode: distribution([x[\''total_ms\''] for x in rows if x[\''mode\''] == mode])\n                          for
+        mode in [\''plain\'', \''traced\'']}\n    metrics = [\''lock_calls_total_ms\'', \''credential_lookup_total_ms\'',
+        \''first_journal_write_call_ms\'',\n               \''lock_to_first_journal_ms\'', \''sync_calls_total_ms\'',
+        \''sync_call_max_ms\'', \''sync_calls\'']\n    report[\''phases\''] = {k: distribution([x[\''phases\''][k]
+        for x in traced if x[\''phases\''][k] is not None]) for k in metrics}\n    report[\''first_stdout_ms\'']
+        = distribution([x[\''first_stdout_ms\''] for x in traced if x[\''first_stdout_ms\''] is not None])\n    report[\''passed\'']
+        = report[\''complete\''] and all(x[\''qualified\''] for x in rows)\n    save()\n    return 0 if
+        report[\''passed\''] else 1\n\ntry:\n    code = main()\nexcept BaseException as error:\n    report[\''failure\'']
+        = {\''type\'': type(error).__name__, \''detail\'': str(error), \''traceback\'': traceback.format_exc()}\n    code
+        = 1\nfinally:\n    save()\n    manifest = [{\''file\'': f.relative_to(OUT).as_posix(), \''bytes\'':
+        f.stat().st_size, \''sha256\'': sha(f)}\n                for f in sorted(OUT.rglob(\''*\'')) if
+        f.is_file() and f.name != \''manifest.json\'']\n    (OUT / \''manifest.json\'').write_text(json.dumps(manifest,
+        indent=2) + \''\\n\'')\nraise SystemExit(code)\n''}
+
+        for name,source in files.items():(root/name).write_text(source)
+
+        '
+    - name: Build the frozen distribution image
+      shell: python
+      run: "from pathlib import Path\nimport os,subprocess,time,json,hashlib\nroot=Path(os.environ['RUNNER_TEMP'])/'init241'/'evidence'\n\
+        source=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()\nassert source=='7b23fb01a7e16362c6d6b024e5c1801a32bda8c6'\n\
+        assert not subprocess.check_output(['git','status','--porcelain','--untracked-files=no'])\nenv=dict(os.environ)\n\
+        for key in ['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS']:env.pop(key,None)\nstart=time.monotonic()\n\
+        with (root/'build.stdout').open('wb') as out,(root/'build.stderr').open('wb') as err:\n code=subprocess.run(['cargo','build','--profile','distribution','-p','se','--bin','se','--locked'],env=env,stdout=out,stderr=err).returncode\n\
+        receipt={'exit':code,'seconds':time.monotonic()-start,'source':source,'profile':'distribution','features':'default'}\n\
+        image=Path('target/distribution/se')\nif code==0:receipt['image']={'sha256':hashlib.sha256(image.read_bytes()).hexdigest(),'bytes':image.stat().st_size}\n\
+        (root/'build.json').write_text(json.dumps(receipt,indent=2)+'\\n')\nraise SystemExit(code)\n"
+    - name: Observe fifty fresh setups and five plain controls
+      shell: python
+      run: 'from pathlib import Path
+
+        import os,sys,subprocess
+
+        root=Path(os.environ[''RUNNER_TEMP''])/''init241''/''evidence''
+
+        argv=[sys.executable,str(root/''run.py''),''--image'',str(Path(''target/distribution/se'').resolve()),''--source-tree'',str(Path.cwd()),''--source'',''7b23fb01a7e16362c6d6b024e5c1801a32bda8c6'',''--out'',str(root/''results''),''--scratch'',str(Path(os.environ[''RUNNER_TEMP''])/''init241-homes''),''--count'',''50'']
+
+        raise SystemExit(subprocess.run(argv).returncode)
+
+        '
+    - name: Retain every observation and failure
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: init241-${{ matrix.os }}-r1
+        path: ${{ runner.temp }}/init241/evidence
+        if-no-files-found: error
+        retention-days: 14
