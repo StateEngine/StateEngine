@@ -1,0 +1,51 @@
+name: existing cold release development controls
+on:
+  push:
+permissions:
+  contents: read
+jobs:
+  cold-controls:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: s
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: d4edee95c9b913b91c8a2d2eea9a99e6410796cc
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          shared-key: hosted-atlas-worker-release-s-v1
+          save-if: false
+      - name: Exercise existing cold crash and reap controls in release mode
+        run: |
+          mkdir -p retained
+          git rev-parse HEAD > retained/source.txt
+          target="$(rustc --print host-tuple)"
+          cargo test --target "$target" --release -p se-host --test atlas_cold_crash_dev --features remote --locked > retained/cold-crash.log 2>&1
+          cat retained/cold-crash.log
+      - name: Exercise existing cold history publication controls in release mode
+        if: runner.os == 'Linux'
+        run: |
+          target="$(rustc --print host-tuple)"
+          cargo test --target "$target" --release -p se-host --test atlas_cold_history_dev --features remote --locked > retained/cold-history.log 2>&1
+          cat retained/cold-history.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: cold-release-controls-${{ matrix.os }}
+          path: retained/
+          retention-days: 7
+          if-no-files-found: error
