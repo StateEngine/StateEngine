@@ -182,8 +182,10 @@ pub fn restore_image_cache(
     restore(root, NAME, expected, bound)
 }
 /// Restore the host's prior hint only for this unchanged native executable.
-/// Startup has no endpoint yet. The retained file key selects the hint; the
-/// subsequent native self/peer observation still rechecks that exact key.
+/// Unix change time is kernel-owned. The retained file key selects the hint;
+/// the subsequent native self/peer observation still rechecks that exact key.
+/// Windows writers can restore ChangeTime, so startup keeps its cold proof there.
+#[cfg(unix)]
 pub fn restore_current_image_cache(
     root: &Path,
     bound: &IpcIoBound,

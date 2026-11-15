@@ -174,6 +174,7 @@ fn serve(
         log.note("Native host executable verification started");
     }
     let proof_bound = deadline(Duration::from_secs(30))?;
+    #[cfg(unix)]
     se_proc::native_ipc::restore_current_image_cache(&home, &proof_bound.native_bound()).map_err(
         |error| {
             se_core::scope::unreadable("native host executable cache", &error.to_string())
