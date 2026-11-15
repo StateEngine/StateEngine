@@ -1,0 +1,60 @@
+name: Native macOS release cold-crash consumers
+'on':
+  push:
+    branches:
+    - prime/macos-release-consumers-307-r1
+  workflow_dispatch: null
+permissions:
+  contents: read
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 50
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: bda8e1e7a2c7905cb9b8537c35aad29e9242cb99
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: macos-release-consumers-v1
+    - name: Register disposable runner account
+      run: |
+        from pathlib import Path
+        import runpy,subprocess,sys
+        script=Path('scripts/ci/installation_account.py').resolve()
+        identity,profile=runpy.run_path(str(script))['account']()
+        # Elevate registration only, while preserving the actual disposable runner identity.
+        subprocess.run(['sudo',sys.executable,str(script),'provision','--identity',identity,'--profile',str(profile)],check=True)
+        subprocess.run([sys.executable,str(script),'check'],check=True)
+      shell: python
+    - name: Exercise both existing native release cold-crash consumers
+      shell: python
+      run: |
+        from pathlib import Path
+        import hashlib,json,os,resource,subprocess,time
+        root=Path('release-consumer-evidence');root.mkdir()
+        source=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip();assert source=='bda8e1e7a2c7905cb9b8537c35aad29e9242cb99'
+        host=subprocess.check_output(['rustc','--print','host-tuple'],text=True).strip();assert host.endswith('-apple-darwin')
+        resource.setrlimit(resource.RLIMIT_CORE,(0,0))
+        command=['cargo','test','--release','--target',host,'--locked','-p','se-host','--test','atlas_cold_crash_dev']
+        inputs={'source':source,'native_host':host,'argv':command,'test_sha256':hashlib.sha256(Path('crates/se-host/tests/atlas_cold_crash_dev.rs').read_bytes()).hexdigest(),'compiler':subprocess.check_output(['rustc','-vV'],text=True),'run_id':os.environ['GITHUB_RUN_ID'],'publication':os.environ['GITHUB_SHA'],'core_limit':list(resource.getrlimit(resource.RLIMIT_CORE))}
+        (root/'inputs.json').write_text(json.dumps(inputs,indent=2)+'\n')
+        started=time.monotonic_ns()
+        with (root/'stdout.log').open('wb') as stdout,(root/'stderr.log').open('wb') as stderr:
+         result=subprocess.run(command,stdout=stdout,stderr=stderr,timeout=2400)
+        receipt={'exit':result.returncode,'elapsed_ns':time.monotonic_ns()-started}
+        (root/'execution.json').write_text(json.dumps(receipt,indent=2)+'\n')
+        print(json.dumps(receipt),flush=True)
+        raise SystemExit(result.returncode)
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: macos-release-cold-consumers
+        path: release-consumer-evidence/
+        retention-days: 14
+        if-no-files-found: error
