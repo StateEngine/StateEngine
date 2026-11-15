@@ -1,0 +1,62 @@
+name: Native fixture owner strict checks
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-fixture-owner-373-${{ github.run_id }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '2'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+jobs:
+  strict:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 8100b2b32d2183f6e494176c44831e5e9136486b
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          shared-key: native-fixture-owner-373-${{ matrix.os }}
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Strict native Clippy including Windows-only code
+        run: |
+          python3 -I - <<'PY'
+          from pathlib import Path
+          import json, subprocess, sys, time
+          source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert source == '8100b2b32d2183f6e494176c44831e5e9136486b'
+          target = subprocess.check_output(['rustc', '--print', 'host-tuple'], text=True).strip()
+          command = ['cargo', 'clippy', '--target', target, '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']
+          started = time.monotonic_ns()
+          with open('strict.log', 'wb') as output:
+              result = subprocess.run(command, stdout=output, stderr=subprocess.STDOUT)
+          receipt = {'source': source, 'target': target, 'argv': command, 'exit': result.returncode, 'elapsed_ns': time.monotonic_ns() - started}
+          Path('strict.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps(receipt))
+          sys.exit(result.returncode)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: native-fixture-owner-strict-${{ matrix.os }}
+          path: |
+            strict.json
+            strict.log
+          retention-days: 14
+          if-no-files-found: error
