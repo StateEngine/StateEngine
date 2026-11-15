@@ -12,6 +12,7 @@ mod installer;
 mod ipc;
 mod mcp;
 mod mcp_stdio;
+mod phase_probe;
 mod private_entry;
 mod remote;
 #[cfg(feature = "remote")]
@@ -46,6 +47,7 @@ pub fn run(
     if let Some(result) = remote_owner::entry(&args) {
         return result;
     }
+    phase_probe::mark("run.enter");
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
     let original_args = args.clone();
@@ -69,6 +71,7 @@ pub fn run(
             );
         }
     };
+    phase_probe::mark("parse.done");
     let hook_event = match &invocation.operation {
         AnyOp::HookClaude(value) => Some(value.event),
         _ => None,
@@ -152,6 +155,7 @@ pub fn run(
             });
         }
     };
+    phase_probe::mark("bootstrap.done");
     context.selections = common.selections;
     context.retry_invocation = Some(retry_invocation);
     // Remote structured stderr is reserved for keyed status/error records.
@@ -187,6 +191,7 @@ pub fn run(
     #[cfg(windows)]
     let foreground_fallback = matches!(&operation, AnyOp::RuntimeUp(_));
     let atlas_presentation = operation.atlas_options().cloned();
+    phase_probe::mark("dispatch.begin");
     let result = {
         let mut diagnostic = |message: &str| {
             writeln!(stderr, "{message}")?;
@@ -195,6 +200,7 @@ pub fn run(
         dispatch(&context, operation, &mut diagnostic)
             .map_err(|error| route::setup::with_recovery_remedy(error, &context.home))
     };
+    phase_probe::mark("dispatch.done");
     #[cfg(windows)]
     if foreground_fallback
         && result
@@ -323,6 +329,7 @@ fn finish(result: se_types::Result<u8>, args: &[OsString]) -> std::process::Exit
 }
 
 fn main() -> std::process::ExitCode {
+    let _phase = phase_probe::begin();
     let args: Vec<_> = std::env::args_os().collect();
     #[cfg(windows)]
     let args = match private_entry::retain_package_parent(args) {
@@ -339,6 +346,7 @@ fn main() -> std::process::ExitCode {
     if let Err(error) = bootstrap::initialize_file_owner() {
         return finish(Err(error), &args);
     }
+    phase_probe::mark("file_owner.done");
     #[cfg(windows)]
     if let Some(result) = private_entry::dispatch_console_interrupt(&args) {
         return finish(result, &args);

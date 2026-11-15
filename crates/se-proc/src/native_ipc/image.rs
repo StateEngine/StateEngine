@@ -112,6 +112,27 @@ const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
 )]
 pub(super) fn hash_image(mut file: std::fs::File, bound: &IpcIoBound) -> IpcNativeResult<Sha256> {
     use std::io::Read;
+    struct ProofClock {
+        start: Option<std::time::Instant>,
+        cached: bool,
+    }
+    impl Drop for ProofClock {
+        fn drop(&mut self) {
+            if let Some(start) = self.start {
+                eprintln!(
+                    "IMAGE_PROOF_TRACE {}",
+                    serde_json::json!({
+                        "pid": std::process::id(), "elapsed_ns": start.elapsed().as_nanos(),
+                        "cached": self.cached,
+                    })
+                );
+            }
+        }
+    }
+    let mut proof_clock = ProofClock {
+        start: std::env::var_os("SE_OBSERVE_PHASES").map(|_| std::time::Instant::now()),
+        cached: false,
+    };
     let before = file
         .metadata()
         .map_err(|e| error("read pinned image metadata", e))?;
@@ -137,6 +158,7 @@ pub(super) fn hash_image(mut file: std::fs::File, bound: &IpcIoBound) -> IpcNati
             .find_map(|(stored, digest)| (stored == &stamp).then_some(*digest))
     };
     if let Some(digest) = cached {
+        proof_clock.cached = true;
         let after = file
             .metadata()
             .map_err(|e| error("reobserve cached executable", e))?;

@@ -161,6 +161,7 @@ fn dispatch_with_cold_recovery(
     {
         return Ok(output);
     }
+    crate::phase_probe::mark("setup.begin");
     let (files, (reader, mut phase)) =
         match setup::inspect_phase(&cx.home, se_core::ops::receipt::timestamp(now_us()?)?)? {
             setup::Setup::Absent(output) if matches!(op, AnyOp::ProjectStatus(_)) => {
@@ -176,6 +177,7 @@ fn dispatch_with_cold_recovery(
             }
             setup::Setup::Present(reader) => reader,
         };
+    crate::phase_probe::mark("setup.done");
     // The host verifier admits a prepared launch's first fixed hook after C3.
     // End this finite read pin before stdin or forwarding; ordinary operations
     // still require active-session admission below.
@@ -190,7 +192,9 @@ fn dispatch_with_cold_recovery(
     } else {
         None
     };
+    crate::phase_probe::mark("admission.begin");
     let mut caller = admit::observe(cx, &mut phase, &files)?;
+    crate::phase_probe::mark("admission.done");
     let mut snapshot = phase
         .into_snapshot(se_core::admission::read_scope(&caller.admission))
         .map_err(|e| store_error(&e))?;
@@ -200,6 +204,7 @@ fn dispatch_with_cold_recovery(
             .select_project(project.clone())
             .map_err(|e| store_error(&e))?;
     }
+    crate::phase_probe::mark("selection.done");
     let mut selections = cx.selections.clone();
     if let se_store::Scope::Project(project) = &caller.admission.scope {
         selections.project = Some(project.clone());
@@ -274,6 +279,7 @@ fn dispatch_with_cold_recovery(
         RuntimeNeed::Host | RuntimeNeed::HostAutoStart
     );
     if op.meta().effect == Effect::Read && !host_required {
+        crate::phase_probe::mark("listing.begin");
         let observation_op = op.clone();
         let observed = se_types::UnixMicros::new(u64::try_from(now_us()?).map_err(|_| {
             SeError::invalid("read observation clock", "nonnegative Unix microseconds")
@@ -282,6 +288,7 @@ fn dispatch_with_cold_recovery(
             .with_command_home(&cx.home)
             .with_configuration(cx.config.value.clone())?
             .with_config_origin(cx.config.origin.label());
+        crate::phase_probe::mark("listing.plan.begin");
         let result = direct::plan_snapshot(
             &mut snapshot,
             &caller.admission,
@@ -298,6 +305,7 @@ fn dispatch_with_cold_recovery(
             )),
         })
         .and_then(|output| {
+            crate::phase_probe::mark("listing.plan.done");
             super::session_observation::prepare(
                 output,
                 &mut snapshot,
@@ -306,8 +314,11 @@ fn dispatch_with_cold_recovery(
             )
         });
         let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
+        crate::phase_probe::mark("listing.snapshot.done");
         let mut output = super::session_observation::finish(prepared, &cx.home)?;
+        crate::phase_probe::mark("listing.observation.done");
         if super::session_observation::has_runtime_observation(&output) {
+            crate::phase_probe::mark("listing.runtime.begin");
             let live = match endpoint(&files) {
                 Ok(Read::Present { .. }) => Some(super::hosted::forward(
                     cx,
@@ -331,6 +342,7 @@ fn dispatch_with_cold_recovery(
                 output = super::session_observation::merge_runtime_observation(output, live)?;
             }
         }
+        crate::phase_probe::mark("listing.finish.begin");
         return super::status::finish(cx, &reader, output, &caller.admission);
     }
     // End the finite auth/selection pin before stdin, IPC, writer or custody work.
