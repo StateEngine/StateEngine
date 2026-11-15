@@ -1,0 +1,119 @@
+name: Reproduce native saved-turn stop and descendant exec
+'on':
+  push:
+    branches:
+    - prime/macos-stop-346-r3
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: macos-stop-346-${{ github.ref }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+jobs:
+  reproduce:
+    runs-on: macos-15
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        batch:
+        - 1
+        - 2
+        - 3
+        - 4
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 7b23fb01a7e16362c6d6b024e5c1801a32bda8c6
+        fetch-depth: 1
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Read pinned compiler
+      id: compiler
+      shell: python
+      run: 'import os,tomllib
+
+        from pathlib import Path
+
+        channel=tomllib.loads(Path(''rust-toolchain.toml'').read_text())[''toolchain''][''channel'']
+
+        with open(os.environ[''GITHUB_OUTPUT''],''a'') as f: print(''channel=''+channel,file=f)
+
+        '
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: ${{ steps.compiler.outputs.channel }}
+        components: rust-docs,llvm-tools-preview
+    - name: Materialize sealed reproduction
+      shell: python
+      run: 'from pathlib import Path
+
+        import os,hashlib
+
+        r=Path(os.environ[''RUNNER_TEMP''])/''stop346'';r.mkdir()
+
+        (r/''reproduce.py'').write_bytes(b''"""Author reproduction through saved public turns, stop, and outside native reads."""\nfrom pathlib import Path\nimport hashlib,json,os,shutil,subprocess,sys,time,traceback\nimport psutil\nSOURCE=\''7b23fb01a7e16362c6d6b024e5c1801a32bda8c6\''\nROOT=Path(os.environ[\''RUNNER_TEMP\''])/\''stop346\'';ROOT.mkdir(exist_ok=True)\nOUT=ROOT/\''results\'';OUT.mkdir()\nREPO=Path.cwd();PRODUCT=ROOT/\''product\'';IMAGE=PRODUCT/\''se\'';IMAGE.chmod(0o500)\ndef digest(p):\n with p.open(\''rb\'') as f:return hashlib.file_digest(f,\''sha256\'').hexdigest()\nassert subprocess.check_output([\''git\'',\''rev-parse\'',\''HEAD\''],text=True).strip()==SOURCE\nbuild=json.loads((PRODUCT/\''build.json\'').read_text());assert build[\''source_commit\'']==SOURCE and build[\''profile\'']==\''distribution\'' and build[\''target\'']==\''aarch64-apple-darwin\''\nassert build[\''files\''][\''se\'']==digest(IMAGE)\nshutil.copyfile(PRODUCT/\''build.json\'',OUT/\''build.json\'')\nsys.path.insert(0,str(REPO/\''crates/se/tests/judges\''))\nfrom
+        mail_cli import Fixture as Base\nprovider=ROOT/\''provider.py\'';text=(REPO/\''crates/se/tests/judges/provider_waiting_protocol_review.py\'').read_text()\nneedle=\''repo = Path.cwd()\'';assert text.count(needle)==1\ntext=text.replace(needle,needle+\''\''\''\nif (repo/\''cohort\'').read_text()==\''post-turn-descendant-exec\'':\n    worker=subprocess.Popen([str(repo/\''exec-a\''),str(repo/\''exec-b\''),str(repo/\''exec-gate\''),str(repo/\''exec-done\''),"200"],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n    (repo/\''descendant.json\'').write_text(json.dumps({\''pid\'':worker.pid,\''parent\'':os.getpid(),\''pgid\'':os.getpgid(worker.pid)}))\n\''\''\'',1);provider.write_text(text)\nALLOWED={\''PATH\'',\''LANG\'',\''LC_ALL\'',\''SHELL\'',\''TMPDIR\'',\''TMP\'',\''TEMP\'',\''RUSTUP_HOME\'',\''CARGO_HOME\''}\nclass Fixture(Base):\n def call(self,*args,recipient=False):\n  self.env={k:v for k,v in self.env.items() if k in ALLOWED or k in {\''HOME\'',\''USERPROFILE\''}}\n  self.calls+=1;env=dict(self.env)\n  if
+        recipient:env[\''SE_SESSION\'']=self.session\n  argv=[str(self.se),\''--json\'',\''--home\'',str(self.home),*map(str,args)]\n  stem=self.log_root/f\''call-{self.calls:03}\'';at=time.monotonic();timed_out=False\n  try:\n   value=subprocess.run(argv,stdin=subprocess.DEVNULL,env=env,cwd=self.repo,capture_output=True,timeout=90)\n  except subprocess.TimeoutExpired as error:\n   timed_out=True;value=subprocess.CompletedProcess(argv,None,error.stdout or b\''\'',error.stderr or b\''\'')\n  stem.with_suffix(\''.stdout\'').write_bytes(value.stdout);stem.with_suffix(\''.stderr\'').write_bytes(value.stderr)\n  stem.with_suffix(\''.json\'').write_text(json.dumps({\''argv\'':argv,\''exit\'':value.returncode,\''elapsed\'':time.monotonic()-at,\''timed_out\'':timed_out},indent=2)+\''\\n\'')\n  if timed_out:raise RuntimeError(\''Public command timed out; this trial remains ungraded\'')\n  return value\nclass Pin:\n def __init__(self,pid):\n  p=psutil.Process(pid);self.pid=pid;self.birth=p.create_time();self.argv=p.cmdline();self.image=p.exe()\n
+        def read(self):\n  try:\n   p=psutil.Process(self.pid)\n   if p.create_time()!=self.birth:return {\''pid\'':self.pid,\''birth\'':self.birth,\''state\'':\''replaced\''}\n   return {\''pid\'':self.pid,\''birth\'':self.birth,\''state\'':\''exited\'' if p.status()==psutil.STATUS_ZOMBIE else \''live\'',\''command\'':p.cmdline(),\''image\'':p.exe(),\''pgid\'':os.getpgid(self.pid)}\n  except psutil.NoSuchProcess:return {\''pid\'':self.pid,\''birth\'':self.birth,\''state\'':\''absent\''}\n  except (psutil.AccessDenied,ProcessLookupError,OSError) as e:return {\''pid\'':self.pid,\''birth\'':self.birth,\''state\'':\''unreadable\'',\''error\'':repr(e)}\ndef activity(value,agent):\n if isinstance(value,dict):\n  if value.get(\''id\'')==agent and \''provider_activity\'' in value:\n   a=value[\''provider_activity\''];return a.get(\''value\'') if a.get(\''state\'')==\''present\'' else None\n  for v in value.values():\n   a=activity(v,agent)\n   if a is not None:return a\n if isinstance(value,list):\n  for
+        v in value:\n   a=activity(v,agent)\n   if a is not None:return a\n return None\ndef wait_until(fn,seconds,message):\n end=time.monotonic()+seconds\n while True:\n  v=fn()\n  if v:return v\n  if time.monotonic()>=end:raise RuntimeError(message)\n  time.sleep(.02)\ndef json_reply(r):\n try:return json.loads(r.stdout)\n except (ValueError,UnicodeError):return None\nrows=[];batch=int(os.environ[\''BATCH\''])\ninputs={\''source\'':SOURCE,\''image_sha256\'':digest(IMAGE),\''batch\'':batch,\''requested_rounds\'':25,\''platform\'':sys.platform,\''observer_source_sha256\'':digest(Path(__file__)),\''provider_source_sha256\'':digest(provider),\''limits\'':[\''Author development reproduction, not independent judging of a fix.\'',\''No paid providers or credential files.\'',\''Fresh fixture each round; stop this VM batch on any unproved cleanup.\'',\''Controlled cohort execs a descendant in the same group only after public saved-turn history.\'',\''Exited numeric identities do not justify treating
+        retained native custody as complete.\'']}\n(OUT/\''inputs.json\'').write_text(json.dumps(inputs,indent=2)+\''\\n\'')\ndef save():\n (OUT/\''summary.json\'').write_text(json.dumps({\''inputs\'':inputs,\''rounds\'':rows,\''attempts\'':len(rows),\''saved_turns\'':sum(r[\''saved_turn\''] for r in rows),\''stop_reached\'':sum(r[\''stop_reached\''] for r in rows),\''stop_failures\'':sum(r.get(\''stop_exit\'') not in [0,None] for r in rows),\''all_passed\'':len(rows)==25 and all(r[\''passed\''] for r in rows)},indent=2)+\''\\n\'')\nfor local in range(25):\n number=(batch-1)*25+local+1;case=OUT/f\''round-{number:03}\'';case.mkdir()\n f=None;pins=[];row={\''round\'':number,\''cohort\'':\''natural\'' if number%2 else \''post-turn-descendant-exec\'',\''saved_turn\'':False,\''stop_reached\'':False,\''passed\'':False,\''cleanup\'':{}}\n rows.append(row)\n try:\n  f=Fixture(IMAGE,ROOT/\''fixtures\''/f\''round-{number:03}\'',provider_helper=provider,log_directory=\''calls\'')\n  (f.repo/\''cohort\'').write_text(row[\''cohort\''])\n  if
+        row[\''cohort\'']!=\''natural\'':\n   shutil.copyfile(ROOT/\''exec-worker\'',f.repo/\''exec-a\'');shutil.copyfile(ROOT/\''exec-worker\'',f.repo/\''exec-b\'')\n   for p in [f.repo/\''exec-a\'',f.repo/\''exec-b\'']:p.chmod(0o500)\n  up=f.ok(\''up\'');pins.append(Pin(up[\''process\''][\''pid\'']))\n  launched=f.ok(\''--project\'',f.project,\''launch\'',f.agent,\''--detach\'',\''--task\'',\''Complete one saved protocol turn\'')\n  assert launched[\''state\'']==\''running\'';f.session=launched[\''session_id\''];pins.append(Pin(launched[\''process\''][\''pid\'']))\n  wait_until(lambda:(f.repo/\''review-provider-ready\'').exists(),30,\''Authenticated provider discovery absent\'')\n  for child in psutil.Process(pins[-1].pid).children(recursive=True):pins.append(Pin(child.pid))\n  (f.repo/\''review-release\'').touch()\n  def completed():\n   a=activity(f.ok(\''--project\'',f.project,\''agent\'',\''show\'',f.agent),f.agent)\n   return a if a and a[\''activity\'']==\''turn-completed\'' else
+        None\n  row[\''activity\'']=wait_until(completed,30,\''Public completed-turn activity absent\'')\n  def history():\n   h=f.ok(\''--project\'',f.project,\''history\'',\''--agent\'',f.agent,\''--kind\'',\''session.turn\'',\''--limit\'',\''100\'')\n   assert h[\''window\''][\''complete\''] and h[\''next\''] is None\n   a=[x for x in h[\''items\''] if x[\''payload\''][\''role\'']==\''assistant\'']\n   if not a:return None\n   assert len(a)==1 and a[0][\''payload\''][\''body\''][\''text\'']==\''REVIEW_RECOVERED_OK\'';return a[0]\n  row[\''history\'']=wait_until(history,30,\''Saved assistant turn absent\'');row[\''saved_turn\'']=True\n  if row[\''cohort\'']!=\''natural\'':\n   child=json.loads((f.repo/\''descendant.json\'').read_text());pin=Pin(child[\''pid\'']);pins.append(pin)\n   row[\''descendant_before\'']=pin.read();assert row[\''descendant_before\''][\''state\'']==\''live\''\n   assert row[\''descendant_before\''][\''pgid\'']==os.getpgid(launched[\''process\''][\''pid\''])\n   (f.repo/\''exec-gate\'').touch();wait_until(lambda:(f.repo/\''exec-done\'').exists(),15,\''Controlled
+        descendant did not finish\'')\n   row[\''descendant_after\'']=pin.read()\n   events=[json.loads(l) for l in (f.repo/\''exec-events.jsonl\'').read_text().splitlines()]\n   assert len(events)==201 and all(e[\''pid\'']==child[\''pid\''] and e[\''pgid\'']==row[\''descendant_before\''][\''pgid\''] for e in events)\n   row[\''exec_events\'']=len(events);shutil.copyfile(f.repo/\''exec-events.jsonl\'',case/\''exec-events.jsonl\'')\n  row[\''stop_reached\'']=True;stopped=f.call(\''--project\'',f.project,\''stop\'',f.agent);row[\''stop_exit\'']=stopped.returncode;row[\''stop\'']=json_reply(stopped)\n  assert stopped.returncode==0 and row[\''stop\''][\''complete\''] and row[\''stop\''][\''witness\''][\''state\'']==\''witnessed\'' and row[\''stop\''][\''enumeration\'']==\''complete\'',(\''Public stop failed\'',row[\''stop\''])\n  row[\''passed\'']=True\n except Exception as e:row.update(error=repr(e),traceback=traceback.format_exc())\n finally:\n  if f is not None:\n   try:\n    down=f.call(\''down\'');value=json_reply(down);row[\''cleanup\''][\''down_exit\'']=down.returncode;row[\''cleanup\''][\''down\'']=value\n    assert
+        down.returncode==0 and value[\''complete\''] and value[\''witness\''][\''state\'']==\''witnessed\''\n    row[\''cleanup\''][\''outside\'']=wait_until(lambda:(s if all(x[\''state\''] in [\''absent\'',\''exited\'',\''replaced\''] for x in s) else None) if (s:=[p.read() for p in pins]) else [],10,\''Observed native identity remained or unreadable\'')\n    assert not (f.home/\''endpoint.json\'').exists();row[\''cleanup\''][\''complete\'']=True\n   except Exception as e:row[\''cleanup\''].update(complete=False,error=repr(e))\n   # Retain public calls, never upload the private fixture/credential home.\n   shutil.copytree(f.log_root,case/\''calls\'')\n   if row[\''cleanup\''].get(\''complete\''):shutil.rmtree(f.root)\n  else:\n   row[\''cleanup\''][\''complete\'']=True\n   logs=ROOT/\''fixtures\''/f\''round-{number:03}\''/\''calls\''\n   if logs.exists():shutil.copytree(logs,case/\''calls\'')\n  row[\''passed\''] &= row[\''cleanup\''].get(\''complete\'',False)\n  save()\n print(json.dumps({k:row[k]
+        for k in [\''round\'',\''cohort\'',\''saved_turn\'',\''stop_reached\'',\''passed\'']}),flush=True)\n if not row[\''passed\'']:break\n# Exact file manifest is written even for a failed reproduction.\nmanifest=[{\''file\'':p.relative_to(OUT).as_posix(),\''bytes\'':p.stat().st_size,\''sha256\'':digest(p)} for p in sorted(OUT.rglob(\''*\'')) if p.is_file()]\n(OUT/\''manifest.json\'').write_text(json.dumps(manifest,indent=2)+\''\\n\'')\nsys.exit(0 if len(rows)==25 and all(r[\''passed\''] for r in rows) else 1)\n'')
+
+        assert hashlib.sha256((r/''reproduce.py'').read_bytes()).hexdigest()==''cc500e82ac981ca741a407992360cc836c4fc48c6ade3b4910210d2abf5e1178''
+
+        (r/''exec-worker.c'').write_bytes(b''#include <stdio.h>\n#include <stdlib.h>\n#include <unistd.h>\n#include <limits.h>\n#include <string.h>\nint main(int argc,char **argv){\n if(argc!=5)return 2;\n for(int i=0;access(argv[2],F_OK)!=0;i++){if(i>6000)return 3;usleep(10000);}\n char path[PATH_MAX];if(strlen(argv[2])>=sizeof(path)-32)return 4;\n strcpy(path,argv[2]);char *slash=strrchr(path,\''/\'');if(!slash)return 5;strcpy(slash+1,"exec-events.jsonl");\n FILE *f=fopen(path,"a");if(!f)return 6;\n fprintf(f,"{\\"pid\\":%d,\\"pgid\\":%d,\\"image\\":\\"%s\\"}\\n",getpid(),getpgrp(),argv[0]);if(fclose(f))return 7;\n int left=atoi(argv[4]);\n if(left<=0){f=fopen(argv[3],"w");if(!f)return 8;fputs("complete\\n",f);return fclose(f)?9:0;}\n usleep(10000);char next[32];snprintf(next,sizeof(next),"%d",left-1);\n execl(argv[1],argv[1],argv[0],argv[2],argv[3],next,(char *)NULL);return 10;\n}\n'')
+
+        assert hashlib.sha256((r/''exec-worker.c'').read_bytes()).hexdigest()==''a00e49c8024ef4c3580147ea38b83a05690bc1462b65bd61b5b0c027ed75854c''
+
+        (r/''requirements.txt'').write_bytes(b''psutil==7.0.0 \\\n    --hash=sha256:101d71dc322e3cffd7cea0650b09b3d08b8e7c4109dd6809fe452dfd00e58b25 \\\n    --hash=sha256:1e744154a6580bc968a0195fd25e80432d3afec619daf145b9e5ba16cc1d688e \\\n    --hash=sha256:1fcee592b4c6f146991ca55919ea3d1f8926497a713ed7faaf8225e174581e91 \\\n    --hash=sha256:39db632f6bb862eeccf56660871433e111b6ea58f2caea825571951d4b6aa3da \\\n    --hash=sha256:4b1388a4f6875d7e2aff5c4ca1cc16c545ed41dd8bb596cefea80111db353a34 \\\n    --hash=sha256:4cf3d4eb1aa9b348dec30105c55cd9b7d4629285735a102beb4441e38db90553 \\\n    --hash=sha256:84df4eb63e16849689f76b1ffcb36db7b8de703d1bc1fe41773db487621b6c17 \\\n    --hash=sha256:a5f098451abc2828f7dc6b58d44b532b22f2088f4999a937557b603ce72b1993 \\\n    --hash=sha256:ba3fcef7523064a6c9da440fc4d6bd07da93ac726b5733c29027d7dc95b39d99\n'')
+
+        assert hashlib.sha256((r/''requirements.txt'').read_bytes()).hexdigest()==''31226c5e3bfe57bd7a279334bb4c3769fcde2c1bdf5ab58d524e2e8b4104063a''
+
+        '
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: stop346-product
+        path: ${{ runner.temp }}/stop346/product
+        run-id: 43713591107
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Install pinned native observer
+      run: 'python -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r "$RUNNER_TEMP/stop346/requirements.txt"'
+    - name: Compile private descendant exec fixture
+      run: cc -std=gnu11 -O2 -Wall -Wextra -Werror "$RUNNER_TEMP/stop346/exec-worker.c" -o "$RUNNER_TEMP/stop346/exec-worker"
+    - name: Provision disposable installation account
+      run: 'import os,pwd,subprocess
+
+        identity=str(os.geteuid())
+
+        profile=pwd.getpwuid(os.geteuid()).pw_dir
+
+        subprocess.run([''sudo'',''python3'',''scripts/ci/installation_account.py'',''provision'',''--identity'',identity,''--profile'',profile],check=True)
+
+        subprocess.run([''python3'',''scripts/ci/installation_account.py'',''check''],check=True)
+
+        '
+      shell: python
+    - name: Run twenty-five isolated saved-turn repetitions
+      env:
+        BATCH: ${{ matrix.batch }}
+      run: 'python3 scripts/ci/installation_account.py check
+
+        python3 -u "$RUNNER_TEMP/stop346/reproduce.py"'
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: stop346-batch-${{ matrix.batch }}
+        path: ${{ runner.temp }}/stop346/results/
+        if-no-files-found: error
+        retention-days: 7
