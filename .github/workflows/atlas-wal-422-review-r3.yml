@@ -1,0 +1,132 @@
+name: Independent native Atlas WAL admission pair
+'on':
+  push:
+    branches:
+    - prime/atlas-wal-422-review-r3
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - windows-2025
+        arm:
+        - base
+        - head
+    env:
+      PRODUCT_SOURCE: ${{ matrix.arm == 'head' && '58355cd837fb15aa78578b4e7310a964fc785d2e' || '7b23fb01a7e16362c6d6b024e5c1801a32bda8c6'
+        }}
+      ARM: ${{ matrix.arm }}
+      CARGO_TARGET_DIR: target-wal-${{ matrix.arm }}
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUTF8: '1'
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ env.PRODUCT_SOURCE }}
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: 1.97.1
+    - name: Authenticate reviewer fixture and exact source
+      shell: python
+      run: |
+        import base64, hashlib, json, os, subprocess
+        from pathlib import Path
+        r = Path(os.environ['RUNNER_TEMP']) / 'wal-review'
+        r.mkdir()
+        (r / 'inputs').mkdir()
+        source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, encoding='utf-8').strip()
+        assert source == os.environ['PRODUCT_SOURCE']
+        assert not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'])
+        data = base64.b64decode('Ly8hIEluZGVwZW5kZW50IG5hdGl2ZSBTUUxpdGUgV0FMIGFkbWlzc2lvbiBjb250cm9sczsgbm8gcHJvY2VzcyBvciBhY2NvdW50IGZpeHR1cmUuCi8vISBUaGUgYWRhcHRlciBzdXBwbGllcyByZWFsIGZpbGUgaWRlbnRpdHkgYW5kIFdBTCBsZW5ndGguIEl0cyBncm93dGggcmVzZXJ2YXRpb24KLy8hIGlzIHN5bnRoZXRpYywgc28gdGhlc2UgY29udHJvbHMgZG8gbm90IHF1YWxpZnkgdGhlIHByb2R1Y3Rpb24gZGlzayBpbnZlbnRvcnkuCnVzZSBzZV9hdGxhczo6ewogICAgY2FjaGU6Ontjb25uZWN0aW9uOjoqLCAqfSwKICAgIG1vZGVsOjoqLAogICAgc2NvcGU6OlNjb3BlLAp9Owp1c2Ugc2VfdHlwZXM6OntQcm9qZWN0SWQsIFNlRXJyb3J9Owp1c2Ugc3RkOjp7CiAgICBjZWxsOjpDZWxsLAogICAgZnM6OntzZWxmLCBGaWxlLCBPcGVuT3B0aW9uc30sCiAgICBwYXRoOjpQYXRoQnVmLAogICAgdGltZTo6e0R1cmF0aW9uLCBJbnN0YW50LCBTeXN0ZW1UaW1lLCBVTklYX0VQT0NIfSwKfTsKdHlwZSBDaGVjayA9IFJlc3VsdDwoKSwgQm94PGR5biBzdGQ6OmVycm9yOjpFcnJvcj4+OwpmbiBlcnIodmFsdWU6IGltcGwgc3RkOjpmbXQ6OkRpc3BsYXkpIC0+IFNlRXJyb3IgewogICAgU2VFcnJvcjo6aW52YWxpZCgibmF0aXZlIFNRTCByZXZpZXciLCAmdmFsdWUudG9fc3RyaW5nKCkpCn0KZm4gZGVhZGxpbmUoKSAtPiBJbnN0YW50IHsKICAgIHNlX2F0bGFzOjpjbG9jazo6bm93KCkgKyBEdXJhdGlvbjo6ZnJvbV9zZWNzKDEwKQp9CmZuIGlkZW50aXR5KGZpbGU6ICZGaWxlKSAtPiBzdGQ6OmlvOjpSZXN1bHQ8RGF0YWJhc2VGaWxlSWRlbnRpdHk+IHsKICAgICNbY2ZnKHVuaXgpXQogICAgewogICAgICAgIHVzZSBzdGQ6Om9zOjp1bml4Ojpmczo6TWV0YWRhdGFFeHQ7CiAgICAgICAgbGV0IG1ldGFkYXRhID0gZmlsZS5tZXRhZGF0YSgpPzsKICAgICAgICBPaygoCiAgICAgICAgICAgIChtZXRhZGF0YS5kZXYoKSBhcyB1MTI4KS50b19iZV9ieXRlcygpLAogICAgICAgICAgICAobWV0YWRhdGEuaW5vKCkgYXMgdTEyOCkudG9fYmVfYnl0ZXMoKSwKICAgICAgICApKQogICAgfQogICAgI1tjZmcod2luZG93cyldCiAgICB7CiAgICAgICAgdXNlIHN0ZDo6e2ZmaTo6Y192b2lkLCBvczo6d2luZG93czo6aW86OkFzUmF3SGFuZGxlfTsKICAgICAgICAjW3JlcHIoQyldCiAgICAgICAgc3RydWN0IEZpbGVJZCB7CiAgICAgICAgICAgIHZvbHVtZTogdTY0LAogICAgICAgICAgICBpZDogW3U4OyAxNl0sCiAgICAgICAgfQogICAgICAgICNbbGluayhuYW1lID0gImtlcm5lbDMyIildCiAgICAgICAgdW5zYWZlIGV4dGVybiAic3lzdGVtIiB7CiAgICAgICAgICAgIGZuIEdldEZpbGVJbmZvcm1hdGlvbkJ5SGFuZGxlRXgoCiAgICAgICAgICAgICAgICBoYW5kbGU6ICptdXQgY192b2lkLAogICAgICAgICAgICAgICAgY2xhc3M6IGkzMiwKICAgICAgICAgICAgICAgIGRhdGE6ICptdXQgY192b2lkLAogICAgICAgICAgICAgICAgYnl0ZXM6IHUzMiwKICAgICAgICAgICAgKSAtPiBpMzI7CiAgICAgICAgfQogICAgICAgIGxldCBtdXQgdmFsdWUgPSBGaWxlSWQgewogICAgICAgICAgICB2b2x1bWU6IDAsCiAgICAgICAgICAgIGlkOiBbMDsgMTZdLAogICAgICAgIH07CiAgICAgICAgLy8gU0FGRVRZOiB0aGUgcmV0YWluZWQgRmlsZSBoYW5kbGUgaXMgbGl2ZTsgRklMRV9JRF9JTkZPIGlzIGNvcnJlY3RseQogICAgICAgIC8vIHNpemVkIGFuZCBleGNsdXNpdmVseSBib3Jyb3dlZCBmb3IgdGhlIGR1cmF0aW9uIG9mIHRoZSBuYXRpdmUgY2FsbC4KICAgICAgICBsZXQgcmVzdWx0ID0gdW5zYWZlIHsKICAgICAgICAgICAgR2V0RmlsZUluZm9ybWF0aW9uQnlIYW5kbGVFeCgKICAgICAgICAgICAgICAgIGZpbGUuYXNfcmF3X2hhbmRsZSgpLAogICAgICAgICAgICAgICAgMTgsCiAgICAgICAgICAgICAgICAoJm11dCB2YWx1ZSBhcyAqbXV0IEZpbGVJZCkuY2FzdCgpLAogICAgICAgICAgICAgICAgc3RkOjptZW06OnNpemVfb2Y6OjxGaWxlSWQ+KCkgYXMgdTMyLAogICAgICAgICAgICApCiAgICAgICAgfTsKICAgICAgICBpZiByZXN1bHQgPT0gMCB7CiAgICAgICAgICAgIHJldHVybiBFcnIoc3RkOjppbzo6RXJyb3I6Omxhc3Rfb3NfZXJyb3IoKSk7CiAgICAgICAgfQogICAgICAgIE9rKCgodmFsdWUudm9sdW1lIGFzIHUxMjgpLnRvX2JlX2J5dGVzKCksIHZhbHVlLmlkKSkKICAgIH0KfQpzdHJ1Y3QgSGVsZChGaWxlKTsKaW1wbCBEYXRhYmFzZUZpbGUgZm9yIEhlbGQgewogICAgZm4gbWV0YWRhdGEoJnNlbGYpIC0+IHN0ZDo6aW86OlJlc3VsdDxmczo6TWV0YWRhdGE+IHsKICAgICAgICBzZWxmLjAubWV0YWRhdGEoKQogICAgfQogICAgZm4gaWRlbnRpdHkoJnNlbGYpIC0+IHN0ZDo6aW86OlJlc3VsdDxEYXRhYmFzZUZpbGVJZGVudGl0eT4gewogICAgICAgIGlkZW50aXR5KCZzZWxmLjApCiAgICB9Cn0Kc3RydWN0IE5hdGl2ZSB7CiAgICByb290OiBQYXRoQnVmLAp9CnN0cnVjdCBSZXNlcnZhdGlvbjsKaW1wbCBHcm93dGhSZXNlcnZhdGlvbiBmb3IgUmVzZXJ2YXRpb24ge30KaW1wbCBEcm9wIGZvciBOYXRpdmUgewogICAgZm4gZHJvcCgmbXV0IHNlbGYpIHsKICAgICAgICBsZXQgXyA9IGZzOjpyZW1vdmVfZGlyX2FsbCgmc2VsZi5yb290KTsKICAgIH0KfQppbXBsIENhY2hlRmlsZXMgZm9yIE5hdGl2ZSB7CiAgICBmbiByZWFkX3BvaW50ZXIoJnNlbGYpIC0+IHNlX3R5cGVzOjpSZXN1bHQ8T3B0aW9uPFZlYzx1OD4+PiB7CiAgICAgICAgT2soTm9uZSkKICAgIH0KICAgIGZuIHJlcGxhY2VfcG9pbnRlcigmc2VsZiwgXzogT3B0aW9uPCZbdThdPiwgXzogJlt1OF0pIC0+IHNlX3R5cGVzOjpSZXN1bHQ8KCk+IHsKICAgICAgICBFcnIoZXJyKCJub3QgdXNlZCIpKQogICAgfQogICAgZm4gcGluX2RhdGFiYXNlKCZzZWxmLCBfOiAmQ2FjaGVFcG9jaCkgLT4gc2VfdHlwZXM6OlJlc3VsdDxPcHRpb248RGF0YWJhc2VQaW4+PiB7CiAgICAgICAgbGV0IHBhdGggPSBzZWxmLnJvb3Quam9pbigiYXRsYXMuZGIiKTsKICAgICAgICBtYXRjaCBGaWxlOjpvcGVuKCZwYXRoKSB7CiAgICAgICAgICAgIE9rKGZpbGUpID0+IE9rKFNvbWUoRGF0YWJhc2VQaW4gewogICAgICAgICAgICAgICAgZmlsZTogQm94OjpuZXcoSGVsZChmaWxlKSksCiAgICAgICAgICAgICAgICBwYXRoLAogICAgICAgICAgICB9KSksCiAgICAgICAgICAgIEVycihlKSBpZiBlLmtpbmQoKSA9PSBzdGQ6OmlvOjpFcnJvcktpbmQ6Ok5vdEZvdW5kID0+IE9rKE5vbmUpLAogICAgICAgICAgICBFcnIoZSkgPT4gRXJyKGVycihlKSksCiAgICAgICAgfQogICAgfQogICAgZm4gcmVzZXJ2ZV9kYXRhYmFzZSgmc2VsZiwgXzogJkNhY2hlRXBvY2gpIC0+IHNlX3R5cGVzOjpSZXN1bHQ8RGF0YWJhc2VQaW4+IHsKICAgICAgICBsZXQgcGF0aCA9IHNlbGYucm9vdC5qb2luKCJhdGxhcy5kYiIpOwogICAgICAgIGxldCBmaWxlID0gT3Blbk9wdGlvbnM6Om5ldygpCiAgICAgICAgICAgIC5yZWFkKHRydWUpCiAgICAgICAgICAgIC53cml0ZSh0cnVlKQogICAgICAgICAgICAuY3JlYXRlX25ldyh0cnVlKQogICAgICAgICAgICAub3BlbigmcGF0aCkKICAgICAgICAgICAgLm1hcF9lcnIoZXJyKT87CiAgICAgICAgT2soRGF0YWJhc2VQaW4gewogICAgICAgICAgICBmaWxlOiBCb3g6Om5ldyhIZWxkKGZpbGUpKSwKICAgICAgICAgICAgcGF0aCwKICAgICAgICB9KQogICAgfQogICAgZm4gZGlzY2FyZF91bnB1Ymxpc2hlZCgmc2VsZiwgXzogJkRhdGFiYXNlUGluKSAtPiBzZV90eXBlczo6UmVzdWx0PCgpPiB7CiAgICAgICAgT2soKCkpCiAgICB9CiAgICBmbiB2YWxpZGF0ZV9kYXRhYmFzZSgmc2VsZiwgcGluOiAmRGF0YWJhc2VQaW4pIC0+IHNlX3R5cGVzOjpSZXN1bHQ8KCk+IHsKICAgICAgICBsZXQgY3VycmVudCA9IEZpbGU6Om9wZW4oJnBpbi5wYXRoKS5tYXBfZXJyKGVycik/OwogICAgICAgIGlmIGlkZW50aXR5KCZjdXJyZW50KS5tYXBfZXJyKGVycik/ICE9IHBpbi5maWxlLmlkZW50aXR5KCkubWFwX2VycihlcnIpPyB7CiAgICAgICAgICAgIHJldHVybiBFcnIoZXJyKCJpZGVudGl0eSBjaGFuZ2VkIikpOwogICAgICAgIH0KICAgICAgICBPaygoKSkKICAgIH0KICAgIGZuIHdhbF9ieXRlcygmc2VsZiwgXzogJkRhdGFiYXNlUGluKSAtPiBzZV90eXBlczo6UmVzdWx0PHU2ND4gewogICAgICAgIG1hdGNoIGZzOjptZXRhZGF0YShzZWxmLnJvb3Quam9pbigiYXRsYXMuZGItd2FsIikpIHsKICAgICAgICAgICAgT2sodmFsdWUpID0+IE9rKHZhbHVlLmxlbigpKSwKICAgICAgICAgICAgRXJyKGUpIGlmIGUua2luZCgpID09IHN0ZDo6aW86OkVycm9yS2luZDo6Tm90Rm91bmQgPT4gT2soMCksCiAgICAgICAgICAgIEVycihlKSA9PiBFcnIoZXJyKGUpKSwKICAgICAgICB9CiAgICB9CiAgICBmbiByZXNlcnZlX2dyb3d0aCgmc2VsZiwgXzogdTY0KSAtPiBzZV90eXBlczo6UmVzdWx0PEJveDxkeW4gR3Jvd3RoUmVzZXJ2YXRpb24gKyAnXz4+IHsKICAgICAgICBPayhCb3g6Om5ldyhSZXNlcnZhdGlvbikpCiAgICB9Cn0KZm4gc2V0dXAoKSAtPiBSZXN1bHQ8KE5hdGl2ZSwgQ2FjaGVTZWVkKSwgQm94PGR5biBzdGQ6OmVycm9yOjpFcnJvcj4+IHsKICAgIGxldCByb290ID0gc3RkOjplbnY6OnRlbXBfZGlyKCkuam9pbihmb3JtYXQhKAogICAgICAgICJ3YWwtcmV2aWV3LXt9LXt9IiwKICAgICAgICBzdGQ6OnByb2Nlc3M6OmlkKCksCiAgICAgICAgU3lzdGVtVGltZTo6bm93KCkuZHVyYXRpb25fc2luY2UoVU5JWF9FUE9DSCk/LmFzX25hbm9zKCkKICAgICkpOwogICAgZnM6OmNyZWF0ZV9kaXIoJnJvb3QpPzsKICAgIGxldCByb290ID0gZnM6OmNhbm9uaWNhbGl6ZShyb290KT87CiAgICBsZXQgc2NvcGUgPSBTY29wZTo6bmV3KAogICAgICAgIFJvb3RSZWdpc3RyYXRpb24gewogICAgICAgICAgICBwcm9qZWN0OiBQcm9qZWN0SWQ6OmZyb21fcGFydHMoMSwgWzE7IDEwXSk/LAogICAgICAgICAgICByb290OiBSb290SWQ6OmZyb21fcGFydHMoMSwgWzI7IDEwXSk/LAogICAgICAgICAgICBjYW5vbmljYWxfc291cmNlX3Jvb3Q6IHJvb3QuY2xvbmUoKSwKICAgICAgICAgICAgY2FjaGU6IENhY2hlTG9jYXRpb24gewogICAgICAgICAgICAgICAgZGlyZWN0b3J5OiByb290LmNsb25lKCksCiAgICAgICAgICAgIH0sCiAgICAgICAgICAgIGdpdF9tZXRhZGF0YTogTm9uZSwKICAgICAgICB9LAogICAgICAgIFszOyAzMl0sCiAgICApPzsKICAgIGxldCBjb3ZlcmFnZSA9IHNlcmRlX2pzb246OmZyb21fdmFsdWUoCiAgICAgICAgc2VyZGVfanNvbjo6anNvbiEoeyJkaXNjb3ZlcmVkX2ZpbGVzIjowLCJpbmRleGVkX2ZpbGVzIjowLCJwYXJ0aWFsX2ZpbGVzIjowLCJkZWZlcnJlZF9maWxlcyI6MCwiZmFpbGVkX2ZpbGVzIjowLCJkaXNjb3ZlcnlfY29tcGxldGUiOnRydWUsInN0YWxlX2ZpbGVzIjowLCJyZXNvbHZlZF9yZWZlcmVuY2VzIjowLCJuYW1lX29ubHlfcmVmZXJlbmNlcyI6MCwid2F0Y2hlZF9kaXJlY3RvcmllcyI6MCwidW53YXRjaGVkX2RpcmVjdG9yaWVzIjowLCJ3YXRjaF9kaXNjb3ZlcnlfY29tcGxldGUiOnRydWUsIndhdGNoX3N0YXRzX3N0YXJ0ZWQiOm51bGwsIndhdGNoX2FjdGl2YXRpb25fYXR0ZW1wdHMiOjAsIndhdGNoX2xpbWl0ZWRfYWN0aXZhdGlvbnMiOjAsInJlYXNvbnMiOltdfSksCiAgICApPzsKICAgIGxldCBzZWVkID0gQ2FjaGVTZWVkIHsKICAgICAgICBpZGVudGl0eTogQ2FjaGVJZGVudGl0eSB7CiAgICAgICAgICAgIHNjb3BlLAogICAgICAgICAgICBlcG9jaDogQ2FjaGVFcG9jaDo6ZnJvbV9wYXJ0cygxLCBbNDsgMTBdKT8sCiAgICAgICAgfSwKICAgICAgICBleHRyYWN0b3JfdmVyc2lvbjogIm5hdGl2ZS1yZXZpZXciLmludG8oKSwKICAgICAgICBpZ25vcmVfZGlnZXN0OiBDb250ZW50SGFzaChbMDsgMzJdKSwKICAgICAgICBjb3ZlcmFnZSwKICAgICAgICBzdGF0ZTogSW5kZXhTdGF0ZTo6Q3VycmVudCwKICAgIH07CiAgICBPaygoTmF0aXZlIHsgcm9vdCB9LCBzZWVkKSkKfQpmbiB3YWwobmF0aXZlOiAmTmF0aXZlKSAtPiBzdGQ6OmlvOjpSZXN1bHQ8dTY0PiB7CiAgICBmczo6bWV0YWRhdGEobmF0aXZlLnJvb3Quam9pbigiYXRsYXMuZGItd2FsIikpLm1hcCh8bXwgbS5sZW4oKSkKfQpmbiBmaWxsKGRiOiAmbXV0IENhY2hlQ29ubmVjdGlvbjwnXz4sIG5hdGl2ZTogJk5hdGl2ZSkgLT4gQ2hlY2sgewogICAgZm9yIGJhdGNoIGluIDAuLjY0IHsKICAgICAgICBpZiB3YWwobmF0aXZlKT8gPiA2XzAwMF8wMDAgewogICAgICAgICAgICByZXR1cm4gT2soKCkpOwogICAgICAgIH0KICAgICAgICBkYi53cml0ZSgyXzAwMF8wMDAsIGRlYWRsaW5lKCksIHxzcWx8IHsKICAgICAgICAgICAgbGV0IG11dCBpbnNlcnQgPSBzcWwucHJlcGFyZSgiSU5TRVJUIElOVE8gbmFtZXModGV4dCkgVkFMVUVTKD8xKSIpPzsKICAgICAgICAgICAgZm9yIG4gaW4gMC4uMTIwIHsKICAgICAgICAgICAgICAgIGluc2VydAogICAgICAgICAgICAgICAgICAgIC5leGVjdXRlKFtmb3JtYXQhKCJ7YmF0Y2g6MDN9LXtuOjAzfS17fSIsICJ4Ii5yZXBlYXQoOTAwKSldKQogICAgICAgICAgICAgICAgICAgIC5tYXBfZXJyKGVycik/OwogICAgICAgICAgICB9CiAgICAgICAgICAgIE9rKCgpKQogICAgICAgIH0pPzsKICAgICAgICBhc3NlcnQhKAogICAgICAgICAgICB3YWwobmF0aXZlKT8gPD0gOF8wMDBfMDAwLAogICAgICAgICAgICAiZml4dHVyZSBleGNlZWRlZCBvcmlnaW5hbCBXQUwgY2VpbGluZyIKICAgICAgICApOwogICAgfQogICAgRXJyKCJmaXh0dXJlIGRpZCBub3QgcmVhY2ggd3JpdGUgcHJlc3N1cmUiLmludG8oKSkKfQpmbiBjb3VudChkYjogJm11dCBDYWNoZUNvbm5lY3Rpb248J18+KSAtPiBzZV90eXBlczo6UmVzdWx0PGk2ND4gewogICAgZGIucmVhZChkZWFkbGluZSgpLCB8c3FsfCB7CiAgICAgICAgc3FsLnByZXBhcmUoIlNFTEVDVCBjb3VudCgqKSBGUk9NIG5hbWVzIik/CiAgICAgICAgICAgIC5xdWVyeV9yb3coW10sIHxyb3d8IHJvdy5nZXQoMCkpCiAgICAgICAgICAgIC5tYXBfZXJyKGVycikKICAgIH0pCn0KZm4gYWRtaXNzaW9uKAogICAgZGI6ICZtdXQgQ2FjaGVDb25uZWN0aW9uPCdfPiwKICAgIHJhbjogJkNlbGw8Ym9vbD4sCiAgICBncm93dGg6IHU2NCwKICAgIHVudGlsOiBJbnN0YW50LAopIC0+IHNlX3R5cGVzOjpSZXN1bHQ8KCk+IHsKICAgIGRiLndyaXRlKGdyb3d0aCwgdW50aWwsIHxzcWx8IHsKICAgICAgICByYW4uc2V0KHRydWUpOwogICAgICAgIHNxbC5wcmVwYXJlKCJJTlNFUlQgSU5UTyBuYW1lcyh0ZXh0KSBWQUxVRVMoJ2FmdGVyLXByZXNzdXJlJykiKT8KICAgICAgICAgICAgLmV4ZWN1dGUoW10pCiAgICAgICAgICAgIC5tYXBfZXJyKGVycik/OwogICAgICAgIE9rKCgpKQogICAgfSkKfQpmbiBydW5fY2FzZShwaW5uZWQ6IGJvb2wpIC0+IENoZWNrIHsKICAgIGxldCAobmF0aXZlLCBzZWVkKSA9IHNldHVwKCk/OwogICAgbGV0IG11dCBkYiA9IENhY2hlQ29ubmVjdGlvbjo6Y3JlYXRlKAogICAgICAgICZuYXRpdmUsCiAgICAgICAgJnNlZWQsCiAgICAgICAgQ29ubmVjdGlvblJvbGU6Okhvc3RXcml0ZXIsCiAgICAgICAgJlNxbFByb2ZpbGU6OmZyb21fcXVhbGlmaWVkX292ZXJoZWFkKDEpPywKICAgICAgICBkZWFkbGluZSgpLAogICAgKT87CiAgICBsZXQgb3V0c2lkZSA9IGlmIHBpbm5lZCB7CiAgICAgICAgbGV0IGNvbm5lY3Rpb24gPSBydXNxbGl0ZTo6Q29ubmVjdGlvbjo6b3Blbl93aXRoX2ZsYWdzKAogICAgICAgICAgICBuYXRpdmUucm9vdC5qb2luKCJhdGxhcy5kYiIpLAogICAgICAgICAgICBydXNxbGl0ZTo6T3BlbkZsYWdzOjpTUUxJVEVfT1BFTl9SRUFEX09OTFksCiAgICAgICAgKT87CiAgICAgICAgY29ubmVjdGlvbi5leGVjdXRlX2JhdGNoKCJCRUdJTiIpPzsKICAgICAgICBsZXQgdmFsdWU6IGk2NCA9CiAgICAgICAgICAgIGNvbm5lY3Rpb24ucXVlcnlfcm93KCJTRUxFQ1QgY291bnQoKikgRlJPTSBuYW1lcyIsIFtdLCB8cm93fCByb3cuZ2V0KDApKT87CiAgICAgICAgYXNzZXJ0X2VxISh2YWx1ZSwgMCk7CiAgICAgICAgU29tZShjb25uZWN0aW9uKQogICAgfSBlbHNlIHsKICAgICAgICBOb25lCiAgICB9OwogICAgZmlsbCgmbXV0IGRiLCAmbmF0aXZlKT87CiAgICBsZXQgYmVmb3JlID0gd2FsKCZuYXRpdmUpPzsKICAgIGxldCByb3dzID0gY291bnQoJm11dCBkYik/OwogICAgbGV0IHJhbiA9IENlbGw6Om5ldyhmYWxzZSk7CiAgICBsZXQgb3ZlcnNpemUgPSBhZG1pc3Npb24oJm11dCBkYiwgJnJhbiwgOF8wMDBfMDAxLCBkZWFkbGluZSgpKQogICAgICAgIC5lcnIoKQogICAgICAgIC5va19vcigib3ZlcnNpemVkIHJlc2VydmF0aW9uIGFkbWl0dGVkIik/OwogICAgYXNzZXJ0IShtYXRjaGVzISgKICAgICAgICBvdmVyc2l6ZS5ib2R5LmRldGFpbCgpLAogICAgICAgIHNlX3R5cGVzOjpEZXRhaWw6OkF0bGFzUmVzb3VyY2VCdWRnZXQoXykKICAgICkpOwogICAgYXNzZXJ0ISghcmFuLmdldCgpKTsKICAgIGFzc2VydF9lcSEod2FsKCZuYXRpdmUpPywgYmVmb3JlKTsKICAgIGxldCBleHBpcmVkID0gYWRtaXNzaW9uKCZtdXQgZGIsICZyYW4sIDJfMDAwXzAwMCwgc2VfYXRsYXM6OmNsb2NrOjpub3coKSkKICAgICAgICAuZXJyKCkKICAgICAgICAub2tfb3IoImV4cGlyZWQgYWRtaXNzaW9uIGFjY2VwdGVkIik/OwogICAgYXNzZXJ0IShtYXRjaGVzISgKICAgICAgICBleHBpcmVkLmJvZHkuZGV0YWlsKCksCiAgICAgICAgc2VfdHlwZXM6OkRldGFpbDo6RGVhZGxpbmVFeGNlZWRlZChfKQogICAgKSk7CiAgICBhc3NlcnQhKCFyYW4uZ2V0KCkpOwogICAgYXNzZXJ0X2VxIShjb3VudCgmbXV0IGRiKT8sIHJvd3MpOwogICAgaWYgbGV0IFNvbWUob3V0c2lkZSkgPSBvdXRzaWRlIHsKICAgICAgICBsZXQgc3RhcnRlZCA9IEluc3RhbnQ6Om5vdygpOwogICAgICAgIGxldCByZWZ1c2VkID0gYWRtaXNzaW9uKCZtdXQgZGIsICZyYW4sIDJfMDAwXzAwMCwgZGVhZGxpbmUoKSkKICAgICAgICAgICAgLmVycigpCiAgICAgICAgICAgIC5va19vcigicGlubmVkIHJlYWRlciBhbGxvd2VkIHdyaXRlIik/OwogICAgICAgIGFzc2VydCEoCiAgICAgICAgICAgIG1hdGNoZXMhKAogICAgICAgICAgICAgICAgcmVmdXNlZC5ib2R5LmRldGFpbCgpLAogICAgICAgICAgICAgICAgc2VfdHlwZXM6OkRldGFpbDo6QXRsYXNSZXNvdXJjZUJ1ZGdldChfKQogICAgICAgICAgICApLAogICAgICAgICAgICAie3JlZnVzZWR9IgogICAgICAgICk7CiAgICAgICAgYXNzZXJ0ISghcmFuLmdldCgpKTsKICAgICAgICBhc3NlcnRfZXEhKGNvdW50KCZtdXQgZGIpPywgcm93cyk7CiAgICAgICAgYXNzZXJ0X2VxISh3YWwoJm5hdGl2ZSk/LCBiZWZvcmUpOwogICAgICAgIHByaW50bG4hKAogICAgICAgICAgICAiUElOTkVEX1JFRlVTQUwge30iLAogICAgICAgICAgICBzZXJkZV9qc29uOjpqc29uISh7IndhbF9ieXRlcyI6YmVmb3JlLCJlbGFwc2VkX21zIjpzdGFydGVkLmVsYXBzZWQoKS5hc19zZWNzX2Y2NCgpKjEwMDAuMCwiZXJyb3IiOnJlZnVzZWQudG9fc3RyaW5nKCksIndvcmtfcmFuIjpyYW4uZ2V0KCl9KQogICAgICAgICk7CiAgICAgICAgb3V0c2lkZS5leGVjdXRlX2JhdGNoKCJST0xMQkFDSyIpPzsKICAgICAgICBkcm9wKG91dHNpZGUpOwogICAgfQogICAgbGV0IHN0YXJ0ZWQgPSBJbnN0YW50Ojpub3coKTsKICAgIGFkbWlzc2lvbigmbXV0IGRiLCAmcmFuLCAyXzAwMF8wMDAsIGRlYWRsaW5lKCkpPzsKICAgIGFzc2VydCEocmFuLmdldCgpKTsKICAgIGFzc2VydF9lcSEoY291bnQoJm11dCBkYik/LCByb3dzICsgMSk7CiAgICBsZXQgYWZ0ZXIgPSB3YWwoJm5hdGl2ZSk/OwogICAgYXNzZXJ0IShhZnRlciA8IGJlZm9yZSAmJiBhZnRlciA8PSA4XzAwMF8wMDApOwogICAgcHJpbnRsbiEoCiAgICAgICAgIkFETUlTU0lPTl9SRUNPVkVSWSB7fSIsCiAgICAgICAgc2VyZGVfanNvbjo6anNvbiEoeyJwaW5uZWQiOnBpbm5lZCwiYmVmb3JlX2J5dGVzIjpiZWZvcmUsImFmdGVyX2J5dGVzIjphZnRlciwiZWxhcHNlZF9tcyI6c3RhcnRlZC5lbGFwc2VkKCkuYXNfc2Vjc19mNjQoKSoxMDAwLjAsInJvd3NfYmVmb3JlIjpyb3dzLCJyb3dzX2FmdGVyIjpyb3dzKzF9KQogICAgKTsKICAgIGRyb3AoZGIpOwogICAgZHJvcChuYXRpdmUpOwogICAgT2soKCkpCn0KI1t0ZXN0XQpmbiByZWNsYWltc19jb21taXR0ZWRfZnJhbWVzX29uX3NhbWVfY29ubmVjdGlvbigpIC0+IENoZWNrIHsKICAgIHJ1bl9jYXNlKGZhbHNlKQp9CiNbdGVzdF0KZm4gcGlubmVkX3JlYWRlcl9yZWZ1c2VzX3RoZW5fcmVsZWFzZXNfd2l0aG91dF9yZW9wZW4oKSAtPiBDaGVjayB7CiAgICBydW5fY2FzZSh0cnVlKQp9Cg==')
+        expected = '0c13274fc0ad819e15bfb54796258f7c9ea925c3df80e8fa7a1f90ef7df2ff75'
+        assert hashlib.sha256(data).hexdigest() == expected
+        p = Path('crates/se-atlas/tests/wal_pressure_review.rs')
+        assert not p.exists()
+        p.write_bytes(data)
+        (r / 'inputs/fixture.rs').write_bytes(data)
+        (r / 'inputs/source.json').write_text(json.dumps(dict(source=source, fixture_sha256=expected, scope='Native CacheConnection with actual SQLite, native retained file identity and real WAL length; synthetic growth reservation does not qualify the production disk inventory or whole application startup.'), indent=2) + '\n', encoding='utf-8')
+    - name: Build native test image in separate arm target
+      shell: python
+      run: |
+        import hashlib, json, os, shutil, subprocess, time
+        from pathlib import Path
+        r = Path(os.environ['RUNNER_TEMP']) / 'wal-review'
+        i = r / 'inputs'
+        compiler = subprocess.check_output(['rustc', '-Vv'], text=True, encoding='utf-8')
+        host = next((x[6:] for x in compiler.splitlines() if x.startswith('host: ')))
+        argv = ['cargo', 'test', '-p', 'se-atlas', '--test', 'wal_pressure_review', '--all-features', '--target', host, '--locked', '--no-run', '--message-format=json']
+        start = time.monotonic()
+        with (i / 'build.stdout').open('wb') as stdout, (i / 'build.stderr').open('wb') as stderr:
+            p = subprocess.run(argv, stdout=stdout, stderr=stderr)
+        record = dict(source=os.environ['PRODUCT_SOURCE'], arm=os.environ['ARM'], argv=argv, compiler=compiler, target=host, exit=p.returncode, seconds=time.monotonic() - start, profile='test')
+        if p.returncode == 0:
+            executables = []
+            for line in (i / 'build.stdout').read_text(encoding='utf-8').splitlines():
+                data = json.loads(line)
+                if data.get('reason') == 'compiler-artifact' and data.get('target', {}).get('name') == 'wal_pressure_review' and data.get('executable'):
+                    executables.append(data['executable'])
+            assert len(executables) == 1
+            image = r / ('native-wal-test.exe' if os.name == 'nt' else 'native-wal-test')
+            shutil.copy2(executables[0], image)
+            record.update(image=str(image), sha256=hashlib.sha256(image.read_bytes()).hexdigest())
+        (i / 'build.json').write_text(json.dumps(record, indent=2) + '\n', encoding='utf-8')
+        raise SystemExit(p.returncode)
+    - name: Exercise native WAL pressure and pinned-reader release
+      shell: python
+      run: |
+        import hashlib, json, os, subprocess, time
+        from pathlib import Path
+        r = Path(os.environ['RUNNER_TEMP']) / 'wal-review'
+        b = json.loads((r / 'inputs/build.json').read_text(encoding='utf-8'))
+        assert b['exit'] == 0
+        image = Path(b['image'])
+        assert hashlib.sha256(image.read_bytes()).hexdigest() == b['sha256']
+        temporary = r / 'owned-temp'
+        temporary.mkdir()
+        env = dict(os.environ, TMPDIR=str(temporary), TMP=str(temporary), TEMP=str(temporary))
+        argv = [str(image), '--nocapture', '--test-threads=1']
+        start = time.monotonic()
+        with (r / 'test.stdout').open('wb') as stdout, (r / 'test.stderr').open('wb') as stderr:
+            p = subprocess.run(argv, env=env, stdout=stdout, stderr=stderr)
+        text = (r / 'test.stdout').read_text(encoding='utf-8') + (r / 'test.stderr').read_text(encoding='utf-8')
+        head = os.environ['ARM'] == 'head'
+        qualified = p.returncode == 0 and '2 passed; 0 failed;' in text and (text.count('ADMISSION_RECOVERY ') == 2) and ('PINNED_REFUSAL ' in text) if head else p.returncode != 0 and '0 passed; 2 failed;' in text and (text.count('AtlasResourceBudget') >= 2) and ('PINNED_REFUSAL ' in text) and ('ADMISSION_RECOVERY ' not in text)
+        records = []
+        for line in text.splitlines():
+            for marker in ['PINNED_REFUSAL ', 'ADMISSION_RECOVERY ']:
+                if marker in line:
+                    records.append(dict(kind=marker.strip(), value=json.loads(line.split(marker, 1)[1])))
+        result = dict(source=b['source'], arm=os.environ['ARM'], image_sha256=b['sha256'], exit=p.returncode, argv=argv, seconds=time.monotonic() - start, qualified=qualified, records=records, expected='candidate admits after reclaim/release; pinned/oversized/expired calls never execute SQL' if head else 'both recovery cases refuse at the unchanged WAL ceiling; pinned refusal remains valid')
+        (r / 'result.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
+        raise SystemExit(0 if qualified else 1)
+    - name: Seal every result and failure
+      if: always()
+      shell: python
+      run: |
+        import hashlib, json, os
+        from pathlib import Path
+        r = Path(os.environ['RUNNER_TEMP']) / 'wal-review'
+        files = [p for p in r.rglob('*') if p.is_file()]
+        assert all((not p.is_symlink() for p in files))
+        (r / 'members.json').write_text(json.dumps({p.relative_to(r).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}, indent=2) + '\n', encoding='utf-8')
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: atlas-wal-${{ matrix.os }}-${{ matrix.arm }}-r3
+        path: ${{ runner.temp }}/wal-review/
+        if-no-files-found: error
+        retention-days: 14
