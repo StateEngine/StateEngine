@@ -1,7 +1,8 @@
 //! Bounded executable proofs. Unix reuse requires stable native file identity,
-//! modification/change times and size. Windows reuse requires a positive journal
-//! revision bound to its journal instance while a native handle excludes writers.
-//! Unsupported revisions fall back to reading the bytes. A pathname is never a cache identity.
+//! modification/change times and size. Persistent Windows reuse requires a positive
+//! journal revision bound to its instance while a native handle excludes writers.
+//! Unsupported revisions read the bytes once per continuously writer-excluded
+//! process-local file pin. A pathname is never a cache identity.
 //! Unix change time invalidates same-inode rewrites even when mtime is restored;
 //! it is not a qualified persistent journal or protection against hostile same-user mutation.
 use super::*;
@@ -25,161 +26,8 @@ pub(super) struct ImageKey {
     changed: Option<(i64, i64)>,
 }
 #[cfg(windows)]
-mod windows {
-    //! A qualified file revision binds writer exclusion to its journal instance.
-    use std::{
-        fs::File,
-        mem::size_of,
-        os::windows::io::{AsRawHandle, FromRawHandle},
-        ptr,
-    };
-    use windows_sys::Win32::{
-        Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE},
-        Storage::FileSystem::{
-            CreateFileW, FILE_NAME_OPENED, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            GetFinalPathNameByHandleW, OPEN_EXISTING, ReOpenFile, VOLUME_NAME_GUID,
-        },
-        System::{
-            IO::DeviceIoControl,
-            Ioctl::{FSCTL_QUERY_USN_JOURNAL, FSCTL_READ_FILE_USN_DATA, USN_JOURNAL_DATA_V0},
-        },
-    };
+use crate::native_file_revision as windows;
 
-    #[repr(align(8))]
-    struct RecordBuffer([u8; 4096]);
-
-    /// Reopen the exact retained file object, never its possibly replaced pathname.
-    /// Denying write sharing excludes a live writer whose repeated writes may share
-    /// one journal record. Failure leaves the caller on its bounded full-hash path.
-    pub(super) fn pin(file: &File) -> Option<File> {
-        // SAFETY: borrowed live file handle and documented read/share flags. A new
-        // native handle is returned on success; no ownership of the input transfers.
-        let raw = unsafe {
-            ReOpenFile(
-                file.as_raw_handle(),
-                GENERIC_READ,
-                FILE_SHARE_READ | FILE_SHARE_DELETE,
-                0,
-            )
-        };
-        if raw == INVALID_HANDLE_VALUE {
-            return None;
-        }
-        // SAFETY: successful ReOpenFile returned a new uniquely owned native handle.
-        Some(unsafe { File::from_raw_handle(raw) })
-    }
-
-    /// Qualify every key capture, including hint publication outside hash_image.
-    /// A full hash performed while a writer lives must not publish that writer's
-    /// coalesced revision as reusable. Zero and unsupported journals also miss.
-    pub(super) fn revision(file: &File) -> Option<(i64, u64)> {
-        let pin = pin(file)?;
-        let volume = volume(&pin)?;
-        let before = journal(&volume)?;
-        let mut output = RecordBuffer([0; 4096]);
-        let mut returned = 0;
-        // SAFETY: retained file handle, no input/overlapped operation, and a writable
-        // aligned bounded byte buffer whose exact size accompanies its pointer.
-        if unsafe {
-            DeviceIoControl(
-                pin.as_raw_handle(),
-                FSCTL_READ_FILE_USN_DATA,
-                ptr::null(),
-                0,
-                output.0.as_mut_ptr().cast(),
-                output.0.len() as u32,
-                &mut returned,
-                ptr::null_mut(),
-            )
-        } == 0
-        {
-            return None;
-        }
-        let bytes = output.0.get(..returned as usize)?;
-        let length = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?) as usize;
-        let major = u16::from_le_bytes(bytes.get(4..6)?.try_into().ok()?);
-        let offset = match major {
-            2 => 24,
-            3 => 40,
-            _ => return None,
-        };
-        if length > bytes.len() || length < offset + 8 {
-            return None;
-        }
-        let revision = i64::from_le_bytes(bytes.get(offset..offset + 8)?.try_into().ok()?);
-        let after = journal(&volume)?;
-        (revision > 0
-            && before.UsnJournalID != 0
-            && before.UsnJournalID == after.UsnJournalID
-            && revision >= before.LowestValidUsn
-            && revision >= after.LowestValidUsn
-            && revision < after.NextUsn)
-            .then_some((revision, after.UsnJournalID))
-    }
-
-    /// Resolve the volume from the retained file, without following its pathname or
-    /// a mutable drive letter. Unsupported namespaces and unavailable access miss.
-    fn volume(file: &File) -> Option<File> {
-        let mut path = vec![0u16; 32768];
-        // SAFETY: retained file handle, bounded writable UTF-16 buffer.
-        let length = unsafe {
-            GetFinalPathNameByHandleW(
-                file.as_raw_handle(),
-                path.as_mut_ptr(),
-                path.len() as u32,
-                FILE_NAME_OPENED | VOLUME_NAME_GUID,
-            )
-        } as usize;
-        if length == 0 || length >= path.len() {
-            return None;
-        }
-        let path = String::from_utf16(&path[..length]).ok()?;
-        let (guid, _) = path.strip_prefix(r"\\?\Volume{")?.split_once("}\\")?;
-        // No trailing slash: open the volume itself, not its root directory.
-        let name: Vec<u16> = format!(r"\\?\Volume{{{guid}}}")
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
-        // SAFETY: validated NUL-terminated native volume name; read-only access
-        // for journal queries, documented sharing and no mutation or ownership transfer.
-        let raw = unsafe {
-            CreateFileW(
-                name.as_ptr(),
-                GENERIC_READ,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                ptr::null(),
-                OPEN_EXISTING,
-                0,
-                ptr::null_mut(),
-            )
-        };
-        if raw == INVALID_HANDLE_VALUE {
-            return None;
-        }
-        // SAFETY: successful CreateFileW returned a new uniquely owned handle.
-        Some(unsafe { File::from_raw_handle(raw) })
-    }
-
-    fn journal(volume: &File) -> Option<USN_JOURNAL_DATA_V0> {
-        let mut data = USN_JOURNAL_DATA_V0::default();
-        let mut returned = 0;
-        // SAFETY: retained volume handle, initialized aligned native output with its
-        // exact capacity, no input and a synchronous operation.
-        let succeeded = unsafe {
-            DeviceIoControl(
-                volume.as_raw_handle(),
-                FSCTL_QUERY_USN_JOURNAL,
-                ptr::null(),
-                0,
-                (&mut data as *mut USN_JOURNAL_DATA_V0).cast(),
-                size_of::<USN_JOURNAL_DATA_V0>() as u32,
-                &mut returned,
-                ptr::null_mut(),
-            )
-        };
-        (succeeded != 0 && returned as usize == size_of::<USN_JOURNAL_DATA_V0>()).then_some(data)
-    }
-}
 impl ImageKey {
     pub(super) fn reusable(&self) -> bool {
         #[cfg(windows)]
@@ -194,7 +42,9 @@ impl ImageKey {
         }
     }
 }
-type Cache = VecDeque<(ImageKey, Sha256)>;
+// Unqualified keys may live only beside the handle that excluded writers
+// before their full hash. They can never be populated by persisted hints.
+type Cache = VecDeque<(ImageKey, Sha256, Option<File>)>;
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
 pub(super) fn key(file: &File, metadata: &std::fs::Metadata) -> IpcNativeResult<ImageKey> {
     #[cfg(unix)]
@@ -290,8 +140,10 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
         .remaining()
         .map_err(|e| error("executable cache deadline", e))?;
     let stamp = key(&file, &before)?;
+    // The current pin overlaps any retained cache pin, preserving exclusion
+    // even if another thread evicts that entry after the lookup.
     #[cfg(windows)]
-    let reusable = guarded && stamp.reusable();
+    let reusable = guarded;
     #[cfg(not(windows))]
     let reusable = true;
     let cached = if reusable {
@@ -301,9 +153,9 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
                 "executable cache poisoned; restart the host",
             )
         })?;
-        cache
-            .iter()
-            .find_map(|(stored, digest)| (stored == &stamp).then_some(*digest))
+        cache.iter().find_map(|(stored, digest, held)| {
+            (stored == &stamp && (stamp.reusable() || held.is_some())).then_some(*digest)
+        })
     } else {
         None
     };
@@ -372,8 +224,12 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
         ));
     }
     let digest = Sha256::from_bytes(hasher.finalize().into());
+    #[cfg(windows)]
+    let held = (guarded && !stamp.reusable()).then_some(file);
+    #[cfg(not(windows))]
+    let held = None;
     if reusable {
-        remember(stamp, digest)?;
+        remember_held(stamp, digest, held)?;
     }
     Ok(digest)
 }
@@ -381,7 +237,10 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
 /// Populate only an absent key. An already-observed process-local proof wins
 /// over a persisted hint, including a contradictory protected cache entry.
 pub(super) fn remember(stamp: ImageKey, digest: Sha256) -> IpcNativeResult<()> {
-    if !stamp.reusable() {
+    remember_held(stamp, digest, None)
+}
+fn remember_held(stamp: ImageKey, digest: Sha256, held: Option<File>) -> IpcNativeResult<()> {
+    if !stamp.reusable() && held.is_none() {
         return Ok(());
     }
     let mut cache = cache().lock().map_err(|_| {
@@ -390,12 +249,12 @@ pub(super) fn remember(stamp: ImageKey, digest: Sha256) -> IpcNativeResult<()> {
             "executable cache poisoned; restart the host",
         )
     })?;
-    if cache.iter().any(|(stored, _)| *stored == stamp) {
+    if cache.iter().any(|(stored, _, _)| *stored == stamp) {
         return Ok(());
     }
     if cache.len() == 64 {
         cache.pop_front();
     }
-    cache.push_back((stamp, digest));
+    cache.push_back((stamp, digest, held));
     Ok(())
 }

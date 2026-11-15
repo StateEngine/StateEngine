@@ -7,7 +7,7 @@ use std::{
 };
 
 /// File facts only, never authentication, policy or a running process proof.
-/// Qualified native revisions or a fresh digest detect same-inode edits.
+/// Native revisions or a digest under continuous writer exclusion detect edits.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ExecutableStamp {
     path: PathBuf,
@@ -19,7 +19,7 @@ impl ExecutableStamp {
         &self.path
     }
     /// Aliases and scripts deliberately have no reusable qualification key.
-    /// Unavailable native revisions require a fresh bounded content proof.
+    /// Unavailable revisions require bounded content proof or a retained native pin.
     /// Every observation opens and reads the image; unreadability is an error.
     pub fn observe(path: &Path) -> IpcNativeResult<Option<Self>> {
         if !path.is_absolute() {
