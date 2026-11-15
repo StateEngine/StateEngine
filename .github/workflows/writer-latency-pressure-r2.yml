@@ -1,7 +1,8 @@
-name: retained-wal-copy-pressure
-on:
+name: serial-passive-wal-pressure-linux
+'on':
   push:
-    branches: [prime/writer-latency-b4-pressure-r2]
+    branches:
+    - prime/writer-latency-b4-pressure-r2
 permissions:
   contents: read
 concurrency:
@@ -19,154 +20,114 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: linux
-            runner: ubuntu-24.04
-            cache: writer-latency-linux-v1
-            ref: 6b30714d37b1d1ca575e811bba1fc11a633594af
-          - os: windows
-            runner: windows-2025
-            cache: writer-latency-windows-v1
-            ref: 6b30714d37b1d1ca575e811bba1fc11a633594af
+        - os: linux
+          runner: ubuntu-24.04
+          cache: writer-latency-linux-v1
+          ref: bda8e1e7a2c7905cb9b8537c35aad29e9242cb99
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ matrix.ref }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Overlay measurement sources
-        env:
-          MEASUREMENTS: 57ba1b02f1669d1a48d8641482f0f88a94e310f4
-        run: |
-          git fetch --quiet origin "57ba1b02f1669d1a48d8641482f0f88a94e310f4:refs/remotes/measure/tests" "refs/heads/main:refs/remotes/measure/main"
-          measured="$(git rev-parse refs/remotes/measure/tests)"
-          test "$measured" = 57ba1b02f1669d1a48d8641482f0f88a94e310f4
-          echo "$measured" > measurement-commit.txt
-          fork="$(git merge-base refs/remotes/measure/main refs/remotes/measure/tests)"
-          git diff --name-only --diff-filter=AM "$fork" refs/remotes/measure/tests > "$RUNNER_TEMP/measurement-files"
-          python -I - "$RUNNER_TEMP/measurement-files" <<'PY'
-          import re, sys
-          paths = open(sys.argv[1], encoding="utf-8").read().splitlines()
-          if not paths or any(not re.match(r"^(crates/[^/]+/)?tests/", p) for p in paths):
-              sys.exit("measurement overlay must contain only tests directory changes")
-          PY
-          xargs git checkout refs/remotes/measure/tests -- < "$RUNNER_TEMP/measurement-files"
-      - uses: ./.github/actions/rust
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
-        with:
-          shared-key: ${{ matrix.cache }}
-          cache-on-failure: true
-      - name: Measure baseline continuous WAL pressure
-        id: baseline
-        continue-on-error: true
-        run: |
-          git rev-parse HEAD > baseline-source.txt
-          target="$(rustc --print host-tuple)"
-          set +e
-          python -I -c 'from pathlib import Path; Path("target/judge-diagnostics/wal-pressure.json").unlink(missing_ok=True)'
-          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-baseline.log 2>&1
-          pressure_status=$?
-          set -e
-          if [[ -f target/judge-diagnostics/wal-pressure.json ]]; then
-            mkdir -p target/pressure-baseline
-            cp target/judge-diagnostics/wal-pressure.json target/pressure-baseline/wal-pressure.json
-          fi
-          exit "$pressure_status"
-      - name: Run baseline retained checkpoint and pressure controls
-        id: baseline_controls
-        continue-on-error: true
-        run: |
-          target="$(rustc --print host-tuple)"
-          cargo test --target "$target" --release --all-features --locked --no-fail-fast -p se-store --test background_checkpoint_independent --test deferred_checkpoint_independent -- --nocapture > checkpoint-baseline-controls.log 2>&1
-      - name: Select rejected with the same measurement overlay
-        run: |
-          git fetch --quiet origin 4b2bbba73b2c159f2a66b6105f4e6d96fa55643c:refs/remotes/measure/rejected
-          test "$(git rev-parse refs/remotes/measure/rejected)" = 4b2bbba73b2c159f2a66b6105f4e6d96fa55643c
-          git restore --source=HEAD --staged --worktree --pathspec-from-file="$RUNNER_TEMP/measurement-files"
-          git checkout --detach 4b2bbba73b2c159f2a66b6105f4e6d96fa55643c
-          xargs git checkout refs/remotes/measure/tests -- < "$RUNNER_TEMP/measurement-files"
-          git rev-parse HEAD > rejected-source.txt
-          while IFS= read -r measurement_path; do
-            git diff --exit-code refs/remotes/measure/tests -- "$measurement_path"
-          done < "$RUNNER_TEMP/measurement-files"
-      - name: Measure rejected continuous WAL pressure
-        id: rejected
-        continue-on-error: true
-        run: |
-          target="$(rustc --print host-tuple)"
-          set +e
-          python -I -c 'from pathlib import Path; Path("target/judge-diagnostics/wal-pressure.json").unlink(missing_ok=True)'
-          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-rejected.log 2>&1
-          pressure_status=$?
-          set -e
-          if [[ -f target/judge-diagnostics/wal-pressure.json ]]; then
-            mkdir -p target/pressure-rejected
-            cp target/judge-diagnostics/wal-pressure.json target/pressure-rejected/wal-pressure.json
-          fi
-          exit "$pressure_status"
-      - name: Select candidate with the same measurement overlay
-        run: |
-          git fetch --quiet origin f5c2b93c907b36b884da727b0ade941503417ee8:refs/remotes/measure/head
-          test "$(git rev-parse refs/remotes/measure/head)" = f5c2b93c907b36b884da727b0ade941503417ee8
-          git restore --source=HEAD --staged --worktree --pathspec-from-file="$RUNNER_TEMP/measurement-files"
-          git checkout --detach f5c2b93c907b36b884da727b0ade941503417ee8
-          xargs git checkout refs/remotes/measure/tests -- < "$RUNNER_TEMP/measurement-files"
-          git rev-parse HEAD > candidate-source.txt
-          while IFS= read -r measurement_path; do
-            git diff --exit-code refs/remotes/measure/tests -- "$measurement_path"
-          done < "$RUNNER_TEMP/measurement-files"
-      - name: Measure candidate continuous WAL pressure
-        id: candidate
-        continue-on-error: true
-        run: |
-          target="$(rustc --print host-tuple)"
-          set +e
-          python -I -c 'from pathlib import Path; Path("target/judge-diagnostics/wal-pressure.json").unlink(missing_ok=True)'
-          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-candidate.log 2>&1
-          pressure_status=$?
-          set -e
-          if [[ -f target/judge-diagnostics/wal-pressure.json ]]; then
-            mkdir -p target/pressure-candidate
-            cp target/judge-diagnostics/wal-pressure.json target/pressure-candidate/wal-pressure.json
-          fi
-          exit "$pressure_status"
-      - name: Run candidate retained checkpoint and pressure controls
-        id: candidate_controls
-        continue-on-error: true
-        run: |
-          target="$(rustc --print host-tuple)"
-          cargo test --target "$target" --release --all-features --locked --no-fail-fast -p se-store --test background_checkpoint_independent --test deferred_checkpoint_independent -- --nocapture > checkpoint-candidate-controls.log 2>&1
-      - name: Preserve failed observer verdicts
-        if: ${{ always() }}
-        env:
-          BASELINE: ${{ steps.baseline.outcome }}
-          CANDIDATE: ${{ steps.candidate.outcome }}
-          REJECTED: ${{ steps.rejected.outcome }}
-          BASE_CONTROLS: ${{ steps.baseline_controls.outcome }}
-          HEAD_CONTROLS: ${{ steps.candidate_controls.outcome }}
-        run: |
-          test "$BASELINE" = success
-          test "$CANDIDATE" = success
-          test "$REJECTED" = success
-          test "$BASE_CONTROLS" = success
-          test "$HEAD_CONTROLS" = success
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: ${{ always() }}
-        with:
-          name: retained-wal-copy-pressure-${{ matrix.os }}-triple
-          path: |
-            checkpoint-baseline-controls.log
-            checkpoint-candidate-controls.log
-            pressure-baseline.log
-            pressure-rejected.log
-            pressure-candidate.log
-            baseline-source.txt
-            rejected-source.txt
-            candidate-source.txt
-            measurement-commit.txt
-            target/pressure-baseline/
-            target/pressure-rejected/
-            target/pressure-candidate/
-          if-no-files-found: error
-          retention-days: 14
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.ref }}
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Overlay measurement sources
+      env:
+        MEASUREMENTS: 57ba1b02f1669d1a48d8641482f0f88a94e310f4
+      run: "git fetch --quiet origin \"57ba1b02f1669d1a48d8641482f0f88a94e310f4:refs/remotes/measure/tests\" \"refs/heads/main:refs/remotes/measure/main\"\
+        \nmeasured=\"$(git rev-parse refs/remotes/measure/tests)\"\ntest \"$measured\" = 57ba1b02f1669d1a48d8641482f0f88a94e310f4\n\
+        echo \"$measured\" > measurement-commit.txt\nfork=\"$(git merge-base refs/remotes/measure/main refs/remotes/measure/tests)\"\
+        \ngit diff --name-only --diff-filter=AM \"$fork\" refs/remotes/measure/tests > \"$RUNNER_TEMP/measurement-files\"\n\
+        python -I - \"$RUNNER_TEMP/measurement-files\" <<'PY'\nimport re, sys\npaths = open(sys.argv[1], encoding=\"utf-8\"\
+        ).read().splitlines()\nif not paths or any(not re.match(r\"^(crates/[^/]+/)?tests/\", p) for p in paths):\n    sys.exit(\"\
+        measurement overlay must contain only tests directory changes\")\nPY\nxargs git checkout refs/remotes/measure/tests\
+        \ -- < \"$RUNNER_TEMP/measurement-files\"\n"
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: ${{ matrix.cache }}
+        cache-on-failure: true
+    - name: Measure baseline continuous WAL pressure
+      id: baseline
+      continue-on-error: true
+      run: "git rev-parse HEAD > baseline-source.txt\ntarget=\"$(rustc --print host-tuple)\"\nset +e\npython -I -c 'from pathlib\
+        \ import Path; Path(\"target/judge-diagnostics/wal-pressure.json\").unlink(missing_ok=True)'\ncargo test --target\
+        \ \"$target\" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture\
+        \ > pressure-baseline.log 2>&1\npressure_status=$?\nset -e\nif [[ -f target/judge-diagnostics/wal-pressure.json ]];\
+        \ then\n  mkdir -p target/pressure-baseline\n  cp target/judge-diagnostics/wal-pressure.json target/pressure-baseline/wal-pressure.json\n\
+        fi\nexit \"$pressure_status\"\n"
+    - name: Run baseline retained checkpoint and pressure controls
+      id: baseline_controls
+      continue-on-error: true
+      run: 'target="$(rustc --print host-tuple)"
+
+        cargo test --target "$target" --release --all-features --locked --no-fail-fast -p se-store --test background_checkpoint_independent
+        --test deferred_checkpoint_independent -- --nocapture > checkpoint-baseline-controls.log 2>&1
+
+        '
+    - name: Select candidate with the same measurement overlay
+      run: "git fetch --quiet origin bd015d85d006b91a8c5ee1aa0306df1fa388e9aa:refs/remotes/measure/head\ntest \"$(git rev-parse\
+        \ refs/remotes/measure/head)\" = bd015d85d006b91a8c5ee1aa0306df1fa388e9aa\ngit restore --source=HEAD --staged --worktree\
+        \ --pathspec-from-file=\"$RUNNER_TEMP/measurement-files\"\ngit checkout --detach bd015d85d006b91a8c5ee1aa0306df1fa388e9aa\n\
+        xargs git checkout refs/remotes/measure/tests -- < \"$RUNNER_TEMP/measurement-files\"\ngit rev-parse HEAD > candidate-source.txt\n\
+        while IFS= read -r measurement_path; do\n  git diff --exit-code refs/remotes/measure/tests -- \"$measurement_path\"\
+        \ndone < \"$RUNNER_TEMP/measurement-files\"\n"
+    - name: Measure candidate continuous WAL pressure
+      id: candidate
+      continue-on-error: true
+      run: "target=\"$(rustc --print host-tuple)\"\nset +e\npython -I -c 'from pathlib import Path; Path(\"target/judge-diagnostics/wal-pressure.json\"\
+        ).unlink(missing_ok=True)'\ncargo test --target \"$target\" --release --locked --all-features --no-fail-fast -p se-store\
+        \ --test wal_pressure_measurement -- --nocapture > pressure-candidate.log 2>&1\npressure_status=$?\nset -e\nif [[\
+        \ -f target/judge-diagnostics/wal-pressure.json ]]; then\n  mkdir -p target/pressure-candidate\n  cp target/judge-diagnostics/wal-pressure.json\
+        \ target/pressure-candidate/wal-pressure.json\nfi\nexit \"$pressure_status\"\n"
+    - name: Run candidate retained checkpoint and pressure controls
+      id: candidate_controls
+      continue-on-error: true
+      run: 'target="$(rustc --print host-tuple)"
+
+        cargo test --target "$target" --release --all-features --locked --no-fail-fast -p se-store --test background_checkpoint_independent
+        --test deferred_checkpoint_independent -- --nocapture > checkpoint-candidate-controls.log 2>&1
+
+        '
+    - name: Preserve failed observer verdicts
+      if: ${{ always() }}
+      env:
+        BASELINE: ${{ steps.baseline.outcome }}
+        CANDIDATE: ${{ steps.candidate.outcome }}
+        BASE_CONTROLS: ${{ steps.baseline_controls.outcome }}
+        HEAD_CONTROLS: ${{ steps.candidate_controls.outcome }}
+      run: 'test "$BASELINE" = success
+
+        test "$CANDIDATE" = success
+
+        test "$BASE_CONTROLS" = success
+
+        test "$HEAD_CONTROLS" = success
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: serial-passive-wal-pressure-linux-paired
+        path: 'checkpoint-baseline-controls.log
+
+          checkpoint-candidate-controls.log
+
+          pressure-baseline.log
+
+          pressure-candidate.log
+
+          baseline-source.txt
+
+          candidate-source.txt
+
+          measurement-commit.txt
+
+          target/pressure-baseline/
+
+          target/pressure-candidate/
+
+          '
+        if-no-files-found: error
+        retention-days: 14
