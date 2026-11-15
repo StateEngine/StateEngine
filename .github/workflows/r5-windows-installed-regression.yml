@@ -233,23 +233,46 @@ jobs:
         'pid\\'])), \\'Service ancestor changed during family census\\'\\n            assert child[\\'parent\\'] == parent[\\\
         'pid\\'] and child[\\'native\\'][\\'state\\'] == \\'present\\'\\n            assert child[\\'native\\'][\\'creation_filetime\\\
         '] >= parent[\\'native\\'][\\'creation_filetime\\']\\n            visited.add(child[\\'pid\\'])\\n            selected.append(dict(child,\
-        \ depth=parent[\\'depth\\']+1))\\n    return selected\\n', 'regression.py': '\"\"\"Hosted Windows-to-Windows SSH development\
-        \ regression in two fresh accounts.\"\"\"\\nimport argparse\\nimport datetime\\nimport json\\nimport os\\nfrom pathlib\
-        \ import Path\\nimport secrets\\nimport shutil\\nimport socket\\nimport subprocess\\nimport sys\\nimport time\\nfrom\
-        \ concurrent.futures import ThreadPoolExecutor\\nimport accounts\\nimport native\\nfrom ssh_service import Service\\\
-        n\\n\\ndef main():\\n    parser = argparse.ArgumentParser()\\n    parser.add_argument(\\'--assets\\', required=True,\
-        \ type=Path)\\n    parser.add_argument(\\'--root\\', required=True, type=Path)\\n    parser.add_argument(\\'--deadline-utc\\\
-        ', required=True)\\n    args = parser.parse_args()\\n    assert sys.platform == \\'win32\\' and not os.environ.get(\\\
-        'GH_TOKEN\\') and not os.environ.get(\\'GITHUB_TOKEN\\')\\n    deadline = datetime.datetime.fromisoformat(args.deadline_utc)\\\
-        n    assert deadline.tzinfo is not None\\n    root = args.root.resolve()\\n    root.mkdir(exist_ok=False)\\n    reports\
-        \ = root/\\'reports\\'\\n    reports.mkdir()\\n    private = root/\\'private\\'\\n    private.mkdir()\\n    accounts.private_acl(private,\
-        \ \\'S-1-5-32-544\\')\\n    report = {\\'qualified\\': False, \\'phase\\': \\'archive provenance\\', \\'commands\\\
-        ': [],\\n              \\'accounts\\': [], \\'cleanup\\': [], \\'census\\': [],\\n              \\'scope\\': \\'Windows-to-Windows\
-        \ installed-distribution cold SSH, list, reconnect and shutdown\\',\\n              \\'unqualified\\': [\\'Linux direction\
-        \ pairs\\', \\'real providers\\', \\'remote launch/output/send/watch\\',\\n                              \\'four full-journey\
-        \ timings\\', \\'alternate SSH shell\\', \\'native VM\\', \\'macOS\\']}\\n    users = []\\n    service = None\\n \
-        \   child = None\\n    executor = ThreadPoolExecutor(max_workers=1)\\n\\n    def save():\\n        (reports/\\'result.json\\\
-        ').write_text(json.dumps(report, indent=2) + \\'\\\\n\\')\\n\\n    def remaining(maximum):\\n        left = (deadline-datetime.datetime.now(datetime.timezone.utc)).total_seconds()\\\
+        \ depth=parent[\\'depth\\']+1))\\n    return selected\\n\\n\\ndef retained_child(child):\\n    handle = int(child._handle)\\\
+        n    value = times(handle)\\n    class UNICODE_STRING(ctypes.Structure):\\n        _fields_ = [(\\'length\\', W.USHORT),\
+        \ (\\'maximum\\', W.USHORT), (\\'buffer\\', W.LPVOID)]\\n    api = ctypes.WinDLL(\\'ntdll\\')\\n    query = api.NtQueryInformationProcess\\\
+        n    query.argtypes = [W.HANDLE, W.ULONG, W.LPVOID, W.ULONG, ctypes.POINTER(W.ULONG)]\\n    query.restype = ctypes.c_long\\\
+        n    needed = W.ULONG()\\n    status = query(handle, 60, None, 0, ctypes.byref(needed))\\n    assert status & 0xffffffff\
+        \ in (0xc0000004, 0xc0000023), {\\'command_size_status\\': status & 0xffffffff}\\n    assert ctypes.sizeof(UNICODE_STRING)\
+        \ <= needed.value <= 131072\\n    storage = ctypes.create_string_buffer(needed.value)\\n    status = query(handle,\
+        \ 60, storage, len(storage), ctypes.byref(needed))\\n    assert status == 0, {\\'command_read_status\\': status &\
+        \ 0xffffffff}\\n    text = UNICODE_STRING.from_buffer(storage)\\n    start = ctypes.addressof(storage)\\n    assert\
+        \ text.length % 2 == 0 and text.length <= text.maximum <= len(storage)\\n    assert text.buffer and start <= text.buffer\
+        \ and text.buffer+text.length <= start+len(storage)\\n    command = ctypes.wstring_at(text.buffer, text.length//2)\\\
+        n    assert command == subprocess.list2cmdline(child.args), \\'Owned child command line changed\\'\\n    K.QueryFullProcessImageNameW.argtypes\
+        \ = [W.HANDLE, W.DWORD, W.LPWSTR, ctypes.POINTER(W.DWORD)]\\n    path = ctypes.create_unicode_buffer(32768)\\n   \
+        \ size = W.DWORD(len(path))\\n    if not K.QueryFullProcessImageNameW(handle, 0, path, ctypes.byref(size)):\\n   \
+        \     raise ctypes.WinError(ctypes.get_last_error())\\n    assert Path(path.value).resolve() == Path(child.args[0]).resolve()\\\
+        n    return {\\'state\\': \\'present\\', \\'pid\\': child.pid, \\'command\\': command,\\n            \\'image\\':\
+        \ path.value, \\'native\\': value, \\'observation\\': \\'retained CreateProcess handle\\'}\\n\\n\\ndef stop_child(child,\
+        \ observed):\\n    handle = int(child._handle)\\n    assert observed[\\'pid\\'] == child.pid and observed[\\'command\\\
+        ']\\n    assert times(handle)[\\'creation_filetime\\'] == observed[\\'native\\'][\\'creation_filetime\\']\\n    if\
+        \ child.poll() is None:\\n        current = retained_child(child)\\n        assert current[\\'command\\'] == observed[\\\
+        'command\\'] and current[\\'image\\'] == observed[\\'image\\']\\n        if not K.TerminateProcess(handle, 0):\\n\
+        \            raise ctypes.WinError(ctypes.get_last_error())\\n        assert K.WaitForSingleObject(handle, 10000)\
+        \ == 0\\n    child.wait(timeout=5)\\n    return dict(times(handle), reaped=True, exit=child.returncode)\\n', 'regression.py':\
+        \ '\"\"\"Hosted Windows-to-Windows SSH development regression in two fresh accounts.\"\"\"\\nimport argparse\\nimport\
+        \ datetime\\nimport json\\nimport os\\nfrom pathlib import Path\\nimport secrets\\nimport shutil\\nimport socket\\\
+        nimport subprocess\\nimport sys\\nimport time\\nfrom concurrent.futures import ThreadPoolExecutor\\nimport accounts\\\
+        nimport native\\nfrom ssh_service import Service\\n\\n\\ndef main():\\n    parser = argparse.ArgumentParser()\\n \
+        \   parser.add_argument(\\'--assets\\', required=True, type=Path)\\n    parser.add_argument(\\'--root\\', required=True,\
+        \ type=Path)\\n    parser.add_argument(\\'--deadline-utc\\', required=True)\\n    args = parser.parse_args()\\n  \
+        \  assert sys.platform == \\'win32\\' and not os.environ.get(\\'GH_TOKEN\\') and not os.environ.get(\\'GITHUB_TOKEN\\\
+        ')\\n    deadline = datetime.datetime.fromisoformat(args.deadline_utc)\\n    assert deadline.tzinfo is not None\\\
+        n    root = args.root.resolve()\\n    root.mkdir(exist_ok=False)\\n    reports = root/\\'reports\\'\\n    reports.mkdir()\\\
+        n    private = root/\\'private\\'\\n    private.mkdir()\\n    accounts.private_acl(private, \\'S-1-5-32-544\\')\\\
+        n    report = {\\'qualified\\': False, \\'phase\\': \\'archive provenance\\', \\'commands\\': [],\\n             \
+        \ \\'accounts\\': [], \\'cleanup\\': [], \\'census\\': [],\\n              \\'scope\\': \\'Windows-to-Windows installed-distribution\
+        \ cold SSH, list, reconnect and shutdown\\',\\n              \\'unqualified\\': [\\'Linux direction pairs\\', \\'real\
+        \ providers\\', \\'remote launch/output/send/watch\\',\\n                              \\'four full-journey timings\\\
+        ', \\'alternate SSH shell\\', \\'native VM\\', \\'macOS\\']}\\n    users = []\\n    service = None\\n    child = None\\\
+        n    executor = ThreadPoolExecutor(max_workers=1)\\n\\n    def save():\\n        (reports/\\'result.json\\').write_text(json.dumps(report,\
+        \ indent=2) + \\'\\\\n\\')\\n\\n    def remaining(maximum):\\n        left = (deadline-datetime.datetime.now(datetime.timezone.utc)).total_seconds()\\\
         n        assert left > 0, \\'Fixture work deadline expired; cleanup only\\'\\n        return min(left, maximum)\\\
         n\\n    def census(label):\\n        value = native.census([u[\\'sid\\'] for u in users])\\n        value.update(label=label,\
         \ utc=datetime.datetime.now(datetime.timezone.utc).isoformat())\\n        report[\\'census\\'].append(value)\\n  \
@@ -430,21 +453,24 @@ jobs:
         ']\\n            if ignore:\\n                argv.append(\\'-n\\')\\n            argv += [\\'fixture-destination\\\
         ', command]\\n            process = subprocess.Popen(argv, stdin=subprocess.PIPE if pipe else subprocess.DEVNULL,\\\
         n                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)\\n            row[\\'birth\\\
-        '] = native.exact(process.pid)\\n            if pipe:\\n                process.stdin.close()\\n                process.stdin\
-        \ = None\\n            try:\\n                stdout, stderr = process.communicate(timeout=8)\\n                row.update(timed_out=False,\
-        \ exit=process.returncode,\\n                           stdout=stdout.decode(errors=\\'replace\\'), stderr=stderr.decode(errors=\\\
-        'replace\\'))\\n            except subprocess.TimeoutExpired as error:\\n                row.update(timed_out=True,\
-        \ exit_at_timeout=process.poll(),\\n                           native_at_timeout=native.process(process.pid))\\n \
-        \               if process.poll() is None:\\n                    row[\\'forced_exact_after\\'] = native.stop(row[\\\
-        'birth\\'])\\n                try:\\n                    stdout, stderr = process.communicate(timeout=3)\\n      \
-        \              row.update(exit=process.returncode, pipes_joined=True,\\n                               stdout=stdout.decode(errors=\\\
+        '] = native.retained_child(process)\\n            if pipe:\\n                process.stdin.close()\\n            \
+        \    process.stdin = None\\n            try:\\n                stdout, stderr = process.communicate(timeout=8)\\n\
+        \                row.update(timed_out=False, exit=process.returncode,\\n                           stdout=stdout.decode(errors=\\\
+        'replace\\'), stderr=stderr.decode(errors=\\'replace\\'))\\n            except subprocess.TimeoutExpired as error:\\\
+        n                row.update(timed_out=True, exit_at_timeout=process.poll(),\\n                           native_at_timeout=native.process(process.pid))\\\
+        n                if process.poll() is None:\\n                    row[\\'forced_exact_after\\'] = native.stop_child(process,\
+        \ row[\\'birth\\'])\\n                try:\\n                    stdout, stderr = process.communicate(timeout=3)\\\
+        n                    row.update(exit=process.returncode, pipes_joined=True,\\n                               stdout=stdout.decode(errors=\\\
         'replace\\'), stderr=stderr.decode(errors=\\'replace\\'))\\n                except subprocess.TimeoutExpired as after:\\\
         n                    row.update(pipes_joined=False, partial_stdout=(after.stdout or b\\'\\').decode(errors=\\'replace\\\
         '),\\n                               partial_stderr=(after.stderr or b\\'\\').decode(errors=\\'replace\\'))\\n   \
-        \     except Exception as error:\\n            row[\\'error\\'] = repr(error)\\n        finally:\\n            if\
-        \ process is not None and process.poll() is None:\\n                row[\\'final_forced_after\\'] = native.stop(row[\\\
-        'birth\\'])\\n                process.wait(timeout=5)\\n            row[\\'elapsed_seconds\\'] = time.monotonic()-started\\\
-        n            args.report.parent.mkdir(exist_ok=True)\\n            args.report.write_text(json.dumps(report, indent=2)+\\\
+        \     except Exception as error:\\n            row[\\'error\\'] = repr(error)\\n        finally:\\n            row[\\\
+        'elapsed_seconds\\'] = time.monotonic()-started\\n            args.report.parent.mkdir(exist_ok=True)\\n         \
+        \   args.report.write_text(json.dumps(report, indent=2)+\\'\\\\n\\')\\n            if process is not None and process.poll()\
+        \ is None:\\n                try:\\n                    observed = row.get(\\'birth\\') or native.retained_child(process)\\\
+        n                    row[\\'final_forced_after\\'] = native.stop_child(process, observed)\\n                except\
+        \ Exception as error:\\n                    row[\\'cleanup_error\\'] = repr(error)\\n                    args.report.write_text(json.dumps(report,\
+        \ indent=2)+\\'\\\\n\\')\\n                    raise\\n                args.report.write_text(json.dumps(report, indent=2)+\\\
         '\\\\n\\')\\n    print(json.dumps({\\'completed\\': True, \\'cases\\': len(report[\\'cases\\'])}))\\n\\n\\nif __name__\
         \ == \\'__main__\\':\\n    main()\\n', 'ssh_service.py': '\"\"\"An exact newly registered service using the built-in\
         \ SSH server image.\"\"\"\\nimport json\\nimport os\\nfrom pathlib import Path\\nimport secrets\\nimport subprocess\\\
