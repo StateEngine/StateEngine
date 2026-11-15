@@ -47,29 +47,9 @@ pub(super) fn collect(
             output.truncated = true;
             break;
         }
-        let mut ids = Vec::with_capacity(513);
-        {
-            let mut stmt = sql.prepare(&plan.sql)?;
-            let mut rows = stmt
-                .query(rusqlite::params_from_iter(plan.values))
-                .map_err(cache_error)?;
-            while let Some(row) = rows.next().map_err(cache_error)? {
-                ids.push((
-                    get::<i64>(row, 0)?,
-                    get::<Option<i64>>(row, 1)?,
-                    if plan.lexical {
-                        get::<f64>(row, 2)?
-                    } else {
-                        0.0
-                    },
-                ));
-            }
-        }
-        if ids.len() > 512 {
-            ids.pop();
-            output.truncated = true;
-        }
-        for (rowid, precomputed_last, bm25) in ids {
+        let selected = super::candidate_window::collect(sql, &plan)?;
+        output.truncated |= selected.truncated;
+        for (rowid, precomputed_last, bm25) in selected.rows {
             if !bm25.is_finite() || bm25 > 0.0 {
                 return Err(cache_error("invalid BM25 score"));
             }

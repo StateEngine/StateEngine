@@ -1,6 +1,7 @@
 //! Read-only, scoped cache queries. No query starts indexing or repairs a cache.
 mod body;
 mod candidate_sql;
+mod candidate_window;
 mod candidates;
 pub mod changes;
 pub mod cursor;

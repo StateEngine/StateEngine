@@ -5,8 +5,10 @@ pub(super) struct Plan {
     pub kind: Kind,
     pub tier: u8,
     pub sql: String,
+    pub filter: String,
     pub values: Vec<Value>,
     pub lexical: bool,
+    pub lexical_multiplier: u8,
 }
 #[expect(
     clippy::cognitive_complexity,
@@ -162,6 +164,7 @@ fn plan(kind: Kind, tier: u8, condition: &str, text: &str, query: &FindQuery) ->
     let fts = ["symbol_fts", "record_fts", "record_text_fts"]
         .into_iter()
         .find(|table| condition.contains(&format!("FROM {table} WHERE")));
+    let lexical_multiplier = split_score(fts, condition, text, query, &mut values);
     let mut from = if kind == Kind::Symbol && fts.is_none() {
         // SQLite otherwise scans declarations and probes names once per row.
         // Name predicates visit each interned name once, then its indexed
@@ -179,13 +182,11 @@ fn plan(kind: Kind, tier: u8, condition: &str, text: &str, query: &FindQuery) ->
             .strip_prefix(&prefix)
             .and_then(|s| s.strip_suffix(')'))
             .ok_or_else(|| cache_error("invalid bounded FTS plan"))?;
-        (condition, format!(",bm25({table})"))
+        (condition, format!(",{lexical_multiplier}*bm25({table})"))
     } else {
         (condition, String::new())
     };
-    let mut sql = format!(
-        "SELECT {alias}.id,a.last_touch_unix_ms{lexical} FROM {from} LEFT JOIN activity a ON a.target_kind='{tag}' AND a.target_key={key} WHERE ({condition})"
-    );
+    let mut filter = format!("({condition})");
     if kind == Kind::Record {
         let k = match query.kind {
             SearchKind::Message => Some("message"),
@@ -195,37 +196,70 @@ fn plan(kind: Kind, tier: u8, condition: &str, text: &str, query: &FindQuery) ->
         };
         if let Some(k) = k {
             values.push(Value::Text(k.into()));
-            sql.push_str(&format!(" AND r.kind=?{}", values.len()));
+            filter.push_str(&format!(" AND r.kind=?{}", values.len()));
         }
     }
     if !query.scope.paths.is_empty() || !query.scope.languages.is_empty() {
         let column = if kind == Kind::File { "f" } else { "scope" };
         if kind == Kind::Symbol {
-            sql.push_str(" AND EXISTS(SELECT 1 FROM files scope WHERE scope.id=s.file");
+            filter.push_str(" AND EXISTS(SELECT 1 FROM files scope WHERE scope.id=s.file");
         } else if kind != Kind::File {
-            sql.push_str(&format!(" AND EXISTS(SELECT 1 FROM mentions m JOIN files scope ON m.target_key=scope.key WHERE m.source_kind='{tag}' AND m.source_id={alias}.id AND m.target_kind='file'"));
+            filter.push_str(&format!(" AND EXISTS(SELECT 1 FROM mentions m JOIN files scope ON m.target_key=scope.key WHERE m.source_kind='{tag}' AND m.source_id={alias}.id AND m.target_kind='file'"));
         }
         values.push(Value::Blob(query.scope.packed_paths()));
         values.push(Value::Blob(query.scope.packed_languages()));
-        sql.push_str(&format!(
+        filter.push_str(&format!(
             " AND atlas_scope({column}.path,{column}.language,?{},?{})",
             values.len() - 1,
             values.len()
         ));
         if kind != Kind::File {
-            sql.push(')');
+            filter.push(')');
         }
     }
-    sql.push_str(&format!(
-        " ORDER BY a.last_touch_unix_ms DESC,{key} LIMIT 513"
-    ));
+    let bounded = matches!(kind, Kind::Symbol | Kind::File);
+    let key_column = if bounded {
+        format!(",{key}")
+    } else {
+        String::new()
+    };
+    let mut sql = format!(
+        "SELECT {alias}.id,a.last_touch_unix_ms{lexical}{key_column} FROM {from} LEFT JOIN activity a ON a.target_kind='{tag}' AND a.target_key={key} WHERE {filter}"
+    );
+    if !bounded {
+        sql.push_str(&format!(
+            " ORDER BY a.last_touch_unix_ms DESC,{key} LIMIT 513"
+        ));
+    }
     Ok(Plan {
         kind,
         tier,
         sql,
+        filter,
         values,
         lexical: fts.is_some(),
+        lexical_multiplier,
     })
+}
+fn split_score(
+    table: Option<&str>,
+    condition: &str,
+    expression: &str,
+    query: &FindQuery,
+    values: &mut [Value],
+) -> u8 {
+    let atom = format!("\"{}\"*", query.query.as_str().replace('"', "\"\""));
+    if table == Some("symbol_fts")
+        && condition.contains("WHERE split_name MATCH")
+        && expression == format!("({atom} OR ({atom}))")
+    {
+        // Identical OR phrases contribute the same two BM25 summands. Keep
+        // that score while retaining only one native prefix-posting list.
+        values[0] = Value::Text(atom);
+        2
+    } else {
+        1
+    }
 }
 fn oid_prefix(text: &str, exact: bool) -> Option<(Vec<u8>, Vec<u8>)> {
     if text.len() < 7

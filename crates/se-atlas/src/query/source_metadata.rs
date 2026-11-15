@@ -66,11 +66,7 @@ impl Pool {
                 pool.truncated = true;
                 break;
             }
-            let (condition, _) = plan
-                .sql
-                .split_once(" WHERE ")
-                .and_then(|(_, s)| s.rsplit_once(" ORDER BY "))
-                .ok_or_else(|| cache_error("invalid source metadata plan"))?;
+            let condition = &plan.filter;
             let from = if plan.kind == Kind::Symbol {
                 if plan.lexical {
                     "symbols s JOIN names n ON n.id=s.name JOIN symbol_fts ON symbol_fts.rowid=s.id"
@@ -86,9 +82,9 @@ impl Pool {
                 ("f.id", "f.id")
             };
             let score = if plan.lexical {
-                ",bm25(symbol_fts)"
+                format!(",{}*bm25(symbol_fts)", plan.lexical_multiplier)
             } else {
-                ",0.0"
+                ",0.0".into()
             };
             let statement =
                 format!("SELECT {id},{file}{score} FROM {from} WHERE {condition} LIMIT 513");
