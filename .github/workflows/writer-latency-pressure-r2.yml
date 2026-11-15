@@ -107,10 +107,10 @@ jobs:
           exit "$pressure_status"
       - name: Select candidate with the same measurement overlay
         run: |
-          git fetch --quiet origin 8da3b66b10ee763009af6f7cacfe8f00992fca0a:refs/remotes/measure/head
-          test "$(git rev-parse refs/remotes/measure/head)" = 8da3b66b10ee763009af6f7cacfe8f00992fca0a
+          git fetch --quiet origin f5c2b93c907b36b884da727b0ade941503417ee8:refs/remotes/measure/head
+          test "$(git rev-parse refs/remotes/measure/head)" = f5c2b93c907b36b884da727b0ade941503417ee8
           git restore --source=HEAD --staged --worktree --pathspec-from-file="$RUNNER_TEMP/measurement-files"
-          git checkout --detach 8da3b66b10ee763009af6f7cacfe8f00992fca0a
+          git checkout --detach f5c2b93c907b36b884da727b0ade941503417ee8
           xargs git checkout refs/remotes/measure/tests -- < "$RUNNER_TEMP/measurement-files"
           git rev-parse HEAD > candidate-source.txt
           while IFS= read -r measurement_path; do
