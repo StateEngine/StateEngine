@@ -1,0 +1,55 @@
+name: venue-review
+on:
+  push:
+    branches: [prime/venue-review-r3]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  controls:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: cab33a8b597b4f6ecb8e2479c179d9dc0094adac
+          persist-credentials: false
+      - name: Overlay unchanged independent controls
+        run: |
+          git fetch --quiet origin 0c5e17d9434542ed55fc56c7a4e41c3bf0af5a72
+          git checkout FETCH_HEAD -- tests/input_venue_review.py
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Run independent venue controls
+        run: |
+          set +e
+          python -B tests/input_venue_review.py > venue-controls.log 2>&1
+          control_status=$?
+          set -e
+          cat venue-controls.log
+          exit "$control_status"
+      - name: Observe actual hosted venue
+        if: ${{ always() }}
+        run: |
+          python -B -c 'import sys; sys.path.insert(0,"scripts/ci"); import input_judges; print("native venue requires breakaway:",input_judges.breakaway_venue_required())' > native-venue.log 2>&1
+          cat native-venue.log
+      - name: Preserve the control verdict in the summary
+        if: ${{ always() }}
+        run: |
+          cat venue-controls.log >> "$GITHUB_STEP_SUMMARY"
+          cat native-venue.log >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: venue-review-${{ matrix.runner }}
+          path: |
+            venue-controls.log
+            native-venue.log
+          if-no-files-found: error
