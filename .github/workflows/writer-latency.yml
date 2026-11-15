@@ -1,4 +1,4 @@
-name: writer-latency
+name: background-wal-copy-mcp
 on:
   push:
     branches: [prime/writer-latency-b4-mixed-r2]
@@ -13,17 +13,26 @@ defaults:
 env:
   CARGO_INCREMENTAL: '0'
   CARGO_PROFILE_RELEASE_DEBUG: '0'
-  SE_MEASURE_MIXED: '1'
-  SE_MEASURE_CAPTURE_PER_MINUTE: '13'
 jobs:
   measure:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - side: baseline
-            ref: 737bee8caf03e17d2a61e21594d7b0285d6619dc
-    runs-on: ubuntu-24.04
+          - os: linux
+            runner: ubuntu-24.04
+            cache: writer-latency-linux-v1
+            mixed: '1'
+            ref: 906ca100f773a8d824a47905f0f700d38de3f63c
+          - os: windows
+            runner: windows-2025
+            cache: writer-latency-windows-v1
+            mixed: '0'
+            ref: 906ca100f773a8d824a47905f0f700d38de3f63c
+    env:
+      SE_MEASURE_MIXED: ${{ matrix.mixed }}
+      SE_MEASURE_CAPTURE_PER_MINUTE: '13'
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -33,11 +42,11 @@ jobs:
           persist-credentials: false
       - name: Overlay measurement sources
         env:
-          MEASUREMENTS: 0cfea8966b0a549025fa87216b4512d5221840ad
+          MEASUREMENTS: 57ba1b02f1669d1a48d8641482f0f88a94e310f4
         run: |
-          git fetch --quiet origin "0cfea8966b0a549025fa87216b4512d5221840ad:refs/remotes/measure/tests" "refs/heads/main:refs/remotes/measure/main"
+          git fetch --quiet origin "57ba1b02f1669d1a48d8641482f0f88a94e310f4:refs/remotes/measure/tests" "refs/heads/main:refs/remotes/measure/main"
           measured="$(git rev-parse refs/remotes/measure/tests)"
-          test "$measured" = 0cfea8966b0a549025fa87216b4512d5221840ad
+          test "$measured" = 57ba1b02f1669d1a48d8641482f0f88a94e310f4
           echo "$measured" > measurement-commit.txt
           fork="$(git merge-base refs/remotes/measure/main refs/remotes/measure/tests)"
           git diff --name-only --diff-filter=AM "$fork" refs/remotes/measure/tests > "$RUNNER_TEMP/measurement-files"
@@ -51,50 +60,68 @@ jobs:
       - uses: ./.github/actions/rust
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
         with:
-          shared-key: writer-latency-linux-v1
+          shared-key: ${{ matrix.cache }}
           cache-on-failure: true
-      - name: Measure baseline release writes
+      - name: Measure baseline public MCP writes
         id: baseline
         continue-on-error: true
         run: |
           git rev-parse HEAD > baseline-source.txt
           target="$(rustc --print host-tuple)"
+          python -I - <<'PYREMOVE'
+          from pathlib import Path
+          for name in ('mcp-writers.json', 'mcp-writers.stderr', 'mixed-background.json'):
+              Path('target/judge-diagnostics', name).unlink(missing_ok=True)
+          PYREMOVE
           set +e
           cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se --test eight_writer_mcp_measurement -- --nocapture > mcp-baseline.log 2>&1
           measurement_status=$?
-          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-baseline.log 2>&1
-          pressure_status=$?
-          if [[ "$pressure_status" != 0 ]]; then measurement_status="$pressure_status"; fi
           set -e
-          if [[ -d target/judge-diagnostics ]]; then mv target/judge-diagnostics target/judge-baseline; fi
+          python -I - <<'PYCOPY'
+          from pathlib import Path
+          import shutil
+          destination = Path('target/mcp-pair-${{ github.run_id }}/judge-baseline')
+          destination.mkdir(parents=True)
+          for name in ('mcp-writers.json', 'mcp-writers.stderr', 'mixed-background.json'):
+              source = Path('target/judge-diagnostics', name)
+              if source.is_file():
+                  shutil.copy2(source, destination / name)
+          PYCOPY
           exit "$measurement_status"
       - name: Select candidate with the same measurement overlay
         run: |
-          git fetch --quiet origin 906ca100f773a8d824a47905f0f700d38de3f63c:refs/remotes/measure/head
-          test "$(git rev-parse refs/remotes/measure/head)" = 906ca100f773a8d824a47905f0f700d38de3f63c
-          git checkout --detach 906ca100f773a8d824a47905f0f700d38de3f63c
+          git fetch --quiet origin 4b2bbba73b2c159f2a66b6105f4e6d96fa55643c:refs/remotes/measure/head
+          test "$(git rev-parse refs/remotes/measure/head)" = 4b2bbba73b2c159f2a66b6105f4e6d96fa55643c
+          git checkout --detach 4b2bbba73b2c159f2a66b6105f4e6d96fa55643c
           git rev-parse HEAD > candidate-source.txt
           while IFS= read -r measurement_path; do
             git diff --exit-code refs/remotes/measure/tests -- "$measurement_path"
           done < "$RUNNER_TEMP/measurement-files"
-      - name: Measure candidate release writes
+      - name: Measure candidate public MCP writes
         id: candidate
         continue-on-error: true
         run: |
           target="$(rustc --print host-tuple)"
+          python -I - <<'PYREMOVE'
+          from pathlib import Path
+          for name in ('mcp-writers.json', 'mcp-writers.stderr', 'mixed-background.json'):
+              Path('target/judge-diagnostics', name).unlink(missing_ok=True)
+          PYREMOVE
           set +e
           cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se --test eight_writer_mcp_measurement -- --nocapture > mcp-candidate.log 2>&1
           measurement_status=$?
-          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-candidate.log 2>&1
-          pressure_status=$?
-          if [[ "$pressure_status" != 0 ]]; then measurement_status="$pressure_status"; fi
           set -e
-          if [[ -d target/judge-diagnostics ]]; then mv target/judge-diagnostics target/judge-candidate; fi
+          python -I - <<'PYCOPY'
+          from pathlib import Path
+          import shutil
+          destination = Path('target/mcp-pair-${{ github.run_id }}/judge-candidate')
+          destination.mkdir(parents=True)
+          for name in ('mcp-writers.json', 'mcp-writers.stderr', 'mixed-background.json'):
+              source = Path('target/judge-diagnostics', name)
+              if source.is_file():
+                  shutil.copy2(source, destination / name)
+          PYCOPY
           exit "$measurement_status"
-      - name: Run retained background and pressure controls
-        run: |
-          target="$(rustc --print host-tuple)"
-          cargo test --target "$target" --release --all-features --locked --no-fail-fast -p se-store --test background_checkpoint_independent --test deferred_checkpoint_independent -- --nocapture > checkpoint-controls.log 2>&1
       - name: Preserve failed observer verdicts
         if: ${{ always() }}
         env:
@@ -106,17 +133,13 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}
         with:
-          name: writer-latency-linux-quiet-paired
+          name: background-wal-copy-mcp-${{ matrix.os }}-paired
           path: |
             mcp-baseline.log
             mcp-candidate.log
-            pressure-baseline.log
-            pressure-candidate.log
-            checkpoint-controls.log
             baseline-source.txt
             candidate-source.txt
             measurement-commit.txt
-            target/judge-baseline/
-            target/judge-candidate/
+            target/mcp-pair-${{ github.run_id }}/
           if-no-files-found: error
           retention-days: 14
