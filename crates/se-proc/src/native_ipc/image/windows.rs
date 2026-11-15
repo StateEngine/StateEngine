@@ -31,16 +31,18 @@ pub(super) fn pin(file: &File) -> Option<File> {
     Some(unsafe { File::from_raw_handle(raw) })
 }
 
-/// Zero, unsupported records and unreadable journals are cache misses. In
-/// particular, an inactive journal can return success with a zero revision.
+/// Qualify every key capture, including hint publication outside hash_image.
+/// A full hash performed while a writer lives must not publish that writer's
+/// coalesced revision as reusable. Zero and unsupported journals also miss.
 pub(super) fn revision(file: &File) -> Option<i64> {
+    let pin = pin(file)?;
     let mut output = [0u8; 4096];
     let mut returned = 0;
     // SAFETY: retained file handle, no input/overlapped operation, and a writable
     // bounded byte buffer whose exact size accompanies its pointer.
     if unsafe {
         DeviceIoControl(
-            file.as_raw_handle(),
+            pin.as_raw_handle(),
             FSCTL_READ_FILE_USN_DATA,
             ptr::null(),
             0,
