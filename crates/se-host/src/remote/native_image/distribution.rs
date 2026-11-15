@@ -33,31 +33,38 @@ pub(in crate::remote) async fn describe(destination: &str, distribution: &Path) 
     let (unix, platform) = ssh(destination, "uname -sm".into()).await?;
     let platform = String::from_utf8(platform)
         .map_err(|_| unavailable("SSH platform response is not UTF-8"))?;
-    let (target, windows) = if unix {
-        match platform.trim() {
-            "Linux x86_64" => ("x86_64-unknown-linux-gnu", false),
-            "Darwin arm64" => ("aarch64-apple-darwin", false),
-            "Darwin x86_64" => ("x86_64-apple-darwin", false),
-            _ => {
+    let uname = platform.trim();
+    let (target, windows) = match (unix, uname) {
+        (true, "Linux x86_64") => ("x86_64-unknown-linux-gnu", false),
+        (true, "Darwin arm64") => ("aarch64-apple-darwin", false),
+        (true, "Darwin x86_64") => ("x86_64-apple-darwin", false),
+        // A failed uname exit, or a compatibility responder that names no
+        // supported Unix target (Git for Windows' uname answers
+        // "MSYS_NT-10.0-26100 x86_64"), is verified through the Windows
+        // architecture probe before it is rejected.
+        _ => {
+            let (success, probe) = ssh(
+                destination,
+                staging::powershell(
+                    "[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()",
+                ),
+            )
+            .await?;
+            if success && String::from_utf8_lossy(&probe).trim() == "X64" {
+                ("x86_64-pc-windows-msvc", true)
+            } else if unix {
+                // uname identified a system that is neither a supported Unix
+                // target nor a Windows x64 host; reject it by name.
+                let named: String = uname.chars().take(60).collect();
+                return Err(unavailable(&format!(
+                    "remote operating system or architecture is unsupported: {named}"
+                )));
+            } else {
                 return Err(unavailable(
-                    "remote operating system or architecture is unsupported",
+                    "remote platform discovery failed; check the SSH destination and supported native platform",
                 ));
             }
         }
-    } else {
-        let (success, platform) = ssh(
-            destination,
-            staging::powershell(
-                "[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()",
-            ),
-        )
-        .await?;
-        if !success || String::from_utf8_lossy(&platform).trim() != "X64" {
-            return Err(unavailable(
-                "remote platform discovery failed; check the SSH destination and supported native platform",
-            ));
-        }
-        ("x86_64-pc-windows-msvc", true)
     };
     // A reused host may itself run from an uploaded single-platform cache.
     // Native Owner admission supplies the calling CLI's full distribution.
