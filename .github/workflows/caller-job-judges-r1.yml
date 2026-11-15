@@ -1,0 +1,983 @@
+name: Native caller-job reviewer comparison
+'on':
+  push:
+    branches:
+    - prime/caller-job-judges-r1
+  workflow_dispatch: null
+permissions:
+  contents: read
+concurrency:
+  group: caller-job-review-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      CALLER_REVIEW_SOURCE: ${{ github.workspace }}/source
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 8ade22d54f4e938a5fbb7f3b5ce51ac09ecc7ace
+        path: source
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: 1.97.1
+        components: rust-docs
+    - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+      with:
+        arch: amd64
+    - name: Install identical reviewer controls
+      shell: python
+      run: "import ast,hashlib,json,os\nfrom pathlib import Path\nroot=Path(os.environ['RUNNER_TEMP'])/'caller-job-review';root.mkdir()\n\
+        with open(os.environ['GITHUB_ENV'],'a') as out:out.write('CALLER_REVIEW_ROOT='+str(root)+'\\n')\nfiles={'compare.py':\
+        \ '\"\"\"Build and run identical reviewer controls on one native Windows runner.\"\"\"\\nimport hashlib\\\
+        nimport json\\nimport os\\nfrom pathlib import Path\\nimport re\\nimport shutil\\nimport subprocess\\nimport\
+        \ sys\\n\\nROOT = Path(os.environ[\\'CALLER_REVIEW_ROOT\\'])\\nSOURCE = Path(os.environ[\\'CALLER_REVIEW_SOURCE\\\
+        '])\\nBASE = \\'689c05b15fb0a0b36f02f7545e5df55290ef5a9d\\'\\nHEAD = \\'8ade22d54f4e938a5fbb7f3b5ce51ac09ecc7ace\\\
+        '\\nCASES = [\\'eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it\\',\\n         \\\
+        'explicit_foreground_stays_in_caller_job_until_public_down\\',\\n         \\'no_eligible_broker_returns_background_in_caller_job_and_stops_publicly\\\
+        ']\\n\\n\\ndef run(argv, cwd, label, timeout=1800):\\n    with (ROOT / (label + \\'.stdout\\')).open(\\\
+        'wb\\') as out, (ROOT / (label + \\'.stderr\\')).open(\\'wb\\') as err:\\n        child = subprocess.Popen(argv,\
+        \ cwd=cwd, stdin=subprocess.DEVNULL, stdout=out, stderr=err)\\n        try:\\n            return child.wait(timeout=timeout)\\\
+        n        except subprocess.TimeoutExpired:\\n            sys.path.insert(0, str(ROOT / \\'controls/account\\\
+        '))\\n            import native_jobs as native\\n            pin = native.Process(child.pid)\\n        \
+        \    try:\\n                # This Popen child is ours; read its complete native command and\\n        \
+        \        # birth through a retained handle before any emergency signal.\\n                (ROOT / (label\
+        \ + \\'-timeout.json\\')).write_text(json.dumps(\\n                    {\\'child\\': pin.initial, \\'argv\\\
+        ': argv, \\'cleanup_unknown\\': True}, indent=2))\\n                current = pin.observe()\\n         \
+        \       assert current[\\'creation_filetime\\'] == pin.initial[\\'creation_filetime\\']\\n             \
+        \   native.require(native.k.TerminateProcess(pin.handle, 91))\\n                child.wait(timeout=10)\\\
+        n            finally:\\n                pin.close()\\n            raise\\n\\n\\ndef build(checkout, package,\
+        \ test, label):\\n    code = run([\\'cargo\\', \\'test\\', \\'-p\\', package, \\'--all-features\\', \\'--locked\\\
+        ', \\'--test\\', test,\\n                \\'--no-run\\', \\'--message-format=json\\'], checkout, label)\\\
+        n    assert code == 0, f\\'{label} build failed: {code}\\'\\n    rows = [json.loads(line) for line in (ROOT\
+        \ / (label + \\'.stdout\\')).read_text().splitlines()]\\n    binaries = [row[\\'executable\\'] for row in\
+        \ rows if row.get(\\'reason\\') == \\'compiler-artifact\\'\\n                and row.get(\\'target\\', {}).get(\\\
+        'name\\') == test and row.get(\\'executable\\')]\\n    assert len(binaries) == 1\\n    return binaries[0]\\\
+        n\\n\\ndef collect_public_case(label):\\n    text = (ROOT / (label + \\'.stderr\\')).read_text(errors=\\\
+        'replace\\')\\n    roots = re.findall(r\\'(?:fixture root \\\\(retained if interrupted or cleanup is unproved\\\
+        \\)|retained fixture root after incomplete or failed case): ([^\\\\r\\\\n\\\\x1b]+)\\', text)\\n    for\
+        \ index, name in enumerate(dict.fromkeys(roots)):\\n        source = Path(name.strip())\\n        if not\
+        \ source.is_dir():\\n            continue\\n        out = ROOT / (label + \\'-case-\\' + str(index))\\n\
+        \        out.mkdir()\\n        # No database, profile, credential, nonce channel or private state files.\\\
+        n        for filename in [\\'job.json\\', \\'json.stdout\\', \\'json.stderr\\', \\'json.exit\\',\\n    \
+        \                     \\'plain.stdout\\', \\'plain.stderr\\', \\'plain.exit\\']:\\n            path = source\
+        \ / filename\\n            if path.is_file():\\n                shutil.copyfile(path, out / filename)\\\
+        n\\n\\ndef main():\\n    results = {}\\n    for label, revision in [(\\'base\\', BASE), (\\'head\\', HEAD)]:\\\
+        n        checkout = ROOT.parent / (\\'caller-source-\\' + label)\\n        subprocess.run([\\'git\\', \\\
+        'worktree\\', \\'add\\', \\'--detach\\', str(checkout), revision], cwd=SOURCE, check=True)\\n        assert\
+        \ subprocess.check_output([\\'git\\', \\'rev-parse\\', \\'HEAD\\'], cwd=checkout, text=True).strip() ==\
+        \ revision\\n        os.environ[\\'CARGO_TARGET_DIR\\'] = str(ROOT.parent / (\\'caller-target-\\' + label))\\\
+        n        for source, target in [(\\'breakaway_refusal.rs\\', \\'crates/se/tests/breakaway_refusal.rs\\'),\\\
+        n                               (\\'strict_job.ps1\\', \\'crates/se/tests/support/strict_job.ps1\\'),\\\
+        n                               (\\'bootstrap_stderr.rs\\', \\'crates/se-proc/tests/bootstrap_stderr.rs\\\
+        ')]:\\n            shutil.copyfile(ROOT / \\'controls/strict\\' / source, checkout / target)\\n        binary\
+        \ = build(checkout, \\'se\\', \\'breakaway_refusal\\', label + \\'-cli-build\\')\\n        rows = []\\n\
+        \        for case in CASES:\\n            name = label + \\'-\\' + case\\n            code = run([binary,\
+        \ \\'--exact\\', case, \\'--nocapture\\', \\'--test-threads=1\\'], checkout, name, 180)\\n            collect_public_case(name)\\\
+        n            rows.append({\\'case\\': case, \\'exit\\': code})\\n        bootstrap = build(checkout, \\\
+        'se-proc\\', \\'bootstrap_stderr\\', label + \\'-bootstrap-build\\')\\n        code = run([bootstrap], checkout,\
+        \ label + \\'-bootstrap\\', 180)\\n        rows.append({\\'case\\': \\'bootstrap_stderr\\', \\'exit\\':\
+        \ code})\\n        results[label] = {\\'source\\': revision, \\'cases\\': rows}\\n        (ROOT / \\'comparison.json\\\
+        ').write_text(json.dumps(results, indent=2) + \\'\\\\n\\')\\n        # Build processes and every native\
+        \ judge have returned before their\\n        # checkout-specific compiler scratch is removed.\\n       \
+        \ shutil.rmtree(Path(os.environ[\\'CARGO_TARGET_DIR\\']))\\n    # A clean checkout runs the actual shipping\
+        \ producer. Reviewer overlays must\\n    # never enter its clean-source or release-build manifest.\\n  \
+        \  checkout = ROOT.parent / \\'caller-distribution-source\\'\\n    subprocess.run([\\'git\\', \\'worktree\\\
+        ', \\'add\\', \\'--detach\\', str(checkout), HEAD], cwd=SOURCE, check=True)\\n    os.environ.pop(\\'CARGO_PROFILE_DEV_DEBUG\\\
+        ', None)\\n    os.environ.pop(\\'CARGO_PROFILE_TEST_DEBUG\\', None)\\n    os.environ.pop(\\'CARGO_TARGET_DIR\\\
+        ', None)\\n    image = ROOT / \\'distribution\\'\\n    code = run([sys.executable, \\'-B\\', \\'scripts/release/build.py\\\
+        ', \\'--target\\', \\'x86_64-pc-windows-msvc\\',\\n                \\'--out\\', str(image)], checkout, \\\
+        'distribution-build\\', 3600)\\n    assert code == 0, f\\'actual shipping producer failed: {code}\\'\\n\
+        \    manifest = json.loads((image / \\'build.json\\').read_text())\\n    digest = hashlib.sha256((image\
+        \ / \\'se.exe\\').read_bytes()).hexdigest()\\n    assert manifest[\\'source_commit\\'] == HEAD and manifest[\\\
+        'files\\'][\\'se.exe\\'] == digest\\n    account = ROOT / \\'controls/account\\'\\n    expected = {\\'source\\\
+        ': HEAD, \\'image_sha256\\': digest}\\n    (account / \\'expected.json\\').write_text(json.dumps(expected,\
+        \ indent=2) + \\'\\\\n\\')\\n    files = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in account.iterdir()\
+        \ if p.is_file()}\\n    (account / \\'manifest.json\\').write_text(json.dumps(expected | {\\'files\\': files},\
+        \ indent=2) + \\'\\\\n\\')\\n    (ROOT / \\'image-pin.json\\').write_text(json.dumps(expected, indent=2)\
+        \ + \\'\\\\n\\')\\n    print(json.dumps(results))\\n\\n\\nif __name__ == \\'__main__\\':\\n    main()\\\
+        n', 'strict/breakaway_refusal.rs': '//! Public CLI success and honest refusal from actual strict Windows\
+        \ jobs.\\n#![cfg(windows)]\\n#[path = \"../../test-support/directory.rs\"]\\nmod cleanup_directory;\\nuse\
+        \ std::{\\n    error::Error,\\n    fs,\\n    path::PathBuf,\\n    process::{Command, Output},\\n    time::{Duration,\
+        \ Instant},\\n};\\ntype Result<T = ()> = std::result::Result<T, Box<dyn Error>>;\\nfn clear(command: &mut\
+        \ Command) {\\n    for key in [\\n        \"SE_HOME\",\\n        \"SE_CONFIG\",\\n        \"SE_PROJECT\"\
+        ,\\n        \"SE_SESSION\",\\n        \"CLAUDECODE\",\\n        \"CODEX_THREAD_ID\",\\n        \"CODEX_CI\"\
+        ,\\n    ] {\\n        command.env_remove(key);\\n    }\\n}\\nstruct Fixture {\\n    root: PathBuf,\\n  \
+        \  executable: PathBuf,\\n    home: PathBuf,\\n    host: Option<se_proc::ProcessIdentity>,\\n    root_owner:\
+        \ Option<cleanup_directory::PrivateDirectory>,\\n}\\nimpl Fixture {\\n    fn new(_case: &str) -> Result<Self>\
+        \ {\\n        se_proc::initialize_file_creation_owner()?;\\n        let root_owner = cleanup_directory::private_case_directory()?;\\\
+        n        let root = root_owner.to_path_buf();\\n        drop(se_proc::NativeStateFiles::create(&root)?);\\\
+        n        // Cargo hard-links its binary; the installed runtime requires a single-link image.\\n        let\
+        \ executable = root.join(\"se.exe\");\\n        fs::copy(env!(\"CARGO_BIN_EXE_se\"), &executable)?;\\n \
+        \       let mut fixture = Self {\\n            home: root.join(\"state\"),\\n            root,\\n      \
+        \      executable,\\n            host: None,\\n            root_owner: Some(root_owner),\\n        };\\\
+        n        fs::create_dir(fixture.root.join(\"repo\"))?;\\n        fixture.ok(&[\\n            \"init\",\\\
+        n            \"--repo\",\\n            fixture\\n                .root\\n                .join(\"repo\"\
+        )\\n                .to_str()\\n                .ok_or(\"non-UTF8 fixture\")?,\\n        ])?;\\n       \
+        \ fs::write(\\n            fixture.root.join(\"strict-job.ps1\"),\\n            include_str!(\"support/strict_job.ps1\"\
+        ),\\n        )?;\\n        // Keep the guard active even if a later assertion or native read fails.\\n \
+        \       fixture.host = fixture.read_host()?;\\n        Ok(fixture)\\n    }\\n    fn command(&self) -> Command\
+        \ {\\n        let mut command = Command::new(&self.executable);\\n        clear(&mut command);\\n      \
+        \  command\\n            .arg(\"--home\")\\n            .arg(&self.home)\\n            .arg(\"--json\")\\\
+        n            .current_dir(&self.root);\\n        command\\n    }\\n    fn ok(&self, args: &[&str]) -> Result<serde_json::Value>\
+        \ {\\n        let output = self.command().args(args).output_executable()?;\\n        assert!(\\n       \
+        \     output.status.success(),\\n            \"public CLI failed; retained {}: {output:?}\",\\n        \
+        \    self.root.display()\\n        );\\n        Ok(serde_json::from_slice(&output.stdout)?)\\n    }\\n \
+        \   fn read_host(&self) -> Result<Option<se_proc::ProcessIdentity>> {\\n        let path = self.home.join(\"\
+        endpoint.json\");\\n        if !path.try_exists()? {\\n            return Ok(None);\\n        }\\n     \
+        \   let endpoint = se_host::client::endpoint::decode_endpoint(&fs::read(path)?)?;\\n        let fields =\
+        \ endpoint.epoch.owner.fields();\\n        let observed = se_proc::NativeProcessRuntime::read_process(\\\
+        n            fields.machine.clone(),\\n            se_proc::ProcessId(fields.pid.get()),\\n        )\\n\
+        \        .map_err(|e| format!(\"outside exact runtime read: {e:?}\"))?;\\n        let se_proc::ProcessRead::Present(live)\
+        \ = observed else {\\n            return Err(\"published host is not live\".into());\\n        };\\n   \
+        \     assert_eq!(\\n            fs::canonicalize(&live.identity.image)?,\\n            fs::canonicalize(&self.executable)?\\\
+        n        );\\n        let se_types::StartIdentity::Windows { creation_filetime } = &fields.started else\
+        \ {\\n            return Err(\"endpoint does not carry a Windows process birth\".into());\\n        };\\\
+        n        assert_eq!(\\n            live.identity.start,\\n            se_proc::StartIdentity::Windows {\\\
+        n                creation_filetime: creation_filetime.get()\\n            }\\n        );\\n        Ok(Some(live.identity))\\\
+        n    }\\n    fn run_strict(&mut self, refuse: bool, foreground: bool) -> Result {\\n        let powershell\
+        \ = se_proc::windows_directory()\\n            .map_err(|e| format!(\"native Windows directory: {e:?}\"\
+        ))?\\n            .join(\"System32/WindowsPowerShell/v1.0/powershell.exe\");\\n        let mut command =\
+        \ Command::new(powershell);\\n        clear(&mut command);\\n        command\\n            .args([\"-NoProfile\"\
+        , \"-ExecutionPolicy\", \"Bypass\", \"-File\"])\\n            .arg(self.root.join(\"strict-job.ps1\"))\\\
+        n            .arg(\"-Se\")\\n            .arg(&self.executable)\\n            .arg(\"-HomePath\")\\n   \
+        \         .arg(&self.home)\\n            .arg(\"-Out\")\\n            .arg(&self.root);\\n        if refuse\
+        \ {\\n            command.arg(\"-NoEligibleBroker\");\\n        }\\n        if foreground {\\n         \
+        \   command.arg(\"-Foreground\");\\n        }\\n        let output = command.output_executable()?;\\n  \
+        \      // This outside reader runs only after the strict-job shell has exited.\\n        self.host = self.read_host()?;\\\
+        n        assert!(\\n            output.status.success(),\\n            \"strict-job fixture failed; retained\
+        \ {}: {output:?}\",\\n            self.root.display()\\n        );\\n        let witness: serde_json::Value\
+        \ =\\n            serde_json::from_slice(&fs::read(self.root.join(\"job.json\"))?)?;\\n        assert_eq!(witness[\"\
+        caller_in_job_before\"], true);\\n        assert_eq!(witness[\"caller_in_job_after\"], true);\\n       \
+        \ assert_eq!(witness[\"privilege_removed\"], refuse);\\n        assert_eq!(witness[\"restricting_sids\"\
+        ], false);\\n        assert_eq!(witness[\"home_readable_after_restriction\"], true);\\n        if refuse\
+        \ {\\n            assert!(matches!(\\n                witness[\"removed_privilege\"].as_str(),\\n      \
+        \          Some(\\n                    \"SeShutdownPrivilege\"\\n                        | \"SeTimeZonePrivilege\"\
+        \\n                        | \"SeIncreaseWorkingSetPrivilege\"\\n                        | \"SeUndockPrivilege\"\
+        \\n                )\\n            ));\\n        } else {\\n            assert!(witness[\"removed_privilege\"\
+        ].is_null());\\n        }\\n        Ok(())\\n    }\\n    fn result(&self, mode: &str) -> Result<(String,\
+        \ Vec<u8>, String)> {\\n        Ok((\\n            fs::read_to_string(self.root.join(format!(\"{mode}.exit\"\
+        )))?\\n                .trim()\\n                .into(),\\n            fs::read(self.root.join(format!(\"\
+        {mode}.stdout\")))?,\\n            fs::read_to_string(self.root.join(format!(\"{mode}.stderr\")))?,\\n \
+        \       ))\\n    }\\n    fn exited(&self, identity: &se_proc::ProcessIdentity) -> Result<bool> {\\n    \
+        \    match se_proc::NativeProcessRuntime::read_process(identity.machine.clone(), identity.pid)\\n      \
+        \      .map_err(|e| format!(\"outside runtime closure: {e:?}\"))?\\n        {\\n            se_proc::ProcessRead::Absent\
+        \ { .. } => Ok(true),\\n            se_proc::ProcessRead::ExitedRecord {\\n                pid, boot, start,\
+        \ ..\\n            } if pid == identity.pid && boot == identity.boot && start == identity.start => {\\n\
+        \                Ok(true)\\n            }\\n            se_proc::ProcessRead::Present(live) if live.identity\
+        \ == *identity => {\\n                Ok(live.state == se_proc::NativeState::ExitedAwaitingReap)\\n    \
+        \        }\\n            _ => Err(\"runtime identity changed; refusing another process\".into()),\\n   \
+        \     }\\n    }\\n    fn stop(&mut self) -> Result {\\n        // Public down resolves only this fresh protected\
+        \ home\\'s owned endpoint.\\n        // It also cleans a host when a preceding assertion failed before identity\
+        \ capture.\\n        if self.home.join(\"endpoint.json\").try_exists()? {\\n            let output: Output\
+        \ = self.command().arg(\"down\").output_executable()?;\\n            if !matches!(output.status.code(),\
+        \ Some(0) | Some(2)) {\\n                return Err(format!(\\n                    \"public down failed;\
+        \ retained {}: {output:?}\",\\n                    self.root.display()\\n                )\\n          \
+        \      .into());\\n            }\\n        }\\n        if let Some(identity) = &self.host {\\n         \
+        \   let until = Instant::now() + Duration::from_secs(15);\\n            while !self.exited(identity)? {\\\
+        n                if Instant::now() >= until {\\n                    return Err(\"exact broker runtime did\
+        \ not exit\".into());\\n                }\\n                std::thread::park_timeout(Duration::from_millis(10));\\\
+        n            }\\n        }\\n        if self.home.join(\"endpoint.json\").try_exists()? {\\n           \
+        \ return Err(\"endpoint survived public shutdown\".into());\\n        }\\n        let path = self.home.join(\"\
+        runtime.lock\");\\n        if path.try_exists()? {\\n            let lease = fs::OpenOptions::new().read(true).write(true).open(path)?;\\\
+        n            lease.try_lock()?;\\n        }\\n        self.host = None;\\n        Ok(())\\n    }\\n    fn\
+        \ finish(mut self) -> Result {\\n        self.stop()?;\\n        self.root_owner\\n            .as_ref()\\\
+        n            .ok_or(\"strict-job fixture owner absent\")?\\n            .finish(Ok(()))\\n    }\\n}\\nimpl\
+        \ Drop for Fixture {\\n    fn drop(&mut self) {\\n        if self.root.exists()\\n            && let Err(error)\
+        \ = self.stop()\\n            && let Some(root) = self.root_owner.take()\\n        {\\n            root.retain(&format!(\"\
+        strict-job shutdown failed: {error}\"));\\n        }\\n    }\\n}\\n\\n#[test]\\nfn eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it()\
+        \ -> Result {\\n    let mut f = Fixture::new(\"broker\")?;\\n    f.run_strict(false, false)?;\\n    let\
+        \ identity = f\\n        .host\\n        .as_ref()\\n        .ok_or(\"eligible broker did not retain a live\
+        \ host after job exit\")?;\\n    for mode in [\"json\", \"plain\"] {\\n        let (exit, stdout, stderr)\
+        \ = f.result(mode)?;\\n        assert_eq!(exit, \"0\", \"broker launch refused: {stderr}\");\\n        if\
+        \ mode == \"json\" {\\n            let value: serde_json::Value = serde_json::from_slice(&stdout)?;\\n \
+        \           assert_eq!(value[\"state\"], \"running\");\\n            assert_eq!(value[\"process\"][\"pid\"\
+        ], identity.pid.0);\\n        } else {\\n            let text = String::from_utf8(stdout)?;\\n         \
+        \   assert!(\\n                text.contains(\"Runtime running\")\\n                    && text.contains(&format!(\"\
+        PID {}\", identity.pid.0)),\\n                \"wrong human startup output: {text}\"\\n            );\\\
+        n        }\\n    }\\n    let witness: serde_json::Value = serde_json::from_slice(&fs::read(f.root.join(\"\
+        job.json\"))?)?;\\n    assert_eq!(witness[\"runtime_outside_all_jobs\"], true);\\n    assert_eq!(witness[\"\
+        runtime_pid\"], identity.pid.0);\\n    let birth = witness[\"runtime_creation_filetime\"]\\n        .as_str()\\\
+        n        .ok_or(\"missing outside native process birth\")?\\n        .parse::<u64>()?;\\n    assert_eq!(\\\
+        n        identity.start,\\n        se_proc::StartIdentity::Windows {\\n            creation_filetime: birth\\\
+        n        }\\n    );\\n    let status = f.ok(&[\"status\"])?;\\n    assert_eq!(status[\"runtime\"][\"state\"\
+        ], \"running\");\\n    assert_eq!(status[\"runtime\"][\"process\"][\"pid\"], identity.pid.0);\\n    f.stop()?;\\\
+        n    println!(\\n        \"PASS broker: JSON/plain CLI success; caller stayed in strict job; exact runtime\
+        \ outside all jobs survived job exit; public down closed it\"\\n    );\\n    f.finish()\\n}\\n\\n#[test]\\\
+        nfn explicit_foreground_stays_in_caller_job_until_public_down() -> Result {\\n    let mut f = Fixture::new(\"\
+        no-broker\")?;\\n    f.run_strict(true, true)?;\\n    assert!(\\n        f.host.is_none(),\\n        \"\
+        foreground host survived its joined public down\"\\n    );\\n    let witness: serde_json::Value = serde_json::from_slice(&fs::read(f.root.join(\"\
+        job.json\"))?)?;\\n    let cases = witness[\"foreground_cases\"]\\n        .as_array()\\n        .ok_or(\"\
+        missing foreground cases\")?;\\n    assert_eq!(cases.len(), 2);\\n    for mode in [\"json\", \"plain\"]\
+        \ {\\n        let (exit, stdout, stderr) = f.result(mode)?;\\n        assert_eq!(exit, \"0\", \"foreground\
+        \ startup/down failed: {stderr}\");\\n        let observed = cases\\n            .iter()\\n            .find(|row|\
+        \ row[\"mode\"] == mode)\\n            .ok_or(\"missing mode witness\")?;\\n        assert_eq!(observed[\"\
+        in_job\"], true);\\n        assert_eq!(observed[\"down_exit\"], 0);\\n        if mode == \"json\" {\\n \
+        \           let value: serde_json::Value = serde_json::from_slice(&stdout)?;\\n            assert_eq!(value[\"\
+        state\"], \"running\");\\n            assert_eq!(value[\"process\"][\"pid\"], observed[\"pid\"]);\\n   \
+        \     } else {\\n            let text = String::from_utf8(stdout)?;\\n            assert!(\\n          \
+        \      text.contains(\"Runtime running\")\\n                    && text.contains(&format!(\"PID {}\", observed[\"\
+        pid\"])),\\n                \"wrong foreground output: {text}\"\\n            );\\n        }\\n    }\\n\
+        \    f.finish()\\n}\\n\\n#[test]\\nfn no_eligible_broker_returns_background_in_caller_job_and_stops_publicly()\
+        \ -> Result {\\n    let mut f = Fixture::new(\"caller-job\")?;\\n    f.run_strict(true, false)?;\\n    assert!(\\\
+        n        f.host.is_none(),\\n        \"caller-job host survived its witnessed public down\"\\n    );\\n\
+        \    let witness: serde_json::Value = serde_json::from_slice(&fs::read(f.root.join(\"job.json\"))?)?;\\\
+        n    let cases = witness[\"background_cases\"]\\n        .as_array()\\n        .ok_or(\"missing background\
+        \ cases\")?;\\n    assert_eq!(cases.len(), 2);\\n    for mode in [\"json\", \"plain\"] {\\n        let (exit,\
+        \ stdout, stderr) = f.result(mode)?;\\n        assert_eq!(exit, \"0\", \"background startup failed: {stderr}\"\
+        );\\n        assert!(\\n            stderr.contains(\"Windows may stop this background host\"),\\n     \
+        \       \"caller-job lifetime hidden: {stderr}\"\\n        );\\n        let observed = cases\\n        \
+        \    .iter()\\n            .find(|row| row[\"mode\"] == mode)\\n            .ok_or(\"missing mode witness\"\
+        )?;\\n        assert_eq!(observed[\"in_job\"], true);\\n        assert_eq!(observed[\"detachment\"], \"\
+        windows-job\");\\n        assert_ne!(observed[\"cli_pid\"], observed[\"pid\"]);\\n        assert_eq!(observed[\"\
+        down_exit\"], 0);\\n        assert_eq!(observed[\"down_complete\"], true);\\n        assert_eq!(observed[\"\
+        down_witness\"], \"witnessed\");\\n        assert_eq!(observed[\"exact_host_exited\"], true);\\n       \
+        \ assert_eq!(observed[\"endpoint_absent\"], true);\\n        if mode == \"json\" {\\n            let value:\
+        \ serde_json::Value = serde_json::from_slice(&stdout)?;\\n            assert_eq!(value[\"state\"], \"running\"\
+        );\\n            assert_eq!(value[\"process\"][\"pid\"], observed[\"pid\"]);\\n        } else {\\n     \
+        \       let text = String::from_utf8(stdout)?;\\n            assert!(\\n                text.contains(\"\
+        Runtime running\")\\n                    && text.contains(&format!(\"PID {}\", observed[\"pid\"])),\\n \
+        \               \"wrong background output: {text}\"\\n            );\\n        }\\n    }\\n    f.finish()\\\
+        n}\\n\\n#[path = \"../../test-support/executable.rs\"]\\nmod executable;\\nuse executable::ExecutableCommand;\\\
+        n', 'strict/strict_job.ps1': 'param([string]$Se, [string]$HomePath, [string]$Out, [switch]$NoEligibleBroker,\
+        \ [switch]$Foreground)\\n$ErrorActionPreference = \\'Stop\\'\\nAdd-Type -TypeDefinition @\\'\\nusing System;\\\
+        nusing System.Runtime.InteropServices;\\npublic static class StrictJobFixture {\\n  [StructLayout(LayoutKind.Sequential)]\
+        \ struct Luid { public uint Low; public int High; }\\n  [StructLayout(LayoutKind.Sequential)] struct Privileges\
+        \ { public uint Count; public Luid Id; public uint Attributes; }\\n  [DllImport(\"kernel32.dll\", CharSet=CharSet.Unicode,\
+        \ SetLastError=true)]\\n  static extern IntPtr CreateJobObjectW(IntPtr security, string name);\\n  [DllImport(\"\
+        kernel32.dll\", SetLastError=true)]\\n  static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);\\\
+        n  [DllImport(\"kernel32.dll\", SetLastError=true)]\\n  static extern bool IsProcessInJob(IntPtr process,\
+        \ IntPtr job, out bool member);\\n  [DllImport(\"kernel32.dll\")] static extern IntPtr GetCurrentProcess();\\\
+        n  [DllImport(\"kernel32.dll\")] public static extern bool CloseHandle(IntPtr handle);\\n  [DllImport(\"\
+        advapi32.dll\", SetLastError=true)]\\n  static extern bool OpenProcessToken(IntPtr process, uint access,\
+        \ out IntPtr token);\\n  [DllImport(\"advapi32.dll\", CharSet=CharSet.Unicode, SetLastError=true)]\\n  static\
+        \ extern bool LookupPrivilegeValueW(string system, string name, out Luid id);\\n  [DllImport(\"advapi32.dll\"\
+        , SetLastError=true)]\\n  static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref Privileges\
+        \ value, uint length, IntPtr previous, IntPtr returned);\\n  [DllImport(\"advapi32.dll\", SetLastError=true)]\\\
+        n  static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr buffer, uint size, out uint returned);\\\
+        n  [DllImport(\"advapi32.dll\")] static extern bool IsTokenRestricted(IntPtr token);\\n  static void Require(bool\
+        \ ok, string operation) {\\n    if (!ok) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),\
+        \ operation);\\n  }\\n  public static bool InJob(IntPtr process, IntPtr job) {\\n    bool member; Require(IsProcessInJob(process,\
+        \ job, out member), \"query owned job membership\"); return member;\\n  }\\n  static bool HasPrivilege(IntPtr\
+        \ token, Luid id) {\\n    IntPtr buffer=Marshal.AllocHGlobal(65536);\\n    try {\\n      uint returned;\
+        \ Require(GetTokenInformation(token, 3, buffer, 65536, out returned), \"read owned token privileges\");\\\
+        n      int count=Marshal.ReadInt32(buffer);\\n      if (returned < 4 || count < 0 || 4L + count*12L > returned\
+        \ || returned > 65536) throw new Exception(\"invalid bounded token privilege list\");\\n      for (int i=0;\
+        \ i<count; i++) {\\n        if ((uint)Marshal.ReadInt32(buffer,4+i*12)==id.Low && Marshal.ReadInt32(buffer,8+i*12)==id.High)\
+        \ return true;\\n      }\\n      return false;\\n    } finally { Marshal.FreeHGlobal(buffer); }\\n  }\\\
+        n  public static bool CallerRestricted() {\\n    IntPtr token; Require(OpenProcessToken(GetCurrentProcess(),0x8,out\
+        \ token),\"query dedicated fixture token\");\\n    try { return IsTokenRestricted(token); } finally { CloseHandle(token);\
+        \ }\\n  }\\n  public static string RemoveNonFilePrivilege() {\\n    IntPtr token; Require(OpenProcessToken(GetCurrentProcess(),0x28,out\
+        \ token),\"open dedicated fixture token\");\\n    try {\\n      // Keep traverse checking unchanged: removing\
+        \ SeChangeNotifyPrivilege can\\n      // make the protected home unreadable before broker selection is reached.\\\
+        n      Luid traverse; Require(LookupPrivilegeValueW(null,\"SeChangeNotifyPrivilege\",out traverse),\"resolve\
+        \ traverse privilege\");\\n      if (!HasPrivilege(token,traverse)) throw new Exception(\"fixture caller\
+        \ must retain its traverse privilege\");\\n      foreach (string name in new string[] {\"SeShutdownPrivilege\"\
+        , \"SeTimeZonePrivilege\", \"SeIncreaseWorkingSetPrivilege\", \"SeUndockPrivilege\"}) {\\n        Luid id;\
+        \ Require(LookupPrivilegeValueW(null,name,out id),\"resolve non-filesystem fixture privilege\");\\n    \
+        \    if (!HasPrivilege(token,id)) continue;\\n        Privileges value=new Privileges {Count=1,Id=id,Attributes=4};\
+        \ // SE_PRIVILEGE_REMOVED\\n        Require(AdjustTokenPrivileges(token,false,ref value,0,IntPtr.Zero,IntPtr.Zero),\"\
+        remove only dedicated fixture caller privilege\");\\n        Require(Marshal.GetLastWin32Error()==0,\"privilege\
+        \ removal fully assigned\");\\n        if (HasPrivilege(token,id) || !HasPrivilege(token,traverse) || IsTokenRestricted(token))\
+        \ throw new Exception(\"fixture must remove only the selected privilege, retain traversal, and keep IsTokenRestricted\
+        \ FALSE\");\\n        return name;\\n      }\\n      throw new Exception(\"fixture has no removable non-filesystem\
+        \ privilege; refusing to remove SeChangeNotifyPrivilege\");\\n    } finally { CloseHandle(token); }\\n \
+        \ }\\n  public static IntPtr Enter() {\\n    // No BREAKAWAY_OK/SILENT_BREAKAWAY_OK. Only this dedicated\
+        \ shell and children enter.\\n    IntPtr job = CreateJobObjectW(IntPtr.Zero, null);\\n    Require(job!=IntPtr.Zero,\"\
+        create private strict job\");\\n    if (!AssignProcessToJobObject(job, GetCurrentProcess())) {\\n      int\
+        \ code=Marshal.GetLastWin32Error(); CloseHandle(job); throw new System.ComponentModel.Win32Exception(code);\\\
+        n    }\\n    return job;\\n  }\\n  public static bool CallerInJob(IntPtr job) { return InJob(GetCurrentProcess(),job);\
+        \ }\\n}\\n\\'@\\n# Adjust only this dedicated fixture shell; the cargo driver and all other processes keep\
+        \ their tokens.\\n$removedPrivilege = $null\\nif ($NoEligibleBroker) { $removedPrivilege = [StrictJobFixture]::RemoveNonFilePrivilege()\
+        \ }\\n# Prove the changed caller can still read the actual initialized home before\\n# either public CLI\
+        \ mode attempts broker selection.\\n$homeProbe = [IO.File]::Open((Join-Path $HomePath \\'state.db\\'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)\\\
+        n$homeProbe.Dispose()\\nfunction Invoke-OwnedCli([string]$Verb) {\\n  $info = New-Object System.Diagnostics.ProcessStartInfo\\\
+        n  $info.FileName = $Se\\n  $info.Arguments = \\'--home \"\\' + $HomePath.TrimEnd(\\'\\\\\\') + \\'\" --json\
+        \ \\' + $Verb\\n  $info.UseShellExecute = $false\\n  $info.RedirectStandardOutput = $true\\n  $info.RedirectStandardError\
+        \ = $true\\n  $process = [Diagnostics.Process]::Start($info)\\n  try {\\n    $output = $process.StandardOutput.ReadToEndAsync()\\\
+        n    $errors = $process.StandardError.ReadToEndAsync()\\n    if (!$process.WaitForExit(15000)) {\\n    \
+        \  $pin = Get-CimInstance Win32_Process -Filter \"ProcessId=$($process.Id)\"\\n      if (!$pin -or !$pin.CommandLine.Contains($HomePath))\
+        \ { throw \\'owned timed-out client command line unreadable\\' }\\n      [IO.File]::WriteAllText((Join-Path\
+        \ $Out (\\'timeout-\\' + $process.Id + \\'.json\\')), (@{pid=$process.Id;birth=$process.StartTime.ToFileTimeUtc().ToString();command=$pin.CommandLine}|ConvertTo-Json\
+        \ -Compress))\\n      $process.Kill(); $process.WaitForExit()\\n      throw \"owned $Verb client exceeded\
+        \ its bound\"\\n    }\\n    return @{exit=$process.ExitCode; stdout=$output.Result; stderr=$errors.Result}\\\
+        n  } finally { $process.Dispose() }\\n}\\n$job = [StrictJobFixture]::Enter()\\ntry {\\n  $witness = @{caller_in_job_before=[StrictJobFixture]::CallerInJob($job);\
+        \ privilege_removed=($null -ne $removedPrivilege); removed_privilege=$removedPrivilege; home_readable_after_restriction=$true;\
+        \ restricting_sids=[StrictJobFixture]::CallerRestricted(); foreground_cases=@(); background_cases=@()}\\\
+        n  foreach ($mode in @(\\'json\\',\\'plain\\')) {\\n    $info = New-Object System.Diagnostics.ProcessStartInfo\\\
+        n    $info.FileName = $Se\\n    $info.Arguments = \\'--home \"\\' + $HomePath.TrimEnd(\\'\\\\\\') + \\'\"\
+        \ \\' + $(if ($mode -eq \\'json\\') {\\'--json \\'}) + \\'up\\' + $(if ($Foreground) {\\' --foreground\\\
+        '})\\n    $info.UseShellExecute = $false\\n    $info.RedirectStandardOutput = $true\\n    $info.RedirectStandardError\
+        \ = $true\\n    $child = [System.Diagnostics.Process]::Start($info)\\n    $stdout = $child.StandardOutput.ReadToEndAsync()\\\
+        n    $stderr = $child.StandardError.ReadToEndAsync()\\n    if ($NoEligibleBroker -and !$Foreground) {\\\
+        n      $runtime = $null\\n      try {\\n        if (!$child.WaitForExit(30000)) { throw \\'background up\
+        \ did not return before public down\\' }\\n        if ($child.ExitCode -ne 0) { throw \\'background up returned\
+        \ a refusal\\' }\\n        $status = Invoke-OwnedCli \\'status\\'\\n        if ($status.exit -ne 0) { throw\
+        \ \\'outside public status failed\\' }\\n        $view = $status.stdout | ConvertFrom-Json\\n        if\
+        \ ($view.runtime.state -ne \\'running\\' -or $view.runtime.detachment -ne \\'windows-job\\') {\\n      \
+        \    throw \\'caller-job lifetime was not reported by public status\\'\\n        }\\n        if ([int]$view.runtime.process.pid\
+        \ -eq $child.Id) { throw \\'background arm silently stayed foreground\\' }\\n        $runtime = [Diagnostics.Process]::GetProcessById([int]$view.runtime.process.pid)\\\
+        n        $native = Get-CimInstance Win32_Process -Filter \"ProcessId=$($runtime.Id)\"\\n        if (!$native\
+        \ -or !$native.CommandLine.Contains(\\'--stateengine-private-runtime-bootstrap\\')) {\\n          throw\
+        \ \\'exact runtime command line was not observed\\'\\n        }\\n        $birth = $runtime.StartTime.ToFileTimeUtc().ToString()\\\
+        n        $member = [StrictJobFixture]::InJob($runtime.Handle,$job)\\n        if (!$member) { throw \\'runtime\
+        \ escaped the exact caller job in the inherited-job arm\\' }\\n        $stopped = Invoke-OwnedCli \\'down\\\
+        '\\n        if ($stopped.exit -ne 0) { throw \\'public background down failed\\' }\\n        $down = $stopped.stdout\
+        \ | ConvertFrom-Json\\n        if ($down.schema -ne \\'se.runtime-stop/v1\\' -or !$down.complete -or $down.witness.state\
+        \ -ne \\'witnessed\\') {\\n          throw \\'public background down lacked its complete native witness\\\
+        '\\n        }\\n        if (!$runtime.WaitForExit(15000)) { throw \\'exact background host survived public\
+        \ down\\' }\\n        if (Test-Path -LiteralPath (Join-Path $HomePath \\'endpoint.json\\')) { throw \\'background\
+        \ endpoint survived public down\\' }\\n        $witness.background_cases += @{mode=$mode; cli_pid=$child.Id;\
+        \ pid=$runtime.Id;\\n          creation_filetime=$birth; command=$native.CommandLine;\\n          in_job=$member;\
+        \ detachment=$view.runtime.detachment; down_exit=$stopped.exit;\\n          down_complete=$down.complete;\
+        \ down_witness=$down.witness.state; exact_host_exited=$true; endpoint_absent=$true}\\n      } finally {\\\
+        n        # Baseline remains foreground: request public shutdown before returning\\n        # the failed\
+        \ assertion, keeping the failing arm safe and reviewable.\\n        if (Test-Path -LiteralPath (Join-Path\
+        \ $HomePath \\'endpoint.json\\')) { $null = Invoke-OwnedCli \\'down\\' }\\n        if ($runtime) { $runtime.Dispose()\
+        \ }\\n      }\\n    }\\n    if ($NoEligibleBroker -and $Foreground) {\\n      # The explicit foreground\
+        \ consumer stays alive until this independent client\\n      # witnesses the same root and requests public\
+        \ shutdown.\\n      $until = [DateTime]::UtcNow.AddSeconds(30)\\n      $ready = $false\\n      while (!$child.HasExited\
+        \ -and [DateTime]::UtcNow -lt $until) {\\n        if (Test-Path (Join-Path $HomePath \\'endpoint.json\\\
+        ')) {\\n          $status = Invoke-OwnedCli \\'status\\'\\n          if ($status.exit -eq 0) {\\n      \
+        \      $view = $status.stdout | ConvertFrom-Json\\n            if ($view.runtime.state -eq \\'running\\\
+        ') {\\n              if ([int]$view.runtime.process.pid -ne $child.Id) { throw \\'foreground fallback detached\
+        \ a different owner\\' }\\n              $member = [StrictJobFixture]::InJob($child.Handle,$job)\\n    \
+        \          if (!$member) { throw \\'no-broker arm did not exercise an in-job foreground host\\' }\\n   \
+        \           $stopped = Invoke-OwnedCli \\'down\\'\\n              if ($stopped.exit -ne 0) { throw \"public\
+        \ foreground down failed: $($stopped.stderr)\" }\\n              $down = $stopped.stdout | ConvertFrom-Json\\\
+        n              if (!$down.complete -or $down.witness.state -ne \\'witnessed\\') { throw \\'foreground down\
+        \ lacked its complete witness\\' }\\n              $witness.foreground_cases += @{mode=$mode; pid=$child.Id;\
+        \ creation_filetime=$child.StartTime.ToFileTimeUtc().ToString(); in_job=$member; down_exit=$stopped.exit}\\\
+        n              $ready = $true\\n              break\\n            }\\n          }\\n        }\\n       \
+        \ Start-Sleep -Milliseconds 30\\n      }\\n      if (!$ready -and !$child.HasExited) {\\n        # Preserve\
+        \ the refusal below, but request normal owned-home cleanup first.\\n        if (Test-Path (Join-Path $HomePath\
+        \ \\'endpoint.json\\')) { $null = Invoke-OwnedCli \\'down\\' }\\n      }\\n    }\\n    if (!$child.WaitForExit(30000))\
+        \ {\\n      # This exact Process object pins the CLI child created here; no name/pattern signaling.\\n \
+        \     $pin = Get-CimInstance Win32_Process -Filter \"ProcessId=$($child.Id)\"\\n      if (!$pin -or !$pin.CommandLine.Contains($HomePath))\
+        \ { throw \\'owned timed-out startup command line unreadable\\' }\\n      [IO.File]::WriteAllText((Join-Path\
+        \ $Out (\\'timeout-\\' + $child.Id + \\'.json\\')), (@{pid=$child.Id;birth=$child.StartTime.ToFileTimeUtc().ToString();command=$pin.CommandLine}|ConvertTo-Json\
+        \ -Compress))\\n      $child.Kill(); $child.WaitForExit()\\n      throw \\'exact strict-job CLI child exceeded\
+        \ its original bound\\'\\n    }\\n    [IO.File]::WriteAllText((Join-Path $Out \"$mode.stdout\"), $stdout.Result)\\\
+        n    [IO.File]::WriteAllText((Join-Path $Out \"$mode.stderr\"), $stderr.Result)\\n    [IO.File]::WriteAllText((Join-Path\
+        \ $Out \"$mode.exit\"), [string]$child.ExitCode)\\n    if (!$NoEligibleBroker -and $mode -eq \\'json\\'\
+        \ -and $child.ExitCode -eq 0) {\\n      $started = $stdout.Result | ConvertFrom-Json\\n      $runtime =\
+        \ [Diagnostics.Process]::GetProcessById([int]$started.process.pid)\\n      try {\\n        $observed = Invoke-OwnedCli\
+        \ \\'status\\'\\n        if ($observed.exit -ne 0) { throw \\'broker lifetime status was unreadable\\' }\\\
+        n        $witness.selected_lifetime = ($observed.stdout | ConvertFrom-Json).runtime.detachment\\n      \
+        \  $witness.runtime_in_exact_caller_job = [StrictJobFixture]::InJob($runtime.Handle,$job)\\n        $witness.runtime_pid\
+        \ = $runtime.Id\\n        $witness.runtime_creation_filetime = $runtime.StartTime.ToFileTimeUtc().ToString()\\\
+        n        $witness.runtime_outside_all_jobs = ![StrictJobFixture]::InJob($runtime.Handle,[IntPtr]::Zero)\\\
+        n      } finally { $runtime.Dispose() }\\n    }\\n    $child.Dispose()\\n  }\\n  $witness.caller_in_job_after\
+        \ = [StrictJobFixture]::CallerInJob($job)\\n  [IO.File]::WriteAllText((Join-Path $Out \\'job.json\\'),($witness\
+        \ | ConvertTo-Json -Compress))\\n} finally { [void][StrictJobFixture]::CloseHandle($job) }\\n', 'strict/bootstrap_stderr.rs':\
+        \ '//! Cold real bootstrap consumers; no host, endpoint or public stdio substitute.\\n#[cfg(any(target_os\
+        \ = \"linux\", target_os = \"macos\", windows))]\\nmod judge {\\n    use se_proc::*;\\n    use std::time::{Duration,\
+        \ Instant};\\n    type Result<T = ()> = std::result::Result<T, String>;\\n    const SECRET_SENTINEL: &str\
+        \ = \"fixture-not-a-real-secret-never-dump-frame\";\\n    const REASON: &str = \"cold child refused: fixture\
+        \ storage is unavailable\";\\n    fn error(value: impl std::fmt::Debug) -> String {\\n        format!(\"\
+        {value:?}\")\\n    }\\n    fn require(ok: bool, reason: &str) -> Result {\\n        if ok { Ok(()) } else\
+        \ { Err(reason.into()) }\\n    }\\n    fn child(mut guard: RuntimeBootstrap) -> Result {\\n        let arguments:\
+        \ Vec<_> = guard.arguments().map(std::ffi::OsString::from).collect();\\n        let mode = arguments\\n\
+        \            .first()\\n            .ok_or(\"missing child mode\")?\\n            .to_string_lossy();\\\
+        n        #[cfg(windows)]\\n        if mode == \"inheritance\" {\\n            let raw = arguments\\n   \
+        \             .get(3)\\n                .ok_or(\"missing excluded event\")?\\n                .to_string_lossy()\\\
+        n                .parse::<usize>()\\n                .map_err(error)?;\\n            // from_process_entry\
+        \ already consumed the explicit input and auth\\n            // channels and validated the inherited parent.\
+        \ The normal refusal\\n            // below positively witnesses the child\\'s explicit diagnostic handle.\\\
+        n            // SAFETY: SetEvent validates a possibly absent native handle.\\n            unsafe {\\n  \
+        \              windows_sys::Win32::System::Threading::SetEvent(raw as _);\\n            }\\n        }\\\
+        n        #[cfg(windows)]\\n        if mode == \"broker\" {\\n            use windows_sys::Win32::System::{\\\
+        n                JobObjects::IsProcessInJob, Threading::GetCurrentProcess,\\n            };\\n         \
+        \   let mut member = 1;\\n            // SAFETY: current-process query and writable BOOL; null tests every\
+        \ job.\\n            require(\\n                // SAFETY: retained process reference and writable native\
+        \ membership output.\\n                unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(),\
+        \ &mut member) }\\n                    != 0\\n                    && member == 0,\\n                \"broker\
+        \ child still belongs to a Windows job\",\\n            )?;\\n            std::thread::sleep(Duration::from_millis(500));\\\
+        n        }\\n        if mode == \"await-commit\" {\\n            let _ = guard.await_commit(HostInstanceId([31;\
+        \ 16]));\\n            return Err(\"uncommitted guard unexpectedly returned to its caller\".into());\\n\
+        \        }\\n        if mode == \"retained-await\" {\\n            let root = std::path::PathBuf::from(arguments.get(2).ok_or(\"\
+        missing fixture root\")?);\\n            let publication = root.join(\"endpoint.fixture\");\\n         \
+        \   std::fs::write(&publication, b\"published before ownership commit\").map_err(error)?;\\n           \
+        \ let failure = guard.await_commit_retained(HostInstanceId([31; 16]));\\n            require(\\n       \
+        \         failure.is_err(),\\n                \"uncommitted retained bootstrap returned admission\",\\n\
+        \            )?;\\n            // This must happen while the uncommitted guard is still alive.\\n      \
+        \      std::fs::remove_file(&publication).map_err(error)?;\\n            let mut marker = std::fs::File::create(root.join(\"\
+        cleanup.witness\")).map_err(error)?;\\n            std::io::Write::write_all(&mut marker, b\"cleanup completed\
+        \ before guard drop\")\\n                .map_err(error)?;\\n            marker.sync_all().map_err(error)?;\\\
+        n            drop(guard);\\n            return Err(\"retained uncommitted guard drop returned\".into());\\\
+        n        }\\n        if mode == \"flood\" {\\n            for _ in 0..12 {\\n                guard\\n  \
+        \                  .report_startup_failure(\"bounded-overflow\", &\"x\".repeat(8192))\\n               \
+        \     .map_err(error)?;\\n            }\\n        }\\n        guard\\n            .report_startup_failure(\"\
+        cold-fixture\", REASON)\\n            .map_err(error)?;\\n        if mode == \"live-read\" {\\n        \
+        \    std::thread::sleep(Duration::from_secs(2));\\n        }\\n        drop(guard); // uncommitted native\
+        \ guard exits only this exact child\\n        Err(\"uncommitted guard drop returned\".into())\\n    }\\\
+        n    struct Custody(Option<RuntimeChild>);\\n    impl Custody {\\n        fn child(&self) -> Result<&RuntimeChild>\
+        \ {\\n            self.0.as_ref().ok_or(\"missing exact child custody\".into())\\n        }\\n        fn\
+        \ wait_exit(&self) -> Result<RuntimeExitWitness> {\\n            let deadline = Instant::now() + Duration::from_secs(10);\\\
+        n            loop {\\n                match NativeProcessRuntime::witness_runtime(self.child()?).map_err(error)?\
+        \ {\\n                    RuntimeExitObservation::Exited(witness) => return Ok(*witness),\\n           \
+        \         RuntimeExitObservation::Pending { .. } if Instant::now() < deadline => {\\n                  \
+        \      std::thread::sleep(Duration::from_millis(5))\\n                    }\\n                    _ => return\
+        \ Err(\"exact cold child failed to exit\".into()),\\n                }\\n            }\\n        }\\n  \
+        \      fn release(&mut self, witness: &RuntimeExitWitness) -> Result {\\n            NativeProcessRuntime::release_runtime(\\\
+        n                self.0.as_mut().ok_or(\"missing custody\")?,\\n                witness,\\n            )\\\
+        n            .map_err(error)?;\\n            self.0 = None;\\n            Ok(())\\n        }\\n    }\\n\
+        \    impl Drop for Custody {\\n        fn drop(&mut self) {\\n            if let Some(child) = self.0.as_mut()\
+        \ {\\n                let _ = NativeProcessRuntime::abort_runtime(child);\\n            }\\n           \
+        \ if self.0.is_some() {\\n                match self.wait_exit() {\\n                    Ok(witness) =>\
+        \ {\\n                        if let Err(e) = self.release(&witness) {\\n                            eprintln!(\"\
+        exact fixture cleanup failed: {e}\");\\n                        }\\n                    }\\n           \
+        \         Err(e) => eprintln!(\"exact fixture exit remains unproved: {e}\"),\\n                }\\n    \
+        \        }\\n        }\\n    }\\n    #[expect(\\n        clippy::too_many_lines,\\n        reason = \"pre-existing\
+        \ at guardrail establishment; delete this expect when the lint is fixed\"\\n    )]\\n    fn trial(mode:\
+        \ &str) -> Result {\\n        let root = std::env::temp_dir().join(format!(\\n            \"se-retained-bootstrap-{}-{}\"\
+        ,\\n            std::process::id(),\\n            std::time::SystemTime::now()\\n                .duration_since(std::time::UNIX_EPOCH)\\\
+        n                .map_err(error)?\\n                .as_nanos()\\n        ));\\n        if mode == \"retained-await\"\
+        \ {\\n            std::fs::create_dir(&root).map_err(error)?;\\n            eprintln!(\\n              \
+        \  \"bootstrap fixture retained on failed or interrupted closure: {}\",\\n                root.display()\\\
+        n            );\\n        }\\n        let machine = MachineId::new(\"persisted-cold-bootstrap-judge\").map_err(error)?;\\\
+        n        #[cfg(windows)]\\n        let excluded = if mode == \"inheritance\" {\\n            use std::{mem::size_of,\
+        \ os::windows::io::FromRawHandle};\\n            use windows_sys::Win32::{\\n                Security::SECURITY_ATTRIBUTES,\
+        \ System::Threading::CreateEventW,\\n            };\\n            let attributes = SECURITY_ATTRIBUTES {\\\
+        n                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,\\n                lpSecurityDescriptor:\
+        \ std::ptr::null_mut(),\\n                bInheritHandle: 1,\\n            };\\n            // SAFETY: creates\
+        \ an unnamed owned event with inheritance explicitly enabled.\\n            let raw = unsafe { CreateEventW(&attributes,\
+        \ 1, 0, std::ptr::null()) };\\n            if raw.is_null() {\\n                return Err(error(std::io::Error::last_os_error()));\\\
+        n            }\\n            // SAFETY: successful event creation transferred unique ownership.\\n     \
+        \       Some(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) })\\n        } else {\\n \
+        \           None\\n        };\\n        #[allow(unused_mut)]\\n        let mut arguments = vec![\\n    \
+        \        mode.into(),\\n            SECRET_SENTINEL.into(),\\n            root.as_os_str().to_owned(),\\\
+        n        ];\\n        #[cfg(windows)]\\n        if let Some(event) = &excluded {\\n            use std::os::windows::io::AsRawHandle;\\\
+        n            arguments.push((event.as_raw_handle() as usize).to_string().into());\\n        }\\n       \
+        \ let spec = RuntimeLaunchSpec {\\n            machine: machine.clone(),\\n            startup_nonce: [61;\
+        \ 16],\\n            executable: std::env::current_exe().map_err(error)?,\\n            arguments,\\n  \
+        \          environment: Environment {\\n                entries: vec![(\"JUDGE_NOT_A_CREDENTIAL\".into(),\
+        \ SECRET_SENTINEL.into())],\\n            },\\n            deadline: Instant::now() + Duration::from_secs(3),\\\
+        n        };\\n        #[cfg(windows)]\\n        let mut observed_detachment = None;\\n        let mut custody\
+        \ = match NativeProcessRuntime::spawn_runtime(spec) {\\n            Ok(launch) => {\\n                #[cfg(windows)]\\\
+        n                {\\n                    observed_detachment = Some(launch.detachment);\\n             \
+        \   }\\n                Custody(Some(launch.child))\\n            }\\n            Err(failure) => {\\n \
+        \               let custody = Custody(failure.remaining);\\n                if custody.0.is_none() {\\n\
+        \                    return Err(format!(\"native child was not created: {:?}\", failure.error));\\n    \
+        \            }\\n                custody\\n            }\\n        };\\n        #[cfg(windows)]\\n     \
+        \   if mode == \"broker\" {\\n            eprintln!(\"strict job selected detachment: {observed_detachment:?}\"\
+        );\\n            require(\\n                observed_detachment == Some(RuntimeDetachment::WindowsBroker),\\\
+        n                \"strict job did not use the broker path\",\\n            )?;\\n            use std::os::windows::io::{AsRawHandle,\
+        \ FromRawHandle, OwnedHandle};\\n            use windows_sys::Win32::System::{JobObjects::IsProcessInJob,\
+        \ Threading::*};\\n            let identity = custody\\n                .child()?\\n                .identity()\\\
+        n                .ok_or(\"broker child identity missing\")?;\\n            // SAFETY: read-only open of\
+        \ the exact child PID; retained custody pins that birth.\\n            let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,\
+        \ 0, identity.pid.0) };\\n            require(!raw.is_null(), \"outside broker child observation failed\"\
+        )?;\\n            // SAFETY: successful native open transfers one owned reference.\\n            let observed\
+        \ = unsafe { OwnedHandle::from_raw_handle(raw) };\\n            let mut member = 1;\\n            // SAFETY:\
+        \ retained exact child reference and writable BOOL.\\n            require(\\n                // SAFETY:\
+        \ retained process reference and writable native membership output.\\n                unsafe {\\n      \
+        \              IsProcessInJob(observed.as_raw_handle(), std::ptr::null_mut(), &mut member)\\n          \
+        \      } != 0\\n                    && member == 0,\\n                \"outside observer found the detached\
+        \ child in a job\",\\n            )?;\\n        }\\n        if mode == \"live-read\" {\\n            require(\\\
+        n                matches!(\\n                    NativeProcessRuntime::witness_runtime(custody.child()?).map_err(error)?,\\\
+        n                    RuntimeExitObservation::Pending { .. }\\n                ),\\n                \"live-read\
+        \ child already exited\",\\n            )?;\\n            let start = Instant::now();\\n            let\
+        \ partial = custody\\n                .child()?\\n                .startup_stderr(start + Duration::from_millis(100))\\\
+        n                .map_err(error)?;\\n            require(\\n                !partial.complete,\\n      \
+        \          \"live child\\'s stderr was falsely labeled EOF\",\\n            )?;\\n            require(\\\
+        n                start.elapsed() < Duration::from_secs(1),\\n                \"incomplete stderr read ignored\
+        \ its deadline\",\\n            )?;\\n            require(\\n                partial.bytes.len() <= 16384,\\\
+        n                \"incomplete capture exceeded its cap\",\\n            )?;\\n        }\\n        let witness\
+        \ = custody.wait_exit()?;\\n        require(\\n            !matches!(witness.status, ExitStatus::Code(0)),\\\
+        n            \"refused cold child exited successfully\",\\n        )?;\\n        let retained = custody\\\
+        n            .child()?\\n            .startup_stderr(Instant::now() + Duration::from_secs(2))\\n       \
+        \     .map_err(error)?;\\n        require(\\n            retained.complete,\\n            \"stderr readback\
+        \ did not witness actual EOF\",\\n        )?;\\n        require(\\n            retained.failure.is_none(),\\\
+        n            \"stderr readback retained an unexplained native read failure\",\\n        )?;\\n        require(\\\
+        n            retained.bytes.len() <= 16384,\\n            \"retained stderr exceeded the 16 KiB cap\",\\\
+        n        )?;\\n        let text = String::from_utf8_lossy(&retained.bytes);\\n        require(\\n      \
+        \      !text.contains(SECRET_SENTINEL),\\n            \"startup diagnostic dumped private frame or environment\
+        \ values\",\\n        )?;\\n        if mode == \"await-commit\" || mode == \"retained-await\" {\\n     \
+        \       require(\\n                text.contains(\"runtime\")\\n                    && (text.contains(\"\
+        deadline\") || text.contains(\"LaunchTimedOut\")),\\n                \"await_commit lost its refusal before\
+        \ guard drop\",\\n            )?;\\n        } else {\\n            require(\\n                text.contains(\"\
+        cold-fixture\") && text.contains(REASON),\\n                \"parent lost the exact cold child\\'s public\
+        \ refusal\",\\n            )?;\\n            require(\\n                retained.truncated == (mode == \"\
+        flood\"),\\n                \"stderr truncation fact differs from actual bounded tail\",\\n            )?;\\\
+        n        }\\n        require(\\n            !matches!(read_process(machine,witness.identity.pid).map_err(error)?,\
+        \ ProcessRead::Present(live) if live.identity==witness.identity && live.state!=NativeState::ExitedAwaitingReap),\\\
+        n            \"refused cold child still executing\",\\n        )?;\\n        custody.release(&witness)?;\\\
+        n        #[cfg(windows)]\\n        if let Some(event) = excluded {\\n            use std::os::windows::io::AsRawHandle;\\\
+        n            // Observe the original object, not whether its raw number happens to\\n            // name\
+        \ another child handle. No child report can substitute for this.\\n            // SAFETY: retained parent\
+        \ event and zero-time native observation.\\n            let state = unsafe {\\n                windows_sys::Win32::System::Threading::WaitForSingleObject(event.as_raw_handle(),\
+        \ 0)\\n            };\\n            require(\\n                state == windows_sys::Win32::Foundation::WAIT_TIMEOUT,\\\
+        n                \"bootstrap leaked an unlisted inheritable event\",\\n            )?;\\n        }\\n  \
+        \      if mode == \"retained-await\" {\\n            require(\\n                !root.join(\"endpoint.fixture\"\
+        ).try_exists().map_err(error)?,\\n                \"failed bootstrap publication survived cleanup\",\\n\
+        \            )?;\\n            require(\\n                std::fs::read(root.join(\"cleanup.witness\")).map_err(error)?\\\
+        n                    == b\"cleanup completed before guard drop\",\\n                \"parent did not witness\
+        \ cleanup before guard drop\",\\n            )?;\\n            std::fs::remove_file(root.join(\"cleanup.witness\"\
+        )).map_err(error)?;\\n            std::fs::remove_dir(root).map_err(error)?;\\n        }\\n        println!(\"\
+        PASS {mode}: exact exited child, bounded EOF stderr and public refusal\");\\n        Ok(())\\n    }\\n \
+        \   #[cfg(windows)]\\n    fn strict_job() -> Result {\\n        use std::{\\n            mem::{size_of,\
+        \ zeroed},\\n            os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},\\n        };\\n   \
+        \     use windows_sys::Win32::System::{JobObjects::*, Threading::GetCurrentProcess};\\n        // SAFETY:\
+        \ creates a new unnamed noninheritable job owned only by this fixture.\\n        let raw = unsafe { CreateJobObjectW(std::ptr::null(),\
+        \ std::ptr::null()) };\\n        require(!raw.is_null(), \"strict fixture job creation failed\")?;\\n  \
+        \      // SAFETY: successful native creation transfers one owned reference.\\n        let job = unsafe {\
+        \ OwnedHandle::from_raw_handle(raw) };\\n        // SAFETY: native POD job information with no limits or\
+        \ breakaway flags enabled.\\n        let limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed()\
+        \ };\\n        // SAFETY: retained private job and exact read-only native structure size.\\n        require(\\\
+        n            // SAFETY: retained private job and exact native limit structure.\\n            unsafe {\\\
+        n                SetInformationJobObject(\\n                    job.as_raw_handle(),\\n                \
+        \    JobObjectExtendedLimitInformation,\\n                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),\\\
+        n                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,\\n                )\\n  \
+        \          } != 0,\\n            \"strict fixture job configuration failed\",\\n        )?;\\n        //\
+        \ SAFETY: assign only this dedicated fixture caller, never the test driver or another process.\\n      \
+        \  require(\\n            // SAFETY: assigns only this dedicated fixture caller to its owned job.\\n   \
+        \         unsafe { AssignProcessToJobObject(job.as_raw_handle(), GetCurrentProcess()) } != 0,\\n       \
+        \     \"strict fixture job admission failed\",\\n        )?;\\n        let mut member = 0;\\n        //\
+        \ SAFETY: exact private job and current-process query.\\n        require(\\n            // SAFETY: retained\
+        \ private job and current-process query with writable BOOL.\\n            unsafe { IsProcessInJob(GetCurrentProcess(),\
+        \ job.as_raw_handle(), &mut member) } != 0\\n                && member != 0,\\n            \"strict fixture\
+        \ caller was not in its job\",\\n        )?;\\n        trial(\"broker\")?;\\n        // SAFETY: same retained\
+        \ caller/job after the detached child has exited.\\n        require(\\n            // SAFETY: retained private\
+        \ job and current-process query with writable BOOL.\\n            unsafe { IsProcessInJob(GetCurrentProcess(),\
+        \ job.as_raw_handle(), &mut member) } != 0\\n                && member != 0,\\n            \"launch changed\
+        \ the caller\\'s job membership\",\\n        )?;\\n        println!(\\n            \"bootstrap broker: 1\
+        \ passed, 0 failed; caller remains in strict job; child outside all jobs and exited\"\\n        );\\n  \
+        \      Ok(())\\n    }\\n    pub fn run() -> Result {\\n        if let Some(guard) = RuntimeBootstrap::from_process_entry().map_err(error)?\
+        \ {\\n            return child(guard);\\n        }\\n        #[cfg(windows)]\\n        if std::env::args_os().any(|arg|\
+        \ arg == \"--strict-job\") {\\n            return strict_job();\\n        }\\n        #[cfg(windows)]\\\
+        n        {\\n            let output = std::process::Command::new(std::env::current_exe().map_err(error)?)\\\
+        n                .arg(\"--strict-job\")\\n                .output()\\n                .map_err(error)?;\\\
+        n            require(\\n                output.status.success(),\\n                &format!(\\n        \
+        \            \"strict-job consumer failed: {}{}\",\\n                    String::from_utf8_lossy(&output.stdout),\\\
+        n                    String::from_utf8_lossy(&output.stderr)\\n                ),\\n            )?;\\n \
+        \           print!(\"{}\", String::from_utf8_lossy(&output.stdout));\\n        }\\n        if std::env::args_os().any(|arg|\
+        \ arg == \"--retained-only\") {\\n            trial(\"retained-await\")?;\\n            println!(\"bootstrap_stderr\
+        \ retained: 1 passed, 0 failed\");\\n            return Ok(());\\n        }\\n        for mode in [\\n \
+        \           \"refuse\",\\n            \"flood\",\\n            \"await-commit\",\\n            \"retained-await\"\
+        ,\\n            \"live-read\",\\n            \"refuse\",\\n        ] {\\n            trial(mode)?;\\n  \
+        \      }\\n        #[cfg(windows)]\\n        {\\n            trial(\"inheritance\")?;\\n            println!(\"\
+        bootstrap_stderr: 7 passed, 0 failed\");\\n        }\\n        #[cfg(not(windows))]\\n        println!(\"\
+        bootstrap_stderr: 6 passed, 0 failed\");\\n        Ok(())\\n    }\\n}\\n#[cfg(any(target_os = \"linux\"\
+        , target_os = \"macos\", windows))]\\nfn main() {\\n    if std::env::args().any(|v| v == \"--list\") {\\\
+        n        if !std::env::args().any(|v| v == \"--ignored\") {\\n            println!(\"bootstrap_stderr: test\"\
+        );\\n        }\\n        return;\\n    }\\n    if let Err(e) = judge::run() {\\n        eprintln!(\"FAIL\
+        \ bootstrap_stderr: {e}\");\\n        std::process::exit(1);\\n    }\\n}\\n#[cfg(not(any(target_os = \"\
+        linux\", target_os = \"macos\", windows)))]\\nfn main() {\\n    if std::env::args().any(|v| v == \"--list\"\
+        ) {\\n        if !std::env::args().any(|v| v == \"--ignored\") {\\n            println!(\"bootstrap_stderr:\
+        \ test\");\\n        }\\n        return;\\n    }\\n    println!(\"bootstrap_stderr: NOT GRADED on this platform\"\
+        );\\n}\\n', 'account/standard_user_lifecycle.py': '\"\"\"Observe native token and process facts for a private\
+        \ lifecycle judge.\"\"\"\\nimport contextlib\\nimport ctypes as C\\nfrom ctypes import wintypes as W\\nimport\
+        \ hashlib\\nimport json\\nimport os\\nfrom pathlib import Path\\nimport subprocess\\nimport time\\nimport\
+        \ traceback\\n\\nk = C.WinDLL(\\'kernel32\\', use_last_error=True)\\na = C.WinDLL(\\'advapi32\\', use_last_error=True)\\\
+        nnt = C.WinDLL(\\'ntdll\\')\\nH = W.HANDLE\\nk.GetCurrentProcess.restype = H\\nk.CloseHandle.argtypes =\
+        \ [H]\\nk.LocalFree.argtypes = [H]\\nk.WaitForSingleObject.argtypes = [H, W.DWORD]\\nk.WaitForSingleObject.restype\
+        \ = W.DWORD\\nk.IsProcessInJob.argtypes = [H, H, C.POINTER(W.BOOL)]\\nk.GetProcessTimes.argtypes = [H, C.c_void_p,\
+        \ C.c_void_p, C.c_void_p, C.c_void_p]\\nk.QueryFullProcessImageNameW.argtypes = [H, W.DWORD, W.LPWSTR, C.POINTER(W.DWORD)]\\\
+        nk.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]\\nk.OpenProcess.restype = H\\na.OpenProcessToken.argtypes\
+        \ = [H, W.DWORD, C.POINTER(H)]\\na.GetTokenInformation.argtypes = [H, C.c_int, C.c_void_p, W.DWORD, C.POINTER(W.DWORD)]\\\
+        na.ConvertSidToStringSidW.argtypes = [C.c_void_p, C.POINTER(W.LPWSTR)]\\nnt.NtQueryInformationProcess.argtypes\
+        \ = [H, W.ULONG, C.c_void_p, W.ULONG, C.c_void_p]\\nnt.NtQueryInformationProcess.restype = C.c_long\\nROOT\
+        \ = Path(__file__).resolve().parent\\nIMAGE = ROOT / \\'se.exe\\'\\nEXPECTED = json.loads((ROOT / \\'expected.json\\\
+        ').read_text())\\nEXPECTED_IMAGE = EXPECTED[\\'image_sha256\\']\\n\\n\\nclass SidAttributes(C.Structure):\\\
+        n    _fields_ = [(\\'sid\\', C.c_void_p), (\\'attributes\\', W.DWORD)]\\n\\nclass UnicodeString(C.Structure):\\\
+        n    _fields_ = [(\\'length\\', W.USHORT), (\\'maximum\\', W.USHORT), (\\'buffer\\', C.c_void_p)]\\n\\ndef\
+        \ require(ok, operation):\\n    if not ok:\\n        raise C.WinError(C.get_last_error(), operation)\\n\\\
+        ndef token_info(token, kind):\\n    buffer = C.create_string_buffer(65536)\\n    used = W.DWORD()\\n   \
+        \ require(a.GetTokenInformation(token, kind, buffer, len(buffer), C.byref(used)),\\n            f\\'query\
+        \ token class {kind}\\')\\n    assert 0 < used.value <= len(buffer)\\n    return buffer, used.value\\n\\\
+        ndef token_dword(token, kind):\\n    value, used = W.DWORD(), W.DWORD()\\n    require(a.GetTokenInformation(token,\
+        \ kind, C.byref(value), C.sizeof(value),\\n                                  C.byref(used)), f\\'query fixed\
+        \ token class {kind}\\')\\n    assert used.value == C.sizeof(value)\\n    return value.value\\n\\ndef sid_text(sid):\\\
+        n    text = W.LPWSTR()\\n    require(a.ConvertSidToStringSidW(sid, C.byref(text)), \\'read token SID\\')\\\
+        n    try:\\n        return text.value\\n    finally:\\n        k.LocalFree(C.cast(text, H))\\n\\ndef token_snapshot(token):\\\
+        n    user, _ = token_info(token, 1)\\n    integrity, _ = token_info(token, 25)\\n    groups, used = token_info(token,\
+        \ 2)\\n    count = W.DWORD.from_buffer(groups).value\\n    offset = C.sizeof(C.c_void_p)\\n    assert offset\
+        \ + count * C.sizeof(SidAttributes) <= used\\n    values = (SidAttributes * count).from_buffer(groups, offset)\\\
+        n    admin = [v.attributes for v in values if sid_text(v.sid) == \\'S-1-5-32-544\\']\\n    restricted, _\
+        \ = token_info(token, 11)\\n    return {\\'user\\': sid_text(SidAttributes.from_buffer(user).sid),\\n  \
+        \          \\'elevated\\': token_dword(token, 20),\\n            \\'elevation_type\\': token_dword(token,\
+        \ 18),\\n            \\'integrity\\': sid_text(SidAttributes.from_buffer(integrity).sid),\\n           \
+        \ \\'admin_group_attributes\\': admin,\\n            \\'admin_enabled\\': any(x & 4 for x in admin),\\n\
+        \            \\'restricting_sid_count\\': W.DWORD.from_buffer(restricted).value}\\n\\ndef process_snapshot(handle):\\\
+        n    image, size = C.create_unicode_buffer(32768), W.DWORD(32768)\\n    require(k.QueryFullProcessImageNameW(handle,\
+        \ 0, image, C.byref(size)), \\'read exact image\\')\\n    buffer = C.create_string_buffer(65536)\\n    status\
+        \ = nt.NtQueryInformationProcess(handle, 60, buffer, len(buffer), None)\\n    assert status >= 0, f\\'exact\
+        \ command line unreadable: {status:#x}\\'\\n    value = UnicodeString.from_buffer(buffer)\\n    start, end\
+        \ = C.addressof(buffer), C.addressof(buffer) + len(buffer)\\n    assert value.length % 2 == 0 and start\
+        \ <= value.buffer <= end\\n    assert value.buffer + value.length <= end\\n    created, exited, kernel,\
+        \ user = (C.c_ulonglong() for _ in range(4))\\n    require(k.GetProcessTimes(handle, C.byref(created), C.byref(exited),\\\
+        n                              C.byref(kernel), C.byref(user)), \\'read exact birth\\')\\n    member = W.BOOL()\\\
+        n    require(k.IsProcessInJob(handle, None, C.byref(member)), \\'read exact job membership\\')\\n    token\
+        \ = H()\\n    require(a.OpenProcessToken(handle, 8, C.byref(token)), \\'read exact process token\\')\\n\
+        \    try:\\n        return {\\'image\\': image.value, \\'command\\': C.wstring_at(value.buffer, value.length\
+        \ // 2),\\n                \\'creation_filetime\\': created.value, \\'in_job\\': bool(member.value),\\n\
+        \                \\'token\\': token_snapshot(token)}\\n    finally:\\n        k.CloseHandle(token)\\n\\\
+        ndef save(report):\\n    (ROOT / \\'report.json\\').write_text(json.dumps(report, indent=2) + \\'\\\\n\\\
+        ')\\n\\nimport sys\\nimport native_jobs as N\\n\\n\\nclass ClosingJob(N.Job):\\n    def __init__(self):\\\
+        n        super().__init__(False)\\n        settings, observed = N.Extended(), N.Extended()\\n        settings.basic.flags\
+        \ = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE\\n        N.require(N.k.SetInformationJobObject(self.handle,\
+        \ 9, N.C.byref(settings), N.C.sizeof(settings)))\\n        N.require(N.k.QueryInformationJobObject(self.handle,\
+        \ 9, N.C.byref(observed), N.C.sizeof(observed), None))\\n        assert observed.basic.flags == 0x2000\\\
+        n        self.flags = observed.basic.flags\\n\\n    def close(self):\\n        if self.handle:\\n      \
+        \      super().close()\\n            self.handle = None\\n\\n\\ndef write_json(path, value):\\n    pending\
+        \ = path.with_suffix(\\'.pending\\')\\n    with pending.open(\\'w\\') as out:\\n        json.dump(value,\
+        \ out, indent=2)\\n        out.flush()\\n        os.fsync(out.fileno())\\n    os.replace(pending, path)\\\
+        n\\n\\ndef wait_json(path, child, timeout=45):\\n    until, last = time.monotonic() + timeout, None\\n \
+        \   while time.monotonic() < until:\\n        try:\\n            return json.loads(path.read_text())\\n\
+        \        except (FileNotFoundError, json.JSONDecodeError) as error:\\n            last = repr(error)\\n\
+        \        assert child.poll() is None, f\\'helper exited {child.returncode}; {last}\\'\\n        time.sleep(.025)\\\
+        n    raise RuntimeError(f\\'bounded receipt missing or incomplete: {path.name}: {last}\\')\\n\\n\\ndef cli(report,\
+        \ label, args, timeout=20):\\n    home = ROOT / \\'home\\'\\n    command = [str(IMAGE), \\'--json\\', \\\
+        '--home\\', str(home), *args]\\n    row = {\\'label\\': label, \\'command\\': command}\\n    report.setdefault(\\\
+        'calls\\', []).append(row)\\n    with (ROOT / (label + \\'.stdout\\')).open(\\'wb\\') as out, (ROOT / (label\
+        \ + \\'.stderr\\')).open(\\'wb\\') as err:\\n        child = subprocess.Popen(command, stdin=subprocess.DEVNULL,\
+        \ stdout=out, stderr=err, cwd=ROOT)\\n        row[\\'pid\\'] = child.pid\\n        try:\\n            child.wait(timeout=timeout)\\\
+        n        except subprocess.TimeoutExpired:\\n            row[\\'timeout\\'] = timeout\\n            row[\\\
+        'before_emergency_stop\\'] = process_snapshot(int(child._handle))\\n            assert str(home).casefold()\
+        \ in row[\\'before_emergency_stop\\'][\\'command\\'].casefold()\\n            child.kill()\\n          \
+        \  child.wait(timeout=5)\\n            raise\\n        finally:\\n            row[\\'exit\\'] = child.poll()\\\
+        n    assert row[\\'exit\\'] == 0, row\\n    return json.loads((ROOT / (label + \\'.stdout\\')).read_bytes())\\\
+        n\\n\\ndef absent_endpoint():\\n    try:\\n        (ROOT / \\'home/endpoint.json\\').lstat()\\n    except\
+        \ FileNotFoundError:\\n        return True\\n    raise AssertionError(\\'endpoint still present; unreadable\
+        \ is not absent\\')\\n\\n\\ndef down(report, label):\\n    value = cli(report, label, [\\'down\\'])\\n \
+        \   assert value[\\'schema\\'] == \\'se.runtime-stop/v1\\'\\n    assert value[\\'complete\\'] is True and\
+        \ value[\\'witness\\'][\\'state\\'] == \\'witnessed\\', value\\n    return value\\n\\n\\ndef remove_non_file_privilege():\\\
+        n    class Luid(C.Structure):\\n        _fields_ = [(\\'low\\', W.DWORD), (\\'high\\', C.c_long)]\\n   \
+        \ class OnePrivilege(C.Structure):\\n        _fields_ = [(\\'count\\', W.DWORD), (\\'luid\\', Luid), (\\\
+        'attributes\\', W.DWORD)]\\n    a.LookupPrivilegeValueW.argtypes = [W.LPCWSTR, W.LPCWSTR, C.POINTER(Luid)]\\\
+        n    a.AdjustTokenPrivileges.argtypes = [H, W.BOOL, C.POINTER(OnePrivilege), W.DWORD, C.c_void_p, C.c_void_p]\\\
+        n    token = H()\\n    require(a.OpenProcessToken(k.GetCurrentProcess(), 0x28, C.byref(token)), \\'open\
+        \ only helper token\\')\\n    def resolve(name):\\n        value = Luid()\\n        require(a.LookupPrivilegeValueW(None,\
+        \ name, C.byref(value)), \\'resolve helper privilege\\')\\n        return value\\n    def privileges():\\\
+        n        buffer, used = token_info(token, 3)\\n        count = W.DWORD.from_buffer(buffer).value\\n    \
+        \    assert 4 + count * 12 <= used\\n        return {(W.DWORD.from_buffer(buffer, 4 + n * 12).value,\\n\
+        \                 C.c_long.from_buffer(buffer, 8 + n * 12).value) for n in range(count)}\\n    try:\\n \
+        \       before = privileges()\\n        traverse = resolve(\\'SeChangeNotifyPrivilege\\')\\n        assert\
+        \ (traverse.low, traverse.high) in before\\n        for name in [\\'SeShutdownPrivilege\\', \\'SeTimeZonePrivilege\\\
+        ', \\'SeIncreaseWorkingSetPrivilege\\', \\'SeUndockPrivilege\\']:\\n            value = resolve(name)\\\
+        n            key = (value.low, value.high)\\n            if key not in before:\\n                continue\\\
+        n            change = OnePrivilege(1, value, 4)  # SE_PRIVILEGE_REMOVED, helper only\\n            C.set_last_error(0)\\\
+        n            require(a.AdjustTokenPrivileges(token, False, C.byref(change), 0, None, None), \\'remove helper\
+        \ privilege\\')\\n            assert C.get_last_error() == 0\\n            after = privileges()\\n     \
+        \       assert after == before - {key} and (traverse.low, traverse.high) in after\\n            return {\\\
+        'removed\\': name, \\'before\\': sorted(before), \\'after\\': sorted(after),\\n                    \\'traverse_retained\\\
+        ': True, \\'token\\': token_snapshot(token)}\\n        raise RuntimeError(\\'no removable non-file privilege;\
+        \ this venue is unqualified\\')\\n    finally:\\n        k.CloseHandle(token)\\n\\n\\ndef helper():\\n \
+        \   report = {\\'mode\\': \\'owned caller helper\\'}\\n    try:\\n        changed = remove_non_file_privilege()\\\
+        n        assert changed[\\'token\\'][\\'admin_group_attributes\\'] == []\\n        assert changed[\\'token\\\
+        '][\\'restricting_sid_count\\'] == 0\\n        write_json(ROOT / \\'signals/helper-ready.json\\', changed)\\\
+        n        until = time.monotonic() + 45\\n        while not (ROOT / \\'signals/go\\').exists():\\n      \
+        \      assert time.monotonic() < until, \\'parent never assigned the exact private caller job\\'\\n    \
+        \        time.sleep(.025)\\n        value = cli(report, \\'initial-up\\', [\\'up\\'], timeout=30)\\n   \
+        \     assert value[\\'schema\\'] == \\'se.runtime-start/v1\\' and value[\\'state\\'] == \\'running\\'\\\
+        n        write_json(ROOT / \\'signals/up-returned.json\\', {\\'calls\\': report[\\'calls\\'], \\'up\\':\
+        \ value})\\n        # The outside controller owns this helper/job and closes it after pinning\\n       \
+        \ # the returned host. No provider or unrelated process enters this job.\\n        while True:\\n      \
+        \      time.sleep(.1)\\n    except BaseException:\\n        report[\\'error\\'] = traceback.format_exc()\\\
+        n        try:\\n            if (ROOT / \\'home/endpoint.json\\').exists():\\n                report[\\'cleanup_down\\\
+        '] = down(report, \\'helper-cleanup-down\\')\\n        except BaseException:\\n            report[\\'cleanup_error\\\
+        '] = traceback.format_exc()\\n        write_json(ROOT / \\'helper-failure.json\\', report)\\n        raise\\\
+        n\\n\\ndef controller():\\n    report = {\\'mode\\': \\'real standard-user caller-job closure and same-home\
+        \ fresh start\\',\\n              \\'source\\': EXPECTED[\\'source\\'], \\'image_sha256\\': hashlib.sha256(IMAGE.read_bytes()).hexdigest(),\\\
+        n              \\'calls\\': [], \\'limitations\\': [\\'No provider journey; no desktop survival claim.\\\
+        ']}\\n    assert report[\\'image_sha256\\'] == EXPECTED_IMAGE\\n    report[\\'controller\\'] = process_snapshot(k.GetCurrentProcess())\\\
+        n    token = report[\\'controller\\'][\\'token\\']\\n    assert token[\\'elevated\\'] == 0 and token[\\\
+        'admin_group_attributes\\'] == []\\n    assert token[\\'integrity\\'] == \\'S-1-16-8192\\' and token[\\\
+        'restricting_sid_count\\'] == 0\\n    repo = ROOT / \\'repo\\'\\n    repo.mkdir()\\n    (repo / \\'preserve-work.txt\\\
+        ').write_bytes(b\\'preserve this user work\\\\n\\')\\n    sentinel = hashlib.sha256((repo / \\'preserve-work.txt\\\
+        ').read_bytes()).hexdigest()\\n    initialized = cli(report, \\'init\\', [\\'init\\', \\'--repo\\', str(repo)])\\\
+        n    project = initialized[\\'project\\'][\\'id\\']\\n    absent_endpoint()\\n    (ROOT / \\'signals\\').mkdir()\\\
+        n    helper_child, job, host, fresh = None, None, None, None\\n    pins = []\\n    try:\\n        with (ROOT\
+        \ / \\'helper.stdout\\').open(\\'wb\\') as out, (ROOT / \\'helper.stderr\\').open(\\'wb\\') as err:\\n \
+        \           helper_child = subprocess.Popen([sys.executable, \\'-B\\', str(Path(__file__).resolve()), \\\
+        '--helper\\'],\\n                                            stdin=subprocess.DEVNULL, stdout=out, stderr=err,\
+        \ cwd=ROOT)\\n        changed = wait_json(ROOT / \\'signals/helper-ready.json\\', helper_child)\\n     \
+        \   report[\\'helper_context\\'] = changed\\n        owned_helper = N.Process(helper_child.pid)\\n     \
+        \   pins.append(owned_helper)\\n        assert str(ROOT).casefold() in owned_helper.initial[\\'command\\\
+        '].casefold()\\n        report[\\'helper_native\\'] = owned_helper.initial\\n        job = ClosingJob()\\\
+        n        job.attach(owned_helper)\\n        report[\\'caller_job_flags\\'] = job.flags\\n        (ROOT /\
+        \ \\'signals/go\\').write_text(\\'exact owned helper is now assigned\\')\\n        returned = wait_json(ROOT\
+        \ / \\'signals/up-returned.json\\', helper_child)\\n        report[\\'initial_up\\'] = returned\\n     \
+        \   first = returned[\\'up\\']\\n        host = N.Process(first[\\'process\\'][\\'pid\\'])\\n        pins.append(host)\\\
+        n        assert Path(host.initial[\\'image\\']).resolve() == IMAGE.resolve()\\n        assert host.member(job.handle)\\\
+        n        report[\\'initial_host\\'] = host.initial | {\\'token\\': process_snapshot(host.handle)[\\'token\\\
+        ']}\\n        assert report[\\'initial_host\\'][\\'token\\'][\\'user\\'] == token[\\'user\\']\\n       \
+        \ view = cli(report, \\'initial-status\\', [\\'status\\'])\\n        assert view[\\'runtime\\'][\\'state\\\
+        '] == \\'running\\' and view[\\'runtime\\'][\\'detachment\\'] == \\'windows-job\\'\\n        assert view[\\\
+        'runtime\\'][\\'process\\'][\\'pid\\'] == host.pid\\n        report[\\'initial_status\\'] = view\\n    \
+        \    assert \\'Windows may stop this background host\\' in (ROOT / \\'initial-up.stderr\\').read_text()\\\
+        n        members = job.members()\\n        assert host.pid in members and owned_helper.pid in members\\\
+        n        for pid in members:\\n            if pid not in [p.pid for p in pins]:\\n                pins.append(N.Process(pid))\\\
+        n        # Full native command/image/birth records precede this exact private\\n        # job\\'s authorized\
+        \ lifetime closure. No name/pattern stop is used.\\n        report[\\'before_caller_job_close\\'] = [p.initial\
+        \ for p in pins]\\n        job.close()\\n        report[\\'caller_job_closed\\'] = True\\n        helper_child.wait(timeout=10)\\\
+        n        until = time.monotonic() + 10\\n        while not all(p.exited() for p in pins) and time.monotonic()\
+        \ < until:\\n            time.sleep(.025)\\n        report[\\'caller_job_process_exits\\'] = [p.exited()\
+        \ for p in pins]\\n        assert all(report[\\'caller_job_process_exits\\'])\\n        report[\\'caller_job_host_exit_witnessed\\\
+        '] = True\\n        # Recovery is requested through the public consumer with the same home.\\n        restarted\
+        \ = cli(report, \\'fresh-up\\', [\\'up\\'], timeout=30)\\n        assert restarted[\\'state\\'] == \\'running\\\
+        '\\n        fresh = N.Process(restarted[\\'process\\'][\\'pid\\'])\\n        report[\\'fresh_host\\'] =\
+        \ fresh.initial\\n        assert Path(fresh.initial[\\'image\\']).resolve() == IMAGE.resolve()\\n      \
+        \  assert fresh.initial[\\'creation_filetime\\'] != host.initial[\\'creation_filetime\\']\\n        assert\
+        \ restarted[\\'generation\\'] > first[\\'generation\\']\\n        after = cli(report, \\'fresh-status\\\
+        ', [\\'status\\'])\\n        assert after[\\'runtime\\'][\\'state\\'] == \\'running\\' and after[\\'runtime\\\
+        '][\\'process\\'][\\'pid\\'] == fresh.pid\\n        assert after[\\'project\\'][\\'state\\'] == \\'present\\\
+        ' and after[\\'project\\'][\\'value\\'][\\'id\\'] == project\\n        assert hashlib.sha256((repo / \\\
+        'preserve-work.txt\\').read_bytes()).hexdigest() == sentinel\\n        report[\\'fresh_status\\'] = after\\\
+        n        report[\\'fresh_up\\'] = restarted\\n        report[\\'down\\'] = down(report, \\'fresh-down\\\
+        ')\\n        until = time.monotonic() + 10\\n        while not fresh.exited() and time.monotonic() < until:\\\
+        n            time.sleep(.025)\\n        assert fresh.exited()\\n        report[\\'exact_host_exit_witnessed\\\
+        '] = True\\n        absent_endpoint()\\n        stopped = cli(report, \\'status-after-down\\', [\\'status\\\
+        '])\\n        assert stopped[\\'runtime\\'][\\'state\\'] == \\'stopped\\'\\n        report[\\'lifecycle_completed\\\
+        '] = True\\n    except BaseException:\\n        report[\\'error\\'] = traceback.format_exc()\\n        raise\\\
+        n    finally:\\n        try:\\n            if (ROOT / \\'home/endpoint.json\\').exists():\\n           \
+        \     report[\\'cleanup_down\\'] = down(report, \\'cleanup-down\\')\\n        except BaseException:\\n \
+        \           report[\\'cleanup_error\\'] = traceback.format_exc()\\n        if job and job.handle:\\n   \
+        \         try:\\n                cleanup_pins = []\\n                for pid in job.members():\\n      \
+        \              pin = N.Process(pid)\\n                    pins.append(pin)\\n                    cleanup_pins.append(pin)\\\
+        n                report[\\'cleanup_job_members\\'] = [pin.initial for pin in cleanup_pins]\\n          \
+        \      job.close()\\n            except BaseException:\\n                report[\\'job_cleanup_error\\']\
+        \ = traceback.format_exc()\\n        if helper_child:\\n            try:\\n                helper_child.wait(timeout=10)\\\
+        n            except BaseException:\\n                report[\\'helper_cleanup_error\\'] = traceback.format_exc()\\\
+        n        for pin in pins:\\n            report.setdefault(\\'final_process_exits\\', []).append(pin.exited())\\\
+        n            pin.close()\\n        if fresh:\\n            report[\\'host_exited_at_cleanup\\'] = fresh.exited()\\\
+        n            fresh.close()\\n        save(report)\\n    assert report.get(\\'host_exited_at_cleanup\\')\
+        \ is True\\n    assert all(report.get(\\'final_process_exits\\', []))\\n    assert not any(key in report\
+        \ for key in [\\'cleanup_error\\', \\'job_cleanup_error\\', \\'helper_cleanup_error\\'])\\n\\n\\nif __name__\
+        \ == \\'__main__\\':\\n    label = \\'helper.log\\' if \\'--helper\\' in sys.argv else \\'controller.log\\\
+        '\\n    with (ROOT / label).open(\\'w\\') as log:\\n        with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):\\\
+        n            try:\\n                helper() if \\'--helper\\' in sys.argv else controller()\\n        \
+        \    except BaseException:\\n                traceback.print_exc()\\n                raise\\n', 'account/standard-user-bootstrap.ps1':\
+        \ 'param([Parameter(Mandatory=$true)][string]$Python)\\n$ErrorActionPreference = \\'Stop\\'\\n# Compiler\
+        \ scratch belongs to this new account even before its native profile\\n# path is available; no administrator\
+        \ TEMP directory enters the child logon.\\n$env:TEMP = Join-Path $PSScriptRoot \\'bootstrap-temp\\'\\n$env:TMP\
+        \ = $env:TEMP\\n$null = [IO.Directory]::CreateDirectory($env:TEMP)\\n# The new account\\'s profile is loaded\
+        \ by the credentialed ProcessStartInfo owner.\\n# Resolve it from this process token, never from the SSH\
+        \ account\\'s environment.\\nAdd-Type -TypeDefinition @\\'\\nusing System;\\nusing System.Runtime.InteropServices;\\\
+        nusing System.Text;\\npublic static class OwnProfile {\\n  [DllImport(\"kernel32.dll\")] public static extern\
+        \ IntPtr GetCurrentProcess();\\n  [DllImport(\"kernel32.dll\")] public static extern bool CloseHandle(IntPtr\
+        \ value);\\n  [DllImport(\"advapi32.dll\", SetLastError=true)]\\n  static extern bool OpenProcessToken(IntPtr\
+        \ process, uint access, out IntPtr token);\\n  [DllImport(\"userenv.dll\", CharSet=CharSet.Unicode, SetLastError=true)]\\\
+        n  static extern bool GetUserProfileDirectoryW(IntPtr token, StringBuilder path, ref uint size);\\n  public\
+        \ static string Read() {\\n    IntPtr token;\\n    if (!OpenProcessToken(GetCurrentProcess(),8,out token))\\\
+        n      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());\\n    try {\\n     \
+        \ var path=new StringBuilder(32768); uint size=32768;\\n      if (!GetUserProfileDirectoryW(token,path,ref\
+        \ size))\\n        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());\\n     \
+        \ return path.ToString();\\n    } finally { CloseHandle(token); }\\n  }\\n}\\n\\'@\\n$profileRoot = [OwnProfile]::Read()\\\
+        n$env:USERPROFILE = $profileRoot\\n$env:APPDATA = [IO.Path]::Combine($profileRoot, \\'AppData\\', \\'Roaming\\\
+        ')\\n$env:LOCALAPPDATA = [IO.Path]::Combine($profileRoot, \\'AppData\\', \\'Local\\')\\n$env:TEMP = [IO.Path]::Combine($env:LOCALAPPDATA,\
+        \ \\'Temp\\')\\n$env:TMP = $env:TEMP\\n$null = [IO.Directory]::CreateDirectory($env:TEMP)\\n$env:HOMEDRIVE\
+        \ = [IO.Path]::GetPathRoot($profileRoot).TrimEnd(\\'\\\\\\')\\n$env:HOMEPATH = $profileRoot.Substring($env:HOMEDRIVE.Length)\\\
+        nforeach ($name in @(\\'GH_TOKEN\\',\\'GITHUB_TOKEN\\',\\'CLAUDECODE\\',\\'CODEX_THREAD_ID\\',\\'CODEX_CI\\\
+        ')) {\\n  [Environment]::SetEnvironmentVariable($name,$null,\\'Process\\')\\n}\\nforeach ($entry in @(Get-ChildItem\
+        \ Env:SE_*)) {\\n  [Environment]::SetEnvironmentVariable($entry.Name,$null,\\'Process\\')\\n}\\nSet-Location\
+        \ -LiteralPath $PSScriptRoot\\n& $Python ([IO.Path]::Combine($PSScriptRoot,\\'standard_user_lifecycle.py\\\
+        '))\\nexit $LASTEXITCODE\\n', 'account/prepare-standard-user.ps1': 'param(\\n  [Parameter(Mandatory=$true)][string]$Image,\\\
+        n  [Parameter(Mandatory=$true)][string]$Python,\\n  [Parameter(Mandatory=$true)][string]$EvidenceRoot\\\
+        n)\\n$ErrorActionPreference = \\'Stop\\'\\n$principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())\\\
+        nif (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {\\n  throw \\'Account\
+        \ provisioning requires the admitted VM owner administrator.\\'\\n}\\n$manifest = [IO.File]::ReadAllText((Join-Path\
+        \ $PSScriptRoot \\'manifest.json\\')) | ConvertFrom-Json\\nif ((Get-FileHash -LiteralPath $Image -Algorithm\
+        \ SHA256).Hash.ToLowerInvariant() -ne $manifest.image_sha256) {\\n  throw \\'The baseline executable differs\
+        \ from the authenticated image.\\'\\n}\\nforeach ($property in $manifest.files.PSObject.Properties) {\\\
+        n  $path = Join-Path $PSScriptRoot $property.Name\\n  if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()\
+        \ -ne $property.Value) {\\n    throw \"Diagnostic input changed: $($property.Name)\"\\n  }\\n}\\nif (!(Test-Path\
+        \ -LiteralPath $Python -PathType Leaf)) { throw \\'Native guest Python executable is required.\\' }\\nif\
+        \ (!(Test-Path -LiteralPath $EvidenceRoot -PathType Container)) { throw \\'An existing private evidence\
+        \ directory is required.\\' }\\n$case = Join-Path $EvidenceRoot (\\'standard-user-\\' + [Guid]::NewGuid().ToString(\\\
+        'N\\'))\\n$null = [IO.Directory]::CreateDirectory($case)\\n$name = \\'selife\\' + [Guid]::NewGuid().ToString(\\\
+        'N\\').Substring(0,10)\\n$account = $null\\n$password = $null\\n$child = $null\\n$receipt = [ordered]@{source=$manifest.source;\
+        \ image_sha256=$manifest.image_sha256; case=$case; account_created=$false; lifecycle_observed=$false; lifecycle_qualified=$false;\
+        \ account_disabled_verified=$false; controller_exited=$false}\\ntry {\\n  # Password material exists only\
+        \ in this process and the OS account operation.\\n  # Do not enable transcripts/debug tracing or print this\
+        \ secure value.\\n  $random = New-Object byte[] 48\\n  $generator = [Security.Cryptography.RandomNumberGenerator]::Create()\\\
+        n  try { $generator.GetBytes($random) } finally { $generator.Dispose() }\\n  $secretText = [Convert]::ToBase64String($random)\
+        \ + \\'aA1!\\'\\n  [Array]::Clear($random,0,$random.Length)\\n  $password = ConvertTo-SecureString -String\
+        \ $secretText -AsPlainText -Force\\n  $secretText = $null\\n  $account = New-LocalUser -Name $name -Password\
+        \ $password -AccountNeverExpires -Description \\'Disposable native lifecycle diagnostic\\'\\n  $receipt.account_created\
+        \ = $true\\n  $receipt.account_sid = $account.SID.Value\\n  $users = Get-LocalGroup -SID ([Security.Principal.SecurityIdentifier]::new(\\\
+        'S-1-5-32-545\\'))\\n  Add-LocalGroupMember -Group $users -Member $account\\n  $admins = Get-LocalGroup\
+        \ -SID ([Security.Principal.SecurityIdentifier]::new(\\'S-1-5-32-544\\'))\\n  if (@(Get-LocalGroupMember\
+        \ -Group $admins | Where-Object {$_.SID -eq $account.SID}).Count -ne 0) {\\n    throw \\'New account unexpectedly\
+        \ belongs to Administrators.\\'\\n  }\\n  $acl = New-Object Security.AccessControl.DirectorySecurity\\n\
+        \  $acl.SetAccessRuleProtection($true,$false)\\n  $acl.SetOwner([Security.Principal.SecurityIdentifier]::new(\\\
+        'S-1-5-32-544\\'))\\n  foreach ($sid in @(\\'S-1-5-18\\',\\'S-1-5-32-544\\',$account.SID.Value)) {\\n  \
+        \  $rule = [Security.AccessControl.FileSystemAccessRule]::new(\\n      [Security.Principal.SecurityIdentifier]::new($sid),\\\
+        'FullControl\\',\\n      [Security.AccessControl.InheritanceFlags]\\'ContainerInherit,ObjectInherit\\',\\\
+        n      [Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)\\\
+        n    $acl.AddAccessRule($rule)\\n  }\\n  Set-Acl -LiteralPath $case -AclObject $acl\\n  # The parent directory\
+        \ must permit traversal by the selected identity. Its\\n  # contents remain private: this grants no list/read/write\
+        \ rights to siblings.\\n  $parentAcl = Get-Acl -LiteralPath $EvidenceRoot\\n  $parentAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(\\\
+        n    $account.SID,[Security.AccessControl.FileSystemRights]::Traverse,\\n    [Security.AccessControl.AccessControlType]::Allow))\\\
+        n  Set-Acl -LiteralPath $EvidenceRoot -AclObject $parentAcl\\n  foreach ($file in @(\\'standard_user_lifecycle.py\\\
+        ',\\'standard-user-bootstrap.ps1\\',\\'native_jobs.py\\',\\'expected.json\\')) {\\n    [IO.File]::Copy((Join-Path\
+        \ $PSScriptRoot $file),(Join-Path $case $file),$false)\\n  }\\n  [IO.File]::Copy($Image,(Join-Path $case\
+        \ \\'se.exe\\'),$false)\\n  & icacls.exe $case /setintegritylevel \\'(OI)(CI)M\\' /T\\n  if ($LASTEXITCODE\
+        \ -ne 0) { throw \\'Could not set medium integrity on this disposable case.\\' }\\n  $info = New-Object\
+        \ Diagnostics.ProcessStartInfo\\n  $info.FileName = [IO.Path]::Combine([Environment]::GetFolderPath(\\'Windows\\\
+        '),\\'System32\\',\\'WindowsPowerShell\\',\\'v1.0\\',\\'powershell.exe\\')\\n  $info.Arguments = \\'-NoLogo\
+        \ -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"\\' + (Join-Path $case \\'standard-user-bootstrap.ps1\\\
+        ') + \\'\" -Python \"\\' + $Python + \\'\"\\'\\n  $info.UseShellExecute = $false\\n  $info.UserName = $name\\\
+        n  $info.Domain = [Environment]::MachineName\\n  $info.Password = $password\\n  $info.LoadUserProfile =\
+        \ $true\\n  $info.RedirectStandardOutput = $true\\n  $info.RedirectStandardError = $true\\n  $info.WorkingDirectory\
+        \ = $case\\n  # Never copy the administrator\\'s credential or provider environment into the new logon.\\\
+        n  $info.EnvironmentVariables.Clear()\\n  foreach ($key in @(\\'SystemRoot\\',\\'WINDIR\\',\\'COMSPEC\\\
+        ',\\'PATH\\',\\'PATHEXT\\',\\'ProgramData\\',\\'ProgramFiles\\',\\'ProgramFiles(x86)\\',\\'COMPUTERNAME\\\
+        ',\\'PROCESSOR_ARCHITECTURE\\',\\'NUMBER_OF_PROCESSORS\\')) {\\n    $value = [Environment]::GetEnvironmentVariable($key,\\\
+        'Machine\\')\\n    if (!$value) { $value = [Environment]::GetEnvironmentVariable($key,\\'Process\\') }\\\
+        n    if ($value) { $info.EnvironmentVariables[$key] = $value }\\n  }\\n  $child = [Diagnostics.Process]::Start($info)\\\
+        n  $receipt.controller_pid = $child.Id\\n  $receipt.controller_birth = $child.StartTime.ToFileTimeUtc().ToString()\\\
+        n  $stdout = $child.StandardOutput.ReadToEndAsync()\\n  $stderr = $child.StandardError.ReadToEndAsync()\\\
+        n  $observed = Get-CimInstance Win32_Process -Filter \"ProcessId=$($child.Id)\"\\n  if ($observed) { $receipt.controller_command\
+        \ = $observed.CommandLine }\\n  if (!$child.WaitForExit(180000)) {\\n    # No other PID or process name\
+        \ is signaled. A timed-out detached host remains\\n    # an explicit cleanup failure under the sole VM owner\\\
+        's joined-stop custody.\\n    $observed = Get-CimInstance Win32_Process -Filter \"ProcessId=$($child.Id)\"\
+        \\n    if (!$observed -or !$observed.CommandLine.Contains((Join-Path $case \\'standard-user-bootstrap.ps1\\\
+        '))) {\\n      throw \\'Exact controller command line unreadable; refusing emergency termination.\\'\\n\
+        \    }\\n    $receipt.before_emergency_stop = $observed.CommandLine\\n    $child.Kill()\\n    if (!$child.WaitForExit(5000))\
+        \ { throw \\'Exact controller did not exit after emergency stop.\\' }\\n    $receipt.cleanup_unknown = $true\\\
+        n    throw \\'Standard-user controller exceeded180 seconds; retain VM custody and join stop.\\'\\n  }\\\
+        n  $receipt.controller_exit = $child.ExitCode\\n  if (!$stdout.Wait(5000) -or !$stderr.Wait(5000)) { throw\
+        \ \\'Controller output remains open after its exact exit.\\' }\\n  [IO.File]::WriteAllText((Join-Path $case\
+        \ \\'launcher.stdout\\'),$stdout.Result)\\n  [IO.File]::WriteAllText((Join-Path $case \\'launcher.stderr\\\
+        '),$stderr.Result)\\n  if ($child.ExitCode -ne 0) { throw \"Standard-user controller failed with exit$($child.ExitCode).\"\
+        \ }\\n  $result = [IO.File]::ReadAllText((Join-Path $case \\'report.json\\')) | ConvertFrom-Json\\n  if\
+        \ (!$result.lifecycle_completed -or !$result.exact_host_exit_witnessed -or !$result.host_exited_at_cleanup)\
+        \ {\\n    throw \\'Public lifecycle or exact native cleanup remains unqualified.\\'\\n  }\\n  if ($result.controller.token.user\
+        \ -ne $account.SID.Value) { throw \\'Observer ran as a different OS account.\\' }\\n  $receipt.lifecycle_observed\
+        \ = $true\\n  if (!$result.caller_job_host_exit_witnessed -or !$result.caller_job_closed) { throw \\'Caller-job\
+        \ closure lacked its outside native witness.\\' }\\n  if (!$result.caller_job_process_exits -or $result.caller_job_process_exits\
+        \ -contains $false) { throw \\'Caller-job members remain executing.\\' }\\n  $receipt.up_mode = $result.initial_status.runtime.detachment\\\
+        n  $receipt.up_returned_before_down = $true\\n  $receipt.same_home_fresh_generation = $result.fresh_up.generation\\\
+        n  $receipt.caller_job_host_exit_witnessed = $result.caller_job_host_exit_witnessed\\n} catch {\\n  $receipt.error\
+        \ = $_.Exception.Message\\n  throw\\n} finally {\\n  try {\\n    if ($child) {\\n      $receipt.controller_exited\
+        \ = $child.HasExited\\n      if ($child.HasExited) { $child.Dispose() }\\n      else { $receipt.cleanup_unknown\
+        \ = $true }\\n    }\\n  } catch {\\n    $receipt.cleanup_unknown = $true\\n    $receipt.controller_cleanup_error\
+        \ = $_.Exception.Message\\n  }\\n  try {\\n    if ($account) {\\n      $current = Get-LocalUser -SID $account.SID\
+        \ -ErrorAction Stop\\n      if (!$current -or $current.SID -ne $account.SID) { throw \\'Exact created account\
+        \ SID changed or is absent.\\' }\\n      Disable-LocalUser -InputObject $current\\n      $readback = Get-LocalUser\
+        \ -SID $account.SID -ErrorAction Stop\\n      if (!$readback -or $readback.SID -ne $account.SID -or $readback.Enabled\
+        \ -ne $false) {\\n        throw \\'Exact created account was not witnessed disabled.\\'\\n      }\\n   \
+        \   $receipt.account_disabled_verified = $true\\n      $receipt.account_disabled_readback = @{sid=$readback.SID.Value;\
+        \ enabled=$readback.Enabled}\\n      # Keep the private profile and evidence for readback. The VM owner\
+        \ resets\\n      # the disposable guest only after the joined-stop release.\\n    }\\n  } catch {\\n   \
+        \ $receipt.account_cleanup_unknown = $true\\n    $receipt.account_cleanup_error = $_.Exception.Message\\\
+        n  }\\n  if ($password) { $password.Dispose() }\\n  $receipt.lifecycle_qualified = $receipt.lifecycle_observed\
+        \ -and $receipt.controller_exited -and $receipt.account_disabled_verified -and !$receipt.cleanup_unknown\
+        \ -and !$receipt.account_cleanup_unknown -and !$receipt.error\\n  [IO.File]::WriteAllText((Join-Path $case\
+        \ \\'launcher.json\\'),($receipt | ConvertTo-Json -Depth 8))\\n}\\nif (!$receipt.lifecycle_qualified) {\
+        \ throw \\'Lifecycle or cleanup remains unqualified; read the retained launcher receipt.\\' }\\n$receipt\
+        \ | ConvertTo-Json -Depth 8\\n', 'account/native_jobs.py': '\"\"\"Reviewer-owned Windows job and exact process\
+        \ witnesses; no product hooks.\"\"\"\\nimport ctypes as C\\nfrom ctypes import wintypes as W\\n\\nk = C.WinDLL(\\\
+        'kernel32\\', use_last_error=True)\\nnt = C.WinDLL(\\'ntdll\\')\\nHANDLE = W.HANDLE\\nk.CreateJobObjectW.argtypes\
+        \ = [C.c_void_p, W.LPCWSTR]\\nk.CreateJobObjectW.restype = HANDLE\\nk.SetInformationJobObject.argtypes =\
+        \ [HANDLE, C.c_int, C.c_void_p, W.DWORD]\\nk.QueryInformationJobObject.argtypes = [HANDLE, C.c_int, C.c_void_p,\
+        \ W.DWORD, C.c_void_p]\\nk.AssignProcessToJobObject.argtypes = [HANDLE, HANDLE]\\nk.IsProcessInJob.argtypes\
+        \ = [HANDLE, HANDLE, C.POINTER(W.BOOL)]\\nk.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]\\nk.OpenProcess.restype\
+        \ = HANDLE\\nk.CloseHandle.argtypes = [HANDLE]\\nk.GetProcessTimes.argtypes = [HANDLE, C.c_void_p, C.c_void_p,\
+        \ C.c_void_p, C.c_void_p]\\nk.QueryFullProcessImageNameW.argtypes = [HANDLE, W.DWORD, W.LPWSTR, C.POINTER(W.DWORD)]\\\
+        nk.WaitForSingleObject.argtypes = [HANDLE, W.DWORD]\\nk.WaitForSingleObject.restype = W.DWORD\\nk.TerminateProcess.argtypes\
+        \ = [HANDLE, W.UINT]\\nnt.NtQueryInformationProcess.argtypes = [HANDLE, W.ULONG, C.c_void_p, W.ULONG, C.c_void_p]\\\
+        nnt.NtQueryInformationProcess.restype = C.c_long\\n\\n\\ndef require(ok):\\n    if not ok:\\n        raise\
+        \ C.WinError(C.get_last_error())\\n\\n\\nclass UnicodeString(C.Structure):\\n    _fields_ = [(\\'length\\\
+        ', W.USHORT), (\\'maximum\\', W.USHORT), (\\'buffer\\', C.c_void_p)]\\n\\n\\nclass Basic(C.Structure):\\\
+        n    _fields_ = [(\\'process_time\\', C.c_longlong), (\\'job_time\\', C.c_longlong),\\n                (\\\
+        'flags\\', W.DWORD), (\\'min_ws\\', C.c_size_t), (\\'max_ws\\', C.c_size_t),\\n                (\\'active\\\
+        ', W.DWORD), (\\'affinity\\', C.c_size_t),\\n                (\\'priority\\', W.DWORD), (\\'scheduling\\\
+        ', W.DWORD)]\\n\\n\\nclass Extended(C.Structure):\\n    _fields_ = [(\\'basic\\', Basic), (\\'io\\', C.c_ulonglong\
+        \ * 6),\\n                (\\'process_memory\\', C.c_size_t), (\\'job_memory\\', C.c_size_t),\\n       \
+        \         (\\'peak_process\\', C.c_size_t), (\\'peak_job\\', C.c_size_t)]\\n\\n\\nclass Process:\\n    def\
+        \ __init__(self, pid):\\n        self.pid = int(pid)\\n        self.handle = k.OpenProcess(0x1000 | 0x100000\
+        \ | 0x100 | 1, False, self.pid)\\n        require(self.handle)\\n        self.initial = self.observe()\\\
+        n\\n    def observe(self):\\n        created, exited, kernel, user = (C.c_ulonglong() for _ in range(4))\\\
+        n        require(k.GetProcessTimes(self.handle, C.byref(created), C.byref(exited),\\n                  \
+        \                C.byref(kernel), C.byref(user)))\\n        image, count = C.create_unicode_buffer(32768),\
+        \ W.DWORD(32768)\\n        require(k.QueryFullProcessImageNameW(self.handle, 0, image, C.byref(count)))\\\
+        n        buffer = C.create_string_buffer(65536)\\n        status = nt.NtQueryInformationProcess(self.handle,\
+        \ 60, buffer, len(buffer), None)\\n        if status < 0:\\n            raise RuntimeError(f\\'bounded native\
+        \ command line query failed: {status:#x}\\')\\n        value = UnicodeString.from_buffer(buffer)\\n    \
+        \    start, end = C.addressof(buffer), C.addressof(buffer) + len(buffer)\\n        assert value.length %\
+        \ 2 == 0 and start <= value.buffer <= end\\n        assert value.buffer + value.length <= end\\n       \
+        \ command = C.wstring_at(value.buffer, value.length // 2)\\n        return {\\'pid\\': self.pid, \\'creation_filetime\\\
+        ': created.value,\\n                \\'image\\': image.value, \\'command\\': command, \\'exited\\': self.exited()}\\\
+        n\\n    def exited(self):\\n        code = k.WaitForSingleObject(self.handle, 0)\\n        assert code in\
+        \ (0, 258), f\\'native process wait failed: {code}\\'\\n        return code == 0\\n\\n    def member(self,\
+        \ job=None):\\n        present = W.BOOL()\\n        require(k.IsProcessInJob(self.handle, job, C.byref(present)))\\\
+        n        return bool(present.value)\\n\\n    def emergency_stop(self, owned_path):\\n        if self.exited():\\\
+        n            return\\n        current = self.observe()\\n        assert current[\\'creation_filetime\\']\
+        \ == self.initial[\\'creation_filetime\\']\\n        assert str(owned_path).casefold() in current[\\'command\\\
+        '].casefold(), current\\n        require(k.TerminateProcess(self.handle, 91))\\n        assert k.WaitForSingleObject(self.handle,\
+        \ 10000) == 0\\n\\n    def close(self):\\n        if self.handle:\\n            require(k.CloseHandle(self.handle))\\\
+        n            self.handle = None\\n\\n\\nclass Job:\\n    def __init__(self, allow_breakaway):\\n       \
+        \ self.handle = k.CreateJobObjectW(None, None)\\n        require(self.handle)\\n        self.flags = 0x800\
+        \ if allow_breakaway else 0\\n        settings = Extended()\\n        settings.basic.flags = self.flags\\\
+        n        require(k.SetInformationJobObject(self.handle, 9, C.byref(settings), C.sizeof(settings)))\\n  \
+        \      observed = Extended()\\n        require(k.QueryInformationJobObject(self.handle, 9, C.byref(observed),\
+        \ C.sizeof(observed), None))\\n        assert observed.basic.flags == self.flags\\n\\n    def attach(self,\
+        \ process):\\n        require(k.AssignProcessToJobObject(self.handle, process.handle))\\n        assert\
+        \ process.member(self.handle)\\n\\n    def members(self):\\n        data = C.create_string_buffer(4096)\\\
+        n        require(k.QueryInformationJobObject(self.handle, 3, data, len(data), None))\\n        total, count\
+        \ = (W.DWORD * 2).from_buffer(data)\\n        assert total == count and count <= 128, \\'native membership\
+        \ exceeded its bounded census\\'\\n        values = (C.c_size_t * count).from_buffer(data, 8)\\n       \
+        \ return list(values)\\n\\n    def close(self):\\n        require(k.CloseHandle(self.handle))\\n       \
+        \ self.handle = None\\n'}\nhashes={'compare.py': '579cd0f3ac3bd10aca4e4a5fa46f31f2f22d468dcdd8d1db8170534ba48b6308',\
+        \ 'strict/breakaway_refusal.rs': 'd3819636dcdf93b1befd5c6439a68a275328021686be58b2c5c56212affd3b31', 'strict/strict_job.ps1':\
+        \ '219f10c47bc62cd0dbaa352f6c0162183c59ecd2680a13c845fa8781b4018d0f', 'strict/bootstrap_stderr.rs': '412201d0c8154e4498d07469b1d763bd702076f2ceae4d08df6b8b6280dc792b',\
+        \ 'account/standard_user_lifecycle.py': 'e75c0021eac06c5a67fd12fb931df3cd4711e7fe117fff458c33136d67409aea',\
+        \ 'account/standard-user-bootstrap.ps1': 'fa45adf2eb690370be3f70c9e7d8edf737cfff06b2e36e5c5db1daaea22d985f',\
+        \ 'account/prepare-standard-user.ps1': 'fd332cec99c8a1a6549711a53f72ae037f33aedb3a650a9b36e86f365f58db98',\
+        \ 'account/native_jobs.py': 'cca368c264082d8dddac6a53398d8b0cd686ae630df1a363cae71f4f26651529'}\nfor name,data\
+        \ in files.items():\n    assert hashlib.sha256(data.encode()).hexdigest()==hashes[name]\n    if name.endswith('.py'):ast.parse(data)\n\
+        \    path=root/'controls'/name;path.parent.mkdir(parents=True,exist_ok=True)\n    path.write_text(data,encoding='utf-8',newline='')\n\
+        (root/'controls.json').write_text(json.dumps(hashes,indent=2)+'\\n')"
+    - name: Parse all scripts in PowerShell 5.1 and 7
+      shell: python
+      run: "import base64,os,subprocess\nfrom pathlib import Path\nroot=Path(os.environ['CALLER_REVIEW_ROOT'])\n\
+        env={k:v for k,v in os.environ.items() if k.casefold()!='psmodulepath'}\nshells=[('ps51',str(Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe')),('ps7','pwsh.exe')]\n\
+        for name in ['strict/strict_job.ps1','account/prepare-standard-user.ps1','account/standard-user-bootstrap.ps1']:\n\
+        \    script=\"$tokens=$null;$errors=$null;[Management.Automation.Language.Parser]::ParseFile('\"+str(root/'controls'/name).replace(\"\
+        '\",\"''\")+\"',[ref]$tokens,[ref]$errors)|Out-Null;if($errors.Count){$errors|Format-List;exit 1};$PSVersionTable.PSVersion.ToString()\"\
+        \n    for label,shell in shells:\n        command=[shell,'-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',base64.b64encode(script.encode('utf-16le')).decode()]\n\
+        \        prefix=label+'-'+Path(name).stem\n        with (root/(prefix+'.stdout')).open('wb') as out,(root/(prefix+'.stderr')).open('wb')\
+        \ as err:\n            subprocess.run(command,env=env,stdout=out,stderr=err,check=True,timeout=30)"
+    - name: Compare main and candidate with broker assertions preserved
+      shell: python
+      run: 'import os,subprocess,sys
+
+        from pathlib import Path
+
+        root=Path(os.environ[''CALLER_REVIEW_ROOT''])
+
+        subprocess.run([sys.executable,''-B'',str(root/''controls/compare.py'')],check=True)'
+    - name: Hash finite evidence and clean-source shipping image
+      if: ${{ always() }}
+      shell: python
+      run: 'import hashlib,json,os
+
+        from pathlib import Path
+
+        root=Path(os.environ[''CALLER_REVIEW_ROOT''])
+
+        hashes={str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob(''*'') if
+        p.is_file()}
+
+        (root/''sha256sums.json'').write_text(json.dumps(hashes,indent=2)+''\n'')'
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: caller-job-review-r1
+        path: ${{ runner.temp }}/caller-job-review
+        if-no-files-found: error
+        retention-days: 14
