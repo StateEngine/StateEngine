@@ -1,0 +1,78 @@
+name: Independent native image revision delta
+'on':
+  push:
+    branches:
+    - prime/native-image-delta-review-r1
+permissions:
+  contents: read
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  JUDGE_SOURCE: 6661808acefb690fc0626734bbd8c08b4e561440
+jobs:
+  judge:
+    runs-on: windows-2025
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - side: broken
+          ref: 737bee8caf03e17d2a61e21594d7b0285d6619dc
+        - side: head
+          ref: c54f75ad44e2b90134daa0f1d6600b4d774540bb
+    env:
+      EXPECTED_SOURCE: ${{ matrix.ref }}
+      SIDE: ${{ matrix.side }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.ref }}
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: native-image-delta-windows-v1
+        cache-on-failure: true
+    - name: Overlay independent native judges
+      shell: python
+      run: "import hashlib, json, os, pathlib, subprocess\nroot=pathlib.Path(os.environ['RUNNER_TEMP'])/'native-image-delta-evidence';root.mkdir()\n\
+        source=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()\nif source!=os.environ['EXPECTED_SOURCE']:raise\
+        \ ValueError('Product pin differs')\nsubprocess.run(['git','fetch','--quiet','origin',os.environ['JUDGE_SOURCE']],check=True)\n\
+        manifest={}\nfor path in ['crates/se-proc/src/native_ipc/independent_delta.rs','crates/se-proc/tests/windows_image_hint_independent.rs']:\n\
+        \ data=subprocess.check_output(['git','show',os.environ['JUDGE_SOURCE']+':'+path])\n pathlib.Path(path).write_bytes(data);(root/pathlib.Path(path).name).write_bytes(data)\n\
+        \ manifest[path]=hashlib.sha256(data).hexdigest()\np=pathlib.Path('crates/se-proc/src/native_ipc/mod.rs')\np.write_bytes(p.read_bytes()+b'\\\
+        n#[cfg(all(test, windows))]\\n#[path = \"independent_delta.rs\"]\\nmod independent_delta;\\n')\n(root/'pins.json').write_text(json.dumps(dict(source=source,judge=os.environ['JUDGE_SOURCE'],files=manifest),indent=2)+'\\\
+        n')\n"
+    - name: Exercise common native proofs and four public consumers
+      shell: python
+      run: 'import base64, hashlib, os, pathlib, subprocess, sys
+
+        data=base64.b64decode(''IiIiRXhlcmNpc2UgbmF0aXZlIHByb2R1Y3QgcHJvb2ZzIG9uIG9uZSB2ZXJpZmllZCBkaXNwb3NhYmxlIE5URlMgdm9sdW1lLiIiIgppbXBvcnQganNvbgppbXBvcnQgb3MKZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCByZQppbXBvcnQgc3VicHJvY2VzcwppbXBvcnQgc3lzCnJvb3Q9UGF0aChvcy5lbnZpcm9uWydSVU5ORVJfVEVNUCddKS8nbmF0aXZlLWltYWdlLWRlbHRhLXZvbHVtZS1yMScKcm9vdC5ta2RpcihleGlzdF9vaz1GYWxzZSkKaW1hZ2U9cm9vdC8nanVkZ2UudmhkJwppZiBub3QgcmUuZnVsbG1hdGNoKHInW0EtWmEtejAtOV86XFwgLi1dKycsc3RyKGltYWdlKSk6cmFpc2UgVmFsdWVFcnJvcignVGVtcG9yYXJ5IHBhdGggZGlmZmVycycpCmxldHRlcj1uZXh0KChjIGZvciBjIGluICdaWVhXVlVUU1JRUCcgaWYgbm90IFBhdGgoYysnOi8nKS5leGlzdHMoKSksTm9uZSkKaWYgbGV0dGVyIGlzIE5vbmU6cmFpc2UgVmFsdWVFcnJvcignTm8gcHJpdmF0ZSBkcml2ZSBsZXR0ZXInKQp2b2x1bWU9bGV0dGVyKyc6JwpldmlkZW5jZT1QYXRoKG9zLmVudmlyb25bJ1JVTk5FUl9URU1QJ10pLyduYXRpdmUtaW1hZ2UtZGVsdGEtZXZpZGVuY2UnCnJlY2VpcHQ9eydzb3VyY2UnOm9zLmVudmlyb25bJ0VYUEVDVEVEX1NPVVJDRSddLCdqdWRnZXMnOm9zLmVudmlyb25bJ0pVREdFX1NPVVJDRSddLCdjb21tYW5kcyc6e30sJ3Njb3BlJzonaW5kZXBlbmRlbnQgY29tbW9uIG5hdGl2ZSBwcm9vZiBwbHVzIGZvdXIgcHVibGljIGxlZ2FjeS1rZXkgY29uc3VtZXJzJ30KZGVmIHJ1bihuYW1lLGFyZ3MsZW52PU5vbmUsY2hlY2s9VHJ1ZSx0aW1lb3V0PTE4MCk6CiB3aXRoIChldmlkZW5jZS8obmFtZSsnLmxvZycpKS5vcGVuKCd3YicpIGFzIGxvZzoKICByZXN1bHQ9c3VicHJvY2Vzcy5ydW4oYXJncyxlbnY9ZW52LHN0ZG91dD1sb2csc3RkZXJyPXN1YnByb2Nlc3MuU1RET1VULHRpbWVvdXQ9dGltZW91dCkKIHJlY2VpcHRbJ2NvbW1hbmRzJ11bbmFtZV09eydleGl0JzpyZXN1bHQucmV0dXJuY29kZX0KIChldmlkZW5jZS8ncmVzdWx0Lmpzb24nKS53cml0ZV90ZXh0KGpzb24uZHVtcHMocmVjZWlwdCxpbmRlbnQ9MikrJ1xuJykKIGlmIGNoZWNrOnJlc3VsdC5jaGVja19yZXR1cm5jb2RlKCkKIHJldHVybiByZXN1bHQucmV0dXJuY29kZQpjcmVhdGU9cm9vdC8nY3JlYXRlLnR4dCc7Y3JlYXRlLndyaXRlX3RleHQoZidjcmVhdGUgdmRpc2sgZmlsZT0ie2ltYWdlfSIgbWF4aW11bT0yMDQ4IHR5cGU9ZXhwYW5kYWJsZVxuc2VsZWN0IHZkaXNrIGZpbGU9IntpbWFnZX0iXG5hdHRhY2ggdmRpc2tcbmNyZWF0ZSBwYXJ0aXRpb24gcHJpbWFyeVxuZm9ybWF0IGZzPW50ZnMgbGFiZWw9RGVsdGFKdWRnZSBxdWlja1xuYXNzaWduIGxldHRlcj17bGV0dGVyfVxuZXhpdFxuJykKdmVyaWZ5PXJvb3QvJ3ZlcmlmeS5wczEnO3ZlcmlmeS53cml0ZV90ZXh0KCdwYXJhbShbc3RyaW5nXSRJbWFnZVBhdGgsW3N0cmluZ10kTGV0dGVyKVxuJEVycm9yQWN0aW9uUHJlZmVyZW5jZT0iU3RvcCJcbiRpbWFnZT1HZXQtRGlza0ltYWdlIC1JbWFnZVBhdGggJEltYWdlUGF0aFxuaWYgKCEkaW1hZ2UuQXR0YWNoZWQpIHt0aHJvdyAiUHJpdmF0ZSBkaXNrIGlzIG5vdCBhdHRhY2hlZCJ9XG4kcGFydHM9QCgkaW1hZ2UgfCBHZXQtRGlzayB8IEdldC1QYXJ0aXRpb24gfCBXaGVyZS1PYmplY3QgeyRfLkRyaXZlTGV0dGVyIC1lcSAkTGV0dGVyfSlcbmlmICgkcGFydHMuQ291bnQgLW5lIDEpIHt0aHJvdyAiUHJpdmF0ZSB2b2x1bWUgaWRlbnRpdHkgZGlmZmVycyJ9XG4kdj0kcGFydHNbMF0gfCBHZXQtVm9sdW1lXG5pZiAoJHYuRmlsZVN5c3RlbSAtbmUgIk5URlMiIC1vciAkdi5GaWxlU3lzdGVtTGFiZWwgLW5lICJEZWx0YUp1ZGdlIikge3Rocm93ICJQcml2YXRlIGZpbGVzeXN0ZW0gZGlmZmVycyJ9XG4kdiB8IFNlbGVjdC1PYmplY3QgRHJpdmVMZXR0ZXIsRmlsZVN5c3RlbSxGaWxlU3lzdGVtTGFiZWwsVW5pcXVlSWQgfCBDb252ZXJ0VG8tSnNvbiAtQ29tcHJlc3NcbicpCnRyeToKIHJ1bignY3JlYXRlJyxbJ2Rpc2twYXJ0JywnL3MnLHN0cihjcmVhdGUpXSkKIHJ1bigndmVyaWZ5JyxbJ3Bvd2Vyc2hlbGwnLCctTm9Qcm9maWxlJywnLUZpbGUnLHN0cih2ZXJpZnkpLCctSW1hZ2VQYXRoJyxzdHIoaW1hZ2UpLCctTGV0dGVyJyxsZXR0ZXJdKQogcmVjZWlwdFsndm9sdW1lX2lkZW50aXR5J109anNvbi5sb2FkcygoZXZpZGVuY2UvJ3ZlcmlmeS5sb2cnKS5yZWFkX3RleHQoZW5jb2Rpbmc9J3V0Zi04LXNpZycpKQogcnVuKCdqb3VybmFsLWNyZWF0ZScsWydmc3V0aWwnLCd1c24nLCdjcmVhdGVqb3VybmFsJywnbT04Mzg4NjA4JywnYT0xMDQ4NTc2Jyx2b2x1bWVdKQogcnVuKCdqb3VybmFsLWJlZm9yZScsWydmc3V0aWwnLCd1c24nLCdxdWVyeWpvdXJuYWwnLHZvbHVtZV0pCiBob21lPVBhdGgodm9sdW1lKycvJykvJ2RlbHRhLWNhc2VzJztob21lLm1rZGlyKCkKIGVudj1kaWN0KG9zLmVudmlyb24sREVMVEFfUk9PVD1zdHIoaG9tZSksREVMVEFfVk9MVU1FPXZvbHVtZSxQUk9PRl9KVURHRV9ST09UPXN0cihob21lLydwdWJsaWMnKSkKIFBhdGgoZW52WydQUk9PRl9KVURHRV9ST09UJ10pLm1rZGlyKCkKIGhvc3Q9bmV4dChsaW5lLnNwbGl0KCc6ICcsMSlbMV0gZm9yIGxpbmUgaW4gc3VicHJvY2Vzcy5jaGVja19vdXRwdXQoWydydXN0YycsJy12ViddLHRleHQ9VHJ1ZSkuc3BsaXRsaW5lcygpIGlmIGxpbmUuc3RhcnRzd2l0aCgnaG9zdDogJykpCiBjb21tb249WydjYXJnbycsJ3Rlc3QnLCctLXRhcmdldCcsaG9zdCwnLXAnLCdzZS1wcm9jJywnLS1sb2NrZWQnXQogcnVuKCdjb21tb24tbmF0aXZlJyxjb21tb24rWyctLWxpYicsJ2luZGVwZW5kZW50X2RlbHRhOjonLCctLScsJy0tbm9jYXB0dXJlJywnLS10ZXN0LXRocmVhZHM9MSddLGVudj1lbnYsY2hlY2s9RmFsc2UsdGltZW91dD0zNjAwKQogIyBKb3VybmFsIHJlbW92YWwgaXMgdGhlIGxhc3QgY29tbW9uIGNhc2UsIHNvIHB1YmxpYyBjbG9jay1vbmx5IGhpbnRzIGFsc28KICMgZXhlcmNpc2UgdGhlIHVuYXZhaWxhYmxlLWpvdXJuYWwgZmFsbGJhY2sgd2l0aG91dCBhbiBlbXVsYXRlZCBBUEkuCiBydW4oJ2pvdXJuYWwtYWZ0ZXItY29tbW9uJyxbJ2ZzdXRpbCcsJ3VzbicsJ3F1ZXJ5am91cm5hbCcsdm9sdW1lXSxjaGVjaz1GYWxzZSkKIHJ1bigncHVibGljLWxlZ2FjeScsY29tbW9uK1snLS10ZXN0Jywnd2luZG93c19pbWFnZV9oaW50X2luZGVwZW5kZW50JywnLS0nLCctLW5vY2FwdHVyZScsJy0tdGVzdC10aHJlYWRzPTEnXSxlbnY9ZW52LGNoZWNrPUZhbHNlLHRpbWVvdXQ9MzYwMCkKIHJlY2VpcHRbJ2NvbnN1bWVyc19jb21wbGV0ZWQnXT1UcnVlCmZpbmFsbHk6CiBkZXRhY2g9cm9vdC8nZGV0YWNoLnR4dCc7ZGV0YWNoLndyaXRlX3RleHQoZidzZWxlY3QgdmRpc2sgZmlsZT0ie2ltYWdlfSJcbmRldGFjaCB2ZGlza1xuZXhpdFxuJykKIHJ1bignZGV0YWNoJyxbJ2Rpc2twYXJ0JywnL3MnLHN0cihkZXRhY2gpXSkKIHJ1bigndmVyaWZ5LWRldGFjaGVkJyxbJ3Bvd2Vyc2hlbGwnLCctTm9Qcm9maWxlJywnLUNvbW1hbmQnLGYiR2V0LURpc2tJbWFnZSAtSW1hZ2VQYXRoICd7aW1hZ2V9JyB8IFNlbGVjdC1PYmplY3QgQXR0YWNoZWQgfCBDb252ZXJ0VG8tSnNvbiAtQ29tcHJlc3MiXSkKIGRldGFjaGVkPWpzb24ubG9hZHMoKGV2aWRlbmNlLyd2ZXJpZnktZGV0YWNoZWQubG9nJykucmVhZF90ZXh0KGVuY29kaW5nPSd1dGYtOC1zaWcnKSkKIGlmIGRldGFjaGVkWydBdHRhY2hlZCddOnJhaXNlIFZhbHVlRXJyb3IoJ1ByaXZhdGUgZGlzayBkZXRhY2ggaXMgdW53aXRuZXNzZWQnKQogcmVjZWlwdFsnZGV0YWNoZWQnXT1UcnVlCiAoZXZpZGVuY2UvJ3Jlc3VsdC5qc29uJykud3JpdGVfdGV4dChqc29uLmR1bXBzKHJlY2VpcHQsaW5kZW50PTIpKydcbicpCiBpZiBpbWFnZS5leGlzdHMoKTppbWFnZS51bmxpbmsoKQppZiBub3QgcmVjZWlwdC5nZXQoJ2NvbnN1bWVyc19jb21wbGV0ZWQnKTpyYWlzZSBWYWx1ZUVycm9yKCdDb25zdW1lcnMgZGlkIG5vdCBmaW5pc2gnKQpwcmludChqc29uLmR1bXBzKHJlY2VpcHQpLGZsdXNoPVRydWUpCg=='')
+
+        if hashlib.sha256(data).hexdigest()!=''3fa070bb8590533b5e4ad0bb45a822c50468743e20759a1724158a93faf2cf5d'':raise ValueError(''Driver
+        differs'')
+
+        p=pathlib.Path(os.environ[''RUNNER_TEMP''])/''product-delta-driver.py'';p.write_bytes(data)
+
+        subprocess.run([sys.executable,''-B'',str(p)],check=True)
+
+        '
+    - name: Grade witnessed base failures and candidate passes
+      shell: python
+      run: "import json,os,pathlib,re\nr=pathlib.Path(os.environ['RUNNER_TEMP'])/'native-image-delta-evidence'\nd=json.loads((r/'result.json').read_text())\n\
+        if not d.get('detached') or not d.get('consumers_completed'):raise ValueError('Completion or cleanup absent')\nverdict={}\n\
+        for name in ['common-native','public-legacy']:\n text=(r/(name+'.log')).read_text(errors='replace')\n match=re.search(r'test\
+        \ result: (?:ok|FAILED)\\. (\\d+) passed; (\\d+) failed; (\\d+) ignored;',text)\n if not match or sum(map(int,match.groups()[:2]))!=4\
+        \ or int(match[3])!=(1 if name=='public-legacy' else 0):raise ValueError(name+' did not finish exactly four native\
+        \ cases')\n code=d['commands'][name]['exit'];wanted=0 if os.environ['SIDE']=='head' else 101\n verdict[name]=dict(exit=code,expected=wanted)\n\
+        \ if code!=wanted:raise ValueError(f'{name}: expected {wanted}, observed {code}')\n(r/'grade.json').write_text(json.dumps(verdict,indent=2)+'\\\
+        n')\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: native-image-delta-${{ matrix.side }}
+        path: ${{ runner.temp }}/native-image-delta-evidence
+        if-no-files-found: error
+        retention-days: 14
