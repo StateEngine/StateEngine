@@ -62,7 +62,7 @@ pub(crate) fn parse_budget() -> ParseBudget {
     }
 }
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-fn parser_memory_guard() -> AtlasResult<()> {
+pub(crate) fn parser_memory_guard() -> AtlasResult<()> {
     let (used, measurement) = se_proc::atlas_worker::memory_usage().map_err(failure)?;
     // Reserve space for cancellation, fallible extraction, SQL and a native
     // allocation between Tree-sitter's progress checks, including realloc copy.
@@ -92,11 +92,25 @@ fn parser_memory_guard() -> AtlasResult<()> {
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub fn private_entry() -> AtlasResult<u8> {
     let (mut channel, bytes) = se_proc::atlas_worker::WorkerChannel::receive().map_err(failure)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(failure)?;
+    if value.get("parse_only").is_some() {
+        return crate::atlas_parse::run_child(&mut channel, &bytes);
+    }
     let request: protocol::Request = serde_json::from_slice(&bytes).map_err(failure)?;
     let job = request.job;
     let result = run_child(&request, |reply| {
         let bytes = serde_json::to_vec(&reply).map_err(failure)?;
-        channel.send(&bytes).map_err(failure)
+        channel.send(&bytes).map_err(failure)?;
+        if matches!(
+            reply,
+            protocol::Reply::Working {
+                phase: protocol::Phase::Parse,
+                ..
+            }
+        ) {
+            channel.await_parse().map_err(failure)?;
+        }
+        Ok(())
     });
     let reply = match result {
         Ok(summary) => protocol::Reply::Completed {

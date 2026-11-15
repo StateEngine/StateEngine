@@ -54,7 +54,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
     pub fn new(
         home: PathBuf,
         image: PathBuf,
-        driver: D,
+        mut driver: D,
         profile: Option<SqlProfile>,
     ) -> AtlasResult<Self> {
         if !home.is_absolute() || !image.is_absolute() {
@@ -62,6 +62,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                 "absolute owned home and installed image required",
             ));
         }
+        driver.bind_parser_image(&image)?;
         Ok(Self {
             home,
             #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
@@ -159,6 +160,10 @@ impl<D: RenewalDriver> NativeRuntime<D> {
     #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
     pub fn child_pid(&self) -> Option<u32> {
         self.child.as_ref().map(|c| c.pid())
+    }
+    #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+    pub fn child_deadline(&self) -> Option<Instant> {
+        self.child.as_ref().map(|child| child.next_deadline())
     }
     #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
     pub fn wait_child_ready(&mut self, deadline: Instant) -> AtlasResult<bool> {
@@ -284,7 +289,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             }
             Err(error) => {
                 self.child_failure = Some(error.body.clone());
-                if let Err(cancel) = child.cancel() {
+                if let Err(cancel) = child.cancel_until(child.cancellation_deadline()) {
                     // Keep exact child custody and the original protocol/native
                     // failure; cleanup latency must not erase the crash cause.
                     return Err(cancel.with_cause(error));
@@ -334,6 +339,10 @@ pub fn drive_child<D: RenewalDriver>(controller: &mut NativeController<D>) -> At
 }
 
 pub trait RenewalDriver {
+    /// Use the same installed image already owned by the native runtime.
+    fn bind_parser_image(&mut self, _image: &std::path::Path) -> AtlasResult<()> {
+        Ok(())
+    }
     fn step(
         &mut self,
         source: &RegisteredSource<NativeAtlasSource>,

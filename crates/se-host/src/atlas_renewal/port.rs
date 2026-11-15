@@ -1,5 +1,9 @@
 use super::*;
 impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
+    fn bind_parser_image(&mut self, image: &std::path::Path) -> AtlasResult<()> {
+        self.parser.bind_image(image);
+        Ok(())
+    }
     fn step(
         &mut self,
         source: &Source,

@@ -24,12 +24,12 @@ impl Drop for Lease {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ParserPlacement {
     Incremental,
     ColdChild,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ParserProfile {
     pub language: Language,
     pub placement: ParserPlacement,
