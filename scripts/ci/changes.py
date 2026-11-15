@@ -57,7 +57,7 @@ def windows_affected(event, name):
 # Remote feature tests consume these crates and their shared Rust dependencies.
 REMOTE_INPUTS = (
     "crates/se-host/", "crates/se-remote/", "crates/se-remote-cli/",
-    "crates/se-config/", "crates/se-types/", "crates/se-core/", "crates/se-store/",
+    "crates/se-config/", "crates/se-types/", "crates/se-core/", "crates/se-store",
     "crates/se-proc/", "crates/se-atlas", "crates/se/",
     ".cargo/", ".github/", "scripts/ci/",
 )
