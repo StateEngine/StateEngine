@@ -21,6 +21,7 @@ pub(super) struct Entry {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImageCacheRead {
     Absent,
+    /// The protected hint was read; native proof still decides whether it can be reused.
     Current,
     Stale,
 }
@@ -219,7 +220,7 @@ fn restore(
     bound
         .remaining()
         .map_err(|e| error("finish executable cache restore", e))?;
-    if entry.digest != expected || !entry.image.reusable() {
+    if entry.digest != expected {
         return Ok(ImageCacheRead::Stale);
     };
     remember(entry.image, entry.digest)?;
