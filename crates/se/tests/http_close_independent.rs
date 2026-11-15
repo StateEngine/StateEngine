@@ -11,6 +11,9 @@ type Check = Result<(), Box<dyn std::error::Error>>;
 mod executable;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
+#[cfg(windows)]
+#[path = "support/http_close_foreground.rs"]
+mod foreground;
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
 use executable::ExecutableCommand;
@@ -123,19 +126,24 @@ fn public_early_refusal_survives_split_body_twenty_times() -> Check {
         "judge-se"
     });
     std::fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
+    println!("PUBLIC_CLOSE stage=init-begin");
     checked(
         command(&image, home, true)
             .args(["init", "--repo"])
             .arg(&repository)
             .output_executable()?,
     )?;
+    println!("PUBLIC_CLOSE stage=init-complete");
     let config: toml::Value = toml::from_str(&std::fs::read_to_string(home.join("config.toml"))?)?;
     let port = u16::try_from(
         config["runtime"]["listen_port"]
             .as_integer()
             .ok_or("persisted port absent")?,
     )?;
+    #[cfg(windows)]
+    let mut foreground = foreground::Foreground::start(&image, home, &f.home)?;
     let host = runtime_host::RunningHost::start(&image, home)?;
+    println!("PUBLIC_CLOSE stage=native-host-observed");
     let mut failed = 0;
     for iteration in 1..=20 {
         if let Err(error) = split_body(port, iteration) {
@@ -145,6 +153,8 @@ fn public_early_refusal_survives_split_body_twenty_times() -> Check {
     }
     host.stop()?;
     drop(host);
+    #[cfg(windows)]
+    foreground.join()?;
     drop(std::mem::ManuallyDrop::into_inner(f));
     println!(
         "PUBLIC_CLOSE summary attempted=20 passed={} failed={failed} outside-host-exit=true",
