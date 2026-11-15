@@ -11,6 +11,21 @@ from mail_cli import Fixture as MailFixture
 from public_ready import PublicReady
 
 
+def refresh_exited_identity(row):
+    """Resolve an empty command only with a fresh native lifecycle witness."""
+    if sys.platform != 'linux' or row['command']:
+        return
+    try:
+        fields = Path(f"/proc/{row['pid']}/stat").read_text().rsplit(') ', 1)[1].split()
+    except (FileNotFoundError, ProcessLookupError):
+        row.update(state='X', command_observation='absent-after-snapshot')
+        return
+    if fields[19] != row['birth']:
+        row.update(state='X', command_observation='birth-replaced-after-snapshot')
+    elif fields[0].startswith(('Z', 'X', 'x')):
+        row.update(state=fields[0], command_observation='exited-after-snapshot')
+
+
 class Fixture(MailFixture):
     startup = None
 
@@ -64,7 +79,9 @@ class NativeObserver:
         # private root. Retained identities remain in scope even if arguments
         # change; mismatches are evidence rather than permission to signal.
         for row in selected:
-            require(row['birth'] and row['command'], 'Retained native identity is unreadable')
+            refresh_exited_identity(row)
+            require(row['birth'] and (row['command'] or row['state'].startswith(('Z', 'X', 'x'))),
+                    'Retained live native identity is unreadable: ' + str(row['pid']))
         self.sequence += 1
         save(self.output / f'outside-{self.sequence:04d}.json', dict(
             coverage='complete', rows=selected,

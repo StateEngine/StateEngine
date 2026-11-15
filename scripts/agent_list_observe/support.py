@@ -198,6 +198,24 @@ def close(smokes, record):
             record['cleanup'][side] = dict(error=str(error))
             record['exit'] = 1
         try:
+            if sys.platform == 'linux':
+                # Detached runtime children belong to this subreaper. Join
+                # retained exact children before requiring live command lines.
+                joined = []
+                deadline = time.monotonic() + 10
+                for pid, birth in smoke.commands.observer.known:
+                    while time.monotonic() < deadline:
+                        try:
+                            fields = Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()
+                            if fields[19] != birth:
+                                break
+                            if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                                joined.append(dict(pid=pid, birth=birth))
+                                break
+                        except (FileNotFoundError, ProcessLookupError, ChildProcessError):
+                            break
+                        time.sleep(.02)
+                record.setdefault('joined_runtime_children', {})[side] = joined
             remaining = smoke.commands.observer.observe()
             record['process_closure'][side] = remaining
             require(remaining == [], 'Owned process remains after shutdown')
