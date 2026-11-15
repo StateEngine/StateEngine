@@ -39,14 +39,14 @@ for arm,revision in [('base',BASE),('head',HEAD)]:
         dest=checkout/p;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(SOURCE/p,dest)
     target=root/('target-'+arm);env=dict(os.environ,CARGO_TARGET_DIR=str(target),CARGO_BUILD_JOBS='2',CARGO_INCREMENTAL='0')
     row={'arm':arm,'source':revision,'cases':[]};summary['arms'].append(row);save()
-    code=command(['cargo','build','--locked','-p','se','--bin','se'],checkout,env,arm+'-se-build');row['image_build_exit']=code;save()
+    code=command(['cargo','build','--target',native,'--locked','-p','se','--bin','se'],checkout,env,arm+'-se-build');row['image_build_exit']=code;save()
     if code:raise RuntimeError('Native product build failed')
-    code=command(['cargo','test','--locked','-p','se-proc','--test','launch_382_review','--no-run','--message-format=json'],checkout,env,arm+'-judge-build');row['judge_build_exit']=code;save()
+    code=command(['cargo','test','--target',native,'--locked','-p','se-proc','--test','launch_382_review','--no-run','--message-format=json'],checkout,env,arm+'-judge-build');row['judge_build_exit']=code;save()
     if code:raise RuntimeError('Reviewer fixture did not compile; no native verdict')
     events=[json.loads(line) for line in (root/(arm+'-judge-build.stdout')).read_text().splitlines()]
     paths={e['executable'] for e in events if e.get('reason')=='compiler-artifact' and e.get('target',{}).get('name')=='launch_382_review' and e.get('executable')}
     assert len(paths)==1
-    binary=Path(paths.pop());image=target/'debug/se'
+    binary=Path(paths.pop());image=target/native/'debug/se'
     row.update(binary_sha256=digest(binary),image_sha256=digest(image));save()
     for name,base_pass in CASES.items():
         case=root/(arm+'-'+name);case.mkdir()
