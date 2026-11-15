@@ -1,0 +1,811 @@
+name: Native Linux login lifetime review
+'on':
+  push:
+    branches:
+    - prime/linux-login-review-r1
+permissions:
+  contents: read
+jobs:
+  judge:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 920a32abcb80f228825f941ef8b4b0e206228a3f
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: native-linux-login-review-v1
+    - name: Install native login dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install --yes --no-install-recommends openssh-server libsystemd0
+    - name: Stage exact independent review assets
+      shell: python
+      run: |
+        import hashlib
+        import os
+        from pathlib import Path
+        root = Path(os.environ['RUNNER_TEMP']) / 'login-lifetime-review-r1'
+        root.mkdir()
+        assets = {
+        'controller.py': r'''"""Outside native custody for one disposable Linux login account on a hosted VM."""
+        import json
+        import os
+        from pathlib import Path
+        import pwd
+        import select
+        import shlex
+        import shutil
+        import signal
+        import socket
+        import subprocess
+        import sys
+        import time
+        import uuid
+
+        ROOT = Path(sys.argv[1]).resolve()
+        assert os.geteuid() == 0
+        out = ROOT / 'evidence'
+        out.mkdir()
+        name = 'selogin' + uuid.uuid4().hex[:8]
+        home = Path('/home') / name
+        uid = None
+        listener = None
+        policy = Path('/run/systemd/logind.conf.d') / (name + '.conf')
+        sequence = 0
+        report = {'account': name, 'cases': [], 'shutdown_pairs': [], 'errors': [],
+                  'login_teardown': 'ordinary SSH logout with KillUserProcesses=yes for this account only'}
+
+
+        def save():
+            (out / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+
+
+        def command(args, check=True):
+            global sequence
+            sequence += 1
+            result = subprocess.run(args, capture_output=True, timeout=60)
+            (out / f'command-{sequence}.stdout').write_bytes(result.stdout)
+            (out / f'command-{sequence}.stderr').write_bytes(result.stderr)
+            report.setdefault('commands', []).append({'argv': list(map(str, args)), 'exit': result.returncode})
+            save()
+            if check:
+                assert result.returncode == 0, (args, result.returncode, result.stderr.decode())
+            return result
+
+
+        def facts(pid):
+            path = Path('/proc') / str(pid)
+            fields = (path / 'stat').read_text().rsplit(')', 1)[1].split()
+            return {'pid': pid, 'birth': fields[19], 'parent': int(fields[1]), 'uid': path.stat().st_uid,
+                    'command': (path / 'cmdline').read_bytes().replace(b'\0', b' ').decode(),
+                    'cgroup': (path / 'cgroup').read_text()}
+
+
+        class Pin:
+            def __init__(self, pid):
+                self.fd = os.pidfd_open(pid)
+                self.initial = facts(pid)
+                assert self.initial['uid'] == uid and str(home) in self.initial['command']
+                assert not self.exited()
+
+            def exited(self):
+                return bool(select.select([self.fd], [], [], 0)[0])
+
+            def wait(self, seconds=15):
+                assert select.select([self.fd], [], [], seconds)[0], self.initial
+
+            def close(self):
+                os.close(self.fd)
+
+
+        def ssh(mode, side, label, prefix=None, pipe=False):
+            argv = ['/usr/bin/python3', str(home / 'remote_driver.py'), mode, side, label]
+            if prefix:
+                argv = prefix + argv
+            remote = ['ssh', '-F', str(ROOT / 'ssh_config'), 'fixture', shlex.join(argv)]
+            if not pipe:
+                result = command(remote)
+                return json.loads(result.stdout.splitlines()[-1])
+            error = (out / (label + '-' + str(time.monotonic_ns()) + '.ssh.stderr')).open('wb')
+            child = subprocess.Popen(remote, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=error)
+            error.close()
+            return child
+
+
+        def close_child(child):
+            child.stdin.close()
+            child.stdout.close()
+
+
+        def next_json(child):
+            assert select.select([child.stdout], [], [], 45)[0], 'SSH fixture produced no record'
+            raw = child.stdout.readline()
+            assert raw, 'SSH fixture ended without its record'
+            return json.loads(raw)
+
+
+        def release(child, word):
+            child.stdin.write((word + '\n').encode())
+            child.stdin.flush()
+
+
+        def install(src, target, executable=False):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, target)
+            target.chmod(0o700 if executable else 0o600)
+            os.chown(target, uid, uid)
+
+
+        def lifetime(side):
+            label = 'lifetime-' + side
+            child = ssh('lifecycle', side, label, pipe=True)
+            row = next_json(child)
+            report['cases'].append(row)
+            save()
+            pins = [Pin(item['pid']) for item in row['native']]
+            try:
+                assert [p.initial['birth'] for p in pins] == [p['birth'] for p in row['native']]
+                release(child, 'release')
+                assert child.wait(timeout=30) == 0
+                close_child(child)
+                old = Path('/sys/fs/cgroup/user.slice') / f'user-{uid}.slice' / ('session-' + row['session'] + '.scope')
+                until = time.monotonic() + 20
+                while old.exists() and time.monotonic() < until:
+                    time.sleep(.05)
+                row['login_scope_absent_after_ordinary_logout'] = not old.exists()
+                assert not old.exists(), 'PAM did not finish the real login scope cleanup'
+                row['exited_after_logout'] = [p.exited() for p in pins]
+                if side == 'base':
+                    assert all(row['exited_after_logout']), 'base did not reproduce the login-lifetime defect'
+                else:
+                    assert not any(row['exited_after_logout']), 'admitted host or provider was lost with its login'
+                    assert row['observation']['detachment'] == 'user-manager-unit'
+                    scope = row['observation']['lifetime']['user_scope']
+                    actual = command(['runuser', '-u', name, '--', 'env', f'XDG_RUNTIME_DIR=/run/user/{uid}',
+                                      f'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus',
+                                      'systemctl', '--user', 'show', scope['unit'], '-p', 'InvocationID', '-p', 'ControlGroup'])
+                    props = dict(line.split('=', 1) for line in actual.stdout.decode().splitlines())
+                    assert props['InvocationID'] == scope['invocation'] and props['ControlGroup'] == scope['cgroup']
+                    status = ssh('status', side, label)
+                    assert status['exit'] == 0
+                down = ssh('down', side, label)
+                row['down'] = down
+                if side == 'head':
+                    assert down['exit'] == 0 and json.loads(down['stdout'])['complete'] is True
+                for p in pins:
+                    p.wait()
+                row['all_exact_processes_exited'] = True
+                if side == 'head':
+                    group = Path('/sys/fs/cgroup') / scope['cgroup'].lstrip('/')
+                    until = time.monotonic() + 5
+                    while group.exists() and time.monotonic() < until:
+                        time.sleep(.025)
+                    row['scope_absent_after_down'] = not group.exists()
+                    assert not group.exists()
+                save()
+            finally:
+                save()
+                for p in pins:
+                    p.close()
+
+
+        def shutdown_pairs():
+            # Preserve all forty alternating pairs and sample the retained host's wait/CPU state.
+            for pair in range(40):
+                for side in (['base', 'head'] if pair % 2 == 0 else ['head', 'base']):
+                    child = ssh('shutdown', side, 'shutdown-' + side, pipe=True)
+                    row = next_json(child)
+                    pin = Pin(row['host']['pid'])
+                    report.setdefault('shutdown_started', []).append(dict(pair=pair, **row))
+                    save()
+                    states = []
+                    try:
+                        release(child, 'down')
+                        started = time.monotonic()
+                        while child.poll() is None:
+                            if not pin.exited():
+                                native = Path('/proc') / str(pin.initial['pid'])
+                                tasks = []
+                                try:
+                                    threads = list((native / 'task').iterdir())
+                                except FileNotFoundError:
+                                    threads = []
+                                for task in threads:
+                                    try:
+                                        tasks.append({'tid': int(task.name), 'wait': (task / 'wchan').read_text(),
+                                                      'schedstat': (task / 'schedstat').read_text()})
+                                    except FileNotFoundError:
+                                        pass
+                                states.append({'at_ms': (time.monotonic() - started) * 1000, 'tasks': tasks,
+                                               'cpu_pressure': Path('/proc/pressure/cpu').read_text(),
+                                               'io_pressure': Path('/proc/pressure/io').read_text(),
+                                               'memory_pressure': Path('/proc/pressure/memory').read_text()})
+                            assert time.monotonic() - started < 45, 'public down observation exceeded its bound'
+                            time.sleep(.02)
+                        final = next_json(child)
+                        assert child.wait(timeout=5) == 0
+                        close_child(child)
+                        pin.wait()
+                        final.update(pair=pair, first=('base' if pair % 2 == 0 else 'head'),
+                                     outside_host_exit=True)
+                        report['shutdown_pairs'].append(final)
+                        save()
+                    finally:
+                        (out / f'down-{pair}-{side}-native.json').write_text(json.dumps(states) + '\n')
+                        pin.close()
+                        save()
+
+
+        def counterfeit_peer():
+            private = Path(f'/run/user/{uid}/systemd/private')
+            backup = private.with_name('private-review-held')
+            assert private.is_socket() and not backup.exists()
+            original = private.stat().st_ino
+            private.rename(backup)
+            pin = None
+            try:
+                command(['runuser', '-u', name, '--', '/usr/bin/python3', str(home / 'fake_peer.py')])
+                ready = home / 'fake-ready.json'
+                until = time.monotonic() + 5
+                while not ready.exists():
+                    assert time.monotonic() < until
+                    time.sleep(.02)
+                peer = json.loads(ready.read_text())
+                until = time.monotonic() + 5
+                while facts(peer['pid'])['parent'] != 1:
+                    assert time.monotonic() < until, 'counterfeit peer was not reparented'
+                    time.sleep(.02)
+                pin = Pin(peer['pid'])
+                assert pin.initial['parent'] == 1
+                group = Path(f'/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/init.scope')
+                (group / 'cgroup.procs').write_text(str(peer['pid']))
+                assert facts(peer['pid'])['cgroup'].strip() == '0::' + str(group)[len('/sys/fs/cgroup'):]
+                actual = command(['systemctl', 'show', f'user@{uid}.service', '-p', 'MainPID', '--value'])
+                assert int(actual.stdout) != peer['pid']
+                row = ssh('remedy', 'head', 'fake-manager selected home')
+                assert 'not the system manager\'s current user service' in row['notice']
+                row.update(case='same-user-fake-manager', native_peer=facts(peer['pid']),
+                           actual_manager_pid=int(actual.stdout))
+                report['cases'].append(row)
+            finally:
+                (home / 'fake-stop').touch()
+                if pin:
+                    pin.wait()
+                    pin.close()
+                if private.exists():
+                    private.unlink()
+                backup.rename(private)
+                assert private.stat().st_ino == original
+                save()
+
+
+        def cleanup_step(label, action):
+            try:
+                action()
+            except BaseException as error:
+                report['errors'].append(label + ': ' + repr(error))
+            save()
+
+
+        def cleanup_account():
+            if uid is not None:
+                before_stop = []
+                for process in Path('/proc').iterdir():
+                    if process.name.isdecimal():
+                        try:
+                            if process.stat().st_uid == uid:
+                                before_stop.append(facts(int(process.name)))
+                        except FileNotFoundError:
+                            pass
+                report['owned_account_before_manager_stop'] = before_stop
+                command(['loginctl', 'disable-linger', name], check=False)
+                command(['systemctl', 'stop', f'user@{uid}.service'], check=False)
+                census = []
+                for path in Path('/proc').iterdir():
+                    if path.name.isdecimal():
+                        try:
+                            if path.stat().st_uid == uid:
+                                census.append(facts(int(path.name)))
+                        except FileNotFoundError:
+                            pass
+                report['final_account_census'] = census
+                if not census:
+                    command(['usermod', '--lock', '--shell', '/usr/sbin/nologin', name])
+                    assert home.parent == Path('/home') and home.name == name and not home.is_symlink()
+                    retained = out / 'public-consumers'
+                    retained.mkdir()
+                    allowed = {'init.stdout', 'init.stderr', 'up.stdout', 'up.stderr', 'down.stdout',
+                               'down.stderr', 'launch.stdout', 'launch.stderr', 'status.stdout',
+                               'status.stderr', 'down-after.stdout', 'down-after.stderr',
+                               'status-after.stdout', 'status-after.stderr', 'foreground.stdout',
+                               'foreground.stderr', 'launch-report.json'}
+                    for case in home.iterdir():
+                        if case.is_dir() and not case.is_symlink():
+                            for file in case.iterdir():
+                                if file.name in allowed and file.is_file() and not file.is_symlink():
+                                    target = retained / case.name / file.name
+                                    target.parent.mkdir(exist_ok=True)
+                                    shutil.copyfile(file, target)
+                    # The isolated account has no remaining process; never traverse another home.
+                    shutil.rmtree(home)
+                    report['private_home_removed'] = True
+                else:
+                    report['errors'].append('Retained fixture processes; private account home preserved')
+                command(['systemctl', 'unmask', f'user@{uid}.service'], check=False)
+
+
+        def cleanup_listener():
+            if listener is not None:
+                current = facts(pid)
+                assert current['birth'] == listener_fact['birth'] and current['uid'] == 0
+                assert str(config) in current['command']
+                signal.pidfd_send_signal(listener, signal.SIGTERM)
+                report['listener_exited'] = bool(select.select([listener], [], [], 10)[0])
+                os.close(listener)
+                if not report['listener_exited']:
+                    report['errors'].append('Private listener exit not witnessed')
+
+
+        def cleanup_keys():
+            for key in ['client-key', 'server-key']:
+                (ROOT / key).unlink(missing_ok=True)
+
+
+        def cleanup_policy():
+            if policy.exists():
+                policy.unlink()
+                command(['systemctl', 'restart', 'systemd-logind'], check=False)
+
+
+        try:
+            command(['useradd', '--create-home', '--home-dir', str(home), '--shell', '/bin/bash', '--password', '*', name])
+            uid = pwd.getpwnam(name).pw_uid
+            assert uid != 0 and pwd.getpwnam(name).pw_gid == uid
+            home.chmod(0o700)
+            for side in ['base', 'head']:
+                install(ROOT / 'images' / side / 'se', home / 'images' / side / 'se', True)
+            for file in ['remote_driver.py', 'fake_peer.py', 'provider']:
+                install(ROOT / file, home / file, file == 'provider')
+            for file in ['mail_provider.py', 'judge_records.py']:
+                install(ROOT / 'fixtures' / file, home / 'fixtures' / file)
+            for directory in [home / 'images', home / 'images/base', home / 'images/head', home / 'fixtures']:
+                os.chown(directory, uid, uid)
+                directory.chmod(0o700)
+            command(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(ROOT / 'client-key')])
+            command(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(ROOT / 'server-key')])
+            (home / '.ssh').mkdir(mode=0o700)
+            os.chown(home / '.ssh', uid, uid)
+            install(ROOT / 'client-key.pub', home / '.ssh/authorized_keys')
+            with socket.socket() as reserve:
+                reserve.bind(('127.0.0.1', 0))
+                port = reserve.getsockname()[1]
+            config = ROOT / 'sshd.conf'
+            config.write_text('\n'.join(['ListenAddress 127.0.0.1', f'Port {port}', 'AddressFamily inet',
+                'HostKey ' + str(ROOT / 'server-key'), 'PidFile ' + str(ROOT / 'sshd.pid'),
+                'UsePAM yes', 'PasswordAuthentication no', 'KbdInteractiveAuthentication no',
+                'PubkeyAuthentication yes', 'PermitRootLogin no', 'StrictModes yes', 'AllowUsers ' + name,
+                'AuthorizedKeysFile .ssh/authorized_keys', 'AllowAgentForwarding no', 'AllowTcpForwarding no',
+                'X11Forwarding no', 'PermitTunnel no', 'UseDNS no', 'PrintMotd no', 'LogLevel VERBOSE', '']))
+            Path('/run/sshd').mkdir(exist_ok=True)
+            command(['/usr/sbin/sshd', '-t', '-f', str(config)])
+            command(['/usr/sbin/sshd', '-f', str(config), '-E', str(out / 'sshd.log')])
+            until = time.monotonic() + 5
+            while not (ROOT / 'sshd.pid').exists():
+                assert time.monotonic() < until, 'private listener never published its pid'
+                time.sleep(.02)
+            pid = int((ROOT / 'sshd.pid').read_text())
+            listener = os.pidfd_open(pid)
+            listener_fact = facts(pid)
+            assert str(config) in listener_fact['command']
+            hostkey = (ROOT / 'server-key.pub').read_text().split()
+            (ROOT / 'known_hosts').write_text(f'[localhost]:{port} ' + ' '.join(hostkey[:2]) + '\n')
+            (ROOT / 'ssh_config').write_text('\n'.join(['Host fixture', '  HostName localhost', f'  Port {port}',
+                '  User ' + name, '  IdentityFile ' + str(ROOT / 'client-key'),
+                '  UserKnownHostsFile ' + str(ROOT / 'known_hosts'), '  StrictHostKeyChecking yes',
+                '  IdentitiesOnly yes', '  BatchMode yes', '  ControlMaster no', '  ControlPersist no', '']))
+            assert not policy.exists()
+            policy.parent.mkdir(parents=True, exist_ok=True)
+            policy.write_text('[Login]\nKillUserProcesses=yes\nKillOnlyUsers=\nKillOnlyUsers=' + name + '\n')
+            command(['systemctl', 'restart', 'systemd-logind'])
+            command(['loginctl', 'enable-linger', name])
+            report['kill_policy'] = command(['busctl', 'get-property', 'org.freedesktop.login1',
+                '/org/freedesktop/login1', 'org.freedesktop.login1.Manager', 'KillUserProcesses']).stdout.decode()
+            assert report['kill_policy'].strip() == 'b true'
+            lifetime('base')
+            lifetime('head')
+            independent = ssh('independent', 'head', 'independent-placement', prefix=[
+                'systemd-run', '--user', '--scope', '--collect', '--unit=review-parent-' + uuid.uuid4().hex])
+            report['cases'].append(dict(case='preserve-independent-placement', **independent))
+            shutdown_pairs()
+            counterfeit_peer()
+            command(['loginctl', 'disable-linger', name])
+            no_linger = ssh('remedy', 'head', 'linger-disabled selected home')
+            assert 'enable-linger' in no_linger['notice']
+            report['cases'].append(dict(case='linger-disabled', **no_linger))
+            command(['loginctl', 'enable-linger', name])
+            command(['systemctl', 'mask', '--runtime', f'user@{uid}.service'])
+            command(['systemctl', 'stop', f'user@{uid}.service'])
+            absent = ssh('remedy', 'head', 'unavailable-manager selected home')
+            report['cases'].append(dict(case='unavailable-manager', **absent))
+        except BaseException as error:
+            report['errors'].append(repr(error))
+            raise
+        finally:
+            cleanup_step('account cleanup', cleanup_account)
+            cleanup_step('listener cleanup', cleanup_listener)
+            cleanup_step('private key removal', cleanup_keys)
+            cleanup_step('runtime policy removal', cleanup_policy)
+            save()
+        print(json.dumps({'cases': len(report['cases']), 'shutdown_observations': len(report['shutdown_pairs']),
+                          'errors': report['errors']}), flush=True)
+        assert not report['errors']
+        assert len(report['cases']) == 6 and len(report['shutdown_pairs']) == 80
+        assert report['private_home_removed'] and report['listener_exited']
+        ''',
+        'remote_driver.py': r'''"""Unprivileged public consumers inside a disposable authenticated SSH login."""
+        import argparse
+        import json
+        import os
+        from pathlib import Path
+        import select
+        import shutil
+        import subprocess
+        import time
+        import uuid
+
+        ROOT = Path(__file__).resolve().parent
+        p = argparse.ArgumentParser()
+        p.add_argument('mode', choices=['lifecycle', 'down', 'status', 'shutdown', 'independent', 'remedy'])
+        p.add_argument('side', choices=['base', 'head'])
+        p.add_argument('label')
+        a = p.parse_args()
+        case = ROOT / a.label
+        image = ROOT / 'images' / a.side / 'se'
+        home = case / 'state home'
+        assert os.geteuid() != 0
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(('SE_', 'STATEENGINE_', 'CODEX_', 'CLAUDE', 'OPENAI_',
+                                    'ANTHROPIC_', 'GITHUB_', 'GH_', 'GIT_'))}
+        env.update(HOME=str(ROOT), USERPROFILE=str(ROOT), CODEX_HOME=str(ROOT / 'synthetic-code-home'),
+                   CLAUDE_CONFIG_DIR=str(ROOT / 'synthetic-claude-home'))
+
+
+        def call(name, *args, check=True, target=image, state=home):
+            result = subprocess.run([str(target), '--json', '--home', str(state), *args],
+                                    capture_output=True, stdin=subprocess.DEVNULL, env=env, timeout=30)
+            (case / (name + '.stdout')).write_bytes(result.stdout)
+            (case / (name + '.stderr')).write_bytes(result.stderr)
+            if check:
+                assert result.returncode == 0, (name, result.returncode, result.stdout, result.stderr)
+            return result
+
+
+        def init():
+            case.mkdir(mode=0o700)
+            (case / 'repo').mkdir()
+            value = json.loads(call('init', '--key', str(uuid.uuid4()), 'init', '--repo',
+                                   str(case / 'repo'), '--name', 'Login lifetime', '--agent',
+                                   'Observer', '--provider', 'claude', '--model', 'claude-sonnet-5-5').stdout)
+            config = home / 'config.toml'
+            text = config.read_text().replace(f'listen_port = {value["profile"]["native_server_port"]}', '', 1)
+            config.write_text(text)
+            return value
+
+
+        def native(pid):
+            path = Path('/proc') / str(pid)
+            fields = (path / 'stat').read_text().rsplit(')', 1)[1].split()
+            return {'pid': pid, 'birth': fields[19], 'uid': path.stat().st_uid,
+                    'image': str((path / 'exe').resolve(strict=True)),
+                    'command': (path / 'cmdline').read_bytes().replace(b'\0', b' ').decode(),
+                    'cgroup': (path / 'cgroup').read_text()}
+
+
+        def stopped(pid):
+            with open('/proc/' + str(pid) + '/stat') as f:
+                assert f.read()
+            fd = os.pidfd_open(pid)
+            try:
+                result = call('down', 'down')
+                assert json.loads(result.stdout)['complete'] is True
+                assert select.select([fd], [], [], 15)[0], 'host did not exit after public down'
+            finally:
+                os.close(fd)
+
+
+        def record():
+            return json.loads((home / 'runtime-info.json').read_text())['observation']
+
+
+        if a.mode in ('status', 'down'):
+            result = call(a.mode + '-after', a.mode, check=False)
+            print(json.dumps({'exit': result.returncode, 'stdout': result.stdout.decode(),
+                              'stderr': result.stderr.decode()}), flush=True)
+        elif a.mode == 'lifecycle':
+            value = init()
+            shutil.copyfile(image, case / 'se')
+            (case / 'se').chmod(0o700)
+            shutil.copyfile(ROOT / 'provider', case / 'provider')
+            (case / 'provider').chmod(0o700)
+            config = home / 'config.toml'
+            config.write_text(config.read_text().replace('[providers.claude]',
+                '[providers.claude]\ncommand = ' + json.dumps(str(case / 'provider')), 1))
+            launch = json.loads(call('launch', '--key', str(uuid.uuid4()), '--project', value['project']['id'],
+                                    'launch', value['agent']['id'], '--detach', '--task',
+                                    'Retain the login lifetime fixture').stdout)
+            assert launch['state'] == 'running'
+            until = time.monotonic() + 20
+            while not (case / 'repo/provider-ready.json').exists():
+                assert time.monotonic() < until, 'protocol discovery never completed'
+                time.sleep(.025)
+            provider = json.loads((case / 'repo/provider-ready.json').read_text())
+            status = json.loads(call('status', '--project', value['project']['id'], 'status').stdout)
+            pids = [status['runtime']['process']['pid'], provider['native_root_pid'], provider['helper_pid']]
+            report = {'session': os.environ['XDG_SESSION_ID'], 'uid': os.geteuid(), 'side': a.side,
+                      'observation': record(), 'native': [native(pid) for pid in pids],
+                      'provider_discovery': provider}
+            (case / 'launch-report.json').write_text(json.dumps(report, indent=2) + '\n')
+            print(json.dumps(report), flush=True)
+            assert input() == 'release'
+        elif a.mode == 'remedy':
+            init()
+            up = json.loads(call('up', 'up').stdout)
+            observation = record()
+            notice = (case / 'up.stderr').read_text()
+            assert observation['detachment'] == 'session-only' and not observation['lifetime']['user_scope']
+            assert 'up --foreground' in notice and 'down' in notice and str(home) in notice
+            stopped(up['process']['pid'])
+            with (case / 'foreground.stdout').open('wb') as out, (case / 'foreground.stderr').open('wb') as err:
+                child = subprocess.Popen([str(image), '--json', '--home', str(home), 'up', '--foreground'],
+                                         env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
+            try:
+                until = time.monotonic() + 20
+                while True:
+                    raw = (case / 'foreground.stdout').read_text()
+                    ready = None
+                    for line in raw.splitlines():
+                        try:
+                            value = json.loads(line)
+                        except ValueError:
+                            continue
+                        if value.get('state') == 'running':
+                            ready = value
+                    if ready:
+                        break
+                    assert child.poll() is None and time.monotonic() < until, 'foreground remedy never ready'
+                    time.sleep(.025)
+                assert ready['process']['pid'] == child.pid and child.poll() is None
+                stopped(child.pid)
+                assert child.wait(timeout=10) == 0
+            finally:
+                if child.poll() is None:
+                    call('remedy-cleanup', 'down', check=False)
+                    child.wait(timeout=10)
+            print(json.dumps({'observation': observation, 'notice': notice,
+                              'foreground_pid': child.pid, 'foreground_exit': child.returncode,
+                              'remedy_witnessed': True}), flush=True)
+        else:
+            if not case.exists():
+                init()
+            before = Path('/proc/self/cgroup').read_text()
+            started = time.perf_counter_ns()
+            ready = json.loads(call('up', 'up').stdout)
+            elapsed = (time.perf_counter_ns() - started) / 1_000_000
+            observed = native(ready['process']['pid'])
+            report = {'up_ms': elapsed, 'side': a.side, 'observation': record(),
+                      'caller_cgroup': before, 'host': observed}
+            if a.mode == 'independent':
+                assert observed['cgroup'] == before, 'already independent host was moved again'
+            else:
+                print(json.dumps(report), flush=True)
+                assert input() == 'down'
+            started = time.perf_counter_ns()
+            stopped(ready['process']['pid'])
+            report.update(down_ms=(time.perf_counter_ns() - started) / 1_000_000,
+                          outside_exit_after_down=True)
+            print(json.dumps(report), flush=True)
+        ''',
+        'fake_peer.py': r'''"""A same-user orphan, moved into the fixture manager's cgroup by the outside judge."""
+        import json
+        import os
+        from pathlib import Path
+        import socket
+        import time
+
+        root = Path(__file__).resolve().parent
+        assert os.geteuid() != 0
+        if os.fork():
+            raise SystemExit(0)
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        # The detached negative control must not retain runuser's capture pipes.
+        null = os.open('/dev/null', os.O_RDWR)
+        for descriptor in (0, 1, 2):
+            os.dup2(null, descriptor)
+        if null > 2:
+            os.close(null)
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind('/run/user/' + str(os.geteuid()) + '/systemd/private')
+            server.listen(8)
+            server.settimeout(.1)
+            staged = root / 'fake-ready.pending'
+            staged.write_text(json.dumps({'pid': os.getpid(), 'uid': os.geteuid()}))
+            staged.replace(root / 'fake-ready.json')
+            connections = []
+            until = time.monotonic() + 120
+            try:
+                while not (root / 'fake-stop').exists():
+                    assert time.monotonic() < until, 'fake peer lifetime exceeded'
+                    try:
+                        connection, _ = server.accept()
+                        connections.append(connection)
+                    except TimeoutError:
+                        pass
+            finally:
+                for connection in connections:
+                    connection.close()
+        ''',
+        'provider.rs': r'''fn main() {
+            let args: Vec<String> = std::env::args().collect();
+            if args.iter().any(|a| a == "--safe-mode") {
+                let mut request = String::new();
+                std::io::stdin().read_line(&mut request).unwrap();
+                println!(
+                    r#"{{"type":"control_response","response":{{"subtype":"success","request_id":"settings","response":{{"effective":{{}},"sources":[],"errors":[]}}}}}}"#
+                );
+                return;
+            }
+            if args.get(1).map(String::as_str) == Some("--version") {
+                println!("2.1.287 (Claude Code)");
+                return;
+            }
+            if args.get(1).map(String::as_str) == Some("auth") {
+                println!(r#"{{"loggedIn":true}}"#);
+                return;
+            }
+            let image = std::env::current_exe().unwrap();
+            let root = image.parent().unwrap();
+            let helper = root.parent().unwrap().join("fixtures/mail_provider.py");
+            let result = std::process::Command::new("/usr/bin/python3")
+                .arg(helper)
+                .arg(root.join("se"))
+                .arg(root.join("state home"))
+                .args(&args[1..])
+                .status()
+                .unwrap();
+            std::process::exit(result.code().unwrap_or(1));
+        }
+        ''',
+        'build.py': r'''"""Build the unchanged public binaries with one recipe, then call the native judge."""
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        import shutil
+        import subprocess
+        import sys
+
+        ROOT = Path(__file__).resolve().parent
+        BASE = '7b23fb01a7e16362c6d6b024e5c1801a32bda8c6'
+        HEAD = '920a32abcb80f228825f941ef8b4b0e206228a3f'
+        logs = ROOT / 'build-evidence'
+        logs.mkdir()
+        provenance = {'base': BASE, 'head': HEAD, 'commands': [], 'images': {},
+                      'recipe': 'cargo build --target <native> --target-dir <shared-review-target> --locked -p se --bin se',
+                      'scope': 'Linux-only placement and real login teardown; synthetic provider protocol; forty alternating shutdown pairs; no paid provider or Windows/macOS behavior'}
+
+
+        def save():
+            (logs / 'provenance.json').write_text(json.dumps(provenance, indent=2) + '\n')
+
+
+        def run(name, argv, timeout=1800):
+            with (logs / (name + '.stdout')).open('wb') as out, (logs / (name + '.stderr')).open('wb') as err:
+                done = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err, timeout=timeout)
+            provenance['commands'].append({'name': name, 'argv': argv, 'exit': done.returncode})
+            save()
+            assert done.returncode == 0, name
+            return (logs / (name + '.stdout')).read_text()
+
+
+        try:
+            provenance['compiler'] = run('compiler', ['rustc', '-vV'])
+            target = run('target', ['rustc', '--print', 'host-tuple']).strip()
+            assert target == 'x86_64-unknown-linux-gnu'
+            provenance['os'] = Path('/etc/os-release').read_text()
+            provenance['systemd'] = run('systemd', ['systemctl', '--version'])
+            provenance['memory_before_build'] = Path('/proc/meminfo').read_text()
+            provenance['workflow_checkout'] = run('initial-checkout', ['git', 'rev-parse', 'HEAD']).strip()
+            assert provenance['workflow_checkout'] == HEAD
+            helpers = ['mail_provider.py', 'judge_records.py']
+            (ROOT / 'fixtures').mkdir()
+            for helper in helpers:
+                rel = 'crates/se/tests/judges/' + helper
+                base = subprocess.check_output(['git', 'show', BASE + ':' + rel])
+                head = subprocess.check_output(['git', 'show', HEAD + ':' + rel])
+                assert base == head, 'protocol fixture differs between the pair'
+                (ROOT / 'fixtures' / helper).write_bytes(head)
+                provenance.setdefault('protocol_fixtures', {})[rel] = hashlib.sha256(head).hexdigest()
+            for side, sha in [('base', BASE), ('head', HEAD)]:
+                run(side + '-checkout', ['git', 'switch', '--detach', sha], timeout=60)
+                assert run(side + '-identity', ['git', 'rev-parse', 'HEAD']).strip() == sha
+                assert not run(side + '-clean', ['git', 'status', '--porcelain']).strip()
+                run(side + '-build', ['cargo', 'build', '--target', target, '--target-dir',
+                    str(Path(os.environ['GITHUB_WORKSPACE']) / 'target'), '--locked', '-p', 'se', '--bin', 'se'])
+                image = Path(os.environ['GITHUB_WORKSPACE']) / 'target' / target / 'debug/se'
+                dest = ROOT / 'images' / side / 'se'
+                dest.parent.mkdir(parents=True)
+                shutil.copyfile(image, dest)
+                dest.chmod(0o700)
+                provenance['images'][side] = {'source': sha, 'sha256': hashlib.sha256(dest.read_bytes()).hexdigest(),
+                                             'bytes': dest.stat().st_size}
+                save()
+            run('provider-build', ['rustc', '--edition=2024', str(ROOT / 'provider.rs'), '-o', str(ROOT / 'provider')])
+            run('native-review', ['sudo', '-n', '/usr/bin/python3', str(ROOT / 'controller.py'), str(ROOT)], timeout=1800)
+            provenance['native_review_completed'] = True
+        except BaseException as error:
+            provenance['error'] = repr(error)
+            raise
+        finally:
+            save()
+        ''',
+        'collect.py': r'''"""Export only explicit public evidence; never traverse the disposable account or keys."""
+        import hashlib
+        import json
+        from pathlib import Path
+        import shutil
+
+        ROOT = Path(__file__).resolve().parent
+        export = ROOT / 'export'
+        export.mkdir()
+        for name in ['build-evidence', 'evidence', 'images', 'fixtures']:
+            source = ROOT / name
+            if source.exists():
+                shutil.copytree(source, export / name)
+        for name in ['controller.py', 'remote_driver.py', 'fake_peer.py', 'provider.rs', 'build.py', 'collect.py']:
+            shutil.copyfile(ROOT / name, export / name)
+        manifest = {str(file.relative_to(export)): {'sha256': hashlib.sha256(file.read_bytes()).hexdigest(),
+                                                 'bytes': file.stat().st_size}
+                    for file in export.rglob('*') if file.is_file()}
+        (export / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+        print(json.dumps({'files': len(manifest), 'manifest_sha256': hashlib.sha256((export / 'manifest.json').read_bytes()).hexdigest()}))
+        ''',
+        }
+        expected = {'controller.py': '890b88ad4c97e61bce5e940d48768c4c1f327de46ed21a12cf9885c4e5821eeb', 'remote_driver.py': '01d0d3466b42adfaec11f29809dec8f056b2ee51ece0c72153d7d0ed61a723e5', 'fake_peer.py': '75af06640c9351195ec78fd8b6aa2caef328a22bdb14a015f101e4dd045c752f', 'provider.rs': '1bc4984021f9146e4929c0098defe15e82ebe7003e4f4d6a37f7439d25793f19', 'build.py': '49d6fe77d440ac21ad8d34b0d29ce391009f64d68e48dcaac1fd86d956bdf929', 'collect.py': 'a17d72fb98a08e22b06007e790c0d7293882ac5759ded07ac7af2fcfcab3995f'}
+        for name, source in assets.items():
+            raw = source.encode()
+            assert hashlib.sha256(raw).hexdigest() == expected[name], name
+            (root / name).write_bytes(raw)
+    - name: Build the public pair and exercise native login boundaries
+      run: |
+        python3 "$RUNNER_TEMP/login-lifetime-review-r1/build.py"
+    - name: Seal explicit evidence without private account files
+      if: ${{ always() }}
+      run: |
+        if test -f "$RUNNER_TEMP/login-lifetime-review-r1/collect.py"; then
+          python3 "$RUNNER_TEMP/login-lifetime-review-r1/collect.py"
+        else
+          exit 1
+        fi
+    - name: Retain complete native review evidence
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: linux-login-review-r1
+        path: ${{ runner.temp }}/login-lifetime-review-r1/export
+        if-no-files-found: error
+        retention-days: 14
