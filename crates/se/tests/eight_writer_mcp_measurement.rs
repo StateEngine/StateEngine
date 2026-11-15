@@ -7,6 +7,9 @@ use tokio::io::AsyncWriteExt;
 #[path = "../../se-host/tests/support/wave2_host_fixture.rs"]
 mod support;
 use support::*;
+#[cfg(target_os = "linux")]
+#[path = "eight_writer_mixed/background.rs"]
+mod background;
 
 #[test]
 fn measure_eight_mcp_writers() -> Check {
@@ -16,6 +19,10 @@ fn measure_eight_mcp_writers() -> Check {
     let (mut writer, lease) = direct(&f)?;
     let now = now()?;
     let mut clients = Vec::new();
+    #[cfg(target_os = "linux")]
+    let mut sources = Vec::new();
+    #[cfg(target_os = "linux")]
+    let mixed = std::env::var_os("SE_MEASURE_MIXED").is_some();
     for index in 0..8 {
         let agent = agent()?;
         let session = support::session::session()?;
@@ -70,7 +77,21 @@ fn measure_eight_mcp_writers() -> Check {
             )?,
             &*lease,
         )?;
+        #[cfg(target_os = "linux")]
+        if mixed {
+            sources.push(background::prepare(
+                &f,
+                &mut writer,
+                &lease,
+                agent.clone(),
+                session.clone(),
+            )?);
+        }
         clients.push(json!({"capability": capability, "to": agent.as_str()}));
+    }
+    #[cfg(target_os = "linux")]
+    if mixed {
+        background::register_root(&f, &mut writer, &lease)?;
     }
     writer.close()?;
     drop(lease);
@@ -94,6 +115,13 @@ fn measure_eight_mcp_writers() -> Check {
             HostedRuntime::prepare(initialized, settings, engine.handle().clone(), &bound()?)
                 .await?;
         host.configure(se_config::config_policy::ConfigFile::default())?;
+        #[cfg(target_os = "linux")]
+        if mixed {
+            host.install_native_atlas(
+                Path::new(env!("CARGO_BIN_EXE_se")).canonicalize()?,
+                NativeAtlasQualification::default(),
+            )?;
+        }
         let (_coordinator, reconciliation) = LaunchCoordinator::install(
             &mut host,
             ProcessOptions {
@@ -110,10 +138,38 @@ fn measure_eight_mcp_writers() -> Check {
             reconciliation.unproved.is_empty(),
             "fresh observer has native reconciliation debt",
         )?;
+        #[cfg(target_os = "linux")]
+        let capture = host.capture_handle();
+        #[cfg(target_os = "linux")]
+        let context = host.execution_context();
+        #[cfg(target_os = "linux")]
+        for source in &mut sources {
+            source.bind(&capture, &f).await?;
+        }
         let listener = host.listen(engine.handle().clone(), &bound()?).await?;
         let stop = host.local_stop();
         let client = async {
-            let result = observe(&f.options.state_directory, &clients).await;
+            let result = async {
+                #[cfg(target_os = "linux")]
+                if mixed {
+                    background::ready(&context, &f.project).await?;
+                    let done = std::sync::atomic::AtomicBool::new(false);
+                    let foreground = async {
+                        let result = observe(&f.options.state_directory, &clients).await;
+                        done.store(true, std::sync::atomic::Ordering::Relaxed);
+                        result
+                    };
+                    let (writes, traffic) = join(
+                        foreground,
+                        background::run(&f, &context, &capture, &sources, &done),
+                    )
+                    .await;
+                    writes?;
+                    return traffic;
+                }
+                observe(&f.options.state_directory, &clients).await
+            }
+            .await;
             stop.request();
             result
         };
@@ -135,8 +191,12 @@ fn measure_eight_mcp_writers() -> Check {
 
 async fn observe(home: &Path, clients: &[Value]) -> Check {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut child = tokio::process::Command::new("python")
-        .arg(root.join("crates/se/tests/kept_open_writes.py"))
+    let mut command = tokio::process::Command::new("python");
+    command.arg(root.join("crates/se/tests/kept_open_writes.py"));
+    if std::env::var_os("SE_MEASURE_MIXED").is_some() {
+        command.args(["--cohort", "8", "--minimum-phase-seconds", "10"]);
+    }
+    let mut child = command
         .arg("--se")
         .arg(env!("CARGO_BIN_EXE_se"))
         .arg("--home")
@@ -172,7 +232,17 @@ async fn observe(home: &Path, clients: &[Value]) -> Check {
                 format!("cohort {count} client {index} failed: {client}"),
             )?;
             require(
-                client["verified_events"] == 60,
+                client["verified_events"]
+                    .as_u64()
+                    .is_some_and(|count| count >= 60)
+                    && client["verified_events"].as_u64()
+                        == client["samples"].as_object().map(|commands| {
+                            commands
+                                .values()
+                                .filter_map(Value::as_array)
+                                .map(|rows| rows.len() as u64)
+                                .sum()
+                        }),
                 "outside event readback missing",
             )?;
             println!("cohort {count} client {index} p95: {}", client["p95_ms"]);

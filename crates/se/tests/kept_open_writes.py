@@ -156,7 +156,7 @@ class Rpc:
                 raise RuntimeError("owned MCP stderr did not reach EOF")
 
 
-def run_client(binary, home, client, samples, barrier, report):
+def run_client(binary, home, client, samples, barrier, report, minimum_phase_seconds=0):
     rpc = None
     receipts = []
     generation = None
@@ -179,12 +179,14 @@ def run_client(binary, home, client, samples, barrier, report):
             if barrier:
                 barrier.wait(timeout=30)
             rows = report["samples"].setdefault(name, [])
-            for _ in range(samples):
+            phase_start = time.monotonic()
+            while len(rows) < samples or time.monotonic() - phase_start < minimum_phase_seconds:
                 key = "b9-" + uuid.uuid4().hex
                 body = "independent kept-open write " + key
                 arguments = ({"to": client["to"], "body": body, "idempotency_key": key}
                              if name == "stateengine_msg_send" else
                              {"text": body, "expect": revision, "idempotency_key": key})
+                started_unix_ms = time.time_ns() / 1e6
                 receipt, elapsed = rpc.tool(name, arguments)
                 if receipt["state"] != "committed" or receipt["idempotency_key"] != key:
                     raise ValueError("timed write did not commit the requested new key")
@@ -199,7 +201,7 @@ def run_client(binary, home, client, samples, barrier, report):
                     if receipt["revision"] != next_revision:
                         raise ValueError("working-state revision did not advance once")
                     revision = next_revision
-                rows.append({"ms": elapsed, "event_id": receipt["event_id"], "key": key,
+                rows.append({"ms": elapsed, "started_unix_ms": started_unix_ms, "event_id": receipt["event_id"], "key": key,
                              "writer": receipt["writer"], "diagnostics": receipt.get("diagnostics")})
                 receipts.append((name, arguments, receipt, hashlib.sha256(body.encode()).hexdigest()))
         # A separate bridge reads every immutable event outside the writing connection.
@@ -247,6 +249,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", required=True)
     parser.add_argument("--home", required=True)
+    parser.add_argument("--cohort", type=int, choices=[1, 8])
+    parser.add_argument("--minimum-phase-seconds", type=float, default=0)
     args = parser.parse_args()
     raw = sys.stdin.buffer.read(LIMIT + 1)
     if len(raw) > LIMIT:
@@ -259,20 +263,24 @@ def main():
     result = {"boundary": "request submission to complete receipt on an open MCP client",
               "limit_ms": 20, "samples_per_command_client": 30,
               "exemptions": ["provider hooks", "mixed FULL traffic", "one-shot CLI"], "cohorts": {}}
-    for count in (1, 8):
+    for count in ([args.cohort] if args.cohort else (1, 8)):
         reports = [{"samples": {}} for _ in range(count)]
         barrier = threading.Barrier(count) if count > 1 else None
         with concurrent.futures.ThreadPoolExecutor(max_workers=count) as pool:
-            list(pool.map(lambda pair: run_client(args.se, args.home, pair[0], 30, barrier, pair[1]),
+            list(pool.map(lambda pair: run_client(args.se, args.home, pair[0], 30, barrier, pair[1], args.minimum_phase_seconds),
                           zip(clients[:count], reports)))
         for report in reports:
             report["p95_ms"] = {name: sorted(row["ms"] for row in rows)[math.ceil(len(rows) * .95) - 1]
                                 for name, rows in report["samples"].items() if rows}
             report["pass"] = (not any(k.endswith("error") for k in report)
-                              and report.get("verified_events") == 60
+                              and report.get("verified_events", 0) >= 60
+                              and report.get("verified_events") == sum(len(rows) for rows in report["samples"].values())
                               and len(report["p95_ms"]) == 2
                               and all(value <= 20 for value in report["p95_ms"].values()))
         result["cohorts"][str(count)] = reports
+    if args.minimum_phase_seconds:
+        result["minimum_phase_seconds"] = args.minimum_phase_seconds
+        result["exemptions"] = ["real provider launch", "one-shot CLI"]
     result["pass"] = all(r["pass"] for rows in result["cohorts"].values() for r in rows)
     output = json.dumps(result, indent=2)
     for client in clients:
