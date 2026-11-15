@@ -48,6 +48,17 @@ class ProbeContext:
         if budget not in PLATFORM_BUDGETS:
             return True
         return self.platform == PLATFORM_BUDGETS[budget]
+
+    def required(self, budget):
+        """Whether `budget` must pass for this receipt to be complete.
+
+        A platform-only budget is never required coverage: it can only be measured
+        in one venue, so its absence or its miss is a fact about that venue, not a
+        missing required probe. It is still judged wherever it applies — a real
+        Windows miss stays a MISS with its own probe rather than being discarded
+        along with an otherwise valid receipt.
+        """
+        return budget not in PLATFORM_BUDGETS
 LABELS = {
     "B1": ("embedded A/B",), "B2": ("embedded A/B",),
     "B3": ("standalone persistent processes", "persistent processes after 1 seat(s)",
@@ -107,7 +118,7 @@ def budget_numbers(budget, row):
 
 
 
-def windows_full_write_result(row, limits):
+def windows_full_write_result(row, limits, context=None):
     """B10: native Windows serial send against the Windows full-write ceiling.
 
     The producer reports this budget as a named relation on the existing serial
@@ -117,7 +128,10 @@ def windows_full_write_result(row, limits):
     native Windows row that carries the relation can answer, and the relation
     must repeat the row's own p95 and describe the cohort it rides on.
     """
-    if row.get("platform") not in (None, "win32"):
+    # Applicability comes from the verified invocation context, never from a tag
+    # the row carries: a Windows receipt with an unrelated platform tag on one row
+    # is still a Windows receipt.
+    if context is not None and not context.applies("B10"):
         return "NOT MEASURED"
     writes = row.get("writes")
     if not isinstance(writes, list):
@@ -156,9 +170,9 @@ def windows_full_write_result(row, limits):
     return "PASS" if seen else "NOT MEASURED"
 
 
-def probe_result(budget, row, limits, numeric):
+def probe_result(budget, row, limits, numeric, context=None):
     if budget == "B10":
-        return windows_full_write_result(row, limits)
+        return windows_full_write_result(row, limits, context)
     if not numeric or row.get("state") == "unavailable":
         return "NOT MEASURED"
     if budget not in {"B5", "B6"}:
@@ -339,11 +353,14 @@ def invocation(inv, directory, run=None):
                     for row in budget_artifact["measurements"] if row["label"] in FIRST_HOUR_PROBES
                     for key, expected_labels in LABELS.items()
                     if row["label"] in expected_labels
-                    and context.applies(key)):
+                    and context.applies(key) and context.required(key)):
                 budget_error = "required first-hour probe is missing a passing measurement"
                 entry["problems"].append(budget_error)
     entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification, behavior_only=behavior_only,
-                 receipt_complete=budget_error is None and cleanup_known and qualified)
+                 receipt_complete=budget_error is None and cleanup_known and qualified,
+                 # The one value this invocation's rows are judged against; kept
+                 # so summarize() never reconstructs a second one.
+                 context=context)
     code = inv.get("exit")
     # Judge exit 1 includes budget misses. Journey verdicts depend only on
     # witnessed behavior and their own cleanup, with receipt identity intact.
@@ -424,7 +441,7 @@ def summarize(run, directory):
                 if not isinstance(row, dict) or row.get("label") not in labels:
                     continue
                 numeric = budget_numbers(budget, row)
-                slot_context = ProbeContext(entry.get("platform"))
+                slot_context = entry["context"]
                 slots[budget].append({"output": entry["output"], "surface": entry["surface"],
                     "platform": entry.get("platform"), "context": slot_context,
                     "label": row["label"], "numbers": numeric,
@@ -432,10 +449,17 @@ def summarize(run, directory):
                     "sample_state": "observed" if numeric else row.get("state", "unavailable"),
                     "probe_result": first_hour_probe_result(budget, row, measured.get("limits"), slot_context)
                     if entry["mode"] == "first-hour" and not entry.get("behavior_only")
-                    else probe_result(budget, row, measured.get("limits"), numeric),
+                    else probe_result(budget, row, measured.get("limits"), numeric, slot_context),
                     "invocation_outcome": entry["outcome"], "reason": row.get("reason"), "limits": measured.get("limits")})
+    # A budget that no invocation could answer in this run is a named gap only
+    # when some invocation was eligible to answer it. Asking for a Windows number
+    # from a Linux-only run would be a gap the run could never close.
+    eligible = {key: any(entry["context"].applies(key) for entry in entries
+                         if entry.get("context") is not None and entry.get("receipt_complete"))
+                for key in LABELS}
     gaps = [f"{key}: {label}" for key, labels in LABELS.items() for label in labels
-            if not any(row["label"] == label and row["numbers"] for row in slots[key])]
+            if eligible[key]
+            and not any(row["label"] == label and row["numbers"] for row in slots[key])]
     gaps += ["FULL: independent FULL-write probe unavailable"]
     if not any(entry.get("surface") == "codex" and entry["mode"] == "first-hour"
                and entry["receipt_complete"] and not entry.get("behavior_only") for entry in entries):
