@@ -344,7 +344,10 @@ fn probe(root: &Path, report: &mut Report) -> ProbeResult<()> {
 
 #[test]
 fn committed_endmarks_bound_each_copy_before_latency_work() -> ProbeResult<()> {
-    let root = std::env::temp_dir().join(format!("wal-endmark-{}", uuid::Uuid::new_v4()));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("wal-endmark-{}-{nonce}", std::process::id()));
     fs::create_dir(&root)?;
     let mut report = Report {
         platform: std::env::consts::OS.into(),
