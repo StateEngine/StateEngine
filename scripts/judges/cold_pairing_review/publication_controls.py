@@ -20,6 +20,9 @@ payload = b'private publication content\n' * 4096
 digest = hashlib.sha256(payload).hexdigest()
 receipt = dict(side=side, platform=sys.platform, cases=[], source_files={})
 receipt['scope'] = 'Native verification and publication commands; Windows upload is a synthetic fixture and unchanged receive is recorded separately'
+cache_parent = home / '.stateengine-runtime'
+cache_parent_existed = cache_parent.exists()
+prepared_directory = cache_parent / namespace
 
 
 def run(command, folder, label, data=None, env=None):
@@ -49,8 +52,8 @@ def harden(path):
 try:
     harden(root)
     if windows:
-        # Receive is unchanged by the reviewed delta. Keep its direct native
-        # result and a reason-only diagnostic, separately from publication.
+        # Exercise the original stream receiver and retain its diagnostics.
+        # Both the result and the bytes are required before publication cases.
         probe = output / 'unchanged-receive'
         probe.mkdir()
         for name in ('original', 'diagnostic'):
@@ -63,7 +66,28 @@ try:
                 assert script.count(needle) == 1
                 script = script.replace(needle, 'catch {[Console]::Error.WriteLine($_.Exception.ToString()); if ($f) {$f.Dispose()}; exit 1}')
                 command = 'powershell.exe -NoProfile -NonInteractive -EncodedCommand ' + base64.b64encode(script.encode('utf-16le')).decode()
-            run(command, probe, name, payload)
+            observed = run(command, probe, name, payload)
+            assert observed['exit'] == 0, (name, observed)
+            received = home / path
+            assert received.read_bytes() == payload
+            verified = run(commands['verify_upload'], probe, name + '-verify')
+            assert verified['exit'] == 0, (name, verified)
+        # Exercise the other constructor through the source-generated directory
+        # preparation command, then receive and verify inside that directory.
+        prepare_probe = output / 'directory-prepare'
+        prepare_probe.mkdir()
+        relative_directory = prepared_directory.relative_to(home).as_posix()
+        prepared_upload = relative_directory + '/upload'
+        commands = json.loads(subprocess.check_output([str(emitter), prepared_upload, relative_directory, digest, 'windows'], text=True))
+        (prepare_probe / 'commands.json').write_text(json.dumps(commands, indent=2) + '\n')
+        prepared = run(commands['prepare'], prepare_probe, 'prepare')
+        assert prepared['exit'] == 0 and prepared_directory.is_dir(), prepared
+        received = run(commands['receive'], prepare_probe, 'receive', payload)
+        assert received['exit'] == 0 and (home / prepared_upload).read_bytes() == payload, received
+        verified = run(commands['verify_upload'], prepare_probe, 'verify')
+        assert verified['exit'] == 0, verified
+        receipt['native_receive_verified'] = True
+        receipt['native_directory_prepare_verified'] = True
     modes = ('fresh', 'corrupt-upload', 'matching-incumbent', 'corrupt-incumbent', 'warm-match', 'warm-corrupt')
     if not windows:
         modes += ('symlink-incumbent', 'writable-upload')
@@ -158,5 +182,12 @@ finally:
     import shutil
     shutil.rmtree(root)
     receipt['private_namespace_removed'] = not root.exists()
+    if windows:
+        if prepared_directory.exists():
+            shutil.rmtree(prepared_directory)
+        receipt['prepared_namespace_removed'] = not prepared_directory.exists()
+        if not cache_parent_existed and cache_parent.exists():
+            cache_parent.rmdir()
+        receipt['cache_parent_preexisted'] = cache_parent_existed
     (output / 'summary.json').write_text(json.dumps(receipt, indent=2) + '\n')
 print(json.dumps(receipt))

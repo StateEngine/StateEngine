@@ -10,7 +10,7 @@ mod remote {
         let post_promote = s::check(path, windows, false);
         #[cfg(not(feature = "head"))]
         let post_promote = s::verify(path, digest, windows, false);
-        serde_json::json!({"post_promote":post_promote,"receive":s::receive(upload,windows),"verify_upload":s::verify(upload,digest,windows,false),
+        serde_json::json!({"prepare":s::prepare(path,windows,false),"post_promote":post_promote,"receive":s::receive(upload,windows),"verify_upload":s::verify(upload,digest,windows,false),
             "verify_path":s::verify(path,digest,windows,false),"publish":s::publish(upload,path,windows),
             "remove":s::remove(upload,windows),"transaction":t::publish(upload,path,digest,false),
             "warm":t::cached(".",path,digest,false)})
