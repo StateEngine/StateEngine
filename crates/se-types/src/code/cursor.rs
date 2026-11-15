@@ -2,14 +2,12 @@
 use super::*;
 type AtlasResult<T> = crate::Result<T>;
 use crate::{Detail, SeError, details};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::Digest;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd)]
 pub struct CursorKey {
     pub integers: Vec<u64>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "key_bytes")]
     pub bytes: Vec<u8>,
 }
 impl CursorKey {
@@ -215,28 +213,4 @@ fn decode(text: &str) -> AtlasResult<Vec<u8>> {
         return Err(cursor_invalid("noncanonical base64url"));
     }
     Ok(result)
-}
-mod key_bytes {
-    use serde::{Deserialize, Deserializer, Serializer};
-    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&super::encode(bytes))
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        if text.is_empty() {
-            return Ok(Vec::new());
-        }
-        if text.len() > 684 {
-            return Err(serde::de::Error::custom(
-                "cursor ordering key exceeds 512 bytes",
-            ));
-        }
-        let bytes = super::decode(&text).map_err(serde::de::Error::custom)?;
-        if bytes.len() > 512 {
-            return Err(serde::de::Error::custom(
-                "cursor ordering key exceeds 512 bytes",
-            ));
-        }
-        Ok(bytes)
-    }
 }

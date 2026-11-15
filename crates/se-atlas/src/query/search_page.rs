@@ -106,18 +106,17 @@ impl SearchPage {
 }
 
 fn shrink(items: &mut Vec<SearchHit>, keys: &mut Vec<Key>, omitted: &mut u16) -> bool {
-    let single = items.len() == 1;
-    if let Some(hit) = items.iter_mut().rev().find(|hit| hit.body.is_some()) {
-        if single && hit.body.as_mut().is_some_and(clip_body) {
+    if items.len() > 1 {
+        items.pop();
+        keys.pop();
+        return true;
+    }
+    if let Some(hit) = items.first_mut().filter(|hit| hit.body.is_some()) {
+        if hit.body.as_mut().is_some_and(clip_body) {
             return true;
         }
         hit.body = None;
         *omitted += 1;
-        return true;
-    }
-    if items.len() > 1 {
-        items.pop();
-        keys.pop();
         return true;
     }
     items.first_mut().is_some_and(clip_hit)
