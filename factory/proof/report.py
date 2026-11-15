@@ -21,16 +21,34 @@ SELECTIONS = {"first-hour": ("first-hour", {1, 2, 3, 4, 5}),
 # Budgets that only one platform can answer, and therefore only that platform's
 # rows may feed them. `B10` is a Windows full-write ceiling measured from the same
 # CLI-write samples; a Linux or macOS row carries no Windows relation, and its
-# honest "not measured" is neither a missing probe nor a vote against the Windows
-# result. Applicability lives here, in one place, because it has two consumers:
-# required-coverage validation, and the aggregation that decides a budget's state
-# from its probes. A second local exception cannot keep them in agreement.
+# honest "not measured" is neither a missing probe nor a vote against a Windows
+# result.
 PLATFORM_BUDGETS = {"B10": "win32"}
 
 
-def budget_applies(budget, platform):
-    """Whether a row from `platform` may feed `budget` at all."""
-    return budget not in PLATFORM_BUDGETS or PLATFORM_BUDGETS[budget] == platform
+class ProbeContext:
+    """What one invocation's budget rows may be judged against.
+
+    Built once, at the receipt boundary, from the platform the receipt itself was
+    verified to have (`invocation()` already refuses a receipt whose platform
+    differs from the requested one). Every consumer takes this value rather than
+    re-reading a row or re-deriving the platform, because applicability decided in
+    more than one place is what drifted three times before.
+
+    `platform` is the verified platform, or None when it is not yet established;
+    None applies to nothing platform-specific rather than to everything.
+    """
+
+    __slots__ = ("platform",)
+
+    def __init__(self, platform):
+        self.platform = platform
+
+    def applies(self, budget):
+        """Whether this context's rows may feed `budget` at all."""
+        if budget not in PLATFORM_BUDGETS:
+            return True
+        return self.platform == PLATFORM_BUDGETS[budget]
 LABELS = {
     "B1": ("embedded A/B",), "B2": ("embedded A/B",),
     "B3": ("standalone persistent processes", "persistent processes after 1 seat(s)",
@@ -173,12 +191,14 @@ def finite_nonnegative(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
-def first_hour_probe_result(budget, row, limits):
-    """Validate current first-hour measurements without changing legacy receipts."""
-    # A platform-only budget is not judged from another platform's row at all;
-    # this is the same applicability the aggregation uses, so the two cannot
-    # disagree about which rows count.
-    if not budget_applies(budget, row.get("platform")):
+def first_hour_probe_result(budget, row, limits, context=None):
+    """Validate current first-hour measurements without changing legacy receipts.
+
+    `context` is the one applicability value for this invocation. Without it the
+    budget is judged as before, which keeps legacy callers working; with it, a
+    row that cannot answer this budget is not judged at all.
+    """
+    if context is not None and not context.applies(budget):
         return "NOT MEASURED"
     state = row.get("state")
     if (not isinstance(limits, dict) or state is not None and not isinstance(state, str)
@@ -279,6 +299,9 @@ def invocation(inv, directory, run=None):
             or len(selected) != len(expected) or set(selected) != expected):
         entry["problems"].append("identity, selection or scope mismatch")
         return entry
+    # One applicability value for everything downstream, built here because this
+    # is where the receipt's platform became verified rather than asserted.
+    context = ProbeContext(receipt["platform"])
     if (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
             or any(type(row.get("journey")) is not int or row.get("result") not in ("PASS", "FAIL") for row in rows)
             or {row["journey"] for row in rows} != expected or len(rows) != len(expected)):
@@ -318,11 +341,11 @@ def invocation(inv, directory, run=None):
                 budget_error = "first-hour required probes differ from the reporter contract"
                 entry["problems"].append(budget_error)
             if isinstance(budget, dict) and budget.get("passed") is True and any(
-                    first_hour_probe_result(key, row, budget_artifact.get("limits")) != "PASS"
+                    first_hour_probe_result(key, row, budget_artifact.get("limits"), context) != "PASS"
                     for row in budget_artifact["measurements"] if row["label"] in FIRST_HOUR_PROBES
                     for key, expected_labels in LABELS.items()
                     if row["label"] in expected_labels
-                    and budget_applies(key, budget_artifact.get("platform", entry.get("platform")))):
+                    and context.applies(key)):
                 budget_error = "required first-hour probe is missing a passing measurement"
                 entry["problems"].append(budget_error)
     entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification, behavior_only=behavior_only,
@@ -409,13 +432,14 @@ def summarize(run, directory):
                 if not isinstance(row, dict) or row.get("label") not in labels:
                     continue
                 numeric = budget_numbers(budget, row)
+                slot_context = ProbeContext(entry.get("platform"))
                 slots[budget].append({"output": entry["output"], "surface": entry["surface"],
-                    "platform": entry.get("platform"),
+                    "platform": entry.get("platform"), "context": slot_context,
                     "label": row["label"], "numbers": numeric,
                     "box_load": entry.get("box_load"),
                     "machine_context": machine_context(row, entry.get("platform")),
                     "sample_state": "observed" if numeric else row.get("state", "unavailable"),
-                    "probe_result": first_hour_probe_result(budget, row, measured.get("limits"))
+                    "probe_result": first_hour_probe_result(budget, row, measured.get("limits"), slot_context)
                     if entry["mode"] == "first-hour" and not entry.get("behavior_only")
                     else probe_result(budget, row, measured.get("limits"), numeric),
                     "invocation_outcome": entry["outcome"], "reason": row.get("reason"), "limits": measured.get("limits")})
@@ -435,13 +459,17 @@ def summarize(run, directory):
         # A budget that only one platform answers is decided by that platform's
         # rows alone. Rows from elsewhere are not weaker votes or missing probes:
         # they are not evidence about this budget, so they never reach it.
-        applicable = [p for p in probes if budget_applies(key, p.get("platform"))]
+        applicable = [p for p in probes if p["context"].applies(key)]
         state = "NOT MEASURED"
         if any(p["probe_result"] == "MISS" for p in applicable):
             state = "MISS"
         elif not missing and applicable and all(p["probe_result"] == "PASS" for p in applicable):
             state = "PASS"
-        budgets.append({"id": key, "state": state, "probes": applicable})
+        # The context travels with the probe while it is being decided and is not
+        # serialized: it is a judgement input, not a measurement.
+        budgets.append({"id": key, "state": state,
+                        "probes": [{k: v for k, v in probe.items() if k != "context"}
+                                   for probe in applicable]})
     matrix = matrix_observation(run, directory)
     if matrix is not None:
         status['errors'].extend('harness matrix: ' + value for value in matrix['errors'])
