@@ -126,8 +126,11 @@ impl Parser {
             }
         }
         // Neither a reply nor a timeout grants success before exact reap.
-        self.close(deadline)?;
-        result
+        match (self.close(deadline), result) {
+            (Ok(()), result) => result,
+            (Err(close), Err(error)) => Err(close.with_cause(error)),
+            (Err(close), Ok(_)) => Err(close),
+        }
     }
 }
 pub(crate) fn expired() -> SeError {

@@ -54,6 +54,7 @@ pub struct RootRegistration {
 pub struct ParseBudget {
     pub max_source_bytes: u32,
     pub max_rows: u32,
+    /// Source I/O allowance; the containing parent owns the parse deadline.
     pub max_work: Duration,
     pub reserved_bytes: u32,
 }

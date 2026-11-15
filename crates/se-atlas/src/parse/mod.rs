@@ -176,7 +176,11 @@ impl AtlasParser for SemanticParser {
             return Err(error);
         }
         let Some(tree) = tree else {
-            return Ok(defer(CoverageReason::ParseWorkLimit));
+            return Err(failure(
+                &snapshot.path,
+                language,
+                "native parser returned no tree".into(),
+            ));
         };
         let arena = budget::Arena::new(
             profile.extraction_bytes,
