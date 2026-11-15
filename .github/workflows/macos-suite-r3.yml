@@ -1,0 +1,99 @@
+name: Full native macOS suite
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: bda8e1e7a2c7905cb9b8537c35aad29e9242cb99
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: full-macos-suite-v1
+    - name: Register disposable runner account
+      run: |
+        from pathlib import Path
+        import runpy,subprocess,sys
+        script=Path('scripts/ci/installation_account.py').resolve()
+        identity,profile=runpy.run_path(str(script))['account']()
+        # Elevate registration only, while preserving the actual disposable runner identity.
+        subprocess.run(['sudo',sys.executable,str(script),'provision','--identity',identity,'--profile',str(profile)],check=True)
+        subprocess.run([sys.executable,str(script),'check'],check=True)
+      shell: python
+    - name: Record pinned native suite inputs
+      shell: python
+      run: |
+        from pathlib import Path
+        import hashlib,json,os,subprocess
+        root=Path('target/nextest/full-suite-evidence');root.mkdir(parents=True,exist_ok=True)
+        source=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+        assert source=='bda8e1e7a2c7905cb9b8537c35aad29e9242cb99'
+        host=subprocess.check_output(['rustc','--print','host-tuple'],text=True).strip()
+        assert host.endswith('-apple-darwin')
+        paths=['scripts/ci/custom.py','scripts/ci/installation_account.py','.github/actions/rust/action.yml','.config/nextest.toml']
+        (root/'inputs.json').write_text(json.dumps({'source':source,'native_host':host,'compiler':subprocess.check_output(['rustc','-vV'],text=True),'run_id':os.environ['GITHUB_RUN_ID'],'publication':os.environ['GITHUB_SHA'],'input_sha256':{p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in paths}},indent=2)+'\n')
+    - name: Build shipping-default archive
+      run: |
+        # Keep target linker flags off host compiler plugins, matching the existing CI path.
+        target="$(rustc --print host-tuple)"
+        cargo nextest archive --target "$target" --workspace --locked --archive-file tests.tar.zst
+    - name: Run every ordinary shipping-default case
+      env:
+        NEXTEST_PROFILE: ci
+      run: |
+        from pathlib import Path
+        import json,subprocess,sys,time
+        root=Path('target/nextest/full-suite-evidence');root.mkdir(parents=True,exist_ok=True)
+        filterset=subprocess.check_output([sys.executable,'scripts/ci/custom.py','filter'],text=True).strip()
+        command=['cargo','nextest','run','--archive-file','tests.tar.zst','--extract-to','.','--extract-overwrite','--workspace-remap',str(Path.cwd()),'--profile','ci','--no-fail-fast','--no-tests','fail','-E',filterset]
+        started=time.monotonic_ns()
+        with (root/'ordinary.log').open('wb') as log:
+         result=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT)
+        receipt={'argv':command,'exit':result.returncode,'elapsed_ns':time.monotonic_ns()-started,'stderr_merged_with_stdout':True}
+        (root/'ordinary.json').write_text(json.dumps(receipt,indent=2)+'\n')
+        print(json.dumps(receipt),flush=True)
+        raise SystemExit(result.returncode)
+      shell: python
+    - name: Run every custom harness
+      if: ${{ !cancelled() }}
+      run: |
+        from pathlib import Path
+        import json,subprocess,sys,time
+        root=Path('target/nextest/full-suite-evidence');root.mkdir(parents=True,exist_ok=True)
+        command=[sys.executable,'scripts/ci/custom.py','run']
+        started=time.monotonic_ns()
+        with (root/'custom.log').open('wb') as log:
+         result=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT)
+        receipt={'argv':command,'exit':result.returncode,'elapsed_ns':time.monotonic_ns()-started,'stderr_merged_with_stdout':True}
+        (root/'custom.json').write_text(json.dumps(receipt,indent=2)+'\n')
+        print(json.dumps(receipt),flush=True)
+        raise SystemExit(result.returncode)
+      shell: python
+    - name: Retain complete outcomes
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: full-macos-suite
+        path: |-
+          target/nextest/ci/junit.xml
+          target/nextest/input-judges.json
+
+          target/nextest/full-suite-evidence/
+        retention-days: 14
+        if-no-files-found: warn
+'on':
+  push:
+    branches:
+    - prime/macos-suite-r3
