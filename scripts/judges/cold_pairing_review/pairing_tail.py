@@ -16,7 +16,7 @@ base, head = map(lambda value: Path(value).resolve(), sys.argv[2:4])
 root.mkdir()
 private = root / 'private'
 private.mkdir(mode=0o700)
-receipt = dict(samples=[], failures=[], source_images={}, qualified=False, scope='Hosted Linux loopback SSH; pretrusted host key, fresh OS accounts and repositories, cached file pages; sudo/env spawn included; 200 ms native process sampler active; providers not launched')
+receipt = dict(samples=[], failures=[], source_images={}, qualified=False, scope='Hosted Linux loopback SSH; isolated PAM-disabled key-only server, pretrusted host key, fresh OS accounts and repositories, cached file pages; sudo/env spawn included; 200 ms native process sampler active; providers not launched')
 for side, binary in (('base', base), ('head', head)):
     receipt['source_images'][side] = dict(path=str(binary), bytes=binary.stat().st_size, sha256=hashlib.file_digest(binary.open('rb'), 'sha256').hexdigest())
 
@@ -100,7 +100,7 @@ with socket.socket() as probe:
     port = probe.getsockname()[1]
 config = private / 'sshd_config'
 pidfile = private / 'sshd.pid'
-config.write_text(f'Port {port}\nListenAddress 127.0.0.1\nHostKey {private / "host-key"}\nPidFile {pidfile}\nPasswordAuthentication no\nPubkeyAuthentication yes\nUsePAM yes\nPermitRootLogin no\nPermitUserEnvironment yes\nAllowTcpForwarding yes\nAllowUsers se418*\n')
+config.write_text(f'Port {port}\nListenAddress 127.0.0.1\nHostKey {private / "host-key"}\nPidFile {pidfile}\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nUsePAM no\nPermitRootLogin no\nPermitUserEnvironment yes\nAllowTcpForwarding yes\nAllowUsers se418*\n')
 sudo('mkdir', '-p', '/run/sshd')
 sudo('env', '-i', 'PATH=/usr/sbin:/usr/bin:/sbin:/bin', '/usr/sbin/sshd', '-f', config)
 daemon = int(pidfile.read_text())
@@ -127,7 +127,7 @@ try:
                         raise RuntimeError('Fresh test account already exists')
                     except KeyError:
                         pass
-                    sudo('useradd', '-m', '-s', '/bin/bash', user)
+                    sudo('useradd', '-m', '-s', '/bin/bash', '--password', '*', user)
                     entry = pwd.getpwnam(user)
                     owned.append((user, entry.pw_uid, Path(entry.pw_dir)))
                 source_user, source_uid, source_home = owned[0]

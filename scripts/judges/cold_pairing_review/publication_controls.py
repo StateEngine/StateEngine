@@ -35,10 +35,12 @@ def harden(path):
         path.chmod(0o700)
         return
     # Test-created paths only. The product commands subsequently verify them.
-    script = "$p=$env:REVIEW_NATIVE_PATH;$a=Get-Acl -LiteralPath $p;$a.SetAccessRuleProtection($true,$false);" \
+    inherit = 'ContainerInherit,ObjectInherit' if path.is_dir() else 'None'
+    script = "$ErrorActionPreference='Stop';$p=$env:REVIEW_NATIVE_PATH;$a=Get-Acl -LiteralPath $p;$a.SetAccessRuleProtection($true,$false);" \
         "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User;" \
+        "$a.SetOwner($u);" \
         "foreach($s in @($u,[Security.Principal.SecurityIdentifier]::new('S-1-5-18')))" \
-        "{$a.SetAccessRule([Security.AccessControl.FileSystemAccessRule]::new($s,'FullControl','ContainerInherit,ObjectInherit','None','Allow'))};" \
+        "{$a.SetAccessRule([Security.AccessControl.FileSystemAccessRule]::new($s,'FullControl','" + inherit + "','None','Allow'))};" \
         "Set-Acl -LiteralPath $p -AclObject $a"
     subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
         env=dict(os.environ, REVIEW_NATIVE_PATH=str(path)), check=True, capture_output=True, timeout=120)
@@ -72,6 +74,8 @@ try:
         folder.mkdir()
         files = root / mode
         files.mkdir(mode=0o700)
+        if windows:
+            harden(files)
         upload, published = files / 'upload', files / 'se'
         relative_upload, relative_published = (p.relative_to(home).as_posix() for p in (upload, published))
         commands = json.loads(subprocess.check_output([str(emitter), relative_upload, relative_published, digest, 'windows' if windows else 'unix'], text=True))
@@ -80,6 +84,7 @@ try:
             # A synthetic private upload isolates the changed verify/promote
             # commands from the unchanged receive path's separately kept result.
             upload.write_bytes(payload)
+            harden(upload)
             (folder / 'fixture-upload.json').write_text(json.dumps(dict(state='created', bytes=len(payload), sha256=hashlib.sha256(upload.read_bytes()).hexdigest())) + '\n')
         else:
             receive = run(commands['receive'], folder, 'receive', payload)
@@ -90,8 +95,12 @@ try:
         if mode == 'writable-upload':
             upload.chmod(0o722)
         if mode == 'foreign-write-upload':
-            script = "$p=$env:REVIEW_NATIVE_PATH;$a=Get-Acl -LiteralPath $p;$s=[Security.Principal.SecurityIdentifier]::new('S-1-1-0');$a.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($s,'WriteData','None','None','Allow'));Set-Acl -LiteralPath $p -AclObject $a"
+            script = "$ErrorActionPreference='Stop';$p=$env:REVIEW_NATIVE_PATH;$a=Get-Acl -LiteralPath $p;$s=[Security.Principal.SecurityIdentifier]::new('S-1-1-0');$a.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($s,'WriteData','None','None','Allow'));Set-Acl -LiteralPath $p -AclObject $a"
             subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',script],env=dict(os.environ,REVIEW_NATIVE_PATH=str(upload)),capture_output=True,check=True,timeout=120)
+        if windows:
+            script = "$p=$env:REVIEW_NATIVE_PATH;$a=Get-Acl -LiteralPath $p;[pscustomobject]@{home=$HOME;path=$p;user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;rules=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])|ForEach-Object{[pscustomobject]@{sid=$_.IdentityReference.Value;rights=$_.FileSystemRights.ToString();kind=$_.AccessControlType.ToString();inherited=$_.IsInherited}})}|ConvertTo-Json -Depth 5"
+            observed = subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',script],env=dict(os.environ,REVIEW_NATIVE_PATH=str(upload)),capture_output=True,text=True,check=True,timeout=120)
+            (folder / 'fixture-identity.json').write_text(observed.stdout)
         if 'incumbent' in mode or mode.startswith('warm'):
             published.write_bytes(b'incumbent corruption' if 'corrupt' in mode else payload)
             harden(files)
