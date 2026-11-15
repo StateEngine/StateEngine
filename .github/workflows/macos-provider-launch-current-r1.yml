@@ -1,0 +1,80 @@
+name: Current main native macOS provider launch observations
+'on':
+  push: null
+  workflow_dispatch: null
+permissions:
+  contents: read
+concurrency:
+  group: macos-provider-launch-current-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  native:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 97e3dd7594b060593743440a52ef265032151f7b
+        path: source
+        persist-credentials: false
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 366d6c1770abf746eb447d1bbc4ec624bf0f40d9
+        path: controls
+        sparse-checkout: crates/se-proc/tests/review_git_lifetime
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: 1.97.1
+    - name: Build pinned native public executable
+      shell: python
+      run: |
+        from pathlib import Path
+        import hashlib,json,os,subprocess
+        source=Path('source').resolve()
+        out=Path(os.environ['RUNNER_TEMP'])/'launch-evidence'
+        out.mkdir()
+        actual=subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()
+        assert actual=='97e3dd7594b060593743440a52ef265032151f7b'
+        host=subprocess.check_output(['rustc','--print','host-tuple'],text=True).strip()
+        assert host.endswith('-apple-darwin')
+        control=Path('controls/crates/se-proc/tests/review_git_lifetime/control.py').resolve()
+        assert hashlib.sha256(control.read_bytes()).hexdigest()=='9e415a48ce03cc7d7b4ea39a6f809daed9b58dc4471036c3211f4d2140e78aac'
+        command=['cargo','build','--release','--locked','-p','se','--target',host]
+        env=dict(os.environ,CARGO_TARGET_DIR=str(out/'target'),CARGO_INCREMENTAL='0',CARGO_BUILD_JOBS='2')
+        (out/'inputs.json').write_text(json.dumps({'source':actual,'host':host,'command':command,'compiler':subprocess.check_output(['rustc','-vV'],text=True),'control_sha256':'9e415a48ce03cc7d7b4ea39a6f809daed9b58dc4471036c3211f4d2140e78aac','observer_sha256':'8bd0f6920c98ba8182ba966f057196d5fae618c06d8a9455ba428d77df79f4e7'},indent=2)+'\n')
+        with (out/'build.log').open('w') as log:
+         result=subprocess.run(command,cwd=source,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=1800)
+        if result.returncode:raise SystemExit(result.returncode)
+        (out/'binary.txt').write_text(str(out/'target'/host/'release/se'))
+    - name: Observe both public provider launches and authenticated MCP
+      shell: python
+      run: |
+        from pathlib import Path
+        import hashlib,os,subprocess,sys
+        out=Path(os.environ['RUNNER_TEMP'])/'launch-evidence'
+        observer=out/'observe-launch.py'
+        observer.write_text('"""Author observations of public native provider launch on disposable macOS homes."""\nimport argparse, fcntl, hashlib, json, os\nfrom pathlib import Path\nimport subprocess, sys, time, traceback\n\np = argparse.ArgumentParser(description=__doc__)\np.add_argument(\'--source\', type=Path, required=True)\np.add_argument(\'--se\', type=Path, required=True)\np.add_argument(\'--controls\', type=Path, required=True)\np.add_argument(\'--out\', type=Path, required=True)\na = p.parse_args()\nassert sys.platform == \'darwin\'\nos.umask(0o077)\na.out.mkdir(mode=0o700)\nsys.dont_write_bytecode = True\nsys.path.insert(0, str(a.controls.resolve()))\nfrom control import observe, same\nsys.path.insert(0, str(a.source.resolve() / \'crates/se/tests/judges\'))\nfrom mail_cli import Fixture\nfrom judge_records import wait_json\n\nreport = {\'source\': subprocess.check_output([\'git\',\'rev-parse\',\'HEAD\'], cwd=a.source, text=True).strip(),\n          \'se_sha256\': hashlib.sha256(a.se.read_bytes()).hexdigest(), \'cases\': [],\n          \'limitations\': [\'Native protocol doubles exercise actual provider launch and authenticated MCP, without paid accounts or external model calls.\',\n                          \'These author observations do not qualify indexed source coverage or actual provider package installation.\']}\ndef save():\n    (a.out / \'launch-report.json\').write_text(json.dumps(report, indent=2) + \'\\n\')\n\nclass PrivateFixture(Fixture):\n    def call(self, *arguments, **options):\n        for key in list(self.env):\n            if key.startswith((\'OPENAI_\', \'ANTHROPIC_\', \'GITHUB_\', \'GH_\', \'GIT_\')):\n                self.env.pop(key)\n        for key in (\'XDG_CONFIG_HOME\',\'XDG_CACHE_HOME\',\'XDG_DATA_HOME\',\'XDG_STATE_HOME\',\'CODEX_HOME\'):\n            directory = self.root / key.lower()\n            directory.mkdir(mode=0o700, exist_ok=True)\n            self.env[key] = str(directory)\n        # Exercise the product\'s normal macOS runtime-directory selection.\n        self.env.pop(\'XDG_RUNTIME_DIR\', None)\n        self.env[\'GIT_CONFIG_NOSYSTEM\'] = \'1\'\n        self.env[\'GIT_CONFIG_GLOBAL\'] = str(self.root / \'empty-git-config\')\n        result = super().call(*arguments, **options)\n        (self.log_root / f\'call-{self.calls:02}.json\').write_text(json.dumps({\'argv\':list(arguments),\'exit\':result.returncode}) + \'\\n\')\n        return result\n\ndef remember(pins, pid):\n    current = observe(pid)\n    assert current is not None and current[\'status\'] != 5, (\'native process absent\', pid)\n    current[\'command\'] = subprocess.check_output([\'ps\',\'-ww\',\'-p\',str(pid),\'-o\',\'command=\'], text=True).strip()\n    pins.append(current)\n    return current\n\nfor provider in (\'claude\', \'codex\'):\n    row = {\'provider\':provider, \'launched\':False, \'qualified\':False}\n    report[\'cases\'].append(row)\n    pins, f = [], None\n    try:\n        f = PrivateFixture(a.se, a.out / provider)\n        wrapper = f.root / \'provider.rs\'\n        wrapper.write_text(wrapper.read_text().replace(\'2.1.287\',\'2.1.318\'))\n        subprocess.run([\'rustc\',\'--edition=2024\',str(wrapper),\'-o\',str(f.root/\'provider\')], capture_output=True, check=True, timeout=60)\n        if provider == \'codex\':\n            helper = (a.source / \'crates/se/tests/judges/codex_recovery_provider.py\').resolve()\n            code = \'\'\'fn main(){let a:Vec<String>=std::env::args().collect();\nif a.iter().any(|v|v=="--version"){println!("codex-cli 0.152.0");return;}\nlet log=std::fs::File::create(LOG).unwrap();\nlet result=std::process::Command::new(PYTHON).arg(HELPER).args(&a[1..]).stderr(log).status().unwrap();\nstd::process::exit(result.code().unwrap_or(1));}\'\'\'\n            code = code.replace(\'LOG\',json.dumps(str(f.root/\'provider-stderr.txt\'))).replace(\'PYTHON\',json.dumps(sys.executable)).replace(\'HELPER\',json.dumps(str(helper)))\n            wrapper = f.root/\'codex.rs\'\n            wrapper.write_text(code)\n            executable = f.root/\'codex-provider\'\n            subprocess.run([\'rustc\',\'--edition=2024\',str(wrapper),\'-o\',str(executable)], capture_output=True, check=True, timeout=60)\n            config = f.home/\'config.toml\'\n            config.write_text(config.read_text().replace(\'[providers.codex]\', \'[providers.codex]\\ncommand = \'+json.dumps(str(executable)), 1))\n            f.agent = f.ok(\'--project\',f.project,\'agent\',\'add\',\'Native worker\',\'--provider\',\'codex\',\'--model\',\'gpt-6.1-sol\')[\'agent\'][\'id\']\n        for args in [(\'--help\',),(\'launch\',\'--help\'),(\'stop\',\'--help\'),(\'down\',\'--help\')]:\n            f.ok(*args)\n        (f.repo/\'visible.rs\').write_text(\'pub fn ordinary_work() -> u32 { 7 }\\n\')\n        for command in [[\'git\',\'init\',\'-q\'],[\'git\',\'add\',\'--\',\'visible.rs\'],[\'git\',\'-c\',\'user.name=Fixture\',\'-c\',\'user.email=fixture@example.invalid\',\'commit\',\'-qm\',\'Create ordinary source fixture\']]:\n            subprocess.run(command, cwd=f.repo, env=f.env, capture_output=True, check=True, timeout=20)\n        up = f.ok(\'up\')\n        row[\'up\'] = up\n        remember(pins,up[\'process\'][\'pid\'])\n        started = time.monotonic_ns()\n        launched = f.ok(\'--project\',f.project,\'launch\',f.agent,\'--detach\',\'--task\',\'Observe native launch\')\n        row[\'launch_elapsed_ns\'] = time.monotonic_ns()-started\n        row[\'launch\'] = launched\n        assert launched[\'state\'] == \'running\', launched\n        f.session = launched[\'session_id\']\n        ready = wait_json(f.repo/\'provider-ready.json\')\n        row[\'ready\'] = ready\n        if provider == \'claude\':\n            assert ready[\'session_discovery\'] and ready[\'http_discovery\'], ready\n            remember(pins,ready[\'native_root_pid\'])\n        else:\n            assert ready[\'discovery\'], ready\n            remember(pins,ready[\'native_pid\'])\n        remember(pins,ready[\'helper_pid\'])\n        row[\'CLI\'] = f.ok(\'--project\',f.project,\'status\')\n        row[\'MCP\'] = f.rpc(\'stateengine_status\',{})\n        assert not row[\'MCP\'].get(\'isError\'), row[\'MCP\']\n        row[\'launched\'] = True\n        row[\'pins\'] = pins\n        # Exercise normal stop as well, but keep its refusal distinct from launch.\n        stopped = f.call(\'--project\',f.project,\'stop\',f.agent)\n        row[\'stop\'] = {\'exit\':stopped.returncode,\'stdout\':stopped.stdout.decode(),\'stderr\':stopped.stderr.decode()}\n    except Exception:\n        row[\'failure\'] = traceback.format_exc()\n    finally:\n        if f is not None:\n            try:\n                f.close()\n                row[\'endpoint_absent\'] = not (f.home/\'endpoint.json\').exists()\n                with (f.home/\'runtime.lock\').open(\'rb\') as lock:\n                    fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)\n                row[\'outside_after_down\'] = [{\'pin\':pin,\'current\':observe(pin[\'pid\'])} for pin in pins]\n                assert all(not same(x[\'pin\'],x[\'current\']) or x[\'current\'][\'status\']==5 for x in row[\'outside_after_down\'])\n                row[\'shutdown_witnessed_and_runtime_lease_free\'] = True\n                row[\'qualified\'] = row[\'launched\'] and row[\'endpoint_absent\']\n            except Exception:\n                row[\'closure_failure\'] = traceback.format_exc()\n        save()\nreport[\'complete\'] = True\nreport[\'both_launches_qualified\'] = all(r[\'qualified\'] for r in report[\'cases\'])\nsave()\nfor row in report[\'cases\']:\n    print(json.dumps({\'provider\':row[\'provider\'],\'launched\':row[\'launched\'],\'qualified\':row[\'qualified\'],\'failure\':row.get(\'failure\'),\'closure_failure\':row.get(\'closure_failure\')}),flush=True)\nassert report[\'both_launches_qualified\'], \'one or more native launch/closure paths did not qualify\'\n')
+        assert hashlib.sha256(observer.read_bytes()).hexdigest()=='8bd0f6920c98ba8182ba966f057196d5fae618c06d8a9455ba428d77df79f4e7'
+        command=[sys.executable,'-B',str(observer),'--source',str(Path('source').resolve()),'--se',(out/'binary.txt').read_text(),'--controls',str(Path('controls/crates/se-proc/tests/review_git_lifetime').resolve()),'--out',str(out/'results')]
+        with (out/'control.log').open('w') as log:
+         result=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,timeout=600)
+        raise SystemExit(result.returncode)
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: macos-provider-launch-current-main
+        if-no-files-found: error
+        retention-days: 14
+        path: |-
+          ${{ runner.temp }}/launch-evidence/inputs.json
+          ${{ runner.temp }}/launch-evidence/build.log
+          ${{ runner.temp }}/launch-evidence/control.log
+          ${{ runner.temp }}/launch-evidence/observe-launch.py
+          ${{ runner.temp }}/launch-evidence/results/launch-report.json
+          ${{ runner.temp }}/launch-evidence/results/*/call-*.json
+          ${{ runner.temp }}/launch-evidence/results/*/call-*.stdout
+          ${{ runner.temp }}/launch-evidence/results/*/call-*.stderr
