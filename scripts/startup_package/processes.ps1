@@ -1,7 +1,25 @@
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$rows = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
+$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$known = @{}
+foreach ($binding in $request.known) { $known[([string]$binding.pid + '|' + $binding.birth)] = $true }
+$processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+$family = [Collections.Generic.HashSet[int]]::new()
+$prefix = [string]$request.home + '\'
+foreach ($process in $processes) {
+    $birth = if ($process.CreationDate) { $process.CreationDate.ToUniversalTime().ToString('o') } else { '' }
+    $retained = $known.ContainsKey(([string]$process.ProcessId + '|' + $birth))
+    $private = $process.ExecutablePath -and $process.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+    if ($retained -or $private) { [void]$family.Add([int]$process.ProcessId) }
+}
+do {
+    $changed = $false
+    foreach ($process in $processes) {
+        if ($family.Contains([int]$process.ParentProcessId) -and $family.Add([int]$process.ProcessId)) { $changed = $true }
+    }
+} while ($changed)
+$rows = @($processes | ForEach-Object {
     if (-not $_.Name) { throw 'Native process image name is unreadable' }
     $owner = 'not-needed'
     if ($_.Name -ieq 'se.exe' -and -not $_.ExecutablePath) {
@@ -19,7 +37,7 @@ $rows = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
         birth = if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('o') } else { $null }
         name = $_.Name
         image = $_.ExecutablePath
-        command = if ($_.Name -ieq 'se.exe') { $_.CommandLine } else { $null }
+        command = if ($family.Contains([int]$_.ProcessId)) { $_.CommandLine } else { $null }
         owner_state = $owner
         rss_bytes = if ($null -ne $_.WorkingSetSize) { [long]$_.WorkingSetSize } else { $null }
         state = 'live'

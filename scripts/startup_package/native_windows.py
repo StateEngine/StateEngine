@@ -27,6 +27,7 @@ class ImageObserver:
     def census(self):
         result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-File',
                                  str(Path(__file__).with_name('processes.ps1'))],
+                                input=json.dumps(dict(home=self.home, known=[dict(pid=pid,birth=birth) for pid,birth in sorted(self.known)])),
                                 capture_output=True, text=True, encoding='utf-8', timeout=30)
         require(result.returncode == 0, 'Native image census failed: ' + result.stderr)
         require(len(result.stdout.encode()) <= 4 * 1024**2, 'Native image census exceeded its bound')
