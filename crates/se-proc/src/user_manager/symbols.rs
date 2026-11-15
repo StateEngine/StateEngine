@@ -36,6 +36,7 @@ macro_rules! native_api {
 native_api! {
     new: "sd_bus_new" => unsafe extern "C" fn(*mut Handle) -> c_int,
     address: "sd_bus_set_address" => unsafe extern "C" fn(Handle, *const c_char) -> c_int,
+    client: "sd_bus_set_bus_client" => unsafe extern "C" fn(Handle, c_int) -> c_int,
     start: "sd_bus_start" => unsafe extern "C" fn(Handle) -> c_int,
     negotiate: "sd_bus_negotiate_fds" => unsafe extern "C" fn(Handle, c_int) -> c_int,
     fd: "sd_bus_get_fd" => unsafe extern "C" fn(Handle) -> c_int,

@@ -1,9 +1,11 @@
 //! Linux background lifetime admission. Failure preserves the existing session host.
 mod bus;
+mod peer;
 mod symbols;
 use crate::support::input;
 use crate::{ProcResult, ProcessId, RuntimeLaunchSpec, RuntimeLifetime, RuntimeUserScope};
 use bus::{Bus, name};
+use peer::verify as verify_peer;
 use std::{
     ffi::CStr,
     fs,
@@ -46,8 +48,8 @@ fn attempt(
     // Manager discovery never accepts a caller-supplied bus address.
     let address = name(&format!("unix:path=/run/user/{uid}/systemd/private"))?;
     let deadline = admission_deadline(spec.deadline);
-    let bus = Bus::connect(&api, &address, deadline)?;
-    peer(&bus, uid)?;
+    let bus = Bus::connect(&api, &address, deadline, false)?;
+    verify_peer(&bus, uid, deadline)?;
     let mut unit_nonce = [0; 16];
     crate::fill_entropy(&mut unit_nonce).map_err(|e| e.to_string())?;
     let unit = format!("se-runtime-{}.scope", se_types::hex_lower(&unit_nonce));
@@ -120,54 +122,6 @@ fn attempt(
         }
         std::thread::sleep(Duration::from_millis(1));
     }
-}
-fn peer(bus: &Bus<'_>, uid: u32) -> Result<(), String> {
-    let fd = bus.fd()?;
-    // SAFETY: native POD output is initialized by getsockopt on this retained socket.
-    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut size = std::mem::size_of_val(&credentials) as libc::socklen_t;
-    // SAFETY: exact writable SO_PEERCRED output on the uniquely owned manager channel.
-    if unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&mut credentials as *mut libc::ucred).cast(),
-            &mut size,
-        )
-    } < 0
-    {
-        return Err(std::io::Error::last_os_error().to_string());
-    }
-    if size as usize != std::mem::size_of_val(&credentials)
-        || credentials.uid != uid
-        || credentials.pid <= 0
-    {
-        return Err("The private user-manager peer has a different native owner".into());
-    }
-    let native = PathBuf::from(format!("/proc/{}/exe", credentials.pid));
-    let image = fs::metadata(&native).map_err(|e| e.to_string())?;
-    let matches = ["/usr/lib/systemd/systemd", "/lib/systemd/systemd"]
-        .iter()
-        .any(|path| {
-            fs::metadata(path).is_ok_and(|expected| {
-                expected.is_file()
-                    && expected.uid() == 0
-                    && expected.mode() & 0o022 == 0
-                    && expected.dev() == image.dev()
-                    && expected.ino() == image.ino()
-            })
-        });
-    let fields =
-        fs::read_to_string(format!("/proc/{}/stat", credentials.pid)).map_err(|e| e.to_string())?;
-    let parent = fields
-        .rsplit_once(')')
-        .and_then(|(_, tail)| tail.split_whitespace().nth(1));
-    let group = format!("/user.slice/user-{uid}.slice/user@{uid}.service/init.scope");
-    if !matches || parent != Some("1") || !in_group(ProcessId(credentials.pid as u32), &group)? {
-        return Err("The private peer is not the native system-managed user manager".into());
-    }
-    Ok(())
 }
 fn lingering() -> Result<(), String> {
     let mut storage = vec![0u8; 65536];
@@ -245,8 +199,9 @@ pub(crate) fn verify(
     }
     let api = symbols::Api::load().ok_or("The native user-manager library became unavailable")?;
     let address = name(&format!("unix:path=/run/user/{uid}/systemd/private"))?;
-    let bus = Bus::connect(&api, &address, admission_deadline(deadline))?;
-    peer(&bus, uid)?;
+    let deadline = admission_deadline(deadline);
+    let bus = Bus::connect(&api, &address, deadline, false)?;
+    verify_peer(&bus, uid, deadline)?;
     let request = bus.request(MANAGER, INTERFACE, c"GetUnit")?;
     request.string(b's', &name(&scope.unit)?)?;
     let path = name(&bus.call(&request)?.read_string(b'o')?)?;

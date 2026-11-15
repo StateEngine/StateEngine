@@ -16,13 +16,20 @@ pub(super) struct Message<'a> {
 }
 
 impl<'a> Bus<'a> {
-    pub fn connect(api: &'a Api, address: &CStr, deadline: Instant) -> Result<Self, String> {
+    pub fn connect(
+        api: &'a Api,
+        address: &CStr,
+        deadline: Instant,
+        client: bool,
+    ) -> Result<Self, String> {
         let mut raw = null();
         // SAFETY: exact native connection output, owned by the guard below.
         checked(unsafe { (api.new)(&mut raw) })?;
         let bus = Self { api, raw, deadline };
         // SAFETY: a retained connection and NUL-terminated native address; start queues nonblocking authentication.
         checked(unsafe { (api.address)(raw, address.as_ptr()) })?;
+        // SAFETY: select peer or bus-daemon protocol before starting authentication.
+        checked(unsafe { (api.client)(raw, i32::from(client)) })?;
         // SAFETY: FD passing is negotiated before this private Unix connection starts.
         checked(unsafe { (api.negotiate)(raw, 1) })?;
         // SAFETY: this new private peer connection is configured and uniquely owned.
@@ -45,13 +52,22 @@ impl<'a> Bus<'a> {
         interface: &CStr,
         member: &CStr,
     ) -> Result<Message<'a>, String> {
+        self.request_to(c"org.freedesktop.systemd1", path, interface, member)
+    }
+    pub fn request_to(
+        &self,
+        destination: &CStr,
+        path: &CStr,
+        interface: &CStr,
+        member: &CStr,
+    ) -> Result<Message<'a>, String> {
         let mut raw = null();
         // SAFETY: retained connection, exact output, and four immutable terminated native names.
         checked(unsafe {
             (self.api.message)(
                 self.raw,
                 &mut raw,
-                c"org.freedesktop.systemd1".as_ptr(),
+                destination.as_ptr(),
                 path.as_ptr(),
                 interface.as_ptr(),
                 member.as_ptr(),
@@ -91,6 +107,17 @@ impl<'a> Bus<'a> {
     }
 }
 impl Message<'_> {
+    pub fn uint(&self) -> Result<u32, String> {
+        let mut value = 0u32;
+        // SAFETY: exact writable 32-bit output for the native unsigned field.
+        if checked(unsafe {
+            (self.api.read)(self.raw, b'u' as c_char, (&mut value as *mut u32).cast())
+        })? != 1
+        {
+            return Err("native manager reply integer is absent".into());
+        }
+        Ok(value)
+    }
     pub fn string(&self, kind: u8, text: &CStr) -> Result<(), String> {
         // SAFETY: kind is a native string/object-path type and text is terminated.
         checked(unsafe { (self.api.append)(self.raw, kind as c_char, text.as_ptr().cast()) })?;
