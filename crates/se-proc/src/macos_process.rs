@@ -129,7 +129,12 @@ fn absent(pid: ProcessId) -> ProcResult<ProcessRead> {
 }
 
 fn image_failure(mut cause: ProcError, pid: ProcessId, birth: &StartIdentity) -> ProcError {
-    if cause.code == ProcErrorCode::IdentityUnreadable {
+    if cause.code == ProcErrorCode::IdentityUnreadable
+        && cause
+            .native
+            .as_ref()
+            .is_some_and(|failure| failure.api == "proc_pidpath")
+    {
         // Returned only after the surrounding BSD reads confirm this birth.
         // Keep the native error; an unavailable image is not process absence.
         cause.detail = Box::new(ProcErrorDetail::Identity {
