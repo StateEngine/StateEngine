@@ -43,32 +43,26 @@ pub(super) fn collect(
     };
     let mut resident = 0;
     for plan in super::candidate_sql::plans(query, mode)? {
-        if crate::clock::now() >= end {
-            output.truncated = true;
-            break;
-        }
+        admission_time(end, query.budget)?;
         let selected = super::candidate_window::collect(sql, &plan)?;
         output.truncated |= selected.truncated;
         for (rowid, precomputed_last, bm25) in selected.rows {
             if !bm25.is_finite() || bm25 > 0.0 {
                 return Err(cache_error("invalid BM25 score"));
             }
-            if crate::clock::now() >= end {
-                output.truncated = true;
-                break;
-            }
+            // A prefix of the admission window is not a ranked page and
+            // cannot supply a continuation for the candidates left out.
+            admission_time(end, query.budget)?;
             let kind = plan.kind;
-            if matches!(kind, Kind::Symbol | Kind::File) {
-                let file = if kind == Kind::Symbol {
-                    symbol_by_id(sql, rowid)?.1
-                } else {
-                    rowid
-                };
-                if crate::policy::built_in_denied(&file_by_id(sql, file)?.pointer.path) {
-                    continue;
-                }
-            }
             let (key, tie) = metadata(sql, kind, rowid)?;
+            let path = match kind {
+                Kind::Symbol => Some(symbol_path(sql, rowid)?),
+                Kind::File => Some(RelativePath::new(tie.as_str())?),
+                Kind::Record | Kind::Commit => None,
+            };
+            if path.as_ref().is_some_and(crate::policy::built_in_denied) {
+                continue;
+            }
             if key.len() > 256 || tie.len() > 4096 || tie.contains('\0') {
                 return Err(cache_error("search candidate exceeds key/name admission"));
             }
@@ -110,7 +104,7 @@ pub(super) fn collect(
             }
             let cost = key.len() + tie.len() + 160;
             resident += cost;
-            output.values.push(Candidate {
+            let candidate = Candidate {
                 kind,
                 rowid,
                 tier: plan.tier,
@@ -120,14 +114,11 @@ pub(super) fn collect(
                 precomputed_last,
                 lexical: if bm25 < 0.0 { -bm25 } else { 0.0 },
                 related: false,
-            });
-            output.values.sort_by(|a, b| {
-                a.tier
-                    .cmp(&b.tier)
-                    .then(b.precomputed_last.cmp(&a.precomputed_last))
-                    .then(a.tie.cmp(&b.tie))
-                    .then(a.key.cmp(&b.key))
-            });
+            };
+            let position = output
+                .values
+                .partition_point(|existing| admission_order(existing, &candidate).is_le());
+            output.values.insert(position, candidate);
             while output.values.len() > 128 || resident > 24576 {
                 let old = output
                     .values
@@ -157,8 +148,7 @@ pub(super) fn collect(
             },
         )?;
         let path = if candidate.kind == Kind::Symbol {
-            let file_id = symbol_by_id(sql, candidate.rowid)?.1;
-            Some(file_by_id(sql, file_id)?.pointer.path)
+            Some(symbol_path(sql, candidate.rowid)?)
         } else {
             None
         };
@@ -173,6 +163,33 @@ pub(super) fn collect(
         .values
         .sort_by_cached_key(|candidate| super::find::key(candidate, query.order));
     Ok(output)
+}
+fn admission_order(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
+    a.tier
+        .cmp(&b.tier)
+        .then(b.precomputed_last.cmp(&a.precomputed_last))
+        .then(a.tie.cmp(&b.tie))
+        .then(a.key.cmp(&b.key))
+}
+fn admission_time(end: Instant, budget: QueryBudget) -> AtlasResult<()> {
+    if crate::clock::now() < end {
+        return Ok(());
+    }
+    let work = budget.work - (budget.work / 4).min(Duration::from_millis(3));
+    Err(se_types::SeError::new(se_types::Detail::DeadlineExceeded(
+        se_types::details::DeadlineExceeded {
+            op: "Atlas candidate admission".into(),
+            deadline_ms: work.as_millis().try_into().map_err(cache_error)?,
+        },
+    )))
+}
+fn symbol_path(sql: &SqlView<'_>, id: i64) -> AtlasResult<RelativePath> {
+    let mut statement =
+        sql.prepare("SELECT f.path FROM symbols s JOIN files f ON f.id=s.file WHERE s.id=?1")?;
+    let path: String = statement
+        .query_row([id], |row| row.get(0))
+        .map_err(cache_error)?;
+    RelativePath::new(path)
 }
 pub(super) fn record_pointer(sql: &SqlView<'_>, id: i64) -> AtlasResult<RecordPointer> {
     let mut stmt = sql.prepare("SELECT record_id,kind,source_event FROM records WHERE id=?1")?;
