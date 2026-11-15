@@ -122,11 +122,7 @@ pub(in crate::remote) async fn describe(destination: &str, distribution: &Path) 
 /// (a failed `uname -sm` that reported the real verdict, such as a
 /// permission denial, while the fallback said nothing).
 fn reported_discovery_cause<'a>(first: &'a str, fallback: &'a str) -> &'a str {
-    if fallback.is_empty() {
-        first
-    } else {
-        fallback
-    }
+    if fallback.is_empty() { first } else { fallback }
 }
 
 /// A discovery refusal names the SSH client's own verdict when the client
