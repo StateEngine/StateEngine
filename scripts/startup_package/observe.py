@@ -55,6 +55,10 @@ def timed(smoke, traced):
         require(sys.platform == 'linux', 'Syscall diagnostics require Linux')
         from syscalls import capture
         return capture(smoke, argv, env)
+    if os.environ.get('STARTUP_PUBLIC_READY') == '1':
+        from public_ready import PublicReady
+        smoke.public_ready = PublicReady(smoke, argv, env)
+        return smoke.public_ready.wait()
     started = time.perf_counter_ns()
     child = subprocess.Popen(argv, cwd=smoke.repository, env=env, stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -85,6 +89,10 @@ def stop(smoke, label):
     if os.environ.get('STARTUP_SYSCALL_TRACE') == '1':
         from syscalls import join
         join(smoke)
+    command = getattr(smoke, 'public_ready', None)
+    if command is not None:
+        smoke.public_ready_final = command.join()
+        smoke.public_ready = None
     outside = smoke.commands.observer.observe()
     require(outside == [], 'Runtime survived witnessed down')
     return dict(down=stopped, outside=outside)
@@ -127,6 +135,11 @@ def sample(smoke, traced, number):
         require(len(logs) == 1, 'Expected exactly one new complete native verification trace')
         record['native_verification'] = logs[0]
     record['closure'] = stop(smoke, 'down')
+    if hasattr(smoke, 'public_ready_final'):
+        final = smoke.public_ready_final
+        record.update(exit=final['exit'], stdout=final['stdout'], stderr=final['stderr'],
+                      command_return=final['command_return'],
+                      owned_command_joined_after_down=final['owned_command_joined_after_down'])
     return record
 
 
@@ -149,6 +162,8 @@ def main(output):
     try:
         diagnostic = os.environ.get('STARTUP_DIAGNOSTIC_ONLY') == '1'
         receipt['syscall_diagnostic'] = os.environ.get('STARTUP_SYSCALL_TRACE') == '1'
+        if os.environ.get('STARTUP_PUBLIC_READY') == '1':
+            receipt['timing'] = 'unlogged time to flushed public running JSON; command return unavailable during foreground fallback; logged diagnostics separate'
         if receipt['syscall_diagnostic']:
             receipt['qualification'] += '; syscall tracing changes timings; localization only, not budget evidence'
         for traced in ((True,) if diagnostic else (False, True)):
