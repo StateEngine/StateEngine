@@ -6,6 +6,7 @@ pub(crate) mod attributes;
 pub(crate) mod console;
 mod parent;
 mod process_query;
+pub(crate) mod token;
 pub(crate) use parent::parent;
 use std::{
     collections::BTreeMap,
