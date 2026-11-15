@@ -125,6 +125,7 @@ def cohort(image, root, count=120):
             for index in range(count + 10):
                 marker = f'output-probe-{index:05d}'
                 control.write(marker + '\n')
+                control.flush()
                 deadline = time.monotonic() + 15
                 visible = measured = None
                 while visible is None:
