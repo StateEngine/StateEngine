@@ -29,16 +29,12 @@ jobs:
             tail-bound-sec: null
     steps:
       - name: Checkout ${{ matrix.run.name }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ matrix.run.ref }}
 
-      - name: Rust toolchain 1.97.1
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal
-          rustup default 1.97.1
-          rustc --version
-          cargo --version
+      - name: Rust CI tools
+        uses: ./.github/actions/rust
 
       - name: Build se (release)
         run: cargo build --release --locked -p se
@@ -88,7 +84,7 @@ jobs:
 
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cold-pair-${{ matrix.run.name }}
           path: cold-pair-results/${{ matrix.run.name }}
