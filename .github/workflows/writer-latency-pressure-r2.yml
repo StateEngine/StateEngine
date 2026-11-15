@@ -1,0 +1,131 @@
+name: writer-latency
+on:
+  push:
+    branches: [prime/writer-latency-b4-pressure-r2]
+permissions:
+  contents: read
+concurrency:
+  group: writer-latency-${{ github.run_id }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_RELEASE_DEBUG: '0'
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-24.04
+            cache: writer-latency-linux-v1
+            ref: 737bee8caf03e17d2a61e21594d7b0285d6619dc
+          - os: windows
+            runner: windows-2025
+            cache: writer-latency-windows-v1
+            ref: 737bee8caf03e17d2a61e21594d7b0285d6619dc
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ matrix.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Overlay measurement sources
+        env:
+          MEASUREMENTS: 59e933271f64164d99d687241e08a9a3c3fb3fc1
+        run: |
+          git fetch --quiet origin "59e933271f64164d99d687241e08a9a3c3fb3fc1:refs/remotes/measure/tests" "refs/heads/main:refs/remotes/measure/main"
+          measured="$(git rev-parse refs/remotes/measure/tests)"
+          test "$measured" = 59e933271f64164d99d687241e08a9a3c3fb3fc1
+          echo "$measured" > measurement-commit.txt
+          fork="$(git merge-base refs/remotes/measure/main refs/remotes/measure/tests)"
+          git diff --name-only --diff-filter=AM "$fork" refs/remotes/measure/tests > "$RUNNER_TEMP/measurement-files"
+          python -I - "$RUNNER_TEMP/measurement-files" <<'PY'
+          import re, sys
+          paths = open(sys.argv[1], encoding="utf-8").read().splitlines()
+          if not paths or any(not re.match(r"^(crates/[^/]+/)?tests/", p) for p in paths):
+              sys.exit("measurement overlay must contain only tests directory changes")
+          PY
+          xargs git checkout refs/remotes/measure/tests -- < "$RUNNER_TEMP/measurement-files"
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          shared-key: ${{ matrix.cache }}
+          cache-on-failure: true
+      - name: Measure baseline continuous WAL pressure
+        id: baseline
+        continue-on-error: true
+        run: |
+          git rev-parse HEAD > baseline-source.txt
+          target="$(rustc --print host-tuple)"
+          set +e
+          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-baseline.log 2>&1
+          pressure_status=$?
+          set -e
+          if [[ -d target/judge-diagnostics ]]; then mv target/judge-diagnostics target/judge-baseline; fi
+          exit "$pressure_status"
+      - name: Select candidate with the same measurement overlay
+        run: |
+          git fetch --quiet origin 906ca100f773a8d824a47905f0f700d38de3f63c:refs/remotes/measure/head
+          test "$(git rev-parse refs/remotes/measure/head)" = 906ca100f773a8d824a47905f0f700d38de3f63c
+          git checkout --detach 906ca100f773a8d824a47905f0f700d38de3f63c
+          git rev-parse HEAD > candidate-source.txt
+          while IFS= read -r measurement_path; do
+            git diff --exit-code refs/remotes/measure/tests -- "$measurement_path"
+          done < "$RUNNER_TEMP/measurement-files"
+      - name: Measure candidate continuous WAL pressure
+        id: candidate
+        continue-on-error: true
+        run: |
+          target="$(rustc --print host-tuple)"
+          set +e
+          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-candidate.log 2>&1
+          pressure_status=$?
+          set -e
+          if [[ -d target/judge-diagnostics ]]; then mv target/judge-diagnostics target/judge-candidate; fi
+          exit "$pressure_status"
+      - name: Run uncovered custom harnesses on pinned main
+        if: ${{ always() && runner.os == 'Windows' }}
+        run: |
+          git checkout --detach 737bee8caf03e17d2a61e21594d7b0285d6619dc
+          git rev-parse HEAD > custom-base-source.txt
+          target="$(rustc --print host-tuple)"
+          set +e
+          cargo test --target "$target" --release --all-features --locked -p se-proc --test bootstrap_stderr -- --nocapture > custom-bootstrap-base.log 2>&1
+          bootstrap_status=$?
+          cargo test --target "$target" --release --all-features --locked -p se --test host_e3 -- --nocapture > custom-host-e3-base.log 2>&1
+          startup_status=$?
+          set -e
+          printf 'bootstrap_stderr=%s\nhost_e3=%s\n' "$bootstrap_status" "$startup_status" > custom-base-status.txt
+          if [[ "$bootstrap_status" != 0 ]]; then exit "$bootstrap_status"; fi
+          exit "$startup_status"
+      - name: Preserve failed observer verdicts
+        if: ${{ always() }}
+        env:
+          BASELINE: ${{ steps.baseline.outcome }}
+          CANDIDATE: ${{ steps.candidate.outcome }}
+        run: |
+          test "$BASELINE" = success
+          test "$CANDIDATE" = success
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: writer-latency-pressure-${{ matrix.os }}-paired
+          path: |
+            pressure-baseline.log
+            pressure-candidate.log
+            custom-*-base.log
+            custom-base-source.txt
+            custom-base-status.txt
+            baseline-source.txt
+            candidate-source.txt
+            measurement-commit.txt
+            target/judge-baseline/
+            target/judge-candidate/
+          if-no-files-found: error
+          retention-days: 14
