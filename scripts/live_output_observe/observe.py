@@ -79,7 +79,7 @@ def cohort(image, root, count=120):
         if any(row is None for row in known):
             raise ValueError('Owned process identity is absent before measurement')
         argv = [str(image), '--home', str(f.home), '--project', f.project, '--json',
-                'client', 'watch', '--target', f.project + '/' + f.agent, '--measure',
+                'watch', '--target', f.project + '/' + f.agent, '--measure',
                 '--wait-ms', '1000', '--budget', '65536']
         watcher = subprocess.Popen(argv, cwd=f.repo, env=f.env, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -201,3 +201,9 @@ if __name__ == '__main__':
     output = Path(sys.argv[1]).resolve()
     image = Path(json.loads((output / 'image.json').read_text())['image'])
     cohort(image, output)
+    if os.environ.get('OUTPUT_BOTH_COHORTS') == '1':
+        inflight = output / 'inflight'
+        inflight.mkdir()
+        shutil.copyfile(output / 'image.json', inflight / 'image.json')
+        os.environ['OUTPUT_RESULT_DELAY_MS'] = '250'
+        cohort(image, inflight)

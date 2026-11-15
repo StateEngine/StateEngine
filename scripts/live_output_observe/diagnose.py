@@ -60,6 +60,14 @@ def main():
     for line in (diagnostic / 'trace.log').read_text().splitlines():
         stage, marker, us, pid = line.split()
         stages.setdefault(marker, {}).setdefault(stage, []).append(int(us))
+    folders = [diagnostic]
+    if (diagnostic / 'inflight').exists():
+        folders.append(diagnostic / 'inflight')
+    for folder in folders:
+        summarize(folder, stages, metadata)
+
+
+def summarize(diagnostic, stages, metadata):
     result = json.loads((diagnostic / 'result.json').read_text())
     serial = ['stream_read', 'transcript_read', 'published', 'watch_page_ready',
               'ipc_response_flushed', 'stdout_flushed']

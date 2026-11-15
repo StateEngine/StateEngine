@@ -35,6 +35,9 @@ def main():
     save(output / 'reuse.json', {'prior_run': os.environ['PRIOR_RUN'],
                                'archive_sha256': digest(archive), 'executable_sha256': digest(image),
                                'scope': 'Same native package; controlled assistant-to-result pause, separate hosted runner'})
+    help_result = subprocess.run([str(image), 'watch', '--help'], check=True,
+                                 capture_output=True, timeout=15)
+    (output / 'watch-help.stdout').write_bytes(help_result.stdout)
     subprocess.run([sys.executable, '-B', Path(__file__).with_name('observe.py'), output],
                    cwd=ROOT, check=True, timeout=1200)
 
