@@ -96,7 +96,7 @@ pub(in crate::route) fn quarantine(files: &Files) -> Result<Vec<String>> {
 }
 
 pub(super) fn missing_database(files: &Files, init: bool, recovered: bool) -> Result<()> {
-    let first_init = init && crate::route::init::provenance::resumable(files)?;
+    let first_init = init && crate::route::first_init::resumable(files)?;
     let stages = staging(files)?;
     if !stages.is_empty() && !init {
         return Err(conflict(

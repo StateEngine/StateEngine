@@ -22,6 +22,7 @@ mod endpoint_diagnostic;
 pub mod execute;
 #[path = "route/files.rs"]
 pub mod files;
+mod first_init;
 use crate::repository::{identity as git_identity, state as git_state};
 mod harness_setup;
 #[path = "route/hook.rs"]

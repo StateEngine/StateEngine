@@ -3,7 +3,7 @@
 use super::{
     execute,
     files::{DirectLease, Files},
-    owner, select, setup,
+    first_init, owner, select, setup,
 };
 use crate::bootstrap::Bootstrap;
 use se_core::{
@@ -23,8 +23,6 @@ use se_types::{
 };
 use sha2::{Digest, Sha256};
 use std::time::Duration;
-#[path = "init/provenance.rs"]
-pub(super) mod provenance;
 #[path = "init/repository.rs"]
 mod repository;
 
@@ -149,7 +147,7 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
         !recovered_changes.is_empty(),
     )?;
     let files = &lease.files;
-    provenance::resumable(files)?;
+    first_init::resumable(files)?;
     let observed = match &before {
         setup::Setup::Absent(_) => owner::observe(&[])?,
         setup::Setup::Present(reader) => owner::from_inventory(&owner::inventory(reader, files)?)?,
@@ -196,7 +194,7 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
         setup::Setup::Absent(_) => {
             super::identity::initialize_machine(files)?;
             super::credential::initialize_before_publish(files, |secret| {
-                provenance::prepare(files, secret)
+                first_init::prepare(files, secret)
             })?;
         }
     }
@@ -220,7 +218,7 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
             Read::Unknown { what } => return Err(scope::unreadable("setup store", &what)),
         };
     lease.identity.store = Some(store.info().map_err(|e| store_error(&e))?.id);
-    let result = provenance::complete(files, &store).and_then(|()| {
+    let result = first_init::complete(files, &store).and_then(|()| {
         registration::finish(
             cx,
             registration::Plan {
