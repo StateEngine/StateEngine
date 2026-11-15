@@ -4,13 +4,14 @@ use se_types::{AgentId, EventId};
 use std::sync::Barrier;
 
 const CLIENTS: usize = 8;
-const ROUNDS: u64 = 30;
+const ROUNDS: u64 = 100;
 struct Proof {
     event: EventId,
     agent: AgentId,
     body: String,
     working: bool,
     revision: u64,
+    sample: serde_json::Value,
 }
 
 /// Protects: eight finite host jobs have matching reader capacity during real
@@ -77,6 +78,8 @@ pub fn check() -> Check {
         .build()?;
     let proofs = engine.block_on(async {
         let mut start = start_options(&f, epoch(machine)?)?;
+        start.writer.maximum_requests = NonZeroU16::new(16).ok_or("group bound")?;
+        start.writer.queue_requests = NonZeroU16::new(64).ok_or("queue bound")?;
         start.limits.blocking_jobs = positive(CLIENTS as u32)?;
         start.limits.active_connections = positive(32)?;
         start.limits.preauth_connections = positive(16)?;
@@ -161,6 +164,10 @@ pub fn check() -> Check {
         assert_eq!(proofs.len(), CLIENTS * ROUNDS as usize * 2);
         Ok::<_, Box<dyn std::error::Error>>(proofs)
     })?;
+    let rows: Vec<_> = proofs.iter().map(|p| p.sample.clone()).collect();
+    let path = std::path::Path::new("target/judge-diagnostics");
+    std::fs::create_dir_all(path)?;
+    std::fs::write(path.join("eight-writers.json"), serde_json::to_vec_pretty(&rows)?)?;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let mut snapshot = reader.snapshot(f.scoped(Visibility::Owner))?;
     let mut events = std::collections::BTreeSet::new();
@@ -266,10 +273,12 @@ fn write(
             &options(),
         )
     };
+    let started = std::time::Instant::now();
     let output = serde_json::to_value(call().map_err(|error| {
         // Keep refusal and confirmed-commit failure distinct in the red output.
         format!("{}: {}", error.code().as_str(), error)
     })?)?;
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     if output["state"] != "committed"
         || output["writer"]["mode"] != "host"
         || output["idempotency_key"] != request.as_str()
@@ -297,6 +306,8 @@ fn write(
         body,
         working,
         revision: round + 1,
+        sample: serde_json::json!({"client": index, "round": round, "working": working,
+            "elapsed_ms": elapsed_ms, "diagnostics": output["diagnostics"]}),
     })
 }
 type CheckProof = Result<Proof, Box<dyn std::error::Error>>;
