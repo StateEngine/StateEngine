@@ -43,10 +43,7 @@ pub(super) fn collect(
     };
     let mut resident = 0;
     for plan in super::candidate_sql::plans(query, mode)? {
-        if crate::clock::now() >= end {
-            output.truncated = true;
-            break;
-        }
+        admission_time(end, query.budget)?;
         let mut ids = Vec::with_capacity(513);
         {
             let mut stmt = sql.prepare(&plan.sql)?;
@@ -73,10 +70,8 @@ pub(super) fn collect(
             if !bm25.is_finite() || bm25 > 0.0 {
                 return Err(cache_error("invalid BM25 score"));
             }
-            if crate::clock::now() >= end {
-                output.truncated = true;
-                break;
-            }
+            // An unfinished traversal prefix cannot provide a ranked continuation.
+            admission_time(end, query.budget)?;
             let kind = plan.kind;
             if matches!(kind, Kind::Symbol | Kind::File) {
                 let file = if kind == Kind::Symbol {
@@ -193,6 +188,18 @@ pub(super) fn collect(
         .values
         .sort_by_cached_key(|candidate| super::find::key(candidate, query.order));
     Ok(output)
+}
+pub(super) fn admission_time(end: Instant, budget: QueryBudget) -> AtlasResult<()> {
+    if crate::clock::now() < end {
+        return Ok(());
+    }
+    let work = budget.work - (budget.work / 4).min(Duration::from_millis(3));
+    Err(se_types::SeError::new(se_types::Detail::DeadlineExceeded(
+        se_types::details::DeadlineExceeded {
+            op: "Atlas SQL".into(),
+            deadline_ms: work.as_millis().try_into().map_err(cache_error)?,
+        },
+    )))
 }
 pub(super) fn record_pointer(sql: &SqlView<'_>, id: i64) -> AtlasResult<RecordPointer> {
     let mut stmt = sql.prepare("SELECT record_id,kind,source_event FROM records WHERE id=?1")?;
