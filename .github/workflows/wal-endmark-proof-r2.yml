@@ -1,0 +1,130 @@
+name: Native bounded checkpoint frame proof
+'on':
+  push:
+    branches:
+    - prime/wal-endmark-proof-r2
+permissions:
+  contents: read
+jobs:
+  proof:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: linux
+          runner: ubuntu-24.04
+        - os: windows
+          runner: windows-2025
+        - os: macos
+          runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      PROBE_SOURCE: 121f45e585d1e21e8f0dce25e979b58dd0a838c5
+      PROBE_OS: ${{ matrix.os }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 121f45e585d1e21e8f0dce25e979b58dd0a838c5
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: wal-endmark-proof-r2-${{ matrix.os }}
+        cache-on-failure: true
+    - name: Prove each native copy before any latency measurement
+      shell: python
+      run: |
+        """Hosted-only native frame eligibility proof; there is no latency job."""
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        import platform
+        import subprocess
+        import sys
+
+        ROOT = Path(os.environ['RUNNER_TEMP']) / 'wal-endmark-proof-r2'
+        ROOT.mkdir()
+        SOURCE = os.environ['PROBE_SOURCE']
+        BASE = '7b23fb01a7e16362c6d6b024e5c1801a32bda8c6'
+        FILE = 'crates/se-store/tests/wal_endmark_probe.rs'
+        record = {'source': SOURCE, 'main_base': BASE, 'phase': 'bounded-frame proof only',
+                  'production_policy_changed': False, 'latency_started': False,
+                  'commands': [], 'platform': platform.platform(), 'machine': platform.machine(),
+                  'limitations': ['Native library feasibility, not a public host-writer or provider journey',
+                                  'Bounds eligible committed frame intervals, not wall time or native sync latency',
+                                  'No cold-backlog fix, crash/power-loss qualification, or performance result']}
+
+
+        def save():
+            (ROOT / 'provenance.json').write_text(json.dumps(record, indent=2) + '\n')
+
+
+        def call(name, argv, timeout=1200):
+            row = {'name': name, 'argv': argv, 'state': 'started'}
+            record['commands'].append(row)
+            save()
+            with (ROOT / (name + '.log')).open('wb') as log:
+                try:
+                    rc = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                        timeout=timeout).returncode
+                except BaseException as error:
+                    row.update(state='exception', error=repr(error))
+                    save()
+                    raise
+            row.update(state='exited', exit=rc)
+            save()
+            assert rc == 0, name
+            return (ROOT / (name + '.log')).read_text()
+
+
+        try:
+            assert call('checkout-identity', ['git', 'rev-parse', 'HEAD']).strip() == SOURCE
+            changed = call('source-scope', ['git', 'diff', '--name-only', BASE, SOURCE]).splitlines()
+            assert changed == [FILE], changed
+            blob = subprocess.check_output(['git', 'show', SOURCE + ':' + FILE])
+            actual = Path(FILE).read_bytes()
+            assert actual.replace(b'\r\n', b'\n') == blob.replace(b'\r\n', b'\n')
+            (ROOT / 'wal_endmark_probe.rs').write_bytes(actual)
+            record['source_blob_sha256'] = hashlib.sha256(blob).hexdigest()
+            record['checkout_file_sha256'] = hashlib.sha256(actual).hexdigest()
+            record['compiler'] = call('compiler', ['rustc', '-vV'])
+            target = call('native-target', ['rustc', '--print', 'host-tuple']).strip()
+            expected = os.environ['PROBE_OS']
+            assert {'linux': sys.platform.startswith('linux'), 'windows': os.name == 'nt',
+                    'macos': sys.platform == 'darwin'}[expected]
+            record['native_target'] = target
+            call('format', ['rustfmt', '--edition', '2024', '--check', FILE])
+            args = ['--target', target, '--release', '--locked', '-p', 'se-store', '--test', 'wal_endmark_probe']
+            call('strict-native-clippy', ['cargo', 'clippy', *args, '--', '-D', 'warnings'])
+            os.environ['WAL_ENDMARK_PROBE_OUTPUT'] = str(ROOT / 'frame-proof.json')
+            call('frame-proof', ['cargo', 'test', *args, '--',
+                 'committed_endmarks_bound_each_copy_before_latency_work', '--exact', '--nocapture', '--test-threads=1'], timeout=300)
+            proof = json.loads((ROOT / 'frame-proof.json').read_text())
+            assert proof['complete'] is True and proof['error'] is None
+            assert len(proof['cases']) == 5 and len(proof['steps']) == 13
+            assert [c['case'] for c in proof['cases']].count('rolling-window') == 3
+            record['bounded_frame_proof_completed'] = True
+        except BaseException as error:
+            record['error'] = repr(error)
+            record['next_phase'] = 'STOP: no latency work after an unsuccessful proof'
+            raise
+        finally:
+            save()
+            manifest = {str(f.relative_to(ROOT)).replace('\\', '/'): {
+                'sha256': hashlib.sha256(f.read_bytes()).hexdigest(), 'bytes': f.stat().st_size}
+                for f in ROOT.rglob('*') if f.is_file() and f.name != 'manifest.json'}
+            (ROOT / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    - name: Retain complete proof and failed assertions
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: wal-endmark-proof-r2-${{ matrix.os }}
+        path: ${{ runner.temp }}/wal-endmark-proof-r2
+        if-no-files-found: error
+        retention-days: 14
