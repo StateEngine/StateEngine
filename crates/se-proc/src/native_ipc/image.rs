@@ -1,6 +1,7 @@
 //! Bounded executable proofs. Unix reuse requires stable native file identity,
 //! modification/change times and size. Windows reuse requires a positive journal
-//! revision while a retained native handle excludes writers. Unsupported revisions
+//! revision bound to its journal instance while a native handle excludes writers.
+//! Unsupported revisions
 //! fall back to reading the bytes. A pathname is never a cache identity.
 //! Unix change time invalidates same-inode rewrites even when mtime is restored;
 //! it is not a qualified persistent journal or protection against hostile same-user mutation.
@@ -22,6 +23,9 @@ pub(super) struct ImageKey {
     // Legacy Windows clock keys used tag 0; absent revisions cannot qualify reuse.
     #[serde(default)]
     changed: Option<(i64, i64)>,
+    #[cfg(windows)]
+    #[serde(default)]
+    journal: Option<u64>,
 }
 #[cfg(windows)]
 mod windows;
@@ -31,6 +35,7 @@ impl ImageKey {
         {
             // Tag 1 is a positive journal revision; legacy file clocks used tag 0.
             matches!(self.changed, Some((revision, 1)) if revision > 0)
+                && self.journal.is_some_and(|id| id != 0)
         }
         #[cfg(not(windows))]
         {
@@ -80,9 +85,13 @@ pub(super) fn key(file: &File, metadata: &std::fs::Metadata) -> IpcNativeResult<
         Some((metadata.ctime(), metadata.ctime_nsec()))
     };
     #[cfg(windows)]
-    let changed = windows::revision(file).map(|revision| (revision, 1));
+    let revision = windows::revision(file);
+    #[cfg(windows)]
+    let changed = revision.map(|(usn, _)| (usn, 1));
     let _ = file;
     Ok(ImageKey {
+        #[cfg(windows)]
+        journal: revision.map(|(_, journal)| journal),
         changed,
         identity,
         modified: match metadata

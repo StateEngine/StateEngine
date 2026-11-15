@@ -10,6 +10,8 @@ use windows_sys::Win32::{
     System::{IO::DeviceIoControl, Ioctl::FSCTL_READ_FILE_USN_DATA},
 };
 
+mod journal;
+
 #[repr(align(8))]
 struct RecordBuffer([u8; 4096]);
 
@@ -37,8 +39,10 @@ pub(super) fn pin(file: &File) -> Option<File> {
 /// Qualify every key capture, including hint publication outside hash_image.
 /// A full hash performed while a writer lives must not publish that writer's
 /// coalesced revision as reusable. Zero and unsupported journals also miss.
-pub(super) fn revision(file: &File) -> Option<i64> {
+pub(super) fn revision(file: &File) -> Option<(i64, u64)> {
     let pin = pin(file)?;
+    let volume = journal::volume(&pin)?;
+    let before = journal::read(&volume)?;
     let mut output = RecordBuffer([0; 4096]);
     let mut returned = 0;
     // SAFETY: retained file handle, no input/overlapped operation, and a writable
@@ -70,5 +74,12 @@ pub(super) fn revision(file: &File) -> Option<i64> {
         return None;
     }
     let revision = i64::from_le_bytes(bytes.get(offset..offset + 8)?.try_into().ok()?);
-    (revision > 0).then_some(revision)
+    let after = journal::read(&volume)?;
+    (revision > 0
+        && before.UsnJournalID != 0
+        && before.UsnJournalID == after.UsnJournalID
+        && revision >= before.LowestValidUsn
+        && revision >= after.LowestValidUsn
+        && revision < after.NextUsn)
+        .then_some((revision, after.UsnJournalID))
 }
