@@ -556,7 +556,7 @@ fn finite<T>(
         result
     }
 }
-fn timeout(budget_ms: u64) -> se_types::SeError {
+pub(crate) fn timeout(budget_ms: u64) -> se_types::SeError {
     se_types::SeError::new(se_types::Detail::DeadlineExceeded(
         se_types::details::DeadlineExceeded {
             op: "Atlas SQL".into(),
