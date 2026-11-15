@@ -140,12 +140,12 @@ mod windows {
             .encode_utf16()
             .chain(Some(0))
             .collect();
-        // SAFETY: validated NUL-terminated native volume name; metadata-only access,
-        // documented device sharing and no mutation or ownership transfer.
+        // SAFETY: validated NUL-terminated native volume name; read-only access
+        // for journal queries, documented sharing and no mutation or ownership transfer.
         let raw = unsafe {
             CreateFileW(
                 name.as_ptr(),
-                0,
+                GENERIC_READ,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 ptr::null(),
                 OPEN_EXISTING,
