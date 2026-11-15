@@ -66,7 +66,7 @@ fn restore(
     let Ok(entry) = serde_json::from_slice::<Entry>(&bytes) else {
         return Ok(ImageCacheRead::Stale);
     };
-    if entry.schema != 1 {
+    if entry.schema != 1 || !entry.image.reusable() {
         return Ok(ImageCacheRead::Stale);
     }
     let held = File::open(path).map_err(|e| error("pin selected adoption image", e))?;

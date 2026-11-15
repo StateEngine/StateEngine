@@ -171,8 +171,8 @@ pub(super) fn store(
 }
 /// Restore a bounded protected hint, never PID, birth, credential, generation,
 /// ancestry or authorization. hash_image still pins/rechecks the actual file's
-/// identity, size and exact modification/change timestamps before using this digest.
-/// Legacy hints without change time cannot match a fresh native key.
+/// identity, size and native change revision before using this digest.
+/// Windows also excludes writers and refuses reuse of unavailable or legacy revisions.
 /// Endpoint/native instance and MAC checks remain required.
 pub fn restore_image_cache(
     root: &Path,
@@ -219,7 +219,7 @@ fn restore(
     bound
         .remaining()
         .map_err(|e| error("finish executable cache restore", e))?;
-    if entry.digest != expected {
+    if entry.digest != expected || !entry.image.reusable() {
         return Ok(ImageCacheRead::Stale);
     };
     remember(entry.image, entry.digest)?;
