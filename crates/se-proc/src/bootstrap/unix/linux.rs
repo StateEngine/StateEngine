@@ -16,7 +16,7 @@ pub(in crate::bootstrap) fn background_lifetime(
         Ok(pin) => crate::user_manager::admit(&pin, ProcessId(pid as u32), spec),
         Err(error) => RuntimeLifetime {
             user_scope: None,
-            session_reason: Some(error.to_string()),
+            session_reason: Some(format!("{error:?}")),
         },
     }
 }

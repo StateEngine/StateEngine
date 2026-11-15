@@ -32,17 +32,21 @@ impl DetachmentObservation {
                 |home| format!("After stopping this host with `se --home {home} down`, keep it attached to your terminal with `se --home {home} up --foreground`."),
             );
         #[cfg(target_os = "linux")]
-        return Some(format!(
-            "{} Background work may stop when this login ends. Enable lingering for this account with `loginctl enable-linger`, then stop and restart this host under its owner. {foreground}",
-            self.lifetime
-                .session_reason
-                .as_deref()
-                .unwrap_or("No lasting user-manager scope was observed.")
-        ));
+        {
+            Some(format!(
+                "{} Background work may stop when this login ends. Enable lingering for this account with `loginctl enable-linger`, then stop and restart this host under its owner. {foreground}",
+                self.lifetime
+                    .session_reason
+                    .as_deref()
+                    .unwrap_or("No lasting user-manager scope was observed.")
+            ))
+        }
         #[cfg(not(target_os = "linux"))]
-        Some(format!(
-            "Background survival after logout is not guaranteed on this platform. {foreground}"
-        ))
+        {
+            Some(format!(
+                "Background survival after logout is not guaranteed on this platform. {foreground}"
+            ))
+        }
     }
 }
 #[derive(Serialize, Deserialize)]
@@ -177,6 +181,15 @@ pub fn read_detachment(
             "user-manager lifetime lacks its exact native unit observation",
         ));
     }
+    #[cfg(target_os = "linux")]
+    if let Some(scope) = &record.observation.lifetime.user_scope {
+        se_proc::verify_runtime_user_scope(
+            scope,
+            se_proc::ProcessId(endpoint.epoch.owner.fields().pid.get()),
+            bound.at(),
+        )
+        .map_err(|e| scope::unreadable("runtime user scope observation", &format!("{e:?}")))?;
+    }
     if read_bytes(files, bound)?.as_deref() != Some(bytes.as_slice()) {
         return Err(scope::unreadable(
             "runtime detachment record",
@@ -207,15 +220,14 @@ pub fn retire_detachment(files: &crate::route::files::Files, bound: &Deadline) -
         ));
     }
     #[cfg(target_os = "linux")]
-    if let Some(unit) = &record.observation.lifetime.user_scope {
-        if !se_proc::runtime_user_scope_empty(unit)
-            .map_err(|e| scope::unreadable("runtime user scope cleanup", &e.to_string()))?
-        {
-            return Err(scope::unreadable(
-                "runtime user scope cleanup",
-                "the exact runtime cgroup still contains processes",
-            ));
-        }
+    if let Some(unit) = &record.observation.lifetime.user_scope
+        && !se_proc::runtime_user_scope_empty(unit)
+            .map_err(|e| scope::unreadable("runtime user scope cleanup", &format!("{e:?}")))?
+    {
+        return Err(scope::unreadable(
+            "runtime user scope cleanup",
+            "the exact runtime cgroup still contains processes",
+        ));
     }
     let path = files.0.root().join(NAME);
     let pin = se_proc::OwnedFile::open(&path)

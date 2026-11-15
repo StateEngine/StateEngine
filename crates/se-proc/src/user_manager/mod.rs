@@ -45,7 +45,7 @@ fn attempt(
     let api = symbols::Api::load().ok_or("The native user-manager library is unavailable")?;
     // Manager discovery never accepts a caller-supplied bus address.
     let address = name(&format!("unix:path=/run/user/{uid}/systemd/private"))?;
-    let deadline = spec.deadline.min(Instant::now() + Duration::from_secs(1));
+    let deadline = admission_deadline(spec.deadline);
     let bus = Bus::connect(&api, &address, deadline)?;
     peer(&bus, uid)?;
     let mut unit_nonce = [0; 16];
@@ -237,6 +237,7 @@ pub(crate) fn verify(
     pid: ProcessId,
     deadline: Instant,
 ) -> Result<(), String> {
+    lingering()?;
     // SAFETY: immutable native owner query.
     let uid = unsafe { libc::geteuid() };
     if !valid_group(&scope.cgroup, uid, &scope.unit) || !in_group(pid, &scope.cgroup)? {
@@ -244,11 +245,7 @@ pub(crate) fn verify(
     }
     let api = symbols::Api::load().ok_or("The native user-manager library became unavailable")?;
     let address = name(&format!("unix:path=/run/user/{uid}/systemd/private"))?;
-    let bus = Bus::connect(
-        &api,
-        &address,
-        deadline.min(Instant::now() + Duration::from_secs(1)),
-    )?;
+    let bus = Bus::connect(&api, &address, admission_deadline(deadline))?;
     peer(&bus, uid)?;
     let request = bus.request(MANAGER, INTERFACE, c"GetUnit")?;
     request.string(b's', &name(&scope.unit)?)?;
@@ -274,6 +271,20 @@ pub(crate) fn verify(
     }
     Ok(())
 }
+fn admission_deadline(deadline: Instant) -> Instant {
+    let now = Instant::now();
+    // Preserve most of the caller's remaining startup bound for its original
+    // bootstrap. A slow optional manager is a session-lifetime fallback.
+    now + (deadline.saturating_duration_since(now) / 4).min(Duration::from_secs(1))
+}
+/// Re-observe the admitted scope before a status reader reports its lifetime.
+pub fn verify_runtime_user_scope(
+    scope: &RuntimeUserScope,
+    pid: ProcessId,
+    deadline: Instant,
+) -> ProcResult<()> {
+    verify(scope, pid, deadline).map_err(|reason| input("runtime user scope", &reason))
+}
 pub(super) fn in_group(pid: ProcessId, expected: &str) -> Result<bool, String> {
     let text = fs::read_to_string(format!("/proc/{}/cgroup", pid.0)).map_err(|e| e.to_string())?;
     if text.len() > 65536 {
@@ -289,7 +300,10 @@ pub(crate) fn pin_launcher(pid: i32) -> ProcResult<File> {
     if fd < 0 {
         return Err(input(
             "user scope bootstrap",
-            "native launcher pin is unavailable",
+            &format!(
+                "native launcher pin is unavailable: {}",
+                std::io::Error::last_os_error()
+            ),
         ));
     }
     // SAFETY: successful pidfd_open transferred this unique descriptor.

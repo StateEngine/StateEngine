@@ -94,7 +94,7 @@ pub use ownership::*;
 #[cfg(windows)]
 pub use stdio::*;
 #[cfg(target_os = "linux")]
-pub use user_manager::runtime_user_scope_empty;
+pub use user_manager::{runtime_user_scope_empty, verify_runtime_user_scope};
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod bootstrap;
