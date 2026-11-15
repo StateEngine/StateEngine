@@ -15,14 +15,23 @@ pub(crate) use diagnostics::Diagnostics;
 use diagnostics::read_errors;
 pub(crate) use transfer::upload;
 
+pub(crate) fn client(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    command.kill_on_drop(true);
+    // Every caller replaces stdio. A Windows SSH login's inherited descriptor
+    // table describes the login pipes, not this child's new handles.
+    #[cfg(windows)]
+    command.env_remove("c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE");
+    command
+}
+
 pub(crate) async fn command(destination: &str, command: String) -> Result<(bool, Vec<u8>)> {
     validate_destination(destination)?;
-    let mut child = Command::new("ssh")
+    let mut child = client("ssh")
         .args(["-T", "-o", "BatchMode=yes", destination, &command])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
         .spawn()
         .map_err(|_| unavailable("cannot start the system SSH file-transfer client"))?;
     let stdout = child
