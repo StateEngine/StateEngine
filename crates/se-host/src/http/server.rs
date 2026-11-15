@@ -41,6 +41,10 @@ const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const CLOSE_TIMEOUT: Duration = Duration::from_millis(100);
 
+#[cfg(test)]
+#[path = "independent_close.rs"]
+mod independent_close;
+
 pub struct HttpListener {
     listener: TcpListener,
     port: u16,
