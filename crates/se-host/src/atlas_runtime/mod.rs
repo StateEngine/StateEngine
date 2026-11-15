@@ -166,6 +166,10 @@ impl<D: RenewalDriver> NativeRuntime<D> {
         self.child.as_ref().map(|child| child.next_deadline())
     }
     #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+    pub fn child_parse_deadline(&self) -> Option<Instant> {
+        self.child.as_ref().and_then(|child| child.parse_deadline())
+    }
+    #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
     pub fn wait_child_ready(&mut self, deadline: Instant) -> AtlasResult<bool> {
         self.child
             .as_mut()

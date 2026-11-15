@@ -84,6 +84,9 @@ impl ColdJob {
     pub(crate) fn discovered_files(&self) -> u64 {
         self.discovered
     }
+    pub fn parse_deadline(&self) -> Option<Instant> {
+        self.parse_deadline
+    }
     pub fn next_deadline(&self) -> Instant {
         self.parse_deadline
             .unwrap_or(self.deadline)
