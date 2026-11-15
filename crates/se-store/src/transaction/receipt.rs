@@ -22,7 +22,9 @@ pub(crate) fn receipt(
     request_key: Option<se_types::IdempotencyKey>,
 ) -> StoreResult<CommitReceipt> {
     let mut q = c
-        .prepare("SELECT event_seq FROM operation_events WHERE operation_id=? ORDER BY ordinal")
+        .prepare_cached(
+            "SELECT event_seq FROM operation_events WHERE operation_id=? ORDER BY ordinal",
+        )
         .map_err(sql)?;
     let seqs = q
         .query_map([op], |r| crate::sql_value::value::<i64>(r, 0))

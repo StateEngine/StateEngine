@@ -449,10 +449,10 @@ impl Engine {
                 .map(|value| value.to_vec())
             })
             .transpose()?;
-        self.db.execute(
+        self.db.prepare_cached(
             "INSERT INTO operations(operation_id,scope_key,actor_id,request_key,
              fingerprint_codec,fingerprint,recorded_incarnation,writer_mode,host_generation,durability)
-             VALUES(?,?,?,?,?,?,?,?,?,?)",
+             VALUES(?,?,?,?,?,?,?,?,?,?)").map_err(sql)?.execute(
             crate::sql_value::sql_params![
                 op, scope, actor, batch.request.as_ref().map(|r| r.key.as_str()),
                 batch.request.as_ref().map(|r| r.intent.codec_version).unwrap_or(1),
@@ -510,11 +510,11 @@ impl Engine {
                     EventBody::ProfileSaved { profile, .. } if profile.harness.is_some() => 2,
                     _ => 1,
                 };
-                self.db.execute(
+                self.db.prepare_cached(
                     "INSERT INTO events(event_id,project_id,actor_id,session_id,origin_id,door,kind,
                      schema_version,recorded_incarnation,entity_revision,writer_mode,host_generation,
                      durability,operation_id,occurred_at_us,recorded_at_us,cause_event_id,supersedes_event_id)
-                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").map_err(sql)?.execute(
                     crate::sql_value::sql_params![
                         event, p, event_actor, session,
                         canonical(info.id.as_str()).ok_or_else(|| invalid("canonical StoreId required"))?,
@@ -538,7 +538,7 @@ impl Engine {
                 )?;
                 seq
             };
-            self.db.execute("INSERT INTO operation_events(operation_id,ordinal,event_seq,newly_appended) VALUES(?,?,?,?)",crate::sql_value::sql_params![op,ordinal,seq,prior.is_none()]).map_err(sql)?;
+            self.db.prepare_cached("INSERT INTO operation_events(operation_id,ordinal,event_seq,newly_appended) VALUES(?,?,?,?)").map_err(sql)?.execute(crate::sql_value::sql_params![op,ordinal,seq,prior.is_none()]).map_err(sql)?;
         }
         receipt(&self.db, &op, info, batch.request.map(|r| r.key))
     }

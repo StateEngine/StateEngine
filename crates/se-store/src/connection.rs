@@ -76,7 +76,7 @@ pub(crate) fn configure(
             return Err(invalid("busy timeout exceeds 5000ms"));
         }
         c.busy_timeout(timeout).map_err(sql)?;
-        // Nine decoder queries use this bounded cache of SQL programs, never results.
+        // Reuse bounded SQL programs for writes and decoders, never query results.
         c.set_prepared_statement_cache_capacity(32);
         c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA cache_size=-512;").map_err(sql)?;
         if writable {
