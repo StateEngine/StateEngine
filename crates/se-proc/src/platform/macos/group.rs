@@ -211,7 +211,11 @@ impl Scope {
         }
         for expected in &self.tracked {
             if let Some(found) = live_member(expected, &root)?
-                && !live.contains(&found.identity)
+                && !live.iter().any(|member| {
+                    member.pid == found.identity.pid
+                        && member.boot == found.identity.boot
+                        && member.start == found.identity.start
+                })
             {
                 self.escaped |=
                     !matches_group(&found.identity, group, found.identity.pid == root.pid)?;
