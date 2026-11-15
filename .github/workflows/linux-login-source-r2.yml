@@ -1,0 +1,59 @@
+name: Compile Linux login-lifetime source r2
+'on':
+  push:
+    branches:
+    - prime/linux-login-source-r2
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_BUILD_JOBS: '2'
+jobs:
+  compile:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-24.04
+        - macos-15
+        - windows-2025
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 418b6f27d6d0cb278924d73ea60d77a3888ff7a0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+    - name: Compile and check exact candidate
+      shell: python
+      run: 'from pathlib import Path
+
+        import os,subprocess,sys
+
+        p=Path(os.environ["RUNNER_TEMP"])/"build_source.py"
+
+        p.write_text("import os,json,subprocess,hashlib,shutil,time\nfrom pathlib
+        import Path\nroot=Path(os.environ[''RUNNER_TEMP''])/''linux-login-source-r2''\nroot.mkdir()\nsource=''418b6f27d6d0cb278924d73ea60d77a3888ff7a0''\nassert
+        subprocess.check_output([''git'',''rev-parse'',''HEAD''],text=True).strip()==source\nassert
+        not subprocess.check_output([''git'',''status'',''--porcelain''])\nrecord={''source'':source,''run'':os.environ[''GITHUB_RUN_ID''],''publication'':os.environ[''GITHUB_SHA''],''compiler'':subprocess.check_output([''rustc'',''-vV''],text=True),''commands'':[]}\ncommands=[[''cargo'',''fmt'',''--all'',''--'',''--check'']]\nif
+        os.environ[''RUNNER_OS'']==''Linux'': commands.append([''cargo'',''build'',''--locked'',''-p'',''se'',''--bin'',''se''])\ncommands.append([''cargo'',''clippy'',''--workspace'',''--all-targets'',''--all-features'',''--locked'',''--'',''-D'',''warnings''])\nif
+        os.environ[''RUNNER_OS'']==''Linux'': commands.append([''cargo'',''test'',''-p'',''se-types'',''--test'',''structure_guardrails'',''--locked''])\ntry:\n    for
+        index,command in enumerate(commands):\n        started=time.monotonic_ns()\n        with
+        (root/f''command-{index}.log'').open(''wb'') as log:\n            result=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,timeout=2400)\n        record[''commands''].append({''argv'':command,''exit'':result.returncode,''elapsed_ns'':time.monotonic_ns()-started})\n        if
+        command[:2]==[''cargo'',''build''] and result.returncode==0: shutil.copyfile(''target/debug/se'',root/''se'')\n        assert
+        result.returncode==0,command\nfinally:\n    shutil.copyfile(__file__,root/''build_source.py'')\n    (root/''build.json'').write_text(json.dumps(record,indent=2)+''\\n'')\n    hashes={str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in root.rglob(''*'') if p.is_file()}\n    (root/''sha256sums.json'').write_text(json.dumps(hashes,indent=2)+''\\n'')\n",encoding="utf-8",newline="")
+
+        subprocess.run([sys.executable,"-B",str(p)],check=True)
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: linux-login-source-r2-${{ runner.os }}
+        path: ${{ runner.temp }}/linux-login-source-r2
+        if-no-files-found: error
+        retention-days: 14
