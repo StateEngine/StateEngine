@@ -45,6 +45,7 @@ pub struct AtlasWorker {
     tail: super::stderr::StderrTail,
     exit: File,
     deadline: Instant,
+    startup_error: Option<io::Error>,
     incoming: Vec<u8>,
     reaped: bool,
     peak: u64,
@@ -132,6 +133,7 @@ impl AtlasWorker {
             stderr: None,
             tail: super::stderr::StderrTail::new(),
             deadline,
+            startup_error: None,
             incoming: Vec::with_capacity(FRAME_BYTES + 4),
             reaped: false,
             peak: 0,
@@ -147,7 +149,7 @@ impl AtlasWorker {
         if unsafe { libc::fcntl(stderr.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
             return Err(io::Error::last_os_error());
         }
-        worker.send_control(&encoded, deadline)?;
+        worker.startup_error = worker.send_control(&encoded, deadline).err();
         worker.channel.set_nonblocking(true)?;
         Ok(worker)
     }
@@ -194,6 +196,18 @@ impl AtlasWorker {
         Ok(self.peak)
     }
     pub fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
+        // Returning custody lets the caller cancel and reap within its own
+        // deadline even when the child refuses the initial envelope.
+        if let Some(error) = self.startup_error.take() {
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "Atlas startup channel failed: {error}; {}",
+                    self.failure_diagnostic()
+                        .unwrap_or_else(|error| format!("stderr unreadable: {error}"))
+                ),
+            ));
+        }
         self.drain_stderr()?;
         if Instant::now() >= self.deadline {
             self.cancel()?;

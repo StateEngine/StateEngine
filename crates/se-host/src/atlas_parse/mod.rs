@@ -1,13 +1,17 @@
 //! One parse attempt uses the existing native Atlas process and exact custody.
 mod child;
+#[cfg(target_os = "linux")]
 mod collect;
 mod protocol;
 use crate::atlas_cold::failure;
 use se_atlas::{
     errors::AtlasResult, lifecycle::*, model::*, parse::ParserProfile, source::RegisteredSource,
 };
-use se_proc::atlas_worker::{AtlasWorker, WorkerChannel};
-use se_types::{Detail, SeError, code::AtlasText, details};
+#[cfg(target_os = "linux")]
+use se_proc::atlas_worker::AtlasWorker;
+use se_proc::atlas_worker::WorkerChannel;
+use se_types::{Detail, SeError, details};
+#[cfg(target_os = "linux")]
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -15,12 +19,14 @@ use std::{
 type Source = RegisteredSource<crate::atlas_source::NativeAtlasSource>;
 pub(crate) use child::run as run_child;
 
+#[cfg(target_os = "linux")]
 pub(crate) struct Parser {
     profiles: Vec<ParserProfile>,
     image: Option<PathBuf>,
     // A failed reap retains the exact process and global slot for the next close.
     worker: Option<AtlasWorker>,
 }
+#[cfg(target_os = "linux")]
 impl Parser {
     pub fn new(profiles: Vec<ParserProfile>) -> Self {
         Self {

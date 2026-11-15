@@ -1,5 +1,6 @@
 //! Bound decoded rows before publication; no worker output can mutate SQL.
 use super::*;
+use se_types::code::AtlasText;
 use std::mem::size_of;
 struct Rows {
     bytes: usize,
