@@ -165,9 +165,13 @@ pub fn check() -> Check {
         Ok::<_, Box<dyn std::error::Error>>(proofs)
     })?;
     let rows: Vec<_> = proofs.iter().map(|p| p.sample.clone()).collect();
-    let path = std::path::Path::new("target/judge-diagnostics");
-    std::fs::create_dir_all(path)?;
-    std::fs::write(path.join("eight-writers.json"), serde_json::to_vec_pretty(&rows)?)?;
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/judge-diagnostics");
+    std::fs::create_dir_all(&path)?;
+    std::fs::write(
+        path.join("eight-writers.json"),
+        serde_json::to_vec_pretty(&rows)?,
+    )?;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let mut snapshot = reader.snapshot(f.scoped(Visibility::Owner))?;
     let mut events = std::collections::BTreeSet::new();
