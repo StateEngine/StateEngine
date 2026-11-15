@@ -1,0 +1,84 @@
+name: Native descendant exec and launch refusal controls
+'on':
+  push:
+    branches:
+    - prime/macos-launch-382-independent-r2
+permissions:
+  contents: read
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  SE382_OBSERVER: ${{ github.workspace }}/observer
+defaults:
+  run:
+    working-directory: judge
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 100
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: e77f02f65cfce9cfc04788473d7fc147a2132f12
+        path: judge
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 844fac50c7aae28f8a40afb7ef2be3cb2fc2d331
+        path: observer
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: 1.97.1
+    - name: Register disposable native test account
+      shell: python
+      run: 'from pathlib import Path
+
+        import runpy,subprocess,sys
+
+        script=Path(''scripts/ci/installation_account.py'').resolve()
+
+        identity,profile=runpy.run_path(str(script))[''account'']()
+
+        subprocess.run([''sudo'',sys.executable,str(script),''provision'',''--identity'',identity,''--profile'',str(profile)],check=True)
+
+        subprocess.run([sys.executable,str(script),''check''],check=True)
+
+        '
+    - name: Parse independent controllers
+      shell: python
+      run: 'import ast,pathlib
+
+        for p in pathlib.Path(''scripts/launch_382_review'').glob(''*.py''):ast.parse(p.read_text())
+
+        '
+    - name: Exercise paired native runtime and public launch controls
+      shell: python
+      run: 'import subprocess,sys
+
+        subprocess.run([sys.executable,''-B'',''scripts/launch_382_review/observe.py''],check=True,timeout=5400)
+
+        '
+    - name: Collect finite evidence without private fixture homes
+      if: ${{ always() }}
+      shell: python
+      run: "from pathlib import Path\nimport hashlib,json,os,shutil\nroot=Path(os.environ['RUNNER_TEMP'])/'launch382-independent';out=Path(os.environ['RUNNER_TEMP'])/'launch382-evidence';out.mkdir()\n\
+        for directory,children,files in os.walk(root):\n children[:]=[n for n in children if n not in ('source-base','source-head','target-base','target-head','fixture','__pycache__')]\n\
+        \ for name in files:\n  p=Path(directory)/name\n  if p.suffix in ('.json','.jsonl','.stdout','.stderr','.py')\
+        \ or name in ('calls','native-home'):\n   q=out/p.relative_to(root);q.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,q)\n\
+        manifest={p.relative_to(out).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in out.rglob('*')\
+        \ if p.is_file()}\n(out/'hashes.json').write_text(json.dumps(manifest,indent=2)+'\\n')\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: macos-launch-382-independent-r2
+        path: ${{ runner.temp }}/launch382-evidence
+        if-no-files-found: error
+        retention-days: 14
+        compression-level: 0
