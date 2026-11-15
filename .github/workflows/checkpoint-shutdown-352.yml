@@ -1,0 +1,61 @@
+name: Native checkpoint shutdown comparison
+on: [push, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+        label: [base, head]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ matrix.label == 'base' && '0fb6ba23e32eab6fbd1f384a9dc168a0d04be21d' || '0063c98bd99cd7077862a6cb4bb2160adb181678' }}
+          path: source
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: e20a89542cbeae057161ec4bd9c7a1f2164ea3ba
+          path: controls
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Read pinned compiler
+        id: compiler
+        shell: python
+        run: |
+          import os,tomllib
+          from pathlib import Path
+          channel=tomllib.loads(Path('source/rust-toolchain.toml').read_text())['toolchain']['channel']
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out: print('channel='+channel,file=out)
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ steps.compiler.outputs.channel }}
+      - name: Compile and judge the unchanged native controls
+        shell: python
+        env:
+          LABEL: ${{ matrix.label }}
+          EXPECTED_SOURCE: ${{ matrix.label == 'base' && '0fb6ba23e32eab6fbd1f384a9dc168a0d04be21d' || '0063c98bd99cd7077862a6cb4bb2160adb181678' }}
+        run: |
+          import os,subprocess,sys
+          from pathlib import Path
+          script=Path('controls/crates/se-host/tests/review_checkpoint_runner.py').resolve()
+          out=Path(os.environ['RUNNER_TEMP'])/'checkpoint-evidence'
+          subprocess.run([sys.executable,'-B',str(script),str(Path('source').resolve()),
+              str(Path('controls').resolve()),str(out),os.environ['LABEL'],os.environ['EXPECTED_SOURCE']],check=True)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: checkpoint-${{ matrix.os }}-${{ matrix.label }}
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/checkpoint-evidence/inputs.json
+            ${{ runner.temp }}/checkpoint-evidence/*-build.jsonl
+            ${{ runner.temp }}/checkpoint-evidence/*-build.stderr
+            ${{ runner.temp }}/checkpoint-evidence/case-*.log
+            ${{ runner.temp }}/checkpoint-evidence/results.json
