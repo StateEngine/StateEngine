@@ -209,11 +209,16 @@ def run_attempt(index, args, ssh_port, source_pub):
     sudo('install', '-d', '-m', '700', '-o', dest_user, '-g', dest_user, dest_ssh)
     sudo('install', '-m', '600', '-o', dest_user, '-g', dest_user, source_pub,
          f'{dest_ssh}/authorized_keys')
-    # Source ssh config for this attempt (fresh HOME means a fresh .ssh).
-    src_ssh = f'{src_home}/.ssh'
-    pathlib.Path(src_ssh).mkdir(exist_ok=True)
-    os.chmod(src_ssh, 0o700)
-    (pathlib.Path(src_ssh) / 'config').write_text(
+    # ssh resolves its user config from the invoking user's passwd-entry
+    # home, not from $HOME (modern OpenSSH ignores $HOME), so the alias must
+    # live there; the synthetic HOME stays only for the se state home.
+    import pwd
+    real_ssh = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir) / '.ssh'
+    real_ssh.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(real_ssh, 0o700)
+    real_config = real_ssh / 'config'
+    saved_config = real_config.read_bytes() if real_config.exists() else None
+    real_config.write_text(
         f'Host pairdest\n'
         f'  HostName 127.0.0.1\n'
         f'  Port {ssh_port}\n'
@@ -222,7 +227,7 @@ def run_attempt(index, args, ssh_port, source_pub):
         f'  IdentitiesOnly yes\n'
         f'  StrictHostKeyChecking accept-new\n'
         f'  BatchMode yes\n')
-    os.chmod(f'{src_ssh}/config', 0o600)
+    os.chmod(real_config, 0o600)
 
     se_env = dict(os.environ)
     se_env.update(xdg)
@@ -280,6 +285,15 @@ def run_attempt(index, args, ssh_port, source_pub):
             try:
                 stdout_text, stderr_text = cli_proc.communicate(timeout=10)
             except subprocess.SubprocessError:
+                pass
+        # The alias is no longer needed once the invocation has returned.
+        if saved_config is not None:
+            real_config.write_bytes(saved_config)
+            os.chmod(real_config, 0o600)
+        else:
+            try:
+                real_config.unlink()
+            except FileNotFoundError:
                 pass
         t1 = clock()
         attempt['wall_sec'] = round(t1 - t0, 6)
