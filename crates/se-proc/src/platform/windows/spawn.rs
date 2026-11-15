@@ -281,47 +281,50 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
         } else {
             CREATE_NEW_CONSOLE
         };
+    let application = wide(spec.executable.as_os_str());
+    let cwd = wide(spec.cwd.as_os_str());
     let create = |flags, info: &mut PROCESS_INFORMATION| {
         // CreateProcessW may modify its command line, including on failure.
         let mut command_line = line.clone();
         // SAFETY: application/cwd/environment/argv and aligned attribute backing
         // storage live for the call. JOB_LIST is atomic creation membership. Only
         // the closed explicit stream/capability handle list is inherited.
-        unsafe {
+        let created = unsafe {
             CreateProcessW(
-                wide(spec.executable.as_os_str()).as_ptr(),
+                application.as_ptr(),
                 command_line.as_mut_ptr(),
                 ptr::null(),
                 ptr::null(),
                 i32::from(!handles.is_empty()),
                 flags,
                 env.as_ptr().cast(),
-                wide(spec.cwd.as_os_str()).as_ptr(),
+                cwd.as_ptr(),
                 &startup.StartupInfo,
                 info,
             )
+        };
+        if created == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
         }
     };
-    let mut ok = create(flags | CREATE_BREAKAWAY_FROM_JOB, &mut info);
-    if ok == 0 {
-        let mut cause = std::io::Error::last_os_error();
-        if cause.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+    let creation = match create(flags | CREATE_BREAKAWAY_FROM_JOB, &mut info) {
+        Err(cause) if cause.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
             // A compatible enclosing job can deny breakaway while permitting
             // nesting. Keep our atomic JOB_LIST and exact handle inheritance;
             // never create an uncontained child or modify the enclosing job.
-            ok = create(flags, &mut info);
-            if ok == 0 {
-                cause = std::io::Error::last_os_error();
-            }
+            create(flags, &mut info)
         }
-        if ok == 0 {
-            return Err(native(
-                ProcErrorCode::LaunchFailed,
-                "CreateProcessW atomic job assignment",
-                cause,
-            ));
-        }
-    }
+        outcome => outcome,
+    };
+    creation.map_err(|cause| {
+        native(
+            ProcErrorCode::LaunchFailed,
+            "CreateProcessW atomic job assignment",
+            cause,
+        )
+    })?;
     // Ownership immediately leaves raw PROCESS_INFORMATION. No fallible query
     // occurs before the caller stores this Child in its retained arena slot.
     let _thread = Handle(info.hThread);
