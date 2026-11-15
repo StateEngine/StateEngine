@@ -23,6 +23,10 @@ fn measure_eight_mcp_writers() -> Check {
     let mut sources = Vec::new();
     #[cfg(target_os = "linux")]
     let mixed = std::env::var_os("SE_MEASURE_MIXED").is_some();
+    #[cfg(target_os = "linux")]
+    if mixed {
+        background::register_root(&f, &mut writer, &lease)?;
+    }
     for index in 0..8 {
         let agent = agent()?;
         let session = support::session::session()?;
@@ -88,10 +92,6 @@ fn measure_eight_mcp_writers() -> Check {
             )?);
         }
         clients.push(json!({"capability": capability, "to": agent.as_str()}));
-    }
-    #[cfg(target_os = "linux")]
-    if mixed {
-        background::register_root(&f, &mut writer, &lease)?;
     }
     writer.close()?;
     drop(lease);
