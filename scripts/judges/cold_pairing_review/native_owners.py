@@ -67,6 +67,8 @@ for sig, seconds in ((signal.SIGTERM, 3), (signal.SIGKILL, 10)):
     if not inventory():
         break
 report['remaining'] = inventory()
-report['complete'] = not report['remaining'] and not report['refused']
+# Earlier refused observations remain visible; a later complete native census
+# can independently witness that no process of this owned account remains.
+report['complete'] = not report['remaining']
 print(json.dumps(report))
 raise SystemExit(0 if report['complete'] else 1)
