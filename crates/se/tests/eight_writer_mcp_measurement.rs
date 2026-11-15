@@ -94,6 +94,22 @@ fn measure_eight_mcp_writers() -> Check {
             HostedRuntime::prepare(initialized, settings, engine.handle().clone(), &bound()?)
                 .await?;
         host.configure(se_config::config_policy::ConfigFile::default())?;
+        let (_coordinator, reconciliation) = LaunchCoordinator::install(
+            &mut host,
+            ProcessOptions {
+                helper_executable: se_types::NativePath::from_local(
+                    Path::new(env!("CARGO_BIN_EXE_se")).to_path_buf(),
+                )?,
+                linux_delegation: se_proc::LinuxDelegation::CurrentScope,
+                maximum_sessions: 8,
+            },
+            &bound()?,
+        )
+        .await?;
+        require(
+            reconciliation.unproved.is_empty(),
+            "fresh observer has native reconciliation debt",
+        )?;
         let listener = host.listen(engine.handle().clone(), &bound()?).await?;
         let stop = host.local_stop();
         let client = async {
