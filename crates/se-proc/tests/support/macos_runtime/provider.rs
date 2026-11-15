@@ -68,6 +68,18 @@ fn tracked_child() -> Check {
     )?;
     let mut escaped = false;
     loop {
+        if root.join("exec-child").exists() {
+            use std::os::unix::process::CommandExt;
+            let cause = Command::new(root.join("next-child"))
+                .args(["--exact", "review_exec_child", "--ignored", "--nocapture"])
+                .env_clear()
+                .env("SE_MACOS_JUDGE_ROOT", &root)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .exec();
+            return Err(cause.into());
+        }
         if !escaped && root.join("escape").exists() {
             // SAFETY: this exact fixture child moves itself, never another process.
             if unsafe { libc::setsid() } < 0 {
