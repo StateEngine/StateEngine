@@ -21,11 +21,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: linux
-            runner: ubuntu-24.04
-            ref: b7a3c1c5d9d4f016b237a97c5c0d883645276eda
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+          - side: baseline
+            ref: 737bee8caf03e17d2a61e21594d7b0285d6619dc
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -34,11 +33,11 @@ jobs:
           persist-credentials: false
       - name: Overlay measurement sources
         env:
-          MEASUREMENTS: seat-5d/eight-writer-measurement-20261115
+          MEASUREMENTS: 0cfea8966b0a549025fa87216b4512d5221840ad
         run: |
-          git fetch --quiet origin "refs/heads/$MEASUREMENTS:refs/remotes/measure/tests" "refs/heads/main:refs/remotes/measure/main"
+          git fetch --quiet origin "0cfea8966b0a549025fa87216b4512d5221840ad:refs/remotes/measure/tests" "refs/heads/main:refs/remotes/measure/main"
           measured="$(git rev-parse refs/remotes/measure/tests)"
-          test "$measured" = c8d06fca62ba5bdd4647d6f47052b0bb7fe2921a
+          test "$measured" = 0cfea8966b0a549025fa87216b4512d5221840ad
           echo "$measured" > measurement-commit.txt
           fork="$(git merge-base refs/remotes/measure/main refs/remotes/measure/tests)"
           git diff --name-only --diff-filter=AM "$fork" refs/remotes/measure/tests > "$RUNNER_TEMP/measurement-files"
@@ -54,33 +53,70 @@ jobs:
         with:
           shared-key: writer-latency-linux-v1
           cache-on-failure: true
-      - name: Measure release writer latency
+      - name: Measure baseline release writes
+        id: baseline
+        continue-on-error: true
+        run: |
+          git rev-parse HEAD > baseline-source.txt
+          target="$(rustc --print host-tuple)"
+          set +e
+          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se --test eight_writer_mcp_measurement -- --nocapture > mcp-baseline.log 2>&1
+          measurement_status=$?
+          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-baseline.log 2>&1
+          pressure_status=$?
+          if [[ "$pressure_status" != 0 ]]; then measurement_status="$pressure_status"; fi
+          set -e
+          if [[ -d target/judge-diagnostics ]]; then mv target/judge-diagnostics target/judge-baseline; fi
+          exit "$measurement_status"
+      - name: Select candidate with the same measurement overlay
+        run: |
+          git fetch --quiet origin 906ca100f773a8d824a47905f0f700d38de3f63c:refs/remotes/measure/head
+          test "$(git rev-parse refs/remotes/measure/head)" = 906ca100f773a8d824a47905f0f700d38de3f63c
+          git checkout --detach 906ca100f773a8d824a47905f0f700d38de3f63c
+          git rev-parse HEAD > candidate-source.txt
+          while IFS= read -r measurement_path; do
+            git diff --exit-code refs/remotes/measure/tests -- "$measurement_path"
+          done < "$RUNNER_TEMP/measurement-files"
+      - name: Measure candidate release writes
+        id: candidate
+        continue-on-error: true
         run: |
           target="$(rustc --print host-tuple)"
-          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se --test eight_writer_mcp_measurement -- --nocapture
-      - name: Enforce the retained release budget verdict
+          set +e
+          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se --test eight_writer_mcp_measurement -- --nocapture > mcp-candidate.log 2>&1
+          measurement_status=$?
+          cargo test --target "$target" --release --locked --all-features --no-fail-fast -p se-store --test wal_pressure_measurement -- --nocapture > pressure-candidate.log 2>&1
+          pressure_status=$?
+          if [[ "$pressure_status" != 0 ]]; then measurement_status="$pressure_status"; fi
+          set -e
+          if [[ -d target/judge-diagnostics ]]; then mv target/judge-diagnostics target/judge-candidate; fi
+          exit "$measurement_status"
+      - name: Run retained background and pressure controls
         run: |
-          python -I - <<'PY_BUDGET'
-          import json
-          from pathlib import Path
-          path = Path("target/judge-diagnostics/mcp-writers.json")
-          report = json.loads(path.read_text(encoding="utf-8"))
-          for cohort, clients in report["cohorts"].items():
-              for index, client in enumerate(clients):
-                  print(cohort, index, client.get("p95_ms"), client.get("error"))
-          if report["pass"] is not True:
-              raise SystemExit("release writes missed the retained probe's 20 ms p95 budget")
-          PY_BUDGET
-      - name: Record source
+          target="$(rustc --print host-tuple)"
+          cargo test --target "$target" --release --all-features --locked --no-fail-fast -p se-store --test background_checkpoint_independent --test deferred_checkpoint_independent -- --nocapture > checkpoint-controls.log 2>&1
+      - name: Preserve failed observer verdicts
         if: ${{ always() }}
-        run: git rev-parse HEAD > source-commit.txt
+        env:
+          BASELINE: ${{ steps.baseline.outcome }}
+          CANDIDATE: ${{ steps.candidate.outcome }}
+        run: |
+          test "$BASELINE" = success
+          test "$CANDIDATE" = success
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ always() }}
         with:
-          name: writer-latency-linux-mixed-main
+          name: writer-latency-linux-quiet-paired
           path: |
-            source-commit.txt
+            mcp-baseline.log
+            mcp-candidate.log
+            pressure-baseline.log
+            pressure-candidate.log
+            checkpoint-controls.log
+            baseline-source.txt
+            candidate-source.txt
             measurement-commit.txt
-            target/judge-diagnostics/
+            target/judge-baseline/
+            target/judge-candidate/
           if-no-files-found: error
           retention-days: 14
