@@ -62,6 +62,10 @@ def cohort(image, root, count=120):
     trace = os.environ.get('OUTPUT_OBSERVER_TRACE')
     if trace:
         f.env['OUTPUT_OBSERVER_TRACE'] = trace
+    delay_ms = int(os.environ.get('OUTPUT_RESULT_DELAY_MS', '0'))
+    if not 0 <= delay_ms <= 1000:
+        raise ValueError('Result delay must be between zero and 1000 ms')
+    (f.repo / 'result-delay-ms').write_text(str(delay_ms))
     os.mkfifo(f.repo / 'output-control', 0o600)
     records, measurements = queue.Queue(), queue.Queue()
     watcher = None
@@ -122,7 +126,12 @@ def cohort(image, root, count=120):
                 rows.append({'id': marker, 'warmup': index < 10, 'visible': visible, 'flushed': measured})
                 # Avoid an artificial synchronized producer/watcher phase.
                 time.sleep(.013 + ((index * 17) % 47) / 1000)
-        producers = {row['id']: row for row in map(json.loads, (f.repo / 'producer.jsonl').read_text().splitlines())}
+        until = time.monotonic() + 15
+        while True:
+            producers = {row['id']: row for row in map(json.loads, (f.repo / 'producer.jsonl').read_text().splitlines())}
+            if len(producers) == count + 10 or time.monotonic() >= until:
+                break
+            time.sleep(.01)
         if len(producers) != count + 10 or len(rows) != count + 10:
             raise ValueError('Producer/reader sample accounting differs')
         for row in rows:
@@ -169,6 +178,7 @@ def cohort(image, root, count=120):
         if remaining:
             cleanup.append('Owned native identities remain after shutdown')
         result = {'failure': failure, 'cleanup_errors': cleanup, 'summary': summary,
+                  'completion_delay_ms': delay_ms,
                   'samples': rows, 'known_instances': known, 'remaining': remaining,
                   'scope': 'Synthetic Claude protocol, real native transcript/host/IPC and persistent CLI; same hosted Linux boot; no GUI paint or paid provider',
                   'qualified': failure is None and not cleanup and len(rows) == count + 10}

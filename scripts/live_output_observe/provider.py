@@ -16,6 +16,8 @@ def produce():
     if len(matches) != 1:
         raise ValueError('Expected one native transcript')
     transcript = matches[0]
+    delay_file = repo / 'result-delay-ms'
+    delay_ms = int(delay_file.read_text()) if delay_file.exists() else 0
     with (repo / 'output-control').open() as control, (repo / 'producer.jsonl').open('a', buffering=1) as log:
         for line in control:
             marker = line.strip()
@@ -30,11 +32,16 @@ def produce():
             written = time.monotonic_ns()
             print(json.dumps({'type': 'assistant', 'session_id': conversation,
                               'message': record['message']}), flush=True)
+            assistant_streamed = time.monotonic_ns()
+            if delay_ms:
+                time.sleep(delay_ms / 1000)
             print(json.dumps({'type': 'result', 'session_id': conversation, 'result': marker,
                               'is_error': False}), flush=True)
             streamed = time.monotonic_ns()
             log.write(json.dumps({'id': marker, 'emit_begin_ns': before,
-                                  'transcript_flushed_ns': written, 'stream_flushed_ns': streamed}) + '\n')
+                                  'transcript_flushed_ns': written,
+                                  'assistant_stream_flushed_ns': assistant_streamed,
+                                  'stream_flushed_ns': streamed}) + '\n')
     while True:
         time.sleep(1)
 
