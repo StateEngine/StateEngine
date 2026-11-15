@@ -72,3 +72,30 @@ class ImageObserver:
             self.known.add((row['pid'], row['birth']))
             selected.append(row)
         return selected
+
+
+def private_state_home(path, environment, output):
+    """Create a new configuration-bearing home with native private permissions."""
+    require(not path.exists() and not path.is_symlink(), 'Private state home already exists')
+    code = r"""$ErrorActionPreference = 'Stop'
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = [System.Security.AccessControl.DirectorySecurity]::new()
+$acl.SetOwner($sid)
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($principal in @($sid, [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'))) {
+    $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+        $principal, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+}
+[System.IO.Directory]::CreateDirectory($env:SE_OBSERVE_STATE_HOME, $acl) | Out-Null
+$read = Get-Acl -LiteralPath $env:SE_OBSERVE_STATE_HOME
+@{owner=$read.Owner;protected=$read.AreAccessRulesProtected;sddl=$read.Sddl} | ConvertTo-Json -Compress
+"""
+    env = dict(environment, SE_OBSERVE_STATE_HOME=str(path))
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', code],
+                            env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
+    save(output / 'private-state-home.json', dict(exit=result.returncode,
+         stdout=result.stdout, stderr=result.stderr))
+    require(result.returncode == 0, 'Native private state creation failed: ' + result.stderr)
+    native = json.loads(result.stdout)
+    require(native['protected'] is True and native['owner'] and native['sddl'],
+            'Native private state readback is incomplete')

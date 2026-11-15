@@ -109,7 +109,11 @@ def prepare(directory, image, provider, dirty, smokes, side, count):
         (smoke.repository / 'untracked.txt').write_text('untracked user work\n')
     selection = ['--harness', 'probe'] if provider == 'acp' else ['--provider', provider]
     if provider == 'acp':
-        smoke.state.mkdir(mode=0o700)
+        if sys.platform == 'win32':
+            from native_windows import private_state_home
+            private_state_home(smoke.state, smoke.commands.environment, directory)
+        else:
+            smoke.state.mkdir(mode=0o700)
         (smoke.state / 'config.toml').write_text(
             'version = 1\n[harnesses.probe]\ndriver = "acp-stdio"\n'
             'command = ' + json.dumps(sys.executable) + '\narguments = ["-c", "pass"]\n'
