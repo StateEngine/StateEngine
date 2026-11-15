@@ -1,0 +1,74 @@
+name: parser worker startup development comparison
+on:
+  push:
+permissions:
+  contents: read
+jobs:
+  startup:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - side: base
+            source: b7a3c1c5d9d4f016b237a97c5c0d883645276eda
+          - side: head
+            source: 800ece78d4a1cf5628af133bf182dd16facdc173
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ matrix.source }}
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          shared-key: judge-linux-v1
+          save-if: false
+      - name: Record exact development image startup under existing address cap
+        run: |
+          mkdir -p retained
+          target="$(rustc --print host-tuple)"
+          cargo build --target "$target" --workspace --bins --all-features --locked
+          git rev-parse HEAD > retained/source.txt
+          readelf -W -l "target/$target/debug/se" > retained/debug-elf.txt
+          python3 -I - "target/$target/debug/se" retained/debug-startup.json <<'PY_PROBE'
+          import hashlib,json,resource,subprocess,sys
+          from pathlib import Path
+          image=Path(sys.argv[1]).resolve(strict=True)
+          rows=[]
+          for cap in [96_000_000,160_000_000,256_000_000]:
+              def limits():
+                  resource.setrlimit(resource.RLIMIT_AS,(cap,cap))
+              result=subprocess.run([str(image),'--help'],preexec_fn=limits,capture_output=True,timeout=10)
+              rows.append({'address_limit':cap,'returncode':result.returncode,
+                  'stdout_bytes':len(result.stdout),'stderr':result.stderr.decode(errors='replace')})
+          Path(sys.argv[2]).write_text(json.dumps({'image_sha256':hashlib.sha256(image.read_bytes()).hexdigest(),
+              'image_bytes':image.stat().st_size,'rows':rows},indent=2)+'\n')
+          print(Path(sys.argv[2]).read_text())
+          PY_PROBE
+      - name: Use the distribution image with the unchanged consumer assertions
+        if: matrix.side == 'head'
+        run: |
+          target="$(rustc --print host-tuple)"
+          cargo build --target "$target" --profile distribution -p se --all-features --locked
+          readelf -W -l "target/$target/distribution/se" > retained/distribution-elf.txt
+          export SE_SELECTOR_SE="$PWD/target/$target/distribution/se"
+          cargo nextest run --target "$target" --workspace --all-features --locked --profile ci --no-fail-fast \
+            -E 'binary(atlas_parser_limit) or binary(atlas_renewal)' > retained/consumer.log 2>&1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: parser-startup-${{ matrix.side }}
+          path: |
+            retained
+            target/nextest/ci/junit.xml
+          if-no-files-found: error
+          retention-days: 7
