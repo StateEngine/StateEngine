@@ -257,3 +257,36 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod review_399_diagnostic {
+    #[test]
+    fn review_399_read_errors_controls() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let cases: Vec<(&str, Vec<u8>, Option<&str>)> = vec![
+            ("permission", b"warning\nREVIEW_DENIED publickey\r\n\n".to_vec(), Some("REVIEW_DENIED publickey")),
+            ("hostile", b"\x1b]0;title\x07\x1b[31mREVIEW_DENIED\x1b[0m\x00\x7f\xff\r\n".to_vec(), Some("REVIEW_DENIED")),
+            ("long", [vec![b'x'; 500], b"REVIEW_DENIED".to_vec()].concat(), Some("REVIEW_DENIED")),
+            ("empty", b"\n\r\n\xff".to_vec(), Some("")),
+            ("bound", vec![b'x'; 4097], None),
+        ];
+        let mut failures = Vec::new();
+        for (name, bytes, expected) in cases {
+            let outcome = runtime.block_on(super::read_errors("review-destination", &bytes[..]));
+            let (passed, observed) = match outcome {
+                Ok(value) => {
+                    let observed = serde_json::to_value(value).unwrap();
+                    let passed = match (expected, observed.as_str()) {
+                        (Some(needle), Some(text)) => text.contains(needle) && text.len() <= 160 && text.bytes().all(|b| b == b' ' || b.is_ascii_graphic()),
+                        _ => false,
+                    };
+                    (passed, observed)
+                }
+                Err(error) => (expected.is_none() && error.body.message().contains("bounded bootstrap response"), serde_json::json!({"error":error.body.message()})),
+            };
+            println!("REVIEW399 {}", serde_json::json!({"case":name,"passed":passed,"observed":observed}));
+            if !passed { failures.push(name); }
+        }
+        assert!(failures.is_empty(), "diagnostic cases failed: {failures:?}");
+    }
+}
