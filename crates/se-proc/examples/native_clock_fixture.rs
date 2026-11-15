@@ -2,6 +2,25 @@
 #[cfg(not(windows))]
 fn main() {}
 #[cfg(windows)]
+fn probe_write(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let attempt = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path);
+    let (opened, error) = match attempt {
+        Ok(file) => {
+            drop(file);
+            (true, None)
+        }
+        Err(error) => (false, error.raw_os_error()),
+    };
+    println!(
+        "{}",
+        serde_json::json!({"write_opened": opened, "native_error": error})
+    );
+    Ok(())
+}
+#[cfg(windows)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::{
         fs::{File, OpenOptions},
@@ -26,19 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("image is not an owned bounded fixture".into());
     }
     if mode == "probe-write" {
-        let attempt = OpenOptions::new().read(true).write(true).open(&path);
-        let (opened, error) = match attempt {
-            Ok(file) => {
-                drop(file);
-                (true, None)
-            }
-            Err(error) => (false, error.raw_os_error()),
-        };
-        println!(
-            "{}",
-            serde_json::json!({"write_opened": opened, "native_error": error})
-        );
-        return Ok(());
+        return probe_write(&path);
     }
     let file = if mode == "read" {
         File::open(&path)?
