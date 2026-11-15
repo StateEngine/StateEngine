@@ -86,7 +86,7 @@ fn attempt(
         let group = bus
             .property(
                 &path,
-                c"org.freedesktop.systemd1.Unit",
+                c"org.freedesktop.systemd1.Scope",
                 c"ControlGroup",
                 c"s",
             )?
@@ -216,7 +216,7 @@ pub(crate) fn verify(
     let group = bus
         .property(
             &path,
-            c"org.freedesktop.systemd1.Unit",
+            c"org.freedesktop.systemd1.Scope",
             c"ControlGroup",
             c"s",
         )?
