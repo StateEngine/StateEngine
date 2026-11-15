@@ -108,7 +108,7 @@ pub fn private_entry() -> AtlasResult<u8> {
                 ..
             }
         ) {
-            channel.await_parse().map_err(failure)?;
+            channel.await_source_read().map_err(failure)?;
         }
         Ok(())
     });
