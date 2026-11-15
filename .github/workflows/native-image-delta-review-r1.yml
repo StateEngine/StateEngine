@@ -22,7 +22,7 @@ jobs:
         - side: journal_gap
           ref: c54f75ad44e2b90134daa0f1d6600b4d774540bb
         - side: head
-          ref: a050e69e596b4484289d0c15671c8d0283ccce1a
+          ref: bb334ddf2affddfccf5ef8ccfe242663f706acea
     env:
       EXPECTED_SOURCE: ${{ matrix.ref }}
       SIDE: ${{ matrix.side }}
