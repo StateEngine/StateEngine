@@ -36,15 +36,21 @@ pub async fn connect(
         "remote __accept --source-host {} --json",
         source.0.hex()
     ));
-    let verification = staging::verify(&remote, &image.digest, windows, image.apple);
+    // The upload's bytes were hash-verified at publication in this same
+    // pairing, and the promotion is a byte-preserving rename of that
+    // verified file inside a directory only the destination account can
+    // write: re-hashing here would re-prove bytes no network attacker can
+    // still reach, so the residual check is identity. The warm path keeps
+    // its full digest, re-proving bytes never seen in this run.
+    let identity = staging::check(&remote, windows, image.apple);
     let command = if windows {
-        let (verified, detail) = ssh(destination, verification).await?;
+        let (verified, detail) = ssh(destination, identity).await?;
         if !verified {
             return Err(super::command::verification_error(&detail));
         }
         acceptance
     } else {
-        image_commands::accept(&verification, &acceptance)
+        image_commands::accept(&identity, &acceptance)
     };
     let (success, bytes) = ssh(destination, command).await?;
     let bytes = zeroize::Zeroizing::new(bytes);

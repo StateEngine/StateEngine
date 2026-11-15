@@ -87,10 +87,21 @@ done"#
     }
 }
 
-pub(in crate::remote) fn verify(path: &str, digest: &str, windows: bool, apple: bool) -> String {
-    if windows {
-        powershell(&format!(
-            r#"$ErrorActionPreference='Stop'; try {{
+/// The identity checks a staged or published image must hold before it is
+/// executed: a regular account-owned file without foreign write access. The
+/// digest is a separate, heavier proof; see `verify`.
+fn unix_identity(path: &str, apple: bool) -> String {
+    let stat = if apple { "stat -f" } else { "stat -c" };
+    let mode = if apple { "%Lp" } else { "%a" };
+    format!(
+        r#"test ! -L {path} && test -f {path} && owner=$({stat} %u {path}) && mode=$({stat} {mode} {path}) && uid=$(id -u) && test "$owner" = "$uid" || exit 1
+if test "$((0$mode & 022))" -ne 0; then printf 'unsafe-mode:%s\n' "$mode"; exit 1; fi"#
+    )
+}
+
+fn windows_identity(path: &str) -> String {
+    format!(
+        r#"$ErrorActionPreference='Stop'; try {{
 $p=Join-Path $HOME '{path}'; $i=Get-Item -LiteralPath $p -Force;
 if ($i.PSIsContainer -or ($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) {{exit 1}};
 $me=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;
@@ -100,16 +111,40 @@ $writes=[Security.AccessControl.FileSystemRights] 'Write,Delete,DeleteSubdirecto
 foreach ($r in $a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {{
 if ($r.AccessControlType -eq 'Allow' -and ($r.FileSystemRights -band $writes) -and $r.IdentityReference.Value -notin ($trusted+@('S-1-3-0'))) {{exit 1}}
 }};
-if ((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() -ne '{digest}') {{exit 1}}; exit 0
-}} catch {{exit 1}}"#
+"#
+    )
+}
+
+/// The identity checks only, no digest proof: a promotion that is a
+/// byte-preserving rename of an upload whose bytes were just hash-verified
+/// re-proves identity, because only the destination account itself can
+/// write inside its own 0700 runtime directory.
+pub(in crate::remote) fn check(path: &str, windows: bool, apple: bool) -> String {
+    if windows {
+        powershell(&format!(
+            r#"{identity}exit 0
+}} catch {{exit 1}}"#,
+            identity = windows_identity(path)
+        ))
+    } else {
+        unix_identity(path, apple)
+    }
+}
+
+/// The identity checks plus the digest proof, for paths whose bytes have not
+/// already been hash-verified in this same pairing.
+pub(in crate::remote) fn verify(path: &str, digest: &str, windows: bool, apple: bool) -> String {
+    if windows {
+        powershell(&format!(
+            r#"{identity}if ((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() -ne '{digest}') {{exit 1}}; exit 0
+}} catch {{exit 1}}"#,
+            identity = windows_identity(path)
         ))
     } else {
         let hash = if apple { "shasum -a 256" } else { "sha256sum" };
-        let stat = if apple { "stat -f" } else { "stat -c" };
-        let mode = if apple { "%Lp" } else { "%a" };
+        let identity = unix_identity(path, apple);
         format!(
-            r#"test ! -L {path} && test -f {path} && owner=$({stat} %u {path}) && mode=$({stat} {mode} {path}) && uid=$(id -u) && test "$owner" = "$uid" || exit 1
-if test "$((0$mode & 022))" -ne 0; then printf 'unsafe-mode:%s\n' "$mode"; exit 1; fi
+            r#"{identity}
 hash=$({hash} {path}) && test "${{hash%% *}}" = {digest}"#
         )
     }
@@ -146,4 +181,60 @@ pub(in crate::remote) fn powershell(script: &str) -> String {
         "powershell.exe -NoProfile -NonInteractive -EncodedCommand {}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     )
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "test setup and assertions retain the failing fs operation"
+)]
+mod tests {
+    use super::*;
+
+    fn decode_windows(encoded: &str) -> String {
+        use base64::Engine as _;
+        let b64 = encoded.split(' ').next_back().expect("encoded command");
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .expect("b64");
+        // -EncodedCommand is UTF-16LE, not UTF-8.
+        let units: Vec<u16> = raw
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16(&units).expect("utf16")
+    }
+
+    #[test]
+    fn check_is_the_identity_half_of_verify() {
+        let unix_check = check(".stateengine-runtime/abc", false, false);
+        assert!(unix_check.contains("test ! -L .stateengine-runtime/abc"));
+        assert!(unix_check.contains("owner=$(stat -c %u .stateengine-runtime/abc)"));
+        assert!(unix_check.contains("0$mode & 022"));
+        assert!(unix_check.contains("unsafe-mode:"));
+        assert!(!unix_check.contains("sha256sum"), "check must not hash");
+        assert!(!unix_check.contains("shasum"), "check must not hash");
+        let apple_check = check(".stateengine-runtime/abc", false, true);
+        assert!(apple_check.contains("stat -f"));
+        assert!(!apple_check.contains("sha256sum"));
+        let verify = verify(".stateengine-runtime/abc", "deadbeef", false, false);
+        assert!(verify.starts_with(&unix_check));
+        assert!(verify.contains("hash=$(sha256sum .stateengine-runtime/abc)"));
+        assert!(verify.contains(r#"test "${hash%% *}" = deadbeef"#));
+    }
+
+    #[test]
+    fn windows_check_drops_only_the_file_hash() {
+        let windows_check = decode_windows(&check("abc", true, false));
+        let windows_verify = decode_windows(&verify("abc", "deadbeef", true, false));
+        assert!(windows_check.contains("Get-Acl -LiteralPath $p"));
+        assert!(!windows_check.contains("Get-FileHash"));
+        assert!(windows_verify.contains("Get-FileHash -LiteralPath $p -Algorithm SHA256"));
+        assert!(windows_verify.contains("-ne 'deadbeef'"));
+        // The identity half is byte-identical between the two commands.
+        let tail = "exit 0\n} catch {exit 1}";
+        assert!(windows_check.ends_with(tail));
+        let identity = windows_check[..windows_check.len() - tail.len()].to_owned();
+        assert!(windows_verify.starts_with(&identity));
+    }
 }
