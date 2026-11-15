@@ -1,0 +1,203 @@
+name: Windows warm checkout independent native judges
+'on':
+  push:
+    branches:
+    - prime/warm-checkout-401-judges-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  judge:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUTF8: '1'
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 1db0f20fa543e496fa04be4f37af106a8a0bc27f
+        path: source-base
+        persist-credentials: false
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 6c45194834cb46e14a9579d780325dd585468e29
+        path: source-head
+        persist-credentials: false
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 8c9a1fda9159e9b0bb8c625f7671cd95ee809729
+        path: controls
+        persist-credentials: false
+        sparse-checkout: 'crates/se/tests/warm_checkout_measurement_review.rs
+
+          crates/se-store/tests/warm_checkout_native_review.rs
+
+          crates/se/tests/review_warm_checkout/clients.py
+
+          crates/se/tests/review_warm_checkout/mutate.py
+
+          crates/se/tests/review_warm_checkout/native_process.py
+
+          crates/se/tests/review_warm_checkout/security.ps1
+
+          crates/se/tests/review_warm_checkout/terminate_owned.py'
+        sparse-checkout-cone-mode: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: 1.97.1
+        targets: x86_64-pc-windows-msvc
+    - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+    - name: Stage independent frozen public consumers
+      shell: python
+      run: "from pathlib import Path\nimport hashlib,json,shutil\nCONTROLS={'crates/se/tests/warm_checkout_measurement_review.rs':\
+        \ 'f41958784831d0076690124a399327d62518cab74d401a8610bf096345a9bd59', 'crates/se-store/tests/warm_checkout_native_review.rs':\
+        \ '62b57c3d454a6bacfdac99d9125a61953642ef325ea874c0beecbcea10fb7226', 'crates/se/tests/review_warm_checkout/clients.py':\
+        \ '2efad4ccd25cfc391abbe23dcf66957f1ee8e076a46a49659f99e33b3efaffa7', 'crates/se/tests/review_warm_checkout/mutate.py':\
+        \ '01dc1539e72232ce0baebaab15a7bee89995796828c73cfdfda5e6571013e062', 'crates/se/tests/review_warm_checkout/native_process.py':\
+        \ '1a1933818b6c46ab9497383fc6e37c8547eee45d448dcd8f8c6b4586529d98dd', 'crates/se/tests/review_warm_checkout/security.ps1':\
+        \ '115bfcf761175d5b5ccf065b84e41f1095aa06e41f0f66d9ceb66c3ba23b5bb8', 'crates/se/tests/review_warm_checkout/terminate_owned.py':\
+        \ '7ad11a21dd2259275eb57cd1ae78324bbbe24083ddb16d3dddb0b67304c5feed'}\nfor arm in [\"base\",\"head\"]:\n for name,digest\
+        \ in CONTROLS.items():\n  original=Path(\"controls\")/name\n  assert hashlib.sha256(original.read_bytes()).hexdigest()==digest\n\
+        \  target=Path(\"source-\"+arm)/name\n  assert not target.exists()\n  target.parent.mkdir(parents=True,exist_ok=True)\n\
+        \  shutil.copyfile(original,target)\n"
+    - name: Compare public one/eight-client paths and native pool boundaries
+      shell: python
+      run: "import os,sys\nfrom pathlib import Path\nsys.argv=[\"producer\",\"--source-base\",\"source-base\",\"--source-head\"\
+        ,\"source-head\",\"--out\",str(Path(os.environ[\"RUNNER_TEMP\"])/\"warm-checkout-401-r1\"),\"--target-root\",str(Path(os.environ[\"\
+        RUNNER_TEMP\"])/\"warm-checkout-401-targets\")]\n\"\"\"Compare frozen public consumers without product instrumentation.\"\
+        \"\"\nimport argparse\nimport hashlib\nimport json\nimport math\nimport os\nfrom pathlib import Path\nimport platform\n\
+        import shutil\nimport statistics\nimport subprocess\nimport time\nimport traceback\n\nPRODUCTS = {'base': '1db0f20fa543e496fa04be4f37af106a8a0bc27f',\n\
+        \            'head': '6c45194834cb46e14a9579d780325dd585468e29'}\nCONTROLS = ['crates/se/tests/warm_checkout_measurement_review.rs',\n\
+        \            'crates/se-store/tests/warm_checkout_native_review.rs']\nCONTROLS += ['crates/se/tests/review_warm_checkout/'\
+        \ + name for name in\n             ['clients.py', 'mutate.py', 'native_process.py', 'security.ps1', 'terminate_owned.py']]\n\
+        OPS = ['stateengine_msg_send', 'stateengine_working_state_set']\nPHASES = ['admission', 'submission', 'continuation']\n\
+        \n\ndef save(path, value):\n    path.write_text(json.dumps(value, indent=2) + '\\n', encoding='utf-8')\n\n\ndef digest(path):\n\
+        \    return hashlib.sha256(path.read_bytes()).hexdigest()\n\n\ndef p95(values):\n    assert values and all(math.isfinite(x)\
+        \ for x in values)\n    return sorted(values)[math.ceil(len(values) * .95) - 1]\n\n\ndef components(sample):\n   \
+        \ assert sample['writer']['mode'] == 'host' and sample['event_id']\n    phases = sample['diagnostics']['host_phases']\n\
+        \    result = {'client_ms': sample['ms'], 'host_ms': phases['admitted_to_encode_us'] / 1000,\n              'completion_wait_ms':\
+        \ phases['completion_wait_us'] / 1000}\n    for phase in PHASES:\n        span = phases[phase]\n        assert span['jobs']\
+        \ == 1 and 'native_file_counts' not in span\n        for part in ['queue', 'work', 'resume']:\n            result[phase\
+        \ + '_' + part + '_ms'] = span[part + '_us'] / 1000\n    for part in ['queue', 'work', 'resume']:\n        result['worker_'\
+        \ + part + '_ms'] = sum(result[phase + '_' + part + '_ms'] for phase in PHASES)\n    result['host_other_ms'] = result['host_ms']\
+        \ - result['completion_wait_ms'] - sum(\n        result['worker_' + part + '_ms'] for part in ['queue', 'work', 'resume'])\n\
+        \    result['bridge_wire_ms'] = result['client_ms'] - result['host_ms']\n    assert result['host_other_ms'] >= -.01\
+        \ and result['bridge_wire_ms'] >= -.01\n    assert all(math.isfinite(value) for value in result.values())\n    return\
+        \ result\n\n\ndef analyze(report, smoke):\n    assert set(report['cohorts']) == ({'1'} if smoke else {'1', '8'})\n\
+        \    result, seen = {}, set()\n    for cohort, clients in report['cohorts'].items():\n        assert len(clients)\
+        \ == int(cohort)\n        for client in clients:\n            assert not client.get('error') and not client.get('cleanup_error'),\
+        \ client\n            assert client['verified_events'] == 60 and client['replay_verified'] == 2\n            assert\
+        \ client['bridge_exit'] == 0 and set(client['samples']) == set(OPS)\n        measured = {}\n        for op in OPS:\n\
+        \            rows, tails = [], []\n            for client in clients:\n                samples = client['samples'][op]\n\
+        \                assert len(samples) == 30 and p95([s['ms'] for s in samples]) == client['p95_ms'][op]\n         \
+        \       tails.append(sorted(samples, key=lambda row: row['ms'])[28])\n                for sample in samples:\n   \
+        \                 assert sample['key'] not in seen\n                    seen.add(sample['key'])\n                \
+        \    rows.append(components(sample))\n            tail = max(tails, key=lambda sample: sample['ms'])\n           \
+        \ measured[op] = {'samples': len(rows), 'worst_client_p95_ms': tail['ms'],\n                'pooled_p95_ms': p95([row['client_ms']\
+        \ for row in rows]),\n                'worker_queue_p95_ms': p95([row['worker_queue_ms'] for row in rows]),\n    \
+        \            'worker_queue_mean_ms': statistics.mean(row['worker_queue_ms'] for row in rows),\n                'worker_work_mean_ms':\
+        \ statistics.mean(row['worker_work_ms'] for row in rows),\n                'exact_worst_client_tail_key': tail['key'],\
+        \ 'exact_tail_components': components(tail)}\n        result[cohort] = measured\n    assert len(seen) == (60 if smoke\
+        \ else 540)\n    return {'cohorts': result, 'verified_events': len(seen), 'latency_budget_pass': report['pass'],\n\
+        \            'accounting': 'Per-request worker sums are additive; marginal p95s and overlapping writer/completion\
+        \ intervals are not added.'}\n\n\nclass CleanupUnknown(RuntimeError):\n    pass\n\n\ndef main():\n    parser = argparse.ArgumentParser(description=__doc__)\n\
+        \    parser.add_argument('--source-base', type=Path)\n    parser.add_argument('--source-head', type=Path, required=True)\n\
+        \    parser.add_argument('--out', type=Path, required=True)\n    parser.add_argument('--target-root', type=Path, required=True)\n\
+        \    parser.add_argument('--preflight', action='store_true')\n    args = parser.parse_args()\n    assert args.preflight\
+        \ or os.name == 'nt', 'Full comparison requires native Windows'\n    sources = {'head': args.source_head.resolve()}\n\
+        \    if not args.preflight:\n        assert args.source_base\n        sources = {'base': args.source_base.resolve(),\
+        \ **sources}\n    out = args.out.resolve()\n    out.mkdir(parents=True, exist_ok=False)\n    target = 'x86_64-pc-windows-msvc'\
+        \ if os.name == 'nt' else 'x86_64-unknown-linux-gnu'\n    summary = {'products': PRODUCTS, 'target': target, 'platform':\
+        \ platform.platform(),\n               'cpu_count': os.cpu_count(), 'preflight': args.preflight, 'qualified': False,\n\
+        \               'producer_sha256': digest(Path(__file__)),\n               'qualification_scope': 'Completed consumers\
+        \ and closure; latency-budget compliance is reported separately.',\n               'profile': 'release', 'features':\
+        \ 'all-features', 'distribution_performance_claim': False,\n               'phases': [], 'measurements': [], 'failures':\
+        \ [], 'resource_cost': 'not measured'}\n    binaries = {}\n\n    def execute(arm, label, command, environment, timeout=1800):\n\
+        \        destination = out / arm\n        destination.mkdir(exist_ok=True)\n        row = {'arm': arm, 'label': label,\
+        \ 'argv': [str(x) for x in command], 'state': 'unrun'}\n        summary['phases'].append(row)\n        save(out /\
+        \ 'summary.json', summary)\n        began = time.monotonic_ns()\n        inherited = ()\n        environment = dict(environment)\n\
+        \        if os.name != 'nt' and row['argv'][0] == 'cargo' and 'SECODE_HEAVY_LEASE' in environment:\n            claim\
+        \ = json.loads(environment['SECODE_HEAVY_LEASE'])\n            inherited = (claim['fd'], claim['notify'])\n      \
+        \      for fd in inherited:\n                os.fstat(fd)\n        elif row['argv'][0] != 'cargo':\n            for\
+        \ key in ['SECODE_HEAVY_LEASE', 'SECODE_DURABLE_JOB']:\n                environment.pop(key, None)\n        options\
+        \ = {'pass_fds': inherited} if os.name != 'nt' else {}\n        with (destination / (label + '.stdout')).open('wb')\
+        \ as stdout, (destination / (label + '.stderr')).open('wb') as stderr:\n            child = subprocess.Popen(row['argv'],\
+        \ cwd=sources[arm], env=environment,\n                                     stdin=subprocess.DEVNULL, stdout=stdout,\
+        \ stderr=stderr, **options)\n            row.update(owned_pid=child.pid, state='running')\n            save(out /\
+        \ 'summary.json', summary)\n            try:\n                row['exit'] = child.wait(timeout=timeout)\n        \
+        \    except subprocess.TimeoutExpired:\n                row.update(state='failed', cleanup_unknown=True)\n       \
+        \         save(out / 'summary.json', summary)\n                raise CleanupUnknown(f'Owned {label} process {child.pid}\
+        \ did not join; no next arm started')\n        row.update(state='passed' if row['exit'] == 0 else 'failed', elapsed_ns=time.monotonic_ns()\
+        \ - began)\n        save(out / 'summary.json', summary)\n        assert row['exit'] == 0, f'{arm} {label} failed;\
+        \ complete output retained'\n        return destination / (label + '.stdout')\n\n    environments = {}\n    try:\n\
+        \        for arm, source in sources.items():\n            try:\n                current = subprocess.check_output(['git',\
+        \ 'rev-parse', 'HEAD'], cwd=source, text=True).strip()\n                changed = set(subprocess.check_output(['git',\
+        \ 'diff', '--name-only', PRODUCTS[arm]], cwd=source, text=True).splitlines())\n                assert current == PRODUCTS[arm]\
+        \ or changed <= set(CONTROLS), 'product source differs'\n                assert changed <= set(CONTROLS)\n       \
+        \         status = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=all'], cwd=source,\
+        \ text=True)\n                assert all(line[3:] in CONTROLS for line in status.splitlines()), 'Unexpected source\
+        \ change or untracked build input'\n                hashes = {name: digest(source / name) for name in CONTROLS}\n\
+        \                destination = out / arm\n                destination.mkdir(exist_ok=True)\n                save(destination\
+        \ / 'inputs.json', {'product': PRODUCTS[arm], 'checked_out': current,\n                    'review_controls': hashes,\
+        \ 'compiler': subprocess.check_output(['rustc', '-vV'], text=True),\n                    'product_diff': sorted(changed),\
+        \ 'run': os.environ.get('GITHUB_RUN_ID')})\n                env = {k: v for k, v in os.environ.items() if not k.startswith(('SE_',\
+        \ 'STATEENGINE_', 'SECODE_', 'OPENAI_', 'ANTHROPIC_', 'GH_', 'GITHUB_'))\n                       and k not in ('CLAUDECODE',\
+        \ 'CODEX_THREAD_ID', 'CODEX_CI')}\n                for key in ['SECODE_HEAVY_LEASE', 'SECODE_DURABLE_JOB']:\n    \
+        \                if key in os.environ:\n                        env[key] = os.environ[key]\n                arm_target\
+        \ = args.target_root.resolve() if args.preflight else args.target_root.resolve() / arm\n                env.update(CARGO_TARGET_DIR=str(arm_target),\
+        \ CARGO_BUILD_JOBS='2',\n                           CARGO_INCREMENTAL='0', CARGO_PROFILE_RELEASE_DEBUG='0')\n    \
+        \            environments[arm] = env\n                commands = [('measure', 'se', ['warm_checkout_measurement_review']),\n\
+        \                            ('store', 'se-store', ['warm_checkout_native_review', 'read_pool_independent'])]\n  \
+        \              if not args.preflight:\n                    commands += [('host', 'se-host', ['read_pool_host_independent'])]\n\
+        \                programs = {}\n                for label, package, tests in commands:\n                    command\
+        \ = ['cargo', 'test', '--no-run', '--message-format=json', '--release',\n                               '--all-features',\
+        \ '--locked', '-p', package]\n                    if not args.preflight:\n                        command += ['--target',\
+        \ target]\n                    for test in tests:\n                        command += ['--test', test]\n         \
+        \           log = execute(arm, 'build-' + label, command, env)\n                    for line in log.read_text(encoding='utf-8').splitlines():\n\
+        \                        if not line.startswith('{'):\n                            continue\n                    \
+        \    row = json.loads(line)\n                        if row.get('reason') == 'compiler-artifact' and row.get('executable')\
+        \ and row.get('profile', {}).get('test'):\n                            name = row['target']['name']\n            \
+        \                assert name not in programs\n                            programs[name] = Path(row['executable'])\n\
+        \                native_target = arm_target if args.preflight else arm_target / target\n                image = native_target\
+        \ / 'release' / ('se.exe' if os.name == 'nt' else 'se')\n                assert image.is_file()\n                scratch\
+        \ = out.parent / (out.name + '-' + arm + '-private')\n                scratch.mkdir(exist_ok=False)\n            \
+        \    repo = scratch / 'repo'\n                repo.mkdir()\n                first = execute(arm, 'first-product-call',\
+        \ [image, '--json', '--home', scratch / 'state',\n                                                           'init',\
+        \ '--repo', repo], env, timeout=60)\n                assert isinstance(json.loads(first.read_text(encoding='utf-8')),\
+        \ dict)\n                assert (scratch / 'state/state.db').is_file(), 'First product call created no real database'\n\
+        \                for name, binary in {**programs, 'se': image}.items():\n                    copy = destination /\
+        \ (name + binary.suffix)\n                    shutil.copyfile(binary, copy)\n                save(destination / 'images.json',\
+        \ {name: {'sha256': digest(path), 'bytes': path.stat().st_size}\n                                                \
+        \   for name, path in {**programs, 'se': image}.items()})\n                binaries[arm] = programs\n            except\
+        \ CleanupUnknown:\n                raise\n            except Exception as error:\n                summary['failures'].append({'arm':\
+        \ arm, 'build_or_first_call': repr(error)})\n                save(out / 'summary.json', summary)\n        assert len(binaries)\
+        \ == len(sources), 'At least one build/first-call path failed'\n        for arm, programs in binaries.items():\n \
+        \           for name in ['warm_checkout_native_review', 'read_pool_independent', 'read_pool_host_independent']:\n\
+        \                if name in programs:\n                    log = execute(arm, 'regression-' + name, [programs[name],\
+        \ '--nocapture', '--test-threads=1'], environments[arm], timeout=300)\n                    expected = {'warm_checkout_native_review':\
+        \ 4, 'read_pool_independent': 7,\n                                'read_pool_host_independent': 4 if os.name == 'nt'\
+        \ else 5}[name]\n                    assert f'test result: ok. {expected} passed; 0 failed;' in log.read_text(encoding='utf-8'),\
+        \ 'Incomplete native test count'\n        order = [('head', 1)] if args.preflight else [('base', 1), ('head', 1),\
+        \ ('head', 2), ('base', 2)]\n        for arm, repeat in order:\n            measurement = out / arm / f'measurement-{repeat}'\n\
+        \            env = dict(environments[arm], SE_REVIEW_OUT=str(measurement))\n            if args.preflight:\n     \
+        \           env['SE_MEASURE_COHORT'] = '1'\n            execute(arm, f'measurement-{repeat}', [binaries[arm]['warm_checkout_measurement_review'],\n\
+        \                'measure_public_warm_checkout', '--exact', '--nocapture', '--test-threads=1'], env, timeout=300)\n\
+        \            report = json.loads((measurement / 'mcp-writers.json').read_text(encoding='utf-8'))\n            summary['measurements'].append({'arm':\
+        \ arm, 'repeat': repeat, **analyze(report, args.preflight)})\n            save(out / 'summary.json', summary)\n  \
+        \      summary['qualified'] = not summary['failures']\n    except Exception as error:\n        summary['failure']\
+        \ = repr(error)\n        summary['traceback'] = traceback.format_exc()\n        summary['cleanup_unknown'] = isinstance(error,\
+        \ CleanupUnknown)\n    finally:\n        save(out / 'summary.json', summary)\n        files = {p.relative_to(out).as_posix():\
+        \ {'bytes': p.stat().st_size, 'sha256': digest(p)}\n                 for p in out.rglob('*') if p.is_file()}\n   \
+        \     save(out / 'manifest.json', {'files': files})\n    return 0 if summary['qualified'] else 1\n\n\nif __name__\
+        \ == '__main__':\n    raise SystemExit(main())\n\n"
+    - name: Retain complete input identities, native controls and raw phase samples
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: warm-checkout-401-r1
+        path: ${{ runner.temp }}/warm-checkout-401-r1
+        if-no-files-found: error
