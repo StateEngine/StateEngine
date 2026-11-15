@@ -11,6 +11,28 @@ impl State {
         owner: &HumanId,
         wake: Wake,
     ) -> Result<Plan> {
+        if matches!(wake, Wake::Core) {
+            for root in &mut self.roots {
+                root.feed_pending = true;
+                root.feed_stalled = false;
+            }
+        }
+        // A native parse deadline takes priority over registry scans and SQL
+        // work. The child cannot start parsing until this owner arms that clock.
+        if self.controller.runtime().child_parse_deadline().is_some() {
+            if let Err(error) = crate::atlas_runtime::drive_child(&mut self.controller) {
+                eprintln!("Code index child cancellation pending: {error}");
+            }
+            if self.controller.runtime().child_pid().is_none() {
+                for root in &mut self.roots {
+                    root.feed_pending = true;
+                    root.feed_stalled = false;
+                }
+            }
+            if let Some(plan) = self.parse_plan()? {
+                return Ok(plan);
+            }
+        }
         let mut again = false;
         if let Some(activity) = context.atlas.records.take_activity()? {
             if self.enabled {
@@ -44,12 +66,7 @@ impl State {
             self.reconcile_all = false;
         }
         match wake {
-            Wake::Core => {
-                for root in &mut self.roots {
-                    root.feed_pending = true;
-                    root.feed_stalled = false;
-                }
-            }
+            Wake::Core => (),
             Wake::Source(root) => {
                 if let Err(error) = drive_events(
                     &mut self.controller,
@@ -78,9 +95,8 @@ impl State {
         // The same controller supplies both event and quantum paths; checkout
         // locks discovered by the driver reach the scheduler before publication.
         if self.controller.runtime().child_pid().is_none()
-            // A qualified parse may use 200 ms. Its source checks, resolution
-            // and atomic SQL commit need a finite margin in the same turn;
-            // repeatedly restarting them at 100 ms could never finish a file.
+            // Source checks, contained parsing, exact reap and atomic commit
+            // share the same finite turn; a shorter restart could starve a file.
             && let Err(error) = drive_quantum(&mut self.controller, MAX_WORK_QUANTUM)
         {
             eprintln!("Code index source work paused: {error}");
@@ -88,6 +104,9 @@ impl State {
         let before = self.controller.runtime().child_pid();
         if let Err(error) = crate::atlas_runtime::drive_child(&mut self.controller) {
             eprintln!("Code index child work paused: {error}");
+        }
+        if let Some(plan) = self.parse_plan()? {
+            return Ok(plan);
         }
         let child = self.controller.runtime().child_pid();
         if before.is_some() && child.is_none() {
@@ -169,6 +188,22 @@ impl State {
             delay,
             fds,
         })
+    }
+    fn parse_plan(&self) -> Result<Option<Plan>> {
+        let Some(end) = self.controller.runtime().child_parse_deadline() else {
+            return Ok(None);
+        };
+        let mut fds = Vec::with_capacity(1);
+        if let Some(fd) = self.controller.runtime().child_readiness_fd() {
+            fds.push((fd.try_clone_to_owned().map_err(fd_error)?, Wake::Child));
+        }
+        Ok(Some(Plan {
+            ready: false,
+            // After a failed bounded reap, retain custody and wait for native
+            // exit readiness rather than spinning on an already expired timer.
+            delay: end.checked_duration_since(Instant::now()),
+            fds,
+        }))
     }
     fn advance_project(&mut self, context: &ExecutionContext, owner: &HumanId) -> Result<bool> {
         if self.active_project.is_none() {
