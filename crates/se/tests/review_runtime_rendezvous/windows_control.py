@@ -1,8 +1,8 @@
 """Real Windows route/authentication crash window and held-owner consumers.
 
-The native peer helper reads the real suspended owner's handle table. It closes
-all duplicated handles before returning. No product hooks or endpoint edits are
-used. Run under the admitted VM owner with a native compiler on PATH.
+The native peer helper reads the real caller's handles and identifies the exact
+suspended server. It closes all duplicates before returning. No product hooks or
+endpoint edits are used. Run with a native compiler on PATH.
 """
 import argparse
 import hashlib
@@ -67,7 +67,6 @@ def trial(args, label, held, Fixture, Native, PausedParent, Process):
         assert endpoint['address']['kind'] == 'windows_pipe'
         pipe_name = endpoint['address']['name']
         assert pipe_name.startswith('\\\\.\\pipe\\'), 'Expected a local native pipe'
-        native_pipe_name = '\\Device\\NamedPipe\\' + pipe_name[len('\\\\.\\pipe\\'):]
         native = Native()
         assert native.writer_present(f.home / 'runtime.lock')
         pause = PausedParent(native, host)
@@ -84,9 +83,8 @@ def trial(args, label, held, Fixture, Native, PausedParent, Process):
 
         def connected():
             assert caller.poll() is None, 'CLI exited before its connection was witnessed'
-            result = subprocess.run([str(args.peer), str(host.pid), str(caller.pid),
-                                     str(host.initial['creation_filetime']), host.initial['image'],
-                                     native_pipe_name],
+            result = subprocess.run([str(args.peer), str(caller.pid), str(host.pid),
+                                     str(client.initial['creation_filetime']), client.initial['image']],
                                     capture_output=True, timeout=10)
             row = {'exit': result.returncode, 'stdout': result.stdout.decode(),
                    'stderr': result.stderr.decode()}
@@ -96,7 +94,7 @@ def trial(args, label, held, Fixture, Native, PausedParent, Process):
             assert result.returncode in (0, 1), row
             if result.returncode == 0:
                 value = json.loads(result.stdout)
-                assert value['owner'] == host.pid and value['client'] == caller.pid
+                assert value['server_pid'] == host.pid and value['process_pid'] == caller.pid
                 assert value['matches'] > 0
                 return value
             return None
