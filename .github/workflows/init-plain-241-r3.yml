@@ -1,0 +1,138 @@
+name: Observe fifty plain fresh public inits on macOS
+'on':
+  push:
+    branches:
+    - prime/init-plain-241-r3
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  CARGO_TERM_COLOR: never
+jobs:
+  observe:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - macos-15
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 7b23fb01a7e16362c6d6b024e5c1801a32bda8c6
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - name: Stage plain init timing driver
+      shell: python
+      run: 'from pathlib import Path
+
+        import os
+
+        r=Path(os.environ[''RUNNER_TEMP''])/''init241''/''evidence''
+
+        r.mkdir(parents=True)
+
+        (r/''plain_run.py'').write_text("from pathlib import Path\nimport argparse,hashlib,json,math,os,platform,selectors,shutil,signal,subprocess,time,traceback\np=argparse.ArgumentParser();p.add_argument(''--image'',required=True);p.add_argument(''--out'',required=True);p.add_argument(''--scratch'',required=True);p.add_argument(''--source'',required=True);p.add_argument(''--source-tree'',required=True);p.add_argument(''--count'',type=int,default=50);a=p.parse_args()\nIMAGE=Path(a.image).resolve(strict=True);OUT=Path(a.out).resolve();OUT.mkdir(parents=True,exist_ok=False);SCRATCH=Path(a.scratch).resolve();SCRATCH.mkdir(parents=True,exist_ok=False);SCRATCH.chmod(0o700)\nBASE={k:v
+        for k,v in os.environ.items() if k in [''PATH'',''HOME'',''USER'',''LOGNAME'',''LANG'',''LC_ALL'',''TMPDIR'',''TMP'',''TEMP'']}\nBASE[''PATH'']=str(SCRATCH/''bin'')+os.pathsep+BASE.get(''PATH'','''')\nreport={''source'':a.source,''platform'':platform.platform(),''planned'':a.count,''rows'':[],''complete'':False,''method'':''plain
+        native public CLI, no preload or interposition'',''limits'':[''Fresh state homes do not imply
+        cold executable or filesystem caches.'',''Five seconds is an external cancellation ceiling, not
+        a product timeout.'',''No native per-phase timings on macOS; this observes total wall time and
+        first output.'',''No provider is launched and no normal-account credential is copied.'']}\ndef
+        sha(p):\n with Path(p).open(''rb'') as f:return hashlib.file_digest(f,''sha256'').hexdigest()\ndef
+        save():(OUT/''report.json'').write_text(json.dumps(report,indent=2)+''\\n'')\ndef distribution(v):\n
+        v=sorted(v);n=len(v)\n return {''n'':n,''median'':(v[n//2] if n%2 else (v[n//2-1]+v[n//2])/2)
+        if n else None,''p95'':v[math.ceil(.95*n)-1] if n else None,''max'':v[-1] if n else None}\ndef
+        members(group):\n    result = subprocess.run([''ps'', ''-ww'', ''-axo'', ''pid=,ppid=,pgid=,lstart=,command=''],\n                            capture_output=True,
+        text=True, check=True)\n    values = []\n    for line in result.stdout.splitlines():\n        f
+        = line.split(None, 8)\n        if len(f) == 9 and int(f[2]) == group:\n            values.append({''pid'':
+        int(f[0]), ''line'': line.strip()})\n    return values\n\ndef observed(argv, env, label, ceiling=5):\n    start
+        = time.monotonic_ns()\n    child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,\n                             stderr=subprocess.PIPE,
+        env=env, start_new_session=True)\n    value = {''argv'': [str(x) for x in argv], ''pid'': child.pid,
+        ''start_ns'': start,\n             ''first_stdout_ms'': None, ''first_stderr_ms'': None, ''supervisor_cancelled'':
+        False}\n    selector = selectors.DefaultSelector()\n    files = {}\n    for name, stream in [(''stdout'',
+        child.stdout), (''stderr'', child.stderr)]:\n        os.set_blocking(stream.fileno(), False)\n        files[name]
+        = (OUT / (label + ''.'' + name)).open(''wb'')\n        selector.register(stream, selectors.EVENT_READ,
+        name)\n    until = start / 1e9 + ceiling\n    try:\n        while selector.get_map():\n            if
+        time.monotonic() >= until and child.poll() is None:\n                value[''supervisor_cancelled'']
+        = True\n                pins = members(child.pid); value[''cancelled_processes''] = pins\n                if
+        sys.platform == ''linux'':\n                    for name in [''wchan'', ''syscall'', ''schedstat'',
+        ''io'']:\n                        try: value[name] = (Path(''/proc'') / str(child.pid) / name).read_text()\n                        except
+        OSError as error: value[name] = {''unreadable'': str(error)}\n                # Every signalled
+        pid belongs to the new session and has an\n                # independently read full command/birth
+        line immediately before use.\n                for pin in reversed(pins):\n                    now
+        = members(child.pid)\n                    if pin in now:\n                        try: os.kill(pin[''pid''],
+        signal.SIGKILL)\n                        except ProcessLookupError: pass\n                until
+        = time.monotonic() + 2\n            elif time.monotonic() >= until:\n                value[''pipe_close_unobserved'']
+        = True\n                break\n            for key, _ in selector.select(0.02):\n                data
+        = os.read(key.fileobj.fileno(), 65536)\n                if data:\n                    field =
+        ''first_'' + key.data + ''_ms''\n                    if value[field] is None: value[field] = (time.monotonic_ns()
+        - start) / 1e6\n                    files[key.data].write(data)\n                else:\n                    selector.unregister(key.fileobj)\n                    key.fileobj.close()\n        value[''exit'']
+        = child.wait(timeout=2)\n    finally:\n        selector.close()\n        for f in files.values():
+        f.close()\n    value[''total_ms''] = (time.monotonic_ns() - start) / 1e6\n    value[''remaining_processes'']
+        = members(child.pid)\n    return value\n\ndef main():\n actual=subprocess.check_output([''git'',''rev-parse'',''HEAD''],cwd=a.source_tree,text=True).strip();assert
+        actual==a.source\n assert not subprocess.check_output([''git'',''status'',''--porcelain'',''--untracked-files=no''],cwd=a.source_tree)\n
+        report.update(actual_source=actual,image={''sha256'':sha(IMAGE),''bytes'':IMAGE.stat().st_size},driver_sha256=sha(__file__),logical_cpus=os.cpu_count())\n
+        (SCRATCH/''bin'').mkdir();inert=SCRATCH/''inert.c'';inert.write_text(''int main(void){return 0;}\\n'');subprocess.run([''cc'',str(inert),''-o'',str(SCRATCH/''bin/goose'')],check=True)\n
+        help=subprocess.run([str(IMAGE),''init'',''--help''],env=BASE,capture_output=True);(OUT/''init-help.txt'').write_bytes(help.stdout+help.stderr);assert
+        help.returncode==0\n for i in range(a.count):\n  label=f''{i+1:02d}-plain'';root=SCRATCH/label;root.mkdir(mode=0o700);repo=root/''repository'';repo.mkdir();marker=repo/''keep.txt'';marker.write_text(''Preserved
+        repository fixture.\\n'');digest=sha(marker);state=root/''state''\n  row={''index'':i+1,''load_before'':list(os.getloadavg()),''wall_start_ns'':time.time_ns()};report[''rows''].append(row);save()\n  argv=[str(IMAGE),''--home'',str(state),''--json'',''init'',''--repo'',str(repo),''--name'',''Fresh
+        setup observation'',''--harness'',''goose'']\n  row.update(observed(argv,BASE,label));row[''load_after'']=list(os.getloadavg());row[''config_published'']=(state/''config.toml'').is_file();row[''repository_preserved'']=sha(marker)==digest\n  try:row[''json_output_valid'']=isinstance(json.loads((OUT/(label+''.stdout'')).read_text()),dict)\n  except
+        ValueError:row[''json_output_valid'']=False\n  outputs=[row[k] for k in [''first_stdout_ms'',''first_stderr_ms'']
+        if row[k] is not None];row[''first_output_ms'']=min(outputs) if outputs else None\n  row[''qualified'']=row[''exit'']==0
+        and not row[''supervisor_cancelled''] and not row.get(''pipe_close_unobserved'') and not row[''remaining_processes'']
+        and row[''config_published''] and row[''repository_preserved''] and row[''json_output_valid''];save();print(json.dumps(row),flush=True)\n  if
+        row[''qualified'']:\n   assert not any(p.is_symlink() for p in root.rglob(''*''));shutil.rmtree(root)\n  if
+        row[''remaining_processes''] or row.get(''pipe_close_unobserved''):report[''stopped_reason'']=''process/pipe
+        closure unobserved'';return 1\n rows=report[''rows''];report[''complete'']=len(rows)==a.count;report[''qualified'']=sum(x[''qualified'']
+        for x in rows);report[''supervisor_cancelled'']=sum(x[''supervisor_cancelled''] for x in rows);report[''two_second_samples'']=sum(x[''total_ms'']>=2000
+        for x in rows)\n report[''total_ms'']=distribution([x[''total_ms''] for x in rows]);report[''first_output_ms'']=distribution([x[''first_output_ms'']
+        for x in rows if x[''first_output_ms''] is not None]);report[''first_stdout_ms'']=distribution([x[''first_stdout_ms'']
+        for x in rows if x[''first_stdout_ms''] is not None]);report[''passed'']=report[''complete'']
+        and all(x[''qualified''] for x in rows);return 0 if report[''passed''] else 1\ntry:code=main()\nexcept
+        BaseException as e:report[''failure'']={''type'':type(e).__name__,''detail'':str(e),''traceback'':traceback.format_exc()};code=1\nfinally:\n
+        save();files=[{''file'':p.relative_to(OUT).as_posix(),''bytes'':p.stat().st_size,''sha256'':sha(p)}
+        for p in sorted(OUT.rglob(''*'')) if p.is_file() and p.name!=''manifest.json''];(OUT/''manifest.json'').write_text(json.dumps(files,indent=2)+''\\n'')\nraise
+        SystemExit(code)\n")
+
+        '
+    - name: Build the frozen distribution image
+      shell: python
+      run: "from pathlib import Path\nimport os,subprocess,time,json,hashlib\nroot=Path(os.environ['RUNNER_TEMP'])/'init241'/'evidence'\n\
+        source=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()\nassert source=='7b23fb01a7e16362c6d6b024e5c1801a32bda8c6'\n\
+        assert not subprocess.check_output(['git','status','--porcelain','--untracked-files=no'])\nenv=dict(os.environ)\n\
+        for key in ['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS']:env.pop(key,None)\ntarget=subprocess.check_output(['rustc','--print','host-tuple'],text=True).strip()\n\
+        target_dir=root.parent/'clean-explicit-target'\nassert not target_dir.exists()\nenv['CARGO_TARGET_DIR']=str(target_dir)\n\
+        start=time.monotonic()\nwith (root/'build.stdout').open('wb') as out,(root/'build.stderr').open('wb')\
+        \ as err:\n code=subprocess.run(['cargo','build','--profile','distribution','-p','se','--bin','se','--locked','--target',target],env=env,stdout=out,stderr=err).returncode\n\
+        receipt={'exit':code,'seconds':time.monotonic()-start,'source':source,'profile':'distribution','features':'default','target':target,'target_dir_started_empty':True,'cargo_target_dir':str(target_dir)}\n\
+        image=target_dir/target/'distribution'/'se'\nif code==0:receipt['image']={'sha256':hashlib.sha256(image.read_bytes()).hexdigest(),'bytes':image.stat().st_size}\n\
+        if code==0:(root/'product.se').write_bytes(image.read_bytes())\n(root/'build.json').write_text(json.dumps(receipt,indent=2)+'\\\
+        n')\nraise SystemExit(code)\n"
+    - name: Observe fifty plain fresh public setups
+      shell: python
+      run: 'from pathlib import Path
+
+        import os,sys,subprocess,json
+
+        root=Path(os.environ[''RUNNER_TEMP''])/''init241''/''evidence''
+
+        build=json.loads((root/''build.json'').read_text())
+
+        image=Path(build[''cargo_target_dir''])/build[''target'']/''distribution''/''se''
+
+        argv=[sys.executable,str(root/''plain_run.py''),''--image'',str(image.resolve(strict=True)),''--source-tree'',str(Path.cwd()),''--source'',''7b23fb01a7e16362c6d6b024e5c1801a32bda8c6'',''--out'',str(root/''results''),''--scratch'',str(Path(os.environ[''RUNNER_TEMP''])/''init241-homes''),''--count'',''50'']
+
+        raise SystemExit(subprocess.run(argv).returncode)
+
+        '
+    - name: Retain every observation and failure
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: init241-${{ matrix.os }}-plain-r3
+        path: ${{ runner.temp }}/init241/evidence
+        if-no-files-found: error
+        retention-days: 14
