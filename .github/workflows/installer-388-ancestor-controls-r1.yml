@@ -1,0 +1,151 @@
+name: Native installer ancestor regression controls
+'on':
+  push:
+    branches:
+    - prime/installer-388-ancestor-controls-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  judge:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+        - ubuntu-24.04
+        - macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 7b23fb01a7e16362c6d6b024e5c1801a32bda8c6
+        path: base
+        persist-credentials: false
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 92f95b2729cd932e21d42a1a8752669a18e6da91
+        path: head
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Read pinned compiler
+      id: compiler
+      shell: python
+      run: 'import os,tomllib
+
+        from pathlib import Path
+
+        channel=tomllib.loads(Path(''head/rust-toolchain.toml'').read_text(encoding=''utf-8''))[''toolchain''][''channel'']
+
+        with open(os.environ[''GITHUB_OUTPUT''],''a'') as out:print(''channel=''+channel,file=out)
+
+        '
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: ${{ steps.compiler.outputs.channel }}
+        components: llvm-tools-preview
+    - name: Build real release archives and run frozen installer controls
+      shell: python
+      run: "JUDGE='\"\"\"Independent real standalone installer controls on a disposable Unix CI account.\"\"\"\\\
+        nimport argparse,errno,hashlib,json,os,pwd,shutil,stat,subprocess,sys,tarfile,time\\nfrom pathlib import\
+        \ Path\\np=argparse.ArgumentParser();p.add_argument(\\'--archive\\',type=Path,required=True);p.add_argument(\\\
+        '--source\\',required=True);p.add_argument(\\'--label\\',choices=[\\'base\\',\\'head\\'],required=True);p.add_argument(\\\
+        '--out\\',type=Path,required=True);p.add_argument(\\'--fixture-parent\\',type=Path,required=True);a=p.parse_args()\\\
+        nassert os.name==\\'posix\\' and os.geteuid()!=0,\\'installer must execute as a non-root account\\'\\nout=a.out.resolve();out.mkdir();fixture=a.fixture_parent.resolve()/a.label\\\
+        nassert not fixture.exists()\\nfixture.mkdir(mode=0o755)\\nuid=os.geteuid();gid=os.getegid();report={\\\
+        'source\\':a.source,\\'label\\':a.label,\\'uid\\':uid,\\'gid\\':gid,\\'platform\\':sys.platform,\\'archive_sha256\\\
+        ':hashlib.sha256(a.archive.read_bytes()).hexdigest(),\\'cases\\':[]}\\ndef save():(out/\\'report.json\\\
+        ').write_text(json.dumps(report,indent=2)+\\'\\\\n\\',encoding=\\'utf-8\\')\\n# Root performs only ownership/mode\
+        \ fixture setup, snapshots and exact cleanup.\\nROOT_HELPER=r\\'\\'\\'\\nimport os,sys,json,stat,hashlib,shutil\\\
+        nfrom pathlib import Path\\nop=sys.argv[1];root=Path(sys.argv[2]);assert root.is_absolute() and root.name\
+        \ in [\\'base\\',\\'head\\']\\nif op==\\'create\\':\\n case,mode,uid,gid=sys.argv[3],int(sys.argv[4],8),int(sys.argv[5]),int(sys.argv[6]);path=root/case;path.mkdir(mode=0o755);os.chmod(path,0o755);anchor=path/\\\
+        'ancestor\\';anchor.mkdir();os.chmod(anchor,mode);os.chown(anchor,0,0);home=anchor/\\'home\\';home.mkdir(mode=0o700);os.chown(home,uid,gid)\\\
+        n if case==\\'leaf-symlink\\':\\n  outside=path/\\'outside\\';outside.mkdir(mode=0o700);os.chown(outside,uid,gid);sentinel=outside/\\\
+        'sentinel\\';sentinel.write_bytes(b\\'Foreign leaf target is preserved.\\\\n\\');os.chown(sentinel,uid,gid);os.symlink(outside,home/\\\
+        'state\\');os.lchown(home/\\'state\\',uid,gid)\\n if case==\\'incumbent\\':\\n  local=home/\\'.local\\';local.mkdir(mode=0o700);os.chown(local,uid,gid);bins=local/\\\
+        'bin\\';bins.mkdir(mode=0o700);os.chown(bins,uid,gid);image=bins/\\'se\\';image.write_bytes(b\\'Existing\
+        \ executable remains byte-for-byte unchanged.\\\\n\\');os.chmod(image,0o755);os.chown(image,uid,gid)\\n\
+        \ print(json.dumps({\\'ancestor_uid\\':anchor.lstat().st_uid,\\'ancestor_mode\\':stat.S_IMODE(anchor.lstat().st_mode),\\\
+        'home_uid\\':home.lstat().st_uid,\\'home_mode\\':stat.S_IMODE(home.lstat().st_mode)}))\\nelif op==\\'snapshot\\\
+        ':\\n path=root/sys.argv[3];rows={}\\n for current,dirs,files in os.walk(path,followlinks=False):\\n  for\
+        \ name in [\\'.\\',*dirs,*files]:\\n   p=Path(current) if name==\\'.\\' else Path(current)/name;s=p.lstat();key=str(p.relative_to(path));v={\\\
+        'mode\\':stat.S_IMODE(s.st_mode),\\'uid\\':s.st_uid,\\'gid\\':s.st_gid,\\'inode\\':s.st_ino,\\'type\\':stat.S_IFMT(s.st_mode)}\\\
+        n   if stat.S_ISLNK(s.st_mode):v[\\'target\\']=os.readlink(p)\\n   elif stat.S_ISREG(s.st_mode):v[\\'bytes\\\
+        ']=s.st_size;v[\\'sha256\\']=hashlib.sha256(p.read_bytes()).hexdigest()\\n   rows[key]=v\\n print(json.dumps(rows,sort_keys=True))\\\
+        nelif op==\\'cleanup\\':\\n assert root.parent.name==\\'installer-fixtures\\';shutil.rmtree(root)\\nelse:raise\
+        \ RuntimeError(\\'unknown fixture operation\\')\\n\\'\\'\\'\\ndef privileged(op,*args):\\n r=subprocess.run([\\\
+        'sudo\\',\\'-n\\',sys.executable,\\'-c\\',ROOT_HELPER,op,str(fixture),*map(str,args)],capture_output=True,text=True,timeout=30)\\\
+        n assert r.returncode==0,(op,r.stdout,r.stderr)\\n return json.loads(r.stdout) if r.stdout else None\\nbundle=out/\\\
+        'bundle\\';bundle.mkdir()\\nwith tarfile.open(a.archive) as archive:\\n for member in archive.getmembers():\\\
+        n  parts=Path(member.name).parts\\n  assert not Path(member.name).is_absolute() and \\'..\\' not in parts\
+        \ and (member.isfile() or member.isdir())\\n archive.extractall(bundle,filter=\\'data\\')\\nroots=list(bundle.iterdir());assert\
+        \ len(roots)==1\\nbundle=roots[0];manifest=json.loads((bundle/\\'manifest.json\\').read_bytes());assert\
+        \ manifest[\\'source_commit\\']==a.source and manifest[\\'variant\\']==\\'standalone\\'\\nfor name,entry\
+        \ in manifest[\\'files\\'].items():\\n path=bundle/name;assert hashlib.sha256(path.read_bytes()).hexdigest()==entry[\\\
+        'sha256\\'] and path.stat().st_size==entry[\\'bytes\\']\\nreport[\\'binary_sha256\\']=hashlib.sha256((bundle/\\\
+        'se\\').read_bytes()).hexdigest();report[\\'manifest_sha256\\']=hashlib.sha256((bundle/\\'manifest.json\\\
+        ').read_bytes()).hexdigest();save()\\ndef command(case,argv,env):\\n start=time.monotonic_ns();r=subprocess.run(argv,capture_output=True,env=env,cwd=fixture,timeout=180)\\\
+        n prefix=out/(case+\\'-\\'+str(len(report[\\'cases\\'][-1][\\'calls\\'])))\\n prefix.with_suffix(\\'.stdout\\\
+        ').write_bytes(r.stdout);prefix.with_suffix(\\'.stderr\\').write_bytes(r.stderr)\\n row={\\'argv\\':argv,\\\
+        'exit\\':r.returncode,\\'elapsed_ns\\':time.monotonic_ns()-start,\\'stdout_file\\':prefix.with_suffix(\\\
+        '.stdout\\').name,\\'stderr_file\\':prefix.with_suffix(\\'.stderr\\').name};report[\\'cases\\'][-1][\\'calls\\\
+        '].append(row);save();return r\\ntry:\\n for case,mode in [(\\'readable-0755\\',0o755),(\\'search-only-0711\\\
+        ',0o711),(\\'non-traversable\\',0o744),(\\'leaf-symlink\\',0o755),(\\'incumbent\\',0o755)]:\\n  row={\\\
+        'case\\':case,\\'expected_success\\':case==\\'readable-0755\\' or (case==\\'search-only-0711\\' and a.label==\\\
+        'head\\'),\\'calls\\':[]};report[\\'cases\\'].append(row);save()\\n  try:\\n   row[\\'fixture\\']=privileged(\\\
+        'create\\',case,oct(mode)[2:],uid,gid);assert row[\\'fixture\\'][\\'ancestor_uid\\']==0 and row[\\'fixture\\\
+        '][\\'ancestor_mode\\']==mode and row[\\'fixture\\'][\\'home_uid\\']==uid\\n   anchor=fixture/case/\\'ancestor\\\
+        ';home=anchor/\\'home\\';state=home/\\'state\\';row[\\'effective_access\\']={\\'read\\':os.access(anchor,os.R_OK),\\\
+        'search\\':os.access(anchor,os.X_OK)}\\n   if mode==0o711:\\n    assert row[\\'effective_access\\']=={\\\
+        'read\\':False,\\'search\\':True}\\n    try:fd=os.open(anchor,os.O_RDONLY|os.O_DIRECTORY)\\n    except OSError\
+        \ as error:assert error.errno==errno.EACCES;row[\\'read_open_errno\\']=error.errno\\n    else:os.close(fd);raise\
+        \ AssertionError(\\'0711 did not deny listing access\\')\\n   if mode==0o744:assert not row[\\'effective_access\\\
+        '][\\'search\\']\\n   before=privileged(\\'snapshot\\',case);row[\\'before\\']=before\\n   env={\\'HOME\\\
+        ':str(home),\\'SE_HOME\\':str(state),\\'SHELL\\':\\'/bin/sh\\',\\'PATH\\':\\'/usr/bin:/bin:/usr/sbin:/sbin\\\
+        ',\\'LC_ALL\\':\\'C\\',\\'TMPDIR\\':str(out)}\\n   installed=command(case,[\\'/bin/sh\\',str(bundle/\\'install.sh\\\
+        ')],env)\\n   row[\\'after\\']=privileged(\\'snapshot\\',case)\\n   if row[\\'expected_success\\']:\\n \
+        \   assert installed.returncode==0,installed.stderr.decode(errors=\\'replace\\')\\n    binary=home/\\'.local/bin/se\\\
+        ';assert binary.is_file() and binary.stat().st_nlink==1 and hashlib.sha256(binary.read_bytes()).hexdigest()==report[\\\
+        'binary_sha256\\']\\n    assert (state/\\'standalone-install.json\\').is_file() and (state/\\'machine.json\\\
+        ').is_file() and not (state/\\'state.db\\').exists() and not (state/\\'credential\\').exists()\\n    version=command(case,[str(binary),\\\
+        '--version\\'],env);assert version.returncode==0\\n    status=command(case,[str(binary),\\'--home\\',str(state),\\\
+        '--json\\',\\'status\\'],env);assert status.returncode==0 and json.loads(status.stdout)[\\'setup\\'][\\\
+        'state\\']==\\'not-set-up\\'\\n    row[\\'installed_manifest_sha256\\']=hashlib.sha256((state/\\'standalone-install.json\\\
+        ').read_bytes()).hexdigest()\\n   else:\\n    assert installed.returncode!=0,\\'installer accepted a required\
+        \ refusal\\'\\n    assert row[\\'after\\']==before,\\'refused installer changed the protected fixture\\\
+        '\\n    if case==\\'search-only-0711\\':assert b\\'Permission denied\\' in installed.stderr or b\\'os error\
+        \ 13\\' in installed.stderr,installed.stderr\\n   row[\\'verdict\\']=\\'pass\\'\\n  except BaseException\
+        \ as error:\\n   row[\\'verdict\\']=\\'fail\\';row[\\'failure\\']={\\'type\\':type(error).__name__,\\'detail\\\
+        ':str(error)}\\n  save()\\nfinally:\\n privileged(\\'cleanup\\');report[\\'fixture_cleanup\\']=\\'exact\
+        \ owned fixture removed by administrator\\';save()\\nassert len(report[\\'cases\\'])==5 and all(row[\\'verdict\\\
+        ']==\\'pass\\' for row in report[\\'cases\\']),json.dumps([{k:r.get(k) for k in [\\'case\\',\\'verdict\\\
+        ',\\'failure\\']} for r in report[\\'cases\\']],indent=2)\\nprint(json.dumps({\\'label\\':a.label,\\'source\\\
+        ':a.source,\\'cases\\':[{k:r[k] for k in [\\'case\\',\\'expected_success\\',\\'verdict\\']} for r in report[\\\
+        'cases\\']]},indent=2))\\n'\nimport pathlib,subprocess,json,os,sys,time,pwd,hashlib\nroot=pathlib.Path(os.environ['RUNNER_TEMP']);out=root/'installer388';out.mkdir();fixtures=root/'installer-fixtures';fixtures.mkdir(mode=0o755);workspace=pathlib.Path(os.environ['GITHUB_WORKSPACE']);sources={'base':('7b23fb01a7e16362c6d6b024e5c1801a32bda8c6',workspace/'base'),'head':('92f95b2729cd932e21d42a1a8752669a18e6da91',workspace/'head')};receipts=[]\n\
+        env=dict(os.environ,PYTHONDONTWRITEBYTECODE='1');host=subprocess.check_output(['rustc','--print','host-tuple'],text=True).strip();judge=out/'judge.py';judge.write_bytes(JUDGE.encode('utf-8'));(out/'inputs.json').write_text(json.dumps({'base':'7b23fb01a7e16362c6d6b024e5c1801a32bda8c6','head':'92f95b2729cd932e21d42a1a8752669a18e6da91','judge_sha256':hashlib.sha256(judge.read_bytes()).hexdigest(),'host':host,'purpose':'Independent\
+        \ real standalone native-only installation controls; no remote or provider session exercised.'},indent=2),encoding='utf-8')\n\
+        def run(label,name,argv,cwd,timeout):\n start=time.monotonic_ns()\n with (out/(label+'-'+name+'.stdout')).open('w',encoding='utf-8')\
+        \ as stdout,(out/(label+'-'+name+'.stderr')).open('w',encoding='utf-8') as stderr:p=subprocess.run(argv,cwd=cwd,env=env,stdout=stdout,stderr=stderr,timeout=timeout)\n\
+        \ receipts.append({'label':label,'phase':name,'argv':argv,'source':sources[label][0] if label in sources\
+        \ else None,'exit':p.returncode,'elapsed_ns':time.monotonic_ns()-start});(out/'executions.json').write_text(json.dumps(receipts,indent=2),encoding='utf-8');return\
+        \ p.returncode\n# These jobs use disposable hosted runner accounts. Do not run on an operator account.\n\
+        account=pwd.getpwuid(os.geteuid());assert os.geteuid()!=0\nregistration=sources['head'][1]/'scripts/ci/installation_account.py'\n\
+        assert run('setup','register',['sudo','-n',sys.executable,str(registration),'provision','--identity',str(account.pw_uid),'--profile',account.pw_dir],workspace,30)==0\n\
+        assert run('setup','check-account',[sys.executable,str(registration),'check'],workspace,30)==0\nfor label,(expected,checkout)\
+        \ in sources.items():\n assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=checkout,text=True).strip()==expected\n\
+        \ assert not subprocess.check_output(['git','status','--porcelain','--untracked-files=all'],cwd=checkout)\n\
+        \ built=out/(label+'-build');archives=out/(label+'-archives')\n if run(label,'build',[sys.executable,str(checkout/'scripts/release/build.py'),'--target',host,'--out',str(built),'--target-dir',str(root/(label+'-target-388'))],checkout,3300)!=0:continue\n\
+        \ if run(label,'assemble',[sys.executable,str(checkout/'scripts/release/assemble.py'),'--build',str(built),'--native-only','--out',str(archives)],checkout,120)!=0:continue\n\
+        \ inputs=list(archives.glob('*.tar.gz'));assert len(inputs)==1\n run(label,'judge',[sys.executable,str(judge),'--archive',str(inputs[0]),'--source',expected,'--label',label,'--out',str(out/(label+'-judges')),'--fixture-parent',str(fixtures)],workspace,1200)\n\
+        assert len([x for x in receipts if x['phase']=='judge'])==2 and all(x['exit']==0 for x in receipts),'producer\
+        \ or independent installer controls failed; inspect retained receipts'\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: installer388-${{ matrix.os }}
+        path: ${{ runner.temp }}/installer388
+        if-no-files-found: warn
