@@ -1,16 +1,20 @@
 use super::*;
 use std::io::{self, Write};
 /// Serialization is bounded before the native frame writer sees a record.
-struct Frame(Vec<u8>);
+struct Frame {
+    bytes: Vec<u8>,
+    overflow: Option<usize>,
+}
 impl Write for Frame {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > se_proc::atlas_worker::FRAME_BYTES.saturating_sub(self.0.len()) {
+        if bytes.len() > se_proc::atlas_worker::FRAME_BYTES.saturating_sub(self.bytes.len()) {
+            self.overflow = Some(self.bytes.len().saturating_add(bytes.len()));
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "parser record exceeds frame limit",
             ));
         }
-        self.0.extend_from_slice(bytes);
+        self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -18,9 +22,22 @@ impl Write for Frame {
     }
 }
 fn send(channel: &mut WorkerChannel, reply: protocol::Reply) -> AtlasResult<()> {
-    let mut frame = Frame(Vec::with_capacity(se_proc::atlas_worker::FRAME_BYTES));
-    serde_json::to_writer(&mut frame, &reply).map_err(failure)?;
-    channel.send(&frame.0).map_err(failure)
+    let mut frame = Frame {
+        bytes: Vec::with_capacity(se_proc::atlas_worker::FRAME_BYTES),
+        overflow: None,
+    };
+    if let Err(error) = serde_json::to_writer(&mut frame, &reply) {
+        return Err(if let Some(requested) = frame.overflow {
+            SeError::new(Detail::AtlasResourceBudget(details::AtlasResourceBudget {
+                resource: "Atlas parser record frame".into(),
+                requested: requested as u64,
+                available: se_proc::atlas_worker::FRAME_BYTES as u64,
+            }))
+        } else {
+            failure(error)
+        });
+    }
+    channel.send(&frame.bytes).map_err(failure)
 }
 pub(crate) fn run(channel: &mut WorkerChannel, bytes: &[u8]) -> AtlasResult<u8> {
     let result = (|| {

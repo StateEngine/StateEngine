@@ -43,7 +43,7 @@ impl Request {
     }
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", deny_unknown_fields)]
+#[serde(tag = "kind", content = "row", deny_unknown_fields)]
 pub(super) enum Reply {
     Start {
         file: FileId,
