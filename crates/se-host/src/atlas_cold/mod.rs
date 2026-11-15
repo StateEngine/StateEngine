@@ -58,6 +58,7 @@ pub(crate) fn parse_budget() -> ParseBudget {
         max_source_bytes: 524288,
         max_rows: 65536,
         max_work: Duration::from_millis(200),
+        max_steps: 4_000_000,
         reserved_bytes: 49_000_000,
     }
 }

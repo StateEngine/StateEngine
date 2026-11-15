@@ -41,6 +41,7 @@ fn policy(watches: u32) -> se_types::Result<AtlasPolicy> {
             max_source_bytes: 16384,
             max_rows: 512,
             max_work: Duration::from_millis(150),
+            max_steps: 4_000_000,
             reserved_bytes: 1_000_000,
         },
         total_reserved_bytes: 2_000_000,

@@ -1,5 +1,5 @@
+use super::work::Work;
 use crate::model::*;
-use std::time::Instant;
 use tree_sitter::Node;
 
 pub(super) struct Declaration<'a> {
@@ -67,19 +67,22 @@ pub(super) fn signature(
     node: Node<'_>,
     body: Option<Node<'_>>,
     bytes: &[u8],
-    deadline: Instant,
+    work: &mut Work,
 ) -> Option<ContentHash> {
     let end = body.map_or(node.end_byte(), |b| b.start_byte());
     let mut hash = blake3::Hasher::new();
     let mut cursor = node.walk();
     loop {
-        if crate::clock::now() >= deadline {
+        if !work.charge(1) {
             return None;
         }
         let n = cursor.node();
         let skip = n.start_byte() >= end || n.kind().contains("comment");
         if !skip && n.child_count() == 0 {
             let value = &bytes[n.byte_range()];
+            if !work.bytes(value.len()) {
+                return None;
+            }
             hash.update(&(value.len() as u64).to_be_bytes());
             hash.update(value);
         }

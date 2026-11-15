@@ -16,6 +16,8 @@ pub fn validate(policy: &AtlasPolicy) -> AtlasResult<()> {
         || policy.parse.reserved_bytes > PARSER_BYTES
         || policy.parse.max_source_bytes > 524_288
         || policy.parse.max_rows > 65_536
+        || policy.parse.max_steps == 0
+        || policy.parse.max_steps > MAX_PARSE_STEPS
         || policy.parse.max_work > Duration::from_millis(200)
         || policy.parse.max_work.is_zero()
     {

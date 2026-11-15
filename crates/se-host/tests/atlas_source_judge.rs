@@ -52,6 +52,7 @@ fn budget() -> ParseBudget {
         max_source_bytes: 524288,
         max_rows: 100,
         max_work: Duration::from_millis(200),
+        max_steps: 4_000_000,
         reserved_bytes: 524288,
     }
 }

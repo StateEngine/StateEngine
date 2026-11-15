@@ -6,6 +6,7 @@ mod javascript;
 mod python;
 mod rust;
 mod syntax;
+mod work;
 use crate::{
     errors::{AtlasResult, capacity},
     lifecycle::*,
@@ -22,7 +23,7 @@ pub struct SemanticParser {
 }
 impl SemanticParser {
     /// The contained adapter can cancel before a native allocator is exhausted.
-    /// This supplements profile/time limits and does not grant an admission.
+    /// This supplements profile/work limits and does not grant an admission.
     pub fn set_resource_guard(&mut self, guard: fn() -> AtlasResult<()>) {
         self.resource_guard = Some(guard);
     }
@@ -121,10 +122,12 @@ impl AtlasParser for SemanticParser {
             || budget.max_source_bytes > 524288
             || budget.max_rows == 0
             || budget.max_rows > 65536
+            || budget.max_steps == 0
+            || budget.max_steps > MAX_PARSE_STEPS
         {
             return Err(se_types::SeError::invalid(
                 "Atlas parse budget",
-                "finite <=200 ms, <=512 KiB and 1..65536 rows",
+                "source I/O <=200 ms, <=512 KiB, 1..65536 rows and 1..4000000 parse steps",
             ));
         }
         if generated(&snapshot.bytes) {
@@ -153,7 +156,7 @@ impl AtlasParser for SemanticParser {
         if let Some(guard) = self.resource_guard {
             guard()?;
         }
-        let deadline = crate::clock::now() + budget.max_work;
+        let mut work = work::Work::new(budget.max_steps);
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&grammar(language))
@@ -166,7 +169,9 @@ impl AtlasParser for SemanticParser {
                 resource_error = Some(error);
                 return ControlFlow::Break(());
             }
-            if crate::clock::now() >= deadline {
+            // The pinned native parser checks progress in batches of 100
+            // operations. Charge each callback, including revisited offsets.
+            if !work.charge(100) {
                 ControlFlow::Break(())
             } else {
                 ControlFlow::Continue(())
@@ -187,7 +192,7 @@ impl AtlasParser for SemanticParser {
             profile.extraction_bytes,
             budget.max_rows.min(profile.max_rows),
         );
-        let result = extract::extract(&self.scope, snapshot, language, &tree, deadline, arena);
+        let result = extract::extract(&self.scope, snapshot, language, &tree, &mut work, arena);
         // Tree and parser are owned by this call. Neither a failed parse nor a
         // caller forgetting release_scratch can retain them between work quanta.
         drop(tree);

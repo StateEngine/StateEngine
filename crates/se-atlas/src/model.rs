@@ -19,9 +19,11 @@ pub const PARSER_BYTES: u32 = 12_000_000;
 pub const QUEUE_BYTES: u32 = 50_000;
 pub const ADAPTER_BYTES: u32 = 200_000;
 pub const ALLOCATOR_SLACK_BYTES: u32 = 146_918;
-/// One finite source turn includes a separately bounded 200 ms parse, live
-/// source verification, resolution and its atomic cache transaction.
+/// One finite source turn includes a work-bounded parse, live source
+/// verification, resolution and its atomic cache transaction.
 pub const MAX_WORK_QUANTUM: Duration = Duration::from_millis(500);
+/// Ceiling shared by native parser progress and semantic extraction.
+pub const MAX_PARSE_STEPS: u32 = 4_000_000;
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CacheLocation {
@@ -54,7 +56,11 @@ pub struct RootRegistration {
 pub struct ParseBudget {
     pub max_source_bytes: u32,
     pub max_rows: u32,
+    /// Source I/O allowance. Parsing counts work instead of scheduler time.
     pub max_work: Duration,
+    /// Work units: 100 per native progress callback, one per visited node or
+    /// symbol comparison, and one per 64 bytes hashed (rounded up).
+    pub max_steps: u32,
     pub reserved_bytes: u32,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]

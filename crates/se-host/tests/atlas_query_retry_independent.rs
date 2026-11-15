@@ -424,6 +424,7 @@ fn native_quantum(prior_failure: bool) -> Check {
             max_source_bytes: 1024,
             max_rows: 512,
             max_work: Duration::from_millis(200),
+            max_steps: 4_000_000,
             reserved_bytes: 1_000_000,
         },
         total_reserved_bytes: 2_000_000,

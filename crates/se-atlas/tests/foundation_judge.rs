@@ -457,6 +457,7 @@ fn native_source_absence_hashes_same_size_edits_and_budget_refusal() -> Check {
         max_source_bytes: 64,
         max_rows: 100,
         max_work: Duration::from_millis(200),
+        max_steps: 4_000_000,
         reserved_bytes: 64,
     };
     assert!(matches!(source.read(&path, budget)?, SourceRead::Removed));

@@ -125,6 +125,7 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
             max_source_bytes: 65536,
             max_rows: 128,
             max_work: Duration::from_millis(200),
+            max_steps: 4_000_000,
             reserved_bytes: 65536,
         },
     )?
@@ -137,6 +138,7 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
             max_source_bytes: 1024,
             max_rows: 128,
             max_work: Duration::from_millis(200),
+            max_steps: 4_000_000,
             reserved_bytes: 1024,
         },
     )?

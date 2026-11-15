@@ -75,6 +75,7 @@ fn policy() -> AtlasPolicy {
             max_source_bytes: 65536,
             max_rows: 1024,
             max_work: Duration::from_millis(150),
+            max_steps: 4_000_000,
             reserved_bytes: 262144,
         },
         total_reserved_bytes: 2_000_000,
