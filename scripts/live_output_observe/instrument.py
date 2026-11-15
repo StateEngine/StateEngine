@@ -35,6 +35,9 @@ pub fn record(stage: &str, bytes: &[u8]) {
 ''')
     path = root / 'crates/se-host/src/lib.rs'
     path.write_text(path.read_text() + '\npub mod output_observer;\n')
+    replace(root, 'crates/se/src/runtime/host/environment.rs',
+            '    let mut entries = se_host::provider_environment();',
+            '    let mut entries = se_host::provider_environment();\n    if let Some(path) = std::env::var_os("OUTPUT_OBSERVER_TRACE") {\n        entries.push(("OUTPUT_OBSERVER_TRACE".into(), path));\n    }')
     replace(root, 'crates/se-host/src/harness/claude_harness/completion.rs',
             '        #[derive(serde::Deserialize)]\n',
             '        crate::output_observer::record("stream_read", line);\n        #[derive(serde::Deserialize)]\n')
@@ -52,7 +55,7 @@ pub fn record(stage: &str, bytes: &[u8]) {
             '        crate::output_observer::record("watch_page_ready", &serde_json::to_vec(&batch).expect("probe batch"));\n        let length = wire::encode(&batch, wire::Phase::Authenticated)?.len();')
     replace(root, 'crates/se-host/src/ipc/listener/connection.rs',
             '        self.awaiting = None;\n',
-            '        crate::output_observer::record("ipc_response_flushed", &frame);\n        self.awaiting = None;\n')
+            '        crate::output_observer::record("ipc_response_flushed", frame.as_bytes());\n        self.awaiting = None;\n')
     replace(root, 'crates/se/src/remote/mod.rs',
             '                stdout.flush()?;\n                if measured',
             '                stdout.flush()?;\n                if let AnyOutput::RemoteWatch(v) = &output {\n                    se_host::output_observer::record("stdout_flushed", &serde_json::to_vec(&v.value).expect("probe render"));\n                }\n                if measured')

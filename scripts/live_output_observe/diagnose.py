@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from instrument import apply
+from observe import stats
 
 
 def digest(path):
@@ -55,6 +56,37 @@ def main():
     environment['OUTPUT_OBSERVER_TRACE'] = str(diagnostic / 'trace.log')
     subprocess.run([sys.executable, '-B', Path(__file__).with_name('observe.py'), diagnostic],
                    env=environment, check=True, timeout=1200)
+    stages = {}
+    for line in (diagnostic / 'trace.log').read_text().splitlines():
+        stage, marker, us, pid = line.split()
+        stages.setdefault(marker, {}).setdefault(stage, []).append(int(us))
+    result = json.loads((diagnostic / 'result.json').read_text())
+    serial = ['stream_read', 'transcript_read', 'published', 'watch_page_ready',
+              'ipc_response_flushed', 'stdout_flushed']
+    intervals, rows = {}, []
+    for sample in result['samples']:
+        marker = sample['id']
+        start = sample['producer']['emit_begin_ns'] // 1000
+        observed = {'emit_begin': start}
+        for stage in serial + ['capture_ready']:
+            times = [t for t in stages.get(marker, {}).get(stage, []) if t >= start]
+            if not times:
+                raise ValueError('Missing diagnostic stage: ' + marker + '/' + stage)
+            observed[stage] = min(times)
+        row = {'id': marker, 'warmup': sample['warmup'], 'timestamps_us': observed}
+        rows.append(row)
+        for before, after in zip(['emit_begin'] + serial, serial):
+            duration = (observed[after] - observed[before]) / 1000
+            if duration < 0:
+                # A callback can enqueue its page before the producer's trailing
+                # probe records completion. Keep this overlap explicit.
+                row.setdefault('overlaps', []).append(before + '→' + after)
+            if not sample['warmup']:
+                intervals.setdefault(before + '→' + after, []).append(duration)
+    report = {'source': metadata['source_commit'], 'matched': len(rows), 'rows': rows,
+              'stages': {stage: stats(values) for stage, values in intervals.items()},
+              'qualification': 'Diagnostic synchronous-probe image; only the separate unmodified package qualifies the end-to-end budget'}
+    (diagnostic / 'stages.json').write_text(json.dumps(report, indent=2) + '\n')
 
 
 if __name__ == '__main__':
