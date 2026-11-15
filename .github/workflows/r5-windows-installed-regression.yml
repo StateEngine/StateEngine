@@ -57,7 +57,7 @@ jobs:
         \ \"\\n    script += \"$g=Get-LocalGroup -Name \\'OpenSSH Users\\' -ErrorAction SilentlyContinue; if($g){Add-LocalGroupMember\
         \ -Group $g -Member $u}; \"\\n    script += \"if(@(Get-LocalGroupMember -SID \\'S-1-5-32-544\\' | Where-Object {$_.SID.Value\
         \ -eq $u.SID.Value}).Count){throw \\'fixture account must not be an administrator\\'}\"\\n    powershell(script)\\\
-        n\\n\\ndef create_profile(account):\\n    output = ctypes.create_unicode_buffer(32768)\\n    result = U.CreateProfile(account[\\\
+        n\\n\\ndef create_profile(account):\\n    output = ctypes.create_unicode_buffer(260)\\n    result = U.CreateProfile(account[\\\
         'sid\\'], account[\\'name\\'], output, len(output))\\n    if result < 0:\\n        raise OSError(result, \\'CreateProfile\
         \ failed for the exact fixture SID\\')\\n    profile = Path(output.value)\\n    account[\\'profile\\'] = str(profile)\\\
         n    assert profile.is_absolute() and profile.name.lower() == account[\\'name\\'].lower()\\n    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,\
@@ -428,7 +428,7 @@ jobs:
       shell: python
       run: 'import datetime,os,pathlib,subprocess,sys
 
-        root=pathlib.Path(''C:/r5-windows-ssh-''+os.environ[''GITHUB_RUN_ID''])
+        root=pathlib.Path(os.environ[''RUNNER_TEMP''])/(''r5-windows-ssh-''+os.environ[''GITHUB_RUN_ID''])
 
         controller=pathlib.Path(os.environ[''RUNNER_TEMP''])/''r5-windows-controller''
 
@@ -439,14 +439,25 @@ jobs:
         subprocess.run([sys.executable,''-B'',str(controller/''regression.py''),''--assets'',str(pathlib.Path(os.environ[''RUNNER_TEMP''])/''r5-release-assets''),''--root'',str(root),''--deadline-utc'',deadline],check=True)
 
         '
+    - name: Stage only bounded reports and controllers after private-key screening
+      if: always()
+      shell: python
+      run: "from pathlib import Path\nimport os,re,shutil\nbase=Path(os.environ['RUNNER_TEMP'])\nreports=base/('r5-windows-ssh-'+os.environ['GITHUB_RUN_ID'])/'reports'\n\
+        controller=base/'r5-windows-controller'\nselected=[]\nif reports.is_dir():\n    for path in reports.iterdir():\n \
+        \       assert path.is_file() and not path.is_symlink() and not (path.stat().st_file_attributes & 0x400)\n       \
+        \ assert path.suffix in ('.json','.stdout','.stderr')\n        selected.append((path,Path('reports')/path.name))\n\
+        for name in ('accounts.py','install.py','native.py','regression.py','ssh_service.py'):\n    path=controller/name\n\
+        \    if path.is_file():selected.append((path,Path('controller')/name))\nprovenance=base/'r5-release-provenance.json'\n\
+        if provenance.is_file():selected.append((provenance,Path(provenance.name)))\nassert selected, 'No bounded fixture\
+        \ evidence exists'\n# Validate every selected byte before staging anything for upload.\nfor path,_ in selected:\n\
+        \    assert not path.is_symlink() and not (path.stat().st_file_attributes & 0x400)\n    data=path.read_bytes()\n \
+        \   assert not re.search(rb'-----BEGIN [A-Z ]*PRIVATE KEY-----|PuTTY-User-Key-File-',data), 'Private material refused\
+        \ from artifact staging'\nstage=base/'r5-windows-upload'\nstage.mkdir(exist_ok=False)\nfor path,relative in selected:\n\
+        \    destination=stage/relative\n    destination.parent.mkdir(parents=True,exist_ok=True)\n    shutil.copyfile(path,destination)\n"
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       if: always()
       with:
         name: r5-windows-installed-regression
-        path: 'C:/r5-windows-ssh-${{ github.run_id }}/reports
-
-          ${{ runner.temp }}/r5-release-provenance.json
-
-          ${{ runner.temp }}/r5-windows-controller'
+        path: ${{ runner.temp }}/r5-windows-upload
         if-no-files-found: error
         retention-days: 7
