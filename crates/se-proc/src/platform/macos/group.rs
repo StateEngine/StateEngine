@@ -133,8 +133,67 @@ fn observation(
     })
 }
 
+fn changing_descendant(root: &ProcessIdentity, cause: &ProcError) -> bool {
+    let ProcErrorDetail::Identity {
+        pid,
+        expected,
+        found,
+        ..
+    } = cause.detail.as_ref()
+    else {
+        return false;
+    };
+    if *pid == root.pid {
+        return false;
+    }
+    if cause.code == ProcErrorCode::IdentityUnreadable {
+        return cause.native.as_ref().is_some_and(|failure| {
+            failure.api == "proc_pidpath" && failure.code == Some(i64::from(libc::ESRCH))
+        });
+    }
+    cause.code == ProcErrorCode::IdentityChanged
+        && expected.as_ref().zip(found.as_ref()).is_some_and(|(a, b)| {
+            a.pid == *pid
+                && b.pid == *pid
+                && a.machine == root.machine
+                && b.machine == a.machine
+                && a.boot == root.boot
+                && b.boot == a.boot
+                && a.start == b.start
+                && a.image != b.image
+        })
+}
+
 impl Scope {
     pub fn observe(&mut self) -> ProcResult<ScopeObservation> {
+        match self.observe_inner() {
+            Err(cause)
+                if self
+                    .root_identity()
+                    .as_ref()
+                    .is_some_and(|root| changing_descendant(root, &cause)) =>
+            {
+                // Descendant discovery may race exec while the reserved root
+                // remains unchanged. Keep custody and the failed native read
+                // explicit; a later observation must prove scope completion.
+                Ok(ScopeObservation {
+                    scope: self.scope.clone(),
+                    remaining: RemainingScope {
+                        population: Population::Unknown,
+                        known_live: Vec::new(),
+                        extent: EnumerationExtent::Partial {
+                            reason: format!("descendant discovery remains inconclusive: {cause:?}"),
+                            omitted: None,
+                        },
+                        observed_at_unix_ns: now()?,
+                    },
+                    exit_basis: None,
+                })
+            }
+            result => result,
+        }
+    }
+    fn observe_inner(&mut self) -> ProcResult<ScopeObservation> {
         self.refresh_exec()?;
         let Some(group) = self.group else {
             if self.child.is_none() {

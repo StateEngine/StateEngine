@@ -96,11 +96,15 @@ fn image(pid: ProcessId, deadline: Instant) -> ProcResult<PathBuf> {
                 "empty executable path result without a native cause",
             ));
         }
-        return Err(native(
-            ProcErrorCode::IdentityUnreadable,
-            "proc_pidpath",
-            cause,
-        ));
+        let mut failure = native(ProcErrorCode::IdentityUnreadable, "proc_pidpath", cause);
+        *failure.detail = ProcErrorDetail::Identity {
+            pid,
+            expected_start: None,
+            found_start: None,
+            expected: None,
+            found: None,
+        };
+        return Err(failure);
     }
     if count as usize >= bytes.len() {
         return Err(capacity("native executable path", bytes.len() as u64));
