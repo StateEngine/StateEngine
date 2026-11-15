@@ -1,0 +1,47 @@
+name: Linux packaged list clock comparison
+on:
+  push:
+    branches: [prime/linux-agent-list-probe-pair-r1]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: linux-agent-list-probe-pair-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Initialize isolated evidence paths
+        run: |
+          echo "PACKAGE_INPUT=$RUNNER_TEMP/list-clock-input" >> "$GITHUB_ENV"
+          echo "MEASURE_ROOT=$RUNNER_TEMP/list-clock-observation" >> "$GITHUB_ENV"
+          echo "EVIDENCE_ROOT=$RUNNER_TEMP/list-clock-evidence" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 85daec30ca3eb87ff6f57bed6f10d344994b04c4
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: {python-version: '3.12'}
+      - name: Download the existing immutable package evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download 43657445455 --name linux-agent-list-package --dir "$PACKAGE_INPUT"
+      - name: Record observers and pair the unchanged nightly clock
+        run: |
+          node --version
+          python3 --version
+          python3 -B scripts/agent_list_probe/observe.py "$PACKAGE_INPUT" "$MEASURE_ROOT"
+      - name: Collect evidence without the private home
+        if: ${{ always() }}
+        run: python3 -B scripts/agent_list_package/collect.py "$MEASURE_ROOT" "$EVIDENCE_ROOT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: linux-agent-list-probe-pair
+          path: ${{ runner.temp }}/list-clock-evidence
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
