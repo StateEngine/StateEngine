@@ -215,7 +215,12 @@ mod macos {
         }
         std::fs::remove_file(source)?;
         std::fs::remove_file(library)?;
-        owner.finish(Ok(()))?;
+        owner.finish(Ok::<(), std::io::Error>(()))?;
+        drop(owner);
+        assert!(
+            !scratch.exists(),
+            "native fixture root remained after cleanup"
+        );
         assert!(
             failures.is_empty(),
             "native boundary failures: {failures:?}"
