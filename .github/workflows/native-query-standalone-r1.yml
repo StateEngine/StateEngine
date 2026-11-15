@@ -1,0 +1,101 @@
+name: Standalone native fixture comparison
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-query-fixture-373-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        side: [base, candidate]
+        case: [query, backup]
+        include:
+          - side: base
+            source: 97e3dd7594b060593743440a52ef265032151f7b
+          - side: candidate
+            source: 8100b2b32d2183f6e494176c44831e5e9136486b
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ matrix.source }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.97.1
+      - name: Run unchanged native assertions in isolation
+        shell: python
+        env:
+          EXPECTED_SOURCE: ${{ matrix.source }}
+          SIDE: ${{ matrix.side }}
+          CASE: ${{ matrix.case }}
+        run: |
+          from pathlib import Path
+          import ctypes, json, os, subprocess, sys, time
+          from ctypes import wintypes
+          root = Path('native-query-evidence')
+          root.mkdir()
+          source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert source == os.environ['EXPECTED_SOURCE']
+          target = subprocess.check_output(['rustc', '--print', 'host-tuple'], text=True).strip()
+          assert target == 'x86_64-pc-windows-msvc'
+          # Observe the inherited token; do not change it or weaken the fixture.
+          kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+          security = ctypes.WinDLL('advapi32', use_last_error=True)
+          kernel.GetCurrentProcess.restype = wintypes.HANDLE
+          kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+          security.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+          security.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+          security.EqualSid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+          token = wintypes.HANDLE()
+          if not security.OpenProcessToken(kernel.GetCurrentProcess(), 8, ctypes.byref(token)):
+              raise ctypes.WinError(ctypes.get_last_error())
+          def information(kind):
+              size = wintypes.DWORD()
+              security.GetTokenInformation(token, kind, None, 0, ctypes.byref(size))
+              if not size.value:
+                  raise ctypes.WinError(ctypes.get_last_error())
+              buffer = ctypes.create_string_buffer(size.value)
+              if not security.GetTokenInformation(token, kind, buffer, size, ctypes.byref(size)):
+                  raise ctypes.WinError(ctypes.get_last_error())
+              return buffer
+          try:
+              user, owner = information(1), information(4)
+              owner_is_user = bool(security.EqualSid(ctypes.cast(user, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.cast(owner, ctypes.POINTER(ctypes.c_void_p))[0]))
+          finally:
+              kernel.CloseHandle(token)
+          case = os.environ['CASE']
+          if case == 'query':
+              command = ['cargo', 'test', '--target', target, '-p', 'se-host', '--all-features', '--locked', '--test', 'atlas_query_reads', '--', '--nocapture']
+          elif case == 'backup':
+              command = ['cargo', 'test', '--target', target, '-p', 'se-store', '--all-features', '--locked', '--test', 'background_checkpoint_independent', 'background_task_honors_backup_suppression', '--', '--exact', '--nocapture']
+          else:
+              raise ValueError('unknown native case')
+          started = time.monotonic_ns()
+          with (root / 'query.stdout').open('wb') as stdout, (root / 'query.stderr').open('wb') as stderr:
+              result = subprocess.run(command, stdout=stdout, stderr=stderr, timeout=1800)
+          receipt = {'source': source, 'side': os.environ['SIDE'], 'case': case, 'initial_owner_is_user': owner_is_user, 'target': target, 'argv': command, 'exit': result.returncode, 'elapsed_ns': time.monotonic_ns() - started}
+          (root / 'execution.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps(receipt))
+          sys.exit(result.returncode)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: native-fixture-${{ matrix.side }}-${{ matrix.case }}
+          path: native-query-evidence/
+          if-no-files-found: error
+          retention-days: 14
