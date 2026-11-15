@@ -1,4 +1,5 @@
 use super::*;
+use crate::cache::connection::BudgetStatement;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum Kind {
@@ -17,6 +18,7 @@ pub(super) struct Candidate {
     pub precomputed_last: Option<i64>,
     pub lexical: f64,
     pub related: bool,
+    pub downweighted: bool,
 }
 pub(super) struct Candidates {
     pub values: Vec<Candidate>,
@@ -66,24 +68,20 @@ pub(super) fn collect(
             ids.pop();
             output.truncated = true;
         }
+        // Reuse one small metadata statement after the bounded ID sort has
+        // closed. Full symbol spans, parents and file coverage are needed only
+        // when a winning hit is materialized, not for every admitted identity.
+        let kind = plan.kind;
+        let mut metadata = sql.prepare(admission_metadata(kind))?;
         for (rowid, precomputed_last, bm25) in ids {
+            admission_time(end)?;
             if !bm25.is_finite() || bm25 > 0.0 {
                 return Err(cache_error("invalid BM25 score"));
             }
-            // An unfinished traversal prefix cannot provide a ranked continuation.
-            admission_time(end)?;
-            let kind = plan.kind;
-            if matches!(kind, Kind::Symbol | Kind::File) {
-                let file = if kind == Kind::Symbol {
-                    symbol_by_id(sql, rowid)?.1
-                } else {
-                    rowid
-                };
-                if crate::policy::built_in_denied(&file_by_id(sql, file)?.pointer.path) {
-                    continue;
-                }
+            let (key, tie, path) = read_metadata(&mut metadata, kind, rowid)?;
+            if path.as_ref().is_some_and(crate::policy::built_in_denied) {
+                continue;
             }
-            let (key, tie) = metadata(sql, kind, rowid)?;
             if key.len() > 256 || tie.len() > 4096 || tie.contains('\0') {
                 return Err(cache_error("search candidate exceeds key/name admission"));
             }
@@ -123,9 +121,11 @@ pub(super) fn collect(
             {
                 continue;
             }
-            let cost = key.len() + tie.len() + 160;
-            resident += cost;
-            output.values.push(Candidate {
+            let downweighted = crate::rank::downweight(
+                path.as_ref().map_or(tie.as_str(), |p| p.as_str()),
+                query.kind,
+            );
+            let candidate = Candidate {
                 kind,
                 rowid,
                 tier: plan.tier,
@@ -135,24 +135,62 @@ pub(super) fn collect(
                 precomputed_last,
                 lexical: if bm25 < 0.0 { -bm25 } else { 0.0 },
                 related: false,
-            });
-            output.values.sort_by(|a, b| {
-                a.tier
-                    .cmp(&b.tier)
-                    .then(b.precomputed_last.cmp(&a.precomputed_last))
-                    .then(a.tie.cmp(&b.tie))
-                    .then(a.key.cmp(&b.key))
-            });
-            while output.values.len() > 128 || resident > 24576 {
-                let old = output
-                    .values
-                    .pop()
-                    .ok_or_else(|| cache_error("candidate admission underflow"))?;
-                resident -= old.key.len() + old.tie.len() + 160;
-                output.truncated = true;
-            }
+                downweighted,
+            };
+            admit(&mut output, &mut resident, candidate)?;
         }
     }
+    rank(&mut output, env, sql, snapshot, query)?;
+    Ok(output)
+}
+fn read_metadata(
+    metadata: &mut BudgetStatement<'_>,
+    kind: Kind,
+    rowid: i64,
+) -> AtlasResult<(Vec<u8>, String, Option<RelativePath>)> {
+    let mut rows = metadata.query([rowid]).map_err(cache_error)?;
+    let row = rows
+        .next()
+        .map_err(cache_error)?
+        .ok_or_else(|| cache_error("candidate disappeared in snapshot"))?;
+    let path = get::<Option<String>>(row, 2)?
+        .map(RelativePath::new)
+        .transpose()?;
+    if matches!(kind, Kind::Symbol | Kind::File) && path.is_none() {
+        return Err(cache_error("candidate file disappeared in snapshot"));
+    }
+    Ok((get(row, 0)?, get(row, 1)?, path))
+}
+
+fn admit(output: &mut Candidates, resident: &mut usize, candidate: Candidate) -> AtlasResult<()> {
+    *resident += candidate.key.len() + candidate.tie.len() + 160;
+    let position = output.values.partition_point(|old| {
+        old.tier
+            .cmp(&candidate.tier)
+            .then(candidate.precomputed_last.cmp(&old.precomputed_last))
+            .then(old.tie.cmp(&candidate.tie))
+            .then(old.key.cmp(&candidate.key))
+            .is_le()
+    });
+    output.values.insert(position, candidate);
+    while output.values.len() > 128 || *resident > 24576 {
+        let old = output
+            .values
+            .pop()
+            .ok_or_else(|| cache_error("candidate admission underflow"))?;
+        *resident -= old.key.len() + old.tie.len() + 160;
+        output.truncated = true;
+    }
+    Ok(())
+}
+
+fn rank(
+    output: &mut Candidates,
+    env: &QueryEnv<'_>,
+    sql: &SqlView<'_>,
+    snapshot: &Snapshot,
+    query: &FindQuery,
+) -> AtlasResult<()> {
     for candidate in &mut output.values {
         let tag = match candidate.kind {
             Kind::Symbol => "symbol",
@@ -171,24 +209,27 @@ pub(super) fn collect(
                 now: env.now_unix_ms,
             },
         )?;
-        let path = if candidate.kind == Kind::Symbol {
-            let file_id = symbol_by_id(sql, candidate.rowid)?.1;
-            Some(file_by_id(sql, file_id)?.pointer.path)
-        } else {
-            None
-        };
-        if crate::rank::downweight(
-            path.as_ref().map_or(candidate.tie.as_str(), |p| p.as_str()),
-            query.kind,
-        ) {
+        if candidate.downweighted {
             candidate.activity.score *= 0.5;
         }
     }
     output
         .values
         .sort_by_cached_key(|candidate| super::find::key(candidate, query.order));
-    Ok(output)
+    Ok(())
 }
+
+fn admission_metadata(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Symbol => {
+            "SELECT s.key,n.text,f.path FROM symbols s JOIN names n ON n.id=s.name LEFT JOIN files f ON f.id=s.file WHERE s.id=?1"
+        }
+        Kind::File => "SELECT key,path,path FROM files WHERE id=?1",
+        Kind::Record => "SELECT CAST(record_id AS BLOB),record_id,NULL FROM records WHERE id=?1",
+        Kind::Commit => "SELECT oid,hex(oid),NULL FROM commits WHERE id=?1",
+    }
+}
+
 pub(super) fn admission_time(end: Instant) -> AtlasResult<()> {
     if crate::clock::now() < end {
         return Ok(());
