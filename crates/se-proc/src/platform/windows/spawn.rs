@@ -274,42 +274,53 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
     }
     // SAFETY: native process output is POD; ownership is taken only on success.
     let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
-    let flags = CREATE_BREAKAWAY_FROM_JOB
-        | CREATE_UNICODE_ENVIRONMENT
+    let flags = CREATE_UNICODE_ENVIRONMENT
         | EXTENDED_STARTUPINFO_PRESENT
         | if spec.mode == LaunchMode::Headless {
             CREATE_NO_WINDOW
         } else {
             CREATE_NEW_CONSOLE
         };
-    // SAFETY: application/cwd/environment/argv and aligned attribute backing
-    // storage live for the call. JOB_LIST is atomic creation membership. Only
-    // the closed explicit stream/capability handle list is inherited.
-    let ok = unsafe {
-        CreateProcessW(
-            wide(spec.executable.as_os_str()).as_ptr(),
-            line.as_mut_ptr(),
-            ptr::null(),
-            ptr::null(),
-            i32::from(!handles.is_empty()),
-            flags,
-            env.as_ptr().cast(),
-            wide(spec.cwd.as_os_str()).as_ptr(),
-            &startup.StartupInfo,
-            &mut info,
-        )
+    let create = |flags, info: &mut PROCESS_INFORMATION| {
+        // CreateProcessW may modify its command line, including on failure.
+        let mut command_line = line.clone();
+        // SAFETY: application/cwd/environment/argv and aligned attribute backing
+        // storage live for the call. JOB_LIST is atomic creation membership. Only
+        // the closed explicit stream/capability handle list is inherited.
+        unsafe {
+            CreateProcessW(
+                wide(spec.executable.as_os_str()).as_ptr(),
+                command_line.as_mut_ptr(),
+                ptr::null(),
+                ptr::null(),
+                i32::from(!handles.is_empty()),
+                flags,
+                env.as_ptr().cast(),
+                wide(spec.cwd.as_os_str()).as_ptr(),
+                &startup.StartupInfo,
+                info,
+            )
+        }
     };
+    let mut ok = create(flags | CREATE_BREAKAWAY_FROM_JOB, &mut info);
     if ok == 0 {
-        let cause = std::io::Error::last_os_error();
-        return Err(native(
-            if cause.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
-                ProcErrorCode::BreakawayDenied
-            } else {
-                ProcErrorCode::LaunchFailed
-            },
-            "CreateProcessW atomic job/breakaway",
-            cause,
-        ));
+        let mut cause = std::io::Error::last_os_error();
+        if cause.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+            // A compatible enclosing job can deny breakaway while permitting
+            // nesting. Keep our atomic JOB_LIST and exact handle inheritance;
+            // never create an uncontained child or modify the enclosing job.
+            ok = create(flags, &mut info);
+            if ok == 0 {
+                cause = std::io::Error::last_os_error();
+            }
+        }
+        if ok == 0 {
+            return Err(native(
+                ProcErrorCode::LaunchFailed,
+                "CreateProcessW atomic job assignment",
+                cause,
+            ));
+        }
     }
     // Ownership immediately leaves raw PROCESS_INFORMATION. No fallible query
     // occurs before the caller stores this Child in its retained arena slot.

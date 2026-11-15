@@ -111,7 +111,7 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
         Ok(ProviderIo {
             child: stdio.child,
             host: ProviderTransport {
-                windows: Some(Port {
+                windows: Some(Arc::new(Port {
                     port: stdio.port,
                     wake,
                     stdout: Mutex::default(),
@@ -124,7 +124,7 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
                     }),
                     unreleased: std::sync::Mutex::default(),
                     closed: Mutex::default(),
-                }),
+                })),
                 _private: (),
             },
         })
