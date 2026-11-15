@@ -70,12 +70,13 @@ fn committed_child() -> Check {
     let (host, lease) = host(&f)?;
     let writer = host.start_writer(options(256)?, lease.clone())?;
     std::fs::write(
-        control.join("ready.json"),
+        control.join("ready.tmp"),
         serde_json::to_vec(
             &json!({"pid":std::process::id(), "home":f.home,"state":f.options.state_directory,
                 "project":f.project,"owner":f.owner,"agent":f.a}),
         )?,
     )?;
+    std::fs::rename(control.join("ready.tmp"), control.join("ready.json"))?;
     wait_file(&control.join("go"))?;
     let receipt = wait(writer.client().submit(payload(&f, "crash-returned")?)?)??;
     let ids: Vec<_> = receipt

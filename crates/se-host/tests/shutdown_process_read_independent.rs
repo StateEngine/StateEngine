@@ -60,11 +60,12 @@ fn standalone_shutdown_process_fixture() -> Check {
             result
         });
         fs::write(
-            output.join("ready.json"),
+            output.join("ready.tmp"),
             serde_json::to_vec(
                 &serde_json::json!({"home":f.options.state_directory,"pid":std::process::id()}),
             )?,
         )?;
+        fs::rename(output.join("ready.tmp"), output.join("ready.json"))?;
         let report = host.serve(listener).await.finish(&bound()?).await;
         require(
             report.pending.is_empty() && report.transport_closed && report.endpoint_retired,

@@ -226,7 +226,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
             at: None,
         };
         items.push(MessageRow {
-            channel_reply: channel_reply(cx.read, &record.message)?,
+            channel_reply: channel_reply(cx, &record.message, &record.recipient)?,
             remote_reply: remote_reply_from(&from, &record.message),
             id: record.message,
             event_id: record.event,
@@ -343,13 +343,20 @@ fn command_text(argv: &[String]) -> String {
 }
 
 pub(super) fn channel_reply<R: se_store::Snapshot>(
-    read: &mut R,
+    cx: &mut Cx<'_, R>,
     id: &se_types::MessageId,
+    recipient: &Actor,
 ) -> se_types::Result<Option<super::outputs::ChannelReply>> {
-    if read.info().schema_version < 5 {
+    // Message visibility includes sent mail; channel routes remain private to
+    // the recipient and native Owner. Do not request them for sender views.
+    if !matches!(cx.admission.actor, Actor::Human(_)) && &cx.admission.actor != recipient {
         return Ok(None);
     }
-    let route = read
+    if cx.read.info().schema_version < 5 {
+        return Ok(None);
+    }
+    let route = cx
+        .read
         .channel_reply_route(id)
         .map_err(|e| se_core_store_error(&e))?;
     Ok(route.map(|r|super::outputs::ChannelReply{instruction:if r.active {format!("This message came from the Owner's paired phone. Send your answer with stateengine_msg_send to {} and set reply_to to {}. A final turn answer alone stays local and does not reach the phone. Keep each linked reply under 1500 characters; send several linked replies when a longer answer is needed.",r.owner,r.original)}else{"The phone channel is disconnected; a new mail reply remains saved but cannot reach that phone.".into()},to:r.owner,reply_to:r.original,active:r.active}))
@@ -371,8 +378,9 @@ pub fn remote_reply_from(
 }
 
 pub fn channel_reply_instruction<R: se_store::Snapshot>(
-    read: &mut R,
+    cx: &mut Cx<'_, R>,
     id: &se_types::MessageId,
+    recipient: &Actor,
 ) -> se_types::Result<Option<String>> {
-    Ok(channel_reply(read, id)?.map(|route| route.instruction))
+    Ok(channel_reply(cx, id, recipient)?.map(|route| route.instruction))
 }

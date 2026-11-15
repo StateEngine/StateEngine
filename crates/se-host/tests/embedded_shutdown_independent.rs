@@ -85,7 +85,8 @@ fn child_case(root: &Path, image: &Path) -> Check {
         let ready = opened.host.activate(api::HostIntegration::Secode { epoch, services: Arc::new(SilentServices) }, options.clone()).await.map_err(|e| format!("embedded activate: {e:?}"))?;
         check(ready == api::Readiness::Ready, "embedded host never became Ready")?;
         if std::env::var_os("SE_SHUTDOWN_JUDGE_POSITIVE").is_some() {
-            fs::write(root.join("ready.json"), serde_json::to_vec(&serde_json::json!({"generation":opened.negotiated.generation.0,"pid":std::process::id()}))?)?;
+            fs::write(root.join("ready.tmp"), serde_json::to_vec(&serde_json::json!({"generation":opened.negotiated.generation.0,"pid":std::process::id()}))?)?;
+            fs::rename(root.join("ready.tmp"), root.join("ready.json"))?;
             let until = Instant::now() + Duration::from_secs(120);
             while !root.join("observer-finished").try_exists()? {
                 check(Instant::now() < until, "outside positive observer timed out")?;
