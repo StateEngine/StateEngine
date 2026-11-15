@@ -1,0 +1,452 @@
+name: Native Windows SSH image comparison
+'on':
+  push:
+    branches:
+    - prime/pr338-upload-r10
+  workflow_dispatch: null
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: windows-upload-comparison-${{ github.run_id }}
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      UPLOAD_SOURCE: ${{ github.workspace }}/source
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 6093a5caeaddd50acb900270cbbe17f2b1a26bf9
+        path: source
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: 1.97.1
+    - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+      with:
+        arch: amd64
+    - name: Install exact reviewer controls
+      shell: python
+      run: "import ast,hashlib,json,os\nfrom pathlib import Path\nroot=Path(os.environ['RUNNER_TEMP'])/'windows-upload-comparison'\n\
+        root.mkdir()\ncontrols=root/'controls';controls.mkdir()\nfiles={'build.py': '\"\"\"Build identical reviewer\
+        \ entry points against two exact product revisions.\"\"\"\\nimport json\\nimport os\\nfrom pathlib import\
+        \ Path\\nimport shutil\\nimport subprocess\\nimport sys\\n\\nBASE = \\'689c05b15fb0a0b36f02f7545e5df55290ef5a9d\\\
+        '\\nHEAD = \\'6093a5caeaddd50acb900270cbbe17f2b1a26bf9\\'\\n\\n\\ndef main():\\n    root = Path(sys.argv[1]).resolve()\\\
+        n    root.mkdir(parents=True, exist_ok=True)\\n    reports = root / \\'reports\\'\\n    reports.mkdir(exist_ok=True)\\\
+        n    source = Path(os.environ[\\'UPLOAD_SOURCE\\']).resolve()\\n    overlay = Path(__file__).with_name(\\\
+        'windows_upload_review.rs\\')\\n    images = {}\\n    for label, revision in [(\\'base\\', BASE), (\\'head\\\
+        ', HEAD)]:\\n        checkout = root / (\\'source-\\' + label)\\n        subprocess.run([\\'git\\', \\'worktree\\\
+        ', \\'add\\', \\'--detach\\', str(checkout), revision], cwd=source, check=True)\\n        actual = subprocess.check_output([\\\
+        'git\\', \\'rev-parse\\', \\'HEAD\\'], cwd=checkout, text=True).strip()\\n        assert actual == revision\\\
+        n        target = root / (\\'target-\\' + label)\\n        shutil.copyfile(overlay, checkout / \\'crates/se-host/tests/windows_upload_review.rs\\\
+        ')\\n        env = dict(os.environ, CARGO_TARGET_DIR=str(target), CARGO_INCREMENTAL=\\'0\\',\\n        \
+        \           CARGO_PROFILE_DEV_DEBUG=\\'0\\', CARGO_PROFILE_TEST_DEBUG=\\'0\\', CARGO_BUILD_JOBS=\\'2\\')\\\
+        n        argv = [\\'cargo\\', \\'test\\', \\'-p\\', \\'se-host\\', \\'--all-features\\', \\'--locked\\',\\\
+        n                \\'--test\\', \\'windows_upload_review\\', \\'--no-run\\', \\'--message-format=json\\']\\\
+        n        executable = None\\n        with (reports / (label + \\'-build.jsonl\\')).open(\\'w\\') as log:\\\
+        n            with (reports / (label + \\'-build.stderr\\')).open(\\'w\\') as err:\\n                proc\
+        \ = subprocess.Popen(argv, cwd=checkout, env=env, text=True,\\n                                        stdout=subprocess.PIPE,\
+        \ stderr=err)\\n                for line in proc.stdout:\\n                    log.write(line)\\n      \
+        \              row = json.loads(line)\\n                    if row.get(\\'reason\\') == \\'compiler-artifact\\\
+        ' and row.get(\\'executable\\'):\\n                        executable = row[\\'executable\\']\\n       \
+        \         code = proc.wait()\\n        if code != 0 or executable is None:\\n            raise RuntimeError(f\\\
+        '{label} build failed: exit {code}\\')\\n        binary = root / (label + \\'.exe\\')\\n        shutil.copyfile(executable,\
+        \ binary)\\n        import hashlib\\n        images[label] = {\\'source\\': actual, \\'binary\\': str(binary),\\\
+        n                         \\'sha256\\': hashlib.sha256(binary.read_bytes()).hexdigest(),\\n            \
+        \             \\'review_overlay\\': \\'reviewer-owned windows_upload_review.rs\\', \\'build_exit\\': code}\\\
+        n        (reports / \\'images.json\\').write_text(json.dumps(images, indent=2))\\n        # Both copies\
+        \ are already joined; release only this build\\'s owned cache.\\n        shutil.rmtree(target)\\n    return\
+        \ 0\\n\\n\\nif __name__ == \\'__main__\\':\\n    raise SystemExit(main())\\n', 'environment.ps1': 'param([Parameter(Mandatory)][ValidateSet(\\\
+        'setup\\',\\'shell\\',\\'census\\',\\'drain\\',\\'cleanup\\')][string]$Mode,\\n      [Parameter(Mandatory)][string]$Root,\
+        \ [string]$ShellPath)\\n$ErrorActionPreference = \\'Stop\\'\\n$utf8 = [Text.UTF8Encoding]::new($false)\\\
+        n$private = Join-Path $Root \\'private\\'\\n$statePath = Join-Path $private \\'environment.json\\'\\n$sshdConfig\
+        \ = Join-Path $env:ProgramData \\'ssh/sshd_config\\'\\n$clientConfig = Join-Path $env:USERPROFILE \\'.ssh/config\\\
+        '\\n$reg = \\'HKLM:\\\\SOFTWARE\\\\OpenSSH\\'\\n\\nfunction Save($state) {\\n    [IO.File]::WriteAllText($statePath,\
+        \ ($state | ConvertTo-Json -Depth 8), $utf8)\\n}\\nfunction Protect([string]$Path, [string[]]$Sids, [string]$Owner)\
+        \ {\\n    $acl = Get-Acl -LiteralPath $Path\\n    $acl.SetAccessRuleProtection($true,$false)\\n    foreach\
+        \ ($rule in @($acl.Access)) { $acl.RemoveAccessRuleSpecific($rule) }\\n    foreach ($sid in $Sids) {\\n\
+        \        $identity = [Security.Principal.SecurityIdentifier]::new($sid)\\n        $rule = [Security.AccessControl.FileSystemAccessRule]::new($identity,\\\
+        'FullControl\\',\\'Allow\\')\\n        $acl.AddAccessRule($rule)\\n    }\\n    $acl.SetOwner([Security.Principal.SecurityIdentifier]::new($Owner))\\\
+        n    Set-Acl -LiteralPath $Path -AclObject $acl\\n}\\nfunction Census([string]$Sid) {\\n    if ([string]::IsNullOrWhiteSpace($Sid))\
+        \ { return @() }\\n    # Enumerate all processes first. Account ownership, never executable name, selects\
+        \ cleanup.\\n    @(Get-CimInstance Win32_Process | ForEach-Object {\\n        $p = $_\\n        $owner =\
+        \ Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction SilentlyContinue\\n        if ($owner.Sid\
+        \ -eq $Sid) {\\n            [ordered]@{pid=$p.ProcessId;parent=$p.ParentProcessId;created=$p.CreationDate.ToString(\\\
+        'o\\');command=$p.CommandLine}\\n        }\\n    })\\n}\\n\\nif ($Mode -eq \\'setup\\') {\\n    if ((Test-Path\
+        \ $clientConfig) -and (Get-Item $clientConfig).Length -gt 0) {\\n        throw \\'Refusing to replace an\
+        \ existing client SSH configuration\\'\\n    }\\n    $cap = Get-WindowsCapability -Online -Name \\'OpenSSH.Server*\\\
+        '\\n    if ($cap.State -ne \\'Installed\\') {\\n        Add-WindowsCapability -Online -Name $cap.Name |\
+        \ Out-Null\\n    }\\n    New-Item -ItemType Directory -Path $private -ErrorAction Stop | Out-Null\\n   \
+        \ $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value\\n    Protect $private @($me,\\'S-1-5-18\\\
+        ',\\'S-1-5-32-544\\') $me\\n    $user = \\'upl\\' + [Guid]::NewGuid().ToString(\\'N\\').Substring(0,10)\\\
+        n    $service = Get-CimInstance Win32_Service -Filter \"Name=\\'sshd\\'\"\\n    $initialProcess = if ($service.ProcessId)\
+        \ {\\n        Get-CimInstance Win32_Process -Filter \"ProcessId=$($service.ProcessId)\" |\\n           \
+        \ Select-Object ProcessId,CreationDate,CommandLine\\n    } else { $null }\\n    $state = [ordered]@{user=$user;\
+        \ sid=$null; me=$me; client_existed=(Test-Path $clientConfig);\\n        server_existed=(Test-Path $sshdConfig);\
+        \ shell_existed=$false; shell_value=$null;\\n        shell_kind=$null; disabled_account=$null; setup_complete=$false;\
+        \ cleanup_complete=$false;\\n        initial_service_running=($service.State -eq \\'Running\\'); initial_service_process=$initialProcess}\\\
+        n    if ($state.server_existed) { [IO.File]::Copy($sshdConfig,(Join-Path $private \\'sshd_config.original\\\
+        ')) }\\n    if ($state.client_existed) { [IO.File]::Copy($clientConfig,(Join-Path $private \\'client_config.original\\\
+        ')) }\\n    $key = Get-Item $reg -ErrorAction SilentlyContinue\\n    if ($key -and ($key.GetValueNames()\
+        \ -contains \\'DefaultShell\\')) {\\n        $state.shell_existed = $true\\n        $state.shell_value =\
+        \ $key.GetValue(\\'DefaultShell\\')\\n        $state.shell_kind = $key.GetValueKind(\\'DefaultShell\\').ToString()\\\
+        n    }\\n    Save $state\\n    # No password is printed, placed on a command line, or written to disk.\\\
+        n    $password = ConvertTo-SecureString (\\'Aa9!\\' + [Guid]::NewGuid().ToString(\\'N\\')) -AsPlainText\
+        \ -Force\\n    $account = New-LocalUser -Name $user -Password $password -PasswordNeverExpires\\n    $state.sid\
+        \ = $account.SID.Value\\n    Save $state\\n    Add-LocalGroupMember -SID \\'S-1-5-32-545\\' -Member $user\\\
+        n    $clientKey = Join-Path $private \\'client_key\\'\\n    $hostKey = Join-Path $private \\'host_key\\\
+        '\\n    foreach ($path in @($clientKey,$hostKey)) {\\n        & \"$env:SystemRoot/System32/OpenSSH/ssh-keygen.exe\"\
+        \ -q -t ed25519 -N \\'\"\"\\' -f $path\\n        if ($LASTEXITCODE -ne 0) { throw \\'Fixture key generation\
+        \ failed\\' }\\n    }\\n    Protect $clientKey @($me,\\'S-1-5-18\\',\\'S-1-5-32-544\\') $me\\n    Protect\
+        \ $hostKey @(\\'S-1-5-18\\',\\'S-1-5-32-544\\') \\'S-1-5-32-544\\'\\n    $authorized = Join-Path $private\
+        \ \\'authorized_keys\\'\\n    [IO.File]::WriteAllText($authorized, [IO.File]::ReadAllText($clientKey+\\\
+        '.pub\\'), $utf8)\\n    Protect $authorized @($state.sid,\\'S-1-5-18\\',\\'S-1-5-32-544\\') $state.sid\\\
+        n    $known = Join-Path $private \\'known_hosts\\'\\n    $public = ([IO.File]::ReadAllText($hostKey+\\'.pub\\\
+        ').Trim() -split \\' \\')[0..1] -join \\' \\'\\n    [IO.File]::WriteAllText($known, (\\'[127.0.0.1]:22222\
+        \ \\'+$public+\"`n\"), $utf8)\\n    $serverText = @\"\\nPort 22222\\nListenAddress 127.0.0.1\\nHostKey \"\
+        $($hostKey.Replace(\\'\\\\\\',\\'/\\'))\"\\nAuthorizedKeysFile \"$($authorized.Replace(\\'\\\\\\',\\'/\\\
+        '))\"\\nPubkeyAuthentication yes\\nPasswordAuthentication no\\nAllowUsers $user\\nSubsystem sftp $env:SystemRoot/System32/OpenSSH/sftp-server.exe\\\
+        nLogLevel VERBOSE\\n\"@\\n    New-Item -ItemType Directory -Force -Path (Split-Path $sshdConfig) | Out-Null\\\
+        n    [IO.File]::WriteAllText($sshdConfig,$serverText,$utf8)\\n    New-Item -ItemType Directory -Force -Path\
+        \ (Split-Path $clientConfig) | Out-Null\\n    $clientText = @\"\\nHost upload-review\\n  HostName 127.0.0.1\\\
+        n  Port 22222\\n  User $user\\n  IdentityFile \"$($clientKey.Replace(\\'\\\\\\',\\'/\\'))\"\\n  UserKnownHostsFile\
+        \ \"$($known.Replace(\\'\\\\\\',\\'/\\'))\"\\n  StrictHostKeyChecking yes\\n  IdentitiesOnly yes\\n  BatchMode\
+        \ yes\\n  ConnectTimeout 10\\n\"@\\n    [IO.File]::WriteAllText($clientConfig,$clientText,$utf8)\\n    &\
+        \ \"$env:SystemRoot/System32/OpenSSH/sshd.exe\" -t\\n    if ($LASTEXITCODE -ne 0) { throw \\'Invalid SSH\
+        \ server configuration\\' }\\n    $state.setup_complete = $true\\n    Save $state\\n    [ordered]@{user=$user;sid=$state.sid;client=\\\
+        'native OpenSSH\\';port=22222;initial_service=$initialProcess} | ConvertTo-Json -Depth 6 -Compress\\n  \
+        \  exit\\n}\\n\\n$state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json\\nif ($Mode -eq \\\
+        'cleanup\\' -and $state.cleanup_complete) {\\n    @{restored=$true;already_complete=$true;after=@()} | ConvertTo-Json\
+        \ -Compress\\n    exit\\n}\\nif ($Mode -eq \\'shell\\') {\\n    if (-not (Test-Path -LiteralPath $ShellPath))\
+        \ { throw \\'Default shell executable absent\\' }\\n    $service = Get-CimInstance Win32_Service -Filter\
+        \ \"Name=\\'sshd\\'\"\\n    $before = if ($service.ProcessId) {\\n        Get-CimInstance Win32_Process\
+        \ -Filter \"ProcessId=$($service.ProcessId)\" |\\n            Select-Object ProcessId,CreationDate,CommandLine\\\
+        n    } else { $null }\\n    if ($before) { Stop-Service sshd; (Get-Service sshd).WaitForStatus(\\'Stopped\\\
+        ',[TimeSpan]::FromSeconds(20)) }\\n    New-Item -Path $reg -Force | Out-Null\\n    New-ItemProperty -Path\
+        \ $reg -Name DefaultShell -Value $ShellPath -PropertyType String -Force | Out-Null\\n    Start-Service sshd\\\
+        n    (Get-Service sshd).WaitForStatus(\\'Running\\',[TimeSpan]::FromSeconds(20))\\n    $afterService = Get-CimInstance\
+        \ Win32_Service -Filter \"Name=\\'sshd\\'\"\\n    $after = Get-CimInstance Win32_Process -Filter \"ProcessId=$($afterService.ProcessId)\"\
+        \ |\\n        Select-Object ProcessId,CreationDate,CommandLine\\n    [ordered]@{shell=$ShellPath;previous_service=$before;current_service=$after}\
+        \ | ConvertTo-Json -Depth 6 -Compress\\n    exit\\n}\\nif ($Mode -eq \\'census\\') {\\n    ConvertTo-Json\
+        \ -InputObject @(Census $state.sid) -Depth 6 -Compress\\n    exit\\n}\\nif ($Mode -eq \\'drain\\') {\\n\
+        \    $pins = @(Census $state.sid)\\n    foreach ($pin in $pins) {\\n        $p = Get-CimInstance Win32_Process\
+        \ -Filter \"ProcessId=$($pin.pid)\"\\n        if ($p -and $p.CreationDate.ToString(\\'o\\') -eq $pin.created\
+        \ -and $p.CommandLine -eq $pin.command) {\\n            Stop-Process -Id $pin.pid -Force\\n        }\\n\
+        \    }\\n    [ordered]@{before=$pins;after=@(Census $state.sid)} | ConvertTo-Json -Depth 6 -Compress\\n\
+        \    exit\\n}\\n\\n$before = @(Census $state.sid)\\n$service = Get-CimInstance Win32_Service -Filter \"\
+        Name=\\'sshd\\'\"\\n$serviceProcess = if ($service.ProcessId) {\\n    Get-CimInstance Win32_Process -Filter\
+        \ \"ProcessId=$($service.ProcessId)\" |\\n        Select-Object ProcessId,CreationDate,CommandLine\\n} else\
+        \ { $null }\\nif ((Get-Service sshd).Status -ne \\'Stopped\\') {\\n    Stop-Service sshd\\n    (Get-Service\
+        \ sshd).WaitForStatus(\\'Stopped\\',[TimeSpan]::FromSeconds(20))\\n}\\nforeach ($pin in $before) {\\n  \
+        \  $p = Get-CimInstance Win32_Process -Filter \"ProcessId=$($pin.pid)\"\\n    if ($p -and $p.CreationDate.ToString(\\\
+        'o\\') -eq $pin.created -and $p.CommandLine -eq $pin.command) {\\n        Stop-Process -Id $pin.pid -Force\\\
+        n    }\\n}\\n$after = @(Census $state.sid)\\nif ($after.Count) { throw \\'Fixture account processes survived\
+        \ exact-identity cleanup\\' }\\nif ($state.server_existed) { [IO.File]::Copy((Join-Path $private \\'sshd_config.original\\\
+        '),$sshdConfig,$true) }\\nelse { Remove-Item -LiteralPath $sshdConfig -ErrorAction SilentlyContinue }\\\
+        nif ($state.client_existed) { [IO.File]::Copy((Join-Path $private \\'client_config.original\\'),$clientConfig,$true)\
+        \ }\\nelse { Remove-Item -LiteralPath $clientConfig -ErrorAction SilentlyContinue }\\nif ($state.shell_existed)\
+        \ {\\n    New-ItemProperty -Path $reg -Name DefaultShell -Value $state.shell_value -PropertyType $state.shell_kind\
+        \ -Force | Out-Null\\n} else { Remove-ItemProperty -Path $reg -Name DefaultShell -ErrorAction SilentlyContinue\
+        \ }\\nif ($state.sid) {\\n    $account = Get-LocalUser -SID $state.sid -ErrorAction Stop\\n    if (!$account\
+        \ -or $account.SID.Value -ne $state.sid) { throw \\'Exact disposable account is unreadable or changed\\\
+        ' }\\n    Disable-LocalUser -InputObject $account\\n    $disabled = Get-LocalUser -SID $state.sid -ErrorAction\
+        \ Stop\\n    if (!$disabled -or $disabled.SID.Value -ne $state.sid -or $disabled.Enabled -ne $false) { throw\
+        \ \\'Disposable account disable was not witnessed\\' }\\n    # Windows can retain an unloaded SSH profile\
+        \ handle after every process exits.\\n    # Keep this disabled account/profile on the disposable hosted\
+        \ runner. Removing\\n    # a still-loaded profile is unrelated to upload acceptance and can fail busy.\\\
+        n    $state.disabled_account = @{sid=$disabled.SID.Value; enabled=$disabled.Enabled}\\n}\\n$state.cleanup_complete=$true\\\
+        nif ($state.initial_service_running) {\\n    Start-Service sshd\\n    (Get-Service sshd).WaitForStatus(\\\
+        'Running\\',[TimeSpan]::FromSeconds(20))\\n}\\nSave $state\\n[ordered]@{before=$before;after=$after;stopped_service=$serviceProcess;service_status=(Get-Service\
+        \ sshd).Status.ToString();restored=$true} | ConvertTo-Json -Depth 8 -Compress\\n', 'payload.py': '\"\"\"\
+        Download the immutable release image without persisting the API credential.\"\"\"\\nimport hashlib\\nimport\
+        \ io\\nfrom pathlib import Path\\nimport subprocess\\nimport sys\\nimport zipfile\\n\\nOUTER = \\'a5a8c0e8ca25edc087e0f7653d4ccc3723093f7baa5432744efa1483926690d8\\\
+        '\\nINNER = \\'d22ca4204cfc40e52fe7b56d61b88f40eb2fc8501343c715be64d250055e2f0c\\'\\nIMAGE = \\'3e42826f684d886b1c91f21b7cae9b46aeb209c8c91e3a7a5cea2c89541001bc\\\
+        '\\nSIZE = 47_660_032\\n\\n\\ndef main():\\n    root = Path(sys.argv[1]).resolve()\\n    root.mkdir(parents=True,\
+        \ exist_ok=True)\\n    archive = root / \\'release-assets.zip\\'\\n    with archive.open(\\'wb\\') as output:\\\
+        n        subprocess.run([\\'gh\\', \\'api\\', \\'repos/StateEngine/StateEngine/actions/artifacts/14112051489/zip\\\
+        '],\\n                       stdout=output, check=True, timeout=180)\\n    assert hashlib.sha256(archive.read_bytes()).hexdigest()\
+        \ == OUTER\\n    with zipfile.ZipFile(archive) as outer:\\n        matches = [name for name in outer.namelist()\
+        \ if name.endswith(\\'x86_64-pc-windows-msvc-unsigned.zip\\')]\\n        assert len(matches) == 1, matches\\\
+        n        data = outer.read(matches[0])\\n    assert hashlib.sha256(data).hexdigest() == INNER\\n    with\
+        \ zipfile.ZipFile(io.BytesIO(data)) as inner:\\n        names = [name for name in inner.namelist() if Path(name).name\
+        \ == \\'se.exe\\']\\n        assert len(names) == 1, names\\n        image = inner.read(names[0])\\n   \
+        \ assert len(image) == SIZE and hashlib.sha256(image).hexdigest() == IMAGE\\n    (root / \\'payload.exe\\\
+        ').write_bytes(image)\\n    archive.unlink()\\n    print(\\'Pinned 47,660,032-byte release image verified\
+        \ at all three archive boundaries.\\')\\n\\n\\nif __name__ == \\'__main__\\':\\n    main()\\n', 'preflight.py':\
+        \ '\"\"\"Validate the native SSH fixture before compiling either product revision.\"\"\"\\nimport hashlib\\\
+        nimport json\\nimport os\\nfrom pathlib import Path\\nimport shutil\\nimport sys\\nimport traceback\\n\\\
+        nfrom run import PS, SSH, SSH_DIR, Review, local_ps\\n\\n\\ndef main():\\n    destination = Path(sys.argv[1]).resolve()\\\
+        n    root = destination / \\'preflight\\'\\n    root.mkdir(parents=True, exist_ok=False)\\n    review =\
+        \ Review(root)\\n    review.report[\\'scope\\'] = \\'Fixture preflight only; no product upload or acceptance\\\
+        '\\n    try:\\n        os.environ[\\'PATH\\'] = str(SSH_DIR) + os.pathsep + os.environ[\\'PATH\\']\\n  \
+        \      review.report[\\'local_shell\\'] = json.loads(local_ps(\\n            \"$null=Get-Acl -LiteralPath\
+        \ $env:TEMP;\"\\n            \"@{major=$PSVersionTable.PSVersion.Major;security=(Get-Module Microsoft.PowerShell.Security).Path}\"\
+        \\n            \"|ConvertTo-Json -Compress\"))\\n        assert review.report[\\'local_shell\\'][\\'major\\\
+        '] == 5\\n        review.report[\\'environment\\'] = review.environment(\\'setup\\', \\'setup\\')\\n   \
+        \     pwsh = shutil.which(\\'pwsh.exe\\')\\n        assert pwsh, \\'PowerShell 7 absent\\'\\n        payload\
+        \ = root / \\'preflight.txt\\'\\n        data = b\\'isolated-native-ssh-preflight\\\\n\\'\\n        payload.write_bytes(data)\\\
+        n        digest = hashlib.sha256(data).hexdigest()\\n        review.report[\\'shells\\'] = []\\n       \
+        \ for label, shell, major in [(\\'ps51\\', PS, 5), (\\'ps7\\', pwsh, 7)]:\\n            switch = review.environment(label+\\\
+        '-switch\\', \\'shell\\', shell)\\n            probe = \\'$PSVersionTable.PSVersion.Major\\'\\n        \
+        \    row = review.run(label+\\'-version\\', [SSH, \\'-T\\', \\'upload-review\\', probe])\\n            assert\
+        \ row[\\'exit\\'] == 0\\n            observed = int((review.out/(label+\\'-version.stdout\\')).read_text(encoding=\\\
+        'utf-8-sig\\').strip())\\n            assert observed == major\\n            sent = review.run(label+\\\
+        '-sftp\\', [str(SSH_DIR/\\'sftp.exe\\'), \\'-b\\', \\'-\\', \\'upload-review\\'],\\n                stdin=(\\\
+        'put \"\\'+payload.as_posix()+\\'\" \"preflight.bin\"\\\\n\\').encode(\\'ascii\\'))\\n            assert\
+        \ sent[\\'exit\\'] == 0\\n            _, text = review.remote(label+\\'-acl-hash\\',\\n                \"\
+        $ErrorActionPreference=\\'Stop\\';$p=Join-Path $HOME \\'preflight.bin\\';\"\\n                \"$a=Get-Acl\
+        \ -LiteralPath $p;\"\\n                \"@{sha256=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant();\"\
+        \\n                \"owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;\"\\n            \
+        \    \"sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value}\"\\n                \"|ConvertTo-Json\
+        \ -Compress\")\\n            facts = json.loads(text)\\n            assert facts[\\'sha256\\'] == digest\
+        \ and facts[\\'owner\\'] == facts[\\'sid\\']\\n            closure = review.idle(label+\\'-closure\\')\\\
+        n            assert not closure[\\'forced\\']\\n            review.reset(label+\\'-remove\\', \\'preflight.bin\\\
+        ')\\n            review.report[\\'shells\\'].append({\\'label\\': label, \\'major\\': observed,\\n     \
+        \           \\'switch\\': switch, \\'readback\\': facts, \\'closure\\': closure})\\n        review.report[\\\
+        'qualified\\'] = True\\n    except Exception:\\n        review.report[\\'error\\'] = traceback.format_exc()\\\
+        n    finally:\\n        if (root/\\'private/environment.json\\').exists():\\n            try:\\n       \
+        \         review.report[\\'cleanup\\'] = review.environment(\\'cleanup\\', \\'cleanup\\')\\n           \
+        \ except Exception:\\n                review.report[\\'cleanup_error\\'] = traceback.format_exc()\\n   \
+        \             review.report[\\'qualified\\'] = False\\n        review.save()\\n        reports = destination\
+        \ / \\'reports\\'\\n        reports.mkdir(exist_ok=True)\\n        shutil.copytree(review.out, reports/\\\
+        'preflight\\')\\n    print(json.dumps({key: review.report.get(key) for key in\\n                     [\\\
+        'qualified\\',\\'error\\',\\'cleanup_error\\']}, indent=2))\\n    return 0 if review.report[\\'qualified\\\
+        '] else 1\\n\\n\\nif __name__ == \\'__main__\\':\\n    raise SystemExit(main())\\n', 'run.py': '\"\"\"Real\
+        \ loopback SSH comparisons; failures and fixture cleanup stay separate.\"\"\"\\nimport base64\\nimport hashlib\\\
+        nimport json\\nimport os\\nfrom pathlib import Path\\nimport shutil\\nimport subprocess\\nimport sys\\nimport\
+        \ time\\nimport traceback\\n\\nfrom payload import IMAGE, SIZE\\n\\nHERE = Path(__file__).resolve().parent\\\
+        nPS = str(Path(os.environ[\\'SystemRoot\\']) / \\'System32/WindowsPowerShell/v1.0/powershell.exe\\')\\nSSH_DIR\
+        \ = Path(os.environ[\\'SystemRoot\\']) / \\'System32/OpenSSH\\'\\nSSH = str(SSH_DIR / \\'ssh.exe\\')\\n\\\
+        n\\ndef encoded(script):\\n    return [\\'-NoLogo\\', \\'-NoProfile\\', \\'-NonInteractive\\', \\'-EncodedCommand\\\
+        ',\\n            base64.b64encode(script.encode(\\'utf-16le\\')).decode()]\\n\\n\\ndef powershell_environment(environment=None):\\\
+        n    # An intermediate Python process retains PowerShell 7\\'s module paths.\\n    # Let Windows PowerShell\
+        \ reconstruct its own defaults, as a direct launch does.\\n    return {key: value for key, value in (environment\
+        \ or os.environ).items()\\n            if key.casefold() != \\'psmodulepath\\'}\\n\\n\\ndef local_ps(script):\\\
+        n    proc = subprocess.run([PS, *encoded(script)], env=powershell_environment(),\\n                    \
+        \      capture_output=True, timeout=60)\\n    if proc.returncode:\\n        raise RuntimeError(proc.stderr.decode(errors=\\\
+        'replace\\'))\\n    return proc.stdout.decode(\\'utf-8-sig\\').strip()\\n\\n\\ndef process_tree(pid):\\\
+        n    script = r\\'\\'\\'$all=@(Get-CimInstance Win32_Process);$ids=@(%d);$rows=@();\\ndo {$changed=$false;foreach($p\
+        \ in $all){if($p.ParentProcessId -in $ids -and $p.ProcessId -notin $ids){$ids+= $p.ProcessId;$changed=$true}}}while($changed);\\\
+        nforeach($p in $all){if($p.ProcessId -in $ids){$rows+=@{pid=$p.ProcessId;created=$p.CreationDate.ToString(\\\
+        'o\\');command=$p.CommandLine}}};\\nConvertTo-Json -InputObject $rows -Compress\\'\\'\\' % pid\\n    return\
+        \ json.loads(local_ps(script) or \\'[]\\')\\n\\n\\ndef close_exact(pins):\\n    for pin in reversed(pins):\\\
+        n        pin64 = base64.b64encode(json.dumps(pin).encode()).decode()\\n        local_ps(r\"\"\"$pin=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(\\\
+        '%s\\'))|ConvertFrom-Json;\\n$p=Get-CimInstance Win32_Process -Filter \"ProcessId=$($pin.pid)\";\\nif($p){if($p.CreationDate.ToString(\\\
+        'o\\') -ne $pin.created -or $p.CommandLine -ne $pin.command){throw \\'process identity changed\\'};Stop-Process\
+        \ -Id $pin.pid -Force}\"\"\" % pin64)\\n\\n\\nclass Review:\\n    def __init__(self, root):\\n        self.root\
+        \ = root\\n        self.out = root / \\'reports\\'\\n        self.out.mkdir(exist_ok=True)\\n        self.report\
+        \ = {\\'qualified\\': False, \\'trials\\': [], \\'commands\\': [], \\'scope\\':\\n            \\'Real hosted\
+        \ Windows SSH upload stage; not full pairing or detached runtime qualification\\'}\\n\\n    def save(self):\\\
+        n        (self.out / \\'result.json\\').write_text(json.dumps(self.report, indent=2))\\n\\n    def run(self,\
+        \ name, argv, limit=60, env=None, stdin=None):\\n        if str(argv[0]).casefold() == PS.casefold():\\\
+        n            env = powershell_environment(env)\\n        row = {\\'name\\': name, \\'argv\\': argv, \\'deadline_seconds\\\
+        ': limit}\\n        self.report[\\'commands\\'].append(row)\\n        begin = time.monotonic()\\n      \
+        \  with (self.out / (name + \\'.stdout\\')).open(\\'wb\\') as stdout:\\n            with (self.out / (name\
+        \ + \\'.stderr\\')).open(\\'wb\\') as stderr:\\n                child = subprocess.Popen(argv, env=env,\
+        \ stdin=subprocess.PIPE if stdin is not None\\n                                         else subprocess.DEVNULL,\
+        \ stdout=stdout, stderr=stderr)\\n                try:\\n                    child.communicate(stdin, timeout=limit)\\\
+        n                except subprocess.TimeoutExpired:\\n                    row[\\'timed_out\\'] = True\\n\
+        \                    # The retained Popen process handle owns the root identity.\\n                    #\
+        \ Read full command lines before any exact-PID stop.\\n                    current = process_tree(child.pid)\
+        \ if child.poll() is None else []\\n                    row[\\'forced_local_closure\\'] = current\\n   \
+        \                 close_exact(current)\\n                    child.wait(timeout=20)\\n                row.update(exit=child.returncode,\
+        \ elapsed_seconds=time.monotonic()-begin, joined=True)\\n        self.save()\\n        return row\\n\\n\
+        \    def environment(self, name, mode, shell=None):\\n        argv = [PS, \\'-NoLogo\\', \\'-NoProfile\\\
+        ', \\'-NonInteractive\\', \\'-File\\',\\n                str(HERE / \\'environment.ps1\\'), \\'-Mode\\',\
+        \ mode, \\'-Root\\', str(self.root)]\\n        if shell:\\n            argv += [\\'-ShellPath\\', shell]\\\
+        n        row = self.run(name, argv, limit=180)\\n        if row[\\'exit\\']:\\n            raise RuntimeError(name\
+        \ + \\' failed; see retained stderr\\')\\n        text = (self.out / (name + \\'.stdout\\')).read_text(encoding=\\\
+        'utf-8-sig\\').strip()\\n        return json.loads(text)\\n\\n    def remote(self, name, script, checked=True):\\\
+        n        command = \\'powershell.exe \\' + \\' \\'.join(encoded(script))\\n        row = self.run(name,\
+        \ [SSH, \\'-T\\', \\'upload-review\\', command])\\n        if checked and row[\\'exit\\']:\\n          \
+        \  raise RuntimeError(name + \\' remote command failed\\')\\n        text = (self.out / (name + \\'.stdout\\\
+        ')).read_text(encoding=\\'utf-8-sig\\').strip()\\n        return row, text\\n\\n    def idle(self, name):\\\
+        n        pins = self.environment(name + \\'-census\\', \\'census\\')\\n        for attempt in range(3):\\\
+        n            if not pins:\\n                return {\\'absent\\': True, \\'forced\\': False}\\n        \
+        \    time.sleep(1)\\n            pins = self.environment(name + f\\'-census-{attempt}\\', \\'census\\')\\\
+        n        result = self.environment(name + \\'-forced-drain\\', \\'drain\\')\\n        if result[\\'after\\\
+        ']:\\n            raise RuntimeError(\\'Synthetic account processes remain after drain\\')\\n        return\
+        \ {\\'absent\\': True, \\'forced\\': True, \\'forced_processes\\': result[\\'before\\']}\\n\\n    def readback(self,\
+        \ name, relative, product):\\n        # Hashing happens after the timer and over a new SSH session.\\n \
+        \       script = r\"\"\"$ErrorActionPreference=\\'Stop\\';$p=Join-Path $HOME \\'%s\\';\\n$files=@();if(Test-Path\
+        \ -LiteralPath $p){$i=Get-Item -LiteralPath $p -Force;\\n$a=Get-Acl -LiteralPath $p;$files+=@{path=$p;bytes=$i.Length;sha256=(Get-FileHash\
+        \ -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant();owner=$a.GetOwner([Security.Principal.SecurityIdentifier]).Value;attributes=$i.Attributes.ToString()}};\\\
+        n$partial=@();$dir=Split-Path $p;if(Test-Path -LiteralPath $dir){$partial=@(Get-ChildItem -LiteralPath $dir\
+        \ -Force|Where-Object Name -like \\'*.upload-*\\'|Select-Object Name,Length)};\\n@{files=$files;partials=$partial;home=$HOME;sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value}|ConvertTo-Json\
+        \ -Depth 6 -Compress\"\"\" % relative\\n        _, text = self.remote(name, script)\\n        result = json.loads(text)\\\
+        n        files = result[\\'files\\']\\n        result[\\'hash_matches\\'] = len(files) == 1 and files[0][\\\
+        'bytes\\'] == SIZE and files[0][\\'sha256\\'] == IMAGE\\n        result[\\'account_owner_matches\\'] = len(files)\
+        \ == 1 and files[0][\\'owner\\'] == result[\\'sid\\']\\n        if product:\\n            result[\\'nonce_cleanup_witnessed\\\
+        '] = len(result[\\'partials\\']) == 0\\n        return result\\n\\n    def reset(self, name, relative):\\\
+        n        # Only the exact cache/file in the fresh synthetic account is owned here.\\n        target = relative.rsplit(\\\
+        '/\\', 1)[0] if relative.startswith(\\'.stateengine-runtime/\\') else relative\\n        script = \"$ErrorActionPreference=\\\
+        'Stop\\';$p=Join-Path $HOME \\'\" + target + \"\\';if(Test-Path -LiteralPath $p){Remove-Item -LiteralPath\
+        \ $p -Force -Recurse};if(Test-Path -LiteralPath $p){throw \\'fixture reset failed\\'};Write-Output \\'absent\\\
+        '\"\\n        self.remote(name, script)\\n\\n    def trials(self):\\n        images = json.loads((self.out\
+        \ / \\'images.json\\').read_text())\\n        payload = self.root / \\'payload.exe\\'\\n        assert payload.stat().st_size\
+        \ == SIZE\\n        assert hashlib.sha256(payload.read_bytes()).hexdigest() == IMAGE\\n        self.report.update(images=images,\
+        \ payload_sha256=IMAGE, payload_bytes=SIZE)\\n        os.environ[\\'PATH\\'] = str(SSH_DIR) + os.pathsep\
+        \ + os.environ[\\'PATH\\']\\n        self.report[\\'product_ssh_client\\'] = shutil.which(\\'ssh\\')\\n\
+        \        assert Path(self.report[\\'product_ssh_client\\']).samefile(SSH)\\n        self.report[\\'environment\\\
+        '] = self.environment(\\'setup\\', \\'setup\\')\\n        pwsh = shutil.which(\\'pwsh.exe\\')\\n       \
+        \ if not pwsh:\\n            raise RuntimeError(\\'PowerShell 7 is absent\\')\\n        self.report[\\'ssh_version\\\
+        '] = subprocess.run([SSH, \\'-V\\'], capture_output=True, text=True).stderr\\n        for shell_label, shell_path,\
+        \ major in [(\\'ps51\\', PS, 5), (\\'ps7\\', pwsh, 7)]:\\n            self.report[shell_label] = self.environment(shell_label+\\\
+        '-switch\\', \\'shell\\', shell_path)\\n            probe = \"$v=@{version=$PSVersionTable.PSVersion.ToString();major=$PSVersionTable.PSVersion.Major;home=$HOME;sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value};$v|ConvertTo-Json\
+        \ -Compress\"\\n            row = self.run(shell_label+\\'-default-shell\\', [SSH, \\'-T\\', \\'upload-review\\\
+        ', probe])\\n            if row[\\'exit\\']:\\n                raise RuntimeError(\\'Real SSH default shell\
+        \ did not start\\')\\n            facts = json.loads((self.out/(shell_label+\\'-default-shell.stdout\\')).read_text(encoding=\\\
+        'utf-8-sig\\'))\\n            assert facts[\\'major\\'] == major\\n            assert facts[\\'sid\\'] ==\
+        \ self.report[\\'environment\\'][\\'sid\\']\\n            self.report[shell_label][\\'outside_shell\\']\
+        \ = facts\\n            for label in [\\'base\\', \\'head\\', \\'scp-default-sftp\\', \\'scp-legacy\\',\
+        \ \\'sftp\\']:\\n                name = shell_label + \\'-\\' + label\\n                product = label\
+        \ in images\\n                relative = \\'.stateengine-runtime/\\' + IMAGE + \\'/se.exe\\' if product\
+        \ else name+\\'.bin\\'\\n                self.idle(name+\\'-before\\')\\n                self.reset(name+\\\
+        '-reset\\', relative)\\n                trial = {\\'name\\': name, \\'product\\': product, \\'relative\\\
+        ': relative}\\n                self.report[\\'trials\\'].append(trial)\\n                if product:\\n\
+        \                    output = self.out / name\\n                    output.mkdir()\\n                  \
+        \  env = dict(os.environ, UPLOAD_REVIEW_PAYLOAD=str(payload), UPLOAD_REVIEW_OUTPUT=str(output))\\n     \
+        \               trial[\\'command\\'] = self.run(name, [images[label][\\'binary\\'], \\'--exact\\',\\n  \
+        \                      \\'native_first_pairing_upload\\', \\'--ignored\\', \\'--nocapture\\'], limit=180,\
+        \ env=env)\\n                    outcome = output / \\'outcome.json\\'\\n                    trial[\\'product_outcome\\\
+        '] = json.loads(outcome.read_text()) if outcome.exists() else None\\n                else:\\n          \
+        \          if label.startswith(\\'scp\\'):\\n                        argv = [str(SSH_DIR/\\'scp.exe\\'),\
+        \ \\'-B\\']\\n                        if label == \\'scp-legacy\\':\\n                            argv +=\
+        \ [\\'-O\\']\\n                        argv += [str(payload), \\'upload-review:\\'+relative]\\n        \
+        \                trial[\\'command\\'] = self.run(name, argv, limit=90)\\n                    else:\\n  \
+        \                      batch = self.root / (name+\\'.batch\\')\\n                        batch.write_text(\\\
+        'put \"\\'+payload.as_posix()+\\'\" \"\\'+relative+\\'\"\\\\n\\', encoding=\\'ascii\\')\\n             \
+        \           trial[\\'command\\'] = self.run(name, [str(SSH_DIR/\\'sftp.exe\\'), \\'-b\\', str(batch), \\\
+        'upload-review\\'], limit=90)\\n                trial[\\'outside_closure\\'] = self.idle(name+\\'-after\\\
+        ')\\n                trial[\\'readback\\'] = self.readback(name+\\'-readback\\', relative, product)\\n \
+        \               trial[\\'passed\\'] = (trial[\\'command\\'][\\'exit\\'] == 0 and\\n                    not\
+        \ trial[\\'command\\'].get(\\'timed_out\\') and trial[\\'readback\\'][\\'hash_matches\\'] and\\n       \
+        \             not trial[\\'outside_closure\\'][\\'forced\\'])\\n                if product:\\n         \
+        \           trial[\\'passed\\'] = (trial[\\'passed\\'] and trial[\\'product_outcome\\'] is not None\\n \
+        \                       and trial[\\'product_outcome\\'][\\'passed\\'] and trial[\\'readback\\'][\\'account_owner_matches\\\
+        ']\\n                        and trial[\\'readback\\'][\\'nonce_cleanup_witnessed\\'])\\n              \
+        \  self.save()\\n                self.reset(name+\\'-remove\\', relative)\\n            self.idle(shell_label+\\\
+        '-finished\\')\\n        heads = [row for row in self.report[\\'trials\\'] if row[\\'name\\'].endswith(\\\
+        '-head\\')]\\n        bases = [row for row in self.report[\\'trials\\'] if row[\\'name\\'].endswith(\\'-base\\\
+        ')]\\n        self.report[\\'head_uploads_passed\\'] = len(heads) == 2 and all(row[\\'passed\\'] for row\
+        \ in heads)\\n        self.report[\\'base_failure_reproduced\\'] = len(bases) == 2 and all(not row[\\'passed\\\
+        '] for row in bases)\\n        self.report[\\'qualified\\'] = self.report[\\'head_uploads_passed\\'] and\
+        \ self.report[\\'base_failure_reproduced\\']\\n\\n\\ndef main():\\n    review = Review(Path(sys.argv[1]).resolve())\\\
+        n    try:\\n        review.trials()\\n    except Exception:\\n        review.report[\\'error\\'] = traceback.format_exc()\\\
+        n    finally:\\n        state = review.root / \\'private/environment.json\\'\\n        if state.exists():\\\
+        n            try:\\n                review.report[\\'cleanup\\'] = review.environment(\\'cleanup\\', \\\
+        'cleanup\\')\\n            except Exception:\\n                review.report[\\'cleanup_error\\'] = traceback.format_exc()\\\
+        n                review.report[\\'qualified\\'] = False\\n        review.save()\\n    print(json.dumps({key:\
+        \ review.report.get(key) for key in\\n        [\\'qualified\\',\\'head_uploads_passed\\',\\'base_failure_reproduced\\\
+        ',\\'error\\',\\'cleanup_error\\']}, indent=2))\\n    return 0 if review.report[\\'qualified\\'] else 1\\\
+        n\\n\\nif __name__ == \\'__main__\\':\\n    raise SystemExit(main())\\n', 'windows_upload_review.rs': '#![cfg(all(windows,\
+        \ feature = \"remote\"))]\\n\\nuse se_host::remote::ssh::{ImageProgress, prepare_image};\\nuse std::{\\\
+        n    fs::OpenOptions,\\n    io::Write,\\n    path::PathBuf,\\n    sync::{\\n        Arc,\\n        atomic::{AtomicBool,\
+        \ Ordering},\\n        mpsc,\\n    },\\n    time::{Duration, Instant},\\n};\\n\\n// Invoke the public upload\
+        \ stage used by native first pairing, with real SSH.\\n#[tokio::test]\\n#[ignore = \"requires an isolated\
+        \ native SSH service and pinned release image\"]\\nasync fn native_first_pairing_upload() {\\n    let payload\
+        \ = PathBuf::from(std::env::var_os(\"UPLOAD_REVIEW_PAYLOAD\").expect(\"payload\"));\\n    let output = PathBuf::from(std::env::var_os(\"\
+        UPLOAD_REVIEW_OUTPUT\").expect(\"output\"));\\n    let cancelled = Arc::new(AtomicBool::new(false));\\n\
+        \    let timer_cancelled = Arc::clone(&cancelled);\\n    let (done, wait) = mpsc::channel();\\n    let timer\
+        \ = std::thread::spawn(move || {\\n        if wait.recv_timeout(Duration::from_secs(90)).is_err() {\\n \
+        \           timer_cancelled.store(true, Ordering::Release);\\n        }\\n    });\\n    let mut events =\
+        \ OpenOptions::new()\\n        .create_new(true)\\n        .write(true)\\n        .open(output.join(\"progress.jsonl\"\
+        ))\\n        .expect(\"progress file\");\\n    let start = Instant::now();\\n    let mut progress = |event:\
+        \ ImageProgress| {\\n        let row = serde_json::json!({\"wall_ms\": start.elapsed().as_millis(), \"event\"\
+        : event});\\n        writeln!(events, \"{row}\").expect(\"progress write\");\\n        events.flush().expect(\"\
+        progress flush\");\\n        Ok(())\\n    };\\n    let result = prepare_image(\"upload-review\", &payload,\
+        \ &cancelled, &mut progress).await;\\n    let elapsed = start.elapsed();\\n    let _ = done.send(());\\\
+        n    timer.join().expect(\"cancellation timer join\");\\n    let receipt = serde_json::json!({\\n      \
+        \  \"passed\": result.is_ok(),\\n        \"error\": result.as_ref().err().map(ToString::to_string),\\n \
+        \       \"elapsed_ms\": elapsed.as_millis(),\\n        \"fixture_cancelled\": cancelled.load(Ordering::Acquire),\\\
+        n        \"deadline_seconds\": 90,\\n        \"scope\": \"public prepare_image stage; no Owner enrollment\
+        \ or detached runtime\"\\n    });\\n    std::fs::write(output.join(\"outcome.json\"), receipt.to_string()).expect(\"\
+        receipt\");\\n    assert!(result.is_ok(), \"{receipt}\");\\n}\\n'}\nhashes={'build.py': 'd884d6e7730fbcaa8b601617c6e061e89f15a531650cc5f50a9f1c0786f10925',\
+        \ 'environment.ps1': '62d2501472a4f88ebd7014e62dd9cb7f8079f35826b4f82dc40bfd89b4cd49bc', 'payload.py': '049e07b9f8c1b2207831bd23006649eba7c97c2bf71b15b45549864207f2879b',\
+        \ 'preflight.py': '2ddc663bd38562a416fe20ba92b0d78029c527bc57545241febfba02d9d78bf0', 'run.py': '9125f950fa26b50ad942f8ede1764228f2da4b90e1151837070f0f0d9377da67',\
+        \ 'windows_upload_review.rs': '9c1cdadd71d4271b6e86d095ab8f3802dda6837bcbac02ee163ce23e16056c53'}\nfor name,code\
+        \ in files.items():\n    assert hashlib.sha256(code.encode()).hexdigest()==hashes[name]\n    if name.endswith('.py'):ast.parse(code)\n\
+        \    (controls/name).write_text(code,encoding='utf-8',newline='')\n(root/'controls.json').write_text(json.dumps(hashes,indent=2)+'\\\
+        n')\n(root/'source.json').write_text(json.dumps({'base': '689c05b15fb0a0b36f02f7545e5df55290ef5a9d', 'head':\
+        \ '6093a5caeaddd50acb900270cbbe17f2b1a26bf9', 'prior': '3b68277f87f16e85139bb804db5f9e6f19812ca6'},indent=2)+'\\\
+        n')\nwith open(os.environ['GITHUB_ENV'],'a') as out:out.write('REVIEW_ROOT='+str(root)+'\\n')"
+    - name: Parse fixture in native PowerShell 5.1 and 7
+      shell: python
+      run: "import base64,os,subprocess\nfrom pathlib import Path\nroot=Path(os.environ['REVIEW_ROOT'])\nscript=\"\
+        $tokens=$null;$errors=$null;[Management.Automation.Language.Parser]::ParseFile('\"+str(root/'controls/environment.ps1').replace(\"\
+        '\",\"''\")+\"',[ref]$tokens,[ref]$errors)|Out-Null;if($errors.Count){$errors|Format-List;exit 1};$PSVersionTable.PSVersion.ToString()\"\
+        \nenv={k:v for k,v in os.environ.items() if k.casefold()!='psmodulepath'}\nfor name,shell in [('ps51',str(Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe')),('ps7','pwsh.exe')]:\n\
+        \    command=[shell,'-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',base64.b64encode(script.encode('utf-16le')).decode()]\n\
+        \    with (root/(name+'-parse.stdout')).open('wb') as out,(root/(name+'-parse.stderr')).open('wb') as err:\n\
+        \        subprocess.run(command,env=env,stdout=out,stderr=err,check=True,timeout=30)"
+    - name: Preflight both real SSH default shells
+      shell: python
+      run: 'import os,subprocess,sys
+
+        from pathlib import Path
+
+        root=Path(os.environ[''REVIEW_ROOT''])
+
+        subprocess.run([sys.executable,''-B'',str(root/''controls/preflight.py''),str(root)],check=True,timeout=600)'
+    - name: Verify immutable full-size shipping payload
+      shell: python
+      run: 'import os,subprocess,sys
+
+        from pathlib import Path
+
+        root=Path(os.environ[''REVIEW_ROOT''])
+
+        subprocess.run([sys.executable,''-B'',str(root/''controls/payload.py''),str(root)],check=True,timeout=240)'
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - name: Build main and fix upload consumers sequentially
+      shell: python
+      run: 'import os,subprocess,sys
+
+        from pathlib import Path
+
+        root=Path(os.environ[''REVIEW_ROOT''])
+
+        subprocess.run([sys.executable,''-B'',str(root/''controls/build.py''),str(root)],check=True,timeout=3600)'
+    - name: Compare full-size real SSH uploads and outside hashes
+      shell: python
+      run: 'import os,subprocess,sys
+
+        from pathlib import Path
+
+        root=Path(os.environ[''REVIEW_ROOT''])
+
+        subprocess.run([sys.executable,''-B'',str(root/''controls/run.py''),str(root)],check=True,timeout=1800)'
+    - name: Recover only initialized disposable fixture
+      if: ${{ always() }}
+      shell: python
+      run: "import os,subprocess,sys\nfrom pathlib import Path\nroot=Path(os.environ['REVIEW_ROOT'])\nsys.path.insert(0,str(root/'controls'))\n\
+        from run import Review\nimport json\nfor directory in [root,root/'preflight']:\n    state=directory/'private/environment.json'\n\
+        \    if state.exists() and not json.loads(state.read_text())['cleanup_complete']:\n        Review(directory).environment('recovery','cleanup')"
+    - name: Collect finite public evidence
+      if: ${{ always() }}
+      shell: python
+      run: "import hashlib,os,shutil\nfrom pathlib import Path\nimport json\nroot=Path(os.environ['REVIEW_ROOT']);out=root/'archive';out.mkdir()\n\
+        for name in ['controls.json','source.json','ps51-parse.stdout','ps51-parse.stderr','ps7-parse.stdout','ps7-parse.stderr']:\n\
+        \    path=root/name\n    if path.exists():shutil.copyfile(path,out/name)\nshutil.copytree(root/'controls',out/'controls',ignore=shutil.ignore_patterns('__pycache__'))\n\
+        if (root/'reports').exists():shutil.copytree(root/'reports',out/'reports')\nmanifest={str(p.relative_to(out)):hashlib.sha256(p.read_bytes()).hexdigest()\
+        \ for p in out.rglob('*') if p.is_file()}\n(out/'sha256sums.json').write_text(json.dumps(manifest,indent=2)+'\\\
+        n')"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: windows-upload-comparison-r10
+        path: ${{ runner.temp }}/windows-upload-comparison/archive
+        if-no-files-found: error
+        retention-days: 14
