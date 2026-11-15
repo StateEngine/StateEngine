@@ -165,6 +165,57 @@ jobs:
         if: ${{ always() }}
         run: echo 'Clippy cache exact hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
 
+  atlas-worker:
+    needs: [changes, fmt]
+    if: ${{ always() && !cancelled() && needs.changes.outputs.rust != 'false' && needs.fmt.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # The native parser's address cap also applies while loading this image.
+      # Build the real CLI separately; a debug test image cannot fit that cap.
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: s
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: hosted-atlas-worker-release-s-v1
+      - name: Build the compact native worker input without LTO
+        run: |
+          target="$(rustc --print host-tuple)"
+          mkdir -p .atlas-worker
+          started="$SECONDS"
+          cargo build --target "$target" --release --package se --bin se --no-default-features --locked
+          echo "Worker build wall time = $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
+          cp "target/$target/release/se" .atlas-worker/se
+          git rev-parse HEAD > .atlas-worker/source.txt
+          sha256sum .atlas-worker/se > .atlas-worker/sha256.txt
+      - name: Verify startup under the unchanged native address cap
+        run: |
+          python3 -I - <<'PY_STARTUP'
+          from pathlib import Path
+          import resource, subprocess
+          image = Path('.atlas-worker/se').resolve(strict=True)
+          def limits():
+              resource.setrlimit(resource.RLIMIT_AS, (96_000_000, 96_000_000))
+          result = subprocess.run([str(image), '--help'], preexec_fn=limits,
+                                  capture_output=True, timeout=10, check=True)
+          if not result.stdout:
+              raise RuntimeError('compact worker produced no help output')
+          print(f'Worker image: {image.stat().st_size} bytes; startup fits 96000000-byte address cap')
+          PY_STARTUP
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: atlas-worker-linux
+          path: .atlas-worker/
+          include-hidden-files: true
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
   archive:
     needs: [changes, fmt]
     if: ${{ always() && !cancelled() && needs.changes.outputs.rust != 'false' && needs.fmt.result == 'success' }}
@@ -224,18 +275,30 @@ jobs:
         run: echo 'Linux archive cache exact hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
 
   test:
-    needs: archive
-    if: ${{ always() && !cancelled() && needs.archive.result == 'success' }}
+    needs: [archive, atlas-worker]
+    if: ${{ always() && !cancelled() && needs.archive.result == 'success' && needs.atlas-worker.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      SE_ATLAS_WORKER_BIN: ${{ github.workspace }}/.atlas-worker/se
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: atlas-worker-linux
+          path: .atlas-worker
+      - name: Prepare the required native worker input
+        run: |
+          test -s "$SE_ATLAS_WORKER_BIN"
+          test "$(cat .atlas-worker/source.txt)" = "$(git rev-parse HEAD)"
+          sha256sum --check .atlas-worker/sha256.txt
+          chmod 700 "$SE_ATLAS_WORKER_BIN"
       - uses: ./.github/actions/test
         with:
           os: ubuntu-24.04
