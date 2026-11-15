@@ -19,7 +19,8 @@ pub enum ImageStage {
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct ImageProgress {
     pub stage: ImageStage,
-    /// Bytes accepted by the owned SSH stream, not a remote publication receipt.
+    /// Bytes transferred by the owned client, not a remote publication receipt.
+    /// Batch SFTP reports zero until completion.
     pub bytes_streamed: u64,
     pub total_bytes: Option<u64>,
     pub elapsed_ms: u64,
@@ -37,7 +38,7 @@ pub async fn prepare_image(
         total_bytes: None,
         elapsed_ms: 0,
     })?;
-    let mut image = super::image::describe(destination, distribution).await?;
+    let image = super::image::describe(destination, distribution).await?;
     if cancelled.load(Ordering::Acquire) {
         return Err(unavailable("remote image preparation was cancelled"));
     }
@@ -56,7 +57,7 @@ pub async fn prepare_image(
         se_types::hex_lower(&crate::remote::session::entropy::<16>()?)
     );
     let result = async {
-        super::command::send_image(destination, &mut image, &upload, cancelled, progress).await?;
+        super::command::send_image(destination, &image, &upload, cancelled, progress).await?;
         if cancelled.load(Ordering::Acquire) {
             return Err(unavailable(
                 "remote image preparation was cancelled before publication",

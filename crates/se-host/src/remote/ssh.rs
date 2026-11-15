@@ -7,6 +7,7 @@ mod authorization;
 mod bootstrap;
 pub(super) mod command;
 mod prepare;
+mod sftp;
 use super::native_image::{self as image, staging, transactions as image_commands};
 pub use authorization::{
     Authorization, AuthorizationResult, LaunchPermissionsRequest, PermissionsRequest,

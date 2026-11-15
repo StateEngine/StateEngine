@@ -1,31 +1,5 @@
 //! Fixed, account-owned runtime paths; partial uploads never become executable.
 // All substituted paths are generated from hexadecimal hashes and nonces.
-pub(in crate::remote) const IMAGE_CHUNK_BYTES: usize = 65536;
-pub(in crate::remote) const WINDOWS_IMAGE_LINE_BYTES: usize = IMAGE_CHUNK_BYTES.div_ceil(3) * 4;
-
-pub(in crate::remote) fn receive(path: &str, windows: bool) -> String {
-    if windows {
-        // A PowerShell SSH shell can transcode stdin passed to a native child.
-        // ASCII base64 lines preserve binary images across that text boundary.
-        powershell(&format!(
-            r#"$ErrorActionPreference='Stop'; $f=$null; $reader=$null;
-try {{
-$p=Join-Path $HOME '{path}';
-$f=[IO.File]::Open($p,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);
-$reader=[IO.StreamReader]::new([Console]::OpenStandardInput(),[Text.Encoding]::ASCII,$false,4096);
-while ($null -ne ($line=$reader.ReadLine())) {{
-if ($line.Length -gt {WINDOWS_IMAGE_LINE_BYTES}) {{throw 'image frame exceeds its bound'}};
-$chunk=[Convert]::FromBase64String($line);
-if ($chunk.Length -gt {IMAGE_CHUNK_BYTES}) {{throw 'image chunk exceeds its bound'}};
-$f.Write($chunk,0,$chunk.Length)
-}};
-$f.Flush($true); exit 0
-}} catch {{exit 1}} finally {{if ($reader) {{$reader.Dispose()}}; if ($f) {{$f.Dispose()}}}}"#
-        ))
-    } else {
-        format!("umask 077; set -C; cat > {path}")
-    }
-}
 pub(in crate::remote) fn prepare(directory: &str, windows: bool, apple: bool) -> String {
     if windows {
         let script = r#"$ErrorActionPreference='Stop'; try {

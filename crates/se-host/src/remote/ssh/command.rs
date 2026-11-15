@@ -1,10 +1,9 @@
-//! Fixed commands and image streams retain and join each owned SSH child.
+//! Fixed commands and image uploads retain and join each owned client.
 use super::*;
 use crate::remote::ssh_diagnostic::read_errors;
-use base64::Engine as _;
 use se_types::SeError;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub(in crate::remote) async fn ssh(destination: &str, command: String) -> Result<(bool, Vec<u8>)> {
     validate_destination(destination)?;
@@ -81,61 +80,67 @@ pub(super) fn verification_error(bytes: &[u8]) -> SeError {
 
 pub(super) async fn send_image(
     destination: &str,
-    image: &mut super::image::Image,
+    image: &super::image::Image,
     upload: &str,
     cancelled: &AtomicBool,
     progress: &mut dyn FnMut(ImageProgress) -> Result<()>,
 ) -> Result<()> {
-    image
-        .file
-        .rewind()
-        .await
-        .map_err(|_| unavailable("cannot rewind the native image"))?;
-    let mut child = Command::new("ssh")
-        .args([
-            "-T",
-            "-o",
-            "BatchMode=yes",
-            destination,
-            &staging::receive(upload, image.windows),
-        ])
+    let batch = super::sftp::upload_batch(&image.path, upload)?;
+    let (sftp, ssh) = super::sftp::clients()?;
+    let mut child = Command::new(sftp)
+        .args(["-b", "-", "-o", "BatchMode=yes", "-S"])
+        .arg(ssh)
+        .arg(destination)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|_| unavailable("cannot start the system SSH image stream"))?;
-    let input = child
+        .map_err(|_| {
+            unavailable(
+                "cannot start the system SFTP client; install the OpenSSH client tools and retry",
+            )
+        })?;
+    let mut input = child
         .stdin
         .take()
-        .ok_or_else(|| unavailable("SSH image input pipe absent"))?;
+        .ok_or_else(|| unavailable("SFTP image input pipe absent"))?;
     let output = child
         .stdout
         .take()
-        .ok_or_else(|| unavailable("SSH image output pipe absent"))?;
+        .ok_or_else(|| unavailable("SFTP image output pipe absent"))?;
     let errors = child
         .stderr
         .take()
-        .ok_or_else(|| unavailable("SSH image error pipe absent"))?;
+        .ok_or_else(|| unavailable("SFTP image error pipe absent"))?;
     let expected = image.expected;
-    let windows = image.windows;
-    let streamed = AtomicU64::new(0);
     let started = std::time::Instant::now();
     let result = {
         let transfer = async {
             tokio::try_join!(
-                copy_image(&mut image.file, input, expected, windows, &streamed),
+                async {
+                    input
+                        .write_all(batch.as_bytes())
+                        .await
+                        .map_err(|_| unavailable("SFTP upload command could not be written"))?;
+                    input
+                        .shutdown()
+                        .await
+                        .map_err(|_| unavailable("SFTP command input could not be closed"))?;
+                    drop(input);
+                    Ok(())
+                },
                 drain(output, 65536),
                 read_errors(destination, errors)
             )?;
             if !child
                 .wait()
                 .await
-                .map_err(|_| unavailable("SSH image completion unreadable"))?
+                .map_err(|_| unavailable("SFTP image completion unreadable"))?
                 .success()
             {
                 return Err(unavailable(
-                    "SSH image stream failed; the image was not published",
+                    "SFTP image stream failed; the image was not published",
                 ));
             }
             Ok(())
@@ -156,7 +161,9 @@ pub(super) async fn send_image(
                     }
                     if let Err(error) = progress(ImageProgress {
                         stage: ImageStage::Uploading,
-                        bytes_streamed: streamed.load(Ordering::Relaxed),
+                        // Batch SFTP has no byte-progress receipt. Report zero until
+                        // its successful exit, rather than inventing streamed bytes.
+                        bytes_streamed: 0,
                         total_bytes: Some(expected),
                         elapsed_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
                     }) { break Err(error); }
@@ -170,64 +177,15 @@ pub(super) async fn send_image(
     result
 }
 
-async fn copy_image(
-    file: &mut tokio::fs::File,
-    mut input: tokio::process::ChildStdin,
-    expected: u64,
-    windows: bool,
-    streamed: &AtomicU64,
-) -> Result<()> {
-    let mut buffer = [0; staging::IMAGE_CHUNK_BYTES];
-    let mut frame = String::with_capacity(if windows {
-        staging::WINDOWS_IMAGE_LINE_BYTES + 1
-    } else {
-        0
-    });
-    loop {
-        let n = file
-            .read(&mut buffer)
-            .await
-            .map_err(|_| unavailable("native image stream read failed"))?;
-        if n == 0 {
-            break;
-        }
-        if streamed.load(Ordering::Relaxed) + n as u64 > expected {
-            return Err(unavailable("native image changed during streaming"));
-        }
-        let bytes = if windows {
-            frame.clear();
-            base64::engine::general_purpose::STANDARD.encode_string(&buffer[..n], &mut frame);
-            frame.push('\n');
-            frame.as_bytes()
-        } else {
-            &buffer[..n]
-        };
-        input
-            .write_all(bytes)
-            .await
-            .map_err(|_| unavailable("SSH image stream write failed"))?;
-        streamed.fetch_add(n as u64, Ordering::Relaxed);
-    }
-    input
-        .shutdown()
-        .await
-        .map_err(|_| unavailable("SSH image input closure failed"))?;
-    drop(input);
-    if streamed.load(Ordering::Relaxed) != expected {
-        return Err(unavailable("native image changed during streaming"));
-    }
-    Ok(())
-}
-
 async fn drain(reader: impl tokio::io::AsyncRead + Unpin, limit: usize) -> Result<()> {
     let mut bytes = Vec::new();
     reader
         .take(limit as u64 + 1)
         .read_to_end(&mut bytes)
         .await
-        .map_err(|_| unavailable("SSH image response unreadable"))?;
+        .map_err(|_| unavailable("SFTP image response unreadable"))?;
     if bytes.len() > limit {
-        return Err(unavailable("SSH image response exceeded its bound"));
+        return Err(unavailable("SFTP image response exceeded its bound"));
     }
     Ok(())
 }
