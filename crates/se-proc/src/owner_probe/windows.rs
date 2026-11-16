@@ -159,11 +159,17 @@ pub(super) fn observe(
                 let mut unqueried = pid.0;
                 let mut seen = std::collections::BTreeSet::new();
                 while unqueried != 0 {
-                    if seen.len() >= 4096 || !seen.insert(unqueried) {
+                    if seen.len() >= 4096 {
                         return Err(refuse(
                             "inspect bounded ancestry",
                             "snapshot ancestry cycle or capacity exceeded",
                         ));
+                    }
+                    // A repeated numeric creator can reflect PID reuse. Every
+                    // reachable selector in this snapshot has already passed
+                    // the recorded-root check; another lap adds no evidence.
+                    if !seen.insert(unqueried) {
+                        break;
                     }
                     if records.iter().any(|record| record.root.pid.0 == unqueried) {
                         return Err(refuse(

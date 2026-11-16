@@ -49,19 +49,39 @@ fn ingest(
     let SourceRead::Bytes(snapshot) = source.read(path, budget())? else {
         return Err("source not read".into());
     };
-    let mut parsed = parser.parse(&snapshot, language, budget())?;
-    db.read(deadline(), |sql| {
-        resolve::resolve(
-            &mut parsed,
-            path,
-            &mut SqlCatalog {
-                sql,
-                deadline: deadline(),
-            },
-            deadline(),
-        )
-        .map(|_| ())
-    })?;
+    let parsed = {
+        // Keep this functional fixture's parse and resolution slices deterministic.
+        #[cfg(debug_assertions)]
+        let _clock = se_atlas::clock::pause();
+        let mut parsed = parser.parse(&snapshot, language, budget())?;
+        let exhausted = match &parsed.coverage {
+            FileCoverage::Partial { reasons } => reasons.contains(&CoverageReason::ParseWorkLimit),
+            FileCoverage::Deferred { reason } => *reason == CoverageReason::ParseWorkLimit,
+            _ => false,
+        };
+        assert!(
+            !exhausted,
+            "parse slice exhausted for {path:?}: {:?}",
+            parsed.coverage
+        );
+        db.read(deadline(), |sql| {
+            let report = resolve::resolve(
+                &mut parsed,
+                path,
+                &mut SqlCatalog {
+                    sql,
+                    deadline: deadline(),
+                },
+                deadline(),
+            )?;
+            assert!(
+                !report.incomplete,
+                "incomplete resolution for {path:?}: {report:?}"
+            );
+            Ok(())
+        })?;
+        parsed
+    };
     assert_eq!(source.verify(&snapshot)?, SourceVerification::Unchanged);
     db.write(2_000_000, deadline(), |sql| {
         if !cold {

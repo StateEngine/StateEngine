@@ -12,6 +12,7 @@ members = [
     "crates/se-remote-cli",
     "crates/se-remote",
     "crates/se-atlas",
+    "crates/se-identifiers",
     "crates/se",
 ]
 
