@@ -9,7 +9,7 @@ struct Step {
     sql: &'static str,
     table_rebuild: bool,
 }
-const STEPS: [Step; 11] = [
+const STEPS: [Step; 12] = [
     Step {
         version: 2,
         sql: include_str!("../migrations/002.sql"),
@@ -64,6 +64,11 @@ const STEPS: [Step; 11] = [
         version: 12,
         sql: include_str!("../migrations/012.sql"),
         table_rebuild: false,
+    },
+    Step {
+        version: 13,
+        sql: include_str!("../migrations/013.sql"),
+        table_rebuild: true,
     },
 ];
 /// Bound on the pre-migration backup; expiry refuses and leaves schema 1.
