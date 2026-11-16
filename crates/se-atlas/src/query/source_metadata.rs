@@ -165,6 +165,7 @@ impl Pool {
             precomputed_last: None,
             lexical: entry.lexical,
             related: entry.related,
+            downweighted: false,
         };
         if let Some(hit) = super::find::materialize(env, sql, snapshot, &candidate, query, mode)?
             && let HitTarget::Code(code) = hit.target
