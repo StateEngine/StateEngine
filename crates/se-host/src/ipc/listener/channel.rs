@@ -113,6 +113,44 @@ pub(super) async fn receive_after_idle(
     exact(stream, &mut bytes, &deadline).await?;
     Ok(Some((wire::WireBytes::from_owned(bytes), deadline)))
 }
+
+/// Byte custodians retain a connection without a periodic idle timer. A cached
+/// readiness notification is not activity: only an actual first byte starts
+/// the finite frame clock.
+pub(super) async fn receive_on_activity(
+    stream: &NativeStream,
+    limit: usize,
+) -> Result<Option<(wire::WireBytes, Deadline)>> {
+    let mut header = [0; 4];
+    let count = loop {
+        stream
+            .readable()
+            .await
+            .map_err(|error| wire::io_failure("wait IPC read", error))?;
+        match stream.try_read(&mut header) {
+            Ok(0) => return Ok(None),
+            Ok(count) => break count,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(wire::io_failure("read IPC header", error)),
+        }
+    };
+    let deadline = Deadline::from_options(&crate::client::ClientOptions {
+        expected_generation: None,
+        timeout: crate::client::lease::CALL_TIMEOUT,
+        cancelled: Arc::new(AtomicBool::new(false)),
+    })?;
+    exact(stream, &mut header[count..], &deadline).await?;
+    let mut bytes = Zeroizing::new(vec![0; wire::frame_length(header, limit)?]);
+    exact(stream, &mut bytes, &deadline).await?;
+    Ok(Some((wire::WireBytes::from_owned(bytes), deadline)))
+}
 async fn first_header(stream: &NativeStream, idle: &Deadline) -> Result<Option<([u8; 4], usize)>> {
     let mut header = [0; 4];
     loop {

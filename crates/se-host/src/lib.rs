@@ -75,6 +75,8 @@ pub mod atlas_renewal;
 pub mod atlas_runtime;
 pub mod atlas_source;
 mod session;
+#[cfg(feature = "listener")]
+pub mod session_runner;
 pub mod state_files;
 pub use harness::*;
 pub use ipc::*;

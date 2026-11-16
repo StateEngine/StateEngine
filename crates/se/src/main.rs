@@ -345,6 +345,22 @@ fn main() -> std::process::ExitCode {
     }
     if args
         .get(1)
+        .is_some_and(|arg| arg == se_host::session_runner::ENTRY)
+    {
+        return finish(
+            if args.len() == 2 {
+                se_host::session_runner::private_entry().map(|()| 0)
+            } else {
+                Err(se_types::SeError::invalid(
+                    "session runner entry",
+                    "an inherited bootstrap frame and no public arguments",
+                ))
+            },
+            &args,
+        );
+    }
+    if args
+        .get(1)
         .is_some_and(|arg| arg == se_proc::atlas_worker::ENTRY)
     {
         #[cfg(any(target_os = "linux", windows, target_os = "macos"))]

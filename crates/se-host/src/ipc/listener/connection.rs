@@ -11,6 +11,33 @@ pub struct IpcConnection {
     pub(super) _connection_slot: tokio::sync::OwnedSemaphorePermit,
 }
 impl IpcConnection {
+    /// A stream custodian can sleep without a periodic idle deadline. The
+    /// ordinary finite frame/call clock starts only after native readability.
+    pub(crate) async fn read_on_activity(&mut self) -> Result<Option<(IpcEnvelope, Deadline)>> {
+        if self.awaiting.is_some() {
+            return Err(SeError::invalid("IPC request", "one outstanding operation"));
+        }
+        let stream = self
+            .stream
+            .take()
+            .ok_or_else(|| SeError::invalid("IPC channel", "a complete prior exchange"))?;
+        let Some((bytes, deadline)) =
+            super::channel::receive_on_activity(&stream, wire::MAX_FRAME_BYTES).await?
+        else {
+            return Ok(None);
+        };
+        let call = wire::decode_call(bytes.as_bytes())?;
+        if call.version != self.hello.version || call.generation != self.hello.generation {
+            return Err(SeError::invalid(
+                "IPC call",
+                "the negotiated API and generation",
+            ));
+        }
+        self.awaiting = Some(call.request_id);
+        self.stream = Some(stream);
+        Ok(Some((call, deadline)))
+    }
+
     /// Only while a cancellable read owns the outstanding request. A caller
     /// cannot pipeline another frame before its response; EOF retires the read.
     pub(crate) async fn wait_for_peer_close(&self) -> Result<()> {
