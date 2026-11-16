@@ -324,6 +324,16 @@ impl State {
         Ok(())
     }
     fn close_root(&mut self, id: RootId) -> Result<()> {
+        let publication = self
+            .roots
+            .iter()
+            .find(|root| root.registration.root == id)
+            .map(|root| {
+                self.controller
+                    .summary(&id)
+                    .map(|summary| (root.registration.clone(), summary))
+            })
+            .transpose()?;
         if !matches!(
             self.controller.close(
                 id.clone(),
@@ -336,6 +346,9 @@ impl State {
                 "Atlas root replacement",
                 "complete native close before recycling its live resource slot",
             ));
+        }
+        if let Some((registration, summary)) = publication {
+            self.work.publish(&registration, summary)?;
         }
         self.roots.retain(|root| root.registration.root != id);
         if let Some(active) = &mut self.active_project
