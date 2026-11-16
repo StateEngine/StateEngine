@@ -93,24 +93,26 @@ pub(super) fn extract(
         reasons.push(CoverageReason::ParseErrors)
     }
     let mut cursor = root.walk();
-    let mut depth = 0usize;
+    // Node::parent searches from the root; reuse the cursor's ancestry instead.
+    // The extraction arena and existing depth bound cover these retained nodes.
+    let mut ancestors = Vec::new();
     loop {
         let node = cursor.node();
         if crate::clock::now() >= deadline {
             reasons.push(CoverageReason::ParseWorkLimit);
             break;
         }
-        if depth >= 128 {
+        if ancestors.len() >= 128 {
             reasons.push(CoverageReason::ResultLimit);
             break;
         }
         let current_scope = scopes.last().map_or(0, |f| f.scope);
         let declaration = match language {
-            Language::Rust => super::rust::declaration(node, &snapshot.bytes),
-            Language::Python => super::python::declaration(node, &snapshot.bytes),
-            _ => super::javascript::declaration(node, &snapshot.bytes),
+            Language::Rust => super::rust::declaration(node, &ancestors, &snapshot.bytes),
+            Language::Python => super::python::declaration(node, &ancestors, &snapshot.bytes),
+            _ => super::javascript::declaration(node, &ancestors, &snapshot.bytes),
         }
-        .or_else(|| pattern_binding(node, language, &snapshot.bytes));
+        .or_else(|| pattern_binding(node, &ancestors, language, &snapshot.bytes));
         let declaration_name = declaration.as_ref().map(|d| d.name.id());
         if let Some(declaration) = declaration {
             let name = declaration
@@ -137,11 +139,12 @@ pub(super) fn extract(
                     reasons.push(CoverageReason::ParseWorkLimit);
                     break;
                 };
-                let export_alias = if default_export(node, &snapshot.bytes) && name != "default" {
-                    Some(arena.text("default")?)
-                } else {
-                    None
-                };
+                let export_alias =
+                    if default_export(&ancestors, &snapshot.bytes) && name != "default" {
+                        Some(arena.text("default")?)
+                    } else {
+                        None
+                    };
                 let record = SymbolRecord {
                     id,
                     parent,
@@ -186,13 +189,14 @@ pub(super) fn extract(
         let current_scope = scopes.last().map_or(0, |f| f.scope);
         imports::extract(
             node,
+            &ancestors,
             &snapshot.bytes,
             language,
             current_scope,
             &mut arena,
             &mut parsed.imports,
         )?;
-        if let Some((name, kind, qualifier)) = reference(node, &snapshot.bytes)
+        if let Some((name, kind, qualifier)) = reference(node, &ancestors, &snapshot.bytes)
             && declaration_name != Some(name.id())
         {
             let spelling = text(name, &snapshot.bytes);
@@ -241,7 +245,7 @@ pub(super) fn extract(
             }
         }
         if cursor.goto_first_child() {
-            depth += 1;
+            arena.push(&mut ancestors, node)?;
             continue;
         }
         loop {
@@ -260,7 +264,7 @@ pub(super) fn extract(
                 }
                 return Ok(parsed);
             }
-            depth -= 1;
+            ancestors.pop();
         }
     }
     parsed.coverage = FileCoverage::Partial { reasons };

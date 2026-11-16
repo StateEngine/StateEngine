@@ -228,7 +228,7 @@ impl LaunchCoordinator {
             if incomplete {
                 return Err(error(
                     "ACP final capture",
-                    "The native provider exited without completing the original prompt. Observed partial input, replies and tool updates are saved as incomplete diagnostics, not a completed turn or proof of input acceptance. Preserve this history and use se launch <agent> --new to start a separate conversation without replaying the interrupted input.",
+                    "The native provider exited without completing the original prompt. Observed partial input, replies and tool updates are saved as incomplete diagnostics, not a completed turn or proof of input acceptance. Preserve this history and use se launch <agent> to start a separate conversation without replaying the interrupted input.",
                 ));
             }
             if observation.active_input.is_some() || observation.cancelling {
