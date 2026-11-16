@@ -14,7 +14,8 @@ FIRST_HOUR_PROBES = frozenset((
     "CLI --version", "CLI contextual read verbs", "CLI writes through running host",
     "standalone persistent processes", "idle no session", "standalone RSS no session",
     "persistent processes after 1 seat(s)", "standalone RSS one session", "idle one session"))
-SELECTIONS = {"first-hour": ("first-hour", {1, 2, 3, 4, 5}),
+SELECTIONS = {"measurement": ("measurement", set()),
+              "first-hour": ("first-hour", {1, 2, 3, 4, 5}),
               "wave-2": ("rust-wave-2", {1, 2, 3, 5}),
               "remote": ("remote", {1}),
               "4": ("selected", {4})}
@@ -342,12 +343,32 @@ def invocation(inv, directory, run=None):
     scope = receipt.get("scope")
     selected = scope.get("selected") if isinstance(scope, dict) else None
     rows = receipt.get("results")
+    # A measurement scope runs probes, not journeys: the judge records it as
+    # `writes_only` with an empty selection, and there are no journey rows to check.
+    measurement = (isinstance(scope, dict) and scope.get("mode") == "measurement")
+    if measurement and mode == "first-hour":
+        entry["problems"].append("measurement scope reached a first-hour invocation")
+        return entry
     if (receipt.get("platform") != inv.get("platform") or receipt.get("implementation") != "rust"
             or receipt.get("surface") != inv.get("surface")
             or not isinstance(scope, dict) or scope.get("mode") != mode or mode == "unsupported"
             or not isinstance(selected, list) or any(type(number) is not int for number in selected)
             or len(selected) != len(expected) or set(selected) != expected):
-        entry["problems"].append("identity, selection or scope mismatch")
+        if not (measurement and mode == "measurement" and selected == []):
+            entry["problems"].append("identity, selection or scope mismatch")
+            return entry
+    if measurement:
+        # No journey rows exist; the budget artifact carries the measurements, and
+        # the cleanup statement still has to be present and known.
+        if not isinstance(rows, list) or rows:
+            entry["problems"].append("measurement scope reported journey rows")
+            return entry
+        entry.update(results=[], scope=scope, cleanup=receipt.get("cleanup") or [],
+                     qualification=receipt.get("qualification"),
+                     behavior_only=receipt.get("qualification") == "measurements only",
+                     receipt_complete=True, journeys={}, outcome="PASS",
+                     problems=entry["problems"])
+        entry["mode"] = "measurement"
         return entry
     # One applicability value for everything downstream, built here because this
     # is where the receipt's platform became verified rather than asserted.
@@ -522,9 +543,15 @@ def summarize(run, directory):
     if not windows_planned:
         gaps.append("windows: not configured")
     elif not windows_measured:
-        reasons = sorted({str(row.get("reason")) for entry in entries
-                          if entry.get("platform") == "win32"
-                          for row in (entry.get("results") or []) if row.get("reason")})
+        # A refusal's cause sits on the entry itself (`error`) or in its `problems`,
+        # not on a result row. Reporting an attempted-but-refused run as "no attempt"
+        # states a false fact, so both places are read.
+        reasons = sorted({str(value)
+                          for entry in entries if entry.get("platform") == "win32"
+                          for value in [entry.get("error"), *(entry.get("problems") or []),
+                                        *(row.get("error") or row.get("reason")
+                                          for row in (entry.get("results") or []))]
+                          if value})
         detail = "; ".join(reasons) if reasons else "no Windows attempt in the custody window"
         gaps.append("windows: " + detail)
     if not any(entry.get("surface") == "codex" and entry["mode"] == "first-hour"

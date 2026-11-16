@@ -5,6 +5,11 @@ Description=Continue the pinned nightly in a native Windows custody window
 # One standing slot a day. The 19:00Z second slot is dropped: the design reserves a
 # single daily custody window, and a night that slipped into a second window would
 # publish Windows rows the Linux attempt never pinned.
+#
+# The first standing night is 2026-11-18 13:00Z; 11-17 belongs to J7/J11. A date in
+# OnCalendar would fire once and never again, so the calendar stays daily and the
+# first permitted night is enforced in windows_continuation.slot_deadline(), which
+# already decides whether a slot may run.
 OnCalendar=*-*-* 13:00:00 UTC
 AccuracySec=1s
 RandomizedDelaySec=0

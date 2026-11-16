@@ -89,7 +89,12 @@ def assess(config, directory, record, report, night, now, report_error=None):
         # window has closed. Silence is not a pass and not a zero: name the reason
         # so the absent row reads NOT MEASURED with the cause attached.
         if any(key[0] == "win32" for key, _ in expected):
-            closed = now.astimezone(timezone.utc).hour >= WINDOWS_CLOSED_HOUR_UTC
+            # Anchor to the night being assessed, not to the current hour: the night
+            # label rolls at 11:00 New York, so an hour test at 15Z names the wrong
+            # record and the reason is looked for under a night that has not started.
+            closed = now.astimezone(timezone.utc) >= datetime.combine(
+                date, datetime.min.time(), timezone.utc).replace(
+                    hour=WINDOWS_CLOSED_HOUR_UTC)
             settled = any(r.get("platform") == "win32"
                           and r.get("state") not in ("planned", "running")
                           for r in checked["invocations"])

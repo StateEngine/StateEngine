@@ -18,6 +18,7 @@ zero and never as a pass.
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -27,13 +28,16 @@ CUSTODY_SCHEMA = "se.windows-nightly-custody/v1"
 # The controller reserves five minutes of the slot for joining the guest and
 # restoring shared custody, so a request with less left cannot finish.
 MINIMUM_REMAINING_SECONDS = 300
-# Scopes the native observer supports on Windows. Kept here so a request naming a
-# scope this producer cannot drive is refused instead of booting a VM for nothing.
-SCOPES = (("claude", "wave-2"), ("claude", "4"), ("codex", "4"))
+# The one provider-free measurement scope this producer drives. Journey scopes are
+# owner-attended and are refused here rather than booting a VM for them.
+SCOPES = (("measure", "writes"),)
 # The controller imports exactly these files; a run that writes fewer produced no
 # usable native receipt, whatever the VM did.
 RECEIPT_FILES = ("native-receipt.json", "credential-closure.json", "results.json",
                  "budgets.json")
+# B10's Windows full-write ceiling. The first standing night must produce a number
+# against it, so the target travels with the attempt instead of being assumed.
+B10_CEILING_MS_INCLUSIVE = 75
 
 
 def number(value):
@@ -79,6 +83,35 @@ def load(request_path):
     return request, settings, Path(runner), claim, seat, request_path
 
 
+def host_load():
+    """The host's load and memory, recorded beside the figures (the B12 rule).
+
+    Windows reports no load average, so the guest cannot supply this; the host that
+    owns the VM is the only witness. An unreadable figure stays marked unreadable
+    rather than becoming zero.
+    """
+    try:
+        one, five, fifteen = os.getloadavg()
+        cpus = os.cpu_count() or 0
+    except OSError:
+        return {"state": "unreadable"}
+    if not cpus:
+        return {"state": "unreadable"}
+    available = None
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                available = int(line.split()[1]) * 1024
+                break
+    except (OSError, ValueError, IndexError):
+        available = None
+    return {"state": "measured", "logical_cpus": cpus, "one_minute": one,
+            "five_minute": five, "fifteen_minute": fifteen, "per_cpu": one / cpus,
+            "available_memory": ({"state": "measured", "bytes": available,
+                                  "method": "MemAvailable"}
+                                 if isinstance(available, int) else {"state": "unreadable"})}
+
+
 def job_record(request):
     """The runner's own account of the attempt, or None when it wrote none."""
     path = Path(request["output"]).parent / "job.json"
@@ -106,7 +139,9 @@ def run(request, settings, runner, claim, seat):
     surface, selection = request["surface"], request["selection"]
     target = "native" if (surface, selection) == ("claude", "wave-2") else "workspace"
     (output.parent / "scope.json").write_text(
-        json.dumps({"surface": surface, "selection": selection, "target": target},
+        json.dumps({"surface": surface, "selection": selection, "target": target,
+                    "b10_ceiling_ms_inclusive": B10_CEILING_MS_INCLUSIVE,
+                    "host_load_before": host_load()},
                    indent=2, sort_keys=True) + "\n")
     argv = [str(runner), commit, target, "--seat", seat, "--claim", claim, "--low-priority"]
     # The runner owns VM admission and shutdown. A timed-out child is killed and
@@ -116,7 +151,10 @@ def run(request, settings, runner, claim, seat):
         child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stream,
                                  stderr=subprocess.STDOUT, close_fds=True)
         try:
-            return child.wait(timeout=timeout)
+            code = child.wait(timeout=timeout)
+            (output.parent / "host-load-after.json").write_text(
+                json.dumps(host_load(), indent=2, sort_keys=True) + "\n")
+            return code
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait(timeout=30)

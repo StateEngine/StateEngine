@@ -46,6 +46,16 @@ def validate(invocation, directory, run):
         if hashlib.sha256(raw[name][0]).hexdigest() != expected_hash:
             raise ValueError("native artifact digest differs: " + name)
     closure = raw["credential-closure.json"][1]
+    if receipt.get("provider") == "none":
+        # A measurement scope never reads a provider credential, so there is no
+        # transport to close. It must SAY so: an explicit provider-none closure is a
+        # different fact from a copied-credential closure that went missing.
+        if (closure.get("provider") != "none" or closure.get("read") is not False
+                or closure.get("refresh_tokens_copied") is not False):
+            raise ValueError("provider-free scope lacks an explicit provider-none closure")
+        if receipt.get("credential_closure"):
+            raise ValueError("provider-free scope reports credential closure rows")
+        return receipt
     source = closure.get("closure")
     if (closure.get("credential_complete") is not True or not isinstance(source, dict)
             or any(source.get(key) is not True for key in

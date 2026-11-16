@@ -9,7 +9,10 @@ import uuid
 from native import import_receipt
 
 # These are the scopes the current native observer supports on Windows.
-SCOPES = {('claude', 'wave-2'), ('claude', '4'), ('codex', '4')}
+# The judge's provider-free measurement selector. `--only writes` drives
+# writeLatency (B10's exact probe) and writes budgets.json with no journey rows.
+# The journey scopes stay owner-attended (J7/J11) and are not planned here.
+SCOPES = {('measure', 'writes')}
 
 
 def plan(config):
@@ -23,7 +26,7 @@ def plan(config):
             or any(not isinstance(arg, str) or not arg for arg in command)
             or not Path(command[0]).is_absolute()):
         raise ValueError('Windows custody producer requires an absolute executable argv')
-    probes = settings.get('probes', [['claude', 'wave-2'], ['claude', '4'], ['codex', '4']])
+    probes = settings.get('probes', [['measure', 'writes']])
     if not isinstance(probes, list) or not 1 <= len(probes) <= len(SCOPES):
         raise ValueError('Windows requires one to three supported native probe scopes')
     rows = []
@@ -33,7 +36,7 @@ def plan(config):
         if (not isinstance(probe, (list, tuple)) or len(probe) != 2
                 or not all(isinstance(value, str) for value in probe)
                 or tuple(probe) not in SCOPES):
-            raise ValueError('Windows probes require Claude wave-2 or Claude/Codex journey 4')
+            raise ValueError('Windows probes require the provider-free measure/writes scope')
         surface, selection = probe
         if (surface, selection) in seen:
             raise ValueError('Windows probe scope is duplicated')
