@@ -120,11 +120,17 @@ pub(crate) struct Binding {
 }
 
 impl Harness for ClaudeHarness {
+    fn arm(&self, binding: &HarnessBinding, wake: &Arc<tokio::sync::Notify>) -> Result<()> {
+        claude_binding(binding)?.completion.arm(wake)
+    }
     fn kind(&self) -> HarnessKind {
         HarnessKind::ClaudeCode
     }
     fn transcript_path(&self, binding: &HarnessBinding) -> Result<Option<PathBuf>> {
         transcript_location(binding).map(Some)
+    }
+    fn transcript_wait(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(10))
     }
     fn probe<'a>(
         &'a self,

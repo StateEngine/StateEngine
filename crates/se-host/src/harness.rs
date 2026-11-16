@@ -299,6 +299,16 @@ pub struct ProviderInterrupt {
     pub requested: bool,
     pub vendor_event: Read<String>,
 }
+/// Reconnect only the original, natively verified provider session.
+pub struct HarnessRecovery<'a> {
+    pub identity: &'a SessionIdentity,
+    pub conversation: &'a ProviderSessionId,
+    pub transcript: Option<&'a crate::TranscriptPin>,
+    pub attended: bool,
+    pub retained: Option<&'a HarnessBinding>,
+}
+pub type TranscriptValidator =
+    fn(&mut se_proc::NativeSourcePin, &ProviderSessionId) -> se_types::Result<()>;
 /// Closed enum selection is performed by composition; no dynamic plugin loader.
 /// Partial launch failure remains owned by the process arena, never dropped.
 pub trait Harness: Send + Sync {
@@ -309,6 +319,50 @@ pub trait Harness: Send + Sync {
     }
     /// The adapter's native transcript, or no file for a protocol capture source.
     fn transcript_path(&self, binding: &HarnessBinding) -> se_types::Result<Option<PathBuf>>;
+    /// A fresh transcript may follow the provider's readiness echo.
+    fn transcript_wait(&self) -> Option<std::time::Duration> {
+        None
+    }
+    fn materialize_transcript<'a>(
+        &'a self,
+        _binding: &'a HarnessBinding,
+        _cx: CallContext,
+    ) -> HostFuture<'a, Option<se_types::SeError>> {
+        Box::pin(async { Ok(None) })
+    }
+    fn transcript_validator(&self) -> TranscriptValidator {
+        |_, _| Ok(())
+    }
+    /// Join this adapter's completion notifications to its owned supervisor.
+    #[cfg(feature = "listener")]
+    fn arm(
+        &self,
+        binding: &HarnessBinding,
+        wake: &std::sync::Arc<tokio::sync::Notify>,
+    ) -> se_types::Result<()>;
+    /// Offer deferred initial input only after activation has committed.
+    fn start_initial<'a>(
+        &'a self,
+        _binding: &'a HarnessBinding,
+        _cx: CallContext,
+    ) -> HostFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+    fn policy_notice(&self, _binding: &HarnessBinding) -> se_types::Result<Option<String>> {
+        Ok(None)
+    }
+    fn recover<'a>(
+        &'a self,
+        _request: HarnessRecovery<'a>,
+        _cx: CallContext,
+    ) -> HostFuture<'a, HarnessBinding> {
+        Box::pin(async {
+            Err(se_core::scope::unreadable(
+                "provider restart control",
+                "the original stdin stream cannot be reopened; preserve the session and use its exact public stop/resume command",
+            ))
+        })
+    }
     fn probe<'a>(
         &'a self,
         request: ProbeRequest,

@@ -122,13 +122,13 @@ impl LaunchCoordinator {
             .as_ref()
             .ok_or_else(|| error("provider readiness", "retained binding absent"))?
             .arm(&work.wake.event)?;
+        let harness = self.harness_for(plan.profile.provider)?;
         let transcript = if plan.capture {
             let binding = work
                 .binding
                 .as_ref()
                 .ok_or_else(|| error("capture readiness", "provider binding absent"))?;
-            self.harness_for(plan.profile.provider)?
-                .transcript_path(binding)?
+            harness.transcript_path(binding)?
         } else {
             None
         };
@@ -137,7 +137,6 @@ impl LaunchCoordinator {
                 .binding
                 .as_ref()
                 .ok_or_else(|| error("capture readiness", "provider binding absent"))?;
-            let provider = plan.profile.provider;
             let conversation = outcome.witness.conversation.clone();
             let candidate_path = path.clone();
             let mut pin = self
@@ -149,16 +148,16 @@ impl LaunchCoordinator {
                 })
                 .await?;
             let mut history_diagnostic = None;
-            // Claude's init echo precedes transcript creation on a fresh
-            // conversation. Wait only for absence, under the original launch
-            // clock; an unreadable/replaced source must still refuse normally.
+            // An adapter may announce readiness before publishing its fresh
+            // transcript. Wait only for absence, under the original launch
+            // clock; unreadable or replaced sources still refuse normally.
             if pin.is_none()
-                && provider == se_store::Provider::Claude
                 && matches!(plan.conversation, Read::Absent { .. })
+                && let Some(wait) = harness.transcript_wait()
             {
                 // Leave the rest of the launch clock for first-use proofs and
                 // witnessed cleanup if the provider never publishes the file.
-                let readiness = deadline.stage(std::time::Duration::from_secs(10))?;
+                let readiness = deadline.stage(wait)?;
                 while pin.is_none() {
                     let remaining =
                         readiness
@@ -167,8 +166,7 @@ impl LaunchCoordinator {
                                 se_types::Detail::DeadlineExceeded(expired) => {
                                     se_types::SeError::new(se_types::Detail::DeadlineExceeded(
                                         se_types::details::DeadlineExceeded {
-                                            op: "Claude transcript creation after its init echo"
-                                                .into(),
+                                            op: "provider transcript readiness".into(),
                                             deadline_ms: expired.deadline_ms,
                                         },
                                     ))
@@ -188,14 +186,14 @@ impl LaunchCoordinator {
                                 native.observe_until(&owner, observed_until).map_err(|e| {
                                     refused(
                                         &agent,
-                                        "Claude transcript process witness",
+                                        "provider transcript process witness",
                                         format!("{e:?}"),
                                     )
                                 })?;
                             if !matches!(observed.root, se_proc::ProcessObservation::Live(_)) {
                                 return Err(refused(
                                     &agent,
-                                    "Claude transcript readiness",
+                                    "provider transcript readiness",
                                     format!(
                                         "provider exited before creating its transcript: {:?}",
                                         observed.root
@@ -212,12 +210,9 @@ impl LaunchCoordinator {
                     }
                 }
             }
-            if pin.is_none()
-                && provider == se_store::Provider::Codex
-                && matches!(plan.conversation, Read::Absent { .. })
-            {
-                history_diagnostic = crate::codex_rpc::bound(binding)?
-                    .materialize_fresh_rollout(&call(self.store.generation, deadline)?)
+            if pin.is_none() && matches!(plan.conversation, Read::Absent { .. }) {
+                history_diagnostic = harness
+                    .materialize_transcript(binding, call(self.store.generation, deadline)?)
                     .await?;
                 pin = self
                     .store
@@ -235,19 +230,18 @@ impl LaunchCoordinator {
                     "the provider has not created its transcript",
                 )
             })?;
+            let validate = harness.transcript_validator();
             let pin = self
                 .store
                 .pool
                 .run_owned(deadline, move || {
-                    if provider == se_store::Provider::Codex {
-                        crate::codex_capture::validate_header(&mut pin, &conversation)?;
-                    }
+                    validate(&mut pin, &conversation)?;
                     Ok(pin)
                 })
                 .await?;
             if let Some(diagnostic) = history_diagnostic {
                 eprintln!(
-                    "Codex capture: native rollout header verified; optional empty-history read failed: {diagnostic}"
+                    "Provider capture: native source verified; optional empty-history read failed: {diagnostic}"
                 );
             }
             work.transcript = Some(crate::TranscriptPin {

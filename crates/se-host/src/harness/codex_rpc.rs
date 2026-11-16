@@ -260,6 +260,33 @@ impl Binding {
     }
 }
 impl Harness for CodexHarness {
+    fn arm(&self, binding: &HarnessBinding, wake: &Arc<tokio::sync::Notify>) -> Result<()> {
+        bound(binding)?.completion.arm(wake)
+    }
+    fn start_initial<'a>(
+        &'a self,
+        binding: &'a HarnessBinding,
+        cx: CallContext,
+    ) -> HostFuture<'a, ()> {
+        Box::pin(async move { CodexHarness::start_initial(self, binding, cx).await })
+    }
+    fn recover<'a>(
+        &'a self,
+        request: crate::HarnessRecovery<'a>,
+        cx: CallContext,
+    ) -> HostFuture<'a, HarnessBinding> {
+        Box::pin(async move {
+            CodexHarness::recover(
+                self,
+                request.identity,
+                request.conversation,
+                request.transcript,
+                request.attended,
+                cx,
+            )
+            .await
+        })
+    }
     fn prepare<'a>(&'a self, request: &'a HarnessRequest, cx: CallContext) -> HostFuture<'a, ()> {
         Box::pin(async move { self.prepare_socket(request, &cx).await })
     }
@@ -271,6 +298,16 @@ impl Harness for CodexHarness {
         )?
         .to_local()?;
         crate::codex_capture::location(&path, &crate::codex_capture::existing_home()?).map(Some)
+    }
+    fn materialize_transcript<'a>(
+        &'a self,
+        binding: &'a HarnessBinding,
+        cx: CallContext,
+    ) -> HostFuture<'a, Option<SeError>> {
+        Box::pin(async move { bound(binding)?.materialize_fresh_rollout(&cx).await })
+    }
+    fn transcript_validator(&self) -> crate::TranscriptValidator {
+        crate::codex_capture::validate_header
     }
     fn kind(&self) -> HarnessKind {
         HarnessKind::CodexAppServer

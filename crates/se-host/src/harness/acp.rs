@@ -81,6 +81,21 @@ pub(crate) fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
         .ok_or_else(|| error("the original protocol binding is absent"))
 }
 impl Harness for AcpHarness {
+    fn arm(&self, binding: &HarnessBinding, wake: &Arc<tokio::sync::Notify>) -> Result<()> {
+        bound(binding)?.session.arm(wake)
+    }
+    fn start_initial<'a>(
+        &'a self,
+        binding: &'a HarnessBinding,
+        cx: CallContext,
+    ) -> HostFuture<'a, ()> {
+        Box::pin(async move { AcpHarness::start_initial(self, binding, cx).await })
+    }
+    fn policy_notice(&self, binding: &HarnessBinding) -> Result<Option<String>> {
+        Ok(Some(
+            bound(binding)?.session.observe()?.policy_notice.into(),
+        ))
+    }
     fn transcript_path(&self, _binding: &HarnessBinding) -> Result<Option<std::path::PathBuf>> {
         Ok(None)
     }
