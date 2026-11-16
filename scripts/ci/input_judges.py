@@ -38,7 +38,8 @@ def unavailable(root: Path):
             label += "::" + test
         excluded.append(selector + ")")
         records.append({"judge": label, "status": "not_run", "missing_inputs": missing})
-    report = root / "target/nextest/input-judges.json"
+    # Archive extraction requires an absent target directory, even before tests run.
+    report = root / "ci-reports/input-judges.json"
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(json.dumps({"schema": "ci-input-judges/v1", "not_run": records}, indent=2) + "\n")
     for record in records:

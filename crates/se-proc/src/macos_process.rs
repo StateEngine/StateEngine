@@ -96,11 +96,15 @@ fn image(pid: ProcessId, deadline: Instant) -> ProcResult<PathBuf> {
                 "empty executable path result without a native cause",
             ));
         }
-        return Err(native(
-            ProcErrorCode::IdentityUnreadable,
-            "proc_pidpath",
-            cause,
-        ));
+        let mut failure = native(ProcErrorCode::IdentityUnreadable, "proc_pidpath", cause);
+        *failure.detail = ProcErrorDetail::Identity {
+            pid,
+            expected_start: None,
+            found_start: None,
+            expected: None,
+            found: None,
+        };
+        return Err(failure);
     }
     if count as usize >= bytes.len() {
         return Err(capacity("native executable path", bytes.len() as u64));
@@ -143,10 +147,43 @@ fn exited(pid: ProcessId, boot: BootIdentity, start: StartIdentity) -> ProcResul
 }
 
 pub fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
-    read_process_until(machine, pid, Instant::now() + Duration::from_secs(5))
+    read_process_once(machine, pid, Instant::now() + Duration::from_secs(5))
 }
 
 pub fn read_process_until(
+    machine: MachineId,
+    pid: ProcessId,
+    deadline: Instant,
+) -> ProcResult<ProcessRead> {
+    loop {
+        let original = match read_process_once(machine.clone(), pid, deadline) {
+            Ok(observed) => return Ok(observed),
+            Err(error)
+                if error.code == ProcErrorCode::IdentityUnreadable
+                    && error.native.as_ref().is_some_and(|failure| {
+                        failure.api == "proc_pidpath"
+                            && failure.code == Some(i64::from(libc::ESRCH))
+                    }) =>
+            {
+                error
+            }
+            Err(error) => return Err(error),
+        };
+        // Darwin can lose the image while the BSD record is still running.
+        // Reread within the caller's original bound; the image error itself
+        // proves neither exit nor a live identity. Immediate reads stay strict.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(original);
+        }
+        std::thread::park_timeout(remaining.min(Duration::from_millis(10)));
+        if Instant::now() >= deadline {
+            return Err(original);
+        }
+    }
+}
+
+fn read_process_once(
     machine: MachineId,
     pid: ProcessId,
     deadline: Instant,
@@ -232,7 +269,7 @@ pub fn read_process_until(
 }
 
 pub(crate) fn exact(expected: &ProcessIdentity, deadline: Instant) -> ProcResult<()> {
-    match read_process_until(expected.machine.clone(), expected.pid, deadline)? {
+    match read_process_once(expected.machine.clone(), expected.pid, deadline)? {
         ProcessRead::Present(live) if live.identity == *expected => Ok(()),
         ProcessRead::Present(live) => Err(changed(expected, Some(&live.identity))),
         ProcessRead::Absent { .. } | ProcessRead::ExitedRecord { .. } => {
