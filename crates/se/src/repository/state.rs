@@ -59,10 +59,8 @@ pub(crate) fn observe_within(root: &Path, deadline: Instant) -> Result<Option<Gi
     if !registered {
         return Ok(None);
     }
-    // One `status --porcelain=v2 --branch` carries HEAD, the branch name and
-    // whether the tree is dirty, so the observation costs two Git processes
-    // instead of four. Its cost is bounded by the working tree, not the
-    // history, and it is settled at the first entry rather than buffered.
+    // Header and dirtiness come from the fresh native observer, or one bounded
+    // `status --porcelain=v2 --branch` fallback. History counting is separate.
     let StatusRead::Known {
         header,
         dirty: observed_dirty,

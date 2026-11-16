@@ -86,7 +86,10 @@ impl Prepared {
             if status.contains(Status::WT_UNREADABLE) {
                 return Err("working-tree status contains an unreadable path".into());
             }
-            dirty |= status != Status::CURRENT && status != Status::IGNORED;
+            if status != Status::CURRENT && status != Status::IGNORED {
+                dirty = true;
+                break;
+            }
         }
         if header(&self.repository)? != self.facts {
             return Err("repository HEAD or branch changed during the working-tree scan".into());
@@ -118,6 +121,7 @@ fn header(repository: &Repository) -> Result<Facts, String> {
             let reference = repository.find_reference("HEAD").map_err(describe)?;
             let name = reference
                 .symbolic_target()
+                .map_err(describe)?
                 .ok_or("unborn HEAD has no UTF-8 branch")?;
             (
                 None,
