@@ -1,0 +1,161 @@
+name: Windows worker service and handoff attribution
+'on':
+  push:
+    branches:
+    - prime/windows-worker-steps-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_RELEASE_DEBUG: '0'
+  CARGO_BUILD_JOBS: '2'
+jobs:
+  observe:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 5987b188bb9a9429a0285ffa6e5ef3ba171010c9
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: windows-worker-steps-r1
+        cache-on-failure: true
+        cache-targets: false
+    - name: Measure tracing overhead and each worker step at the two-worker default
+      shell: python
+      run: "import os,sys\nsys.argv = ['driver', '--out', os.path.join(os.environ['RUNNER_TEMP'], 'windows-worker-steps-r1')]\n\
+        \"\"\"Same-product worker-step attribution with tracing overhead control.\"\"\"\nimport argparse\nimport\
+        \ hashlib\nimport json\nimport math\nimport os\nfrom pathlib import Path\nimport platform\nimport shutil\n\
+        import statistics\nimport subprocess\nimport time\nimport traceback\n\nPRODUCT = '5ef5d32ea8316542d4806383f063ce8a9ddf276c'\n\
+        OVERLAY = {'crates/se-host/src/runtime/timings.rs', 'crates/se-store/src/lib.rs', 'crates/se-proc/src/lib.rs',\
+        \ 'crates/se-store/src/read_phase.rs', 'crates/se-host/src/runtime/pool.rs', 'crates/se-proc/src/worker_observer.rs',\
+        \ 'crates/se-host/src/client/lease.rs', 'crates/se/tests/eight_writer_worker_measurement.rs', 'crates/se-core/src/ops/outputs/host_phases.rs',\
+        \ 'crates/se-proc/src/state_files/effects/windows.rs', 'crates/se-host/src/runtime/executor.rs', 'crates/se-store/src/read/snapshot.rs',\
+        \ 'crates/se-host/src/runtime/admission.rs', 'crates/se/src/mcp_stdio.rs', 'crates/se-store/src/read_phase_pool.rs',\
+        \ 'crates/se-store/src/worker_observer.rs', 'crates/se-proc/src/state_files/windows/security.rs', 'crates/se/tests/worker_process_metrics.py',\
+        \ 'crates/se-proc/src/state_files/metadata.rs', 'crates/se/tests/eight_writer_workers.py', 'crates/se-host/src/runtime/submit.rs'}\n\
+        ORDER = [0, 1, 1, 0]\n\nOPS = ['stateengine_msg_send', 'stateengine_working_state_set']\nPHASES = ['admission',\
+        \ 'submission', 'continuation']\n\n\ndef describe(sample):\n    phases = sample['diagnostics']['host_phases']\n\
+        \    result = {'client_ms': sample['ms'], 'host_ms': phases['admitted_to_encode_us'] / 1000,\n         \
+        \     'completion_ms': phases['completion_wait_us'] / 1000}\n    for phase in PHASES:\n        span = phases[phase]\n\
+        \        assert span['jobs'] == 1, 'unexpected phase multiplicity'\n        for part in ['queue', 'work',\
+        \ 'resume']:\n            result[phase + '_' + part + '_ms'] = span[part + '_us'] / 1000\n        assert\
+        \ 0 <= span['queue_us'] - span['semaphore_us'] - span['dispatch_us'] <= 1\n        for part in ['semaphore',\
+        \ 'dispatch', 'observer_collect']:\n            result[phase + '_' + part + '_ms'] = span[part + '_us']\
+        \ / 1000\n        if span.get('detail') is not None:\n            for layer, records in span['detail'].items():\n\
+        \                assert layer in ['host_native', 'store'] and isinstance(records, dict)\n              \
+        \  for label, values in records.items():\n                    calls, inclusive, exclusive, maximum = values\n\
+        \                    assert calls > 0 and 0 <= exclusive <= inclusive and 0 <= maximum <= inclusive\n  \
+        \                  assert inclusive <= span['work_us'] * 1000 + 1000, (label, values, span)\n    result['host_other_ms']\
+        \ = result['host_ms'] - result['completion_ms'] - sum(\n        result[p + '_' + k + '_ms'] for p in PHASES\
+        \ for k in ['queue', 'work', 'resume'])\n    result['bridge_wire_ms'] = result['client_ms'] - result['host_ms']\n\
+        \    assert result['host_other_ms'] >= -0.01 and result['bridge_wire_ms'] >= -0.01\n    writer = sample['diagnostics']['write_timings']\n\
+        \    for name in ['queue_ms', 'transaction_ms', 'commit_call_ms']:\n        result['writer_' + name] = writer[name]\n\
+        \    assert all(math.isfinite(v) for v in result.values())\n    return result\n\n\ndef analyze(report):\n\
+        \    assert set(report['cohorts']) == {'1', '8'}\n    assert set(report['resources']) == {'1', '8'}\n  \
+        \  seen = set()\n    cohorts = {}\n    for cohort, clients in report['cohorts'].items():\n        assert\
+        \ len(clients) == int(cohort)\n        for client in clients:\n            assert not client.get('error')\
+        \ and not client.get('cleanup_error'), client\n            assert client['verified_events'] == 60\n    \
+        \        assert set(client['samples']) == set(OPS)\n            for samples in client['samples'].values():\n\
+        \                assert len(samples) == 30\n                for sample in samples:\n                   \
+        \ assert sample['key'] not in seen and sample['event_id']\n                    assert sample['writer']['mode']\
+        \ == 'host'\n                    seen.add(sample['key'])\n        operations = {}\n        resources = report['resources'][cohort]\n\
+        \        assert resources['qualified'] is True, resources\n        assert len(resources['snapshots']) ==\
+        \ 4\n        for operation in OPS:\n            for client in clients:\n                assert sorted(client['samples'][operation],\
+        \ key=lambda row: row['ms'])[28]['ms'] == client['p95_ms'][operation]\n            worst = max(range(len(clients)),\
+        \ key=lambda i: clients[i]['p95_ms'][operation])\n            exact = sorted(clients[worst]['samples'][operation],\
+        \ key=lambda row: row['ms'])[28]\n            rows = [describe(sample) for client in clients for sample\
+        \ in client['samples'][operation]]\n            resource = resources['phases'][operation]\n            assert\
+        \ resource['writes'] == len(rows) and resource['wall_ms'] > 0\n            assert resource['cpu_ms_total']\
+        \ >= 0 and resource['ending_working_set_bytes'] > 0\n            operations[operation] = {\n           \
+        \     'count': len(rows), 'worst_client': worst,\n                'worst_client_p95_ms': exact['ms'], 'exact_tail_key':\
+        \ exact['key'],\n                'exact_tail_components': describe(exact),\n                'exact_tail_steps':\
+        \ exact['diagnostics'],\n                'component_means': {key: statistics.mean(row[key] for row in rows)\
+        \ for key in rows[0]},\n                'resources': resource,\n            }\n        cohorts[cohort] =\
+        \ operations\n    assert len(seen) == 540\n    return {'verified_events': len(seen), 'cohorts': cohorts,\
+        \ 'budget_pass': report['pass']}\n\n\ndef digest(path):\n    return hashlib.sha256(Path(path).read_bytes()).hexdigest()\n\
+        \n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument('--out', required=True)\n\
+        \    args = parser.parse_args()\n    root = Path(args.out).resolve()\n    root.mkdir(parents=True, exist_ok=False)\n\
+        \    summary = {'qualified': False, 'product': PRODUCT, 'order': ORDER, 'rows': [],\n        'scope': 'Observation-only\
+        \ instrumented product, tracing off/on/on/off on one Windows runner; no optimization. Underlying behavior\
+        \ unchanged, synthetic active sessions, public kept-open MCP. No provider launches, hook capture, loaded\
+        \ maintenance-progress or mixed FULL qualification.',\n        'accounting': 'Exact request serial host\
+        \ phases add; writer timing overlaps completion. Resource bookends are outside timed requests. Memory records\
+        \ boundary working sets and process-lifetime peaks, not an interval peak.',\n        'decision': 'Attribution\
+        \ and observer overhead only; no product change or full B4 acceptance is inferred.'}\n    def save():\n\
+        \        (root / 'summary.json').write_text(json.dumps(summary, indent=2) + '\\n', encoding='utf-8')\n \
+        \   try:\n        assert os.name == 'nt', 'native Windows only'\n        source = subprocess.check_output(['git',\
+        \ 'rev-parse', 'HEAD'], text=True).strip()\n        summary['observer'] = source\n        subprocess.run(['git',\
+        \ 'merge-base', '--is-ancestor', PRODUCT, source], check=True)\n        assert set(subprocess.check_output(['git',\
+        \ 'diff', '--name-only', PRODUCT, source], text=True).splitlines()) == OVERLAY\n        assert not subprocess.check_output(['git',\
+        \ 'status', '--porcelain', '--untracked-files=no'], text=True)\n        (root / 'observer.diff').write_bytes(subprocess.check_output(['git',\
+        \ 'diff', PRODUCT, source]))\n        inputs = {'product': PRODUCT, 'observer': source, 'publication': os.environ.get('GITHUB_SHA'),\n\
+        \            'run': os.environ.get('GITHUB_RUN_ID'), 'attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),\n\
+        \            'platform': platform.platform(), 'cpu_count': os.cpu_count(),\n            'compiler': subprocess.check_output(['rustc',\
+        \ '-vV'], text=True),\n            'files': {path: digest(path) for path in sorted(OVERLAY)}}\n        (root\
+        \ / 'inputs.json').write_text(json.dumps(inputs, indent=2) + '\\n', encoding='utf-8')\n        env = dict(os.environ)\n\
+        \        env['CARGO_TARGET_DIR'] = str(Path('target').resolve())\n        for key in ['SE_MEASURE_MIXED',\
+        \ 'SE_MEASURE_COHORT', 'SE_OBSERVE_BLOCKING_JOBS']:\n            env.pop(key, None)\n        build = ['cargo',\
+        \ 'test', '--target', 'x86_64-pc-windows-msvc', '--release',\n                 '--all-features', '--locked',\
+        \ '-p', 'se', '--test', 'eight_writer_worker_measurement',\n                 '--no-run', '--message-format=json']\n\
+        \        with (root / 'build.jsonl').open('wb') as out, (root / 'build.stderr').open('wb') as err:\n   \
+        \         done = subprocess.run(build, env=env, stdout=out, stderr=err, timeout=2700)\n        (root / 'build-command.json').write_text(json.dumps({'argv':\
+        \ build, 'exit': done.returncode}) + '\\n')\n        assert done.returncode == 0, 'observer did not compile;\
+        \ no latency verdict'\n        artifacts = [json.loads(line) for line in (root / 'build.jsonl').read_text().splitlines()]\n\
+        \        executables = [row['executable'] for row in artifacts if row.get('reason') == 'compiler-artifact'\n\
+        \            and row.get('target', {}).get('name') == 'eight_writer_worker_measurement'\n            and\
+        \ row.get('profile', {}).get('test') is True and row.get('executable')]\n        assert len(executables)\
+        \ == 1, 'test executable identity is ambiguous'\n        executable = Path(executables[0])\n        shipping\
+        \ = Path('target/x86_64-pc-windows-msvc/release/se.exe').resolve()\n        binaries = {'observer': {'path':\
+        \ str(executable), 'sha256': digest(executable)},\n                    'shipping': {'path': str(shipping),\
+        \ 'sha256': digest(shipping)}}\n        (root / 'binaries.json').write_text(json.dumps(binaries, indent=2)\
+        \ + '\\n', encoding='utf-8')\n        for index, tracing in enumerate(ORDER):\n            workers = 2\n\
+        \            dest = root / f'{index + 1:02d}-tracing-{tracing}'\n            dest.mkdir()\n            row\
+        \ = {'index': index + 1, 'workers': workers, 'tracing': bool(tracing), 'qualified': False}\n           \
+        \ summary['rows'].append(row)\n            try:\n                assert digest(executable) == binaries['observer']['sha256']\n\
+        \                assert digest(shipping) == binaries['shipping']['sha256']\n                assert not Path('target/judge-diagnostics').exists(),\
+        \ 'stale diagnostics remain'\n                runenv = dict(env, SE_OBSERVE_BLOCKING_JOBS=str(workers),\
+        \ SE_OBSERVE_WORKER_STEPS=str(tracing), SE_OBSERVE_BRIDGE_STEPS=str(tracing))\n                command =\
+        \ [str(executable), '--nocapture']\n                started = time.monotonic_ns()\n                with\
+        \ (dest / 'stdout.log').open('wb') as out, (dest / 'stderr.log').open('wb') as err:\n                  \
+        \  process = subprocess.run(command, stdout=out, stderr=err, env=runenv, timeout=300)\n                row['command']\
+        \ = {'argv': command, 'exit': process.returncode,\n                    'elapsed_ns': time.monotonic_ns()\
+        \ - started}\n                diagnostics = Path('target/judge-diagnostics')\n                if diagnostics.is_dir():\n\
+        \                    shutil.move(str(diagnostics), str(dest / 'diagnostics'))\n                assert process.returncode\
+        \ == 0, 'native writes/readback/closure failed'\n                settings = json.loads((dest / 'diagnostics/worker-settings.json').read_text())\n\
+        \                assert settings['requested'] == settings['effective'] == settings['runtime_thread_cap']\
+        \ == workers\n                assert settings['native_cpus'] >= 4\n                assert settings['worker_steps']\
+        \ == settings['bridge_steps'] == bool(tracing)\n                shutdown = json.loads((dest / 'diagnostics/shutdown.json').read_text())\n\
+        \                assert shutdown['transport_closed'] and shutdown['endpoint_retired']\n                assert\
+        \ shutdown['pending'] == [] and shutdown['errors'] == []\n                raw = json.loads((dest / 'diagnostics/mcp-writers.json').read_text())\n\
+        \                row['measurement'] = analyze(raw)\n                for cohort in raw['cohorts'].values():\n\
+        \                    for client in cohort:\n                        for samples in client['samples'].values():\n\
+        \                            for sample in samples:\n                                diag = sample['diagnostics']\n\
+        \                                assert ('bridge_steps' in diag) == bool(tracing)\n                    \
+        \            for phase in PHASES:\n                                    assert ('detail' in diag['host_phases'][phase])\
+        \ == bool(tracing)\n                row['qualified'] = True\n            except Exception as error:\n  \
+        \              row['error'] = repr(error)\n                row['traceback'] = traceback.format_exc()\n \
+        \               if isinstance(error, subprocess.TimeoutExpired):\n                    summary['cleanup_unknown']\
+        \ = True\n                    raise\n            finally:\n                save()\n        summary['qualified']\
+        \ = all(row['qualified'] for row in summary['rows'])\n        assert summary['qualified'], 'one or more\
+        \ observations were not qualified'\n    except Exception as error:\n        summary['error'] = repr(error)\n\
+        \        summary['traceback'] = traceback.format_exc()\n        summary['cleanup_unknown'] = summary.get('cleanup_unknown',\
+        \ False) or isinstance(error, subprocess.TimeoutExpired)\n    finally:\n        save()\n        files =\
+        \ {path.relative_to(root).as_posix(): {'bytes': path.stat().st_size, 'sha256': digest(path)}\n         \
+        \   for path in sorted(root.rglob('*')) if path.is_file()}\n        (root / 'manifest.json').write_text(json.dumps({'files':\
+        \ files}, indent=2) + '\\n', encoding='utf-8')\n    return 0 if summary['qualified'] else 1\n\n\nif __name__\
+        \ == '__main__':\n    raise SystemExit(main())\n"
+    - name: Retain complete measurements and inputs
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: windows-worker-steps-r1
+        path: ${{ runner.temp }}/windows-worker-steps-r1
+        include-hidden-files: true
+        retention-days: 14
+        if-no-files-found: error
