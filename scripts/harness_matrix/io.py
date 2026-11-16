@@ -28,7 +28,8 @@ def digest(path):
 
 def runner_files():
     scripts = Path(__file__).resolve().parents[1]
-    paths = ['harness-matrix.py', 'harness-matrix-report.py', 'ci/installation_account.py',
+    paths = ['../crates/se-harness-registry/src/registry.json', 'harness-matrix.py',
+             'harness-matrix-report.py', 'ci/installation_account.py',
              *['harness_matrix/' + name for name in
                ('flow.py', 'inputs.py', 'io.py', 'report.py', 'native_processes.ps1')]]
     return {name: digest(scripts / name) for name in paths}

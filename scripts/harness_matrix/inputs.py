@@ -1,4 +1,5 @@
 """Validate native smoke inputs without converting missing prerequisites to passes."""
+import json
 import os
 from pathlib import Path, PureWindowsPath
 import re
@@ -8,8 +9,8 @@ import tomllib
 
 from .io import digest, require
 
-DRIVERS = {'acp-stdio': 'acp', 'claude-stream-json': 'claude', 'codex-app-server': 'codex',
-           'secode-native': 'secode'}
+REGISTRY = Path(__file__).resolve().parents[2] / 'crates/se-harness-registry/src/registry.json'
+DRIVERS = {row['driver']: row['id'] for row in json.loads(REGISTRY.read_text(encoding='utf-8'))}
 RESULTS = ('PASS', 'FAIL', 'ABSENT', 'SKIPPED', 'UNREADABLE', 'NOT RUN')
 
 

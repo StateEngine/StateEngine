@@ -85,12 +85,7 @@ pub fn create<R: Snapshot>(
         crate::harness_selection::resolve(configuration, input.provider, input.harness.as_deref())?;
     let provider = binding.provider;
     let harness = binding.harness;
-    let defaults = match provider {
-        Provider::Claude => &configuration.providers.claude,
-        Provider::Codex => &configuration.providers.codex,
-        Provider::SeCode => &configuration.providers.secode,
-        Provider::Acp => &configuration.providers.acp,
-    };
+    let defaults = configuration.provider(provider);
     let permission = match configuration
         .resolve_profile(&defaults.profile, provider, false)?
         .sandbox
