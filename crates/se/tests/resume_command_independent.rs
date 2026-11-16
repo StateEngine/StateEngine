@@ -87,7 +87,7 @@ fn observed_saved_agent_command_parses_without_losing_home_project_or_target() -
         Some(row.id.as_str())
     );
     assert!(
-        matches!(invocation.operation, AnyOp::AgentLaunch(input) if input.detach && input.fresh)
+        matches!(invocation.operation, AnyOp::AgentLaunch(input) if input.detach && input.fresh())
     );
     Ok(())
 }
