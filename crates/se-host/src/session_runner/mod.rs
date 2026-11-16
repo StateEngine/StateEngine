@@ -4,8 +4,8 @@ pub mod protocol;
 mod provider;
 
 use crate::{
-    AcceptedIpcStream, AuthorizedConnection, BlockingPool, EndpointRecord, HandshakeInput,
-    IpcConnection, IpcEnvelope, IpcListener, IpcRequest, IpcResponse, IpcResult, OperationOutput,
+    AuthorizedConnection, BlockingPool, EndpointRecord, HandshakeInput, IpcConnection, IpcEnvelope,
+    IpcListener, IpcRequest, IpcResponse, IpcResult, OperationOutput,
     client::{
         ClientOptions, endpoint,
         lease::{Deadline, native_error},
@@ -48,7 +48,10 @@ pub fn private_entry() -> Result<()> {
     let record = child_record(&parent)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .max_blocking_threads(1)
+        // Windows child stdio uses blocking I/O: two retained output reads
+        // need independent slots from stdin writes and native IPC proof work.
+        // This is a fixed I/O bound; the reactor stays on the current thread.
+        .max_blocking_threads(if cfg!(windows) { 4 } else { 1 })
         .thread_keep_alive(Duration::ZERO)
         .build()
         .map_err(|error| wire::io_failure("start runner reactor", error))?;
@@ -116,12 +119,8 @@ async fn serve(
     listener: &mut IpcListener,
     provider: &mut Option<Provider>,
 ) -> Result<()> {
-    let mut replacement = None;
     loop {
-        let accepted = match replacement.take() {
-            Some(accepted) => accepted,
-            None => listener.accept(Arc::new(AtomicBool::new(false))).await?,
-        };
+        let accepted = listener.accept(Arc::new(AtomicBool::new(false))).await?;
         let mut pending = match accepted.handshake().await {
             Ok(pending) => pending,
             Err(_) => continue,
@@ -148,40 +147,20 @@ async fn serve(
             *provider = Some(Provider::spawn(plan)?);
         }
         let active = provider.as_mut().ok_or_else(invalid)?;
-        match relay(&mut connection, active, listener).await? {
-            Relay::Finished => return Ok(()),
-            Relay::Disconnected => (),
-            Relay::Replacement(accepted) => replacement = Some(*accepted),
+        if relay(&mut connection, active).await? {
+            return Ok(());
         }
     }
 }
 
-enum Relay {
-    Finished,
-    Disconnected,
-    Replacement(Box<AcceptedIpcStream>),
-}
-
-async fn relay(
-    connection: &mut IpcConnection,
-    provider: &mut Provider,
-    listener: &mut IpcListener,
-) -> Result<Relay> {
+async fn relay(connection: &mut IpcConnection, provider: &mut Provider) -> Result<bool> {
     loop {
-        // Windows requires driving ConnectNamedPipe on the spare instance.
-        // Keep accepting during idle reads, so reconnect does not depend on an
-        // old pipe reporting EOF. A partial old frame never reaches dispatch.
-        let received = tokio::select! {
-            call = connection.read_on_activity() => call,
-            accepted = listener.accept(Arc::new(AtomicBool::new(false))) => {
-                return Ok(Relay::Replacement(Box::new(accepted?)));
-            }
-        };
-        let Some((call, clock)) = (match received {
+        let Some((call, clock)) = (match connection.read_on_activity().await {
             Ok(call) => call,
-            Err(_) => return Ok(Relay::Disconnected),
+            // A disconnected client does not close the provider's input.
+            Err(_) => return Ok(false),
         }) else {
-            return Ok(Relay::Disconnected);
+            return Ok(false);
         };
         let (value, finished) = dispatch(&call, provider).await?;
         let response = IpcResponse {
@@ -195,14 +174,10 @@ async fn relay(
             })),
         };
         if connection.reply(&response, &clock).await.is_err() {
-            return Ok(if finished {
-                Relay::Finished
-            } else {
-                Relay::Disconnected
-            });
+            return Ok(finished);
         }
         if finished {
-            return Ok(Relay::Finished);
+            return Ok(true);
         }
     }
 }
