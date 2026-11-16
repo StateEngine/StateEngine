@@ -201,6 +201,7 @@ pub(super) fn unlink(file: &File, posix: bool) -> Result<()> {
     )?;
     let info = FILE_DISPOSITION_INFO_EX {
         Flags: FILE_DISPOSITION_FLAG_DELETE
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE
             | if posix {
                 FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
             } else {

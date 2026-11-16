@@ -27,6 +27,32 @@ pub enum HelperCleanupOutcome {
     StillRunning,
 }
 impl UninstallHelperCleanup {
+    pub const RECORD_NAME: &'static str = "uninstall-helper-cleanup.json";
+
+    // Capture the newly created empty object before copying any executable
+    // bytes. Version 3 may retire a partial copy by its creation identity;
+    // version 2 still requires the original completed-image digest.
+    pub(super) fn created(
+        files: &NativeStateFiles,
+        path: PathBuf,
+        file: &File,
+        digest: [u8; 32],
+        directory: Option<staging::DirectoryCustody>,
+    ) -> Result<Self> {
+        let creator = native::current_process()?;
+        Ok(Self {
+            version: 3,
+            root: files.root().to_owned(),
+            path,
+            // SAFETY: querying this process identifier has no mutable inputs.
+            pid: unsafe { GetCurrentProcessId() },
+            creation_filetime: crate::windows_native::process_start(creator.as_raw_handle())
+                .map_err(|e| error(e.operation, e.source))?,
+            file: native::file_id(file)?,
+            digest,
+            directory,
+        })
+    }
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -54,7 +80,7 @@ impl UninstallHelperCleanup {
         }
         let value: Self = serde_json::from_slice(bytes)
             .map_err(|e| error("decode helper cleanup custody", io::Error::other(e)))?;
-        if value.version != 2 || value.pid == 0 || value.creation_filetime == 0 {
+        if !matches!(value.version, 2 | 3) || value.pid == 0 || value.creation_filetime == 0 {
             return Err(refuse(
                 "decode helper cleanup custody",
                 "unsupported or incomplete native custody",
@@ -141,7 +167,7 @@ impl UninstallHelperCleanup {
         let mut file = native::open_image(&self.path, false)?;
         if native::file_id(&checked)? != native::file_id(&file)?
             || native::file_id(&file)? != self.file
-            || native::digest(&mut file)? != self.digest
+            || self.version == 2 && native::digest(&mut file)? != self.digest
         {
             return Err(refuse(
                 "retire staged uninstall helper",

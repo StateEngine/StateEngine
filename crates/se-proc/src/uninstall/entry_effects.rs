@@ -87,8 +87,8 @@ pub(super) fn remove(objects: &mut [Held]) -> Result<()> {
             .find(|h| h.object.kind == kind)
             .ok_or_else(|| refuse("remove carrier object", "admitted original missing"))?;
         held.verify()?;
-        // POSIX deletion deliberately omits FORCE_IMAGE_SECTION_CHECK: the
-        // carrier still maps this same admitted executable until it exits.
+        // The carrier maps its private copy; the original image has no mapping
+        // from this process after the exact authorized parent has exited.
         native::unlink(&held.file, true)?;
         native::absent_name(&held.object.path)?;
     }

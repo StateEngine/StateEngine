@@ -103,6 +103,8 @@ impl Bootstrap {
         // The normal status/doctor routes retain their native checks below.
         if !diagnostic_export {
             check_home_directory(&home)?;
+            #[cfg(windows)]
+            crate::runtime::helper_cleanup::on_start(&home)?;
         }
         let config = if recovery {
             // Doctor uses explicit named repairs, not runtime configuration.

@@ -8,31 +8,13 @@ use std::os::windows::ffi::OsStrExt;
 #[path = "../../tests/support/carrier_directory_unlink.rs"]
 mod directory_judges;
 
-#[derive(serde::Serialize)]
-struct Entry {
-    handle: u64,
-    path: PathBuf,
-    kind: &'static str,
-    identity: String,
-    sha256: Option<String>,
-}
 pub struct NativeUninstallCarrier {
     process: OwnedHandle,
+    guardian: OwnedHandle,
     authorize: File,
     report: File,
     nonce: [u8; 32],
     deadline: u64,
-}
-fn entry(file: &File, path: &Path, kind: &'static str, sha: Option<[u8; 32]>) -> Result<Entry> {
-    let id = crate::windows_native::file_id(file)
-        .map_err(|cause| error("identify uninstall carrier object", cause))?;
-    Ok(Entry {
-        handle: file.as_raw_handle() as usize as u64,
-        path: path.to_owned(),
-        kind,
-        identity: format!("{:016x}:{}", id.volume, se_types::hex_lower(&id.index)),
-        sha256: sha.map(|value| se_types::hex_lower(&value)),
-    })
 }
 impl NativeUninstallCarrier {
     /// Core has admitted the original record, account and finite directory list.
@@ -70,217 +52,194 @@ impl NativeUninstallCarrier {
         let image = native::process_image(&parent)?;
         let mut target = native::open_image(&image, false)?;
         let digest = native::digest(&mut target)?;
-        let record = record.uninstall_custody().map_err(custody)?;
-        let claim = claim.uninstall_custody().map_err(custody)?;
-        let (read, write) = native::pipe()?;
-        let (ready, ready_write) = native::pipe()?;
-        let mut owned = Vec::new();
-        let mut entries = Vec::new();
-        for (file, path, kind, digest) in [
-            (&target, image.as_path(), "image", Some(digest)),
-            (&record, record_path, "record", Some(record_digest)),
-        ] {
-            let copy = native::duplicate_same(file.as_raw_handle(), true)?;
-            entries.push(entry(
-                &File::from(native::duplicate_same(copy.as_raw_handle(), false)?),
-                path,
-                kind,
-                digest,
-            )?);
-            if let Some(last) = entries.last_mut() {
-                last.handle = copy.as_raw_handle() as usize as u64;
+        let copy = carrier_copy::CarrierCopy::create(
+            files,
+            script_files,
+            &mut target,
+            digest,
+            staging.as_ref().map(|stage| stage.directory.clone()),
+        )?;
+        let pending_copy = copy.path.clone();
+        let pending_journal = copy.journal.clone();
+        let result = (|| {
+            let script_files = staging.as_ref().map_or(files, |stage| stage.files());
+            let record = record.uninstall_custody().map_err(custody)?;
+            let claim = claim.uninstall_custody().map_err(custody)?;
+            let (read, write) = native::pipe()?;
+            let (ready, ready_write) = native::pipe()?;
+            let inventory = inventory::Inventory::new(
+                [
+                    (&target, image.as_path(), "image", Some(digest)),
+                    (&record, record_path, "record", Some(record_digest)),
+                    (&copy.file, copy.path.as_path(), "carrier", Some(digest)),
+                ],
+                directories,
+                [image.parent(), record_path.parent()],
+            )?;
+            let inherited = [
+                parent.as_raw_handle(),
+                claim.as_raw_handle(),
+                read.as_raw_handle(),
+                ready_write.as_raw_handle(),
+                report.as_raw_handle(),
+            ];
+            let mut control = Vec::new();
+            for handle in inherited {
+                control.push(native::duplicate_same(handle, true)?);
             }
-            owned.push(copy);
-        }
-        for path in directories.iter().map(Path::new) {
-            if let Some(file) =
-                crate::state_files::windows::effects::uninstall_directory(path).map_err(custody)?
-            {
-                let copy = native::duplicate_same(file.as_raw_handle(), true)?;
-                let mut observed = entry(&file, path, "directory", None)?;
-                observed.handle = copy.as_raw_handle() as usize as u64;
-                entries.push(observed);
-                owned.push(copy);
-            }
-        }
-        // Keep both original parent directories available for native flushes.
-        for path in [image.parent(), record_path.parent()].into_iter().flatten() {
-            let file = crate::state_files::windows::effects::uninstall_directory(path)
-                .map_err(custody)?
-                .ok_or_else(|| refuse("prepare uninstall carrier", "original parent absent"))?;
-            let copy = native::duplicate_same(file.as_raw_handle(), true)?;
-            let mut observed = entry(&file, path, "flush", None)?;
-            observed.handle = copy.as_raw_handle() as usize as u64;
-            entries.push(observed);
-            owned.push(copy);
-        }
-        let inherited = [
-            parent.as_raw_handle(),
-            claim.as_raw_handle(),
-            read.as_raw_handle(),
-            ready_write.as_raw_handle(),
-            report.as_raw_handle(),
-        ];
-        let mut control = Vec::new();
-        for handle in inherited {
-            control.push(native::duplicate_same(handle, true)?);
-        }
-        let mut random = [0; 32];
-        crate::fill_entropy(&mut random)
-            .map_err(|cause| error("prepare carrier authorization", io::Error::other(cause)))?;
-        let nonce = se_types::hex_lower(&random);
-        let frame = serde_json::json!({"parent":control[0].as_raw_handle() as usize as u64,
+            let mut random = [0; 32];
+            crate::fill_entropy(&mut random)
+                .map_err(|cause| error("prepare carrier authorization", io::Error::other(cause)))?;
+            let nonce = se_types::hex_lower(&random);
+            let cleanup_pipe = format!("se-uninstall-private-{nonce}");
+            let frame = serde_json::json!({"parent":control[0].as_raw_handle() as usize as u64,
             "claim":control[1].as_raw_handle() as usize as u64,
             "authorize":control[2].as_raw_handle() as usize as u64,
             "ready":control[3].as_raw_handle() as usize as u64,
             "report":control[4].as_raw_handle() as usize as u64,
-            "nonce":nonce,"deadline":deadline,"entries":entries});
-        let mut application: Vec<u16> = image.as_os_str().encode_wide().chain(Some(0)).collect();
-        let mut plan_file = script_files
-            .retire_empty_staging(
-                script_files
-                    .create_staging(script_files.root())
-                    .map_err(custody)?,
-            )
-            .map_err(custody)?;
-        let mut encoded = serde_json::to_vec(&frame)
-            .map_err(|cause| error("encode carrier objects", io::Error::other(cause)))?;
-        if encoded.len() > 2 * 1024 * 1024 {
-            return Err(refuse(
-                "prepare uninstall carrier",
-                "object inventory exceeds two MiB",
-            ));
-        }
-        encoded.push(b'\n');
-        plan_file
-            .write_all(&encoded)
-            .and_then(|()| plan_file.rewind())
-            .map_err(|cause| error("prepare private carrier envelope", cause))?;
-        let input = native::duplicate(plan_file.as_raw_handle(), FILE_GENERIC_READ, true)?;
-        let handles: Vec<_> = owned
-            .iter()
-            .chain(&control)
-            .map(AsRawHandle::as_raw_handle)
-            .collect();
-        let environment = cleanup::environment(script_files.root())?;
-        let mut diagnostic = script_files
-            .retire_empty_staging(
-                script_files
-                    .create_staging(script_files.root())
-                    .map_err(custody)?,
-            )
-            .map_err(custody)?;
-        let script = script::Script::create(script_files, staging.is_some())?;
-        let script_path = script.path().to_owned();
-        let mut script = Some(script);
-        let until = clock() + 30000;
-        if let Err(mut failure) = cleanup::admit(&script_path, &environment, &diagnostic, until) {
-            failure.source = io::Error::other(format!(
-                "{}; {}",
-                failure.source,
-                diagnostic_text(&mut diagnostic)
-            ));
-            cleanup_artifacts(&mut failure, &mut script, &mut staging);
-            return Err(failure);
-        }
-        let mut line: Vec<u16> = format!("\"{}\" __uninstall-carrier", image.display())
-            .encode_utf16()
-            .chain(Some(0))
-            .collect();
-        let process = spawn::command(
-            &application,
-            &mut line,
-            &input,
-            &handles,
-            CREATE_NO_WINDOW,
-            Some(&environment),
-            Some(&diagnostic),
-        );
-        let process = match process {
-            Ok(process) => process,
-            Err(mut failure) => {
+            "nonce":nonce,"deadline":deadline,"cleanup_pipe":cleanup_pipe,"entries":inventory.entries});
+            let mut application: Vec<u16> =
+                copy.path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let input = guardian::envelope(script_files, &frame)?;
+            let handles: Vec<_> = inventory
+                .handles
+                .iter()
+                .chain(&control)
+                .map(AsRawHandle::as_raw_handle)
+                .collect();
+            let environment = cleanup::environment(script_files.root())?;
+            let mut diagnostic = script_files
+                .retire_empty_staging(
+                    script_files
+                        .create_staging(script_files.root())
+                        .map_err(custody)?,
+                )
+                .map_err(custody)?;
+            let script = script::Script::create(script_files, staging.is_some())?;
+            let script_path = script.path().to_owned();
+            let mut script = Some(script);
+            let until = clock() + 30000;
+            if let Err(mut failure) = cleanup::admit(&script_path, &environment, &diagnostic, until)
+            {
+                failure.source = io::Error::other(format!(
+                    "{}; {}",
+                    failure.source,
+                    diagnostic_text(&mut diagnostic)
+                ));
                 cleanup_artifacts(&mut failure, &mut script, &mut staging);
                 return Err(failure);
             }
-        };
-        application.clear();
-        drop(input);
-        drop(plan_file);
-        drop(owned);
-        drop(control);
-        let preparation = (|| {
-            let mut ready = ready;
-            loop {
-                if native::exited(&process)? {
-                    return Err(refuse(
-                        "prepare uninstall carrier",
-                        "system carrier exited; installation remains unchanged",
-                    ));
-                }
-                if let Some(frame) = native::poll_frame(&mut ready)? {
-                    if frame[0] != b'R' || frame[1..] != random {
-                        return Err(refuse(
-                            "prepare uninstall carrier",
-                            "readiness authentication failed",
-                        ));
-                    }
-                    break;
-                }
-                if clock() >= until {
-                    return Err(refuse(
-                        "prepare uninstall carrier",
-                        "system carrier readiness deadline; installation remains unchanged",
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            script
-                .take()
-                .ok_or_else(|| refuse("prepare uninstall carrier", "script custody missing"))?
-                .remove()?;
-            if let Some(stage) = staging.take() {
-                let directory = stage.directory.path.clone();
-                drop(stage);
-                crate::remove_empty_directory(&directory)
-                    .map_err(|cause| pending(custody(cause), &directory))?;
-            }
-            Ok(())
-        })();
-        if let Err(mut failure) = preparation {
-            match cancel_preparation(&process) {
-                Ok(()) => {
-                    failure.source = io::Error::other(format!(
-                        "{}; {}",
-                        failure.source,
-                        diagnostic_text(&mut diagnostic)
-                    ));
+            let mut line: Vec<u16> = format!("\"{}\" __uninstall-carrier", copy.path.display())
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let guardian_frame = serde_json::json!({
+                "nonce":nonce, "deadline":deadline, "pipe":cleanup_pipe,
+                "copy":copy.path, "journal":copy.journal,
+                "directory":copy.directory,
+                "directory_id":staging.as_ref().map(|s| super::entry_effects::identity(&staging::verify_directory(&s.directory)?, true)).transpose()?,
+                "image":image, "record":record_path
+            });
+            let process = spawn::command(
+                &application,
+                &mut line,
+                &input,
+                &handles,
+                CREATE_NO_WINDOW,
+                Some(&environment),
+                Some(&diagnostic),
+            );
+            let process = match process {
+                Ok(process) => process,
+                Err(mut failure) => {
                     cleanup_artifacts(&mut failure, &mut script, &mut staging);
+                    return Err(failure);
                 }
-                Err(cause) => {
+            };
+            application.clear();
+            drop(input);
+            drop(inventory);
+            drop(control);
+            let mut guardian = match guardian::start(
+                script_files,
+                &script_path,
+                &environment,
+                &diagnostic,
+                guardian_frame,
+                [
+                    process.as_raw_handle(),
+                    claim.as_raw_handle(),
+                    report.as_raw_handle(),
+                    copy.file.as_raw_handle(),
+                    copy.journal_file.as_raw_handle(),
+                ],
+            ) {
+                Ok(guardian) => guardian,
+                Err(mut failure) => {
+                    if let Err(cause) = cancel_preparation(&process) {
+                        failure.source = io::Error::other(format!("{}; {}", failure.source, cause));
+                    }
+                    cleanup_artifacts(&mut failure, &mut script, &mut staging);
+                    return Err(failure);
+                }
+            };
+            let preparation = (|| {
+                let mut ready = ready;
+                guardian::await_ready(&process, &mut ready, &random, until)?;
+                guardian::await_ready(&guardian.process, &mut guardian.ready, &random, until)?;
+                script
+                    .take()
+                    .ok_or_else(|| refuse("prepare uninstall carrier", "script custody missing"))?
+                    .remove()?;
+                // The guardian owns cleanup of the still-populated copy directory.
+                // Closing these pins permits its final empty-directory removal.
+                drop(staging.take());
+                Ok(())
+            })();
+            if let Err(mut failure) = preparation {
+                if let Err(cause) = cancel_preparation(&guardian.process) {
                     failure.source = io::Error::other(format!("{}; {}", failure.source, cause));
-                    if script.is_some() {
-                        failure.pending_paths.push(script_path.clone());
+                }
+                match cancel_preparation(&process) {
+                    Ok(()) => {
+                        failure.source = io::Error::other(format!(
+                            "{}; {}",
+                            failure.source,
+                            diagnostic_text(&mut diagnostic)
+                        ));
+                        cleanup_artifacts(&mut failure, &mut script, &mut staging);
                     }
-                    if let Some(stage) = &staging {
-                        failure.pending_paths.push(stage.directory.path.clone());
+                    Err(cause) => {
+                        failure.source = io::Error::other(format!("{}; {}", failure.source, cause));
+                        if script.is_some() {
+                            failure.pending_paths.push(script_path.clone());
+                        }
+                        if let Some(stage) = &staging {
+                            failure.pending_paths.push(stage.directory.path.clone());
+                        }
                     }
                 }
+                return Err(failure);
             }
-            return Err(failure);
-        }
-        Ok(Self {
-            process,
-            authorize: write,
-            report,
-            nonce: random,
-            deadline,
+            Ok(Self {
+                process,
+                guardian: guardian.process,
+                authorize: write,
+                report,
+                nonce: random,
+                deadline,
+            })
+        })();
+        result.map_err(|mut cause: UninstallNativeError| {
+            cause.pending_paths.extend([pending_copy, pending_journal]);
+            cause
         })
     }
     /// The parent retains its claims until actual exit. EOF without this exact
     /// nonce never authorizes deletion, even if the parent crashes.
     pub fn authorize(mut self, report: &[u8]) -> Result<()> {
         check_deadline(self.deadline)?;
-        if native::exited(&self.process)? {
+        if native::exited(&self.process)? || native::exited(&self.guardian)? {
             return Err(refuse(
                 "authorize uninstall carrier",
                 "prepared system carrier exited",

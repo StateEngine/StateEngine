@@ -78,6 +78,7 @@ try {
 # learn about the helper would remove the human-terminal evidence it requires.
 # This random output-only channel cannot authorize uninstall or choose a target.
 $pipe = $null
+$reply = $null
 $achieved = $null
 $oldPipe = $env:SE_UNINSTALL_COMPLETION_PIPE
 $oldToken = $env:SE_UNINSTALL_COMPLETION_TOKEN
@@ -169,7 +170,52 @@ try {
     }
     exit 0
 } catch {
-    $failure = "Uninstall incomplete: $($_.Exception.Message). Pending checks include image $binary and record $record; helper staging may be unknown if no reply arrived. Preserve reported paths and use the matching archive for recovery."
+    $reason = $_.Exception.Message
+    $cleanupJournal = Join-Path $data 'uninstall-helper-cleanup.json'
+    $pending = @($binary, $record)
+    if ($null -ne $reply) {
+        foreach ($field in @('helper', 'directory')) {
+            $property = $reply.PSObject.Properties[$field]
+            if ($null -ne $property -and $property.Value -is [string] -and $property.Value) {
+                $pending += $property.Value
+            }
+        }
+    }
+    try {
+        # Read-only recovery names are diagnostic data, never deletion authority.
+        # Only the next native command may admit and retire this protected debt.
+        $attributes = [IO.File]::GetAttributes($cleanupJournal)
+        if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'linked cleanup custody is preserved' }
+        $stream = [IO.File]::Open($cleanupJournal, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+            ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        try {
+            $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false, $true))
+            try {
+                $buffer = New-Object char[] ((256 * 1024) + 1)
+                $count = $reader.ReadBlock($buffer, 0, $buffer.Length)
+                if ($count -gt (256 * 1024)) { throw 'cleanup custody exceeds its bound' }
+                $debt = [string]::new($buffer, 0, $count) | ConvertFrom-Json
+            } finally { $reader.Dispose() }
+        } finally { $stream.Dispose() }
+        $encodedPaths = @($debt.path)
+        if ($null -ne $debt.directory) { $encodedPaths += $debt.directory.path }
+        foreach ($encoded in $encodedPaths) {
+            if ($null -eq $encoded) { continue }
+            if ($encoded.encoding -cne 'windows_utf16' -or $encoded.units.Count -gt 32768) {
+                throw 'cleanup custody path encoding is unreadable'
+            }
+            $characters = [char[]]@($encoded.units | ForEach-Object {
+                if ($_ -le 0 -or $_ -gt 65535) { throw 'cleanup custody path unit is invalid' }
+                [char][int]$_
+            })
+            $name = [string]::new($characters)
+            if (-not [IO.Path]::IsPathRooted($name)) { throw 'cleanup custody path is not absolute' }
+            $pending += $name
+        }
+    } catch [IO.FileNotFoundException] { }
+    catch [IO.DirectoryNotFoundException] { }
+    catch { $reason += "; cleanup custody unreadable at $cleanupJournal : $($_.Exception.Message)" }
+    $failure = "Uninstall incomplete: $reason. Pending cleanup checks: $($pending -join '; '); custody $cleanupJournal. Preserve these paths and retry this matching archive uninstaller; its native command recovers admitted cleanup debt."
     if ($args -contains '--json') {
         [Console]::WriteLine((@{ schema='se.uninstall-completion/v1'; complete=$false; error=$failure; achieved=$achieved } | ConvertTo-Json -Depth 64 -Compress))
     }

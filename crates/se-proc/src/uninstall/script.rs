@@ -18,6 +18,7 @@ impl Script {
         staged
             .file
             .write_all(b"\xef\xbb\xbf")
+            .and_then(|()| staged.file.write_all(include_bytes!("guardian_native.ps1")))
             .and_then(|()| staged.file.write_all(include_bytes!("carrier.ps1")))
             .and_then(|()| staged.file.sync_all())
             .map_err(|cause| error("write readable uninstall carrier", cause))?;
@@ -27,6 +28,7 @@ impl Script {
         use sha2::Digest;
         let mut hash = sha2::Sha256::new();
         hash.update(b"\xef\xbb\xbf");
+        hash.update(include_bytes!("guardian_native.ps1"));
         hash.update(include_bytes!("carrier.ps1"));
         let digest: [u8; 32] = hash.finalize().into();
         drop(staged.file);

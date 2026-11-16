@@ -5,12 +5,29 @@ use se_proc::{
     HelperCleanupOutcome, NativeInstallationClaim, NativeStateFiles, OwnedFile,
     UninstallHelperCleanup,
 };
-const NAME: &str = "uninstall-helper-cleanup.json";
+const NAME: &str = UninstallHelperCleanup::RECORD_NAME;
 const MAXIMUM: usize = 256 * 1024;
 
 fn native(error: se_proc::StateFileError) -> SeError {
     se_core::scope::unreadable("uninstall helper cleanup journal", &error.to_string())
         .with_cause(error)
+}
+/// A crashed uninstall cannot leave executable staging undiscovered until the
+/// next installer. Ordinary commands retry the same protected native custody.
+pub(crate) fn on_start(home: &Path) -> Result<()> {
+    match home.join(NAME).symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(se_core::scope::unreadable(
+                "uninstall helper cleanup journal",
+                &error.to_string(),
+            ));
+        }
+        Ok(_) => (),
+    }
+    let files = NativeStateFiles::open(home).map_err(native)?;
+    let claim = NativeInstallationClaim::acquire().map_err(native)?;
+    retry(&files, &claim)
 }
 struct CleanupRecord {
     file: OwnedFile,

@@ -14,6 +14,7 @@ struct Frame {
     report: u64,
     nonce: String,
     deadline: u64,
+    cleanup_pipe: String,
     entries: Vec<Object>,
 }
 #[derive(serde::Deserialize)]
@@ -138,7 +139,7 @@ struct Authorization {
     report: serde_json::Value,
 }
 fn admit_objects(entries: Vec<Object>, parent: &OwnedHandle) -> Result<Vec<Held>> {
-    if !(4..=132).contains(&entries.len()) {
+    if !(5..=133).contains(&entries.len()) {
         return Err(refuse(
             "admit carrier objects",
             "finite inventory bound required",
@@ -148,7 +149,7 @@ fn admit_objects(entries: Vec<Object>, parent: &OwnedHandle) -> Result<Vec<Held>
     for object in entries {
         if !matches!(
             object.kind.as_str(),
-            "image" | "record" | "directory" | "flush"
+            "image" | "record" | "carrier" | "directory" | "flush"
         ) {
             return Err(refuse("admit carrier object", "unknown object kind"));
         }
@@ -157,7 +158,7 @@ fn admit_objects(entries: Vec<Object>, parent: &OwnedHandle) -> Result<Vec<Held>
         held.verify()?;
         objects.push(held);
     }
-    for kind in ["image", "record"] {
+    for kind in ["image", "record", "carrier"] {
         if objects.iter().filter(|o| o.object.kind == kind).count() != 1 {
             return Err(refuse(
                 "admit carrier objects",
@@ -165,25 +166,31 @@ fn admit_objects(entries: Vec<Object>, parent: &OwnedHandle) -> Result<Vec<Held>
             ));
         }
     }
-    // The child runs the already admitted original image, never a copied helper.
+    // Creator and private copy have separate native identities, with identical
+    // admitted bytes. Neither the entry marker nor a path grants authority.
     let current = native::current_process()?;
-    let image = native::open_image(&native::process_image(&current)?, false)?;
-    let image_id = super::entry_effects::identity(&image, false)?;
-    let parent_image = native::open_image(&native::process_image(parent)?, false)?;
-    if super::entry_effects::identity(&parent_image, false)? != image_id {
-        return Err(refuse(
-            "admit carrier creator image",
-            "creator must run the same original image",
-        ));
+    for (process, kind) in [(&current, "carrier"), (parent, "image")] {
+        let image = native::open_image(&native::process_image(process)?, false)?;
+        let identity = super::entry_effects::identity(&image, false)?;
+        if !objects
+            .iter()
+            .any(|o| o.object.kind == kind && o.object.identity == identity)
+        {
+            return Err(refuse(
+                "admit carrier image",
+                "running image differs from admitted object",
+            ));
+        }
     }
-
-    if !objects
-        .iter()
-        .any(|o| o.object.kind == "image" && o.object.identity == image_id)
+    let original = objects.iter().find(|o| o.object.kind == "image");
+    let copy = objects.iter().find(|o| o.object.kind == "carrier");
+    if original.and_then(|o| o.object.sha256.as_ref())
+        != copy.and_then(|o| o.object.sha256.as_ref())
+        || original.map(|o| &o.object.identity) == copy.map(|o| &o.object.identity)
     {
         return Err(refuse(
-            "admit carrier image",
-            "running image differs from admitted image",
+            "admit carrier copy",
+            "separate identical private image required",
         ));
     }
     Ok(objects)
@@ -223,7 +230,7 @@ fn execute() -> Result<()> {
         std::thread::sleep(Duration::from_millis(20));
     }
     let mut report = File::from(duplicate(frame.report)?);
-    let authorization: Authorization = read_json(&mut report)?;
+    let mut authorization: Authorization = read_json(&mut report)?;
     if authorization.nonce != frame.nonce {
         return Err(refuse("admit completion report", "private nonce differs"));
     }
@@ -237,6 +244,11 @@ fn execute() -> Result<()> {
         )),
         _ => Err(native::last("observe authorized parent exit")),
     };
+    // The system guardian forwards completion only after this image exits and
+    // its private executable and cleanup journal are independently absent.
+    authorization.report["completion"] = serde_json::json!({
+        "pipe": frame.cleanup_pipe, "token": frame.nonce
+    });
     let delivery =
         super::entry_effects::complete(&objects, &authorization.report, outcome.as_ref().err());
     outcome.and(delivery)

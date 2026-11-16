@@ -14,6 +14,8 @@ use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*, System::Threadin
 mod cleanup;
 mod entry;
 mod entry_effects;
+mod guardian;
+mod inventory;
 pub use entry::uninstall_carrier_entry;
 mod debt;
 pub use debt::{HelperCleanupOutcome, UninstallHelperCleanup};
@@ -72,4 +74,5 @@ fn check_deadline(deadline: u64) -> Result<()> {
     }
 }
 mod carrier;
+mod carrier_copy;
 pub use carrier::NativeUninstallCarrier;
