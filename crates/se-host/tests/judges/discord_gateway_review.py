@@ -28,6 +28,7 @@ class Provider:
         self.connections = 0
         self.channel_reads = 0
         self.posts = 0
+        self.withheld = False
         self.session = None
 
     def record(self, **event):
@@ -109,7 +110,8 @@ class Provider:
                     self.message(7, channel_id="2002"),
                     self.message(8, attachments=[{"id": "7001", "filename": "file.txt"}]),
                     self.message(9, type=19, content="human reply")]
-        count = 32 if self.mode == "burst" else 2 if self.mode == "resume" else 1
+        count = (32 if self.mode == "burst"
+                 else 2 if self.mode in ("resume", "zombie") else 1)
         return [self.message(seq) for seq in range(2, count + 2)]
 
     def gateway(self, handler):
@@ -150,6 +152,14 @@ class Provider:
             return
         dispatches = self.dispatches()
         pending = iter(item for item in dispatches if item["s"] > start)
+        # A zombie arm holds everything after the first dispatch until the client
+        # resumes, so the second message can only arrive through the repair.
+        if self.mode == "zombie" and auth["op"] == 2:
+            first = next(pending, None)
+            if first is not None:
+                self.frame(stream, first)
+                self.record(kind="dispatch", seq=first["s"])
+            pending = iter(())
         resumed = auth["op"] == 6
         resumed_sequence = max([start] + [item["s"] for item in dispatches]) + 1
         # Fresh burst fills the bounded client queue. Replays are paced so the
@@ -189,6 +199,13 @@ class Provider:
                 value = json.loads(raw)
                 assert value["op"] == 1
                 self.record(kind="heartbeat", seq=value.get("d"))
+                # "zombie" withholds exactly one acknowledgement per connection,
+                # which is the provider's zombied-connection condition: the next
+                # heartbeat goes unanswered for a whole interval.
+                if self.mode == "zombie" and not self.withheld:
+                    self.withheld = True
+                    self.record(kind="heartbeat_withheld", seq=value.get("d"))
+                    continue
                 self.frame(stream, {"op": 11})
 
 

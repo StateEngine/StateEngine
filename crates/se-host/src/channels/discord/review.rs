@@ -306,12 +306,43 @@ fn discord_wire_review_overflow_recovers_every_message() -> Check {
     }))
 }
 
+/// A withheld heartbeat acknowledgement is the provider's zombied-connection
+/// condition: the client closes that socket and resumes from its checkpoint
+/// instead of reporting an outage, and the missed dispatch still arrives.
+#[test]
+fn discord_wire_review_zombie_connection_resumes_without_losing_mail() -> Check {
+    let f = Fixture::new("zombie")?;
+    let outcome = runtime()?.block_on(async {
+        let mut receiver = ready(&f).await?;
+        let first = next(receiver.as_mut(), &f.token).await?;
+        receiver.ack(&first.cursor)?;
+        // Idle long enough for a heartbeat to go unacknowledged, then read on.
+        let second = next(receiver.as_mut(), &f.token).await?;
+        require(
+            second.update.to_string() == "5003",
+            "the dispatch held for the resumed connection was lost",
+        )?;
+        receiver.ack(&second.cursor)?;
+        require(
+            f.events()?
+                .iter()
+                .any(|e| e["kind"] == "heartbeat_withheld"),
+            "the provider never withheld an acknowledgement",
+        )?;
+        f.no_fixture_errors()
+    });
+    if outcome.is_err() {
+        f.report("discord_wire_review_zombie_connection_resumes_without_losing_mail");
+    }
+    f.finish(outcome)
+}
+
 /// An expired resume session is explicit and invalidated, so the subsequent
 /// attempt identifies afresh instead of retrying an impossible replay forever.
 #[test]
 fn discord_wire_review_expired_replay_is_visible() -> Check {
     let f = Fixture::new("expired")?;
-    f.finish(runtime()?.block_on(async {
+    let outcome = runtime()?.block_on(async {
         let mut receiver = ready(&f).await?;
         let first = next(receiver.as_mut(), &f.token).await?;
         receiver.ack(&first.cursor)?;
@@ -342,5 +373,9 @@ fn discord_wire_review_expired_replay_is_visible() -> Check {
             "invalid replay session was retried forever",
         )?;
         f.no_fixture_errors()
-    }))
+    });
+    if outcome.is_err() {
+        f.report("discord_wire_review_expired_replay_is_visible");
+    }
+    f.finish(outcome)
 }
