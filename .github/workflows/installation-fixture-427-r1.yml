@@ -1,0 +1,75 @@
+name: Native Windows installation contention fixture
+'on':
+  push:
+    branches:
+    - prime/installation-fixture-427-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  PYTHONUTF8: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 81d082b3041ad519eb726566378775f145c017f2
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: full-windows-suite-v1
+        cache-workspace-crates: false
+    - name: Execute the unchanged contention, retry and byte assertions
+      shell: python
+      run: |
+        import hashlib,json,os,shutil,subprocess,time,traceback,xml.etree.ElementTree as ET
+        from pathlib import Path
+        root=Path(os.environ['GITHUB_WORKSPACE']);out=Path(os.environ['RUNNER_TEMP'])/'installation427';out.mkdir()
+        report=dict(source='81d082b3041ad519eb726566378775f145c017f2',target='x86_64-pc-windows-msvc',stages=[],passed=False)
+        def sha(p):
+            with Path(p).open('rb') as f:return hashlib.file_digest(f,'sha256').hexdigest()
+        def save():(out/'report.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+        def run(name,argv):
+            row=dict(name=name,argv=argv);report['stages'].append(row);save();start=time.monotonic()
+            with (out/(name+'.stdout')).open('wb') as stdout,(out/(name+'.stderr')).open('wb') as stderr:p=subprocess.run(argv,cwd=root,stdout=stdout,stderr=stderr)
+            row.update(exit=p.returncode,seconds=time.monotonic()-start);save();return p.returncode
+        try:
+            actual=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip();assert actual==report['source'];report['actual_source']=actual
+            assert not subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=root)
+            report['compiler']=subprocess.check_output(['rustc','-vV'],text=True);assert 'host: '+report['target'] in report['compiler']
+            report['nextest']=subprocess.check_output(['cargo','nextest','--version'],text=True)
+            shutil.copy2(root/'crates/se/tests/installation_contention.rs',out/'installation_contention.rs')
+            assert run('account',[shutil.which('python'),'-B','scripts/ci/installation_account.py','provision'])==0
+            args=['-p','se','--test','installation_contention','--all-features','--locked','--target',report['target']]
+            assert run('inventory',['cargo','nextest','list',*args,'--profile','ci','--message-format','json'])==0
+            metadata=json.loads((out/'inventory.stdout').read_text(encoding='utf-8'))
+            selected=[(key,name) for key,s in metadata['rust-suites'].items() for name,t in s['testcases'].items() if t['filter-match']['status']=='matches']
+            expected=[('se::installation_contention','native_lock_contention_is_retryable_and_releases_without_removing_the_lock')];assert selected==expected
+            code=run('native-test',['cargo','nextest','run',*args,'--profile','ci','--no-fail-fast','--retries','0','--no-tests','fail','--success-output','final','--failure-output','immediate-final'])
+            shutil.copy2(root/'target/nextest/ci/junit.xml',out/'junit.xml')
+            cases=list(ET.parse(out/'junit.xml').getroot().iter('testcase'));assert len(cases)==1
+            assert [(x.get('classname'),x.get('name')) for x in cases]==expected
+            report['cases']=[dict(name=x.get('name'),seconds=x.get('time'),failed=x.find('failure') is not None,error=x.find('error') is not None,skipped=x.find('skipped') is not None) for x in cases]
+            suite=metadata['rust-suites']['se::installation_contention'];image=Path(suite['binary-path']);shutil.copy2(image,out/'test.exe');report['image_sha256']=sha(out/'test.exe')
+            report['passed']=code==0 and all(not x['failed'] and not x['error'] and not x['skipped'] for x in report['cases'])
+        except BaseException as error:report['failure']=dict(type=type(error).__name__,detail=str(error),traceback=traceback.format_exc())
+        finally:
+            save();files=[p for p in out.rglob('*') if p.is_file()];assert all(not p.is_symlink() for p in files)
+            (out/'members.json').write_text(json.dumps({p.relative_to(out).as_posix():sha(p) for p in files},indent=2)+'\n',encoding='utf-8')
+        raise SystemExit(0 if report['passed'] else 1)
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: installation-fixture-427-native
+        path: ${{ runner.temp }}/installation427/
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 14
