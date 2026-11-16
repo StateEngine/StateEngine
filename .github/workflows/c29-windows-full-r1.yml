@@ -1,0 +1,272 @@
+name: Full native Windows suite replay
+on:
+  push:
+    branches: [prime/c29-windows-full-r1]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_TERM_COLOR: never
+  RUST_BACKTRACE: '1'
+jobs:
+  windows:
+    name: Native Windows (${{ matrix.features }})
+    runs-on: windows-2025
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [default, all]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: da1591f8d561326a02863b9acecbb5b5ad9eb005
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          shared-key: c29-windows-${{ matrix.features }}-v1
+      - name: Register disposable runner account
+        run: |
+          python scripts/ci/installation_account.py provision
+          python scripts/ci/installation_account.py check
+      - name: Run complete native suite and inventory failures
+        env:
+          C29_FEATURES: ${{ matrix.features }}
+          C29_OUT_DIR: ${{ runner.temp }}/c29-${{ matrix.features }}
+        run: |
+          python - <<'C29_DRIVER'
+          """Hosted native suite driver; all evidence stays outside the source checkout."""
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+          import sys
+          import time
+          import traceback
+          import xml.etree.ElementTree as ET
+
+          SOURCE = "da1591f8d561326a02863b9acecbb5b5ad9eb005"
+          ROOT = Path.cwd().resolve()
+          OUT = Path(os.environ["C29_OUT_DIR"]).resolve()
+          MODE = os.environ["C29_FEATURES"]
+          assert MODE in {"default", "all"}
+          OUT.mkdir(parents=True, exist_ok=False)
+          FEATURES = ["--all-features"] if MODE == "all" else []
+          REPORT = {"schema": "native-full-suite/v1", "source_expected": SOURCE,
+                    "features": MODE, "workflow_sha": os.environ.get("GITHUB_SHA"),
+                    "workflow_ref": os.environ.get("GITHUB_REF"),
+                    "run_id": os.environ.get("GITHUB_RUN_ID"), "phases": [],
+                    "ordinary": {"state": "not_run"}, "custom": [],
+                    "doctests": {"state": "not_run"}, "failures": []}
+
+
+          def save():
+              (OUT / "report.json").write_text(json.dumps(REPORT, indent=2), encoding="utf-8")
+
+
+          def run(label, argv, timeout, cwd=ROOT):
+              started = time.monotonic()
+              row = {"phase": label, "argv": argv, "state": "running"}
+              REPORT["phases"].append(row)
+              save()
+              with (OUT / (label + ".stdout")).open("wb") as stdout, \
+                      (OUT / (label + ".stderr")).open("wb") as stderr:
+                  try:
+                      result = subprocess.run(argv, cwd=cwd, stdout=stdout, stderr=stderr,
+                                              stdin=subprocess.DEVNULL, timeout=timeout)
+                      row.update(state="exited", exit=result.returncode)
+                  except subprocess.TimeoutExpired:
+                      row.update(state="timeout", exit=None, bound_seconds=timeout)
+                  except OSError as error:
+                      row.update(state="start_failed", exit=None, reason=str(error))
+              row["seconds"] = time.monotonic() - started
+              save()
+              print(f"{label}: {row['state']} exit={row['exit']} seconds={row['seconds']:.2f}", flush=True)
+              return row["state"] == "exited" and row["exit"] == 0
+
+
+          def text(name):
+              return (OUT / name).read_text(encoding="utf-8", errors="replace")
+
+
+          def junit(path):
+              root = ET.parse(path).getroot()
+              suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+              rows = []
+              for suite in suites:
+                  for case in suite.findall("testcase"):
+                      failure = case.find("failure")
+                      if failure is None:
+                          failure = case.find("error")
+                      row = {"suite": suite.get("name"), "name": case.get("name"),
+                             "class": case.get("classname"), "seconds": case.get("time"),
+                             "state": "failed" if failure is not None else
+                             "skipped" if case.find("skipped") is not None else "passed"}
+                      if failure is not None:
+                          row.update(failure_type=failure.get("type"),
+                                     message=failure.get("message"), detail=failure.text,
+                                     stdout=case.findtext("system-out"),
+                                     stderr=case.findtext("system-err"))
+                          REPORT["failures"].append({"phase": "ordinary", **row})
+                      rows.append(row)
+              if not rows:
+                  raise RuntimeError("JUnit contained no testcase rows; no empty success")
+              (OUT / "cases.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
+              return {"state": "observed", "cases": len(rows),
+                      **{state: sum(row["state"] == state for row in rows)
+                         for state in ["passed", "failed", "skipped"]}}
+
+
+          def observe(label, action):
+              try:
+                  return action()
+              except Exception as error:
+                  REPORT.setdefault("evidence_errors", []).append(
+                      {"phase": label, "reason": str(error), "traceback": traceback.format_exc()})
+                  save()
+                  return None
+
+
+          def ordinary_report(path):
+              if path.exists():
+                  shutil.copy2(path, OUT / "junit.xml")
+                  REPORT["ordinary"] = junit(path)
+              else:
+                  REPORT["ordinary"] = {"state": "unreadable", "reason": "no JUnit file was written"}
+              save()
+
+
+          def custom_harnesses():
+              sys.path.insert(0, str(ROOT / "scripts/ci"))
+              from custom import custom_targets
+              metadata_path = ROOT / "target/nextest/binaries-metadata.json"
+              metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+              if Path(metadata["rust-build-meta"]["target-directory"]).resolve() != ROOT / "target":
+                  raise RuntimeError("custom binary metadata does not name this checkout's target directory")
+              for index, (name, cwd) in enumerate(sorted(custom_targets().items())):
+                  entry = {"name": name, "state": "not_run"}
+                  REPORT["custom"].append(entry)
+                  try:
+                      binary = Path(metadata["rust-binaries"][name]["binary-path"])
+                      if not binary.is_relative_to(ROOT / "target") or not binary.is_file():
+                          raise RuntimeError("missing or foreign archived custom binary")
+                      ok = run("custom-" + str(index), [str(binary)], 120, cwd=cwd)
+                      entry["state"] = "passed" if ok else "failed"
+                  except (KeyError, ValueError, OSError, RuntimeError) as error:
+                      entry.update(state="unreadable", reason=str(error))
+                  if entry["state"] != "passed":
+                      REPORT["failures"].append({"phase": "custom", **entry})
+                  save()
+
+
+          try:
+              actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+              REPORT["source_actual"] = actual
+              if actual != SOURCE:
+                  raise RuntimeError("checked-out source does not match the sealed source")
+              for label, argv in [("rustc", ["rustc", "-Vv"]),
+                                  ("cargo", ["cargo", "-V"]),
+                                  ("nextest", ["cargo", "nextest", "--version"])]:
+                  if not run(label, argv, 30):
+                      raise RuntimeError(label + " version unavailable")
+              target = subprocess.check_output(["rustc", "--print", "host-tuple"], text=True).strip()
+              if target != "x86_64-pc-windows-msvc" or sys.platform != "win32":
+                  raise RuntimeError("native Windows MSVC runner required")
+              REPORT["target"] = target
+              command = ["--target", target, "--workspace", *FEATURES, "--locked"]
+              if not run("build-consumers", ["cargo", "build", *command, "--bins"], 3600):
+                  raise RuntimeError("consumer build failed before test execution")
+              image = ROOT / "target" / target / "debug" / "se.exe"
+              if not image.is_file():
+                  raise RuntimeError("candidate CLI is absent")
+              REPORT["image"] = {"bytes": image.stat().st_size,
+                                 "sha256": hashlib.file_digest(image.open("rb"), "sha256").hexdigest()}
+              for name in ["SE_SELECTOR_SE", "SE_W3_SE_BIN"]:
+                  os.environ[name] = str(image)
+              archive = Path(os.environ["RUNNER_TEMP"]) / ("c29-" + MODE + ".tar.zst")
+              if not run("archive", ["cargo", "nextest", "archive", *command,
+                                     "--archive-file", str(archive)], 3600):
+                  raise RuntimeError("test compilation failed before any tests ran")
+              if not run("filter", [sys.executable, "scripts/ci/custom.py", "filter", *FEATURES], 30):
+                  raise RuntimeError("registered custom/input filter is unreadable")
+              filterset = text("filter.stdout").strip()
+              (OUT / "filter.txt").write_text(filterset, encoding="utf-8")
+              availability = ROOT / "ci-reports/input-judges.json"
+              if availability.exists():
+                  shutil.copy2(availability, OUT / "input-judges.json")
+                  REPORT["external_inputs"] = json.loads(availability.read_text(encoding="utf-8"))
+              else:
+                  REPORT["external_inputs"] = {"state": "not_applicable", "mode": MODE}
+              reuse = ["--archive-file", str(archive), "--extract-to", str(ROOT),
+                       "--extract-overwrite", "--workspace-remap", str(ROOT)]
+              listed = run("catalog", ["cargo", "nextest", "list", *reuse,
+                                        "--message-format", "json", "-E", filterset], 600)
+              if listed:
+                  observe("catalog", lambda: json.loads(text("catalog.stdout")))
+              report_path = ROOT / "target/nextest/ci/junit.xml"
+              report_path.unlink(missing_ok=True)
+              run("ordinary", ["cargo", "nextest", "run", *reuse, "--profile", "ci",
+                                "--no-fail-fast", "--no-tests", "fail", "-E", filterset], 3600)
+              observe("ordinary-report", lambda: ordinary_report(report_path))
+              observe("custom", custom_harnesses)
+              docs_ok = run("doctests", ["cargo", "test", *command, "--doc", "--no-fail-fast"], 1200)
+              doc_failures = re.findall(r"^test (.+?) \.\.\. FAILED\s*$",
+                                        text("doctests.stdout") + text("doctests.stderr"), re.M)
+              REPORT["doctests"] = {"state": "passed" if docs_ok else "failed", "failed_names": doc_failures}
+              REPORT["failures"].extend({"phase": "doctests", "name": name} for name in doc_failures)
+          except Exception as error:
+              REPORT["driver_error"] = {"reason": str(error), "traceback": traceback.format_exc()}
+          finally:
+              REPORT["passed"] = (not REPORT.get("driver_error") and not REPORT.get("evidence_errors")
+                                  and all(row["state"] == "exited" and row["exit"] == 0
+                                          for row in REPORT["phases"])
+                                  and REPORT["ordinary"]["state"] == "observed"
+                                  and all(row["state"] == "passed" for row in REPORT["custom"])
+                                  and REPORT["doctests"]["state"] == "passed")
+              save()
+              summary = [f"## Native Windows suite: {MODE}", f"Source: `{REPORT.get('source_actual', 'unreadable')}`",
+                         f"Ordinary: {json.dumps(REPORT['ordinary'])}",
+                         f"Custom: {json.dumps(REPORT['custom'])}",
+                         f"Doctests: {json.dumps(REPORT['doctests'])}", "", "Named failures:"]
+              summary += [f"- {item['phase']}: {item.get('suite', '')}::{item['name']}"
+                          for item in REPORT["failures"]]
+              summary.extend("Evidence error: " + json.dumps(item) for item in REPORT.get("evidence_errors", []))
+              summary.extend("Phase failure: " + json.dumps(item) for item in REPORT["phases"]
+                             if item["state"] != "exited" or item["exit"] != 0)
+              if REPORT.get("driver_error"):
+                  summary.append("Driver error: " + REPORT["driver_error"]["reason"])
+              summary.append("External fixture availability: " + json.dumps(REPORT.get("external_inputs", "unreadable")))
+              rendered = "\n".join(summary) + "\n"
+              (OUT / "summary.txt").write_text(rendered, encoding="utf-8")
+              print(rendered, flush=True)
+              if os.environ.get("GITHUB_STEP_SUMMARY"):
+                  with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
+                      stream.write(rendered)
+              manifest = []
+              for path in sorted(OUT.iterdir()):
+                  if path.is_symlink() or not path.is_file():
+                      raise RuntimeError("evidence member is not an owned regular file")
+                  manifest.append({"file": path.name, "bytes": path.stat().st_size,
+                                   "sha256": hashlib.file_digest(path.open("rb"), "sha256").hexdigest()})
+              (OUT / "artifact-manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+          raise SystemExit(0 if REPORT["passed"] else 1)
+          C29_DRIVER
+      - name: Retain complete outcomes
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: c29-windows-${{ matrix.features }}
+          path: ${{ runner.temp }}/c29-${{ matrix.features }}
+          retention-days: 14
+          if-no-files-found: error
