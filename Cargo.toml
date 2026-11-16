@@ -13,6 +13,7 @@ members = [
     "crates/se-remote",
     "crates/se-atlas",
     "crates/se",
+    "crates/venue-probe",
 ]
 
 [workspace.package]

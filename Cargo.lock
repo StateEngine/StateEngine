@@ -1497,6 +1497,7 @@ dependencies = [
  "tokio",
  "toml",
  "uuid",
+ "venue-probe",
  "zeroize",
 ]
 
@@ -1592,6 +1593,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "venue-probe",
  "windows-sys 0.61.2",
  "zeroize",
 ]
@@ -2311,6 +2313,13 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
+name = "venue-probe"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "version_check"

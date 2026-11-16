@@ -1,0 +1,29 @@
+[package]
+name = "venue-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Dev-only helper: Windows test fixtures confirm a direct breakaway denial
+# through this crate before reporting detached coverage NOT GRADED. The
+# shipping product never links it; only the test crates depend on it.
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects"] }
+
+[lints.rust]
+unsafe_code = "allow"
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+unreachable = "deny"
+# The structural guardrails the rest of the workspace inherits from the
+# workspace lints, listed here because this crate keeps its own lint table for
+# the FFI overrides above.
+too_many_lines = "warn"
+cognitive_complexity = "warn"
+too_many_arguments = "warn"
+struct_excessive_bools = "warn"

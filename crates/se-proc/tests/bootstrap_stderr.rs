@@ -241,6 +241,34 @@ mod judge {
                 "outside observer found the detached child in a job",
             )?;
         }
+        #[cfg(windows)]
+        if mode == "breakaway" {
+            require(
+                observed_detachment == Some(RuntimeDetachment::WindowsBreakaway),
+                "strict job did not use the direct breakaway path",
+            )?;
+            use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+            use windows_sys::Win32::System::{JobObjects::IsProcessInJob, Threading::*};
+            let identity = custody
+                .child()?
+                .identity()
+                .ok_or("breakaway child identity missing")?;
+            // SAFETY: read-only open of the exact child PID; retained custody pins that birth.
+            let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, identity.pid.0) };
+            require(!raw.is_null(), "outside breakaway child observation failed")?;
+            // SAFETY: successful native open transfers one owned reference.
+            let observed = unsafe { OwnedHandle::from_raw_handle(raw) };
+            let mut member = 1;
+            // SAFETY: retained exact child reference and writable BOOL.
+            require(
+                // SAFETY: retained process reference and writable native membership output.
+                unsafe {
+                    IsProcessInJob(observed.as_raw_handle(), std::ptr::null_mut(), &mut member)
+                } != 0
+                    && member == 0,
+                "outside observer found the breakaway child in a job",
+            )?;
+        }
         if mode == "live-read" {
             require(
                 matches!(
@@ -385,10 +413,9 @@ mod judge {
                 && member != 0,
             "strict fixture caller was not in its job",
         )?;
-        // Classify the venue the way the launch would resolve it: a direct
-        // breakaway probe, then the shared broker scan. On a venue that
-        // cannot verify any broker the detached launch requirement is
-        // reported, not faked.
+        // Classify the venue the way the launch would resolve it: the shared
+        // broker scan, then a test-only direct breakaway probe before any
+        // NOT GRADED report; the probe child is joined before it returns.
         let probe_machine = MachineId::new("persisted-cold-bootstrap-judge").map_err(error)?;
         let venue = detached_venue(&probe_machine, Instant::now() + Duration::from_secs(45))
             .map_err(error)?;
@@ -396,9 +423,22 @@ mod judge {
             DetachedVenue::NoBroker {
                 examined,
                 unreadable,
-            } => println!(
-                "NOT GRADED bootstrap broker: no verified detached broker among {examined} examined same-user processes; {unreadable} process contexts unreadable"
-            ),
+            } => {
+                // This strict job enables no BREAKAWAY_OK; the denial still
+                // has to be observed, not assumed, before coverage reports.
+                if venue_probe::direct_breakaway_allowed(Instant::now() + Duration::from_secs(45))
+                    .map_err(error)?
+                {
+                    trial("breakaway")?;
+                    println!(
+                        "bootstrap breakaway: 1 passed, 0 failed; caller remains in strict job; child outside all jobs and exited"
+                    );
+                } else {
+                    println!(
+                        "NOT GRADED bootstrap broker: no verified detached broker among {examined} examined same-user processes; {unreadable} process contexts unreadable"
+                    );
+                }
+            }
             DetachedVenue::Broker => {
                 trial("broker")?;
                 println!(

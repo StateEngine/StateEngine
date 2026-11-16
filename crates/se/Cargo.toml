@@ -42,3 +42,8 @@ harness = false
 [dev-dependencies]
 se-atlas = { path = "../se-atlas" }
 rusqlite = { version = "0.41", features = ["bundled"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Test-only: the dev-only venue probe crate confirms the direct breakaway denial
+# before fixtures report detached coverage; the product surface gains nothing.
+venue-probe = { path = "../venue-probe" }

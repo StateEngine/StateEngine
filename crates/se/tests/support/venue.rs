@@ -43,8 +43,9 @@ impl Venue {
     }
 }
 /// Classifies whether this venue can launch a detached runtime host the same
-/// way a launch resolves it; on a job-contained Windows venue the probe may
-/// create one short-lived breakaway child, joined before it returns. `home` reads
+/// way a launch resolves it; on a job-contained Windows venue where no broker
+/// verifies, a test-only probe creates one short-lived breakaway child,
+/// resolved from the environment and joined before it returns. `home` reads
 /// the persisted machine id when present, otherwise a synthetic label is
 /// stamped (the probe discards the identities it reads, so the label is inert).
 pub fn probe(home: Option<&Path>) -> Check<Venue> {
@@ -63,20 +64,30 @@ pub fn probe(home: Option<&Path>) -> Check<Venue> {
             None => se_types::MachineId::new("control-venue-probe")
                 .map_err(|error| format!("venue probe label is not a machine id: {error}"))?,
         };
-        Ok(
-            match se_proc::detached_venue(&machine, Instant::now() + Duration::from_secs(45))
-                .map_err(|error| format!("classify the detached venue: {error:?}"))?
-            {
-                se_proc::DetachedVenue::NoBroker {
-                    examined,
-                    unreadable,
-                } => Venue::NoBroker {
-                    examined,
-                    unreadable,
-                },
-                _ => Venue::Detached,
-            },
-        )
+        let deadline = Instant::now() + Duration::from_secs(45);
+        match se_proc::detached_venue(&machine, deadline)
+            .map_err(|error| format!("classify the detached venue: {error:?}"))?
+        {
+            se_proc::DetachedVenue::NoBroker {
+                examined,
+                unreadable,
+            } => {
+                // The scan found no verified broker while the caller is
+                // job-contained; confirm the direct breakaway denial before
+                // reporting the detached coverage, never assume it.
+                if venue_probe::direct_breakaway_allowed(deadline)
+                    .map_err(|error| format!("probe direct breakaway: {error}"))?
+                {
+                    Ok(Venue::Detached)
+                } else {
+                    Ok(Venue::NoBroker {
+                        examined,
+                        unreadable,
+                    })
+                }
+            }
+            _ => Ok(Venue::Detached),
+        }
     }
     #[cfg(not(windows))]
     {
