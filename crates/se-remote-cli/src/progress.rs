@@ -24,13 +24,22 @@ pub(super) fn write(event: ImageProgress, json: bool, output: &mut dyn Write) ->
                 ImageStage::Cached => {
                     writeln!(output, "Using the verified remote runtime image; pairing…")?
                 }
-                ImageStage::Uploading => writeln!(
-                    output,
-                    "Uploading runtime: {} / {} bytes ({:.1} seconds elapsed)",
-                    event.bytes_streamed,
-                    event.total_bytes.unwrap_or(0),
-                    event.elapsed_ms as f64 / 1000.0
-                )?,
+                ImageStage::Uploading => {
+                    let elapsed = event.elapsed_ms as f64 / 1000.0;
+                    match (event.bytes_streamed, event.total_bytes) {
+                        (Some(bytes), Some(total)) => writeln!(
+                            output,
+                            "Uploading runtime: {bytes} / {total} bytes ({elapsed:.1} seconds elapsed)"
+                        )?,
+                        (Some(bytes), None) => writeln!(
+                            output,
+                            "Uploading runtime: {bytes} bytes ({elapsed:.1} seconds elapsed)"
+                        )?,
+                        (None, _) => {
+                            writeln!(output, "Uploading runtime ({elapsed:.1} seconds elapsed)…")?
+                        }
+                    }
+                }
                 ImageStage::Verifying => writeln!(output, "Verifying the uploaded runtime image…")?,
                 ImageStage::Ready => writeln!(output, "Runtime image verified; pairing…")?,
             }

@@ -111,7 +111,6 @@ pub fn initialize(files: &Files) -> Result<Secret> {
         .map_err(|error| scope::unreadable("credential staging", &error.to_string()))?;
     let mut file = staged.file;
     file.write_all(secret.expose())
-        .and_then(|()| file.sync_all())
         .map_err(|error| scope::unreadable("credential staging", &error.to_string()))?;
     drop(file);
     match se_store::StateFiles::publish_no_replace(files, &staged.path, &files.0.root().join(FILE))

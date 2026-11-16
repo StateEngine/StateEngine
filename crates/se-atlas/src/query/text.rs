@@ -321,6 +321,7 @@ impl QueryReader<'_, '_, '_> {
                     precomputed_last: last,
                     lexical: metadata.as_ref().map_or(0.0, |(_, _, lexical, _)| *lexical),
                     related: metadata.as_ref().is_some_and(|(_, _, _, related)| *related),
+                    downweighted: false,
                 };
                 let base_key = super::find::key(&candidate, query.order);
                 let hits = if let Some((mut code, _, _, _)) = metadata {
