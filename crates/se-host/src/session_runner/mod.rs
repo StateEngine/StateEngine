@@ -56,7 +56,7 @@ pub fn private_entry() -> Result<()> {
 
 fn child_record(parent: &EndpointRecord) -> Result<EndpointRecord> {
     let native = se_proc::current_runtime_identity(parent.epoch.owner.fields().machine.clone())
-        .map_err(|error| SeError::invalid("runner native identity", &error.to_string()))?;
+        .map_err(|error| SeError::invalid("runner native identity", &format!("{error:?}")))?;
     let peer = se_proc::native_ipc::observe_ipc_self().map_err(native_error)?;
     let mut argv = Hasher::new();
     for arg in std::env::args_os() {
