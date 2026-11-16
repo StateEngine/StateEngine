@@ -541,3 +541,39 @@ impl AdapterBinding for Arc<Binding> {
         })
     }
 }
+
+pub(crate) struct Adoption;
+pub(crate) static ADOPTION: Adoption = Adoption;
+impl crate::adoption::Adapter for Adoption {
+    fn prepare(&self, command: &std::path::Path) -> Result<crate::adoption::ProviderSetup> {
+        let executable = crate::adoption::codex::native_executable(command)?;
+        let home = crate::codex_capture::existing_home()?;
+        crate::adoption::settings::prepare(
+            &home,
+            &home.join(crate::adoption::Kind::Codex.settings()),
+        )?;
+        crate::adoption::codex::qualify(&executable)?;
+        Ok(crate::adoption::ProviderSetup {
+            executable,
+            config_home: home,
+        })
+    }
+    fn hooks(
+        &self,
+        executable: &std::path::Path,
+        home: &std::path::Path,
+    ) -> Result<Vec<(String, serde_json::Value)>> {
+        crate::adoption::codex::hooks(executable, home)
+    }
+    fn discover(
+        &self,
+        home: &std::path::Path,
+        saved: &mut crate::adoption::Registration,
+        root: &std::path::Path,
+    ) -> Result<()> {
+        crate::adoption::codex::trust(home, saved, root)
+    }
+    fn active(&self, home: &std::path::Path, project: &se_types::ProjectId) -> Result<bool> {
+        crate::adoption::status::witnessed(home, crate::adoption::Kind::Codex, project)
+    }
+}

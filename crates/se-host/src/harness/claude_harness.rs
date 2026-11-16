@@ -465,3 +465,28 @@ impl AdapterBinding for Arc<Binding> {
         }
     }
 }
+
+pub(crate) struct Adoption;
+pub(crate) static ADOPTION: Adoption = Adoption;
+impl crate::adoption::Adapter for Adoption {
+    fn prepare(
+        &self,
+        command: &std::path::Path,
+    ) -> se_types::Result<crate::adoption::ProviderSetup> {
+        qualify_adoption(command)?;
+        Ok(crate::adoption::ProviderSetup {
+            executable: command.to_owned(),
+            config_home: claude::config_home(&std::env::vars_os().collect::<Vec<_>>())?,
+        })
+    }
+    fn hooks(
+        &self,
+        executable: &std::path::Path,
+        home: &std::path::Path,
+    ) -> se_types::Result<Vec<(String, serde_json::Value)>> {
+        crate::adoption::settings::hooks(executable, home)
+    }
+    fn notice(&self) -> Option<String> {
+        Some("Review and trust the StateEngine hooks in Claude Code when the provider asks; declining keeps the provider usable with the integration inactive".into())
+    }
+}

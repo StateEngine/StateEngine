@@ -55,7 +55,7 @@ pub use claude::{
     config_home as claude_config_home, conversation as claude_conversation, provider_environment,
 };
 #[cfg(feature = "listener")]
-pub(crate) use claude_harness::Binding as ClaudeBinding;
+pub(crate) use claude_harness::{ADOPTION as CLAUDE_ADOPTION, Binding as ClaudeBinding};
 #[cfg(feature = "listener")]
 pub use claude_harness::{
     ClaudeHarness, qualify_adoption as qualify_claude_adoption,
