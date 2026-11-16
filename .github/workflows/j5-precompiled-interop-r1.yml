@@ -1,0 +1,88 @@
+name: Build fixed uninstall interop assembly
+'on':
+  push:
+    branches:
+    - prime/j5-precompiled-interop-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  interop:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - name: Extract source and deterministic generator
+      shell: python
+      run: "import base64,hashlib,json,os\nfrom pathlib import Path\nr=Path(os.environ['RUNNER_TEMP'])/'interop-build';r.mkdir()\n\
+        inputs={'carrier-interop.cs': 'Ly8gTmF0aXZlIGludGVyb3AgZm9yIHRoZSBmaXhlZCB1bmluc3RhbGwgY2FycmllcjsgY29tcGlsZWQgYmVmb3JlIHNoaXBwaW5nLgp1c2luZyBTeXN0ZW07CnVzaW5nIFN5c3RlbS5JTzsKdXNpbmcgU3lzdGVtLkNvbXBvbmVudE1vZGVsOwp1c2luZyBTeXN0ZW0uUnVudGltZS5JbnRlcm9wU2VydmljZXM7CnVzaW5nIFN5c3RlbS5TZWN1cml0eS5DcnlwdG9ncmFwaHk7CnVzaW5nIE1pY3Jvc29mdC5XaW4zMi5TYWZlSGFuZGxlczsKcHVibGljIHN0YXRpYyBjbGFzcyBTZVVuaW5zdGFsbE9iamVjdHMgewogW1N0cnVjdExheW91dChMYXlvdXRLaW5kLlNlcXVlbnRpYWwpXSBzdHJ1Y3QgSW5mbyB7CiAgcHVibGljIHVpbnQgQXR0cmlidXRlcyxDcmVhdGlvbkxvdyxDcmVhdGlvbkhpZ2gsQWNjZXNzTG93LEFjY2Vzc0hpZ2gsV3JpdGVMb3csV3JpdGVIaWdoOwogIHB1YmxpYyB1aW50IFZvbHVtZSxTaXplSGlnaCxTaXplTG93LExpbmtzLEluZGV4SGlnaCxJbmRleExvdzsKIH0KIFtTdHJ1Y3RMYXlvdXQoTGF5b3V0S2luZC5TZXF1ZW50aWFsKV0gc3RydWN0IElkIHsKICBwdWJsaWMgdWxvbmcgVm9sdW1lOwogIFtNYXJzaGFsQXMoVW5tYW5hZ2VkVHlwZS5CeVZhbEFycmF5LFNpemVDb25zdD0xNildIHB1YmxpYyBieXRlW10gVmFsdWU7CiB9CiBbRGxsSW1wb3J0KCJrZXJuZWwzMi5kbGwiLFNldExhc3RFcnJvcj10cnVlKV0gc3RhdGljIGV4dGVybiB1aW50IEdldEZpbGVUeXBlKEludFB0ciBmaWxlKTsKIFtEbGxJbXBvcnQoImtlcm5lbDMyLmRsbCIsU2V0TGFzdEVycm9yPXRydWUpXSBzdGF0aWMgZXh0ZXJuIGJvb2wgR2V0RmlsZUluZm9ybWF0aW9uQnlIYW5kbGUoSW50UHRyIGZpbGUsb3V0IEluZm8gaW5mbyk7CiBbRGxsSW1wb3J0KCJrZXJuZWwzMi5kbGwiLFNldExhc3RFcnJvcj10cnVlKV0gc3RhdGljIGV4dGVybiBib29sIEdldEZpbGVJbmZvcm1hdGlvbkJ5SGFuZGxlRXgoSW50UHRyIGZpbGUsaW50IGtpbmQsb3V0IElkIGlkLHVpbnQgc2l6ZSk7CiBbRGxsSW1wb3J0KCJrZXJuZWwzMi5kbGwiLFNldExhc3RFcnJvcj10cnVlKV0gc3RhdGljIGV4dGVybiBJbnRQdHIgUmVPcGVuRmlsZShJbnRQdHIgZmlsZSx1aW50IGFjY2Vzcyx1aW50IHNoYXJlLHVpbnQgZmxhZ3MpOwogW0RsbEltcG9ydCgia2VybmVsMzIuZGxsIixTZXRMYXN0RXJyb3I9dHJ1ZSldIHN0YXRpYyBleHRlcm4gYm9vbCBTZXRGaWxlSW5mb3JtYXRpb25CeUhhbmRsZShJbnRQdHIgZmlsZSxpbnQga2luZCxyZWYgdWludCBmbGFncyx1aW50IHNpemUpOwogW0RsbEltcG9ydCgia2VybmVsMzIuZGxsIixTZXRMYXN0RXJyb3I9dHJ1ZSldIHN0YXRpYyBleHRlcm4gYm9vbCBDbG9zZUhhbmRsZShJbnRQdHIgZmlsZSk7CiBbRGxsSW1wb3J0KCJrZXJuZWwzMi5kbGwiLFNldExhc3RFcnJvcj10cnVlKV0gc3RhdGljIGV4dGVybiBib29sIEZsdXNoRmlsZUJ1ZmZlcnMoSW50UHRyIGZpbGUpOwogW0RsbEltcG9ydCgia2VybmVsMzIuZGxsIixTZXRMYXN0RXJyb3I9dHJ1ZSxDaGFyU2V0PUNoYXJTZXQuVW5pY29kZSldIHN0YXRpYyBleHRlcm4gSW50UHRyIENyZWF0ZUZpbGVXKHN0cmluZyBwYXRoLHVpbnQgYWNjZXNzLHVpbnQgc2hhcmUsSW50UHRyIHNlY3VyaXR5LHVpbnQgY3JlYXRpb24sdWludCBmbGFncyxJbnRQdHIgdGVtcGxhdGUpOwogW0RsbEltcG9ydCgia2VybmVsMzIuZGxsIixTZXRMYXN0RXJyb3I9dHJ1ZSldIHB1YmxpYyBzdGF0aWMgZXh0ZXJuIHVpbnQgV2FpdEZvclNpbmdsZU9iamVjdChJbnRQdHIgcHJvY2Vzcyx1aW50IG1pbGxpc2Vjb25kcyk7CiBbRGxsSW1wb3J0KCJrZXJuZWwzMi5kbGwiKV0gcHVibGljIHN0YXRpYyBleHRlcm4gdWxvbmcgR2V0VGlja0NvdW50NjQoKTsKIHN0YXRpYyB2b2lkIEVycm9yKCkgeyB0aHJvdyBuZXcgV2luMzJFeGNlcHRpb24oTWFyc2hhbC5HZXRMYXN0V2luMzJFcnJvcigpKTsgfQogcHVibGljIHN0YXRpYyBzdHJpbmcgSWRlbnRpdHkoSW50UHRyIGZpbGUsYm9vbCBkaXJlY3RvcnkpIHsKICBJbmZvIGluZm89bmV3IEluZm8oKTsgSWQgaWQ9bmV3IElkKCk7CiAgaWYoR2V0RmlsZVR5cGUoZmlsZSkhPTEgfHwgIUdldEZpbGVJbmZvcm1hdGlvbkJ5SGFuZGxlKGZpbGUsb3V0IGluZm8pKSBFcnJvcigpOwogIGlmKChpbmZvLkF0dHJpYnV0ZXMmMTAyNCkhPTAgfHwgKChpbmZvLkF0dHJpYnV0ZXMmMTYpIT0wKSE9ZGlyZWN0b3J5IHx8ICghZGlyZWN0b3J5ICYmIGluZm8uTGlua3MhPTEpKQogICB0aHJvdyBuZXcgSU9FeGNlcHRpb24oIkNhcnJpZXIgb2JqZWN0IG11c3QgcmV0YWluIGl0cyBvcmlnaW5hbCByZWd1bGFyIG5vLXJlcGFyc2UgdHlwZSBhbmQgc2luZ2xlIGZpbGUgbGluayIpOwogIGlmKCFHZXRGaWxlSW5mb3JtYXRpb25CeUhhbmRsZUV4KGZpbGUsMTgsb3V0IGlkLCh1aW50KU1hcnNoYWwuU2l6ZU9mKHR5cGVvZihJZCkpKSkgRXJyb3IoKTsKICByZXR1cm4gaWQuVm9sdW1lLlRvU3RyaW5nKCJ4MTYiKSsiOiIrQml0Q29udmVydGVyLlRvU3RyaW5nKGlkLlZhbHVlKS5SZXBsYWNlKCItIiwiIikuVG9Mb3dlckludmFyaWFudCgpOwogfQogcHVibGljIHN0YXRpYyBzdHJpbmcgRGlnZXN0KEludFB0ciBmaWxlKSB7CiAgdXNpbmcodmFyIGhhbmRsZT1uZXcgU2FmZUZpbGVIYW5kbGUoZmlsZSxmYWxzZSkpCiAgdXNpbmcodmFyIHN0cmVhbT1uZXcgRmlsZVN0cmVhbShoYW5kbGUsRmlsZUFjY2Vzcy5SZWFkLDY1NTM2LGZhbHNlKSkKICB1c2luZyh2YXIgc2hhPVNIQTI1Ni5DcmVhdGUoKSkgewogICBpZihzdHJlYW0uTGVuZ3RoPjUzNjg3MDkxMikgdGhyb3cgbmV3IElPRXhjZXB0aW9uKCJDYXJyaWVyIG9iamVjdCBleGNlZWRzIGhhc2ggYm91bmQiKTsKICAgc3RyZWFtLlBvc2l0aW9uPTA7CiAgIHJldHVybiBCaXRDb252ZXJ0ZXIuVG9TdHJpbmcoc2hhLkNvbXB1dGVIYXNoKHN0cmVhbSkpLlJlcGxhY2UoIi0iLCIiKS5Ub0xvd2VySW52YXJpYW50KCk7CiAgfQogfQogcHVibGljIHN0YXRpYyBpbnQgVW5saW5rKEludFB0ciBvcmlnaW5hbCxzdHJpbmcgcGF0aCxib29sIGRpcmVjdG9yeSkgewogIC8vIFJlT3BlbkZpbGUgcmVmdXNlcyB0aGVzZSBkaXJlY3RvcnkgaGFuZGxlcyB1bmRlciBhbiBvcmRpbmFyeSB1c2VyIHRva2VuLgogIC8vIEEgZnJlc2ggbm8tcmVwYXJzZSBvcGVuIG11c3QgbWF0Y2ggdGhlIHJldGFpbmVkIG9yaWdpbmFsIGJlZm9yZSBhbnkgZWZmZWN0LgogIC8vIEl0cyBpbmRlcGVuZGVudCBjbG9zZSBhbHNvIHB1Ymxpc2hlcyBQT1NJWCBhYnNlbmNlIHdoaWxlIHJlYWQgcGlucyByZW1haW4uCiAgdmFyIGZpbGU9ZGlyZWN0b3J5ID8gQ3JlYXRlRmlsZVcocGF0aCwweDEwMDgwLDcsSW50UHRyLlplcm8sMywweDIyMDAwMDAsSW50UHRyLlplcm8pCiAgICAgICAgICAgICAgICAgICAgIDogUmVPcGVuRmlsZShvcmlnaW5hbCwweDEwMDgwLDcsMHgyMjAwMDAwKTsKICBpZihmaWxlPT1uZXcgSW50UHRyKC0xKSkKICAgdGhyb3cgbmV3IFdpbjMyRXhjZXB0aW9uKE1hcnNoYWwuR2V0TGFzdFdpbjMyRXJyb3IoKSwiT3BlbiBleGFjdCB1bmluc3RhbGwgb2JqZWN0OiAiK3BhdGgpOwogIHRyeSB7IHVpbnQgZmxhZ3M9MzsKICAgaWYoSWRlbnRpdHkoZmlsZSxkaXJlY3RvcnkpIT1JZGVudGl0eShvcmlnaW5hbCxkaXJlY3RvcnkpKQogICAgdGhyb3cgbmV3IElPRXhjZXB0aW9uKCJVbmluc3RhbGwgb2JqZWN0IGlkZW50aXR5IGNoYW5nZWQ7IHJlcGxhY2VtZW50IHByZXNlcnZlZDogIitwYXRoKTsKICAgaWYoIVNldEZpbGVJbmZvcm1hdGlvbkJ5SGFuZGxlKGZpbGUsMjEscmVmIGZsYWdzLDQpKSB7CiAgICBpbnQgZXJyb3I9TWFyc2hhbC5HZXRMYXN0V2luMzJFcnJvcigpOwogICAgaWYoZXJyb3I9PTE0NSkgcmV0dXJuIGVycm9yOwogICAgdGhyb3cgbmV3IFdpbjMyRXhjZXB0aW9uKGVycm9yLCJVbmxpbmsgZXhhY3QgdW5pbnN0YWxsIG9iamVjdDogIitwYXRoKTsKICAgfQogICByZXR1cm4gMDsKICB9IGZpbmFsbHkgeyBDbG9zZUhhbmRsZShmaWxlKTsgfQogfQogcHVibGljIHN0YXRpYyB2b2lkIEZsdXNoKEludFB0ciBmaWxlKSB7IGlmKCFGbHVzaEZpbGVCdWZmZXJzKGZpbGUpKSBFcnJvcigpOyB9CiBwdWJsaWMgc3RhdGljIHZvaWQgQWJzZW50KHN0cmluZyBwYXRoKSB7CiAgdmFyIGZpbGU9Q3JlYXRlRmlsZVcocGF0aCwweDgwLDcsSW50UHRyLlplcm8sMywweDIyMDAwMDAsSW50UHRyLlplcm8pOwogIGlmKGZpbGU9PW5ldyBJbnRQdHIoLTEpKSB7CiAgIGludCBlcnJvcj1NYXJzaGFsLkdldExhc3RXaW4zMkVycm9yKCk7CiAgIGlmKGVycm9yPT0yIHx8IGVycm9yPT0zKSByZXR1cm47CiAgIHRocm93IG5ldyBXaW4zMkV4Y2VwdGlvbihlcnJvcik7CiAgfQogIENsb3NlSGFuZGxlKGZpbGUpOyB0aHJvdyBuZXcgSU9FeGNlcHRpb24oIlJlbW92ZWQgbmFtZSByZW1haW5zIG9yIHdhcyByZXBsYWNlZDsgcmVwbGFjZW1lbnQgcHJlc2VydmVkOiAiK3BhdGgpOwogfQogcHVibGljIHN0YXRpYyB2b2lkIFNhbWVOYW1lKHN0cmluZyBwYXRoLHN0cmluZyBleHBlY3RlZCkgewogIHZhciBmaWxlPUNyZWF0ZUZpbGVXKHBhdGgsMHg4MCw3LEludFB0ci5aZXJvLDMsMHgyMjAwMDAwLEludFB0ci5aZXJvKTsKICBpZihmaWxlPT1uZXcgSW50UHRyKC0xKSkgRXJyb3IoKTsKICB0cnkgeyBpZihJZGVudGl0eShmaWxlLHRydWUpIT1leHBlY3RlZCkgdGhyb3cgbmV3IElPRXhjZXB0aW9uKCJEaXJlY3RvcnkgbmFtZSBjaGFuZ2VkOyByZXBsYWNlbWVudCBwcmVzZXJ2ZWQiKTsgfQogIGZpbmFsbHkgeyBDbG9zZUhhbmRsZShmaWxlKTsgfQogfQp9Cg==',\
+        \ 'compile-interop.ps1': 'IyBSZWdlbmVyYXRlIGNhcnJpZXItaW50ZXJvcC5iNjQgb24gV2luZG93cyB3aXRoIGEgLk5FVCBTREsgUm9zbHluIGNvbXBpbGVyLgojIEV4YW1wbGU6IC5cY29tcGlsZS1pbnRlcm9wLnBzMSAtQ29tcGlsZXIgPHNkaz5cUm9zbHluXGJpbmNvcmVcY3NjLmRsbAojIFRoZSBBbnlDUFUgYXNzZW1ibHkgdGFyZ2V0cyB0aGUgc2FtZSAuTkVUIEZyYW1ld29yayB1c2VkIGJ5IHN5c3RlbSBQb3dlclNoZWxsLgpwYXJhbShbUGFyYW1ldGVyKE1hbmRhdG9yeT0kdHJ1ZSldW3N0cmluZ10kQ29tcGlsZXIpCiRFcnJvckFjdGlvblByZWZlcmVuY2UgPSAnU3RvcCcKU2V0LVN0cmljdE1vZGUgLVZlcnNpb24gTGF0ZXN0CiRmcmFtZXdvcmsgPSBKb2luLVBhdGggJGVudjpTeXN0ZW1Sb290ICdNaWNyb3NvZnQuTkVUL0ZyYW1ld29yay92NC4wLjMwMzE5Jwokc291cmNlID0gSm9pbi1QYXRoICRQU1NjcmlwdFJvb3QgJ2NhcnJpZXItaW50ZXJvcC5jcycKJHRlbXBvcmFyeSA9IEpvaW4tUGF0aCAoW0lPLlBhdGhdOjpHZXRUZW1wUGF0aCgpKSAoW0d1aWRdOjpOZXdHdWlkKCkuVG9TdHJpbmcoJ04nKSkKJG51bGwgPSBbSU8uRGlyZWN0b3J5XTo6Q3JlYXRlRGlyZWN0b3J5KCR0ZW1wb3JhcnkpCnRyeSB7CiAgICAkYXNzZW1ibHkgPSBKb2luLVBhdGggJHRlbXBvcmFyeSAnU3RhdGVFbmdpbmUuVW5pbnN0YWxsLkludGVyb3AuZGxsJwogICAgJiBkb3RuZXQgJENvbXBpbGVyIC9ub2xvZ28gL25vY29uZmlnIC9ub3N0ZGxpYisgL3RhcmdldDpsaWJyYXJ5IC9wbGF0Zm9ybTphbnljcHUgL29wdGltaXplKyAvZGVidWctIC9kZXRlcm1pbmlzdGljKyAvbGFuZ3ZlcnNpb246NSAiL3BhdGhtYXA6JFBTU2NyaXB0Um9vdD0vc3JjIiAiL291dDokYXNzZW1ibHkiICIvcmVmZXJlbmNlOiRmcmFtZXdvcmsvbXNjb3JsaWIuZGxsIiAiL3JlZmVyZW5jZTokZnJhbWV3b3JrL1N5c3RlbS5kbGwiICIvcmVmZXJlbmNlOiRmcmFtZXdvcmsvU3lzdGVtLkNvcmUuZGxsIiAkc291cmNlCiAgICBpZiAoJExBU1RFWElUQ09ERSAtbmUgMCkgeyB0aHJvdyAnTmF0aXZlIGludGVyb3AgY29tcGlsYXRpb24gZmFpbGVkJyB9CiAgICAkZW5jb2RlZCA9IFtDb252ZXJ0XTo6VG9CYXNlNjRTdHJpbmcoW0lPLkZpbGVdOjpSZWFkQWxsQnl0ZXMoJGFzc2VtYmx5KSxbQmFzZTY0Rm9ybWF0dGluZ09wdGlvbnNdOjpJbnNlcnRMaW5lQnJlYWtzKS5SZXBsYWNlKCJgcmBuIiwiYG4iKSsiYG4iCiAgICBbSU8uRmlsZV06OldyaXRlQWxsVGV4dCgoSm9pbi1QYXRoICRQU1NjcmlwdFJvb3QgJ2NhcnJpZXItaW50ZXJvcC5iNjQnKSwkZW5jb2RlZCxbVGV4dC5VVEY4RW5jb2RpbmddOjpuZXcoJGZhbHNlKSkKfSBmaW5hbGx5IHsKICAgICMgT25seSB0aGUgb25lIGNvbXBpbGVyIG91dHB1dCBhbmQgaXRzIGZyZXNobHkgY3JlYXRlZCBwcml2YXRlIGRpcmVjdG9yeS4KICAgIGlmIChbSU8uRmlsZV06OkV4aXN0cygkYXNzZW1ibHkpKSB7IFtJTy5GaWxlXTo6RGVsZXRlKCRhc3NlbWJseSkgfQogICAgW0lPLkRpcmVjdG9yeV06OkRlbGV0ZSgkdGVtcG9yYXJ5KQp9Cg=='}\n\
+        expected={'carrier-interop.cs': 'eb79927d40c620fcc99132683c50ea6a72b79ef49fb6ff4778cb2b27850e7d74',\
+        \ 'compile-interop.ps1': '8da0ebd12ac0b588c88468e754d2df85256aaff11db63c87a4bb3b147393528b'}\n\
+        for name,encoded in inputs.items():\n raw=base64.b64decode(encoded);assert\
+        \ hashlib.sha256(raw).hexdigest()==expected[name];(r/name).write_bytes(raw)\n\
+        (r/'inputs.json').write_text(json.dumps(expected,indent=2)+'\\n')\n"
+    - name: Compile and load fixed interop assembly
+      shell: powershell
+      run: '$ErrorActionPreference=''Stop''
+
+        Set-StrictMode -Version Latest
+
+        $root=Join-Path $env:RUNNER_TEMP ''interop-build''
+
+        $sdks=@(& dotnet --list-sdks)
+
+        if($LASTEXITCODE -ne 0){throw ''SDK enumeration failed''}
+
+        $last=$sdks[-1]
+
+        if($last -notmatch ''^([^ ]+) \[(.+)\]$''){throw ''SDK location absent''}
+
+        $compiler=Join-Path (Join-Path $Matches[2] $Matches[1]) ''Roslyn/bincore/csc.dll''
+
+        & (Join-Path $root ''compile-interop.ps1'') -Compiler $compiler
+
+        $first=(Get-FileHash (Join-Path $root ''carrier-interop.b64'') -Algorithm
+        SHA256).Hash
+
+        & (Join-Path $root ''compile-interop.ps1'') -Compiler $compiler
+
+        if($LASTEXITCODE -ne 0){throw ''Assembly generation failed''}
+
+        if((Get-FileHash (Join-Path $root ''carrier-interop.b64'') -Algorithm SHA256).Hash
+        -cne $first){throw ''Deterministic assembly reproduction differs''}
+
+        $encoded=[IO.File]::ReadAllText((Join-Path $root ''carrier-interop.b64''))
+
+        $bytes=[Convert]::FromBase64String($encoded)
+
+        if($bytes[0] -ne 77 -or $bytes[1] -ne 90){throw ''Assembly header invalid''}
+
+        $assembly=[Reflection.Assembly]::Load($bytes)
+
+        $type=$assembly.GetType(''SeUninstallObjects'',$true)
+
+        foreach($name in @(''Identity'',''Digest'',''Unlink'',''Flush'',''Absent'',''SameName'',''WaitForSingleObject'',''GetTickCount64'')){if($null
+        -eq $type.GetMethod($name)){throw "Missing public native method: $name"}}
+
+        if([SeUninstallObjects]::GetTickCount64() -le 0){throw ''Native interop call
+        failed''}
+
+        $receipt=@{schema=''se.uninstall-interop-build/v1'';source=(Get-FileHash (Join-Path
+        $root ''carrier-interop.cs'') -Algorithm SHA256).Hash.ToLowerInvariant();generator=(Get-FileHash
+        (Join-Path $root ''compile-interop.ps1'') -Algorithm SHA256).Hash.ToLowerInvariant();assembly_b64=(Get-FileHash
+        (Join-Path $root ''carrier-interop.b64'') -Algorithm SHA256).Hash.ToLowerInvariant();compiler=(Get-FileHash
+        $compiler -Algorithm SHA256).Hash.ToLowerInvariant();sdk=$last;framework=[Runtime.InteropServices.RuntimeEnvironment]::GetSystemVersion();assembly_bytes=$bytes.Length;native_interop_loaded=$true}
+
+        $receipt|ConvertTo-Json -Depth 8|Set-Content -LiteralPath (Join-Path $root
+        ''receipt.json'') -Encoding utf8
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: uninstall-interop-assembly
+        path: ${{ runner.temp }}/interop-build/
+        if-no-files-found: error
+        retention-days: 7
