@@ -47,6 +47,28 @@ def download(specification, output):
             require(count <= 512 * 1024**2, 'Release download exceeds its finite bound')
             target.write(data)
     require(digest(path) == expected, 'Downloaded release archive identity differs')
+    member = specification.get('archive_member')
+    member_digest = None
+    if member is not None:
+        require(isinstance(member, dict) and set(member) == {'name', 'sha256'}
+                and isinstance(member['name'], str) and len(member['name']) <= 256
+                and re.fullmatch(r'[A-Za-z0-9_.+-]+\.zip', member['name'])
+                and isinstance(member['sha256'], str)
+                and re.fullmatch('[0-9a-f]{64}', member['sha256']),
+                'A release artifact member requires an exact ZIP name and digest')
+        nested = output / 'package.zip'
+        with zipfile.ZipFile(path) as archive:
+            entries = [entry for entry in archive.infolist() if entry.filename == member['name']]
+            require(len(entries) == 1 and entries[0].file_size <= 512 * 1024**2
+                    and not stat.S_ISLNK(entries[0].external_attr >> 16),
+                    'Release artifact member is missing, duplicated or oversized')
+            with archive.open(entries[0]) as source, nested.open('xb') as target:
+                while data := source.read(1024**2):
+                    require(time.monotonic() < until, 'Release artifact extraction exceeded its time bound')
+                    target.write(data)
+        member_digest = digest(nested)
+        require(member_digest == member['sha256'], 'Release artifact member identity differs')
+        path = nested
     extracted = output / 'release'
     extracted.mkdir()
     inventory = set()
@@ -81,4 +103,5 @@ def download(specification, output):
     actual = {str(p.relative_to(package)).replace('\\', '/') for p in package.rglob('*') if p.is_file()}
     require(actual == set(checksums) | {'SHA256SUMS'}, 'Release has missing or unlisted members')
     return package, dict(url=specification['url'], archive_sha256=expected,
+                         archive_member_sha256=member_digest,
                          source_commit=build['source_commit'], build_sha256=digest(package / 'build.json'))

@@ -34,6 +34,9 @@ Use a real standalone release archive containing `build.json`, `manifest.json`,
 complete member inventory, native target and exact source identity. A private
 download may name `authorization_environment`; its value is used only by the
 downloader and never inherited by providers.
+For an unpublished build artifact containing the standalone ZIP, add
+`archive_member: {"name": "EXACT_PACKAGE.zip", "sha256": "PACKAGE_DIGEST"}`.
+The outer artifact and selected package are both authenticated before extraction.
 
 Before each invocation a separate native credential provisioner must mint fresh
 provider access credentials. Pipe its JSON directly into
