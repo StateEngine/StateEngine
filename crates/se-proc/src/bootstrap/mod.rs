@@ -115,6 +115,7 @@ pub(crate) struct Parent {
     deadline: Instant,
     identity: Option<ProcessIdentity>,
     detachment: RuntimeDetachment,
+    endpoint_notified: bool,
     commit_sent: bool,
     released: bool,
     diagnostics: diagnostics::Capture,
@@ -132,6 +133,28 @@ impl RuntimeChild {
     }
     pub fn identity(&self) -> Option<&ProcessIdentity> {
         self.state.identity.as_ref()
+    }
+    /// Wait for the child's publication wake-up on its retained private channel.
+    /// This proves no endpoint or owner: the caller must still read the protected
+    /// endpoint and authenticate its native peer before committing ownership.
+    pub fn wait_endpoint_publication(&mut self) -> ProcResult<()> {
+        check(self.state.deadline)?;
+        if !self.state.endpoint_notified {
+            let mut notification = [0];
+            os::read(
+                &mut self.state.events,
+                &mut notification,
+                self.state.deadline,
+            )?;
+            if notification != *b"E" {
+                return Err(input(
+                    "runtime endpoint notification",
+                    "unexpected startup event",
+                ));
+            }
+            self.state.endpoint_notified = true;
+        }
+        check(self.state.deadline)
     }
 }
 /// This guard belongs only to the admitted private executable entry. Dropping
@@ -260,6 +283,10 @@ impl RuntimeBootstrap {
         result
     }
     fn receive_commit(&mut self, host: HostInstanceId) -> ProcResult<RuntimeAdmission> {
+        // The host calls only after protected listener publication. This byte
+        // wakes the parent; the subsequent native endpoint/owner proof and the
+        // nonce-bound commit remain the only path to admission.
+        os::write(&mut self.events, b"E", self.deadline)?;
         let mut command = [0; 33];
         os::read(&mut self.authorization, &mut command, self.deadline)?;
         if command[0] != b'C' || command[1..17] != self.frame.nonce || command[17..] != host.0 {
@@ -361,6 +388,7 @@ impl NativeProcessApi for NativeProcessRuntime {
                 deadline: spec.deadline,
                 identity: None,
                 detachment,
+                endpoint_notified: false,
                 commit_sent: false,
                 released: false,
                 diagnostics,
@@ -430,6 +458,7 @@ impl NativeProcessApi for NativeProcessRuntime {
     ) -> Result<RuntimeReady, Box<RuntimeCommitFailure>> {
         let result = (|| {
             check(child.state.deadline)?;
+            child.wait_endpoint_publication()?;
             let identity = child
                 .state
                 .identity

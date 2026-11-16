@@ -154,7 +154,7 @@ fn start_recorded(
     let (files, spec, instance, generation) = setup;
     let nonce = spec.startup_nonce;
     log.note("Waiting for the detached runtime's authenticated native startup handshake");
-    let launched = NativeProcessRuntime::spawn_runtime(spec).map_err(|failure| {
+    let mut launched = NativeProcessRuntime::spawn_runtime(spec).map_err(|failure| {
         startup_failure(
             native_startup_error(failure.error),
             failure.remaining,
@@ -165,7 +165,12 @@ fn start_recorded(
         "Waiting for runtime owner PID {} to publish endpoint.json",
         launched.identity.pid.0
     ));
-    let endpoint = match wait_endpoint(&files, &launched.identity, generation, bound) {
+    let published = launched
+        .child
+        .wait_endpoint_publication()
+        .map_err(native_startup_error)
+        .and_then(|()| read_published_endpoint(&files, &launched.identity, generation, bound));
+    let endpoint = match published {
         Ok(endpoint) => endpoint,
         Err(error) => {
             return Err(startup_failure(error, Some(launched.child), bound));
@@ -324,63 +329,44 @@ fn startup_ipc_error(source: &str, error: se_proc::native_ipc::IpcNativeError) -
         se_core::scope::unreadable(source, &error.to_string()).with_cause(error)
     }
 }
-fn wait_endpoint(
+fn read_published_endpoint(
     files: &se_proc::NativeStateFiles,
     owner: &se_proc::ProcessIdentity,
     generation: HostGeneration,
     bound: &se_host::client::lease::Deadline,
 ) -> Result<se_host::EndpointRecord> {
-    let mut different_owner = false;
-    loop {
-        let remaining = bound.remaining().map_err(|error| {
-            if different_owner {
-                se_core::scope::unreadable("runtime endpoint rendezvous",
-                    "deadline expired waiting for the newly pinned runtime owner; a different-owner endpoint was observed and the exact new-owner publication never appeared").with_cause(error)
-            } else { error }
+    bound.remaining()?;
+    let mut file = files
+        .readback(&files.root().join("endpoint.json"))
+        .map_err(file_error)?
+        .ok_or_else(|| {
+            se_core::scope::unreadable(
+                "runtime endpoint rendezvous",
+                "protected endpoint is absent after the publication notification",
+            )
         })?;
-        if let Some(mut file) = files
-            .readback(&files.root().join("endpoint.json"))
-            .map_err(file_error)?
-        {
-            let mut bytes = Vec::new();
-            (&mut file)
-                .take(se_host::client::wire::MAX_ENDPOINT_BYTES as u64 + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|error| {
-                    se_core::scope::unreadable("runtime endpoint readback", &error.to_string())
-                        .with_cause(error)
-                })?;
-            let endpoint = se_host::client::endpoint::decode_endpoint(&bytes)?;
-            let fields = endpoint.epoch.owner.fields();
-            if fields.machine != owner.machine
-                || fields.pid.get() != owner.pid.0
-                || fields.executable.to_local()? != owner.image
-                || endpoint.epoch.generation != generation
-            {
-                different_owner = true;
-            } else {
-                return Ok(endpoint);
-            }
-        }
-        // Finite startup rendezvous only; ordinary host work is evented.
-        // A native exit refuses now rather than spending the full bound.
-        match NativeProcessRuntime::read_process(owner.machine.clone(), owner.pid)
-            .map_err(native_error)?
-        {
-            se_proc::ProcessRead::Present(value)
-                if value.identity == *owner
-                    && value.state != se_proc::NativeState::ExitedAwaitingReap => {}
-            observed => {
-                return Err(se_core::scope::unreadable(
-                    "runtime child before endpoint publication",
-                    &format!(
-                        "expected live exact child {owner:?}; native observation: {observed:?}"
-                    ),
-                ));
-            }
-        }
-        std::thread::park_timeout(remaining.min(Duration::from_millis(10)));
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(se_host::client::wire::MAX_ENDPOINT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            se_core::scope::unreadable("runtime endpoint readback", &error.to_string())
+                .with_cause(error)
+        })?;
+    let endpoint = se_host::client::endpoint::decode_endpoint(&bytes)?;
+    let fields = endpoint.epoch.owner.fields();
+    if fields.machine != owner.machine
+        || fields.pid.get() != owner.pid.0
+        || fields.executable.to_local()? != owner.image
+        || endpoint.epoch.generation != generation
+    {
+        return Err(se_core::scope::unreadable(
+            "runtime endpoint rendezvous",
+            "published endpoint differs from the newly pinned runtime owner or generation",
+        ));
     }
+    bound.remaining()?;
+    Ok(endpoint)
 }
 fn file_error(error: se_proc::StateFileError) -> SeError {
     se_core::scope::unreadable("protected runtime rendezvous", &error.to_string()).with_cause(error)
