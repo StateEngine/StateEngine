@@ -247,25 +247,33 @@ async fn payload(
         }
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
-async fn run(
-    transport: Arc<Discord>,
+/// How many connections in a row may end without accepting a single dispatch
+/// before the bot is called unreachable. One is an ordinary provider-side
+/// reconnect; a run of them means resuming is not working, and the caller should
+/// see the outage instead of a loop that never ends. Only an accepted dispatch
+/// resets the count, so the loop is bounded however the provider misbehaves.
+const MAX_SILENT_RESUMES: u8 = 3;
+
+/// A live gateway socket plus the heartbeat contract the provider gave it.
+struct Link {
+    socket: Socket,
+    interval: Duration,
+    next_heartbeat: Instant,
+    waiting_ack: bool,
+    /// Highest sequence observed on this connection, echoed in each heartbeat.
+    last_seen: Option<u64>,
+}
+/// Open one gateway connection and send its Identify or Resume.
+///
+/// `handed` is the last sequence whose dispatch reached the queue, so a Resume
+/// never starts past a message the host has not been given.
+async fn connect(
+    transport: &Discord,
     token: &se_types::Secret,
-    mut resume: Option<Resume>,
-    rows: &mpsc::Sender<ChannelResult<Dispatch>>,
-) -> ChannelResult<()> {
-    if resume
-        .as_ref()
-        .map(|r| transport.invalid(&r.session))
-        .transpose()?
-        .unwrap_or(false)
-    {
-        resume = None;
-    }
-    let gateway = if let Some(resume) = &resume {
+    resume: Option<&Resume>,
+    handed: Option<u64>,
+) -> ChannelResult<Link> {
+    let gateway = if let Some(resume) = resume {
         resume.gateway.clone()
     } else {
         // One active receiver per bot; a new Identify follows the same token's
@@ -291,10 +299,10 @@ async fn run(
             .ok_or(Error::ProviderProtocol)?
             .to_owned()
     };
-    let mut socket = socket(&transport, &gateway).await?;
+    let mut socket = socket(transport, &gateway).await?;
     let hello = tokio::time::timeout(
         Duration::from_secs(10),
-        payload(&mut socket, &transport, resume.as_ref()),
+        payload(&mut socket, transport, resume),
     )
     .await
     .map_err(|_| Error::ProviderUnreachable)??;
@@ -309,34 +317,81 @@ async fn run(
         .filter(|n| (100..=120_000).contains(n))
         .ok_or(Error::ProviderProtocol)?;
     let jitter = se_proc::random_secret().map_err(|_| Error::ReceiverNotRunning)?;
-    let mut next_heartbeat =
+    let next_heartbeat =
         Instant::now() + Duration::from_millis(u64::from(jitter.expose()[0]) * interval / 256);
-    let mut waiting_ack = false;
     let token_text = std::str::from_utf8(token.expose()).map_err(|_| Error::InvalidToken)?;
-    let auth = match &resume {
-        Some(r) => json!({"op":6,"d":{"token":token_text,"session_id":r.session,"seq":r.seq}}),
+    let auth = match resume {
+        Some(r) => json!({"op":6,"d":{"token":token_text,"session_id":r.session,
+                                      "seq":handed.unwrap_or(r.seq)}}),
         None => {
             json!({"op":2,"d":{"token":token_text,"intents":4096,"properties":{"os":std::env::consts::OS,"browser":"StateEngine","device":"StateEngine"}}})
         }
     };
     send(&mut socket, auth).await?;
-    let mut last_seen = resume.as_ref().map(|r| r.seq);
+    Ok(Link {
+        socket,
+        interval: Duration::from_millis(interval),
+        next_heartbeat,
+        waiting_ack: false,
+        last_seen: resume.map(|r| handed.unwrap_or(r.seq)),
+    })
+}
+
+/// Consume one connection until the provider ends it.
+///
+/// `Ok(())` means the connection ended in a way a Resume can repair: an
+/// unacknowledged heartbeat (the provider's zombied-connection condition) or a
+/// dropped socket. Every other end returns the error the caller already mapped,
+/// so no refusal changes meaning here. A queue that cannot take the next
+/// dispatch stays terminal, because only the caller can advance its cursor.
+/// `silent` counts consecutive connections that ended without accepting a single
+/// dispatch, so the caller can tell a working reconnect from an outage.
+async fn consume(
+    transport: &Discord,
+    resume: &mut Option<Resume>,
+    handed: &mut Option<u64>,
+    silent: &mut u8,
+    link: &mut Link,
+    rows: &mpsc::Sender<ChannelResult<Dispatch>>,
+) -> ChannelResult<()> {
     loop {
         let value = tokio::select! {
-            value=payload(&mut socket, &transport, resume.as_ref()) => value?,
-            _=tokio::time::sleep_until(next_heartbeat) => {
-                if waiting_ack { return Err(Error::ProviderUnreachable); }
-                send(&mut socket, json!({"op":1,"d":last_seen})).await?;
-                waiting_ack=true;
-                next_heartbeat=Instant::now()+Duration::from_millis(interval);
+            value=payload(&mut link.socket, transport, resume.as_ref()) => match value {
+                Ok(value) => value,
+                // The socket went away under us. With a session there is nothing
+                // to lose: the resume point is the last sequence the queue
+                // accepted, so reopening it either delivers what was missed or
+                // proves the bot is gone. Without one, only a fresh Identify can
+                // recover, and the caller owns that decision.
+                Err(Error::ProviderUnreachable) if resume.is_some() => return Ok(()),
+                Err(error) => return Err(error),
+            },
+            _=tokio::time::sleep_until(link.next_heartbeat) => {
+                // A whole interval with the previous heartbeat still unacknowledged
+                // is the provider's zombied-connection condition: it has stopped
+                // counting this socket. Close it and resume from the last handed
+                // sequence, so a queued dispatch is neither re-sent nor skipped and
+                // a slow provider costs a reconnect instead of an outage.
+                if link.waiting_ack {
+                    // Resuming needs a session; before READY there is none, and a
+                    // fresh Identify is the caller's decision rather than this
+                    // connection's.
+                    return if resume.is_some() { Ok(()) } else { Err(Error::ProviderUnreachable) };
+                }
+                send(&mut link.socket, json!({"op":1,"d":link.last_seen})).await?;
+                link.waiting_ack=true;
+                link.next_heartbeat=Instant::now()+link.interval;
                 continue;
             }
         };
         match value["op"].as_u64() {
-            Some(11) => waiting_ack = false,
+            // An acknowledged heartbeat keeps this socket alive but is not
+            // progress: a provider that acks once and then forgets the socket
+            // would otherwise reset the count on every attempt and loop forever.
+            Some(11) => link.waiting_ack = false,
             Some(1) => {
-                send(&mut socket, json!({"op":1,"d":last_seen})).await?;
-                waiting_ack = true;
+                send(&mut link.socket, json!({"op":1,"d":link.last_seen})).await?;
+                link.waiting_ack = true;
             }
             Some(7) => return Err(Error::ProviderUnreachable),
             Some(9) => {
@@ -351,13 +406,15 @@ async fn run(
             Some(0) => {
                 let seq = value["s"]
                     .as_u64()
-                    .filter(|s| *s <= i64::MAX as u64 && last_seen.is_none_or(|last| *s > last))
+                    .filter(|s| {
+                        *s <= i64::MAX as u64 && link.last_seen.is_none_or(|last| *s > last)
+                    })
                     .ok_or(Error::ProviderProtocol)?;
-                last_seen = Some(seq);
+                link.last_seen = Some(seq);
                 let kind = value["t"].as_str().ok_or(Error::ProviderProtocol)?;
                 let data = &value["d"];
                 if kind == "READY" {
-                    resume = Some(Resume {
+                    *resume = Some(Resume {
                         session: data["session_id"]
                             .as_str()
                             .ok_or(Error::ProviderProtocol)?
@@ -372,7 +429,8 @@ async fn run(
                 let checkpoint = resume.as_mut().ok_or(Error::ProviderProtocol)?;
                 checkpoint.seq = seq;
                 let cursor = checkpoint.cursor()?;
-                let (update, message) = if kind == "MESSAGE_CREATE" {
+                let delivered = kind == "MESSAGE_CREATE";
+                let (update, message) = if delivered {
                     (id(&data["id"])?, Some(data.clone()))
                 } else {
                     use sha2::{Digest, Sha256};
@@ -389,14 +447,67 @@ async fn run(
                 };
                 // Full queue means reconnect from the last durable checkpoint;
                 // never consume the stream while silently discarding messages.
-                rows.try_send(Ok(Dispatch {
-                    update,
-                    cursor,
-                    message,
-                }))
-                .map_err(|_| Error::ProviderUnreachable)?;
+                if rows
+                    .try_send(Ok(Dispatch {
+                        update,
+                        cursor,
+                        message,
+                    }))
+                    .is_err()
+                {
+                    return Err(Error::ProviderUnreachable);
+                }
+                // Only a dispatch the queue accepted may be the resume point.
+                *handed = Some(seq);
+                // A delivered message is progress. A READY or RESUMED checkpoint
+                // is not: a provider that resumes and immediately forgets the
+                // socket again would otherwise reset the count on every attempt
+                // and loop forever.
+                if delivered {
+                    *silent = 0;
+                }
             }
             _ => return Err(Error::ProviderProtocol),
+        }
+    }
+}
+
+async fn run(
+    transport: Arc<Discord>,
+    token: &se_types::Secret,
+    mut resume: Option<Resume>,
+    rows: &mpsc::Sender<ChannelResult<Dispatch>>,
+) -> ChannelResult<()> {
+    if resume
+        .as_ref()
+        .map(|r| transport.invalid(&r.session))
+        .transpose()?
+        .unwrap_or(false)
+    {
+        resume = None;
+    }
+    // The last sequence whose dispatch actually reached the queue. A Resume may
+    // only start here: a later sequence was seen on the wire but never handed on,
+    // and starting past it would drop a message the host has not received.
+    let mut handed = resume.as_ref().map(|r| r.seq);
+    let mut silent = 0u8;
+    loop {
+        let mut link = connect(&transport, token, resume.as_ref(), handed).await?;
+        consume(
+            &transport,
+            &mut resume,
+            &mut handed,
+            &mut silent,
+            &mut link,
+            rows,
+        )
+        .await?;
+        // A zombied or dropped connection is the provider forgetting this socket,
+        // not the bot going dark. Resume from the checkpoint; only a run of them
+        // with no progress in between is an outage worth reporting.
+        silent = silent.saturating_add(1);
+        if silent > MAX_SILENT_RESUMES {
+            return Err(Error::ProviderUnreachable);
         }
     }
 }

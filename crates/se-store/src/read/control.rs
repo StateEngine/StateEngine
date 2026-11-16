@@ -7,6 +7,41 @@ const LIVE_LIMIT: usize = 16;
 /// More recorded moves than this refuses instead of truncating.
 const MOVED_LIMIT: usize = 64;
 impl SqliteSnapshot {
+    pub(super) fn read_control_session(
+        &self,
+        target: AgentId,
+        session: SessionId,
+    ) -> StoreResult<Read<ProjectionRecord>> {
+        // Use the same native/remote grant and creator checks as ordinary
+        // launch selection before reading any requested historical session.
+        match self.read_control_target(target.clone())? {
+            Read::Present { .. } => (),
+            Read::Absent { checked } => return Ok(Read::Absent { checked }),
+            Read::Unknown { what } => return Ok(Read::Unknown { what }),
+            Read::Unreadable {
+                source,
+                reason,
+                error,
+            } => {
+                return Ok(Read::Unreadable {
+                    source,
+                    reason,
+                    error,
+                });
+            }
+        }
+        let project = self.project_bytes()?;
+        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let agent = key(&self.db, "agent", target.as_str(), &scope, false)?;
+        let session = key(&self.db, "session", session.as_str(), &scope, false)?;
+        self.head_with(
+            "sessions",
+            "project_id=? AND agent_id=? AND session_id=?",
+            &[&project, &agent, &session],
+            Some("first_seq"),
+            &|seq| self.control_event(seq, &target),
+        )
+    }
     pub(super) fn read_control_target(&self, target: AgentId) -> StoreResult<Read<ControlTarget>> {
         if self.remote_launch_grant.is_some() {
             self.require_remote_target(&target)?;

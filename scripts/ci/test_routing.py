@@ -311,6 +311,50 @@ class FinalStatus(unittest.TestCase):
                 jobs["macos-test"] = {"result": status}
                 self.assert_macos_gate(jobs, status == "skipped")
 
+    def test_remote_test_is_optional_but_success_is_accepted_on_every_route(self):
+        for route, jobs in self.macos_routes().items():
+            with self.subTest(route=route):
+                self.assert_macos_gate(jobs, True)
+                jobs["remote-test"] = {"result": "success"}
+                self.assert_macos_gate(jobs, True)
+
+    def test_remote_test_non_success_refuses_on_every_route(self):
+        for route, jobs in self.macos_routes().items():
+            for status in ("failure", "cancelled", "skipped", "", None, "unknown"):
+                with self.subTest(route=route, status=status):
+                    jobs["remote-test"] = {"result": status}
+                    self.assert_macos_gate(jobs, False)
+
+    def test_remote_test_rust_exemption_requires_skipped(self):
+        for status in ("skipped", "success", "failure", "cancelled", "", None):
+            with self.subTest(status=status):
+                jobs = self.jobs()
+                jobs["changes"]["outputs"]["rust"] = "false"
+                for name in set(jobs) - {"changes"}:
+                    jobs[name]["result"] = "skipped"
+                self.assert_macos_gate(jobs, True)
+                jobs["remote-test"] = {"result": status}
+                self.assert_macos_gate(jobs, status == "skipped")
+
+    def test_remote_test_does_not_replace_required_jobs_or_allow_unknown_jobs(self):
+        for missing in self.jobs():
+            with self.subTest(missing=missing):
+                jobs = self.jobs()
+                del jobs[missing]
+                jobs["remote-test"] = {"result": "success"}
+                self.assert_macos_gate(jobs, False)
+        jobs = self.jobs()
+        jobs["remote-tests"] = {"result": "success"}
+        self.assert_macos_gate(jobs, False)
+
+    def test_remote_test_success_does_not_hide_an_existing_gate_failure(self):
+        for name in ("changes", "fmt", "clippy", "windows-clippy", "archive", "test", "macos-test"):
+            with self.subTest(name=name):
+                jobs = self.jobs()
+                jobs[name]["result"] = "failure"
+                jobs["remote-test"] = {"result": "success"}
+                self.assert_macos_gate(jobs, False)
+
     def test_failed_cancelled_and_unexplained_skips_refuse(self):
         for key in {"changes", "fmt", "clippy", "windows-clippy", "archive", "test", "macos-test"}:
             for status in ["failure", "cancelled", "skipped"]:

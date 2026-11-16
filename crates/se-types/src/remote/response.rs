@@ -58,6 +58,8 @@ pub struct RemoteLaunchStarted {
     pub target: RemoteTarget,
     pub session: SessionId,
     pub lifecycle: LifecycleId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<crate::LaunchDetails>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
