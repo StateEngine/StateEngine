@@ -247,7 +247,7 @@ fn set_hold(path: &std::path::Path, held: bool, reason: Option<&str>) -> Result<
 )]
 pub(crate) async fn respond(
     router: &crate::HostedRouter,
-    request: hyper::Request<hyper::body::Incoming>,
+    request: hyper::Request<&mut crate::http::server::RequestBody>,
     active: Arc<Mutex<Option<tokio::sync::OwnedSemaphorePermit>>>,
 ) -> hyper::Response<http_body_util::Full<hyper::body::Bytes>> {
     use http_body_util::BodyExt;

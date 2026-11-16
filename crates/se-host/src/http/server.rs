@@ -38,6 +38,7 @@ pub(crate) const ACTIVE_CONNECTIONS: usize = 64;
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 /// hyper's smallest legal read buffer is 8 KiB; 16 KiB bounds the header block.
 const MAX_HEADER_BYTES: usize = 16 * 1024;
+pub(crate) type RequestBody = Limited<Incoming>;
 
 pub struct HttpListener {
     listener: TcpListener,
@@ -122,10 +123,20 @@ pub(crate) async fn connection(
         .ip();
     let permit = Arc::new(Mutex::new(Some(permit)));
     let active = Arc::clone(&permit);
-    let service = hyper::service::service_fn(move |request| {
+    let service = hyper::service::service_fn(move |request: Request<Incoming>| {
         let router = router.clone();
         let active = Arc::clone(&active);
-        async move { Ok::<_, Infallible>(respond(&router, request, port, peer, active).await) }
+        async move {
+            let until = tokio::time::Instant::now() + CALL_TIMEOUT;
+            let (head, body) = request.into_parts();
+            let mut body = Limited::new(body, MAX_BODY_BYTES);
+            let request = Request::from_parts(head, &mut body);
+            let response = respond(&router, request, port, peer, active).await;
+            // Every route returns custody of the same bounded body here,
+            // including early admission/auth refusals and body-read errors.
+            drain_request_body(&mut body, until).await;
+            Ok::<_, Infallible>(response)
+        }
     });
     let mut builder = hyper::server::conn::http1::Builder::new();
     builder
@@ -173,7 +184,7 @@ pub(crate) async fn connection(
 )]
 async fn respond(
     router: &HostedRouter,
-    request: Request<Incoming>,
+    request: Request<&mut RequestBody>,
     port: u16,
     peer: IpAddr,
     active: Arc<Mutex<Option<OwnedSemaphorePermit>>>,
@@ -281,7 +292,7 @@ async fn respond(
             };
             // Count actual bytes whatever Content-Length claimed, within the
             // same request clock as execution.
-            let body = Limited::new(request.into_body(), MAX_BODY_BYTES).collect();
+            let body = request.into_body().collect();
             let body = match tokio::time::timeout(CALL_TIMEOUT, body).await {
                 Ok(Ok(body)) => body.to_bytes(),
                 Ok(Err(_)) => {
@@ -306,6 +317,20 @@ async fn respond(
             }
         }
     }
+}
+
+// Closing with unread bytes can reset the connection and discard its response.
+// Reading and discarding share one byte cap and clock across every route; a
+// failed/unfinished discard preserves the original response, never success.
+async fn drain_request_body(body: &mut RequestBody, until: tokio::time::Instant) {
+    let drain = async {
+        while let Some(frame) = body.frame().await {
+            if frame.is_err() {
+                break;
+            }
+        }
+    };
+    let _ = tokio::time::timeout_at(until, drain).await;
 }
 
 fn refused(refusal: &Refusal) -> Response<Full<Bytes>> {
