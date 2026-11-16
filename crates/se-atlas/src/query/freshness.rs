@@ -6,8 +6,16 @@ pub(super) use output::Verified;
 
 pub(super) fn finish<'a, 'r, 'c, 'x, T: Verified + Serialize>(
     reader: &'a QueryReader<'r, 'c, 'x>,
-    mut answer: Answer<Read<T>>,
+    answer: Answer<Read<T>>,
     budget: QueryBudget,
+    end: Instant,
+) -> AtlasResult<Answer<Read<T>>> {
+    check_output(verify(reader, answer, end)?, budget)
+}
+
+pub(super) fn verify<T: Verified>(
+    reader: &QueryReader<'_, '_, '_>,
+    mut answer: Answer<Read<T>>,
     end: Instant,
 ) -> AtlasResult<Answer<Read<T>>> {
     let mut verifier = Verifier {
@@ -29,7 +37,7 @@ pub(super) fn finish<'a, 'r, 'c, 'x, T: Verified + Serialize>(
             answer.index.coverage.reasons.push(reason);
         }
     }
-    check_output(answer, budget)
+    Ok(answer)
 }
 
 pub(super) struct Verifier<'a, 'r, 'c, 'x> {

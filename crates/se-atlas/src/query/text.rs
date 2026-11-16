@@ -35,7 +35,7 @@ impl QueryReader<'_, '_, '_> {
         let answer = self.cache.read(end, |sql| {
             Self::text_page(&identity, &env, query, mode, initial, work_end, digest, sql)
         })?;
-        super::freshness::finish(self, answer, query.budget, end)
+        answer.finish(self, query, end)
     }
 
     #[expect(
@@ -56,7 +56,7 @@ impl QueryReader<'_, '_, '_> {
         work_end: Instant,
         digest: [u8; 32],
         sql: &SqlView<'_>,
-    ) -> AtlasResult<Answer<Read<SearchResults>>> {
+    ) -> AtlasResult<super::search_page::SearchPage> {
         let source = *env.source;
         let mut snapshot = snapshot(identity, env, sql)?;
         let previous = query
@@ -321,6 +321,7 @@ impl QueryReader<'_, '_, '_> {
                     precomputed_last: last,
                     lexical: metadata.as_ref().map_or(0.0, |(_, _, lexical, _)| *lexical),
                     related: metadata.as_ref().is_some_and(|(_, _, _, related)| *related),
+                    downweighted: false,
                 };
                 let base_key = super::find::key(&candidate, query.order);
                 let hits = if let Some((mut code, _, _, _)) = metadata {
@@ -411,12 +412,12 @@ impl QueryReader<'_, '_, '_> {
             } else {
                 query.budget.max_bytes
             } as usize;
-            if bytes + hit.bytes + size(&snapshot.index)? + 1800 > max && hit.value.body.is_some() {
+            if bytes + hit.bytes > max && hit.value.body.is_some() {
                 hit.value.body = None;
                 bodies_omitted += 1;
                 hit.bytes = size(&hit.value)?;
             }
-            if bytes + hit.bytes + size(&snapshot.index)? + 1800 > max {
+            if !items.is_empty() && bytes + hit.bytes > max {
                 more_hits = true;
                 break;
             }
@@ -424,15 +425,10 @@ impl QueryReader<'_, '_, '_> {
             keys.push(hit.key);
             items.push(hit.value);
         }
-        // The window carries encoded continuations in multiple fields.
-        // Fit the actual answer and move a whole hit back behind its cursor
-        // rather than trusting a fixed envelope estimate.
-        loop {
-            let next = if more_hits {
-                let last = keys
-                    .last()
-                    .ok_or_else(|| capacity("Atlas text response bytes", 1, 0))?;
-                Some(
+        let continuation = keys
+            .last()
+            .map(|last| {
+                Ok::<_, se_types::SeError>(
                     PositionCursor::new(
                         &snapshot.index,
                         "text",
@@ -457,118 +453,103 @@ impl QueryReader<'_, '_, '_> {
                             file: file.0,
                             has_more: more_window,
                         })
-                    }))
-                    .encode()?,
+                    })),
                 )
-            } else if more_window {
-                let (time, file) =
-                    window_end.ok_or_else(|| capacity("Atlas text scan deadline", 1, 0))?;
-                Some(
-                    PositionCursor::new(
-                        &snapshot.index,
-                        "text",
-                        digest,
-                        Key {
-                            integers: vec![
-                                1,
-                                super::linked::time_key(time),
-                                0,
-                                0,
-                                0,
-                                super::modes::key(mode),
-                            ],
-                            bytes: file.0.to_vec(),
-                        },
-                        None,
-                    )?
-                    .with_ranking_time(ranking.now_unix_ms)
+            })
+            .transpose()?;
+        let next = if more_hits {
+            Some(
+                continuation
+                    .as_ref()
+                    .ok_or_else(|| capacity("Atlas text response bytes", 1, 0))?
                     .encode()?,
-                )
-            } else {
-                None
-            };
-            if more_window {
-                let reason = if matching == MAX_MATCHING_FILES || pinned.is_some() {
-                    CoverageReason::ResultLimit
-                } else if matched_bytes > 2 * 1024 * 1024 || staging_limited {
-                    CoverageReason::ByteLimit
-                } else {
-                    CoverageReason::TimeLimit
-                };
-                if !snapshot.index.coverage.reasons.contains(&reason) {
-                    snapshot.index.coverage.reasons.push(reason);
-                }
-            }
-            let output = SearchResults {
-                mode,
-                fallback_from: (mode != initial).then_some(initial),
-                page: page(
-                    &snapshot,
-                    items,
-                    query.budget,
-                    next,
-                    range_incomplete || advanced || !snapshot.negative_complete(),
-                    bytes,
-                    query.next.as_ref(),
-                )?,
-                truncated_candidates: if more_window || metadata_pool.truncated {
-                    None
-                } else {
-                    Some(0)
-                },
-                full: query.full,
-                text: Some(stats.clone()),
-                bodies_omitted,
-            };
-            let answer = snapshot.answer(Read::Present { value: output }, advanced);
-            let maximum = if query.full {
-                query.budget.max_bytes.min(12 * 1024)
-            } else {
-                query.budget.max_bytes
-            };
-            let compact_fits = env.compact.is_none_or(|(bytes, explain)| {
-                crate::render::search(&answer, bytes, explain).is_ok()
-            });
-            if size(&answer)? <= maximum as usize && compact_fits {
-                if let Read::Present { value } = &answer.data {
-                    value.validate()?;
-                }
-                return check_output(
-                    answer,
-                    QueryBudget {
-                        max_bytes: maximum,
-                        ..query.budget
+            )
+        } else if more_window {
+            let (time, file) =
+                window_end.ok_or_else(|| capacity("Atlas text scan deadline", 1, 0))?;
+            Some(
+                PositionCursor::new(
+                    &snapshot.index,
+                    "text",
+                    digest,
+                    Key {
+                        integers: vec![
+                            1,
+                            super::linked::time_key(time),
+                            0,
+                            0,
+                            0,
+                            super::modes::key(mode),
+                        ],
+                        bytes: file.0.to_vec(),
                     },
-                );
-            }
-            let Read::Present { value: output } = answer.data else {
-                return Err(cache_error(
-                    "text response lost its observed search results",
-                ));
+                    None,
+                )?
+                .with_ranking_time(ranking.now_unix_ms)
+                .encode()?,
+            )
+        } else {
+            None
+        };
+        if more_window {
+            let reason = if matching == MAX_MATCHING_FILES || pinned.is_some() {
+                CoverageReason::ResultLimit
+            } else if matched_bytes > 2 * 1024 * 1024 || staging_limited {
+                CoverageReason::ByteLimit
+            } else {
+                CoverageReason::TimeLimit
             };
-            items = output.page.into_items();
-            if let Some(hit) = items.iter_mut().rev().find(|hit| hit.body.is_some()) {
-                let before = size(hit)?;
-                hit.body = None;
-                bytes = bytes.saturating_sub(before - size(hit)?);
-                bodies_omitted += 1;
-                continue;
+            if !snapshot.index.coverage.reasons.contains(&reason) {
+                snapshot.index.coverage.reasons.push(reason);
             }
-            let removed = items
-                .pop()
-                .ok_or_else(|| capacity("Atlas text response bytes", 1, 0))?;
-            keys.pop();
-            bytes = bytes.saturating_sub(size(&removed)?);
-            if removed.body.is_some() {
-                bodies_omitted += 1;
-            }
-            if items.is_empty() {
-                return Err(capacity("Atlas text response bytes", 1, 0));
-            }
-            more_hits = true;
         }
+        let output = SearchResults {
+            mode,
+            fallback_from: (mode != initial).then_some(initial),
+            page: page(
+                &snapshot,
+                items,
+                super::search_page::staging_budget(query.budget),
+                next,
+                range_incomplete || advanced || !snapshot.negative_complete(),
+                bytes,
+                previous
+                    .as_ref()
+                    .map(PositionCursor::encode)
+                    .transpose()?
+                    .as_ref(),
+            )?,
+            truncated_candidates: if more_window || metadata_pool.truncated {
+                None
+            } else {
+                Some(0)
+            },
+            full: query.full,
+            text: Some(stats.clone()),
+            bodies_omitted,
+        };
+        let keys = keys
+            .into_iter()
+            .map(|last| Key {
+                integers: vec![
+                    start.integers[0],
+                    start.integers[1],
+                    1,
+                    last.integers[0],
+                    last.integers[1],
+                    super::modes::key(mode),
+                ],
+                bytes: [&start.bytes[..16], last.bytes.as_slice()].concat(),
+            })
+            .collect();
+        Ok(super::search_page::SearchPage {
+            answer: snapshot.answer(Read::Present { value: output }, advanced),
+            keys,
+            continuation,
+        })
     }
 }
+
 fn at_window_end(started: bool, time: i64, file: &[u8], bound: &TextWindow) -> bool {
     started && time == bound.last_touch_unix_ms && file == bound.file
 }

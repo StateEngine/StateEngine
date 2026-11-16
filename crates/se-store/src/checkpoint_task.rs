@@ -17,13 +17,11 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-/// Background maintenance cadence: the former writer idle gap.
+/// Require a quiet interval before checkpoint I/O; brief request gaps are traffic.
 const TICK: Duration = Duration::from_millis(250);
-/// Lock-contention backoff for the background connection. On contention the
-/// task yields the WAL write lock within this window and retries on the next
-/// tick, so a write that slips in after the idle gate waits at most this long
-/// for the checkpoint to back off, never for a checkpoint waiting on a pinned
-/// reader.
+/// Lock-contention backoff for the background connection. A busy reader
+/// defers maintenance to another quiet interval. This bounds SQLite's lock
+/// wait, not filesystem I/O after the checkpoint has acquired its locks.
 const BACKOFF: Duration = Duration::from_millis(10);
 /// A fully-checkpointed WAL at least this large is worth resetting the file
 /// for; below it the frames are negligible and the next real reset is closer.
@@ -68,18 +66,18 @@ impl State {
 /// Receipt-visible maintenance state shared between the task and the writer.
 /// The idle flag is set by the writer around its blocking receive: the task
 /// performs checkpoint I/O only while the writer has no command in flight, so
-/// a checkpoint contends with a queued commit only inside the short backoff
-/// window a straggling write can enter after the idle gate. The condition
+/// a newly arriving write can still overlap a checkpoint's native I/O. The condition
 /// pairs with that edge: the task waits on it instead of polling, and the
-/// writer notifies whenever it goes idle or the task must exit, so an idle
-/// host does no maintenance wakes at all.
+/// writer notifies whenever it goes idle or the task must exit. Brief gaps
+/// between requests coalesce into one quiet interval; a settled host has no
+/// periodic maintenance wakes.
 #[derive(Clone)]
 pub(crate) struct Status {
     state: Arc<State>,
     idle: Arc<AtomicBool>,
-    /// Signalled on the writer's idle edge and on shutdown. The mutex guards
-    /// nothing but the wait itself; the facts live in `state` and `idle`.
-    notify: Arc<(Mutex<bool>, Condvar)>,
+    /// Latest idle edge, coalesced until the writer has stayed quiet for TICK.
+    /// Shutdown also signals this condition so no timer delays joining.
+    notify: Arc<(Mutex<Option<Instant>>, Condvar)>,
 }
 impl Default for Status {
     fn default() -> Self {
@@ -88,7 +86,7 @@ impl Default for Status {
         Self {
             state: Arc::default(),
             idle: Arc::new(AtomicBool::new(false)),
-            notify: Arc::new((Mutex::new(false), Condvar::new())),
+            notify: Arc::new((Mutex::new(None), Condvar::new())),
         }
     }
 }
@@ -128,10 +126,10 @@ impl Status {
     pub(crate) fn wake(&self) {
         let (lock, condvar) = &*self.notify;
         let mut seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        *seen = true;
+        *seen = Some(Instant::now());
         condvar.notify_all();
     }
-    /// Wait for the writer's next idle edge or for shutdown.
+    /// Coalesce idle edges until a quiet interval, or wake immediately on shutdown.
     ///
     /// `cap` is the backstop for work already owed: a checkpoint that could
     /// not finish (a pinned reader) retries on the next tick, so it is passed
@@ -144,8 +142,11 @@ impl Status {
         let deadline = cap.map(|cap| Instant::now() + cap);
         let (lock, condvar) = &*self.notify;
         let mut seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        while !*seen && !closed.load(Ordering::Acquire) {
-            match deadline {
+        while !closed.load(Ordering::Acquire) {
+            // An idle edge during the wait restarts the quiet interval. Only
+            // retained maintenance debt uses the retry deadline without an edge.
+            let ready = seen.map(|edge| edge + TICK).or(deadline);
+            match ready {
                 None => {
                     seen = condvar
                         .wait(seen)
@@ -163,9 +164,9 @@ impl Status {
                 }
             }
         }
-        // The flag is consumed either way: a stale signal must not turn the
-        // next wait into an immediate wake and a spin.
-        *seen = false;
+        // Consume the edge: after a successful checkpoint, a settled host
+        // waits indefinitely instead of repeating maintenance on an old edge.
+        *seen = None;
         closed.load(Ordering::Acquire)
     }
     fn set(&self, maint: Maint) {
@@ -288,6 +289,9 @@ fn run(
     status: Status,
     gate: crate::transaction::checkpoint::Gate,
 ) {
+    if status.wait(&closed, None) {
+        return;
+    }
     loop {
         if closed.load(Ordering::Acquire) {
             return;

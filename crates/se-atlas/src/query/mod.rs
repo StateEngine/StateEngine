@@ -18,6 +18,7 @@ pub mod refs;
 mod related;
 pub mod resume;
 mod rows;
+mod search_page;
 mod source_metadata;
 mod target;
 mod text;
@@ -124,7 +125,6 @@ impl<'a> QueryCtx<'a> {
             viewer: &self.viewer,
             source: &self.source,
             memory: self.memory.clone(),
-            compact: self.compact,
             hostless: self.hostless,
             epoch_retired: self.epoch_retired,
             record_feed_current: self.record_feed_current,
@@ -140,7 +140,6 @@ pub(super) struct QueryEnv<'a> {
     pub viewer: &'a AtlasPrincipal,
     pub source: &'a Option<&'a dyn LiveSource>,
     pub memory: Option<MemoryBudget>,
-    pub compact: Option<(usize, bool)>,
     pub hostless: bool,
     pub epoch_retired: bool,
     pub record_feed_current: bool,

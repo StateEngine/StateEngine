@@ -1,4 +1,5 @@
 use super::*;
+use crate::cache::connection::BudgetStatement;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum Kind {
@@ -17,6 +18,7 @@ pub(super) struct Candidate {
     pub precomputed_last: Option<i64>,
     pub lexical: f64,
     pub related: bool,
+    pub downweighted: bool,
 }
 pub(super) struct Candidates {
     pub values: Vec<Candidate>,
@@ -43,10 +45,7 @@ pub(super) fn collect(
     };
     let mut resident = 0;
     for plan in super::candidate_sql::plans(query, mode)? {
-        if crate::clock::now() >= end {
-            output.truncated = true;
-            break;
-        }
+        admission_time(end)?;
         let mut ids = Vec::with_capacity(513);
         {
             let mut stmt = sql.prepare(&plan.sql)?;
@@ -69,26 +68,19 @@ pub(super) fn collect(
             ids.pop();
             output.truncated = true;
         }
+        // Close the ID sort before reusing one projected metadata lookup.
+        let mut metadata = metadata_statement(sql, plan.kind)?;
         for (rowid, precomputed_last, bm25) in ids {
             if !bm25.is_finite() || bm25 > 0.0 {
                 return Err(cache_error("invalid BM25 score"));
             }
-            if crate::clock::now() >= end {
-                output.truncated = true;
-                break;
-            }
+            // An unfinished traversal prefix cannot provide a ranked continuation.
+            admission_time(end)?;
             let kind = plan.kind;
-            if matches!(kind, Kind::Symbol | Kind::File) {
-                let file = if kind == Kind::Symbol {
-                    symbol_by_id(sql, rowid)?.1
-                } else {
-                    rowid
-                };
-                if crate::policy::built_in_denied(&file_by_id(sql, file)?.pointer.path) {
-                    continue;
-                }
+            let (key, tie, path) = read_metadata(&mut metadata, rowid)?;
+            if path.as_ref().is_some_and(crate::policy::built_in_denied) {
+                continue;
             }
-            let (key, tie) = metadata(sql, kind, rowid)?;
             if key.len() > 256 || tie.len() > 4096 || tie.contains('\0') {
                 return Err(cache_error("search candidate exceeds key/name admission"));
             }
@@ -130,24 +122,30 @@ pub(super) fn collect(
             }
             let cost = key.len() + tie.len() + 160;
             resident += cost;
-            output.values.push(Candidate {
+            let candidate = Candidate {
                 kind,
                 rowid,
                 tier: plan.tier,
                 key,
+                downweighted: crate::rank::downweight(
+                    path.as_ref().map_or(tie.as_str(), |p| p.as_str()),
+                    query.kind,
+                ),
                 tie,
                 activity: crate::rank::Activity::default(),
                 precomputed_last,
                 lexical: if bm25 < 0.0 { -bm25 } else { 0.0 },
                 related: false,
+            };
+            let position = output.values.partition_point(|old| {
+                old.tier
+                    .cmp(&candidate.tier)
+                    .then(candidate.precomputed_last.cmp(&old.precomputed_last))
+                    .then(old.tie.cmp(&candidate.tie))
+                    .then(old.key.cmp(&candidate.key))
+                    .is_le()
             });
-            output.values.sort_by(|a, b| {
-                a.tier
-                    .cmp(&b.tier)
-                    .then(b.precomputed_last.cmp(&a.precomputed_last))
-                    .then(a.tie.cmp(&b.tie))
-                    .then(a.key.cmp(&b.key))
-            });
+            output.values.insert(position, candidate);
             while output.values.len() > 128 || resident > 24576 {
                 let old = output
                     .values
@@ -158,6 +156,7 @@ pub(super) fn collect(
             }
         }
     }
+    let mut activity = crate::rank::ActivityReader::new(sql)?;
     for candidate in &mut output.values {
         let tag = match candidate.kind {
             Kind::Symbol => "symbol",
@@ -165,8 +164,7 @@ pub(super) fn collect(
             Kind::Record => "record",
             Kind::Commit => "commit",
         };
-        candidate.activity = crate::rank::activity(
-            sql,
+        candidate.activity = activity.read(
             tag,
             &candidate.key,
             crate::rank::ActivityQuery {
@@ -176,16 +174,7 @@ pub(super) fn collect(
                 now: env.now_unix_ms,
             },
         )?;
-        let path = if candidate.kind == Kind::Symbol {
-            let file_id = symbol_by_id(sql, candidate.rowid)?.1;
-            Some(file_by_id(sql, file_id)?.pointer.path)
-        } else {
-            None
-        };
-        if crate::rank::downweight(
-            path.as_ref().map_or(candidate.tie.as_str(), |p| p.as_str()),
-            query.kind,
-        ) {
+        if candidate.downweighted {
             candidate.activity.score *= 0.5;
         }
     }
@@ -193,6 +182,13 @@ pub(super) fn collect(
         .values
         .sort_by_cached_key(|candidate| super::find::key(candidate, query.order));
     Ok(output)
+}
+pub(super) fn admission_time(end: Instant) -> AtlasResult<()> {
+    if crate::clock::now() < end {
+        return Ok(());
+    }
+    // An expired checkpoint has no allowance left, as in SQL preparation.
+    Err(crate::cache::connection::timeout(0))
 }
 pub(super) fn record_pointer(sql: &SqlView<'_>, id: i64) -> AtlasResult<RecordPointer> {
     let mut stmt = sql.prepare("SELECT record_id,kind,source_event FROM records WHERE id=?1")?;
@@ -209,19 +205,32 @@ pub(super) fn record_pointer(sql: &SqlView<'_>, id: i64) -> AtlasResult<RecordPo
 }
 
 pub(super) fn metadata(sql: &SqlView<'_>, kind: Kind, id: i64) -> AtlasResult<(Vec<u8>, String)> {
+    let mut statement = metadata_statement(sql, kind)?;
+    let (key, name, _) = read_metadata(&mut statement, id)?;
+    Ok((key, name))
+}
+fn metadata_statement<'a>(sql: &'a SqlView<'_>, kind: Kind) -> AtlasResult<BudgetStatement<'a>> {
     let statement = match kind {
         Kind::Symbol => {
-            "SELECT s.key,n.text FROM symbols s JOIN names n ON n.id=s.name WHERE s.id=?1"
+            "SELECT s.key,n.text,f.path FROM symbols s JOIN names n ON n.id=s.name JOIN files f ON f.id=s.file WHERE s.id=?1"
         }
-        Kind::File => "SELECT key,path FROM files WHERE id=?1",
-        Kind::Record => "SELECT CAST(record_id AS BLOB),record_id FROM records WHERE id=?1",
-        Kind::Commit => "SELECT oid,hex(oid) FROM commits WHERE id=?1",
+        Kind::File => "SELECT key,path,path FROM files WHERE id=?1",
+        Kind::Record => "SELECT CAST(record_id AS BLOB),record_id,NULL FROM records WHERE id=?1",
+        Kind::Commit => "SELECT oid,hex(oid),NULL FROM commits WHERE id=?1",
     };
-    let mut stmt = sql.prepare(statement)?;
-    let mut rows = stmt.query([id]).map_err(cache_error)?;
+    sql.prepare(statement)
+}
+fn read_metadata(
+    statement: &mut BudgetStatement<'_>,
+    id: i64,
+) -> AtlasResult<(Vec<u8>, String, Option<RelativePath>)> {
+    let mut rows = statement.query([id]).map_err(cache_error)?;
     let row = rows
         .next()
         .map_err(cache_error)?
         .ok_or_else(|| cache_error("candidate disappeared in snapshot"))?;
-    Ok((get(row, 0)?, get(row, 1)?))
+    let path = get::<Option<String>>(row, 2)?
+        .map(RelativePath::new)
+        .transpose()?;
+    Ok((get(row, 0)?, get(row, 1)?, path))
 }
