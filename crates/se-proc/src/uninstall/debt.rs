@@ -16,9 +16,18 @@ pub struct UninstallHelperCleanup {
     creation_filetime: u64,
     file: FileId,
     digest: [u8; 32],
+    #[serde(default)]
+    script: Option<ScriptCustody>,
     // Version 2 requires this field even when its explicit value is null.
     #[serde(deserialize_with = "Option::deserialize")]
     directory: Option<staging::DirectoryCustody>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ScriptCustody {
+    #[serde(with = "crate::checkpoint::native_path")]
+    pub path: PathBuf,
+    pub file: FileId,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HelperCleanupOutcome {
@@ -38,6 +47,7 @@ impl UninstallHelperCleanup {
         file: &File,
         digest: [u8; 32],
         directory: Option<staging::DirectoryCustody>,
+        script: ScriptCustody,
     ) -> Result<Self> {
         let creator = native::current_process()?;
         Ok(Self {
@@ -50,6 +60,7 @@ impl UninstallHelperCleanup {
                 .map_err(|e| error(e.operation, e.source))?,
             file: native::file_id(file)?,
             digest,
+            script: Some(script),
             directory,
         })
     }
@@ -91,33 +102,7 @@ impl UninstallHelperCleanup {
     /// Invoke on the next install/uninstall from the protected core journal.
     /// Replacements and unreadable process/file facts refuse without deleting.
     pub fn cleanup(&self, files: &NativeStateFiles) -> Result<HelperCleanupOutcome> {
-        let name = self.path.file_name().and_then(|v| v.to_str()).unwrap_or("");
-        let suffix = name
-            .strip_prefix(".se-stage-")
-            .and_then(|v| v.strip_suffix(".exe"));
-        if self.root != files.root()
-            || !match &self.directory {
-                None => self.path.parent() == Some(files.root()),
-                Some(dir) => {
-                    dir.path.parent() == Some(files.root())
-                        && self.path.parent() == Some(dir.path.as_path())
-                        && dir
-                            .path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .and_then(|n| n.strip_prefix(".se-uninstall-"))
-                            .is_some_and(|n| {
-                                n.len() == 32 && n.bytes().all(|b| b.is_ascii_hexdigit())
-                            })
-                }
-            }
-            || !suffix.is_some_and(|s| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit()))
-        {
-            return Err(refuse(
-                "retire staged uninstall helper",
-                "exact immediate staging path under held root required",
-            ));
-        }
+        self.validate_paths(files)?;
         // SAFETY: numeric lookup obtains query/synchronize access only; no signal,
         // inheritance or process mutation occurs.
         let raw = unsafe {
@@ -153,35 +138,108 @@ impl UninstallHelperCleanup {
                     native::absent_name(&directory.path)?;
                 }
                 native::absent_name(&self.path)?;
+                if let Some(script) = &self.script {
+                    native::absent_name(&script.path)?;
+                }
                 return Ok(HelperCleanupOutcome::AlreadyAbsent);
             }
             Err(cause) => return Err(cause),
         };
-        let Some(checked) = files.readback(&self.path).map_err(custody)? else {
-            drop(directory_pin);
-            if let Some(directory) = &self.directory {
-                staging::cleanup_directory(directory)?;
-            }
-            return Ok(HelperCleanupOutcome::AlreadyAbsent);
+        let digest = (self.version == 2).then_some(self.digest);
+        let removed = retire_created(files, &self.path, self.file, digest)?;
+        let script_removed = match &self.script {
+            Some(script) => retire_created(files, &script.path, script.file, None)?,
+            None => false,
         };
-        let mut file = native::open_image(&self.path, false)?;
-        if native::file_id(&checked)? != native::file_id(&file)?
-            || native::file_id(&file)? != self.file
-            || self.version == 2 && native::digest(&mut file)? != self.digest
-        {
-            return Err(refuse(
-                "retire staged uninstall helper",
-                "helper name was replaced; replacement preserved",
-            ));
-        }
-        native::unlink(&file, true)?;
-        native::absent_name(&self.path)?;
-        drop(file);
-        drop(checked);
         drop(directory_pin);
         if let Some(directory) = &self.directory {
             staging::cleanup_directory(directory)?;
         }
-        Ok(HelperCleanupOutcome::Removed)
+        Ok(if removed || script_removed {
+            HelperCleanupOutcome::Removed
+        } else {
+            HelperCleanupOutcome::AlreadyAbsent
+        })
     }
+    fn validate_paths(&self, files: &NativeStateFiles) -> Result<()> {
+        let name = self.path.file_name().and_then(|v| v.to_str()).unwrap_or("");
+        let suffix = name
+            .strip_prefix(".se-stage-")
+            .and_then(|v| v.strip_suffix(".exe"));
+        if self.root != files.root()
+            || !match &self.directory {
+                None => self.path.parent() == Some(files.root()),
+                Some(dir) => {
+                    dir.path.parent() == Some(files.root())
+                        && self.path.parent() == Some(dir.path.as_path())
+                        && dir
+                            .path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .and_then(|n| n.strip_prefix(".se-uninstall-"))
+                            .is_some_and(|n| {
+                                n.len() == 32 && n.bytes().all(|b| b.is_ascii_hexdigit())
+                            })
+                }
+            }
+            || !suffix.is_some_and(|s| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return Err(refuse(
+                "retire staged uninstall helper",
+                "exact immediate staging path under held root required",
+            ));
+        }
+        if let Some(script) = &self.script {
+            let valid = script
+                .path
+                .file_name()
+                .and_then(|v| v.to_str())
+                .and_then(|v| v.strip_prefix(".se-stage-"))
+                .and_then(|v| v.strip_suffix(".ps1"))
+                .is_some_and(|v| v.len() == 32 && v.bytes().all(|b| b.is_ascii_hexdigit()));
+            if self.version != 3 || script.path.parent() != self.path.parent() || !valid {
+                return Err(refuse(
+                    "retire staged uninstall script",
+                    "exact immediate script creation path required",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+// Version 3 records creation identity before any bytes are written. A partial
+// input is ours to retire; another file at the same path remains untouched.
+fn retire_created(
+    files: &NativeStateFiles,
+    path: &Path,
+    identity: FileId,
+    digest: Option<[u8; 32]>,
+) -> Result<bool> {
+    let result = (|| {
+        let Some(checked) = files.readback(path).map_err(custody)? else {
+            native::absent_name(path)?;
+            return Ok(false);
+        };
+        let mut file = native::open_image(path, false)?;
+        if native::file_id(&checked)? != native::file_id(&file)?
+            || native::file_id(&file)? != identity
+            || match digest {
+                Some(expected) => native::digest(&mut file)? != expected,
+                None => false,
+            }
+        {
+            return Err(refuse(
+                "retire staged uninstall input",
+                "staging name was replaced; replacement preserved",
+            ));
+        }
+        native::unlink(&file, true)?;
+        native::absent_name(path)?;
+        Ok(true)
+    })();
+    result.map_err(|mut cause: UninstallNativeError| {
+        cause.pending_paths.push(path.to_owned());
+        cause
+    })
 }

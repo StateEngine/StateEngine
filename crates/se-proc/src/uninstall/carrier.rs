@@ -52,13 +52,20 @@ impl NativeUninstallCarrier {
         let image = native::process_image(&parent)?;
         let mut target = native::open_image(&image, false)?;
         let digest = native::digest(&mut target)?;
+        let script = script::Script::reserve(script_files, staging.is_some())?;
+        let pending_script = script.path().to_owned();
         let copy = carrier_copy::CarrierCopy::create(
             files,
             script_files,
             &mut target,
             digest,
             staging.as_ref().map(|stage| stage.directory.clone()),
-        )?;
+            script.custody(),
+        )
+        .map_err(|mut cause| {
+            cause.pending_paths.push(pending_script.clone());
+            cause
+        })?;
         let pending_copy = copy.path.clone();
         let pending_journal = copy.journal.clone();
         let result = (|| {
@@ -115,7 +122,7 @@ impl NativeUninstallCarrier {
                         .map_err(custody)?,
                 )
                 .map_err(custody)?;
-            let script = script::Script::create(script_files, staging.is_some())?;
+            let script = script.finish()?;
             let script_path = script.path().to_owned();
             let mut script = Some(script);
             let until = clock() + 30000;
@@ -231,7 +238,9 @@ impl NativeUninstallCarrier {
             })
         })();
         result.map_err(|mut cause: UninstallNativeError| {
-            cause.pending_paths.extend([pending_copy, pending_journal]);
+            cause
+                .pending_paths
+                .extend([pending_copy, pending_journal, pending_script]);
             cause
         })
     }
@@ -301,10 +310,6 @@ pub(super) fn cancel_preparation(process: &OwnedHandle) -> Result<()> {
     }
 }
 
-fn pending(mut failure: UninstallNativeError, path: &Path) -> UninstallNativeError {
-    failure.pending_paths.push(path.to_owned());
-    failure
-}
 fn cleanup_artifacts(
     failure: &mut UninstallNativeError,
     script: &mut Option<script::Script>,

@@ -18,6 +18,7 @@ impl CarrierCopy {
         source: &mut File,
         expected: [u8; 32],
         directory: Option<staging::DirectoryCustody>,
+        script: debt::ScriptCustody,
     ) -> Result<Self> {
         let staged = staging_files
             .create_staging(staging_files.root())
@@ -56,6 +57,7 @@ impl CarrierCopy {
             &file,
             expected,
             directory.clone(),
+            script,
         )?;
         let bytes = debt.encode()?;
         let journal = files.root().join(UninstallHelperCleanup::RECORD_NAME);
