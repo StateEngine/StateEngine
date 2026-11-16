@@ -1,0 +1,68 @@
+name: Windows listener comparison r3
+'on':
+  push:
+    branches:
+    - prime/pr430-listener-review-r3
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  PYTHONUTF8: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+jobs:
+  native:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.source }}
+        persist-credentials: false
+        fetch-depth: 1
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: pr430-listener-review-r3-${{ matrix.arm }}
+        cache-workspace-crates: false
+        workspaces: . -> ${{ env.CARGO_TARGET_DIR }}
+    - name: Select unchanged listener on both sources and preserve exact failure
+      shell: python
+      run: 'import base64,hashlib,os,subprocess,sys
+
+        from pathlib import Path
+
+        data=base64.b64decode(''aW1wb3J0IGhhc2hsaWIsanNvbixvcyxzdWJwcm9jZXNzLHN5cyx0aW1lLHhtbC5ldHJlZS5FbGVtZW50VHJlZSBhcyBFVApmcm9tIHBhdGhsaWIgaW1wb3J0IFBhdGgKcm9vdD1QYXRoKG9zLmVudmlyb25bJ0dJVEhVQl9XT1JLU1BBQ0UnXSk7b3V0PVBhdGgob3MuZW52aXJvblsnUlVOTkVSX1RFTVAnXSkvJ3JldmlldzQzMC1saXN0ZW5lci1yZXN1bHRzJztvdXQubWtkaXIoKQpzb3VyY2U9b3MuZW52aXJvblsnUkVWSUVXX1NPVVJDRSddO2FybT1vcy5lbnZpcm9uWydSRVZJRVdfQVJNJ107cmVwb3J0PXsnc291cmNlJzpzb3VyY2UsJ2FybSc6YXJtLCdzdGFnZXMnOltdLCdjYXNlcyc6W10sJ3Bhc3NlZCc6RmFsc2V9CmRlZiBzYXZlKCk6KG91dC8ncmVwb3J0Lmpzb24nKS53cml0ZV90ZXh0KGpzb24uZHVtcHMocmVwb3J0LGluZGVudD0yKSsnXG4nKQpkZWYgcnVuKG5hbWUsYXJncyk6CiByb3c9eyduYW1lJzpuYW1lLCdhcmd2JzphcmdzfTtyZXBvcnRbJ3N0YWdlcyddLmFwcGVuZChyb3cpO3NhdmUoKTtlbnY9b3MuZW52aXJvbi5jb3B5KCk7ZW52WydORVhURVNUX1RFU1RfVEhSRUFEUyddPScxJztlbnZbJ1JFVklFVzQzMF9MSVNURU5FUl9PTkxZJ109JzEnCiB3aXRoIChvdXQvKG5hbWUrJy5zdGRvdXQnKSkub3Blbignd2InKSBhcyBzbywob3V0LyhuYW1lKycuc3RkZXJyJykpLm9wZW4oJ3diJykgYXMgc2U6IHJlc3VsdD1zdWJwcm9jZXNzLnJ1bihhcmdzLGN3ZD1yb290LGVudj1lbnYsc3Rkb3V0PXNvLHN0ZGVycj1zZSkKIHJvd1snZXhpdCddPXJlc3VsdC5yZXR1cm5jb2RlO3NhdmUoKTtyZXR1cm4gcmVzdWx0LnJldHVybmNvZGUKdHJ5OgogYXNzZXJ0IHN1YnByb2Nlc3MuY2hlY2tfb3V0cHV0KFsnZ2l0JywncmV2LXBhcnNlJywnSEVBRCddLGN3ZD1yb290LHRleHQ9VHJ1ZSkuc3RyaXAoKT09c291cmNlCiByZXBvcnRbJ2NvbXBpbGVyJ109c3VicHJvY2Vzcy5jaGVja19vdXRwdXQoWydydXN0YycsJy12ViddLHRleHQ9VHJ1ZSk7YXNzZXJ0ICdob3N0OiB4ODZfNjQtcGMtd2luZG93cy1tc3ZjJyBpbiByZXBvcnRbJ2NvbXBpbGVyJ10KIGZvciBuYW1lIGluIFsnQ2FyZ28udG9tbCcsJ0NhcmdvLmxvY2snLCdjcmF0ZXMvc2UvQ2FyZ28udG9tbCcsJ2NyYXRlcy9zZS90ZXN0cy9ob3N0X2UzLnJzJ106CiAgcD1vdXQvJ3NvdXJjZS1pbnB1dHMnL25hbWU7cC5wYXJlbnQubWtkaXIocGFyZW50cz1UcnVlLGV4aXN0X29rPVRydWUpO3Aud3JpdGVfYnl0ZXMoKHJvb3QvbmFtZSkucmVhZF9ieXRlcygpKQogcGF0aD1yb290LydjcmF0ZXMvc2UvdGVzdHMvaG9zdF9lMy5ycyc7b3JpZ2luYWw9cGF0aC5yZWFkX2J5dGVzKCk7dGV4dD1vcmlnaW5hbC5kZWNvZGUoKTthc3NlcnQgdGV4dC5jb3VudCgnZm4gbWFpbigpIC0+IENoZWNrIHsnKT09MQogbmF0aXZlPSdmbiBsaXN0ZW5lcl9tZXNzYWdlX3dvcmtpbmdfYW5kX2hvb2sodmVudWU6JyBpbiB0ZXh0CiBhc3NlcnQgbmF0aXZlPT0oYXJtPT0naGVhZCcpCiBwcmVwYXJlPScgICAgbGV0IHZlbnVlID0gdmVudWU6OnByb2JlKE5vbmUpPztcbicgaWYgbmF0aXZlIGVsc2UgJycKIGNhbGw9J2xpc3RlbmVyX21lc3NhZ2Vfd29ya2luZ19hbmRfaG9vaygmdmVudWUpJyBpZiBuYXRpdmUgZWxzZSAnbGlzdGVuZXJfbWVzc2FnZV93b3JraW5nX2FuZF9ob29rKCknCiB3cmFwcGVyPSdcbmZuIG1haW4oKSAtPiBDaGVjayB7XG4gICAgaWYgc3RkOjplbnY6OmFyZ3Nfb3MoKS5sZW4oKSA9PSAxICYmIHN0ZDo6ZW52Ojp2YXJfb3MoIlJFVklFVzQzMF9MSVNURU5FUl9PTkxZIikuaXNfc29tZSgpIHtcbiAgICAgICAgc2VfcHJvYzo6aW5pdGlhbGl6ZV9maWxlX2NyZWF0aW9uX293bmVyKCk/O1xuJytwcmVwYXJlKycgICAgICAgIHByaW50bG4hKCJSRVZJRVc0MzAgRU5URVIgdW5jaGFuZ2VkIGxpc3RlbmVyIGNvbnN1bWVyIik7XG4gICAgICAgIHJldHVybiAnK2NhbGwrJztcbiAgICB9XG4gICAgb3JkaW5hcnlfbWFpbigpXG59XG4nCiBwYXRjaGVkPXRleHQucmVwbGFjZSgnZm4gbWFpbigpIC0+IENoZWNrIHsnLCdmbiBvcmRpbmFyeV9tYWluKCkgLT4gQ2hlY2sgeycpK3dyYXBwZXIKIHBhdGgud3JpdGVfYnl0ZXMocGF0Y2hlZC5lbmNvZGUoKSk7KG91dC8naG9zdF9lMy1vdmVybGF5LnJzJykud3JpdGVfYnl0ZXMocGF0Y2hlZC5lbmNvZGUoKSk7cmVwb3J0WydvcmlnaW5hbF9zaGEyNTYnXT1oYXNobGliLnNoYTI1NihvcmlnaW5hbCkuaGV4ZGlnZXN0KCk7cmVwb3J0WydvdmVybGF5X3NoYTI1NiddPWhhc2hsaWIuc2hhMjU2KHBhdGNoZWQuZW5jb2RlKCkpLmhleGRpZ2VzdCgpCiBqdW5pdD1yb290Lyd0YXJnZXQvbmV4dGVzdC9jaS9qdW5pdC54bWwnCiBpZiBqdW5pdC5leGlzdHMoKTpqdW5pdC51bmxpbmsoKQogcnVuKCdmaXh0dXJlLWNoZWNrJyxbJ2NhcmdvJywnY2hlY2snLCctcCcsJ3NlJywnLS10ZXN0JywnaG9zdF9lMycsJy0tYWxsLWZlYXR1cmVzJywnLS1sb2NrZWQnLCctLXRhcmdldCcsJ3g4Nl82NC1wYy13aW5kb3dzLW1zdmMnXSkKIGNvZGU9cnVuKCdsaXN0ZW5lcicsWydjYXJnbycsJ25leHRlc3QnLCdydW4nLCctcCcsJ3NlJywnLS10ZXN0JywnaG9zdF9lMycsJy0tYWxsLWZlYXR1cmVzJywnLS1sb2NrZWQnLCctLXRhcmdldCcsJ3g4Nl82NC1wYy13aW5kb3dzLW1zdmMnLCctLXByb2ZpbGUnLCdjaScsJy0tbm8tZmFpbC1mYXN0JywnLS1yZXRyaWVzJywnMCcsJy0tbm8tdGVzdHMnLCdmYWlsJywnLS1zdWNjZXNzLW91dHB1dCcsJ2ZpbmFsJywnLS1mYWlsdXJlLW91dHB1dCcsJ2ltbWVkaWF0ZS1maW5hbCddKQogcmVwb3J0WydqdW5pdF9wYXRoJ109c3RyKGp1bml0KTtyZXBvcnRbJ2p1bml0X3ByZXNlbnQnXT1qdW5pdC5leGlzdHMoKQogaWYganVuaXQuZXhpc3RzKCk6CiAgKG91dC8nanVuaXQueG1sJykud3JpdGVfYnl0ZXMoanVuaXQucmVhZF9ieXRlcygpKTtyZXBvcnRbJ2Nhc2VzJ109W3snbmFtZSc6Yy5nZXQoJ25hbWUnKSwnc3RhdHVzJzpuZXh0KCh0YWcgZm9yIHRhZyBpbiBbJ2ZhaWx1cmUnLCdlcnJvcicsJ3NraXBwZWQnXSBpZiBjLmZpbmQodGFnKSBpcyBub3QgTm9uZSksJ3Bhc3NlZCcpfSBmb3IgYyBpbiBFVC5wYXJzZShqdW5pdCkuZ2V0cm9vdCgpLml0ZXIoJ3Rlc3RjYXNlJyldCiByZXBvcnRbJ3Bhc3NlZCddPWNvZGU9PTAgYW5kIGxlbihyZXBvcnRbJ2Nhc2VzJ10pPT0xIGFuZCByZXBvcnRbJ2Nhc2VzJ11bMF1bJ3N0YXR1cyddPT0ncGFzc2VkJwogcmVwb3J0WydzY29wZSddPSdSZXZpZXdlciB3cmFwcGVyIHNlbGVjdHMgdGhlIG9yaWdpbmFsIGxpc3RlbmVyIGZ1bmN0aW9uIGJlZm9yZSB0aGUgdW5yZWxhdGVkIHN0YXJ0dXAgZ2F0ZTsgYWxsIG9yaWdpbmFsIGZ1bmN0aW9uIGJvZGllcyBhbmQgcHJvZHVjdCBjb2RlIHJlbWFpbiB1bmNoYW5nZWQuIFRoaXMgZG9lcyBub3QgcmVwbGFjZSB0aGUgZnVsbCBoYXJuZXNzIHJlc3VsdC4nCmV4Y2VwdCBFeGNlcHRpb24gYXMgZXJyb3I6cmVwb3J0WydyZWNvcmRlcl9lcnJvciddPXsndHlwZSc6dHlwZShlcnJvcikuX19uYW1lX18sJ2RldGFpbCc6c3RyKGVycm9yKX0KZmluYWxseToKIHNhdmUoKTsob3V0LydtZW1iZXJzLmpzb24nKS53cml0ZV90ZXh0KGpzb24uZHVtcHMoe3AucmVsYXRpdmVfdG8ob3V0KS5hc19wb3NpeCgpOmhhc2hsaWIuc2hhMjU2KHAucmVhZF9ieXRlcygpKS5oZXhkaWdlc3QoKSBmb3IgcCBpbiBvdXQucmdsb2IoJyonKSBpZiBwLmlzX2ZpbGUoKX0saW5kZW50PTIpKydcbicpCnByaW50KGpzb24uZHVtcHMocmVwb3J0LGluZGVudD0yKSk7c3lzLmV4aXQoMCBpZiByZXBvcnRbJ3Bhc3NlZCddIGVsc2UgMSkK'')
+
+        assert hashlib.sha256(data).hexdigest()==''27d2fd15d61d0e2e593b8b8f71b88c0c62a407304dfc8e57d42a86a1c380128a''
+
+        p=Path(os.environ[''RUNNER_TEMP''])/''review430-listener-runner-r3.py''
+
+        p.write_bytes(data)
+
+        raise SystemExit(subprocess.call([sys.executable,''-B'',str(p)]))
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: review430-listener-r3-${{ matrix.arm }}
+        path: ${{ runner.temp }}/review430-listener-results/
+        include-hidden-files: true
+        if-no-files-found: error
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arm: head
+          source: cb3b5ad971fce7cd2f8a0decea495bea5ae2d97e
+        - arm: base
+          source: 452d3207793a05e73433f04752b8cd2c79f9b2e7
+    env:
+      REVIEW_ARM: ${{ matrix.arm }}
+      REVIEW_SOURCE: ${{ matrix.source }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../review430-target-${{ matrix.arm
+        }}
