@@ -87,7 +87,7 @@ fn observed_saved_agent_command_parses_without_losing_home_project_or_target() -
         Some(row.id.as_str())
     );
     assert!(
-        matches!(invocation.operation, AnyOp::AgentLaunch(input) if input.detach && input.fresh)
+        matches!(invocation.operation, AnyOp::AgentLaunch(input) if input.detach && input.fresh())
     );
     Ok(())
 }
@@ -120,6 +120,7 @@ fn human_launch_stop_hint_preserves_the_receipt_home_project_and_agent() -> Chec
     let home = Path::new("/private/Selected home");
     let resume = AgentCommand::launch_in_home(&f.a, home, &f.project, false).ok_or("command")?;
     let value = LaunchResult {
+        mail_notifications: se_types::LaunchDetails::unobserved_mail(),
         harness_policy_notice: None,
         secode_binding: None,
         takeover: None,

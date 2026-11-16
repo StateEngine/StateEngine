@@ -209,7 +209,7 @@ not establish that the task failed or succeeded.
 
 ```sh
 se stop main
-se launch main --detach
+se launch main --resume --detach
 ```
 
 The second command reopens the saved provider conversation. Stop prints the exact
@@ -256,7 +256,7 @@ An ACP agent is a separately installed assistant that speaks Agent Client Protoc
 version 1 over standard input and output. Configure its executable and arguments
 in your state home's `config.toml`; StateEngine does not run a shell to interpret
 those arguments. The agent must support authenticated HTTP MCP connections. Resuming also requires
-loading saved sessions; agents without that capability can start with `--new`. Sign in and select a model using that agent's own setup.
+loading saved sessions; agents without that capability can start fresh by omitting `--resume`. Sign in and select a model using that agent's own setup.
 
 The native agent owns its permissions and sandboxing. StateEngine does not add
 an execution sandbox or network restriction to the protocol. Choose the agent's
@@ -301,7 +301,7 @@ se launch main --task "Read the README and explain what this project does." --de
 se agent show main
 se history --agent main
 se stop main
-se launch main --detach
+se launch main --resume --detach
 ```
 
 Launch and status disclose that the native agent owns its policy. Status shows current activity
@@ -309,7 +309,7 @@ and any permission refusal; streamed text is explicitly provisional until the
 completed turn appears in saved history. Resume loads the same conversation and
 compares its complete text with captured history before offering new input. A
 missing, changed, erased or oversized history refuses resume instead of silently
-starting over. If capture was disabled, use `--new` for a new conversation.
+starting over. If capture was disabled, omit `--resume` for a fresh conversation.
 
 ### Named harness descriptors
 
@@ -523,7 +523,8 @@ output schemas, run `se schema OP`, for example `se schema message.send` or
   notification. Listing or resuming does not mark messages read; reading and
   acknowledging do, while dismissal does not.
 - `working_state_set.expect` is the revision just read, or `absent` on first
-  write. Launch normally resumes the saved conversation; `new` starts another.
+  write. Launch starts fresh with StateEngine context. `resume: true` reopens the
+  latest saved provider conversation; `resume: "session-id"` selects a saved session.
   `force` explicitly consents to stopping the existing lifecycle and jobs.
 - Atlas targets retain their tagged JSON shape, such as
   `{"Symbol":{"Name":{"name":"authenticate"}}}` or `{"File":"src/auth.rs"}`.
