@@ -35,6 +35,7 @@ impl Prepared {
         // Inspect inactive directives too: unknown conditions must select Git
         // rather than silently omitting configuration it could have applied.
         let mut entries = config.entries(None).map_err(describe)?;
+        let mut gitdir_condition = false;
         while let Some(entry) = entries.next() {
             let entry = entry.map_err(describe)?;
             let name = entry.name_bytes();
@@ -54,9 +55,24 @@ impl Prepared {
                         "unsupported include condition requires the command-line observer".into(),
                     );
                 }
+                gitdir_condition |=
+                    condition.starts_with(b"gitdir:") || condition.starts_with(b"gitdir/i:");
             }
         }
         drop(entries);
+        if gitdir_condition {
+            // Git matches both selected and resolved directory names. The
+            // library does not preserve both identities for aliased paths.
+            // Use the shared Windows-aware canonicalizer so an ordinary drive
+            // path is not mistaken for an alias of its verbatim spelling.
+            let canonical = se_proc::canonicalize_path(root)
+                .map_err(|error| format!("cannot resolve conditional Git directory: {error}"))?;
+            if root != canonical {
+                return Err(
+                    "aliased Git directory condition requires the command-line observer".into(),
+                );
+            }
+        }
         for name in [
             "core.sparseCheckout",
             "index.sparse",
