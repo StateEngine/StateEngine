@@ -1,0 +1,52 @@
+name: Compare shared native fixture ownership
+permissions:
+  contents: read
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - side: base
+          source: 7b23fb01a7e16362c6d6b024e5c1801a32bda8c6
+        - side: candidate
+          source: 822711e7ff2500f788c66b26b124cf1818acc597
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_TARGET_DIR: target-fixture373-${{ matrix.side }}
+      PYTHONUTF8: '1'
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.source }}
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: 1.97.1
+    - name: Run unchanged native assertions in isolation
+      shell: python
+      env:
+        EXPECTED_SOURCE: ${{ matrix.source }}
+        SIDE: ${{ matrix.side }}
+      run: "from pathlib import Path\nimport ctypes, json, os, subprocess, sys, time\nfrom ctypes import wintypes\nroot = Path('native-query-evidence')\nroot.mkdir()\nsource = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()\nassert source == os.environ['EXPECTED_SOURCE']\ntarget = subprocess.check_output(['rustc', '--print', 'host-tuple'], text=True).strip()\nassert target == 'x86_64-pc-windows-msvc'\n# Observe the inherited token; do not change it or weaken the fixture.\nkernel = ctypes.WinDLL('kernel32', use_last_error=True)\nsecurity = ctypes.WinDLL('advapi32', use_last_error=True)\nkernel.GetCurrentProcess.restype = wintypes.HANDLE\nkernel.CloseHandle.argtypes = [wintypes.HANDLE]\nsecurity.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]\nsecurity.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]\nsecurity.EqualSid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]\ntoken = wintypes.HANDLE()\nif not security.OpenProcessToken(kernel.GetCurrentProcess(), 8, ctypes.byref(token)):\n    raise ctypes.WinError(ctypes.get_last_error())\ndef information(kind):\n    size = wintypes.DWORD()\n    security.GetTokenInformation(token, kind, None, 0, ctypes.byref(size))\n    if not size.value:\n        raise ctypes.WinError(ctypes.get_last_error())\n    buffer = ctypes.create_string_buffer(size.value)\n    if not security.GetTokenInformation(token, kind, buffer, size, ctypes.byref(size)):\n        raise ctypes.WinError(ctypes.get_last_error())\n    return buffer\ntry:\n    user, owner = information(1), information(4)\n    owner_is_user = bool(security.EqualSid(ctypes.cast(user, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.cast(owner, ctypes.POINTER(ctypes.c_void_p))[0]))\nfinally:\n    kernel.CloseHandle(token)\n(root/'token-context.json').write_text(json.dumps({'initial_owner_is_user':owner_is_user},indent=2)+'\\n')\nassert not owner_is_user, 'Inherited owner already matches user; ownership comparison is unqualified'\ncases=[\n ('se-host','atlas_captured_activity','both_providers_feed_only_bound_successful_root_paths_without_authorship'),\n ('se-host','atlas_query_reads','five_native_reads_and_streaming_text_share_one_scoped_snapshot'),\n ('se-host','atlas_query_retry_independent','accepted_write_timeout_is_not_replayed'),\n ('se-host','atlas_source_scan','compact_literal_and_regex_reach_ten_files_past_unmatched_files_and_prefix_bytes'),\n ('se-store','background_checkpoint_independent','background_task_honors_backup_suppression'),\n]\nimport hashlib\nsources={f'crates/{package}/tests/{binary}.rs':hashlib.sha256(Path(f'crates/{package}/tests/{binary}.rs').read_bytes()).hexdigest() for package,binary,name in cases}\nsources['crates/se-store/tests/support/store_fixture.rs']=hashlib.sha256(Path('crates/se-store/tests/support/store_fixture.rs').read_bytes()).hexdigest()\n(root/'source-hashes.json').write_text(json.dumps(sources,indent=2)+'\\n')\nrows=[]\nfor package,binary,name in cases:\n command=['cargo','test','--target',target,'-p',package,'--all-features','--locked','--test',binary,name,'--','--exact','--nocapture']\n started=time.monotonic_ns()\n with (root/(binary+'.stdout')).open('wb') as stdout,(root/(binary+'.stderr')).open('wb') as stderr:\n  result=subprocess.run(command,stdout=stdout,stderr=stderr,timeout=1800)\n text=(root/(binary+'.stdout')).read_text(errors='replace')+(root/(binary+'.stderr')).read_text(errors='replace')\n one_case='running 1 test' in text and name in text\n expected=(result.returncode==101 and 'owner-only valid DACL required' in text and 'LocationUnsafe' in text) if os.environ['SIDE']=='base' else (result.returncode==0 and '1 passed' in text)\n receipt={'source':source,'side':os.environ['SIDE'],'package':package,'binary':binary,'case':name,'initial_owner_is_user':owner_is_user,'target':target,'argv':command,'exit':result.returncode,'elapsed_ns':time.monotonic_ns()-started,'exact_case_executed':one_case,'matches_expected':one_case and expected};rows.append(receipt)\n (root/(binary+'.execution.json')).write_text(json.dumps(receipt,indent=2)+'\\n');print(json.dumps(receipt),flush=True)\nsummary={'source':source,'side':os.environ['SIDE'],'qualified':len(rows)==5 and all(v['matches_expected'] for v in rows),'cases':rows,'limit':'Unchanged test consumers on native Windows; no runtime product or latency assertion changed.'}\n(root/'summary.json').write_text(json.dumps(summary,indent=2)+'\\n')\nrows=[{'file':p.relative_to(root).as_posix(),'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in sorted(root.rglob('*')) if p.is_file()]\n(root/'manifest.json').write_text(json.dumps(rows,indent=2)+'\\n')\nraise SystemExit(not summary['qualified'])\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: native-fixture-class-${{ matrix.side }}
+        path: native-query-evidence/
+        if-no-files-found: error
+        retention-days: 2
+        include-hidden-files: true
+'on':
+  push:
+    branches:
+    - prime/fixture-owner-class-373-r1
+  workflow_dispatch: null
