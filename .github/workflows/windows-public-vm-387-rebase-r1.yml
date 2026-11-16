@@ -1,0 +1,437 @@
+name: Build Windows public observer VM inputs
+'on':
+  push:
+    branches:
+    - prime/pr387-rebased-inputs-r1
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_BUILD_JOBS: '2'
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arm: base
+          source: 1bb8da394b6371a05270c4b56ace5fa79fa07ce0
+        - arm: head
+          source: 237d4f060f8efe7e5867d1f1c19b58b1f36f1d68
+    env:
+      PRODUCT_SOURCE: ${{ matrix.source }}
+      ARM: ${{ matrix.arm }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.source }}
+        path: product
+        persist-credentials: false
+    - uses: ./product/.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        workspaces: product
+        shared-key: windows-launch-387-v1
+    - name: Stage fixed VM controls
+      shell: python
+      run: "import hashlib,json,os\nfrom pathlib import Path\nroot=Path(os.environ['RUNNER_TEMP'])/'pr387-vm-inputs';root.mkdir()\n\
+        files={'build_images.py': '\"\"\"Build the exact development images used by the independent public observer.\"\
+        \"\"\\nimport hashlib\\nimport json\\nimport os\\nfrom pathlib import Path\\nimport shutil\\nimport subprocess\\\
+        nimport time\\n\\nroot = Path(os.environ[\\'PR387_BUILD_OUTPUT\\'])\\nroot.mkdir()\\nsource = os.environ[\\\
+        'PRODUCT_SOURCE\\']\\nassert subprocess.check_output([\\'git\\', \\'rev-parse\\', \\'HEAD\\'], text=True).strip()\
+        \ == source\\nassert not subprocess.check_output([\\'git\\', \\'status\\', \\'--porcelain\\'])\\ncommand\
+        \ = [\\'cargo\\', \\'build\\', \\'--locked\\', \\'--target\\', \\'x86_64-pc-windows-msvc\\', \\'-p\\', \\\
+        'se\\', \\'--bin\\', \\'se\\']\\nrecord = {\\'source\\': source, \\'arm\\': os.environ[\\'ARM\\'], \\'argv\\\
+        ': command,\\n          \\'publication\\': os.environ[\\'GITHUB_SHA\\'], \\'run\\': os.environ[\\'GITHUB_RUN_ID\\\
+        '],\\n          \\'compiler\\': subprocess.check_output([\\'rustc\\', \\'-vV\\'], text=True),\\n       \
+        \   \\'environment\\': {k: os.environ.get(k) for k in\\n                          [\\'CARGO_INCREMENTAL\\\
+        ', \\'CARGO_PROFILE_DEV_DEBUG\\', \\'CARGO_BUILD_JOBS\\']},\\n          \\'profile\\': \\'Native Windows\
+        \ development image matching the reviewer recipe\\'}\\nstarted = time.monotonic_ns()\\ntry:\\n    with (root\
+        \ / \\'build.log\\').open(\\'wb\\') as log:\\n        result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,\
+        \ timeout=2400)\\n    record.update(exit=result.returncode, elapsed_ns=time.monotonic_ns() - started)\\\
+        n    assert result.returncode == 0, \\'Native development image build failed\\'\\n    original = Path(\\\
+        'target/x86_64-pc-windows-msvc/debug/se.exe\\')\\n    shutil.copyfile(original, root / \\'se.exe\\')\\n\
+        \    record.update(image_sha256=hashlib.sha256(original.read_bytes()).hexdigest(),\\n                  image_bytes=original.stat().st_size)\\\
+        nfinally:\\n    (root / \\'build.json\\').write_text(json.dumps(record, indent=2) + \\'\\\\n\\', encoding=\\\
+        'utf-8\\')\\n', 'prepare-standard-user.ps1': 'param(\\n  [Parameter(Mandatory=$true)][ValidateSet(\\'base\\\
+        ',\\'head\\')][string]$Arm,\\n  [Parameter(Mandatory=$true)][string]$Rustc,\\n  [Parameter(Mandatory=$true)][string]$Python,\\\
+        n  [Parameter(Mandatory=$true)][string]$EvidenceRoot\\n)\\n$ErrorActionPreference = \\'Stop\\'\\n$principal\
+        \ = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())\\nif\
+        \ (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {\\n  throw \\'Account\
+        \ provisioning requires the admitted VM owner administrator.\\'\\n}\\n$manifest = [IO.File]::ReadAllText((Join-Path\
+        \ $PSScriptRoot \\'manifest.json\\')) | ConvertFrom-Json\\n$selected = $manifest.images.$Arm\\n$Image =\
+        \ Join-Path $PSScriptRoot (\\'images\\\\\\' + $Arm + \\'\\\\se.exe\\')\\nif ((Get-FileHash -LiteralPath\
+        \ $Image -Algorithm SHA256).Hash.ToLowerInvariant() -ne $selected.image_sha256) {\\n  throw \\'The selected\
+        \ executable differs from its authenticated build.\\'\\n}\\nforeach ($property in $manifest.files.PSObject.Properties)\
+        \ {\\n  $path = Join-Path $PSScriptRoot $property.Name\\n  if ((Get-FileHash -LiteralPath $path -Algorithm\
+        \ SHA256).Hash.ToLowerInvariant() -ne $property.Value) {\\n    throw \"Diagnostic input changed: $($property.Name)\"\
+        \\n  }\\n}\\nif (!(Test-Path -LiteralPath $Python -PathType Leaf)) { throw \\'Native guest Python executable\
+        \ is required.\\' }\\nif (!(Test-Path -LiteralPath $EvidenceRoot -PathType Container)) { throw \\'An existing\
+        \ private evidence directory is required.\\' }\\n$case = Join-Path $EvidenceRoot (\\'standard-user-\\' +\
+        \ [Guid]::NewGuid().ToString(\\'N\\'))\\n$null = [IO.Directory]::CreateDirectory($case)\\n$name = \\'sepub\\\
+        ' + [Guid]::NewGuid().ToString(\\'N\\').Substring(0,10)\\n$account = $null\\n$password = $null\\n$child\
+        \ = $null\\n$service = $null\\n$task = $null\\n$taskFolder = $null\\n$taskName = \\'StateEngineProbe-\\\
+        ' + [Guid]::NewGuid().ToString(\\'N\\')\\n$taskRegistered = $false\\n$receipt = [ordered]@{source=$selected.source;\
+        \ arm=$Arm; image_sha256=$selected.image_sha256; case=$case; account_created=$false; observer_observed=$false;\
+        \ observer_qualified=$false; account_disabled_verified=$false; controller_exited=$false}\\ntry {\\n  # Password\
+        \ material exists only in this process and the OS account operation.\\n  # Do not enable transcripts/debug\
+        \ tracing or print this secure value.\\n  $random = New-Object byte[] 48\\n  $generator = [Security.Cryptography.RandomNumberGenerator]::Create()\\\
+        n  try { $generator.GetBytes($random) } finally { $generator.Dispose() }\\n  $secretText = [Convert]::ToBase64String($random)\
+        \ + \\'aA1!\\'\\n  [Array]::Clear($random,0,$random.Length)\\n  $password = ConvertTo-SecureString -String\
+        \ $secretText -AsPlainText -Force\\n  $secretText = $null\\n  $account = New-LocalUser -Name $name -Password\
+        \ $password -AccountNeverExpires -Description \\'Disposable native lifecycle diagnostic\\'\\n  $receipt.account_created\
+        \ = $true\\n  $receipt.account_sid = $account.SID.Value\\n  $users = Get-LocalGroup -SID ([Security.Principal.SecurityIdentifier]::new(\\\
+        'S-1-5-32-545\\'))\\n  Add-LocalGroupMember -Group $users -Member $account\\n  $admins = Get-LocalGroup\
+        \ -SID ([Security.Principal.SecurityIdentifier]::new(\\'S-1-5-32-544\\'))\\n  if (@(Get-LocalGroupMember\
+        \ -Group $admins | Where-Object {$_.SID -eq $account.SID}).Count -ne 0) {\\n    throw \\'New account unexpectedly\
+        \ belongs to Administrators.\\'\\n  }\\n  $acl = New-Object Security.AccessControl.DirectorySecurity\\n\
+        \  $acl.SetAccessRuleProtection($true,$false)\\n  $acl.SetOwner([Security.Principal.SecurityIdentifier]::new(\\\
+        'S-1-5-32-544\\'))\\n  foreach ($sid in @(\\'S-1-5-18\\',\\'S-1-5-32-544\\',$account.SID.Value)) {\\n  \
+        \  $rule = [Security.AccessControl.FileSystemAccessRule]::new(\\n      [Security.Principal.SecurityIdentifier]::new($sid),\\\
+        'FullControl\\',\\n      [Security.AccessControl.InheritanceFlags]\\'ContainerInherit,ObjectInherit\\',\\\
+        n      [Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)\\\
+        n    $acl.AddAccessRule($rule)\\n  }\\n  Set-Acl -LiteralPath $case -AclObject $acl\\n  # The parent directory\
+        \ must permit traversal by the selected identity. Its\\n  # contents remain private: this grants no list/read/write\
+        \ rights to siblings.\\n  $parentAcl = Get-Acl -LiteralPath $EvidenceRoot\\n  $parentAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(\\\
+        n    $account.SID,[Security.AccessControl.FileSystemRights]::Traverse,\\n    [Security.AccessControl.AccessControlType]::Allow))\\\
+        n  Set-Acl -LiteralPath $EvidenceRoot -AclObject $parentAcl\\n  foreach ($file in @(\\'run-standard-user.py\\\
+        ',\\'standard-user-bootstrap.ps1\\',\\'token_context.py\\',\\'public_windows.py\\',\\'task-entry.ps1\\'))\
+        \ {\\n    [IO.File]::Copy((Join-Path $PSScriptRoot (\\'controls\\\\\\' + $file)),(Join-Path $case $file),$false)\\\
+        n  }\\n  [IO.File]::Copy((Join-Path $PSScriptRoot \\'observer.tar\\'),(Join-Path $case \\'observer.tar\\\
+        '),$false)\\n  $expected = [ordered]@{source=$selected.source; arm=$Arm; image_sha256=$selected.image_sha256;\
+        \ account_sid=$account.SID.Value; observer_archive_sha256=$manifest.files.\\'observer.tar\\'}\\n  [IO.File]::WriteAllText((Join-Path\
+        \ $case \\'expected.json\\'),($expected | ConvertTo-Json -Depth 6))\\n  # Copy only compiler executables\
+        \ and libraries into this new account\\'s private\\n  # case. Never reuse another account\\'s Rust configuration\
+        \ or credentials.\\n  $compiler = Get-Item -LiteralPath $Rustc -ErrorAction Stop\\n  if ($compiler.Name\
+        \ -ne \\'rustc.exe\\' -or ($compiler.Attributes -band [IO.FileAttributes]::ReparsePoint)) {\\n    throw\
+        \ \\'A native compiler executable is required, not a toolchain proxy or link.\\'\\n  }\\n  $toolchainRoot\
+        \ = Split-Path (Split-Path $compiler.FullName -Parent) -Parent\\n  $targetToolchain = Join-Path $case \\\
+        'toolchain\\'\\n  $null = [IO.Directory]::CreateDirectory($targetToolchain)\\n  foreach ($part in @(\\'bin\\\
+        ',\\'lib\\')) {\\n    $sourcePart = Join-Path $toolchainRoot $part\\n    foreach ($entry in @(Get-Item -LiteralPath\
+        \ $sourcePart) + @(Get-ChildItem -LiteralPath $sourcePart -Force -Recurse)) {\\n      if ($entry.Attributes\
+        \ -band [IO.FileAttributes]::ReparsePoint) { throw \\'Compiler tree contains a link.\\' }\\n    }\\n   \
+        \ Copy-Item -LiteralPath $sourcePart -Destination (Join-Path $targetToolchain $part) -Recurse -ErrorAction\
+        \ Stop\\n  }\\n  $compilerHashes = [ordered]@{}\\n  foreach ($file in Get-ChildItem -LiteralPath $targetToolchain\
+        \ -File -Recurse) {\\n    $relative = $file.FullName.Substring($targetToolchain.Length + 1)\\n    $compilerHashes[$relative]\
+        \ = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()\\n  }\\n  [IO.File]::WriteAllText((Join-Path\
+        \ $case \\'compiler-files.json\\'),($compilerHashes | ConvertTo-Json -Depth 4))\\n  $receipt.compiler_source\
+        \ = $compiler.FullName\\n  $receipt.compiler_files = $compilerHashes.Count\\n  $receipt.compiler_manifest_sha256\
+        \ = (Get-FileHash -LiteralPath (Join-Path $case \\'compiler-files.json\\') -Algorithm SHA256).Hash.ToLowerInvariant()\\\
+        n\\n  [IO.File]::Copy($Image,(Join-Path $case \\'se.exe\\'),$false)\\n  & icacls.exe $case /setintegritylevel\
+        \ \\'(OI)(CI)M\\' /T\\n  if ($LASTEXITCODE -ne 0) { throw \\'Could not set medium integrity on this disposable\
+        \ case.\\' }\\n  # Demand-only batch task: do not inherit the provisioning session\\'s job.\\n  # Password\
+        \ material crosses only the native scheduler COM call in this guest.\\n  $service = New-Object -ComObject\
+        \ \\'Schedule.Service\\'\\n  $service.Connect()\\n  $taskFolder = $service.GetFolder(\\'\\\\\\')\\n  $definition\
+        \ = $service.NewTask(0)\\n  $definition.RegistrationInfo.Description = \\'Disposable public runtime diagnostic\\\
+        '\\n  $definition.Principal.UserId = $account.SID.Value\\n  $definition.Principal.LogonType = 1\\n  $definition.Principal.RunLevel\
+        \ = 0\\n  $definition.Settings.Enabled = $true\\n  $definition.Settings.AllowDemandStart = $true\\n  $definition.Settings.ExecutionTimeLimit\
+        \ = \\'PT15M\\'\\n  $definition.Settings.MultipleInstances = 2\\n  $definition.Settings.AllowHardTerminate\
+        \ = $false\\n  $definition.Settings.DisallowStartIfOnBatteries = $false\\n  $definition.Settings.StopIfGoingOnBatteries\
+        \ = $false\\n  $action = $definition.Actions.Create(0)\\n  $action.Path = [IO.Path]::Combine([Environment]::GetFolderPath(\\\
+        'Windows\\'),\\'System32\\',\\'WindowsPowerShell\\',\\'v1.0\\',\\'powershell.exe\\')\\n  $action.Arguments\
+        \ = \\'-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"\\' + (Join-Path $case \\'task-entry.ps1\\\
+        ') + \\'\" -Python \"\\' + $Python + \\'\"\\'\\n  $action.WorkingDirectory = $case\\n  $bstr = [IntPtr]::Zero\\\
+        n  $secretText = $null\\n  try {\\n    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($password)\\\
+        n    $secretText = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)\\n    $task = $taskFolder.RegisterTaskDefinition($taskName,$definition,2,$account.SID.Value,$secretText,1,$null)\\\
+        n    $taskRegistered = $true\\n  } finally {\\n    $secretText = $null\\n    if ($bstr -ne [IntPtr]::Zero)\
+        \ { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }\\n  }\\n  $receipt.task_name = $taskName\\\
+        n  $receipt.task_path = $task.Path\\n  $digest = [Security.Cryptography.SHA256]::Create()\\n  try { $receipt.task_xml_sha256\
+        \ = [BitConverter]::ToString($digest.ComputeHash([Text.Encoding]::UTF8.GetBytes($task.Xml))).Replace(\\\
+        '-\\',\\'\\').ToLowerInvariant() }\\n  finally { $digest.Dispose() }\\n  $running = $task.Run($null)\\n\
+        \  $receipt.task_instance = $running.InstanceGuid\\n  $deadline = [DateTime]::UtcNow.AddSeconds(900)\\n\
+        \  $identityPath = Join-Path $case \\'task-self.json\\'\\n  while (!(Test-Path -LiteralPath $identityPath))\
+        \ {\\n    $running.Refresh()\\n    if ($running.State -ne 4 -and $task.LastTaskResult -ne 267009 -and $task.LastTaskResult\
+        \ -ne 267011) {\\n      $receipt.task_result = $task.LastTaskResult\\n      throw \\'Scheduled controller\
+        \ exited before its PID identity was published.\\'\\n    }\\n    if ([DateTime]::UtcNow -gt $deadline) {\
+        \ throw \\'Scheduled controller never published its native PID identity; keep VM custody.\\' }\\n    Start-Sleep\
+        \ -Milliseconds 100\\n  }\\n  $identity = [IO.File]::ReadAllText($identityPath) | ConvertFrom-Json\\n  if\
+        \ ($identity.pid -le 0 -or !$identity.command.Contains((Join-Path $case \\'task-entry.ps1\\'))) {\\n   \
+        \ throw \\'Scheduled controller identity does not name this exact case.\\'\\n  }\\n  $receipt.controller_pid\
+        \ = $identity.pid\\n  $receipt.controller_birth = [string]$identity.birth\\n  $receipt.controller_command\
+        \ = $identity.command\\n  $completePath = Join-Path $case \\'task-complete.json\\'\\n  try {\\n    $child\
+        \ = Get-Process -Id $identity.pid -ErrorAction Stop\\n    if ($child.StartTime.ToFileTimeUtc().ToString()\
+        \ -ne [string]$identity.birth) { $child.Dispose(); $child=$null; throw \\'Scheduled controller PID birth\
+        \ changed.\\' }\\n  } catch {\\n    if ($_.FullyQualifiedErrorId -notlike \\'NoProcessFoundForGivenId,*\\\
+        ') { throw }\\n    if (!(Test-Path -LiteralPath $completePath)) { throw }\\n    $receipt.controller_exited_before_handle\
+        \ = $true\\n  }\\n  if ($child) {\\n    $remaining = [Math]::Max(0,[Math]::Min(900000,($deadline-[DateTime]::UtcNow).TotalMilliseconds))\\\
+        n    if (!$child.WaitForExit([int]$remaining)) {\\n      $receipt.cleanup_unknown = $true\\n      throw\
+        \ \\'Exact scheduled controller remains live; keep VM custody and join guest stop.\\'\\n    }\\n    $receipt.controller_exited\
+        \ = $true\\n  }\\n  $finished = [IO.File]::ReadAllText($completePath) | ConvertFrom-Json\\n  if ($finished.pid\
+        \ -ne $identity.pid -or [string]$finished.birth -ne [string]$identity.birth) {\\n    throw \\'Scheduled\
+        \ completion identity differs from the observed controller.\\'\\n  }\\n  if (!$child) {\\n    # A missing\
+        \ Get-Process alone is insufficient; require the native scheduler\\n    # instance stopped and the exact\
+        \ controller\\'s completed identity as well.\\n    $running.Refresh()\\n    if ($running.State -eq 4) {\
+        \ throw \\'Scheduled instance remains running after its claimed completion.\\' }\\n    $receipt.controller_exited\
+        \ = $true\\n  }\\n  $receipt.controller_exit = $finished.exit\\n  $receipt.task_result = $task.LastTaskResult\\\
+        n  if ($finished.exit -ne 0) { throw \"Standard-user scheduled controller failed with exit$($finished.exit).\"\
+        \ }\\n  $result = [IO.File]::ReadAllText((Join-Path $case \\'report.json\\')) | ConvertFrom-Json\\n  if\
+        \ (!$result.observer_completed -or !$result.public_closure_witnessed -or !$result.observer_qualified) {\\\
+        n    throw \\'Public observer or exact native cleanup remains unqualified.\\'\\n  }\\n  if ($result.controller.token.user\
+        \ -ne $account.SID.Value) { throw \\'Observer ran as a different OS account.\\' }\\n  if ($result.controller.token.integrity\
+        \ -ne \\'S-1-16-8192\\' -or $result.controller.token.elevated -ne 0 -or $result.controller.in_job) {\\n\
+        \    throw \\'The standard-user venue is not medium integrity outside caller jobs.\\'\\n  }\\n  $receipt.observer_observed\
+        \ = $true\\n\\n} catch {\\n  $receipt.error = $_.Exception.Message\\n  throw\\n} finally {\\n  try {\\n\
+        \    if ($child) {\\n      $receipt.controller_exited = $child.HasExited\\n      if ($child.HasExited) {\
+        \ $child.Dispose() }\\n      else { $receipt.cleanup_unknown = $true }\\n    }\\n  } catch {\\n    $receipt.cleanup_unknown\
+        \ = $true\\n    $receipt.controller_cleanup_error = $_.Exception.Message\\n  }\\n  try {\\n    if ($taskRegistered)\
+        \ {\\n      $taskDeadline = [DateTime]::UtcNow.AddSeconds(5)\\n      while ($task.GetInstances(0).Count\
+        \ -ne 0 -and [DateTime]::UtcNow -lt $taskDeadline) { Start-Sleep -Milliseconds 100 }\\n      if ($task.GetInstances(0).Count\
+        \ -ne 0) { throw \\'Scheduled controller instance still exists; keep VM custody.\\' }\\n      $taskFolder.DeleteTask($taskName,0)\\\
+        n      $absent = $false\\n      try { $null = $taskFolder.GetTask($taskName) }\\n      catch {\\n      \
+        \  if ($_.Exception.HResult -eq -2147024894 -or ($_.Exception.InnerException -and $_.Exception.InnerException.HResult\
+        \ -eq -2147024894)) { $absent = $true }\\n        else { throw }\\n      }\\n      if (!$absent) { throw\
+        \ \\'Exact temporary scheduled task remains registered.\\' }\\n      $receipt.task_removed_verified = $true\\\
+        n    }\\n  } catch {\\n    $receipt.task_cleanup_unknown = $true\\n    $receipt.task_cleanup_error = $_.Exception.ToString()\\\
+        n  }\\n  try {\\n    if ($account) {\\n      $current = Get-LocalUser -SID $account.SID -ErrorAction Stop\\\
+        n      if (!$current -or $current.SID -ne $account.SID) { throw \\'Exact created account SID changed or\
+        \ is absent.\\' }\\n      Disable-LocalUser -InputObject $current\\n      $readback = Get-LocalUser -SID\
+        \ $account.SID -ErrorAction Stop\\n      if (!$readback -or $readback.SID -ne $account.SID -or $readback.Enabled\
+        \ -ne $false) {\\n        throw \\'Exact created account was not witnessed disabled.\\'\\n      }\\n   \
+        \   $receipt.account_disabled_verified = $true\\n      $receipt.account_disabled_readback = @{sid=$readback.SID.Value;\
+        \ enabled=$readback.Enabled}\\n      # Keep the private profile and evidence for readback. The VM owner\
+        \ resets\\n      # the disposable guest only after the joined-stop release.\\n    }\\n  } catch {\\n   \
+        \ $receipt.account_cleanup_unknown = $true\\n    $receipt.account_cleanup_error = $_.Exception.Message\\\
+        n  }\\n  if ($password) { $password.Dispose() }\\n  $receipt.observer_qualified = $receipt.observer_observed\
+        \ -and $receipt.controller_exited -and $receipt.account_disabled_verified -and $receipt.task_removed_verified\
+        \ -and !$receipt.task_cleanup_unknown -and !$receipt.cleanup_unknown -and !$receipt.account_cleanup_unknown\
+        \ -and !$receipt.error\\n  [IO.File]::WriteAllText((Join-Path $case \\'launcher.json\\'),($receipt | ConvertTo-Json\
+        \ -Depth 8))\\n}\\nif (!$receipt.observer_qualified) { throw \\'Public observer or cleanup remains unqualified;\
+        \ read the retained launcher receipt.\\' }\\n$receipt | ConvertTo-Json -Depth 8\\n', 'controls/public_windows.py':\
+        \ '\"\"\"Public Windows launch/stop qualification; no provider account is used.\"\"\"\\nfrom pathlib import\
+        \ Path\\nfrom types import SimpleNamespace\\nimport hashlib,json,os,shutil,sys,time,uuid\\n\\nobserver=Path(os.environ[\\\
+        'OBSERVER_CHECKOUT\\'])\\nsys.path.insert(0,str(observer/\\'scripts/live_output_observe\\'))\\nfrom native\
+        \ import Fixture as BaseFixture,NativeObserver\\nfrom public_ready import PublicReady\\n\\nclass Fixture(BaseFixture):\\\
+        n def ok(self,*args,recipient=False):\\n  if args!=(\\'up\\',):return super().ok(*args,recipient=recipient)\\\
+        n  self.startup=PublicReady(SimpleNamespace(output=self.root,repository=self.repo),\\n   [str(self.se),\\\
+        '--home\\',str(self.home),\\'--json\\',\\'up\\',\\'--foreground\\'],self.env)\\n  return json.loads(self.startup.wait()[\\\
+        'stdout\\'])\\n\\nout=Path(os.environ[\\'JUDGE_OUTPUT\\']);out.mkdir(exist_ok=True)\\nprivate=Path(os.environ[\\\
+        'JUDGE_PRIVATE\\']);private.mkdir()\\nimage=Path(os.environ[\\'SE_IMAGE\\'])\\nsummary={\\'source\\':os.environ[\\\
+        'PRODUCT_SOURCE\\'],\\'arm\\':os.environ[\\'ARM\\'],\\n \\'image_sha256\\':hashlib.sha256(image.read_bytes()).hexdigest(),\\\
+        n \\'scope\\':\\'Native Windows development executable; account-free Claude protocol fixture through public\
+        \ CLI\\',\\n \\'cases\\':[]}\\n\\ndef save(path,value):path.write_text(json.dumps(value,indent=2)+\\'\\\\\
+        n\\',encoding=\\'utf-8\\')\\ndef await_rows(watch,predicate):\\n end=time.monotonic()+10\\n while True:\\\
+        n  rows=watch.observe()\\n  if predicate(rows):return rows\\n  if time.monotonic()>=end:raise AssertionError(\\\
+        'Native process closure did not settle: \\'+repr(rows))\\n  time.sleep(.1)\\n\\nfor label in [\\'running-stop\\\
+        ',\\'exit-before-ready\\']:\\n dest=out/label;dest.mkdir()\\n scope=private/label;scope.mkdir()\\n executable=scope/\\\
+        'se.exe\\';shutil.copyfile(image,executable)\\n helper=None\\n if label==\\'exit-before-ready\\':\\n  helper=scope/\\\
+        'early_exit.py\\'\\n  helper.write_text(\\'\\'\\'from pathlib import Path\\nimport json,os,sys,time\\nse,home,*args=sys.argv[1:]\\\
+        nassert sys.stdin.readline()\\nflag=\\'--resume\\' if \\'--resume\\' in args else \\'--session-id\\'\\nconversation=args[args.index(flag)+1]\\\
+        nPath(\\'early-provider.json\\').write_text(json.dumps(dict(root=os.getppid(),helper=os.getpid(),conversation=conversation,configured_exit_code=23)),encoding=\\\
+        'utf-8\\')\\nprint(json.dumps(dict(type=\\'system\\',subtype=\\'init\\',session_id=conversation)),flush=True)\\\
+        ntime.sleep(.25)\\nraise SystemExit(23)\\n\\'\\'\\',encoding=\\'utf-8\\')\\n row={\\'case\\':label,\\'failures\\\
+        ':[]};f=None;watch=NativeObserver(scope,dest)\\n try:\\n  f=Fixture(executable,scope/\\'case\\',provider_helper=helper)\\\
+        n  row[\\'up\\']=f.ok(\\'up\\');runtime_pid=row[\\'up\\'][\\'process\\'][\\'pid\\']\\n  runtime=next(r for\
+        \ r in watch.observe(runtime_pid) if r[\\'pid\\']==runtime_pid)\\n  assert runtime[\\'name\\'].casefold()==\\\
+        'se.exe\\' and Path(runtime[\\'image\\']).resolve()==executable.resolve(),runtime\\n  row[\\'runtime_native\\\
+        ']=runtime\\n  if label==\\'running-stop\\':\\n   f.launch()\\n   ready=json.loads((f.repo/\\'provider-ready.json\\\
+        ').read_text(encoding=\\'utf-8\\'))\\n   row[\\'ready\\']=ready\\n   assert ready[\\'session_discovery\\\
+        '] and ready[\\'http_discovery\\'],ready\\n   before=watch.observe();row[\\'running_native\\']=before\\\
+        n   pids={ready[\\'native_root_pid\\'],ready[\\'helper_pid\\']}\\n   bindings={(r[\\'pid\\'],r[\\'birth\\\
+        ']) for r in before if r[\\'pid\\'] in pids}\\n   assert {p for p,b in bindings}==pids,\\'Provider identities\
+        \ not observed outside runtime\\'\\n   stop=f.ok(\\'--project\\',f.project,\\'stop\\',f.agent);row[\\'stop\\\
+        ']=stop\\n   assert stop.get(\\'complete\\') and stop.get(\\'witness\\',{}).get(\\'state\\')==\\'witnessed\\\
+        ',stop\\n   row[\\'after_stop\\']=await_rows(watch,lambda rows:not any((r[\\'pid\\'],r[\\'birth\\']) in\
+        \ bindings for r in rows))\\n  else:\\n   key=str(uuid.uuid4());row[\\'request_key\\']=key\\n   started=time.monotonic_ns()\\\
+        n   result=f.call(\\'--key\\',key,\\'--project\\',f.project,\\'launch\\',f.agent,\\'--detach\\',\\'--task\\\
+        ',\\'Early provider exit qualification\\')\\n   row[\\'launch\\']={\\'exit\\':result.returncode,\\'stdout\\\
+        ':result.stdout.decode(\\'utf-8\\'),\\n    \\'stderr\\':result.stderr.decode(\\'utf-8\\'),\\'elapsed_ns\\\
+        ':time.monotonic_ns()-started}\\n   assert result.returncode!=0,\\'Exited provider reported successful launch\\\
+        '\\n   body=json.loads(result.stdout);body=body.get(\\'error\\',body);row[\\'error\\']=body\\n   early=f.repo/\\\
+        'early-provider.json\\';assert early.is_file(),\\'Provider did not reach real init echo\\'\\n   row[\\'provider\\\
+        ']=json.loads(early.read_text(encoding=\\'utf-8\\'))\\n   assert row[\\'provider\\'][\\'configured_exit_code\\\
+        ']==23\\n   encoded=json.dumps(body)\\n   row[\\'new_refusal_contract\\']=(body.get(\\'code\\')==\\'launch-failed\\\
+        '\\n    and body.get(\\'retry\\',{}).get(\\'kind\\')==\\'after_reread\\'\\n    and \\'agent show\\' in encoded\
+        \ and \\'original launch request key\\' in encoded)\\n   if os.environ[\\'ARM\\']==\\'head\\':assert row[\\\
+        'new_refusal_contract\\'],body\\n  row[\\'graded\\']=True\\n except BaseException as error:\\n  row[\\'failures\\\
+        '].append(f\\'{type(error).__name__}: {error}\\')\\n finally:\\n  if f is not None:\\n   try:f.close();row[\\\
+        'public_down_complete\\']=True\\n   except BaseException as error:row[\\'failures\\'].append(f\\'Public\
+        \ down: {error}\\');row[\\'public_down_complete\\']=False\\n   if f.startup is not None and row.get(\\'public_down_complete\\\
+        '):\\n    row[\\'foreground_joined\\']=True\\n   elif f.startup is not None:\\n    try:\\n     f.startup.join();row[\\\
+        'foreground_joined\\']=True\\n    except BaseException as error:row[\\'failures\\'].append(f\\'Foreground\
+        \ join: {error}\\')\\n   for p in f.log_root.glob(\\'call-*.*\\'):shutil.copyfile(p,dest/p.name)\\n   for\
+        \ name in [\\'public-ready.json\\',\\'public-ready-final.json\\']:\\n    p=f.root/name\\n    if p.is_file():shutil.copyfile(p,dest/name)\\\
+        n   # Runtime homes contain authentication material and are deliberately excluded.\\n  try:row[\\'remaining\\\
+        ']=await_rows(watch,lambda rows:not rows)\\n  except BaseException as error:row[\\'failures\\'].append(f\\\
+        'Outside closure: {error}\\')\\n  save(dest/\\'result.json\\',row);summary[\\'cases\\'].append(row);save(out/\\\
+        'public-summary.json\\',summary)\\nraise SystemExit(any(r[\\'failures\\'] for r in summary[\\'cases\\']))\\\
+        n', 'controls/run-standard-user.py': '\"\"\"Execute an unchanged reviewer observer in a real disposable\
+        \ standard logon.\"\"\"\\nimport hashlib\\nimport json\\nimport os\\nfrom pathlib import Path\\nimport subprocess\\\
+        nimport sys\\nimport tarfile\\nimport traceback\\n\\nimport token_context as T\\n\\nroot = Path(__file__).resolve().parent\\\
+        nsettings = json.loads((root / \\'expected.json\\').read_text(encoding=\\'utf-8\\'))\\nreport = {\\'source\\\
+        ': settings[\\'source\\'], \\'arm\\': settings[\\'arm\\'], \\'observer_completed\\': False,\\n         \
+        \ \\'public_closure_witnessed\\': False, \\'observer_qualified\\': False}\\ntry:\\n    assert os.name ==\
+        \ \\'nt\\'\\n    report[\\'controller\\'] = T.process_snapshot(T.k.GetCurrentProcess())\\n    context =\
+        \ report[\\'controller\\']\\n    assert context[\\'token\\'][\\'user\\'] == settings[\\'account_sid\\']\\\
+        n    assert context[\\'token\\'][\\'integrity\\'] == \\'S-1-16-8192\\'\\n    assert context[\\'token\\'][\\\
+        'elevated\\'] == 0 and not context[\\'token\\'][\\'admin_group_attributes\\']\\n    assert context[\\'token\\\
+        '][\\'restricting_sid_count\\'] == 0\\n    assert context[\\'in_job\\'] is False, \\'Standard-user controller\
+        \ is inside a caller job\\'\\n    image = root / \\'se.exe\\'\\n    assert hashlib.sha256(image.read_bytes()).hexdigest()\
+        \ == settings[\\'image_sha256\\']\\n    archive = root / \\'observer.tar\\'\\n    assert hashlib.sha256(archive.read_bytes()).hexdigest()\
+        \ == settings[\\'observer_archive_sha256\\']\\n    observer = root / \\'observer\\'\\n    observer.mkdir()\\\
+        n    with tarfile.open(archive) as bundle:\\n        for member in bundle.getmembers():\\n            assert\
+        \ member.isfile() or member.isdir(), \\'Unexpected source archive link\\'\\n        bundle.extractall(observer,\
+        \ filter=\\'data\\')\\n    report[\\'compiler\\'] = subprocess.check_output([\\'rustc\\', \\'-vV\\'], text=True,\
+        \ timeout=30)\\n    assert subprocess.check_output([\\'rustc\\', \\'--print\\', \\'host-tuple\\'], text=True,\
+        \ timeout=30).strip() == \\'x86_64-pc-windows-msvc\\'\\n    # Compile only a tiny native fixture here; the\
+        \ StateEngine images were built\\n    # on hosted Windows. This checks new-account access to the installed\
+        \ linker.\\n    test_source = root / \\'compiler-probe.rs\\'\\n    test_source.write_text(\\'fn main() {}\\\
+        \\n\\', encoding=\\'utf-8\\')\\n    probe_command = [\\'rustc\\', \\'--edition=2024\\', str(test_source),\
+        \ \\'-o\\', str(root / \\'compiler-probe.exe\\')]\\n    with (root / \\'compiler.stdout\\').open(\\'wb\\\
+        ') as out, (root / \\'compiler.stderr\\').open(\\'wb\\') as err:\\n        probe = subprocess.run(probe_command,\
+        \ stdin=subprocess.DEVNULL, stdout=out, stderr=err, timeout=60)\\n    report[\\'compiler_probe\\'] = {\\\
+        'argv\\': probe_command, \\'exit\\': probe.returncode}\\n    assert probe.returncode == 0, \\'Standard account\
+        \ cannot compile the native provider fixture\\'\\n    output = root / \\'public\\'\\n    environment = dict(os.environ,\
+        \ OBSERVER_CHECKOUT=str(observer), JUDGE_OUTPUT=str(output),\\n                       JUDGE_PRIVATE=str(root\
+        \ / \\'private\\'), SE_IMAGE=str(image),\\n                       PRODUCT_SOURCE=settings[\\'source\\'],\
+        \ ARM=settings[\\'arm\\'])\\n    command = [sys.executable, \\'-B\\', str(root / \\'public_windows.py\\\
+        ')]\\n    with (root / \\'observer.stdout\\').open(\\'wb\\') as out, (root / \\'observer.stderr\\').open(\\\
+        'wb\\') as err:\\n        # The observer bounds its CLI operations and owns public down and native\\n  \
+        \      # closure. Do not kill it on an outer timeout and discard that custody.\\n        result = subprocess.run(command,\
+        \ stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=environment)\\n    report[\\'observer_exit\\'] =\
+        \ result.returncode\\n    summary = json.loads((output / \\'public-summary.json\\').read_text(encoding=\\\
+        'utf-8\\'))\\n    assert summary[\\'source\\'] == settings[\\'source\\'] and summary[\\'arm\\'] == settings[\\\
+        'arm\\']\\n    assert summary[\\'image_sha256\\'] == settings[\\'image_sha256\\']\\n    assert [r[\\'case\\\
+        '] for r in summary[\\'cases\\']] == [\\'running-stop\\', \\'exit-before-ready\\']\\n    report[\\'observer_completed\\\
+        '] = True\\n    report[\\'public_closure_witnessed\\'] = all(\\n        r.get(\\'public_down_complete\\\
+        ') is True and r.get(\\'foreground_joined\\') is True\\n        and r.get(\\'remaining\\') == [] for r in\
+        \ summary[\\'cases\\'])\\n    report[\\'observer_qualified\\'] = result.returncode == 0 and report[\\'public_closure_witnessed\\\
+        ']\\nexcept BaseException as error:\\n    report[\\'error\\'] = f\\'{type(error).__name__}: {error}\\'\\\
+        n    report[\\'traceback\\'] = traceback.format_exc()\\nfinally:\\n    (root / \\'report.json\\').write_text(json.dumps(report,\
+        \ indent=2) + \\'\\\\n\\', encoding=\\'utf-8\\')\\nprint(json.dumps(report), flush=True)\\nraise SystemExit(0\
+        \ if report[\\'observer_qualified\\'] else 1)\\n', 'controls/token_context.py': '\"\"\"Observe native token\
+        \ and process facts for a private lifecycle judge.\"\"\"\\nimport contextlib\\nimport ctypes as C\\nfrom\
+        \ ctypes import wintypes as W\\nimport hashlib\\nimport json\\nimport os\\nfrom pathlib import Path\\nimport\
+        \ subprocess\\nimport time\\nimport traceback\\n\\nk = C.WinDLL(\\'kernel32\\', use_last_error=True)\\na\
+        \ = C.WinDLL(\\'advapi32\\', use_last_error=True)\\nnt = C.WinDLL(\\'ntdll\\')\\nH = W.HANDLE\\nk.GetCurrentProcess.restype\
+        \ = H\\nk.CloseHandle.argtypes = [H]\\nk.LocalFree.argtypes = [H]\\nk.WaitForSingleObject.argtypes = [H,\
+        \ W.DWORD]\\nk.WaitForSingleObject.restype = W.DWORD\\nk.IsProcessInJob.argtypes = [H, H, C.POINTER(W.BOOL)]\\\
+        nk.GetProcessTimes.argtypes = [H, C.c_void_p, C.c_void_p, C.c_void_p, C.c_void_p]\\nk.QueryFullProcessImageNameW.argtypes\
+        \ = [H, W.DWORD, W.LPWSTR, C.POINTER(W.DWORD)]\\nk.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]\\nk.OpenProcess.restype\
+        \ = H\\na.OpenProcessToken.argtypes = [H, W.DWORD, C.POINTER(H)]\\na.GetTokenInformation.argtypes = [H,\
+        \ C.c_int, C.c_void_p, W.DWORD, C.POINTER(W.DWORD)]\\na.ConvertSidToStringSidW.argtypes = [C.c_void_p, C.POINTER(W.LPWSTR)]\\\
+        nnt.NtQueryInformationProcess.argtypes = [H, W.ULONG, C.c_void_p, W.ULONG, C.c_void_p]\\nnt.NtQueryInformationProcess.restype\
+        \ = C.c_long\\n\\n\\nclass SidAttributes(C.Structure):\\n    _fields_ = [(\\'sid\\', C.c_void_p), (\\'attributes\\\
+        ', W.DWORD)]\\n\\nclass UnicodeString(C.Structure):\\n    _fields_ = [(\\'length\\', W.USHORT), (\\'maximum\\\
+        ', W.USHORT), (\\'buffer\\', C.c_void_p)]\\n\\ndef require(ok, operation):\\n    if not ok:\\n        raise\
+        \ C.WinError(C.get_last_error(), operation)\\n\\ndef token_info(token, kind):\\n    buffer = C.create_string_buffer(65536)\\\
+        n    used = W.DWORD()\\n    require(a.GetTokenInformation(token, kind, buffer, len(buffer), C.byref(used)),\\\
+        n            f\\'query token class {kind}\\')\\n    assert 0 < used.value <= len(buffer)\\n    return buffer,\
+        \ used.value\\n\\ndef token_dword(token, kind):\\n    value, used = W.DWORD(), W.DWORD()\\n    require(a.GetTokenInformation(token,\
+        \ kind, C.byref(value), C.sizeof(value),\\n                                  C.byref(used)), f\\'query fixed\
+        \ token class {kind}\\')\\n    assert used.value == C.sizeof(value)\\n    return value.value\\n\\ndef sid_text(sid):\\\
+        n    text = W.LPWSTR()\\n    require(a.ConvertSidToStringSidW(sid, C.byref(text)), \\'read token SID\\')\\\
+        n    try:\\n        return text.value\\n    finally:\\n        k.LocalFree(C.cast(text, H))\\n\\ndef token_snapshot(token):\\\
+        n    user, _ = token_info(token, 1)\\n    integrity, _ = token_info(token, 25)\\n    groups, used = token_info(token,\
+        \ 2)\\n    count = W.DWORD.from_buffer(groups).value\\n    offset = C.sizeof(C.c_void_p)\\n    assert offset\
+        \ + count * C.sizeof(SidAttributes) <= used\\n    values = (SidAttributes * count).from_buffer(groups, offset)\\\
+        n    admin = [v.attributes for v in values if sid_text(v.sid) == \\'S-1-5-32-544\\']\\n    restricted, _\
+        \ = token_info(token, 11)\\n    return {\\'user\\': sid_text(SidAttributes.from_buffer(user).sid),\\n  \
+        \          \\'elevated\\': token_dword(token, 20),\\n            \\'elevation_type\\': token_dword(token,\
+        \ 18),\\n            \\'integrity\\': sid_text(SidAttributes.from_buffer(integrity).sid),\\n           \
+        \ \\'admin_group_attributes\\': admin,\\n            \\'admin_enabled\\': any(x & 4 for x in admin),\\n\
+        \            \\'restricting_sid_count\\': W.DWORD.from_buffer(restricted).value}\\n\\ndef process_snapshot(handle):\\\
+        n    image, size = C.create_unicode_buffer(32768), W.DWORD(32768)\\n    require(k.QueryFullProcessImageNameW(handle,\
+        \ 0, image, C.byref(size)), \\'read exact image\\')\\n    buffer = C.create_string_buffer(65536)\\n    status\
+        \ = nt.NtQueryInformationProcess(handle, 60, buffer, len(buffer), None)\\n    assert status >= 0, f\\'exact\
+        \ command line unreadable: {status:#x}\\'\\n    value = UnicodeString.from_buffer(buffer)\\n    start, end\
+        \ = C.addressof(buffer), C.addressof(buffer) + len(buffer)\\n    assert value.length % 2 == 0 and start\
+        \ <= value.buffer <= end\\n    assert value.buffer + value.length <= end\\n    created, exited, kernel,\
+        \ user = (C.c_ulonglong() for _ in range(4))\\n    require(k.GetProcessTimes(handle, C.byref(created), C.byref(exited),\\\
+        n                              C.byref(kernel), C.byref(user)), \\'read exact birth\\')\\n    member = W.BOOL()\\\
+        n    require(k.IsProcessInJob(handle, None, C.byref(member)), \\'read exact job membership\\')\\n    token\
+        \ = H()\\n    require(a.OpenProcessToken(handle, 8, C.byref(token)), \\'read exact process token\\')\\n\
+        \    try:\\n        return {\\'image\\': image.value, \\'command\\': C.wstring_at(value.buffer, value.length\
+        \ // 2),\\n                \\'creation_filetime\\': created.value, \\'in_job\\': bool(member.value),\\n\
+        \                \\'token\\': token_snapshot(token)}\\n    finally:\\n        k.CloseHandle(token)\\n',\
+        \ 'controls/standard-user-bootstrap.ps1': 'param([Parameter(Mandatory=$true)][string]$Python)\\n$ErrorActionPreference\
+        \ = \\'Stop\\'\\n# Compiler scratch belongs to this new account even before its native profile\\n# path\
+        \ is available; no administrator TEMP directory enters the child logon.\\n$env:TEMP = Join-Path $PSScriptRoot\
+        \ \\'bootstrap-temp\\'\\n$env:TMP = $env:TEMP\\n$null = [IO.Directory]::CreateDirectory($env:TEMP)\\n# The\
+        \ scheduler creates this account\\'s batch logon and loads its own profile.\\n# Resolve it from this process\
+        \ token, never from the SSH account\\'s environment.\\nAdd-Type -TypeDefinition @\\'\\nusing System;\\nusing\
+        \ System.Runtime.InteropServices;\\nusing System.Text;\\npublic static class OwnProfile {\\n  [DllImport(\"\
+        kernel32.dll\")] public static extern IntPtr GetCurrentProcess();\\n  [DllImport(\"kernel32.dll\")] public\
+        \ static extern bool CloseHandle(IntPtr value);\\n  [DllImport(\"advapi32.dll\", SetLastError=true)]\\n\
+        \  static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);\\n  [DllImport(\"\
+        userenv.dll\", CharSet=CharSet.Unicode, SetLastError=true)]\\n  static extern bool GetUserProfileDirectoryW(IntPtr\
+        \ token, StringBuilder path, ref uint size);\\n  public static string Read() {\\n    IntPtr token;\\n  \
+        \  if (!OpenProcessToken(GetCurrentProcess(),8,out token))\\n      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());\\\
+        n    try {\\n      var path=new StringBuilder(32768); uint size=32768;\\n      if (!GetUserProfileDirectoryW(token,path,ref\
+        \ size))\\n        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());\\n     \
+        \ return path.ToString();\\n    } finally { CloseHandle(token); }\\n  }\\n}\\n\\'@\\n$profileRoot = [OwnProfile]::Read()\\\
+        n$env:USERPROFILE = $profileRoot\\n$env:APPDATA = [IO.Path]::Combine($profileRoot, \\'AppData\\', \\'Roaming\\\
+        ')\\n$env:LOCALAPPDATA = [IO.Path]::Combine($profileRoot, \\'AppData\\', \\'Local\\')\\n$env:TEMP = [IO.Path]::Combine($env:LOCALAPPDATA,\
+        \ \\'Temp\\')\\n$env:TMP = $env:TEMP\\n$null = [IO.Directory]::CreateDirectory($env:TEMP)\\n$env:HOMEDRIVE\
+        \ = [IO.Path]::GetPathRoot($profileRoot).TrimEnd(\\'\\\\\\')\\n$env:HOMEPATH = $profileRoot.Substring($env:HOMEDRIVE.Length)\\\
+        nforeach ($name in @(\\'GH_TOKEN\\',\\'GITHUB_TOKEN\\',\\'CLAUDECODE\\',\\'CODEX_THREAD_ID\\',\\'CODEX_CI\\\
+        ')) {\\n  [Environment]::SetEnvironmentVariable($name,$null,\\'Process\\')\\n}\\nforeach ($entry in @(Get-ChildItem\
+        \ Env:SE_*)) {\\n  [Environment]::SetEnvironmentVariable($entry.Name,$null,\\'Process\\')\\n}\\n$env:PATH\
+        \ = (Join-Path $PSScriptRoot \\'toolchain\\\\bin\\') + \\';\\' + $env:PATH\\nSet-Location -LiteralPath $PSScriptRoot\\\
+        n& $Python ([IO.Path]::Combine($PSScriptRoot,\\'run-standard-user.py\\'))\\nif ($LASTEXITCODE -ne 0) { throw\
+        \ \"Standard-user observer exited with code $LASTEXITCODE.\" }\\n', 'controls/task-entry.ps1': \"param([Parameter(Mandatory=$true)][string]$Python)\\\
+        n$ErrorActionPreference='Stop'\\n$process = Get-Process -Id $PID -ErrorAction Stop\\n$identity = [ordered]@{pid=$PID;\
+        \ birth=$process.StartTime.ToFileTimeUtc().ToString(); command=[Environment]::CommandLine}\\n[IO.File]::WriteAllText((Join-Path\
+        \ $PSScriptRoot 'task-self.pending'),($identity | ConvertTo-Json -Depth 4))\\n[IO.File]::Move((Join-Path\
+        \ $PSScriptRoot 'task-self.pending'),(Join-Path $PSScriptRoot 'task-self.json'))\\n$code = 1\\ntry {\\n\
+        \  $global:LASTEXITCODE = 0\\n  & (Join-Path $PSScriptRoot 'standard-user-bootstrap.ps1') -Python $Python\
+        \ 1> (Join-Path $PSScriptRoot 'launcher.stdout') 2> (Join-Path $PSScriptRoot 'launcher.stderr')\\n  $code\
+        \ = $LASTEXITCODE\\n} catch {\\n  [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'task-entry-error.txt'),$_.Exception.ToString())\\\
+        n} finally {\\n  $finished = [ordered]@{pid=$PID; birth=$identity.birth; exit=$code}\\n  [IO.File]::WriteAllText((Join-Path\
+        \ $PSScriptRoot 'task-complete.pending'),($finished | ConvertTo-Json -Depth 4))\\n  [IO.File]::Move((Join-Path\
+        \ $PSScriptRoot 'task-complete.pending'),(Join-Path $PSScriptRoot 'task-complete.json'))\\n}\\nexit $code\\\
+        n\"}\nhashes={'build_images.py': '14f9e738c791a3cddab641d3ad7c6881d7e4956bb064b01454a1ed2f7260ac96', 'prepare-standard-user.ps1':\
+        \ '08ed62d07b76ccd98555ad77ec34830a7d858c3f5192241cdacea36c8ca4440d', 'controls/public_windows.py': 'd66aa04bd4ff2f941aa64273d8e949feb8b973b64d98a59b16127fc743498a8d',\
+        \ 'controls/run-standard-user.py': 'b98134305783a5f02b4d1e83c2d25a4f17c90d3c8e944dc187bfec64c2b021d3', 'controls/token_context.py':\
+        \ 'ed4e4714a72a15a337992d771bf4c0a55e83df54a7fbbb69bde33482d9422660', 'controls/standard-user-bootstrap.ps1':\
+        \ '6ff2f9f420d18168f6e144f940c532a48f00ad2cff61f779a0b28f3c8ec71e3d', 'controls/task-entry.ps1': 'eb6a33af538fdd39e631a6f45976ef3aac56fd9302bae9f225e6a369a2f9f835'}\n\
+        for name,data in files.items():\n    assert hashlib.sha256(data.encode()).hexdigest()==hashes[name]\n  \
+        \  path=root/'controls'/name;path.parent.mkdir(parents=True,exist_ok=True)\n    path.write_text(data,encoding='utf-8',newline='')\n\
+        (root/'controls.json').write_text(json.dumps(hashes,indent=2)+'\\n')\nwith open(os.environ['GITHUB_ENV'],'a')\
+        \ as env:\n    env.write('PR387_INPUT_ROOT='+str(root)+'\\n')\n    env.write('PR387_BUILD_OUTPUT='+str(root/'image')+'\\\
+        n')"
+    - name: Parse PowerShell 5.1 and 7 launchers
+      shell: python
+      run: "import base64,json,os,subprocess\nfrom pathlib import Path\nroot=Path(os.environ['PR387_INPUT_ROOT'])\n\
+        environment={k:v for k,v in os.environ.items() if k.casefold()!='psmodulepath'}\nresults=[]\nfor name in\
+        \ ['prepare-standard-user.ps1','controls/standard-user-bootstrap.ps1','controls/task-entry.ps1']:\n    command=\"\
+        $tokens=$null;$errors=$null;[Management.Automation.Language.Parser]::ParseFile('\"+str(root/'controls'/name).replace(\"\
+        '\",\"''\")+\"',[ref]$tokens,[ref]$errors)|Out-Null;if($errors.Count){$errors|Format-List;exit 1};$PSVersionTable.PSVersion.ToString()\"\
+        \n    for label,shell in [('ps51',str(Path(os.environ['SystemRoot'])/'System32/WindowsPowerShell/v1.0/powershell.exe')),('ps7','pwsh.exe')]:\n\
+        \        argv=[shell,'-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',base64.b64encode(command.encode('utf-16le')).decode()]\n\
+        \        result=subprocess.run(argv,env=environment,capture_output=True,timeout=30)\n        prefix=label+'-'+Path(name).stem\n\
+        \        (root/(prefix+'.stdout')).write_bytes(result.stdout)\n        (root/(prefix+'.stderr')).write_bytes(result.stderr)\n\
+        \        results.append({'script':name,'shell':label,'exit':result.returncode})\n        (root/'parse.json').write_text(json.dumps(results,indent=2)+'\\\
+        n')\n        assert result.returncode==0,'PowerShell parsing failed'"
+    - name: Build exact development image
+      shell: python
+      working-directory: product
+      run: 'import os,subprocess,sys
+
+        from pathlib import Path
+
+        root=Path(os.environ[''PR387_INPUT_ROOT''])
+
+        subprocess.run([sys.executable,''-B'',str(root/''controls/build_images.py'')],check=True)'
+    - name: Hash finite input artifact
+      if: ${{ always() }}
+      shell: python
+      run: 'import hashlib,json,os
+
+        from pathlib import Path
+
+        root=Path(os.environ[''PR387_INPUT_ROOT''])
+
+        hashes={str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob(''*'') if
+        p.is_file()}
+
+        (root/''sha256sums.json'').write_text(json.dumps(hashes,indent=2)+''\n'')'
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: windows-public-vm-387-rebase-r1-${{ matrix.arm }}
+        path: ${{ runner.temp }}/pr387-vm-inputs
+        if-no-files-found: error
+        retention-days: 14
