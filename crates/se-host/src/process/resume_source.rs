@@ -12,7 +12,7 @@ impl LaunchCoordinator {
         admission: &Admission,
         deadline: &Deadline,
     ) -> Result<()> {
-        if plan.input.fresh {
+        if plan.input.fresh() {
             return Ok(());
         }
         let conversation = match &plan.conversation {

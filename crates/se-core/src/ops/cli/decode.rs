@@ -294,7 +294,7 @@ pub fn from_matches_with_key(
         "working_state.get" => AnyOp::WorkingStateGet(WorkingStateGet { owner_agent: None }),
         "agent.launch" => AnyOp::AgentLaunch(AgentLaunch {
             target_agent_id: None,
-            fresh: flag(m, "new"),
+            resume: se_types::ResumeSelection::from_cli(text(m, "resume"))?,
             model: text(m, "model"),
             task: text(m, "task"),
             detach: flag(m, "detach"),

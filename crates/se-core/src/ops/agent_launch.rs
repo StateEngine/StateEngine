@@ -18,8 +18,8 @@ pub use pending::{LaunchPending, LaunchPendingState, LaunchReply};
 #[serde(deny_unknown_fields)]
 pub struct AgentLaunch {
     pub target_agent_id: Option<AgentId>,
-    #[serde(default, rename = "new")]
-    pub fresh: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<se_types::ResumeSelection>,
     pub model: Option<String>,
     pub task: Option<String>,
     #[serde(default = "headless")]
@@ -94,6 +94,9 @@ fn attended_setup_reason(record: &se_store::ProjectionRecord) -> Option<&str> {
     }
 }
 impl AgentLaunch {
+    pub fn fresh(&self) -> bool {
+        !se_types::ResumeSelection::requested(self.resume.as_ref())
+    }
     /// A busy target is inventoried before this launch-mode refusal. The host
     /// rechecks it before any preflight or native replacement can take effect.
     pub fn require_launch_mode(&self, provider: se_store::Provider) -> Result<()> {
@@ -121,6 +124,34 @@ impl AgentLaunch {
     }
 }
 impl LaunchPlan {
+    pub fn details(&self) -> se_types::LaunchDetails {
+        se_types::LaunchDetails {
+            provider: match self.profile.provider {
+                se_store::Provider::Claude => se_types::Provider::Claude,
+                se_store::Provider::Codex => se_types::Provider::Codex,
+                se_store::Provider::SeCode => se_types::Provider::SeCode,
+                se_store::Provider::Acp => se_types::Provider::Acp,
+            },
+            model: self
+                .input
+                .model
+                .clone()
+                .or_else(|| self.profile.model.clone()),
+            permission_profile: self.resolved.name.clone(),
+            permission: match self.resolved.sandbox {
+                se_config::config_policy::EffectiveSandbox::ReadOnly => "read-only",
+                se_config::config_policy::EffectiveSandbox::WorkspaceWrite => "workspace-write",
+                se_config::config_policy::EffectiveSandbox::Bypass => "bypass",
+            }
+            .into(),
+            network: self.resolved.network,
+            resumed: matches!(self.conversation, Read::Present { .. }),
+            conversation: self.conversation.clone(),
+            mail_notifications: Read::Unknown {
+                what: "launch preparation has not connected the provider".into(),
+            },
+        }
+    }
     pub fn start_new_conversation(&mut self, reason: String) {
         self.conversation = Read::Absent {
             checked: reason.clone(),
@@ -184,6 +215,8 @@ pub struct SavedConversationAge {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct LaunchResult {
+    #[serde(default = "se_types::LaunchDetails::unobserved_mail")]
+    pub mail_notifications: Read<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness_policy_notice: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
