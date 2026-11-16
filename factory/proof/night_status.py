@@ -42,7 +42,10 @@ def planned(config):
                for p in config.get("native_receipts", [])]
     from windows_adapter import plan as windows_plan
     probes += [(p["platform"], p["surface"], p["selection"]) for p in windows_plan(config)]
-    return [(key, scopes[key[2]]) for key in probes]
+    # A measurement scope runs probes, not journeys, so it has no journey rows to
+    # compare. Indexing `scopes` by its selection would raise KeyError, so it carries
+    # an empty row set and the report reads its budget artifact instead.
+    return [(key, scopes[key[2]] if key[2] in scopes else []) for key in probes]
 
 
 def labels(config):
@@ -92,9 +95,11 @@ def assess(config, directory, record, report, night, now, report_error=None):
             # Anchor to the night being assessed, not to the current hour: the night
             # label rolls at 11:00 New York, so an hour test at 15Z names the wrong
             # record and the reason is looked for under a night that has not started.
-            closed = now.astimezone(timezone.utc) >= datetime.combine(
-                date, datetime.min.time(), timezone.utc).replace(
-                    hour=WINDOWS_CLOSED_HOUR_UTC)
+            # The night's own 15:00Z, compared against the assessment instant. No
+            # bare `date` here: the night is a string the caller already fixed.
+            closes_at = datetime.fromisoformat(night).replace(
+                hour=WINDOWS_CLOSED_HOUR_UTC, tzinfo=timezone.utc)
+            closed = now.astimezone(timezone.utc) >= closes_at
             settled = any(r.get("platform") == "win32"
                           and r.get("state") not in ("planned", "running")
                           for r in checked["invocations"])

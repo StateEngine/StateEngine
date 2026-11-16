@@ -132,18 +132,20 @@ def run(request, settings, runner, claim, seat):
     timeout = request["run_timeout_seconds"]
     output = Path(request["output"])
     output.mkdir(parents=True, exist_ok=True)
-    # The runner accepts exactly one target argument and four flags; it has no
-    # scope or output switch. Passing an invented flag would be refused by its own
-    # parser, so the scope is recorded beside the attempt instead of guessed at,
-    # and `closure` refuses any run whose receipts are missing.
+    # The target names the measurement scope. The runner change adds `measure:<name>`
+    # and `--out`; until that lands this refuses rather than passing a journey target
+    # that would produce no measurement receipt.
     surface, selection = request["surface"], request["selection"]
-    target = "native" if (surface, selection) == ("claude", "wave-2") else "workspace"
+    if surface != "measure":
+        raise ValueError("producer drives measurement scopes only, not " + str((surface, selection)))
+    target = "measure:" + selection
     (output.parent / "scope.json").write_text(
         json.dumps({"surface": surface, "selection": selection, "target": target,
                     "b10_ceiling_ms_inclusive": B10_CEILING_MS_INCLUSIVE,
                     "host_load_before": host_load()},
                    indent=2, sort_keys=True) + "\n")
-    argv = [str(runner), commit, target, "--seat", seat, "--claim", claim, "--low-priority"]
+    argv = [str(runner), commit, target, "--seat", seat, "--claim", claim,
+            "--low-priority", "--out", str(output)]
     # The runner owns VM admission and shutdown. A timed-out child is killed and
     # reaped so no guest custody outlives this attempt.
     log = output.parent / "runner.log"

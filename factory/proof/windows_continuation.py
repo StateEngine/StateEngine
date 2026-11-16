@@ -20,19 +20,29 @@ def identity():
 # One standing custody window a day, matching the timer. A second window would let a
 # night publish Windows rows the Linux attempt never pinned.
 CUSTODY_WINDOWS = ((13, 15),)
-# The first night this continuation may serve. Earlier slots belong to separate
-# owner-attended work, so a slot before this one is refused rather than silently
-# producing a Windows row for a night that was never meant to have one.
-FIRST_STANDING_NIGHT = date(2026, 11, 18)
+def first_standing_night(config):
+    """The earliest night this continuation may serve, when the config names one.
+
+    Deployment scheduling belongs to the deployment's configuration, not to public
+    source: a hard-coded date here would be an operator default baked into the
+    product. An absent key permits any date, which is the standing behaviour.
+    """
+    raw = (config.get("windows") or {}).get("first_night")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("windows.first_night must be an ISO date")
+    return date.fromisoformat(raw)
 
 
-def slot_deadline(now=None):
+def slot_deadline(now=None, config=None):
     """Reserve five minutes for joining the guest and restoring shared custody."""
     now = now or datetime.now(timezone.utc)
     now = now.astimezone(timezone.utc)
-    if now.date() < FIRST_STANDING_NIGHT:
+    first = first_standing_night(config) if config is not None else None
+    if first is not None and now.date() < first:
         raise RuntimeError(
-            f"the standing Windows nightly starts {FIRST_STANDING_NIGHT.isoformat()}; "
+            f"the configured first Windows nightly is {first.isoformat()}; "
             f"this slot ({now.date().isoformat()}) is not its own")
     for start, end in CUSTODY_WINDOWS:
         if start <= now.hour < end:

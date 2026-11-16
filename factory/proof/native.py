@@ -47,6 +47,11 @@ def validate(invocation, directory, run):
             raise ValueError("native artifact digest differs: " + name)
     closure = raw["credential-closure.json"][1]
     if receipt.get("provider") == "none":
+        # A journey needs a provider turn; only a provider-free measurement scope may
+        # claim it read no credential. Otherwise "provider none" would excuse a
+        # journey that simply failed to record its closure.
+        if invocation.get("selection") not in ("writes", "measurement"):
+            raise ValueError("provider-none closure on a scope that requires a provider")
         # A measurement scope never reads a provider credential, so there is no
         # transport to close. It must SAY so: an explicit provider-none closure is a
         # different fact from a copied-credential closure that went missing.

@@ -14,7 +14,7 @@ FIRST_HOUR_PROBES = frozenset((
     "CLI --version", "CLI contextual read verbs", "CLI writes through running host",
     "standalone persistent processes", "idle no session", "standalone RSS no session",
     "persistent processes after 1 seat(s)", "standalone RSS one session", "idle one session"))
-SELECTIONS = {"measurement": ("measurement", set()),
+SELECTIONS = {"writes": ("measurement", set()),
               "first-hour": ("first-hour", {1, 2, 3, 4, 5}),
               "wave-2": ("rust-wave-2", {1, 2, 3, 5}),
               "remote": ("remote", {1}),
@@ -345,7 +345,9 @@ def invocation(inv, directory, run=None):
     rows = receipt.get("results")
     # A measurement scope runs probes, not journeys: the judge records it as
     # `writes_only` with an empty selection, and there are no journey rows to check.
-    measurement = (isinstance(scope, dict) and scope.get("mode") == "measurement")
+    # The judge marks this scope `writes_only` beside a mode of `selected`, so the
+    # flag is the identity — not a mode name it never writes.
+    measurement = (isinstance(scope, dict) and scope.get("writes_only") is True)
     if measurement and mode == "first-hour":
         entry["problems"].append("measurement scope reached a first-hour invocation")
         return entry
@@ -354,22 +356,22 @@ def invocation(inv, directory, run=None):
             or not isinstance(scope, dict) or scope.get("mode") != mode or mode == "unsupported"
             or not isinstance(selected, list) or any(type(number) is not int for number in selected)
             or len(selected) != len(expected) or set(selected) != expected):
-        if not (measurement and mode == "measurement" and selected == []):
+        if not (measurement and selected == []):
             entry["problems"].append("identity, selection or scope mismatch")
             return entry
     if measurement:
-        # No journey rows exist; the budget artifact carries the measurements, and
-        # the cleanup statement still has to be present and known.
+        # A measurement scope has no journey rows, but it is judged by the same rule
+        # as any other receipt: failed cleanup, an unqualified receipt, a missing
+        # budget artifact or a budget miss must still refuse. Only the journey-row
+        # checks are exempt, because there are no journeys to check.
         if not isinstance(rows, list) or rows:
             entry["problems"].append("measurement scope reported journey rows")
             return entry
-        entry.update(results=[], scope=scope, cleanup=receipt.get("cleanup") or [],
-                     qualification=receipt.get("qualification"),
-                     behavior_only=receipt.get("qualification") == "measurements only",
-                     receipt_complete=True, journeys={}, outcome="PASS",
-                     problems=entry["problems"])
         entry["mode"] = "measurement"
-        return entry
+        # A measurement scope has no journeys, so its expected set is empty. It must
+        # stay INSIDE this branch: at function level it would wipe the journey
+        # expectations every other scope relies on.
+        expected = set()
     # One applicability value for everything downstream, built here because this
     # is where the receipt's platform became verified rather than asserted.
     context = ProbeContext(receipt.get("platform"))
@@ -378,8 +380,13 @@ def invocation(inv, directory, run=None):
             or {row["journey"] for row in rows} != expected or len(rows) != len(expected)):
         entry["problems"].append("incomplete or invalid journey rows")
         return entry
-    cleanup = receipt.get("cleanup") if mode == "first-hour" else [row.get("cleanup") for row in rows]
-    cleanup_known = isinstance(cleanup, list) and (mode == "first-hour" or all(isinstance(x, list) for x in cleanup))
+    # A measurement scope has no journey rows, so its cleanup statement is the
+    # receipt's own list. Reading it from rows would silently see no cleanup at all
+    # and pass a run that left debris behind.
+    cleanup = (receipt.get("cleanup") if mode in ("first-hour", "measurement")
+               else [row.get("cleanup") for row in rows])
+    cleanup_known = isinstance(cleanup, list) and (
+        mode in ("first-hour", "measurement") or all(isinstance(x, list) for x in cleanup))
     cleanup_failed = bool(cleanup) if mode == "first-hour" else any(cleanup) if cleanup_known else False
     qualification = receipt.get("qualification")
     budget = receipt.get("budgets")
