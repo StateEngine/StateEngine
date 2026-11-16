@@ -112,11 +112,11 @@ assert!(s.success());loop{thread::sleep(Duration::from_secs(1));}}
         return json.loads((self.home / "claude-mail/data" /
                            f"{self.project}-{self.agent}-hold.json").read_text())
 
-    def launch_window(self, fresh=False, release=False):
+    def launch_window(self, fresh=True, release=False):
         previous = {path: path.read_text() for path in self.repo.glob("native-*")}
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             pending = pool.submit(self.call, "--project", self.project, "launch", self.agent,
-                                  *(["--new"] if fresh else []))
+                                  *(["--resume"] if not fresh else []))
             end = time.monotonic() + 40
             while time.monotonic() < end:
                 new = [path for path in self.repo.glob("native-*")
@@ -216,7 +216,7 @@ def main():
         for f, row in zip(fixtures, rows):
             check("expiry retains exact native process and gives ordinary scoped relaunch",
                   row["session"]["liveness"] == {"state": "present", "value": "live"}
-                  and "--new" not in row["resume"]["argv"]
+                  and not any(word.startswith("--resume") for word in row["resume"]["argv"])
                   and "10 minutes" in row["resume"]["reason"])
             f.mod("expired-end")
         check("expiry and final mod closure create no fresh durable hold", fresh.hold()["held"] is False)
@@ -232,10 +232,10 @@ def main():
             held.signal_display(signal.SIGCONT)
         row = held.row()
         check("failed replacement keeps ordinary retry without claiming another expiry",
-              "replacement setup failed" in row["resume"]["reason"] and "--new" not in row["resume"]["argv"])
+              "replacement setup failed" in row["resume"]["reason"] and not any(word.startswith("--resume") for word in row["resume"]["argv"]))
         for f in fixtures:
-            row = f.launch_window(release=True)
-            check("ordinary reconnect activates its selected conversation", row["session"]["recorded_state"] == "activated")
+            row = f.launch_window(fresh=f is fresh, release=True)
+            check("explicit conversation choice activates its selected conversation", row["session"]["recorded_state"] == "activated")
         check("an unactivated fresh setup gets a new conversation",
               fresh.conversation != expired_fresh_conversation)
         check("prior verified conversation remains resumable after failed setup",

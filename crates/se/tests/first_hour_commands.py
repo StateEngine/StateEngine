@@ -150,12 +150,12 @@ def run(args):
         recovery = None
         for machine in [False, True]:
             result = subprocess.run([str(f.se), '--home', str(f.home), '--project', f.project,
-                                     *(['--json'] if machine else []), 'launch', f.agent, '--detach'],
+                                     *(['--json'] if machine else []), 'launch', f.agent, '--detach', '--resume'],
                                     env=f.env, capture_output=True, timeout=45)
             (args.output / ('rotated-' + str(machine) + '.stdout')).write_bytes(result.stdout)
             (args.output / ('rotated-' + str(machine) + '.stderr')).write_bytes(result.stderr)
             assert result.returncode == 3, (result.stdout, result.stderr)
-            assert str(transcript).encode() in result.stderr and b'--new' in result.stderr
+            assert str(transcript).encode() in result.stderr and b'--resume' in result.stderr
             assert not transcript.exists() and rotated.exists(), 'refusal started the permissive provider'
             current = f.ok('--project', f.project, 'agent', 'show', f.agent)['agent']['value']
             assert current['session']['session_id'] == before['session']['session_id']
@@ -169,7 +169,7 @@ def run(args):
         current = f.ok('--project', f.project, 'agent', 'show', f.agent)['agent']['value']
         assert current['conversation']['id'] != launch['conversation_id']
         assert b'FIRST_HOUR_REPLY' in execute(replies, 'retained-old-reply').stdout
-        check('rotated transcript refuses before preparation in both modes; exact --new recovery retains earlier replies')
+        check('rotated transcript refuses before preparation in both modes; exact fresh recovery retains earlier replies')
     finally:
         f.close()
         with (f.home / 'runtime.lock').open('rb') as lease:

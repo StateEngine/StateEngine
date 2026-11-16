@@ -28,6 +28,9 @@ const STDOUT_BOUND: usize = 4096;
 /// repository state to observe, so the path proceeds as a plain folder and
 /// its git identity is recorded as absent.
 pub fn is_bare(root: &Path) -> Result<bool> {
+    if repository_metadata_absent(root) {
+        return Ok(false);
+    }
     let output = match run(root, &["rev-parse", "--is-bare-repository"]) {
         Spawn::Output(output) => output,
         Spawn::Missing => return Ok(false),
@@ -41,6 +44,28 @@ pub fn is_bare(root: &Path) -> Result<bool> {
         Err(unreadable(root, "bare repository check", &output))
     }
 }
+
+/// Plain folders need no child process when every possible discovery location
+/// is readable and has no repository markers. Any uncertainty leaves Git in
+/// charge, including malformed metadata and dangling links.
+fn repository_metadata_absent(root: &Path) -> bool {
+    if !root.is_absolute() {
+        return false;
+    }
+    for ancestor in root.ancestors() {
+        if !std::fs::metadata(ancestor).is_ok_and(|metadata| metadata.is_dir()) {
+            return false;
+        }
+        for marker in [".git", "HEAD", "objects", "refs", "config", "commondir"] {
+            match std::fs::symlink_metadata(ancestor.join(marker)) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                _ => return false,
+            }
+        }
+    }
+    true
+}
+
 /// The common Git directory: the main `.git` of a worktree or bare
 /// repository, wherever the working copy sits.
 fn common_dir(root: &Path) -> Result<PathBuf> {

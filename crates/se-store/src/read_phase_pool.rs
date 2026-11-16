@@ -85,9 +85,14 @@ impl ReadPhasePool {
         identity.validate(&reader.path)?;
         let db = match idle {
             Some(db) => db,
-            None => reader.connect()?,
+            None => {
+                let db = reader.connect()?;
+                // A cold open crosses native I/O; a retained connection does
+                // no work between the entry check and its fresh snapshot.
+                identity.validate(&reader.path)?;
+                db
+            }
         };
-        identity.validate(&reader.path)?;
         let mut phase = reader.read_phase_on(slot, db)?;
         // Recheck after SQLite established its fresh snapshot as well.
         identity.validate(&reader.path)?;

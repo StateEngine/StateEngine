@@ -45,13 +45,13 @@ codes! {
     LaunchFailed => ("launch-failed", Refused) { subject: String, reason: String, next_step: String } => "Launch {subject}: {reason}", "{next_step}";
     ListenerUnavailable => ("listener-unavailable", Refused) { subject: String, reason: String, next_step: String } => "Listener {subject}: {reason}", "{next_step}";
     ProjectRemoved => ("project-removed", Refused) { project: ProjectId, at: UnixMicros } => "project {project} was removed at {at}", "re-adopt: → `se init --repo {root}`";
-    ProviderChangeBreaksResume => ("provider-change-breaks-resume", Refused) { agent: AgentId, saved: String, requested: String } => "{agent}'s conversation is a {saved} conversation", "Use `se launch {agent} --new --provider {requested}`";
+    ProviderChangeBreaksResume => ("provider-change-breaks-resume", Refused) { agent: AgentId, saved: String, requested: String } => "{agent}'s conversation is a {saved} conversation", "Use `se launch {agent} --provider {requested}`";
     ProviderCliNotFound => ("provider-cli-not-found", Refused) { provider: String, searched: Vec<String> } => "can't find the {provider} CLI", "Install the {provider} CLI, add its native executable to PATH or set command under [providers.{provider}] in the runtime's selected configuration (SE_CONFIG, otherwise this home's config.toml), then restart with the same selection and retry the launch";
     ProviderIncompatible => ("provider-incompatible", Refused) { subject: String, reason: String, next_step: String } => "Provider {subject}: {reason}", "{next_step}";
     RecipientOtherProject => ("recipient-other-project", Refused) { to: String, project: ProjectId } => "{to} is in project {project}", "send from that project";
     RepairRefused => ("repair-refused", Refused) { subject: String, reason: String, next_step: String } => "Repair {subject}: {reason}", "{next_step}";
     RepoInvalid => ("repo-invalid", Refused) { subject: String, reason: String, next_step: String } => "Repository {subject}: {reason}", "{next_step}";
-    ResumeReferenceMissing => ("resume-reference-missing", Refused) { agent: AgentId } => "{agent}'s previously saved conversation reference is missing", "Use `se launch {agent} --new`";
+    ResumeReferenceMissing => ("resume-reference-missing", Refused) { agent: AgentId } => "{agent}'s previously saved conversation reference is missing", "Use `se launch {agent}`";
     RuntimeIncompatible => ("runtime-incompatible", Refused) { subject: String, reason: String, next_step: String } => "Runtime {subject}: {reason}", "{next_step}";
     SecretToTerminalRefused => ("secret-to-terminal-refused", Refused) { what: String } => "refusing to print {what} to a terminal", "run it through a pipe (integrations only)";
     SessionAlreadyEnded => ("session-already-ended", Refused) { session: SessionId, at: UnixMicros } => "session {session} ended at {at}", "Use `se launch AGENT`";
@@ -70,7 +70,7 @@ codes! {
     TargetUnknown => ("target-unknown", Unknown) { subject: String, reason: String, next_step: String } => "Unknown target {subject}: {reason}", "{next_step}";
     AtlasSourceUnreadable => ("atlas-source-unreadable", Unreadable) { path: String, reason: String } => "Atlas can't read {path}: {reason}", "restore read access to the file";
     AtlasUnreadable => ("atlas-unreadable", Unreadable) { path: String, reason: String } => "can't read the index database atlas.db: {reason}", "Run `se doctor`; only a diagnosed atlas.index repair may rebuild atlas.db; source-file unreadability is separate";
-    ResumeReferenceUnverifiable => ("resume-reference-unverifiable", Unreadable) { agent: AgentId, conversation: String, reason: String } => "can't verify conversation {conversation}: {reason}", "Use `se launch {agent} --new` (starts fresh, explicitly)";
+    ResumeReferenceUnverifiable => ("resume-reference-unverifiable", Unreadable) { agent: AgentId, conversation: String, reason: String } => "can't verify conversation {conversation}: {reason}", "Use `se launch {agent}` (starts fresh, explicitly)";
     SourceUnreadable => ("source-unreadable", Unreadable) { subject: String, reason: String, next_step: String } => "Cannot read {subject}: {reason}", "{next_step}";
     StoreCorrupt => ("store-corrupt", Unreadable) { path: String, check: String } => "the store failed its integrity check ({check})", "Stop all writers and preserve the damaged database with its WAL/SHM. Run `se status` in your own terminal with the same --home for executable restore or separate fresh-home commands; choose a CLOSED retained copy. No automatic backup selection or salvage is performed";
     StoreUnreadable => ("store-unreadable", Unreadable) { path: String, reason: String } => "can't read the store: {reason}", "Use `se doctor`";

@@ -399,7 +399,7 @@ pub(super) fn finish<R: ReadStore>(
     if value.removal.is_none() {
         if let Some(row) = value.agents.as_ref().and_then(|page| page.items().first()) {
             let command = if row.session.state == "never-launched" {
-                AgentCommand::launch_in_home(&row.id, &cx.home, &scope::project(admission)?, false)
+                AgentCommand::launch_in_home(&row.id, &cx.home, &scope::project(admission)?, true)
             } else {
                 None
             };

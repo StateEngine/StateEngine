@@ -154,8 +154,8 @@ class Consumer(Fixture):
                 'launch', self.agent, '--task', text, '--detach']
         if options.get('override'):
             args.append('--override-live')
-        if options.get('new'):
-            args.append('--new')
+        if options.get('resume'):
+            args.append('--resume')
         result = self.ok(*args)
         self.bind()
         return result
@@ -262,7 +262,7 @@ def mail_case(f):
     queued = f.ok('--key', str(uuid.uuid4()), '--project', f.project, 'msg', 'send',
                   f.agent, 'Later unread source while the recipient is stopped.')
     assert len([x for x in f.messages() if x.get('metadata', {}).get('hostNotice')]) == 1
-    resumed = f.launch('Distinct explicit resumed input.')
+    resumed = f.launch('Distinct explicit resumed input.', resume=True)
     assert resumed['conversation_id'] == conversation
     assert f.api('input/' + old_key) == acceptance
     def later_notice():
@@ -294,7 +294,7 @@ def lifecycle_case(f, case):
         assert refusal.returncode != 0
         assert b'live' in refusal.stdout + refusal.stderr
         assert f.api('input/' + key) == accepted
-        result = f.launch('Distinct explicitly admitted takeover input.', override=True)
+        result = f.launch('Distinct explicitly admitted takeover input.', override=True, resume=True)
         assert result['conversation_id'] == conversation
         assert f.api('input/' + key) == accepted
         assert f.service_identity == service
@@ -317,7 +317,7 @@ def lifecycle_case(f, case):
         assert f.api('input/' + key) == accepted
         assert identity(service['pid']) == service, 'service replaced during owner recovery'
         f.stop()
-        result = f.launch('Distinct explicit input after owner recovery.')
+        result = f.launch('Distinct explicit input after owner recovery.', resume=True)
         assert result['conversation_id'] == conversation
         assert f.api('input/' + key) == accepted
         f.stop()
@@ -385,7 +385,7 @@ def service_new_case(f, cold=False):
         time.sleep(.05)
     row = f.row()
     (f.root / 'lost-stop-row.json').write_text(json.dumps(row, indent=2))
-    assert not row['resume']['ready'] and '--new' in row['resume']['reason']
+    assert not row['resume']['ready'] and '--resume' in row['resume']['reason']
     assert not row['resume'].get('conversation_id'), 'loss invented a resumable conversation'
     journal = document(f.journal_path)
     assert journal['lost'] and not journal['client_closed']['capture_complete']
@@ -394,7 +394,7 @@ def service_new_case(f, cold=False):
                      'launch', f.agent, '--task', 'Unadmitted implicit replacement.', '--detach')
     assert refused.returncode != 0, 'lost conversation implicitly resumed'
     assert document(f.journal_path)['vendor_session'] == sid
-    f.service_identity = None  # A deliberate --new may bind a different service birth.
+    f.service_identity = None  # A deliberate fresh launch may bind a different service birth.
     fresh = 'Distinct explicitly requested new conversation input.'
     launched = f.launch(fresh, new=True)
     assert launched['conversation_id'] != conversation and f.sid != sid and f.key != key
@@ -403,7 +403,7 @@ def service_new_case(f, cold=False):
     assert f.api('input/' + f.key)['data']['text'] == fresh
     messages = f.messages()
     assert any(x.get('type') == 'user' and x.get('text') == fresh for x in messages)
-    assert all(x.get('text') != original for x in messages), 'original input replayed into --new'
+    assert all(x.get('text') != original for x in messages), 'original input replayed into fresh launch'
     previous = f.observer.request('GET', f'/api/session/{sid}/message?limit=100&order=asc')['data']
     assert len(previous) < 100
     assert sum(x.get('type') == 'user' and x.get('text') == original for x in previous) == 1
@@ -424,7 +424,7 @@ def unavailable_case(f):
         assert journal.get('lost', False) is False, 'unavailable HTTP manufactured scope exit'
         assert journal.get('retired', False) is False and (f.profile / 'registration').exists()
         refused = f.call('--key', str(uuid.uuid4()), '--project', f.project,
-                         'launch', f.agent, '--task', 'Must not replace a live scope.', '--detach', '--new')
+                         'launch', f.agent, '--task', 'Must not replace a live scope.', '--detach')
         assert refused.returncode != 0 and document(f.journal_path)['vendor_session'] == sid
         assert identity(service['pid']) == service
     finally:
