@@ -1,28 +1,25 @@
 """Native per-journey token observations; absent usage is never reported as zero."""
 import json
 from pathlib import Path
-import stat
 import time
 
 from harness_matrix.io import require
+from .files import plain_files
 
 
 def snapshot(home, provider):
     root = Path(home) / ('.claude/projects' if provider == 'claude' else '.codex/sessions')
     rows, found = {}, False
-    if not root.exists():
+    try:
+        root.lstat()
+    except FileNotFoundError:
         return dict(files={}, observed=False, observed_at=time.time())
     total = 0
-    for path in sorted(root.rglob('*.jsonl')):
-        for ancestor in [path, *path.relative_to(root).parents]:
-            candidate = ancestor if ancestor.is_absolute() else root / ancestor
-            info = candidate.lstat()
-            require(not stat.S_ISLNK(info.st_mode)
-                    and not getattr(info, 'st_file_attributes', 0) & 0x400,
-                    'Native usage input contains a link or reparse point')
-        require(path.is_file(), 'Native usage input is not a plain file')
-        total += path.stat().st_size
-        require(total <= 256 * 1024**2 and path.stat().st_size <= 32 * 1024**2,
+    for path, info in plain_files(root):
+        if path.suffix != '.jsonl':
+            continue
+        total += info.st_size
+        require(total <= 256 * 1024**2 and info.st_size <= 32 * 1024**2,
                 'Native usage observation exceeds its finite bound')
         usage, events = {}, {}
         with path.open(encoding='utf-8') as stream:

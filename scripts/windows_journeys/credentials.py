@@ -17,6 +17,14 @@ class Prerequisite(RuntimeError):
         self.state = state
 
 
+def present(path):
+    try:
+        path.lstat()
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def plain(path):
     path = Path(path)
     require(path.is_absolute(), 'Credential seed path must be absolute')
@@ -148,8 +156,12 @@ class Credentials:
         directory.mkdir(mode=0o700, exist_ok=True)
         protect(directory)
         self.target = directory / ('.credentials.json' if self.provider == 'claude' else 'auth.json')
+        credential = self.value['credential']
+        if self.provider == 'codex':
+            # Native TokenData requires a string field, even without renewal authority.
+            credential = {**credential, 'tokens': {**credential['tokens'], 'refresh_token': ''}}
         with self.target.open('x', encoding='utf-8') as stream:
-            json.dump(self.value['credential'], stream)
+            json.dump(credential, stream)
         info = plain(self.target)
         require((info.st_dev, info.st_ino) != (self.identity.st_dev, self.identity.st_ino),
                 'Private credential copy shares the seed identity')
@@ -166,8 +178,9 @@ class Credentials:
         current = plain(self.path)
         require((current.st_dev, current.st_ino) == (self.identity.st_dev, self.identity.st_ino)
                 and digest(self.path) == self.sha256, 'Private seed was changed during the run')
-        if self.target is not None and os.path.lexists(self.target):
+        if self.target is not None and present(self.target):
+            plain(self.target)
             self.target.unlink()
         return dict(seed_identity_unchanged=True, seed_bytes_unchanged=True,
-                    private_copy_absent=self.target is None or not os.path.lexists(self.target),
+                    private_copy_absent=self.target is None or not present(self.target),
                     refresh_tokens_copied=False)

@@ -46,6 +46,9 @@ creates a protected current-user/SYSTEM seed. Stdout reports only path, digest
 and expiry. Use that identity in the private manifest. Never put credential
 values in the manifest, shell arguments or repository.
 
+The Codex copy emits its required `refresh_token` string as empty. No refresh
+token bytes are copied, and the seed itself contains no refresh-token field.
+
 Seed age must be at most five minutes at run start. Each private test home gets
 independent protected bytes; seed identity and bytes must stay unchanged.
 Expired access makes the attempt `INCOMPLETE` with an `EXPIRED` prerequisite,

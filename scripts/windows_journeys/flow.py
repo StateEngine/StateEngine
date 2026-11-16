@@ -10,16 +10,15 @@ from harness_matrix.io import digest, require
 from .credentials import Credentials, Prerequisite, protect
 from .usage import snapshot, difference
 from .release import download
+from .files import plain_files
 
 JOURNEYS = ('J1', 'J2', 'J3', 'J4', 'J5')
 
 
 def repository_bytes(root):
     rows = {}
-    for path in sorted(root.rglob('*')):
-        require(not path.is_symlink(), 'Fixture repository contains a link')
-        if path.is_file():
-            rows[str(path.relative_to(root))] = digest(path)
+    for path, _ in plain_files(root):
+        rows[str(path.relative_to(root))] = digest(path)
     return rows
 
 
