@@ -374,7 +374,7 @@ fn quoted(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
-pub(super) fn prepare(home: &Path, path: &Path) -> Result<()> {
+pub(crate) fn prepare(home: &Path, path: &Path) -> Result<()> {
     // Check before even --version: the provider can create temporary directories.
     if let (Some(file), _, _) = read_document(path)? {
         writable(path, &file)?;
