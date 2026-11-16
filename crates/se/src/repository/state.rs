@@ -82,7 +82,7 @@ pub(crate) fn observe_within(root: &Path, deadline: Instant) -> Result<Option<Gi
     // call; nothing else in the output depends on it.
     let commits = match header.head.as_ref() {
         Some(_) if Instant::now() >= deadline => None,
-        Some(_) => match commit_count_within(root, deadline)? {
+        Some(_) => match observe_blocking(observe_count(root, deadline))? {
             CountRead::Count(count) => Some(count),
             // A history walk that outlived the deadline leaves the count
             // unknown. A count of zero would claim an empty history, so the
@@ -126,11 +126,12 @@ fn status_within(root: &Path, deadline: Instant) -> Result<StatusRead> {
                 "deadline expired before status could be measured; state is unknown: {reason}"
             ),
         )),
-        library::Read::Fallback(reason) => status_header_within(root, deadline).map_err(|error| {
-            scope::unreadable("Git repository observation", &format!(
+        library::Read::Fallback(reason) => observe_blocking(observe_status(root, deadline))
+            .map_err(|error| {
+                scope::unreadable("Git repository observation", &format!(
                 "in-process observation failed: {reason}; command-line observation failed: {error}"
             )).with_cause(error)
-        }),
+            }),
     }
 }
 
@@ -142,6 +143,15 @@ enum CountRead {
     Missing,
 }
 
+fn observe_blocking<T>(observation: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(|error| scope::unreadable("Git repository observation", &error.to_string()))?;
+    runtime.block_on(observation)
+}
+
 /// Count the commits reachable from HEAD under the observation's deadline.
 ///
 /// `rev-list --count` walks the history, so it is the one call whose cost grows
@@ -150,15 +160,6 @@ enum CountRead {
 /// slow or stuck walk cannot hold `se status` open. A walk that misses the
 /// deadline is killed and reaped and reported as unknown, never as zero. Its
 /// output is bounded like every other metadata read.
-fn commit_count_within(root: &Path, deadline: Instant) -> Result<CountRead> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()
-        .map_err(|error| scope::unreadable("Git repository observation", &error.to_string()))?;
-    runtime.block_on(observe_count(root, deadline))
-}
-
 async fn observe_count(root: &Path, deadline: Instant) -> Result<CountRead> {
     let deadline = tokio::time::Instant::from(deadline);
     let mut command = tokio::process::Command::new("git");
@@ -268,15 +269,6 @@ async fn observe_count(root: &Path, deadline: Instant) -> Result<CountRead> {
 /// preserved, with Git's own stderr tail, and reported as unreadable rather
 /// than converted to zero. A run that cannot settle a fact before the deadline
 /// reports that fact as unknown, never as clean or as an unborn branch.
-fn status_header_within(root: &Path, deadline: Instant) -> Result<StatusRead> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()
-        .map_err(|error| scope::unreadable("Git repository observation", &error.to_string()))?;
-    runtime.block_on(observe_status(root, deadline))
-}
-
 async fn observe_status(root: &Path, deadline: Instant) -> Result<StatusRead> {
     let deadline = tokio::time::Instant::from(deadline);
     let Some(mut child) = spawn_status(root)? else {

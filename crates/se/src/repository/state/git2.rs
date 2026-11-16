@@ -43,20 +43,19 @@ impl Prepared {
                 .strip_prefix(b"includeif.")
                 .and_then(|name| name.strip_suffix(b".path"))
             {
-                let supported = [b"gitdir:".as_slice(), b"gitdir/i:", b"onbranch:"]
-                    .iter()
-                    .any(|prefix| {
-                        condition
-                            .strip_prefix(*prefix)
-                            .is_some_and(|pattern| !pattern.is_empty())
-                    });
-                if !supported {
-                    return Err(
-                        "unsupported include condition requires the command-line observer".into(),
-                    );
+                let mut parts = condition.splitn(2, |byte| *byte == b':');
+                match (parts.next(), parts.next()) {
+                    (Some(b"gitdir" | b"gitdir/i"), Some(pattern)) if !pattern.is_empty() => {
+                        gitdir_condition = true;
+                    }
+                    (Some(b"onbranch"), Some(pattern)) if !pattern.is_empty() => {}
+                    _ => {
+                        return Err(
+                            "unsupported include condition requires the command-line observer"
+                                .into(),
+                        );
+                    }
                 }
-                gitdir_condition |=
-                    condition.starts_with(b"gitdir:") || condition.starts_with(b"gitdir/i:");
             }
         }
         drop(entries);
@@ -160,33 +159,18 @@ fn header(repository: &Repository) -> Result<Facts, String> {
             let head = reference
                 .target()
                 .ok_or("HEAD did not resolve to an object")?;
-            let branch = if reference.is_branch() {
-                let name =
-                    std::str::from_utf8(reference.name_bytes()).map_err(|e| e.to_string())?;
-                Some(
-                    name.strip_prefix("refs/heads/")
-                        .ok_or("invalid branch reference")?
-                        .to_owned(),
-                )
-            } else {
-                None
-            };
+            let branch = reference
+                .is_branch()
+                .then(|| branch_name(reference.name_bytes()))
+                .transpose()?;
             (Some(head.to_string()), branch)
         }
         Err(error) if error.code() == ErrorCode::UnbornBranch => {
             let reference = repository.find_reference("HEAD").map_err(describe)?;
             let name = reference
-                .symbolic_target()
-                .map_err(describe)?
+                .symbolic_target_bytes()
                 .ok_or("unborn HEAD has no UTF-8 branch")?;
-            (
-                None,
-                Some(
-                    name.strip_prefix("refs/heads/")
-                        .ok_or("invalid unborn branch")?
-                        .to_owned(),
-                ),
-            )
+            (None, Some(branch_name(name)?))
         }
         Err(error) => return Err(describe(error)),
     };
@@ -195,6 +179,14 @@ fn header(repository: &Repository) -> Result<Facts, String> {
         branch,
         dirty: None,
     })
+}
+
+fn branch_name(bytes: &[u8]) -> Result<String, String> {
+    std::str::from_utf8(bytes)
+        .map_err(|error| error.to_string())?
+        .strip_prefix("refs/heads/")
+        .map(str::to_owned)
+        .ok_or_else(|| "invalid branch reference".into())
 }
 
 fn describe(error: git2::Error) -> String {
