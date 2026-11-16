@@ -357,7 +357,6 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("kind").action(ArgAction::Append).help("Event kind to include; repeat for several"))
             .arg(
                 value("position")
-                    .alias("since")
                     .help("An opaque history position cursor, the position value from se history --event, scoped to this caller and project; not a time"),
             )
             .arg(value("limit").default_value("20").help("Maximum events in this page"))
