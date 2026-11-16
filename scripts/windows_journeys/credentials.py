@@ -79,13 +79,11 @@ def without_refresh(value):
 
 def expiry(provider, credential):
     if provider == 'claude':
-        oauth = credential.get('claudeAiOauth', {})
-        require(isinstance(oauth.get('accessToken'), str) and oauth['accessToken'],
-                'Claude access token is absent')
-        value = oauth.get('expiresAt')
-        require(type(value) in (int, float), 'Claude token expiry is unavailable')
-        require(math.isfinite(value), 'Claude token expiry is not finite')
-        return value / 1000
+        require(set(credential) == {'oauth_token'}
+                and isinstance(credential['oauth_token'], str) and credential['oauth_token'],
+                'Claude requires the provider setup-token credential')
+        # The provider's opaque setup token exposes no expiry claim.
+        return None
     access = credential.get('tokens', {}).get('access_token')
     require(isinstance(access, str) and access, 'Codex access token is absent')
     try:
@@ -106,20 +104,20 @@ def provision(provider, source, destination):
             'Provisioning input requires a credential object')
     credential = without_refresh(source['credential'])
     expires = expiry(provider, credential)
-    if expires <= time.time():
+    if expires is not None and expires <= time.time():
         raise Prerequisite('EXPIRED', 'Provisioned access token has already expired')
     native = source.get('native', {})
     if provider == 'claude':
         require(native.get('hasCompletedOnboarding') is True, 'Native Claude onboarding is incomplete')
-        native = {key: without_refresh(native[key]) for key in
-                  ('hasCompletedOnboarding', 'lastOnboardingVersion', 'oauthAccount') if key in native}
+        native = {'hasCompletedOnboarding': True}
     else:
         native = {}
     destination = Path(destination)
     destination.mkdir(mode=0o700, parents=False, exist_ok=False)
     protect(destination)
     seed = destination / 'seed.json'
-    with seed.open('x', encoding='utf-8') as stream:
+    descriptor = os.open(seed, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
         json.dump(dict(schema='se.journey-access-seed/v1', provider=provider, created_at=time.time(),
                        expires_at=expires, credential=credential, native=native), stream)
     return dict(path=str(seed.resolve()), sha256=digest(seed), expires_at=expires)
@@ -147,24 +145,30 @@ class Credentials:
         self.ready()
 
     def ready(self):
-        if time.time() >= self.expires:
+        if self.expires is not None and time.time() >= self.expires:
             raise Prerequisite('EXPIRED', 'Private access token expired; provision a fresh seed and rerun')
+
+    def environment(self):
+        self.ready()
+        return ({'CLAUDE_CODE_OAUTH_TOKEN': self.value['credential']['oauth_token']}
+                if self.provider == 'claude' else {})
 
     def install(self, home):
         self.ready()
         directory = Path(home) / ('.claude' if self.provider == 'claude' else '.codex')
         directory.mkdir(mode=0o700, exist_ok=True)
         protect(directory)
-        self.target = directory / ('.credentials.json' if self.provider == 'claude' else 'auth.json')
-        credential = self.value['credential']
         if self.provider == 'codex':
+            self.target = directory / 'auth.json'
             # Native TokenData requires a string field, even without renewal authority.
+            credential = self.value['credential']
             credential = {**credential, 'tokens': {**credential['tokens'], 'refresh_token': ''}}
-        with self.target.open('x', encoding='utf-8') as stream:
-            json.dump(credential, stream)
-        info = plain(self.target)
-        require((info.st_dev, info.st_ino) != (self.identity.st_dev, self.identity.st_ino),
-                'Private credential copy shares the seed identity')
+            descriptor = os.open(self.target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+                json.dump(credential, stream)
+            info = plain(self.target)
+            require((info.st_dev, info.st_ino) != (self.identity.st_dev, self.identity.st_ino),
+                    'Private credential copy shares the seed identity')
         if self.provider == 'claude':
             config = Path(home) / '.claude.json'
             value = json.loads(config.read_text()) if config.exists() else {}
@@ -183,4 +187,5 @@ class Credentials:
             self.target.unlink()
         return dict(seed_identity_unchanged=True, seed_bytes_unchanged=True,
                     private_copy_absent=self.target is None or not present(self.target),
-                    refresh_tokens_copied=False)
+                    refresh_tokens_copied=False,
+                    delivery='environment' if self.provider == 'claude' else 'private-file')

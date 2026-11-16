@@ -33,6 +33,8 @@ class Journeys(Smoke):
         self.record.update(qualification='five user journeys; performance and clean-image provenance are separate',
                            release=release, phases={key: dict(result='NOT RUN') for key in JOURNEYS},
                            credential_closure=None)
+        self.record['credential_expiry'] = dict(state='unknown' if self.credentials.expires is None
+                                               else 'token-declared', value=self.credentials.expires)
         self.saved_events, self.user_work = {}, {}
         self.initial = None
         self.removed = False
@@ -48,7 +50,7 @@ class Journeys(Smoke):
         try:
             return super().phase(name, operation)
         except BaseException as error:
-            if time.time() >= self.credentials.expires:
+            if self.credentials.expires is not None and time.time() >= self.credentials.expires:
                 self.record['phases'][name].update(result='INCOMPLETE', prerequisite='EXPIRED')
                 raise Prerequisite('EXPIRED', 'Access token expired during the journey; observed error: '
                                    + str(error)) from error
@@ -124,6 +126,9 @@ class Journeys(Smoke):
         require(digest(config) == self.settings['configuration']['sha256'], 'Native configuration changed')
         self.state.mkdir(exist_ok=True)
         (self.state / 'config.toml').write_bytes(config.read_bytes())
+        # Init starts the private host. Supply only the provisioned token;
+        # normal-account credential variables are never inherited.
+        self.commands.environment.update(self.credentials.environment())
         version = self.commands.run(self.settings['version_command'], 'native-provider-version')
         require(version.strip() == self.settings['version_stdout'], 'Native provider version differs')
         self.initialization_attempted = True
@@ -250,6 +255,7 @@ class Journeys(Smoke):
                     self.cleanup(retain_home=True)
                 if self.record.get('process_closure') == [] or self.removed:
                     self.record['credential_closure'] = self.credentials.close()
+                    self.commands.environment.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
             except Exception as error:
                 self.record['cleanup_error'] = str(error)
             passed = all(row['result'] == 'PASS' and row.get('tokens', {}).get('state') != 'unavailable'

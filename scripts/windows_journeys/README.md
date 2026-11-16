@@ -39,9 +39,14 @@ Before each invocation a separate native credential provisioner must mint fresh
 provider access credentials. Pipe its JSON directly into
 `python scripts/windows-journeys.py provision --provider claude --out NEW_PRIVATE_DIRECTORY`
 (or `--provider codex`). Input contains `credential`, the native authentication
-object, and for Claude a `native` object containing completed onboarding. This
-command does not log in, refresh tokens, read a login file or accept its path.
-It recursively removes refresh tokens, checks declared access expiry and
+object, and for Claude a `native` object containing completed onboarding. Claude
+uses `credential: {"oauth_token": "SETUP_TOKEN"}` from the provider's setup-token
+command. It is supplied only through `CLAUDE_CODE_OAUTH_TOKEN` in the private
+command environment before init starts the host. No Claude credential file is
+written. The opaque token exposes no account or expiry claims: these stay
+unknown, and no expiry is invented. This command does not log in, refresh tokens,
+read a login file or accept its path.
+It recursively removes refresh tokens, checks Codex's declared access expiry and
 creates a protected current-user/SYSTEM seed. Stdout reports only path, digest
 and expiry. Use that identity in the private manifest. Never put credential
 values in the manifest, shell arguments or repository.
@@ -49,10 +54,13 @@ values in the manifest, shell arguments or repository.
 The Codex copy emits its required `refresh_token` string as empty. No refresh
 token bytes are copied, and the seed itself contains no refresh-token field.
 
-Seed age must be at most five minutes at run start. Each private test home gets
-independent protected bytes; seed identity and bytes must stay unchanged.
-Expired access makes the attempt `INCOMPLETE` with an `EXPIRED` prerequisite,
-including expiry during a failing call. Cleanup still runs, retaining private
+Seed age must be at most five minutes at run start. Codex gets an independent
+protected native file; Claude gets only the private process environment. Seed
+identity and bytes must stay unchanged.
+Codex's declared expiry makes the attempt `INCOMPLETE` with an `EXPIRED`
+prerequisite, including expiry during a failing call. Opaque Claude token
+rejection is retained as the observed provider failure; the driver cannot
+distinguish expiry from revocation. Cleanup still runs, retaining private
 evidence when closure cannot be proved. Resolve retained processes and native
 installation ownership before reusing the installation account.
 
