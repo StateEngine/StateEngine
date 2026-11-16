@@ -105,8 +105,12 @@ fn grant(h: &Harness) -> Result<GrantRecord, Box<dyn std::error::Error>> {
         issued_at_us: now,
         last_use_at_us: now,
         expires_at_us: now + GRANT_INACTIVITY_US,
-        authority_revision: revision(1)?,
-        lease_revision: revision(1)?,
+        authority_revision: Revision {
+            value: std::num::NonZeroU64::MIN,
+        },
+        lease_revision: Revision {
+            value: std::num::NonZeroU64::MIN,
+        },
         state: GrantState::Active,
     };
     let admission =
@@ -153,7 +157,9 @@ fn remote(
         grant: g.grant.clone(),
         target: target.clone(),
         allowed: true,
-        revision: revision(1)?,
+        revision: Revision {
+            value: std::num::NonZeroU64::MIN,
+        },
     };
     let admitted = se_core::remote::authorize_launch(g.clone(), &target, permission, now)?;
     let admission = h.f.admission(
