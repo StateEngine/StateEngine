@@ -2,6 +2,7 @@
 //! profile bootstrap, the service process, durable intent and native effects.
 use super::*;
 use crate::client::lease::Deadline;
+use crate::harness::binding::{AdapterBinding, Observation, Signal, StopPolicy};
 use crate::{Harness, HarnessBinding, HarnessRequest, ProviderIoPlatform};
 use se_types::{NativePath, Read, Result};
 use std::{
@@ -559,4 +560,35 @@ fn copy(
         cancellation: cx.cancellation.clone(),
         timeout: deadline.remaining()?,
     })
+}
+
+impl AdapterBinding for Arc<Binding> {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn provider(&self) -> se_types::Provider {
+        se_types::Provider::SeCode
+    }
+    fn arm(&self, wake: &Arc<tokio::sync::Notify>) -> Result<()> {
+        self.completion.arm(wake)
+    }
+    fn observe(&self, _capture: bool) -> Observation {
+        let changed = self.completion.take();
+        let failure = match self.diagnostics.lock() {
+            Ok(diagnostics) => diagnostics.failure.clone(),
+            Err(_) => Some(unreadable("SE Code stream state", "poisoned diagnostics").body),
+        };
+        Observation {
+            mail_pending: changed,
+            capture_pending: changed,
+            failure,
+            ..Default::default()
+        }
+    }
+    fn stop_policy(&self) -> StopPolicy {
+        StopPolicy {
+            signal: Some(Signal::Interrupt),
+            ..Default::default()
+        }
+    }
 }
