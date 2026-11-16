@@ -64,7 +64,7 @@ class PrivateSsh:
             'HostKey ' + str(self.server_key), 'PidFile ' + str(root / 'server.pid'),
             'AuthorizedKeysFile ' + str(self.client_key.with_suffix('.pub')),
             'StrictModes no', 'PasswordAuthentication no', 'KbdInteractiveAuthentication no',
-            'PubkeyAuthentication yes', 'UsePAM no', 'PermitRootLogin no',
+            'PubkeyAuthentication yes', 'UsePAM yes', 'PermitRootLogin no',
             'AllowUsers ' + pwd.getpwuid(os.getuid()).pw_name,
             'AllowTcpForwarding yes', 'GatewayPorts no', 'PermitUserEnvironment no',
             'Subsystem sftp /usr/lib/openssh/sftp-server',
