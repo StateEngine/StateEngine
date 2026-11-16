@@ -30,6 +30,7 @@ class Provider:
         self.posts = 0
         self.withheld = False
         self.heartbeats_total = 0
+        self.heartbeats_on_link = 0
         self.session = None
 
     def record(self, **event):
@@ -133,6 +134,7 @@ class Provider:
         auth = json.loads(raw)
         assert auth["d"]["token"] == TOKEN
         self.connections += 1
+        self.heartbeats_on_link = 0
         self.record(kind="gateway_auth", op=auth["op"], seq=auth["d"].get("seq"),
                     session=auth["d"].get("session_id"), intents=auth["d"].get("intents"))
         if auth["op"] == 2:
@@ -157,7 +159,7 @@ class Provider:
         # resumes, so the second message can only arrive through the repair.
         # A provider that never hands on a dispatch gives the client no progress
         # to count, which is the case the bounded loop exists for.
-        if self.mode == "zombie_all":
+        if self.mode in ("zombie_all", "zombie_ack_each"):
             pending = iter(())
         if self.mode == "zombie" and auth["op"] == 2:
             first = next(pending, None)
@@ -217,6 +219,15 @@ class Provider:
                 if self.mode == "zombie_all" and self.heartbeats_total:
                     self.record(kind="heartbeat_withheld", seq=value.get("d"))
                     continue
+                # "zombie_ack_each" acknowledges the first heartbeat of EVERY
+                # connection and then forgets that socket, so each resume is
+                # followed by fresh ACK control traffic. A client that counted an
+                # acknowledgement as progress would never stop retrying even
+                # though no message ever arrives.
+                if self.mode == "zombie_ack_each" and self.heartbeats_on_link:
+                    self.record(kind="heartbeat_withheld", seq=value.get("d"))
+                    continue
+                self.heartbeats_on_link += 1
                 self.heartbeats_total += 1
 
                 self.frame(stream, {"op": 11})

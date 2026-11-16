@@ -372,6 +372,43 @@ fn discord_wire_review_repeated_zombies_end_unreachable() -> Check {
     f.finish(outcome)
 }
 
+/// Acknowledgements on every resumed connection are control traffic, not
+/// progress: a provider that acks the first heartbeat of each socket and then
+/// forgets it, while delivering nothing, must still end as an honest unreachable.
+#[test]
+fn discord_wire_review_control_traffic_does_not_extend_retries() -> Check {
+    let f = Fixture::new("zombie_ack_each")?;
+    let outcome = runtime()?.block_on(async {
+        let mut receiver = ready(&f).await?;
+        loop {
+            match tokio::time::timeout(Duration::from_secs(15), receiver.next(&f.token)).await? {
+                Ok(Some(row)) => {
+                    require(
+                        !matches!(row.content, IncomingContent::Text { .. }),
+                        "a dispatch arrived, so the provider was making progress",
+                    )?;
+                    receiver.ack(&row.cursor)?;
+                }
+                Err(Error::ProviderUnreachable) => break,
+                _ => return Err("control traffic kept the resume loop alive".into()),
+            }
+        }
+        require(
+            f.events()?
+                .iter()
+                .filter(|e| e["kind"] == "heartbeat")
+                .count()
+                > 1,
+            "the provider never acknowledged control traffic",
+        )?;
+        f.no_fixture_errors()
+    });
+    if outcome.is_err() {
+        f.report("discord_wire_review_control_traffic_does_not_extend_retries");
+    }
+    f.finish(outcome)
+}
+
 /// An expired resume session is explicit and invalidated, so the subsequent
 /// attempt identifies afresh instead of retrying an impossible replay forever.
 #[test]
