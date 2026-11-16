@@ -2,7 +2,7 @@
 //! Dropping a forward closes only SSH; it never stops a remote host or agent.
 use super::RemoteReady;
 use super::channel::unavailable;
-use super::ssh_diagnostic::Diagnostics;
+use crate::ssh_transport::Diagnostics;
 mod authorization;
 mod bootstrap;
 pub(super) mod command;
