@@ -67,7 +67,9 @@ def consent(fixture):
                     os.write(master, answer)
             elif process.poll() is not None:
                 break
-        assert process.poll() is not None, 'native Owner permission menu did not finish'
+        # A PTY can report its final EOF before waitpid observes process exit.
+        # Join the owned command rather than treating that scheduling gap as a hang.
+        process.wait(timeout=5)
         assert process.returncode == 0 and not choices, output.decode()
     finally:
         os.close(master)
@@ -122,7 +124,9 @@ def run(args):
         source.session = parent['session_id']
         observation(source, source.session)
         source.ok('remote', 'add', 'isolated-peer', '--name', 'peer')
+        ssh.census()
         consent(source)
+        ssh.census()
         result['checks'].append('real SSH pairing and native Owner launch consent')
         marker = 'durable-remote-' + uuid.uuid4().hex
         destination.ok('--project', destination.project, 'working-state', 'set', marker,
