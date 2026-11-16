@@ -116,7 +116,6 @@ impl MachineIdentityPort for Port<'_> {
             })?;
         let mut file = staged.file;
         file.write_all(bytes)
-            .and_then(|()| file.sync_all())
             .map_err(|error| scope::unreadable("machine identity staging", &error.to_string()))?;
         drop(file);
         match se_store::StateFiles::publish_no_replace(

@@ -21,6 +21,7 @@ pub(super) struct Entry {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImageCacheRead {
     Absent,
+    /// The protected hint was read; native proof still decides whether it can be reused.
     Current,
     Stale,
 }
@@ -171,8 +172,8 @@ pub(super) fn store(
 }
 /// Restore a bounded protected hint, never PID, birth, credential, generation,
 /// ancestry or authorization. hash_image still pins/rechecks the actual file's
-/// identity, size and exact modification/change timestamps before using this digest.
-/// Legacy hints without change time cannot match a fresh native key.
+/// identity, size and native change revision before using this digest.
+/// Windows also excludes writers and refuses reuse of unavailable or legacy revisions.
 /// Endpoint/native instance and MAC checks remain required.
 pub fn restore_image_cache(
     root: &Path,
