@@ -18,12 +18,34 @@ pub enum Door {
     Host,
     Import,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum Provider {
-    Claude,
-    Codex,
-    SeCode,
-    Acp,
+macro_rules! define_providers {
+    ($($variant:ident $field:ident [$($default:tt)*] [$($skip:tt)*] $metadata:tt;)*) => {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+        pub enum Provider { $($variant,)* }
+
+        impl From<se_types::Provider> for Provider {
+            fn from(provider: se_types::Provider) -> Self {
+                match provider { $(se_types::Provider::$variant => Self::$variant,)* }
+            }
+        }
+
+        impl From<Provider> for se_types::Provider {
+            fn from(provider: Provider) -> Self {
+                match provider { $(Provider::$variant => Self::$variant,)* }
+            }
+        }
+    };
+}
+se_types::with_harness_registry!(define_providers);
+
+impl Provider {
+    pub fn id(self) -> &'static str {
+        se_types::Provider::from(self).id()
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        se_types::Provider::from_id(id).map(Into::into)
+    }
 }
 /// The surface chosen by the session's actual launch/bind path, never a liveness fact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
