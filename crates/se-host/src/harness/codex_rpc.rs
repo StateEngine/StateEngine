@@ -1,6 +1,7 @@
 //! Stock Codex headless launch, one retained RPC connection, and exact-turn
 //! interruption. The coordinator alone publishes activation and native exit.
 mod attach;
+mod binding;
 mod channel;
 mod connection;
 #[cfg(target_os = "linux")]
@@ -169,27 +170,6 @@ impl CodexHarness {
             mcp_port: self.mcp_port,
             socket,
         }
-    }
-    pub(crate) async fn start_initial(
-        &self,
-        binding: &HarnessBinding,
-        cx: CallContext,
-    ) -> Result<()> {
-        let binding = bound(binding)?;
-        let params = binding.initial.lock().await.take().ok_or_else(|| {
-            SeError::invalid(
-                "Codex initial task",
-                "the original unsent launch input; no duplicate turn/start",
-            )
-        })?;
-        binding
-            .state
-            .lock()
-            .map_err(|_| poisoned())?
-            .progress
-            .offered();
-        let result = binding.request("turn/start", params, &cx).await?;
-        binding.accept_turn_response(&result)
     }
 }
 impl Binding {

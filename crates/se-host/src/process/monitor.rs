@@ -77,95 +77,24 @@ impl LaunchCoordinator {
                 }
                 capability_retry_at = self.maintain_secode_capability(&state, &deadline).await;
                 let mut capture_pending = job.capture_pending.swap(false, Ordering::AcqRel);
-                if let Some(binding) = state
-                    .binding
-                    .as_ref()
-                    .and_then(|binding| binding.get::<crate::harness::ClaudeBinding>())
-                {
-                    match binding.completion.take() {
-                        Ok(Some(observation)) => {
-                            deadline = deadline.observed_since(observation.observed_at);
-                            state.mail.idle = observation.completed;
-                            if observation.completed {
-                                job.mail_pending.store(true, Ordering::Release);
-                            }
-                            capture_pending = true;
-                        }
-                        Ok(None) => (),
-                        Err(error) => {
-                            let reported = self.report_capture_failure(&state, &error).await;
-                            state.cleanup_failure = Some(reported.err().unwrap_or(error).body);
-                        }
+                if let Some(binding) = &state.binding {
+                    let observed = binding.observe(state.meta.capture);
+                    if let Some(at) = observed.observed_at {
+                        deadline = deadline.observed_since(at);
                     }
-                }
-                if let Some(binding) = state
-                    .binding
-                    .as_ref()
-                    .and_then(|binding| binding.get::<crate::codex_rpc::Binding>())
-                {
-                    let changed = binding.completion.take();
-                    let activity = binding.active_turn();
-                    match activity {
-                        Ok(turn) => state.mail.idle = turn.is_none(),
-                        Err(error) => state.cleanup_failure = Some(error.body),
+                    if let Some(idle) = observed.idle {
+                        state.mail.idle = idle;
                     }
-                    if changed {
+                    if observed.mail_pending {
                         job.mail_pending.store(true, Ordering::Release);
-                        capture_pending = true;
                     }
-                }
-                if let Some(binding) = state
-                    .binding
-                    .as_ref()
-                    .and_then(|binding| binding.get::<crate::secode_process::Binding>())
-                {
-                    let changed = binding.completion.take();
-                    let failure = binding
-                        .diagnostics
-                        .lock()
-                        .map_err(|_| error("SE Code stream state", "poisoned diagnostics"))
-                        .and_then(|diagnostics| match &diagnostics.failure {
-                            Some(body) => Err(se_types::SeError::from(body.clone())),
-                            None => Ok(()),
-                        });
-                    if let Err(error) = failure {
-                        state.cleanup_failure = Some(error.body);
+                    capture_pending |= observed.capture_pending;
+                    if let Some(error) = observed.capture_failure {
+                        let reported = self.report_capture_failure(&state, &error).await;
+                        state.cleanup_failure = Some(reported.err().unwrap_or(error).body);
                     }
-                    if changed {
-                        job.mail_pending.store(true, Ordering::Release);
-                        capture_pending = true;
-                    }
-                }
-                if let Some(binding) = state
-                    .binding
-                    .as_ref()
-                    .and_then(|binding| binding.get::<crate::harness::acp::Binding>())
-                    .cloned()
-                {
-                    match binding.session.observe() {
-                        Ok(observed) => {
-                            state.mail.idle =
-                                observed.active_input.is_none() && !observed.cancelling;
-                            if !observed.completed.is_empty() {
-                                if state.meta.capture {
-                                    capture_pending = true;
-                                } else {
-                                    for request in &observed.completed {
-                                        if let Err(error) =
-                                            binding.session.discard_after_capture_opt_out(*request)
-                                        {
-                                            state.cleanup_failure = Some(error.body);
-                                            break;
-                                        }
-                                    }
-                                }
-                                job.mail_pending.store(true, Ordering::Release);
-                            }
-                            if let Some(failure) = observed.failure {
-                                state.cleanup_failure = Some(failure);
-                            }
-                        }
-                        Err(error) => state.cleanup_failure = Some(error.body),
+                    if let Some(failure) = observed.failure {
+                        state.cleanup_failure = Some(failure);
                     }
                 }
                 // Hook retries and native completions share one capture window.

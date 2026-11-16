@@ -6,6 +6,7 @@
 //! a hook claims.
 use super::claude::{self, ClaudeLaunch};
 mod attended;
+mod binding;
 mod completion;
 mod io;
 mod mail;

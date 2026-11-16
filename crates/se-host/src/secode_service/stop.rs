@@ -5,35 +5,6 @@ use se_proc::ProcessRuntime;
 use serde_json::json;
 
 impl LaunchCoordinator {
-    pub(in crate::process) async fn interrupt_secode_client(
-        &self,
-        work: &owned::Work,
-        deadline: &Deadline,
-    ) -> Result<()> {
-        let process = work.process.clone().ok_or_else(|| {
-            error(
-                "SE Code client cancellation",
-                "retained native process absent",
-            )
-        })?;
-        let native = self.native.clone();
-        let at = deadline.at();
-        let generation = self.options.epoch.generation;
-        self.store
-            .pool
-            .run_owned(deadline, move || {
-                let prepared = native
-                    .prepare_stop(&process, generation, at)
-                    .map_err(|e| error("SE Code native interrupt preparation", e))?;
-                native
-                    .request_interrupt(prepared)
-                    .map_err(|e| error("SE Code native interrupt", e))?
-                    .dispatch
-                    .map_err(|e| error("SE Code native interrupt dispatch", e))?;
-                Ok(())
-            })
-            .await
-    }
     pub(in crate::process) async fn settle_secode(
         &self,
         work: &mut owned::Work,

@@ -1,6 +1,8 @@
 use crate::{CallContext, HarnessKind, HostFuture, SessionIdentity};
 use se_types::{Body, IdempotencyKey, NativePath, ProviderSessionId, Read, Secret, Sha256};
 use std::{ffi::OsString, path::PathBuf};
+#[cfg(feature = "listener")]
+pub(crate) mod binding;
 
 /// Headless Claude launch plan: settings/MCP files, argv, readiness, transcript.
 pub mod claude;
@@ -187,13 +189,16 @@ pub struct HarnessAttach {
 /// Only the adapter modules construct it; empty and mixed bindings are impossible.
 pub struct HarnessBinding {
     #[cfg(feature = "listener")]
-    value: Box<dyn std::any::Any + Send + Sync>,
+    value: Box<dyn binding::AdapterBinding>,
     #[cfg(not(feature = "listener"))]
     _private: (),
 }
 impl HarnessBinding {
     #[cfg(feature = "listener")]
-    fn new<T: Send + Sync + 'static>(binding: std::sync::Arc<T>) -> Self {
+    fn new<T: Send + Sync + 'static>(binding: std::sync::Arc<T>) -> Self
+    where
+        std::sync::Arc<T>: binding::AdapterBinding,
+    {
         Self {
             value: Box::new(binding),
         }
@@ -201,7 +206,37 @@ impl HarnessBinding {
 
     #[cfg(feature = "listener")]
     pub(crate) fn get<T: Send + Sync + 'static>(&self) -> Option<&std::sync::Arc<T>> {
-        self.value.downcast_ref()
+        self.value.as_any().downcast_ref()
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn provider(&self) -> se_types::Provider {
+        self.value.provider()
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn arm(&self, wake: &std::sync::Arc<tokio::sync::Notify>) -> se_types::Result<()> {
+        self.value.arm(wake)
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn observe(&self, capture: bool) -> binding::Observation {
+        self.value.observe(capture)
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn stop_policy(&self) -> binding::StopPolicy {
+        self.value.stop_policy()
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn start_initial(&self, cx: CallContext) -> HostFuture<'_, ()> {
+        self.value.start_initial(cx)
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn policy_notice(&self) -> se_types::Result<Option<String>> {
+        self.value.policy_notice()
     }
 }
 

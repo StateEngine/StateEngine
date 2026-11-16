@@ -175,13 +175,6 @@ impl LaunchCoordinator {
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    #[cfg_attr(
-        target_os = "linux",
-        expect(
-            clippy::cognitive_complexity,
-            reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-        )
-    )]
     pub(super) async fn stop_native(
         &self,
         work: &mut Work,
@@ -229,6 +222,7 @@ impl LaunchCoordinator {
         // The FULL transition rechecks the current control grant before even
         // closing provider stdin. Graceful closure is already a stop effect.
         if let Some(binding) = &work.binding {
+            let policy = binding.stop_policy();
             let graceful = deadline.stage(Duration::from_secs(5))?;
             match self
                 .harness_for(work.meta.provider)?
@@ -236,16 +230,7 @@ impl LaunchCoordinator {
                 .await
             {
                 Ok(interrupt) if interrupt.requested => {
-                    if binding.get::<crate::secode_process::Binding>().is_some()
-                        && let Err(error) = self.interrupt_secode_client(work, &graceful).await
-                    {
-                        work.stop_failure = Some(error.body);
-                    }
-                    // Codex's WebSocket close ends this client's transport,
-                    // not its persistent app-server listener. Ask the exact
-                    // owned Linux scope to terminate before the force interval.
-                    #[cfg(target_os = "linux")]
-                    if binding.get::<crate::codex_rpc::Binding>().is_some() {
+                    if let Some(signal) = policy.signal {
                         let owner = work.process.clone().ok_or_else(|| {
                             error("graceful stop", "owned native reference is absent")
                         })?;
@@ -259,11 +244,18 @@ impl LaunchCoordinator {
                                 let prepared = native
                                     .prepare_stop(&owner, generation, at)
                                     .map_err(|e| error("graceful stop preparation", e))?;
-                                native
-                                    .request_termination(prepared)
-                                    .map_err(|e| error("graceful termination", e))?
+                                let dispatched = match signal {
+                                    crate::harness::binding::Signal::Interrupt => {
+                                        native.request_interrupt(prepared)
+                                    }
+                                    crate::harness::binding::Signal::Terminate => {
+                                        native.request_termination(prepared)
+                                    }
+                                };
+                                dispatched
+                                    .map_err(|e| error("graceful native signal", e))?
                                     .dispatch
-                                    .map_err(|e| error("graceful termination dispatch", e))
+                                    .map_err(|e| error("graceful native signal dispatch", e))
                             })
                             .await;
                         if let Err(error) = attempt {
@@ -295,10 +287,7 @@ impl LaunchCoordinator {
                     }
                 }
                 Ok(_) => {
-                    if binding
-                        .get::<crate::harness::ClaudeBinding>()
-                        .is_some_and(|binding| binding.attended)
-                    {
+                    if policy.native_window {
                         work.stop_method = Some("native-window-scope".into());
                     } else {
                         work.stop_failure = Some(

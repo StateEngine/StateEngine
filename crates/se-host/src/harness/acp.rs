@@ -8,6 +8,7 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
+mod binding;
 mod capture;
 mod environment;
 mod mail;
@@ -72,23 +73,6 @@ impl AcpHarness {
             ));
         }
         Ok(profile)
-    }
-    pub(crate) async fn start_initial(
-        &self,
-        binding: &HarnessBinding,
-        cx: CallContext,
-    ) -> Result<()> {
-        let binding = bound(binding)?;
-        let initial = binding
-            .initial
-            .lock()
-            .map_err(|_| error("input state poisoned"))?
-            .take();
-        if let Some((key, text)) = initial {
-            // Taking the original key precedes stdio. An uncertain offer is never repeated.
-            binding.session.prompt(key, text, cx).await?;
-        }
-        Ok(())
     }
 }
 pub(crate) fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
