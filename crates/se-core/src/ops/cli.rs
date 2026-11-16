@@ -320,7 +320,7 @@ fn input_command(name: &str, c: Command) -> Command {
         "project.status" => c.arg(toggle("all").help("Also summarize every registered project, with its owner-mail counts")),
         "agent.launch" => c
             .arg(positional("agent", 1, true).help("Saved agent name or ID to start in a fresh conversation"))
-            .arg(value("resume").num_args(0..=1).default_missing_value("").value_name("SESSION").help("Reopen the latest saved conversation, or the one identified by SESSION"))
+            .arg(value("resume").num_args(0..=1).default_missing_value("latest").value_name("SESSION").help("Reopen the latest saved conversation, or the one identified by SESSION"))
             .arg(value("provider").help("Override the saved provider for this launch: claude, codex, secode or acp"))
             .arg(value("model").help("Override the saved model for this launch"))
             .arg(value("task").help("Task text handed to the agent for this launch"))

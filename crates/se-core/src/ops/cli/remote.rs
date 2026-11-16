@@ -12,7 +12,7 @@ pub(super) fn command(name: &str, c: Command) -> Command {
     if name == "remote.launch" {
         c.arg(value("target").required(true).help(
             "Exact Owner-approved destination project-ID/agent-ID; uses its saved launch profile",
-        )).arg(value("resume").num_args(0..=1).default_missing_value("").value_name("SESSION").help("Reopen the destination's latest saved conversation, or the one identified by SESSION"))
+        )).arg(value("resume").num_args(0..=1).default_missing_value("latest").value_name("SESSION").help("Reopen the destination's latest saved conversation, or the one identified by SESSION"))
     } else if name == "remote.send" {
         c.arg(
             value("expected_host")

@@ -16,7 +16,7 @@ impl ResumeSelection {
     pub fn from_cli(value: Option<String>) -> Result<Option<Self>> {
         value
             .map(|value| {
-                if value.is_empty() {
+                if value == "latest" {
                     Ok(Self::Latest(true))
                 } else {
                     Ok(Self::Session(value.parse()?))
