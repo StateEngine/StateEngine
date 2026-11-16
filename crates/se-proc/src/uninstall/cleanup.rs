@@ -65,7 +65,13 @@ pub(super) fn admit(
     diagnostic: &File,
     until: u64,
 ) -> Result<()> {
-    let application = native::wide(&cleanup::system_powershell()?)?;
+    // Keep the system interpreter's ordinary DOS path: .NET Framework cannot
+    // initialize its application base from an extended-length path prefix.
+    let application: Vec<u16> = system_powershell()?
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
     let mut line: Vec<u16> = format!(
         "powershell.exe -NoLogo -NoProfile -NonInteractive -File \"{}\"",
         script.display()
