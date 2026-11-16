@@ -70,6 +70,7 @@ impl Service {
             target: input.target.clone(),
             session: plan.session.clone(),
             lifecycle: plan.lifecycle.clone(),
+            details: Some(plan.details()),
         };
         let seed = plan.seed.clone();
         let key = input.idempotency_key.clone();

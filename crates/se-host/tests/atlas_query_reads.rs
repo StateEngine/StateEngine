@@ -75,6 +75,7 @@ fn outer_reader<'a, 'c, 'x>(
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
+    se_proc::initialize_file_creation_owner()?;
     let _clock = test_clock::control();
     let f = Fixture::new()?;
     let (mut direct, lease) = f.direct()?;

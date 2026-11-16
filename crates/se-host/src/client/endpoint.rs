@@ -1,5 +1,6 @@
 //! Endpoint representation only. Protected publication, ownership and actual
 //! server identity are native se-proc operations, not inferred from these bytes.
+pub mod diagnostic;
 use super::wire::{MAX_ENDPOINT_BYTES, decode_json, encode_json};
 use crate::{EndpointRecord, HostKind, IpcEndpoint};
 use se_types::{

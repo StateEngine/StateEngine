@@ -47,7 +47,7 @@ pub fn plan_launch<R: Snapshot>(
     }
     let request = AgentLaunch {
         target_agent_id: Some(input.target.agent),
-        fresh: false,
+        resume: input.resume,
         model: None,
         task: None,
         detach: true,

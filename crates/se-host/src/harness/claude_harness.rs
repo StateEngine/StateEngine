@@ -63,6 +63,19 @@ impl ClaudeHarness {
         self.bells = Some(bells);
         self
     }
+    pub(crate) fn mail_connected(&self, session: &se_types::SessionId) -> Read<bool> {
+        match &self.bells {
+            Some(bells) => match bells.connected(session) {
+                Ok(value) => Read::Present { value },
+                Err(error) => Read::Unreadable {
+                    source: "mail notification connection".into(),
+                    reason: error.to_string(),
+                    error: Some(Box::new(error.body)),
+                },
+            },
+            None => Read::Present { value: false },
+        }
+    }
     pub fn with_atlas_hooks(mut self, enabled: bool) -> Self {
         self.atlas_hooks = enabled;
         self
