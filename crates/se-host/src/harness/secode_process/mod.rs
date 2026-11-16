@@ -11,6 +11,7 @@ pub(crate) mod sandbox;
 pub use contract::{
     Acceptance, AcceptedInput, NoticeBinding, NoticeStatus, ServiceIdentity, notice_text,
 };
+pub(crate) use contract::{CanonicalMessage, CaptureRow};
 pub(crate) use contract::{CapabilityRepair, RepairPlan, registration_fields};
 pub use control::Control;
 pub(crate) use control::service_registration;
