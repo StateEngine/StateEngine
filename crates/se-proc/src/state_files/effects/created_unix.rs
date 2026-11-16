@@ -114,7 +114,9 @@ pub(in crate::state_files) fn prepare_created_directory(
         }
         return Ok(());
     }
-    match leaf(&parent, &target, path, true) {
+    // Each preparation component is only an anchor. Its caller separately
+    // requires a readable final root; new staging objects still use leaf().
+    match super::super::open_component(parent.as_raw_fd(), &target, false, path, false) {
         Ok(file) => return trusted_directory(&file, path, false),
         Err(error) if absent(&error) => (),
         Err(error) => return Err(error),

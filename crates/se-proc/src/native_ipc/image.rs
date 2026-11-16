@@ -1,6 +1,9 @@
-//! Bounded executable proofs, cached only by stable native file identity,
-//! modification/change times and size. A pathname is never a cache identity.
-//! Native change time invalidates same-inode rewrites even when mtime is restored;
+//! Bounded executable proofs. Unix reuse requires stable native file identity,
+//! modification/change times and size. Persistent Windows reuse requires a positive
+//! journal revision bound to its instance while a native handle excludes writers.
+//! Unsupported revisions read the bytes once per continuously writer-excluded
+//! process-local file pin. A pathname is never a cache identity.
+//! Unix change time invalidates same-inode rewrites even when mtime is restored;
 //! it is not a qualified persistent journal or protection against hostile same-user mutation.
 use super::*;
 use sha2::{Digest, Sha256 as Hasher};
@@ -16,11 +19,32 @@ pub(super) struct ImageKey {
     identity: Vec<u8>,
     modified: (bool, u64, u32),
     size: u64,
-    // Older protected hints lack this field and therefore miss current native keys.
+    // Unix ctime/nanoseconds, or Windows USN/journal-ID bits. Preserve the
+    // two-integer wire shape so older readers can decode and miss this hint.
+    // Windows tag 0 was a restorable clock; tag 1 lacked a journal instance.
     #[serde(default)]
     changed: Option<(i64, i64)>,
 }
-type Cache = VecDeque<(ImageKey, Sha256)>;
+#[cfg(windows)]
+use crate::native_file_revision as windows;
+
+impl ImageKey {
+    pub(super) fn reusable(&self) -> bool {
+        #[cfg(windows)]
+        {
+            // Journal IDs are opaque bits; reserve both earlier unqualified tags.
+            matches!(self.changed, Some((revision, journal))
+                if revision > 0 && !matches!(journal, 0 | 1))
+        }
+        #[cfg(not(windows))]
+        {
+            true
+        }
+    }
+}
+// Unqualified keys may live only beside the handle that excluded writers
+// before their full hash. They can never be populated by persisted hints.
+type Cache = VecDeque<(ImageKey, Sha256, Option<File>)>;
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
 pub(super) fn key(file: &File, metadata: &std::fs::Metadata) -> IpcNativeResult<ImageKey> {
     #[cfg(unix)]
@@ -59,31 +83,15 @@ pub(super) fn key(file: &File, metadata: &std::fs::Metadata) -> IpcNativeResult<
     #[cfg(unix)]
     let changed = {
         use std::os::unix::fs::MetadataExt;
-        (metadata.ctime(), metadata.ctime_nsec())
+        Some((metadata.ctime(), metadata.ctime_nsec()))
     };
     #[cfg(windows)]
-    let changed = {
-        use std::{mem::size_of, os::windows::io::AsRawHandle};
-        use windows_sys::Win32::Storage::FileSystem::*;
-        // SAFETY: FILE_BASIC_INFO is an all-integer native output structure.
-        let mut basic: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
-        // SAFETY: retained file handle, initialized exact-size native output.
-        if unsafe {
-            GetFileInformationByHandleEx(
-                file.as_raw_handle(),
-                FileBasicInfo,
-                (&mut basic as *mut FILE_BASIC_INFO).cast(),
-                size_of::<FILE_BASIC_INFO>() as u32,
-            )
-        } == 0
-        {
-            return Err(last("read executable cache change time"));
-        }
-        (basic.ChangeTime, 0)
-    };
+    let revision = windows::revision(file);
+    #[cfg(windows)]
+    let changed = revision.map(|(usn, journal)| (usn, i64::from_le_bytes(journal.to_le_bytes())));
     let _ = file;
     Ok(ImageKey {
-        changed: Some(changed),
+        changed,
         identity,
         modified: match metadata
             .modified()
@@ -110,7 +118,14 @@ const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-pub(super) fn hash_image(mut file: std::fs::File, bound: &IpcIoBound) -> IpcNativeResult<Sha256> {
+pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeResult<Sha256> {
+    #[cfg(windows)]
+    let (mut file, guarded) = match windows::pin(&file) {
+        Some(pin) => (pin, true),
+        None => (file, false),
+    };
+    #[cfg(not(windows))]
+    let mut file = file;
     use std::io::Read;
     let before = file
         .metadata()
@@ -125,16 +140,24 @@ pub(super) fn hash_image(mut file: std::fs::File, bound: &IpcIoBound) -> IpcNati
         .remaining()
         .map_err(|e| error("executable cache deadline", e))?;
     let stamp = key(&file, &before)?;
-    let cached = {
+    // The current pin overlaps any retained cache pin, preserving exclusion
+    // even if another thread evicts that entry after the lookup.
+    #[cfg(windows)]
+    let reusable = guarded;
+    #[cfg(not(windows))]
+    let reusable = true;
+    let cached = if reusable {
         let cache = cache().lock().map_err(|_| {
             refuse(
                 IpcNativeErrorCode::Unreadable,
                 "executable cache poisoned; restart the host",
             )
         })?;
-        cache
-            .iter()
-            .find_map(|(stored, digest)| (stored == &stamp).then_some(*digest))
+        cache.iter().find_map(|(stored, digest, held)| {
+            (stored == &stamp && (stamp.reusable() || held.is_some())).then_some(*digest)
+        })
+    } else {
+        None
     };
     if let Some(digest) = cached {
         let after = file
@@ -201,34 +224,37 @@ pub(super) fn hash_image(mut file: std::fs::File, bound: &IpcIoBound) -> IpcNati
         ));
     }
     let digest = Sha256::from_bytes(hasher.finalize().into());
-    let mut cache = cache().lock().map_err(|_| {
-        refuse(
-            IpcNativeErrorCode::Unreadable,
-            "executable cache poisoned; restart the host",
-        )
-    })?;
-    if cache.len() == 64 {
-        cache.pop_front();
+    #[cfg(windows)]
+    let held = (guarded && !stamp.reusable()).then_some(file);
+    #[cfg(not(windows))]
+    let held = None;
+    if reusable {
+        remember_held(stamp, digest, held)?;
     }
-    cache.push_back((stamp, digest));
     Ok(digest)
 }
 
 /// Populate only an absent key. An already-observed process-local proof wins
 /// over a persisted hint, including a contradictory protected cache entry.
 pub(super) fn remember(stamp: ImageKey, digest: Sha256) -> IpcNativeResult<()> {
+    remember_held(stamp, digest, None)
+}
+fn remember_held(stamp: ImageKey, digest: Sha256, held: Option<File>) -> IpcNativeResult<()> {
+    if !stamp.reusable() && held.is_none() {
+        return Ok(());
+    }
     let mut cache = cache().lock().map_err(|_| {
         refuse(
             IpcNativeErrorCode::Unreadable,
             "executable cache poisoned; restart the host",
         )
     })?;
-    if cache.iter().any(|(stored, _)| *stored == stamp) {
+    if cache.iter().any(|(stored, _, _)| *stored == stamp) {
         return Ok(());
     }
     if cache.len() == 64 {
         cache.pop_front();
     }
-    cache.push_back((stamp, digest));
+    cache.push_back((stamp, digest, held));
     Ok(())
 }
