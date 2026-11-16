@@ -12,7 +12,7 @@ impl LaunchCoordinator {
         admission: &Admission,
         deadline: &Deadline,
     ) -> Result<()> {
-        if plan.input.fresh {
+        if plan.input.fresh() {
             return Ok(());
         }
         let conversation = match &plan.conversation {
@@ -25,7 +25,27 @@ impl LaunchCoordinator {
             .read(admission.clone(), deadline, move |cx| {
                 crate::agent_observation::resume_source(&selected, cx.read)
             })
-            .await?;
+            .await
+            .map_err(|mut failure| {
+                let se_types::Detail::CapabilityInvalid(detail) = failure.body.detail() else {
+                    return failure;
+                };
+                let mut detail = detail.clone();
+                let command = AgentCommand::launch_in_home(&plan.agent.id, &self.options.home, &plan.project.id, false)
+                    .map(|command| {
+                        let command = command.with_detach(plan.input.detach);
+                        match &plan.input.resume {
+                            Some(se_types::ResumeSelection::Session(session)) => command.with_resume_session(session),
+                            _ => command,
+                        }
+                    });
+                detail.next_step = match command {
+                    Some(command) => format!("The saved capture source is private to its principal. Ask the project Owner to use se launch from their own terminal. {}: {}", AgentCommand::instruction("Run"), command.command),
+                    None => AgentCommand::HOME_UNAVAILABLE.into(),
+                };
+                failure.body = se_types::ErrorBody::new(se_types::Detail::CapabilityInvalid(detail));
+                failure
+            })?;
         let Some(source) = source else {
             return Ok(());
         };

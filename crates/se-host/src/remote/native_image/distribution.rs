@@ -2,7 +2,7 @@
 use super::staging;
 use crate::remote::{channel::unavailable, ssh::command::ssh};
 use se_remote::ssh::validate_destination;
-use se_types::Result;
+use se_types::{Detail, Result, SeError, details};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncReadExt;
@@ -30,7 +30,9 @@ pub(in crate::remote) async fn describe(destination: &str, distribution: &Path) 
     validate_destination(destination)?;
     // Probe fixed commands, not caller-controlled shell fragments. Neither probe
     // mutates the remote host or stops an incompatible incumbent.
-    let (unix, platform) = ssh(destination, "uname -sm".into()).await?;
+    let probe = ssh(destination, "uname -sm".into()).await?;
+    let first_tail = probe.stderr_tail;
+    let (unix, platform) = (probe.success, probe.stdout);
     let platform = String::from_utf8(platform)
         .map_err(|_| unavailable("SSH platform response is not UTF-8"))?;
     let uname = platform.trim();
@@ -43,14 +45,14 @@ pub(in crate::remote) async fn describe(destination: &str, distribution: &Path) 
         // "MSYS_NT-10.0-26100 x86_64"), is verified through the Windows
         // architecture probe before it is rejected.
         _ => {
-            let (success, probe) = ssh(
+            let probe = ssh(
                 destination,
                 staging::powershell(
                     "[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()",
                 ),
             )
             .await?;
-            if success && String::from_utf8_lossy(&probe).trim() == "X64" {
+            if probe.success && String::from_utf8_lossy(&probe.stdout).trim() == "X64" {
                 ("x86_64-pc-windows-msvc", true)
             } else if unix {
                 // uname identified a system that is neither a supported Unix
@@ -60,8 +62,9 @@ pub(in crate::remote) async fn describe(destination: &str, distribution: &Path) 
                     "remote operating system or architecture is unsupported: {named}"
                 )));
             } else {
-                return Err(unavailable(
-                    "remote platform discovery failed; check the SSH destination and supported native platform",
+                return Err(discovery_failure(
+                    destination,
+                    reported_discovery_cause(&first_tail, &probe.stderr_tail),
                 ));
             }
         }
@@ -114,6 +117,31 @@ pub(in crate::remote) async fn describe(destination: &str, distribution: &Path) 
     })
 }
 
+/// The SSH client stderr tail a discovery refusal should name: the
+/// fallback probe's, when it names a cause, otherwise the first probe's
+/// (a failed `uname -sm` that reported the real verdict, such as a
+/// permission denial, while the fallback said nothing).
+fn reported_discovery_cause<'a>(first: &'a str, fallback: &'a str) -> &'a str {
+    if fallback.is_empty() { first } else { fallback }
+}
+
+/// A discovery refusal names the SSH client's own verdict when the client
+/// said one; the uninformative fallback stays when stderr carried nothing.
+fn discovery_failure(destination: &str, reported: &str) -> SeError {
+    if reported.is_empty() {
+        return unavailable(
+            "remote platform discovery failed; check the SSH destination and supported native platform",
+        );
+    }
+    SeError::new(Detail::ListenerUnavailable(details::ListenerUnavailable {
+        subject: "remote machine connection".into(),
+        reason: format!("remote platform discovery failed; the SSH client reported: {reported}"),
+        next_step: format!(
+            "Verify the destination login with `ssh {destination} true`, fix what it reports (key, account or network), then retry the pairing."
+        ),
+    }))
+}
+
 fn image(target: &str, executable: &Path) -> Result<PathBuf> {
     let local = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
@@ -148,5 +176,31 @@ fn image(target: &str, executable: &Path) -> Result<PathBuf> {
         Err(_) => Err(unavailable(
             "the matching native remote image cannot be inspected",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reported_discovery_cause;
+
+    #[test]
+    fn keeps_the_first_cause_when_the_fallback_is_silent() {
+        assert_eq!(
+            reported_discovery_cause("Permission denied (publickey).", ""),
+            "Permission denied (publickey).",
+        );
+    }
+
+    #[test]
+    fn prefers_the_fallback_cause_when_it_names_one() {
+        assert_eq!(
+            reported_discovery_cause("first cause", "fallback cause"),
+            "fallback cause",
+        );
+    }
+
+    #[test]
+    fn stays_empty_when_both_probes_said_nothing() {
+        assert_eq!(reported_discovery_cause("", ""), "");
     }
 }

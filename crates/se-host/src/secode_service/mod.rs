@@ -300,7 +300,7 @@ impl LaunchCoordinator {
                 .resume_supported
         {
             return Err(crate::harness::secode_process::incompatible(
-                "the selected service has no qualified input-free release of a human-stop hold; retain the saved session, or explicitly request --new for a different conversation",
+                "the selected service has no qualified input-free release of a human-stop hold; retain the saved session, or explicitly omit --resume for a different conversation",
             ));
         }
         Ok(())

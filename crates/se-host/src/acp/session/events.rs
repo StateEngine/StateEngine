@@ -272,7 +272,7 @@ impl Session {
                 {
                     return Err(failure(
                         "ACP replay",
-                        "Loaded history differs from committed text; no input was offered. Restore the complete original capture or use --new to start a separate conversation.",
+                        "Loaded history differs from committed text; no input was offered. Restore the complete original capture or omit --resume to start a separate conversation.",
                     ));
                 }
                 let mode = result

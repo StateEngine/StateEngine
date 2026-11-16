@@ -31,6 +31,7 @@ pub(super) async fn finish(
                     target: input.target,
                     session: value.session_id,
                     lifecycle: value.lifecycle_id,
+                    details: None,
                 },
                 idempotency_key: input.idempotency_key,
                 setup_needed: matches!(value.state, se_core::ops::LaunchPendingState::SetupNeeded),
@@ -52,6 +53,7 @@ pub(super) async fn finish(
                     target: launched_target,
                     session: value.session_id,
                     lifecycle: value.lifecycle_id,
+                    details: None,
                 },
                 value.event_id,
                 deadline,
@@ -106,6 +108,7 @@ pub(super) async fn started(
             target: origin.target,
             session: origin.session,
             lifecycle: origin.lifecycle,
+            details: origin.details,
         },
         effects: se_types::EffectStatus::NotRequired,
     };

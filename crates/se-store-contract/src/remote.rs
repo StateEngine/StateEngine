@@ -130,6 +130,8 @@ pub struct LaunchAttribution {
     pub session: SessionId,
     pub lifecycle: se_types::LifecycleId,
     pub attribution: RemoteAttribution,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<se_types::LaunchDetails>,
 }
 
 mod mailbox;

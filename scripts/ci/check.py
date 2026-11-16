@@ -6,12 +6,14 @@ import sys
 
 def accepted(jobs):
     expected = {"changes", "linux-route", "linux-box", "fmt", "clippy", "windows-clippy", "archive", "test", "macos-test"}
-    if set(jobs) != expected or jobs["changes"]["result"] != "success":
+    if not expected <= set(jobs) <= expected | {"remote-test"} or jobs["changes"]["result"] != "success":
         return False
     outputs = jobs["changes"].get("outputs", {})
     if outputs.get("rust") == "false":
         return all(j["result"] == "skipped" for n, j in jobs.items() if n != "changes")
     if outputs.get("rust") != "true":
+        return False
+    if "remote-test" in jobs and jobs["remote-test"].get("result") != "success":
         return False
     if jobs["macos-test"].get("result") != "success":
         return False
