@@ -1,6 +1,9 @@
 use super::*;
 use crate::windows_policy_fixture::{Check, Home};
 
+#[path = "carrier_completion.rs"]
+mod completion;
+
 fn held(file: File, path: &Path, kind: &str) -> Check<super::super::entry::Held> {
     let directory = kind == "directory";
     let identity = super::super::entry_effects::identity(&file, directory)?;
@@ -17,7 +20,12 @@ fn held(file: File, path: &Path, kind: &str) -> Check<super::super::entry::Held>
     Ok(super::super::entry::Held { object, file })
 }
 
-fn directory_effect(home: &Path, path: &Path, original: &File, label: &str) -> Check<Result<()>> {
+fn inventory(
+    home: &Path,
+    path: &Path,
+    original: &File,
+    label: &str,
+) -> Check<Vec<super::super::entry::Held>> {
     // The production effect removes image/record before directories. These two
     // synthetic regular files let the judge reach that same path without a
     // second implementation or a shell/compiler extracting obsolete source.
@@ -28,6 +36,11 @@ fn directory_effect(home: &Path, path: &Path, original: &File, label: &str) -> C
         objects.push(held(native::open_image(&file, false)?, &file, kind)?);
     }
     objects.push(held(original.try_clone()?, path, "directory")?);
+    Ok(objects)
+}
+
+fn directory_effect(home: &Path, path: &Path, original: &File, label: &str) -> Check<Result<()>> {
+    let mut objects = inventory(home, path, original, label)?;
     Ok(super::super::entry_effects::remove(&mut objects))
 }
 
