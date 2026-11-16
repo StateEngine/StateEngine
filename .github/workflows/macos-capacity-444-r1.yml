@@ -1,0 +1,55 @@
+name: macOS IPC capacity baseline probe
+'on':
+  push:
+    branches:
+    - prime/macos-capacity-444-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+jobs:
+  probe:
+    runs-on: macos-14
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arm: base
+          source: 312ec7511850345aeb3c6f4bd8f7c4ffde2cced2
+        - arm: fix
+          source: 3344ad2e3dfd0be4f661487ba64c791b268c2727
+    env:
+      REVIEW_SOURCE: ${{ matrix.source }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.source }}
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - name: Repeat existing native capacity test
+      shell: python
+      run: 'import base64,hashlib,subprocess,sys,os
+
+        from pathlib import Path
+
+        b=base64.b64decode(''aW1wb3J0IGhhc2hsaWIsanNvbixvcyxzdWJwcm9jZXNzLHRpbWUKZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCnJvb3Q9UGF0aChvcy5lbnZpcm9uWydHSVRIVUJfV09SS1NQQUNFJ10pO291dD1QYXRoKG9zLmVudmlyb25bJ1JVTk5FUl9URU1QJ10pLydjYXBhY2l0eS1wcm9iZSc7b3V0Lm1rZGlyKCkKc291cmNlPW9zLmVudmlyb25bJ1JFVklFV19TT1VSQ0UnXTthc3NlcnQgc3VicHJvY2Vzcy5jaGVja19vdXRwdXQoWydnaXQnLCdyZXYtcGFyc2UnLCdIRUFEJ10sdGV4dD1UcnVlKS5zdHJpcCgpPT1zb3VyY2UKYXNzZXJ0ICdob3N0OiBhYXJjaDY0LWFwcGxlLWRhcndpbicgaW4gc3VicHJvY2Vzcy5jaGVja19vdXRwdXQoWydydXN0YycsJy12ViddLHRleHQ9VHJ1ZSkKcmVwb3J0PXsnc291cmNlJzpzb3VyY2UsJ3BsYXRmb3JtJzpzdWJwcm9jZXNzLmNoZWNrX291dHB1dChbJ3J1c3RjJywnLXZWJ10sdGV4dD1UcnVlKSwndGVzdCc6J2lwYzo6bGlzdGVuZXI6OmNhcGFjaXR5X3Rlc3RzOjpmdWxsX3ByZWF1dGhfcG9vbF9zZW5kc190eXBlZF9idXN5X2FuZF9yZWxlYXNlc19pdHNfc2xvdF9hZnRlcl9lb2YnLCdhdHRlbXB0cyc6W10sJ2NvbnRyb2xfY29tcGxldGVkJzpGYWxzZX0Kd2l0aCAob3V0LydidWlsZC5zdGRvdXQnKS5vcGVuKCd3YicpIGFzIHNvLChvdXQvJ2J1aWxkLnN0ZGVycicpLm9wZW4oJ3diJykgYXMgc2U6CiBidWlsZD1zdWJwcm9jZXNzLnJ1bihbJ2NhcmdvJywndGVzdCcsJy1wJywnc2UtaG9zdCcsJy0tbGliJywnLS1sb2NrZWQnLCctLXRhcmdldCcsJ2FhcmNoNjQtYXBwbGUtZGFyd2luJywnLS1uby1ydW4nLCctLW1lc3NhZ2UtZm9ybWF0PWpzb24nXSxzdGRvdXQ9c28sc3RkZXJyPXNlKQpyZXBvcnRbJ2J1aWxkX2V4aXQnXT1idWlsZC5yZXR1cm5jb2RlCmlmIGJ1aWxkLnJldHVybmNvZGU9PTA6CiByb3dzPVtqc29uLmxvYWRzKGwpIGZvciBsIGluIChvdXQvJ2J1aWxkLnN0ZG91dCcpLnJlYWRfdGV4dCgpLnNwbGl0bGluZXMoKSBpZiBsLnN0cmlwKCldCiBpbWFnZXM9W3JbJ2V4ZWN1dGFibGUnXSBmb3IgciBpbiByb3dzIGlmIHIuZ2V0KCdyZWFzb24nKT09J2NvbXBpbGVyLWFydGlmYWN0JyBhbmQgci5nZXQoJ2V4ZWN1dGFibGUnKSBhbmQgclsndGFyZ2V0J11bJ25hbWUnXT09J3NlX2hvc3QnXQogYXNzZXJ0IGxlbihpbWFnZXMpPT0xCiB0YXJnZXQ9UGF0aChvcy5lbnZpcm9uLmdldCgnQ0FSR09fVEFSR0VUX0RJUicsc3RyKHJvb3QvJ3RhcmdldCcpKSkucmVzb2x2ZSgpCiBhc3NlcnQgUGF0aChpbWFnZXNbMF0pLnJlc29sdmUoKS5pc19yZWxhdGl2ZV90byh0YXJnZXQvJ2FhcmNoNjQtYXBwbGUtZGFyd2luJykKIGZvciBpIGluIHJhbmdlKDEwMCk6CiAgd2l0aCAob3V0L2Yne2l9LnN0ZG91dCcpLm9wZW4oJ3diJykgYXMgc28sKG91dC9mJ3tpfS5zdGRlcnInKS5vcGVuKCd3YicpIGFzIHNlOgogICByZXN1bHQ9c3VicHJvY2Vzcy5ydW4oW2ltYWdlc1swXSwnLS1leGFjdCcscmVwb3J0Wyd0ZXN0J10sJy0tbm9jYXB0dXJlJ10sc3Rkb3V0PXNvLHN0ZGVycj1zZSx0aW1lb3V0PTMwKQogIHJlcG9ydFsnYXR0ZW1wdHMnXS5hcHBlbmQoeydhdHRlbXB0JzppLCdleGl0JzpyZXN1bHQucmV0dXJuY29kZX0pCiAgaWYgcmVzdWx0LnJldHVybmNvZGU6YnJlYWsKIHJlcG9ydFsnY29udHJvbF9jb21wbGV0ZWQnXT1UcnVlCihvdXQvJ3JlcG9ydC5qc29uJykud3JpdGVfdGV4dChqc29uLmR1bXBzKHJlcG9ydCxpbmRlbnQ9MikrJ1xuJykKKG91dC8nbWVtYmVycy5qc29uJykud3JpdGVfdGV4dChqc29uLmR1bXBzKHtwLm5hbWU6aGFzaGxpYi5zaGEyNTYocC5yZWFkX2J5dGVzKCkpLmhleGRpZ2VzdCgpIGZvciBwIGluIG91dC5pdGVyZGlyKCkgaWYgcC5pc19maWxlKCl9LGluZGVudD0yKSsnXG4nKQpwcmludChqc29uLmR1bXBzKHJlcG9ydCkpO3JhaXNlIFN5c3RlbUV4aXQoMCBpZiByZXBvcnRbJ2NvbnRyb2xfY29tcGxldGVkJ10gZWxzZSAxKQo='')
+
+        assert hashlib.sha256(b).hexdigest()==''394791519cb846b71448519a36cc0c43f79714f25398345f51cd633a1eb32ba1''
+
+        p=Path(os.environ[''RUNNER_TEMP''])/''probe.py'';p.write_bytes(b)
+
+        raise SystemExit(subprocess.call([sys.executable,''-B'',str(p)]))
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: macos-capacity-${{ matrix.arm }}
+        path: ${{ runner.temp }}/capacity-probe/
+        include-hidden-files: true
+        if-no-files-found: error
