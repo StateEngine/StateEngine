@@ -52,6 +52,8 @@ pub(super) struct Work {
     pub exec_observed: bool,
     pub process_view: Option<se_core::ops::ProcessView>,
     pub binding: Option<crate::HarnessBinding>,
+    /// Streams opened before a harness binding exists, retained for rollback.
+    pub pending_transport: Option<crate::ProviderTransport>,
     pub secode: Option<super::secode::Prepared>,
     #[cfg(feature = "remote")]
     pub remote_live: Option<crate::remote::publish::LiveSource>,
@@ -113,6 +115,7 @@ impl Work {
             exec_observed: false,
             process_view: None,
             binding: None,
+            pending_transport: None,
             secode: None,
             #[cfg(feature = "remote")]
             remote_live: None,

@@ -529,6 +529,10 @@ impl Directory {
     ) -> Result<()> {
         let (from, from_name) = self.parent(staged, root)?;
         let (to, to_name) = self.parent(destination, root)?;
+        let from_metadata = metadata(&from, staged, true)?;
+        let to_metadata = metadata(&to, destination, true)?;
+        let same_parent =
+            (from_metadata.dev(), from_metadata.ino()) == (to_metadata.dev(), to_metadata.ino());
         #[cfg(target_os = "linux")]
         // SAFETY: held parent FDs and NUL-terminated single names; no replacement.
         let renamed = unsafe {
@@ -566,8 +570,10 @@ impl Directory {
         }
         to.sync_all()
             .map_err(|e| io_error("sync publication parent", destination, e))?;
-        from.sync_all()
-            .map_err(|e| io_error("sync staging parent after rename", staged, e))?;
+        if !same_parent {
+            from.sync_all()
+                .map_err(|e| io_error("sync staging parent after rename", staged, e))?;
+        }
         Ok(())
     }
 }
