@@ -20,6 +20,8 @@ pub mod remote;
 mod return_mail;
 #[cfg(feature = "remote")]
 mod ssh_transport;
+#[cfg(feature = "listener")]
+pub mod terminal;
 #[cfg(test)]
 #[path = "../../test-support/directory.rs"]
 mod test_directory;

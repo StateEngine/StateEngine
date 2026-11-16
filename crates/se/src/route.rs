@@ -17,7 +17,7 @@ pub mod direct;
 mod doctor;
 #[path = "route/empty_home.rs"]
 mod empty_home;
-mod endpoint_diagnostic;
+use se_host::client::endpoint::diagnostic as endpoint_diagnostic;
 #[path = "route/execute.rs"]
 pub mod execute;
 #[path = "route/files.rs"]

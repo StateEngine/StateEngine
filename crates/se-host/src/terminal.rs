@@ -5,11 +5,11 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-pub(super) struct Signals {
+pub struct Signals {
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     task: Option<std::thread::JoinHandle<()>>,
 }
-pub(super) fn listen(cancelled: Arc<AtomicBool>) -> Result<Signals> {
+pub fn listen(cancelled: Arc<AtomicBool>) -> Result<Signals> {
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let (ready, started) = std::sync::mpsc::sync_channel(1);
     let task = std::thread::Builder::new()

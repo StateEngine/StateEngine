@@ -35,7 +35,16 @@ pub(super) async fn serve(
                     let AnyOutput::MessageList(page) = &output else {
                         return Err(SeError::invalid("mail follow page", "message-list output"));
                     };
-                    input.cursor = page.value.page.window().end_cursor().cloned();
+                    input.cursor = Some(
+                        page.value
+                            .page
+                            .window()
+                            .fields()
+                            .and_then(|fields| fields.end_cursor.clone())
+                            .ok_or_else(|| {
+                                SeError::invalid("mail follow page", "a resume cursor")
+                            })?,
+                    );
                     let more = page.value.page.next().is_some();
                     let display = initial
                         || !page.value.page.items().is_empty()

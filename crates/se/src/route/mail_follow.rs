@@ -4,13 +4,13 @@ use super::{admit, execute, setup};
 use crate::bootstrap::Bootstrap;
 use se_core::{ops::AnyOp, scope, store_error::store_error};
 use se_host::client::{BlockingConnection, BlockingIpcClient, ClientOptions, lease::Deadline};
+use se_host::terminal as signals;
 use se_store::{Actor, Scope, Snapshot};
 use se_types::{Read, Result, SeError};
 use std::{
     io::{self, Write},
     num::NonZeroU32,
 };
-mod signals;
 
 pub(crate) fn run(
     cx: &Bootstrap,
@@ -156,18 +156,12 @@ fn render(output: se_host::OperationOutput, json: bool, stdout: &mut impl Write)
             writeln!(stdout, "Follow cursor: {cursor}")?;
         }
     } else {
+        let cursor = output.value["window"]["to"]
+            .as_str()
+            .ok_or_else(|| io::Error::other("mail page omitted its resume cursor"))?
+            .to_owned();
         let output = crate::ipc::decode(output, &se_core::ops::MessageList::META.family.schema())
             .map_err(io::Error::other)?;
-        let se_core::ops::AnyOutput::MessageList(page) = &output else {
-            return Err(io::Error::other("expected mail page"));
-        };
-        let cursor = page
-            .value
-            .page
-            .window()
-            .end_cursor()
-            .ok_or_else(|| io::Error::other("mail page omitted its resume cursor"))?
-            .clone();
         crate::render::output(&output, json, false, stdout)?;
         if !json {
             writeln!(stdout, "Follow cursor: {cursor}")?;
