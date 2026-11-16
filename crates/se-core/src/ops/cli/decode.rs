@@ -209,7 +209,9 @@ pub fn from_matches_with_key(
                 })
                 .transpose()?,
             kinds: many(m, "kind"),
-            since: text(m, "since").map(Cursor::new).transpose()?,
+            since: text(m, "position")
+                .map(crate::ops::history::position_cursor)
+                .transpose()?,
             limit: number(m, "limit")?,
             cursor: text(m, "cursor").map(Cursor::new).transpose()?,
             owner_agent: None,
