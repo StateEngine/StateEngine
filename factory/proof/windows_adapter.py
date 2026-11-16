@@ -79,6 +79,8 @@ def run(config, record, directory, deadline, checkpoint):
             continue
         stage = directory / (row['output'] + '-producer')
         stage.mkdir(mode=0o700)
+        # A whole number of seconds; a fractional remainder cannot be a timeout.
+        remaining_seconds = max(0, int(deadline - time.monotonic() - 300))
         request = {'schema': 'se.windows-nightly-request/v1', 'attempt': str(uuid.uuid4()),
                    'run_started_at': record['started_at'],
                    'service_invocation_id': record.get('service_invocation_id'),
@@ -87,12 +89,20 @@ def run(config, record, directory, deadline, checkpoint):
                    'reporter_directory': str(Path(__file__).resolve().parent),
                    'producer_config': {'node': config['node'], 'auth_home': config['auth_home'],
                        'credential_sources': config.get('credential_sources', {}),
-                       'window_grant': settings.get('window_grant')},
-                   'run_timeout_seconds': min(timeout, deadline - time.monotonic() - 300),
+                       'window_grant': settings.get('window_grant'),
+                       # The producer admits the VM itself, so it needs the governed
+                       # runner, the floor claim and the seat it acts for.
+                       'runner': settings.get('runner'),
+                       'claim': settings.get('claim'),
+                       'seat': settings.get('seat')},
+                   'scope': {'surface': row['surface'], 'selection': row['selection']},
+                   'run_timeout_seconds': min(timeout, remaining_seconds),
                    'output': str(stage / 'receipts'), 'custody_receipt': str(stage / 'custody.json')}
         request_path = stage / 'request.json'
         from lifecycle import save
         save(request_path, request)
+        # The producer recomputes this from the file it reads, so both sides name
+        # the same bytes without the request having to contain its own hash.
         digest = hashlib.sha256(request_path.read_bytes()).hexdigest()
         row.update(state='running', request_sha256=digest)
         checkpoint()
