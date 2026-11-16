@@ -1,9 +1,2 @@
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/Brepro", "-C", "link-arg=/DELAYLOAD:user32.dll", "-C", "link-arg=/DELAYLOAD:ktmw32.dll", "-C", "link-arg=delayimp.lib"]
-
-# Avoid per-link UUID changes in independently rebuilt native Mac archives.
-[target.aarch64-apple-darwin]
-rustflags = ["-C", "link-arg=-Wl,-no_uuid"]
-
-[target.x86_64-apple-darwin]
-rustflags = ["-C", "link-arg=-Wl,-no_uuid"]
