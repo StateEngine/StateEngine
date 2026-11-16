@@ -54,6 +54,8 @@ runs:
       if: ${{ always() }}
       with:
         name: results-${{ inputs.os }}-${{ inputs.mode }}-${{ inputs.shard }}
-        path: target/nextest/ci/junit.xml
+        path: |
+          target/nextest/ci/junit.xml
+          ci-reports/input-judges.json
         retention-days: 3
         if-no-files-found: warn
