@@ -189,13 +189,40 @@ def run(args):
             assert replay == first, 'remote receipt replay changed the original conversation or launch settings'
             result['checks'].append(door + ': original remote launch receipt remains exact after a later launch')
             stop()
-            _, latest, _ = launch(door, True)
-            assert latest['details']['conversation'] == second['details']['conversation']
-            stop()
-            _, named, _ = launch(door, first['session'])
-            assert named['details']['conversation'] == first['details']['conversation']
-            result['checks'].append(door + ': remote latest and named resume select the requested conversations')
-            stop()
+            for selection, expected in ((True, second), (first['session'], first)):
+                observed = (destination.repo / 'launch-observed.jsonl').read_bytes()
+                key = str(uuid.uuid4())
+                if door == 'cli':
+                    flag = '--resume' if selection is True else '--resume=' + selection
+                    refused = source.call('--key', key, 'remote', 'launch', '--host', 'peer',
+                                          '--target', selector, flag)
+                    assert refused.returncode != 0, refused.stdout.decode()
+                    body = refused.stderr.decode().lower()
+                else:
+                    refused = source.rpc('stateengine_remote_launch', {'host': 'peer',
+                        'request': {'target': target, 'idempotency_key': key, 'resume': selection}})
+                    assert refused.get('isError'), refused
+                    body = json.dumps(refused).lower()
+                # Remote launch consent covers target control, not private capture.
+                assert 'principal' in body or 'private' in body or 'capture' in body, body
+                assert 'owner' in body and 'se launch' in body and '--resume' in body, body
+                if isinstance(selection, str):
+                    assert selection in body, body
+                assert (destination.repo / 'launch-observed.jsonl').read_bytes() == observed
+                # Exercise the prescribed recovery in the destination Owner's
+                # ordinary terminal context, retaining the exact selection.
+                flag = '--resume' if selection is True else '--resume=' + selection
+                recovered = destination.ok('--project', destination.project, 'launch',
+                                           destination.agent, '--detach', flag)
+                row = observation(destination, recovered['session_id'])
+                assert recovered['resumed'] is True and row['flag'] == '--resume', recovered
+                conversation = expected['details']['conversation']['value']
+                assert recovered['conversation_id'] == row['conversation'] == conversation
+                result['launches'].append({'door': door, 'selection': selection,
+                    'remote_refusal': body, 'owner_recovery': recovered,
+                    'provider_observation': row})
+                stop()
+            result['checks'].append(door + ': latest and named resume preserve private capture and recover through the destination Owner')
         assert len(result['checks']) == 7, result
     except Exception as error:
         result['failures'].append(type(error).__name__ + ': ' + str(error))
