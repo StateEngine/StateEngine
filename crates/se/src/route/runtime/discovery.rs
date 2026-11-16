@@ -34,12 +34,13 @@ pub(super) fn authenticate(
         options,
     )
     .map_err(|error| {
+        // Keep the endpoint failure as a typed cause for the released-lease retry.
         if error.code() == se_types::Code::IpcUnavailable {
             SeError::new(se_types::Detail::StateConflict(
                 se_types::details::StateConflict {
                     subject: cx.home.join("runtime.lock").display().to_string(),
-                    reason: format!("the runtime lease is held but its endpoint could not be authenticated: {error}"),
-                    next_step: "Run se down for this same data home before retrying se up; the endpoint and live host were preserved.".into(),
+                    reason: format!("the published runtime endpoint could not be authenticated: {error}"),
+                    next_step: "Run se up again for this same data home; a released lease starts the replacement host and re-adopts the preserved provider. If it refuses again, run se down for this same home before retrying; the endpoint and saved conversations are preserved.".into(),
                 },
             ))
             .with_cause(error)
@@ -50,6 +51,14 @@ pub(super) fn authenticate(
     process::observe(endpoint, bound)
 }
 
+/// Credential and process-observation errors cannot authorize a retry.
+pub(super) fn endpoint_unreachable(error: &SeError) -> bool {
+    error
+        .cause
+        .as_ref()
+        .and_then(|cause| cause.downcast_ref::<SeError>())
+        .is_some_and(|cause| cause.code() == se_types::Code::IpcUnavailable)
+}
 pub(super) fn after_recovery(
     cx: &Bootstrap,
     recovery: Option<&EndpointRecovery>,
