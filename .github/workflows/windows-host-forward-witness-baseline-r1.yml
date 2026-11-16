@@ -1,0 +1,235 @@
+name: Windows host quiet forward baseline witness
+'on':
+  push:
+    branches:
+    - prime/windows-host-forward-witness-baseline-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_RELEASE_DEBUG: '0'
+  CARGO_BUILD_JOBS: '2'
+jobs:
+  witness:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 5e9146309bde68e1e35401c2559cbf9577ef0b27
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: windows-host-forward-witness-r1
+        cache-targets: false
+        cache-on-failure: true
+    - name: Prove main responds before two quiet forwards strand its worker pool
+      shell: python
+      run: |
+        import os,sys
+        sys.argv = ['driver', '--baseline-only', '--out', os.path.join(os.environ['RUNNER_TEMP'], 'windows-host-forward-witness-baseline-r1')]
+        """Independent native main/fix two-forward witness; no worker-limit changes."""
+        import argparse
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        import platform
+        import shutil
+        import subprocess
+        import sys
+        import time
+        import traceback
+
+        FILES = ['crates/se/tests/windows_forward_worker_witness.rs',
+                 'crates/se/tests/forward_worker_probe.py',
+                 'crates/se/tests/support/quiet_forward_process.rs']
+        BASE = '970de27869cf1ab22457eb92836d9849e1513b04'
+
+
+        def sha(path):
+            return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+        def main():
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--out', required=True)
+            parser.add_argument('--candidate')
+            parser.add_argument('--baseline-only', action='store_true')
+            args = parser.parse_args()
+            judge = Path.cwd().resolve()
+            root = Path(args.out).resolve()
+            root.mkdir(parents=True, exist_ok=False)
+            scratch = root.with_name(root.name + '-scratch')
+            scratch.mkdir(exist_ok=False)
+            cleanup_candidates = []
+            result = {'qualified': False, 'base': BASE, 'candidate': args.candidate, 'cases': [],
+                'scope': 'Real host native IPC and public MCP with actual Forwards::activate and controlled native quiet forwarding children. No real SSH authentication/data protocol, provider credentials or full B4 latency qualification.'}
+            def save():
+                (root / 'summary.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
+            try:
+                assert os.name == 'nt'
+                assert args.baseline_only or args.candidate, 'a frozen candidate is required for the pair'
+                result['comparison_complete'] = not args.baseline_only
+                result['observer'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+                assert not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], text=True)
+                if args.candidate:
+                    subprocess.run(['git', 'cat-file', '-e', args.candidate + '^{commit}'], check=True)
+                (root / 'judge-source').mkdir()
+                for path in FILES:
+                    target = root / 'judge-source' / path
+                    target.parent.mkdir(exist_ok=True, parents=True)
+                    shutil.copyfile(judge / path, target)
+                result['inputs'] = {'run': os.environ.get('GITHUB_RUN_ID'), 'publication': os.environ.get('GITHUB_SHA'),
+                    'platform': platform.platform(), 'files': {p: sha(judge / p) for p in FILES},
+                    'rustc': subprocess.check_output(['rustc', '-vV'], text=True)}
+                sys.path.insert(0, str(judge / 'crates/se/tests'))
+                from forward_worker_probe import process_rows
+                helpers = scratch / 'helpers'
+                helpers.mkdir()
+                stub = helpers / 'ssh.exe'
+                compile_stub = ['rustc', '--edition=2024', '--target', 'x86_64-pc-windows-msvc',
+                                '-O', '--crate-name', 'quiet_forward_process',
+                                str(judge / FILES[2]), '-o', str(stub)]
+                with (root / 'helper-build.stdout').open('wb') as out, (root / 'helper-build.stderr').open('wb') as err:
+                    subprocess.run(compile_stub, check=True, stdout=out, stderr=err, timeout=180)
+                result['helper_sha256'] = sha(stub)
+                products = [('base', BASE)] if args.baseline_only else [('base', BASE), ('fix', args.candidate)]
+                for label, product in products:
+                    checkout = scratch / f'source-{label}'
+                    subprocess.run(['git', 'worktree', 'add', '--detach', str(checkout), product], check=True)
+                    assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=checkout, text=True).strip() == product
+                    for name in FILES:
+                        target = checkout / name
+                        assert not target.exists(), 'overlay would replace a product file'
+                        target.parent.mkdir(exist_ok=True, parents=True)
+                        shutil.copyfile(judge / name, target)
+                    assert not subprocess.check_output(['git', 'diff', '--name-only'], cwd=checkout, text=True)
+                    assert set(subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard'], cwd=checkout, text=True).splitlines()) == set(FILES)
+                    assert sha(checkout / 'crates/se/tests/kept_open_writes.py') == sha(judge / 'crates/se/tests/kept_open_writes.py'), 'public RPC observer changed between products'
+                    target_dir = scratch / f'target-{label}'
+                    env = dict(os.environ, CARGO_TARGET_DIR=str(target_dir), CARGO_BUILD_JOBS='2')
+                    build = ['cargo', 'test', '--target', 'x86_64-pc-windows-msvc', '--release', '--all-features',
+                             '--locked', '-p', 'se', '--test', 'windows_forward_worker_witness', '--no-run', '--message-format=json']
+                    with (root / f'{label}-build.jsonl').open('wb') as out, (root / f'{label}-build.stderr').open('wb') as err:
+                        done = subprocess.run(build, cwd=checkout, env=env, stdout=out, stderr=err, timeout=3000)
+                    assert done.returncode == 0, f'{label} native witness did not compile'
+                    artifacts = [json.loads(line) for line in (root / f'{label}-build.jsonl').read_text(encoding='utf-8').splitlines()]
+                    executables = [a['executable'] for a in artifacts if a.get('reason') == 'compiler-artifact'
+                        and a.get('target', {}).get('name') == 'windows_forward_worker_witness'
+                        and a.get('profile', {}).get('test') is True and a.get('executable')]
+                    assert len(executables) == 1
+                    executable = Path(executables[0])
+                    shadow = executable.parent / 'ssh.exe'
+                    # The controlled binary wins both the Windows application-directory
+                    # search and PATH, so no normal account SSH config/key is consulted.
+                    assert not shadow.exists()
+                    shutil.copyfile(stub, shadow)
+                    assert sha(shadow) == result['helper_sha256']
+                    se = target_dir / 'x86_64-pc-windows-msvc/release/se.exe'
+                    result.setdefault('binaries', {})[label] = {
+                        'observer_sha256': sha(executable), 'shipping_sha256': sha(se), 'helper_sha256': sha(shadow)}
+                    for count in (0, 2):
+                        dest = root / f'{label}-{count}-forwards'
+                        dest.mkdir()
+                        receipts = dest / 'forward-receipts'
+                        receipts.mkdir()
+                        cleanup_candidates.append((receipts, shadow))
+                        case = {'product': label, 'forward_count': count, 'qualified': False}
+                        result['cases'].append(case)
+                        env.update(SE_WITNESS_FORWARD_COUNT=str(count), SE_FORWARD_WITNESS_DIR=str(receipts),
+                                   SE_FORWARD_WITNESS_BINARY=str(shadow), PATH=str(shadow.parent) + os.pathsep + os.environ['PATH'])
+                        assert os.path.normcase(shutil.which('ssh', path=env['PATH'])) == os.path.normcase(str(shadow))
+                        started = time.monotonic_ns()
+                        with (dest / 'stdout.log').open('wb') as out, (dest / 'stderr.log').open('wb') as err:
+                            done = subprocess.run([str(executable), '--nocapture'], cwd=checkout, env=env,
+                                                  stdout=out, stderr=err, timeout=150)
+                        case['exit'] = done.returncode
+                        case['elapsed_ns'] = time.monotonic_ns() - started
+                        diagnostics = checkout / 'target/forward-witness'
+                        if diagnostics.exists():
+                            shutil.move(str(diagnostics), str(dest / 'diagnostics'))
+                        assert done.returncode == 0, 'witness could not classify request or prove closure'
+                        probe = json.loads((dest / 'diagnostics/probe.json').read_text(encoding='utf-8'))
+                        closed = json.loads((dest / 'diagnostics/forward-close.json').read_text(encoding='utf-8'))
+                        shutdown = json.loads((dest / 'diagnostics/shutdown.json').read_text(encoding='utf-8'))
+                        configurations = json.loads((dest / 'diagnostics/forwards.json').read_text(encoding='utf-8'))
+                        assert closed['closed'] is True and closed['error'] is None
+                        assert shutdown['storage_closed'] and shutdown['transport_closed'] and shutdown['endpoint_retired']
+                        assert shutdown['pending'] == [] and shutdown['errors'] == []
+                        assert len(configurations) == count and len(probe['helpers']) == count
+                        expected = 'ipc-stalled' if label == 'base' and count == 2 else 'responded'
+                        assert probe['qualified'] is True and probe['outcome'] == expected
+                        assert probe['verified_events'] == (0 if expected == 'ipc-stalled' else 2)
+                        assert probe['replays_verified'] == (0 if expected == 'ipc-stalled' else 2)
+                        outside = []
+                        for helper in probe['helpers']:
+                            before = helper['native_process']
+                            after = process_rows(before['ProcessId'])
+                            assert len(after) <= 1, 'native process query returned duplicate PIDs'
+                            original_absent = not after or after[0]['CreationDate'] != before['CreationDate']
+                            outside.append({'before': before, 'after': after, 'original_absent': original_absent})
+                            assert original_absent, 'owned forward instance survived close'
+                        (dest / 'outside-helper-closure.json').write_text(json.dumps(outside, indent=2) + '\n', encoding='utf-8')
+                        case.update(qualified=True, outcome=probe['outcome'], verified_events=probe['verified_events'], replays_verified=probe['replays_verified'])
+                        save()
+                result['qualified'] = len(result['cases']) == (2 if args.baseline_only else 4) and all(c['qualified'] for c in result['cases'])
+            except Exception as error:
+                result.update(error=repr(error), traceback=traceback.format_exc(), cleanup_unknown=isinstance(error, subprocess.TimeoutExpired))
+            finally:
+                cleanup = []
+                if not result['qualified']:
+                    for receipts, shadow in cleanup_candidates:
+                        for record in receipts.glob('forward-*.json'):
+                            entry = {'receipt': str(record), 'qualified': False}
+                            cleanup.append(entry)
+                            try:
+                                receipt = json.loads(record.read_text(encoding='utf-8'))
+                                rows = process_rows(receipt['pid'])
+                                entry['before'] = rows
+                                if not rows:
+                                    entry.update(qualified=True, state='already-absent')
+                                    continue
+                                assert len(rows) == 1
+                                live = rows[0]
+                                assert os.path.normcase(os.path.realpath(live['ExecutablePath'])) == os.path.normcase(str(shadow))
+                                assert 'forward-witness' in live['CommandLine'] and '-L' in live['CommandLine']
+                                pid = int(live['ProcessId'])
+                                command = [
+                                    'powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+                                    f"$ErrorActionPreference='Stop'; Stop-Process -Id {pid} -Force -ErrorAction Stop"]
+                                subprocess.run(command, check=True, capture_output=True, timeout=10)
+                                deadline = time.monotonic() + 5
+                                while True:
+                                    after = process_rows(pid)
+                                    if not after or after[0]['CreationDate'] != live['CreationDate']:
+                                        entry.update(qualified=True, state='owned-leftover-stopped', after=after)
+                                        break
+                                    if time.monotonic() >= deadline:
+                                        raise RuntimeError('owned helper exit remains unproved')
+                                    time.sleep(.1)
+                            except Exception as error:
+                                entry['error'] = repr(error)
+                    result['cleanup_unknown'] = result.get('cleanup_unknown', False) or any(not entry['qualified'] for entry in cleanup)
+                (root / 'failure-cleanup.json').write_text(json.dumps(cleanup, indent=2) + '\n', encoding='utf-8')
+                save()
+                manifest = {p.relative_to(root).as_posix(): {'bytes': p.stat().st_size, 'sha256': sha(p)}
+                            for p in root.rglob('*') if p.is_file()}
+                (root / 'manifest.json').write_text(json.dumps({'files': manifest}, indent=2) + '\n', encoding='utf-8')
+            return 0 if result['qualified'] else 1
+
+
+        if __name__ == '__main__':
+            raise SystemExit(main())
+    - name: Retain complete native observations and manifest
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: windows-host-forward-witness-baseline-r1
+        path: ${{ runner.temp }}/windows-host-forward-witness-baseline-r1
+        include-hidden-files: true
+        retention-days: 14
+        if-no-files-found: error
