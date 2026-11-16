@@ -136,10 +136,14 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
             token = automation.token()
             try:
                 require_token_absent([directory / name, directory / (name + ".log")], token)
-            except OSError:
-                raise RuntimeError("automation output scan unavailable; preserve the private fixture and restore readable outputs before retrying") from None
-            invocation["credential_closure"] = {"source_inode_unchanged": True,
-                "source_digest_unchanged": True, "output_token_absent": True, "transport": "environment"}
+            except OSError as error:
+                source = str(error.filename or "unreported input").replace(token, "<redacted-automation-token>")
+                invocation["credential_closure"] = {"state": "unreadable", "output_token_absent": None,
+                    "error": f"automation-output-scan-unreadable: {source} (errno={error.errno}); "
+                             "preserve the private fixture and restore readable input before retrying"}
+            else:
+                invocation["credential_closure"] = {"source_inode_unchanged": True,
+                    "source_digest_unchanged": True, "output_token_absent": True, "transport": "environment"}
         invocation["state"] = "finished"
     except subprocess.TimeoutExpired:
         invocation.update(state="timed-out", error="judge deadline; inspect fixture and native custody")

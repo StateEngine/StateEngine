@@ -28,12 +28,7 @@ pub(super) fn harness(value: Provider, selected: Option<&str>) -> &str {
 }
 
 pub(super) fn provider(value: Provider) -> &'static str {
-    match value {
-        Provider::Claude => "Claude Code",
-        Provider::Codex => "Codex",
-        Provider::SeCode => "SE Code",
-        Provider::Acp => "ACP harness",
-    }
+    value.registration().title
 }
 
 fn stored<T: DeserializeOwned>(value: &str) -> Result<T, serde::de::value::Error> {
@@ -54,10 +49,8 @@ pub(super) fn stored_permission(value: &str) -> &str {
 
 pub(super) fn stored_provider(value: &str) -> &str {
     match stored::<se_store::Provider>(value) {
-        Ok(se_store::Provider::Claude) => provider(Provider::Claude),
-        Ok(se_store::Provider::Codex) => provider(Provider::Codex),
-        Ok(se_store::Provider::SeCode) => "SE Code",
-        Ok(se_store::Provider::Acp) => "ACP harness",
+        Ok(value) => provider(value.into()),
+        // Unrecognized history remains visible verbatim, never guessed.
         Err(_) => value,
     }
 }
