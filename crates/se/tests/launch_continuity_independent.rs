@@ -52,7 +52,7 @@ fn nested_launch_discards_parent_provider_and_identity_markers()
     judge("nested")
 }
 
-/// Protects: an ordinary launch visibly resumes with age; --new really starts fresh.
+/// Protects: an explicit resume reports age; fresh launch selects another conversation.
 #[test]
 fn saved_conversation_launch_explains_resume_and_age_and_new_starts_fresh()
 -> Result<(), Box<dyn std::error::Error>> {

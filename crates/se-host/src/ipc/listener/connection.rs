@@ -134,6 +134,15 @@ impl IpcConnection {
         Ok(Some((call, deadline)))
     }
     pub async fn reply(&mut self, response: &IpcResponse, deadline: &Deadline) -> Result<()> {
+        self.reply_part(response, deadline, true).await
+    }
+    /// A read stream retains the outstanding request until its terminal frame.
+    pub(crate) async fn reply_part(
+        &mut self,
+        response: &IpcResponse,
+        deadline: &Deadline,
+        terminal: bool,
+    ) -> Result<()> {
         if self.awaiting != Some(response.request_id)
             || response.version != self.hello.version
             || response.generation != self.hello.generation
@@ -149,7 +158,9 @@ impl IpcConnection {
             .take()
             .ok_or_else(|| SeError::invalid("IPC channel", "a complete prior exchange"))?;
         send(&stream, &frame, &deadline.stage(WRITE_TIMEOUT)?).await?;
-        self.awaiting = None;
+        if terminal {
+            self.awaiting = None;
+        }
         self.stream = Some(stream);
         Ok(())
     }

@@ -33,8 +33,16 @@ fn confirmation(plan: &LaunchPlan, home: &std::path::Path, reason: String) -> Re
     // break. Never fall back to an unqualified command there: that would name
     // the default store and silently address a different home, which is the
     // same missing-scope defect the explicit home exists to prevent.
-    let force =
-        se_core::ops::AgentCommand::launch_in_home(&plan.agent.id, home, &plan.project.id, false);
+    let force = se_core::ops::AgentCommand::launch_in_home(
+        &plan.agent.id,
+        home,
+        &plan.project.id,
+        plan.input.fresh(),
+    )
+    .map(|command| match &plan.input.resume {
+        Some(se_types::ResumeSelection::Session(session)) => command.with_resume_session(session),
+        _ => command,
+    });
     Ok(SeError::new(Detail::LaunchConfirmationRequired(
         details::LaunchConfirmationRequired {
             subject: plan.agent.name.clone(),

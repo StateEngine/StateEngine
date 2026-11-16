@@ -121,14 +121,17 @@ pub(super) fn launch(
     use se_types::{Receipt, remote::RemoteLaunchOutcome};
     match &value.outcome {
         RemoteLaunchOutcome::Started { receipt } => match receipt {
-            Receipt::Committed { commit } | Receipt::Replayed { original: commit } => writeln!(
-                out,
-                "Remote launch started {}/{} in session {} (key {}).",
-                commit.value.target.project,
-                commit.value.target.agent,
-                commit.value.session,
-                commit.idempotency_key
-            ),
+            Receipt::Committed { commit } | Receipt::Replayed { original: commit } => {
+                writeln!(
+                    out,
+                    "Remote launch started {}/{} in session {} (key {}).",
+                    commit.value.target.project,
+                    commit.value.target.agent,
+                    commit.value.session,
+                    commit.idempotency_key
+                )?;
+                launch_details(commit.value.details.as_ref(), out)
+            }
             _ => Err(io::Error::other(
                 "remote launch returned an incompatible start receipt",
             )),
@@ -150,5 +153,54 @@ pub(super) fn launch(
             launch.session,
             idempotency_key
         ),
+    }
+}
+
+fn launch_details(value: Option<&se_types::LaunchDetails>, out: &mut impl Write) -> io::Result<()> {
+    let Some(value) = value else {
+        return writeln!(
+            out,
+            "Launch settings and mail connection: unavailable in this older receipt."
+        );
+    };
+    writeln!(
+        out,
+        "Provider: {}; model: {}",
+        super::labels::provider(value.provider),
+        value.model.as_deref().unwrap_or("provider default")
+    )?;
+    writeln!(
+        out,
+        "Permission profile {}: {}; network {}",
+        value.permission_profile,
+        value.permission,
+        if value.network { "on" } else { "off" }
+    )?;
+    write!(
+        out,
+        "Conversation: {}",
+        if value.resumed { "resumed" } else { "fresh" }
+    )?;
+    match &value.conversation {
+        se_types::Read::Present { value } => writeln!(out, " ({value})")?,
+        se_types::Read::Absent { checked } => writeln!(out, " ({checked})")?,
+        se_types::Read::Unknown { what } => writeln!(out, " ({what})")?,
+        se_types::Read::Unreadable { reason, .. } => writeln!(out, " ({reason})")?,
+    }
+    match &value.mail_notifications {
+        se_types::Read::Present { value } => writeln!(
+            out,
+            "Mail notifications at launch: {}",
+            if *value { "connected" } else { "not connected" }
+        ),
+        se_types::Read::Unknown { what } => {
+            writeln!(out, "Mail notifications at launch: unavailable ({what})")
+        }
+        se_types::Read::Absent { checked } => {
+            writeln!(out, "Mail notifications at launch: absent ({checked})")
+        }
+        se_types::Read::Unreadable { reason, .. } => {
+            writeln!(out, "Mail notifications at launch: unreadable ({reason})")
+        }
     }
 }

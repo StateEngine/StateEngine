@@ -1,18 +1,17 @@
 use super::syntax::{Declaration, exported};
 use crate::model::SymbolKind;
 use tree_sitter::Node;
-pub(super) fn declaration<'a>(node: Node<'a>, bytes: &[u8]) -> Option<Declaration<'a>> {
+pub(super) fn declaration<'a>(
+    node: Node<'a>,
+    ancestors: &[Node<'a>],
+    bytes: &[u8],
+) -> Option<Declaration<'a>> {
     use SymbolKind::*;
     let kind = match node.kind() {
         "function_item" | "function_signature_item" => {
-            if node
-                .parent()
-                .and_then(|n| n.parent())
-                .is_some_and(|n| matches!(n.kind(), "impl_item" | "trait_item"))
-            {
-                Method
-            } else {
-                Function
+            match ancestors.iter().rev().nth(1).map(Node::kind) {
+                Some("impl_item" | "trait_item") => Method,
+                _ => Function,
             }
         }
         "struct_item" => Struct,
@@ -61,6 +60,6 @@ pub(super) fn declaration<'a>(node: Node<'a>, bytes: &[u8]) -> Option<Declaratio
         body: node
             .child_by_field_name("body")
             .or_else(|| node.child_by_field_name("value")),
-        exported: exported(node, bytes),
+        exported: exported(node, ancestors, bytes),
     })
 }
