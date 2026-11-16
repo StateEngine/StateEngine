@@ -568,6 +568,13 @@ impl Snapshot for SqliteSnapshot {
     fn control_target(&mut self, target: AgentId) -> StoreResult<Read<ControlTarget>> {
         self.read_control_target(target)
     }
+    fn control_session(
+        &mut self,
+        target: AgentId,
+        session: SessionId,
+    ) -> StoreResult<Read<ProjectionRecord>> {
+        self.read_control_session(target, session)
+    }
     fn process(&mut self, _id: LifecycleId) -> StoreResult<Read<ProjectionRecord>> {
         let p = self.project_bytes()?;
         let s = scope_key(&self.db, &self.scope.admission.scope, false)?;

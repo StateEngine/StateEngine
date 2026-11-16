@@ -11,7 +11,7 @@ impl LaunchCoordinator {
             true,
         )
         .map(|command| command.command)
-        .unwrap_or_else(|| "se launch <agent> --new --detach".into());
+        .unwrap_or_else(|| "se launch <agent> --detach".into());
         let mut failure = error(
             "SE Code service lost",
             "the original native service scope exited; final capture and uncertain input remain unproved",

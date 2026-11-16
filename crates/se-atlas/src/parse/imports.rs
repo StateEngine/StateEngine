@@ -8,6 +8,7 @@ use tree_sitter::Node;
 
 pub(super) fn extract(
     node: Node<'_>,
+    ancestors: &[Node<'_>],
     bytes: &[u8],
     language: Language,
     scope: u32,
@@ -16,10 +17,10 @@ pub(super) fn extract(
 ) -> AtlasResult<()> {
     match language {
         Language::JavaScript | Language::Jsx | Language::TypeScript | Language::Tsx => {
-            javascript(node, bytes, scope, arena, into)
+            javascript(node, ancestors, bytes, scope, arena, into)
         }
-        Language::Python => python(node, bytes, scope, arena, into),
-        Language::Rust => rust(node, bytes, scope, arena, into),
+        Language::Python => python(node, ancestors, bytes, scope, arena, into),
+        Language::Rust => rust(node, ancestors, bytes, scope, arena, into),
     }
 }
 struct Binding<'a> {
@@ -68,20 +69,21 @@ fn emit(
 )]
 fn javascript(
     node: Node<'_>,
+    ancestors: &[Node<'_>],
     bytes: &[u8],
     scope: u32,
     arena: &mut Arena,
     into: &mut Vec<ImportRecord>,
 ) -> AtlasResult<()> {
-    let mut ancestor = Some(node);
     let mut statement = None;
-    for _ in 0..6 {
-        let Some(n) = ancestor else { break };
+    for n in std::iter::once(node)
+        .chain(ancestors.iter().copied().rev())
+        .take(6)
+    {
         if matches!(n.kind(), "import_statement" | "export_statement") {
             statement = Some(n);
             break;
         }
-        ancestor = n.parent();
     }
     if let Some(statement) = statement {
         let Some(source) = statement
@@ -108,7 +110,11 @@ fn javascript(
                 )
             }
             "namespace_import" => (node.named_child(0).map(|n| text(n, bytes)), None, false),
-            "identifier" if node.parent().is_some_and(|p| p.kind() == "import_clause") => {
+            "identifier"
+                if ancestors
+                    .last()
+                    .is_some_and(|p| p.kind() == "import_clause") =>
+            {
                 (Some(text(node, bytes)), Some("default"), false)
             }
             "import_statement"
@@ -187,12 +193,13 @@ fn javascript(
 }
 fn python(
     node: Node<'_>,
+    ancestors: &[Node<'_>],
     bytes: &[u8],
     scope: u32,
     arena: &mut Arena,
     into: &mut Vec<ImportRecord>,
 ) -> AtlasResult<()> {
-    let Some(parent) = node.parent() else {
+    let Some(parent) = ancestors.last().copied() else {
         return Ok(());
     };
     if !matches!(parent.kind(), "import_statement" | "import_from_statement") {
@@ -248,12 +255,13 @@ fn python(
 }
 fn rust(
     node: Node<'_>,
+    ancestors: &[Node<'_>],
     bytes: &[u8],
     scope: u32,
     arena: &mut Arena,
     into: &mut Vec<ImportRecord>,
 ) -> AtlasResult<()> {
-    let Some(parent) = node.parent() else {
+    let Some(parent) = ancestors.last().copied() else {
         return Ok(());
     };
     let name = match node.kind() {
@@ -268,12 +276,10 @@ fn rust(
     };
     let Some(name) = name else { return Ok(()) };
     let mut prefixes = Vec::new();
-    let mut ancestor = node.parent();
     let mut declaration = None;
-    for _ in 0..32 {
-        let Some(n) = ancestor else { break };
+    for (index, n) in ancestors.iter().copied().enumerate().rev().take(32) {
         if n.kind() == "use_declaration" {
-            declaration = Some(n);
+            declaration = Some((n, index));
             break;
         }
         if n.kind() == "scoped_use_list"
@@ -281,9 +287,8 @@ fn rust(
         {
             arena.push(&mut prefixes, text(path, bytes))?;
         }
-        ancestor = n.parent();
     }
-    let Some(declaration) = declaration else {
+    let Some((declaration, index)) = declaration else {
         return Ok(());
     };
     let suffix = text(name, bytes);
@@ -317,7 +322,7 @@ fn rust(
             local: if wildcard { None } else { local },
             imported,
             kind: ImportKind::Rust,
-            reexport: super::syntax::exported(declaration, bytes),
+            reexport: super::syntax::exported(declaration, &ancestors[..index], bytes),
             wildcard,
         },
         scope,

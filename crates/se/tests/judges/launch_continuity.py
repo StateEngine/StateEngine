@@ -75,12 +75,12 @@ def run(options):
             key = str(uuid.uuid4())
             args = ['--key', key, '--project', fixture.project, 'launch', agent,
                     '--detach', '--task', 'Independent continuity check.']
-            if fresh:
-                args.append('--new')
+            if not fresh:
+                args.append('--resume')
             if door == 'mcp':
                 response = fixture.rpc('stateengine_agent_launch', {
                     'target_agent_id': agent, 'task': 'Independent continuity check.',
-                    'detach': True, 'new': fresh, 'idempotency_key': key})
+                    'detach': True, 'resume': not fresh, 'idempotency_key': key})
                 assert not response.get('isError', False), response
                 receipt, reply = response['structuredContent'], None
             elif plain:
@@ -97,7 +97,7 @@ def run(options):
 
         # Use the existing isolated owner-terminal fixture for grant setup.
         owner_grant(fixture, True)
-        first, _, _ = launch(fixture.agent)
+        first, _, _ = launch(fixture.agent, fresh=True)
         fixture.session = first['session_id']
         if options.case == 'nested':
             parent = {key: 'synthetic-parent-' + key.lower() for key in MARKERS}
@@ -116,7 +116,7 @@ def run(options):
                         assert not response.get('isError', False), response
                         created = response['structuredContent']
                     child = created['agent']['id']
-                    receipt, row, _ = launch(child, door=door)
+                    receipt, row, _ = launch(child, fresh=True, door=door)
                     assert receipt['agent']['id'] == child and receipt['session_id'] != first['session_id']
                     assert row['environment'] == {'SE_SESSION': receipt['session_id']}, row
                     result['checks'].append(door + ': authenticated parent creates and launches child; no parent provider or identity marker reaches native child')
@@ -165,7 +165,7 @@ def run(options):
                     resumed, row, plain = launch(target, plain=True)
                     assert resumed['conversation_id'] == saved['conversation_id'] and row['flag'] == '--resume', (saved, resumed, row)
                     facts(resumed, True, 'cli-resume', before, after, (resuming_at, time.time()))
-                    result['checks'].append('cli: ordinary owner launch really resumes the saved provider conversation')
+                    result['checks'].append('cli: explicit owner resume really reopens the saved provider conversation')
                     fixture.ok('--project', fixture.project, 'stop', target)
                     receipts['cli-resumed'] = resumed
                 else:
@@ -174,7 +174,7 @@ def run(options):
                     observations = (fixture.repo / 'launch-observed.jsonl').read_bytes()
                     refused = fixture.rpc('stateengine_agent_launch', {
                         'target_agent_id': target, 'task': 'Independent continuity check.',
-                        'detach': True, 'new': False, 'idempotency_key': str(uuid.uuid4())})
+                        'detach': True, 'resume': True, 'idempotency_key': str(uuid.uuid4())})
                     assert refused.get('isError') is True, refused
                     assert 'ScopeMismatch' in json.dumps(refused), refused
                     assert (fixture.repo / 'launch-observed.jsonl').read_bytes() == observations
@@ -192,7 +192,7 @@ def run(options):
                     if not age_pattern.search(plain):
                         result['failures'].append('resumed launch does not state how old the saved conversation is')
                     if re.search(r'\bresumed\b', fresh_plain, re.I):
-                        result['failures'].append('--new is misleadingly printed as a resumed conversation')
+                        result['failures'].append('fresh launch is misleadingly printed as a resumed conversation')
                 receipts[door + '-fresh'] = fresh
             (options.output / 'receipts.json').write_text(json.dumps(receipts, indent=2))
     except Exception as error:
