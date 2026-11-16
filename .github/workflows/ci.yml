@@ -398,7 +398,7 @@ jobs:
           name: results-macos-15
           path: |
             target/nextest/ci/junit.xml
-            target/nextest/input-judges.json
+            ci-reports/input-judges.json
           retention-days: 3
           if-no-files-found: warn
 
