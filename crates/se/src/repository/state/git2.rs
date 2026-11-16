@@ -12,6 +12,16 @@ pub(super) struct Prepared {
 }
 impl Prepared {
     pub(super) fn open(root: &Path) -> Result<Self, String> {
+        // Opening without FROM_ENV also omits command-scoped configuration and
+        // alternate global/system files. Preserve that entire configuration
+        // family through Git rather than silently observing different values.
+        if std::env::vars_os().any(|(name, _)| {
+            name.as_encoded_bytes()
+                .get(..b"GIT_CONFIG".len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"GIT_CONFIG"))
+        }) {
+            return Err("environment configuration requires the command-line observer".into());
+        }
         // Deliberately omit FROM_ENV: GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE
         // cannot redirect an observation of the caller's selected repository.
         let repository = Repository::open_ext(
@@ -21,7 +31,23 @@ impl Prepared {
         )
         .map_err(describe)?;
         let config = repository.config().map_err(describe)?;
-        for name in ["core.sparseCheckout", "index.sparse"] {
+        // Includes and enabled per-worktree precedence evolve independently
+        // of this backend. Their presence selects the authoritative CLI, even
+        // when a condition is inactive or a value is overridden later.
+        let mut entries = config.entries(None).map_err(describe)?;
+        while let Some(entry) = entries.next() {
+            let entry = entry.map_err(describe)?;
+            let name = entry.name_bytes();
+            if name == b"include.path" || name.starts_with(b"includeif.") {
+                return Err("configuration includes require the command-line observer".into());
+            }
+        }
+        drop(entries);
+        for name in [
+            "core.sparseCheckout",
+            "index.sparse",
+            "extensions.worktreeConfig",
+        ] {
             match config.get_bool(name) {
                 Ok(true) => return Err(format!("{name} requires the command-line observer")),
                 Ok(false) => {}
