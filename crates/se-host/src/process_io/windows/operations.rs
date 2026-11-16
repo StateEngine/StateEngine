@@ -57,7 +57,7 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> WindowsProviderIo<R> {
 pub(super) fn port(transport: &ProviderTransport) -> Result<&Port> {
     transport
         .windows
-        .as_ref()
+        .as_deref()
         .ok_or_else(|| SeError::invalid("provider transport", "one opened by this platform"))
 }
 
