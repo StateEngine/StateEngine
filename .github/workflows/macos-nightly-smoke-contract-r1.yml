@@ -1,0 +1,222 @@
+name: Native macOS smoke contract correction r1
+'on':
+  push:
+    branches: [prime/macos-nightly-smoke-contract-r1]
+  workflow_dispatch:
+    inputs:
+      nightly_binding:
+        description: Strict se.nightly-binding/v1 from Linux run.json after archive creation
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: native-macos-nightly-${{ github.run_id }}
+  cancel-in-progress: false
+defaults:
+  run:
+    shell: bash
+env:
+  NIGHTLY_BINDING: '{"schema":"se.nightly-binding/v1","started_at":"2026-11-15T09:30:00.535961+00:00","product_commit":"7b23fb01a7e16362c6d6b024e5c1801a32bda8c6","judge_commit":"d8bc5f3c3e0cef67c0d5a5e26a025e0623dedf33","linux_archive_sha256":"b11ef17439f64347544239367bb70d8a254a8b3dd72dde74b3e257c088d57cbe"}'
+  PYTHONDONTWRITEBYTECODE: '1'
+  PYTHONUTF8: '1'
+jobs:
+  package:
+    name: Build exact-source native nightly package
+    runs-on: macos-15
+    timeout-minutes: 120
+    outputs:
+      sha256: ${{ steps.package.outputs.sha256 }}
+    steps:
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - &id001
+      name: Check out adapter at the workflow commit
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 34268eb5f689402f6cbaf9c734f0485f998953de
+        path: controller
+        persist-credentials: false
+    - &id002
+      name: Bind exact nightly source and record adapter inventory
+      id: binding
+      env:
+        WORKFLOW_SHA: 34268eb5f689402f6cbaf9c734f0485f998953de
+      run: "python3 -B - <<'PY'\nimport hashlib, json, os, subprocess, sys\nfrom pathlib import Path\nroot = Path(os.environ['RUNNER_TEMP'])\n\
+        controller = Path(os.environ['GITHUB_WORKSPACE']) / 'controller'\ncommit = subprocess.check_output(['git', '-C', str(controller),\
+        \ 'rev-parse', 'HEAD'], text=True).strip()\nif commit != os.environ['WORKFLOW_SHA']:\n    raise RuntimeError('Adapter\
+        \ checkout differs from the workflow commit')\nsource = controller / 'journeys/hosted_macos'\nsys.path.insert(0, str(source))\n\
+        from common import binding, save\nvalue = os.environ['NIGHTLY_BINDING']\nif len(value.encode()) > 4096:\n    raise\
+        \ RuntimeError('Nightly binding is oversized')\nnightly = binding(json.loads(value))\nsave(root / 'nightly-binding.json',\
+        \ nightly)\nfiles = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(source.glob('*.py'))}\n\
+        if not files:\n    raise RuntimeError('Adapter source inventory is absent')\nsave(root / 'observer-source.json', dict(schema='se.hosted-observer/v1',\
+        \ commit=commit, files=files))\nwith open(os.environ['GITHUB_OUTPUT'], 'a') as out:\n    print('product_commit=' +\
+        \ nightly['product_commit'], file=out)\nPY\n"
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: StateEngine/StateEngine
+        ref: ${{ steps.binding.outputs.product_commit }}
+        path: product
+        persist-credentials: false
+    - name: Read pinned native toolchain
+      id: toolchain
+      run: "python3 -B - <<'PY'\nimport os, tomllib\nfrom pathlib import Path\nchannel = tomllib.loads(Path('product/rust-toolchain.toml').read_text())['toolchain']['channel']\n\
+        if not channel or any(c not in '0123456789.-' for c in channel):\n    raise RuntimeError('Expected the source-pinned\
+        \ release toolchain')\nwith open(os.environ['GITHUB_OUTPUT'], 'a') as out:\n    out.write('channel=' + channel + '\\\
+        n')\nPY\n"
+    - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+      with:
+        toolchain: ${{ steps.toolchain.outputs.channel }}
+        targets: aarch64-apple-darwin
+        components: llvm-tools-preview
+    - name: Build one exact-nightly native package
+      env:
+        CARGO_HOME: ${{ runner.temp }}/cargo-home
+        CARGO_BUILD_JOBS: '2'
+        CARGO_INCREMENTAL: '0'
+      run: 'python3 -B "$GITHUB_WORKSPACE/controller/journeys/hosted_macos/package.py" --source "$GITHUB_WORKSPACE/product"
+        --binding "$RUNNER_TEMP/nightly-binding.json" --out "$RUNNER_TEMP/native-package"
+
+        '
+    - name: Bind transferred package metadata
+      id: package
+      run: "python3 -B - <<'PY'\nimport hashlib, json, os\nfrom pathlib import Path\npath = Path(os.environ['RUNNER_TEMP'])\
+        \ / 'native-package/transfer/package.json'\nvalue = json.loads(path.read_text())\nwith open(os.environ['GITHUB_OUTPUT'],\
+        \ 'a') as out:\n    out.write('sha256=' + hashlib.sha256(path.read_bytes()).hexdigest() + '\\n')\nwith open(os.environ['GITHUB_STEP_SUMMARY'],\
+        \ 'a') as out:\n    out.write('Native-only macOS sibling source: `' + value['nightly']['product_commit'] + '`\\n\\\
+        n')\n    out.write('Linux archive binding: `' + value['nightly']['linux_archive_sha256'] + '`\\n\\n')\n    out.write('Native\
+        \ archive: `' + value['archive_sha256'] + '`\\n\\nRemote bootstrap images and providers are unmeasured.\\n')\nPY\n"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: native-nightly-package
+        path: ${{ runner.temp }}/native-package/transfer/*
+        if-no-files-found: error
+        retention-days: 7
+  smoke:
+    name: Account-free macOS smoke only
+    needs: package
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - *id001
+    - *id002
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: StateEngine/StateEngine
+        ref: ${{ steps.binding.outputs.product_commit }}
+        path: product
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: native-nightly-package
+        path: ${{ runner.temp }}/package-transfer
+    - name: Register the disposable native installation account
+      run: 'identity="$(id -u)"
+
+        profile="$(python3 -c ''import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)'')"
+
+        sudo python3 product/scripts/ci/installation_account.py provision --identity "$identity" --profile "$profile"
+
+        python3 product/scripts/ci/installation_account.py check
+
+        '
+    - name: Account-free native Install, terminal, identity and cleanup
+      env:
+        PACKAGE_SHA256: ${{ needs.package.outputs.sha256 }}
+      run: 'python3 -B "$GITHUB_WORKSPACE/controller/journeys/hosted_macos/five_journeys.py" --mode account-free --surface
+        codex --binding "$RUNNER_TEMP/nightly-binding.json" --package "$RUNNER_TEMP/package-transfer" --package-sha256 "$PACKAGE_SHA256"
+        --account-registration "$GITHUB_WORKSPACE/product/scripts/ci/installation_account.py" --out "$RUNNER_TEMP/evidence"
+
+        '
+    - name: Export finite receipts and qualification limits
+      if: ${{ always() }}
+      run: "python3 -B - <<'PY'\nimport json, os, shutil\nfrom pathlib import Path\nroot = Path(os.environ['RUNNER_TEMP'])\n\
+        evidence = root / 'evidence'\nevidence.mkdir(exist_ok=True)\nshutil.copyfile(root / 'observer-source.json', evidence\
+        \ / 'observer-source.json')\npath = evidence / 'results.json'\nvalue = json.loads(path.read_text()) if path.exists()\
+        \ else {'account_free_result': 'FAIL', 'reason': 'No smoke receipt'}\nwith open(os.environ['GITHUB_STEP_SUMMARY'],\
+        \ 'a') as out:\n    out.write('Account-free macOS smoke: **' + value.get('account_free_result', 'FAIL') + '**\\n\\\
+        n')\n    out.write('Real Claude and Codex journeys: **NOT RUN**. Desktop windows and remote bootstrap images: **NOT\
+        \ RUN**.\\n')\nPY\npython3 -B \"$GITHUB_WORKSPACE/controller/journeys/hosted_macos/collect.py\" --source \"$RUNNER_TEMP/evidence\"\
+        \ --out \"$RUNNER_TEMP/upload\"\n"
+    - name: Retain finite account-free-macos-receipts
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: account-free-macos-receipts
+        path: ${{ runner.temp }}/upload/*
+        if-no-files-found: error
+        retention-days: 7
+  unmeasured:
+    name: Publish NOT RUN provider receipts
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.12'
+    - *id001
+    - *id002
+    - name: Write provider matrices as NOT RUN without accessing credentials
+      run: "for surface in codex claude; do\n  python3 -B \"$GITHUB_WORKSPACE/controller/journeys/hosted_macos/five_journeys.py\"\
+        \ --mode provider-not-run --surface \"$surface\" --binding \"$RUNNER_TEMP/nightly-binding.json\" --out \"$RUNNER_TEMP/reports/$surface\"\
+        \ndone\npython3 -B - <<'PY'\nimport json, os\nfrom pathlib import Path\nroot = Path(os.environ['RUNNER_TEMP'])\nwith\
+        \ open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:\n    out.write('| Provider | Journey | Result |\\n|---|---|---|\\\
+        n')\n    for surface in ('codex', 'claude'):\n        value = json.loads((root / 'reports' / surface / 'results.json').read_text())\n\
+        \        if value['result'] != 'NOT RUN' or len(value['rows']) != 5 or any(row['result'] != 'NOT RUN' for row in value['rows']):\n\
+        \            raise RuntimeError('Unexecuted provider coverage must not turn green')\n        for row in value['rows']:\n\
+        \            out.write('| ' + surface + ' | ' + row['name'] + ' | NOT RUN |\\n')\n    out.write('\\nReceipt production\
+        \ can succeed; provider qualification remains unmeasured. Credentials and spending cap await approval.\\n')\nPY\n"
+    - name: Retain finite provider-not-run-receipts
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: provider-not-run-receipts
+        path: ${{ runner.temp }}/reports/*/results.json
+        if-no-files-found: error
+        retention-days: 7
+  codex:
+    name: "Codex real-provider journeys \u2014 NOT RUN (credential decision pending)"
+    if: ${{ false }}
+    runs-on: macos-15
+    timeout-minutes: 1
+    steps:
+    - run: 'echo "NOT RUN: provider execution awaits approval and a real provider adapter"
+
+        exit 78
+
+        '
+  claude:
+    name: "Claude real-provider journeys \u2014 NOT RUN (credential decision pending)"
+    if: ${{ false }}
+    runs-on: macos-15
+    timeout-minutes: 1
+    steps:
+    - run: 'echo "NOT RUN: provider execution awaits approval and a real provider adapter"
+
+        exit 78
+
+        '
+  gate:
+    name: Require successful account-free macOS smoke
+    if: ${{ always() }}
+    needs:
+    - package
+    - smoke
+    - unmeasured
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+    - name: Reject failed, canceled or skipped smoke and receipts
+      env:
+        SMOKE_RESULT: ${{ needs.smoke.result }}
+        PACKAGE_RESULT: ${{ needs.package.result }}
+        RECEIPTS_RESULT: ${{ needs.unmeasured.result }}
+      run: "if [[ \"$SMOKE_RESULT\" != success ]]; then\n  printf 'Account-free macOS smoke did not pass: %s\n' \"$SMOKE_RESULT\"\
+        \ >&2\n  exit 1\nfi\nif [[ \"$PACKAGE_RESULT\" != success || \"$RECEIPTS_RESULT\" != success ]]; then\n  printf 'Package\
+        \ or NOT RUN receipts failed: package=%s receipts=%s\n' \"$PACKAGE_RESULT\" \"$RECEIPTS_RESULT\" >&2\n  exit 1\nfi\n\
+        printf 'Account-free macOS smoke gate: PASS. Real-provider journeys: NOT RUN.\n' >> \"$GITHUB_STEP_SUMMARY\"\n"
