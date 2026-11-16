@@ -128,7 +128,8 @@ pub fn observe_snapshot<S: Snapshot>(
             let git = if root.is_empty() {
                 None
             } else {
-                match super::git_state::observe(std::path::Path::new(&root)) {
+                match super::git_state::observe_cached(std::path::Path::new(&root), files, &cx.home)
+                {
                     Ok(observed) => {
                         if let Some(view) = &observed
                             && view.head.is_some()

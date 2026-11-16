@@ -38,6 +38,8 @@ pub use file_identity::NativeFileIdentity;
 mod identity;
 mod launch;
 mod native_error;
+#[cfg(windows)]
+mod native_file_revision;
 pub mod native_ipc;
 mod owner_probe;
 #[cfg(windows)]
