@@ -42,9 +42,14 @@ impl SqliteReader {
         slot: crate::read_slots::ReadSlot,
         db: Connection,
     ) -> StoreResult<ReadPhase> {
-        connection::begin_snapshot(&db, &self.path)?;
-        let info = connection::info_at(&db, &self.path)?;
-        self.validate_identity()?;
+        let _worker_step = crate::worker_observer::span("phase.open");
+        crate::worker_observer::observe("phase.begin", || {
+            connection::begin_snapshot(&db, &self.path)
+        })?;
+        let info = crate::worker_observer::observe("phase.header", || {
+            connection::info_at(&db, &self.path)
+        })?;
+        crate::worker_observer::observe("phase.file_identity", || self.validate_identity())?;
         Ok(ReadPhase {
             db,
             info,
@@ -60,6 +65,7 @@ impl ReadPhase {
     /// Read the current phase's generation fact; no authority is cached for a
     /// later pin or request.
     pub fn runtime_owner(&self) -> StoreResult<Read<RuntimeOwnerHead>> {
+        let _worker_step = crate::worker_observer::span("phase.generation");
         let row: Option<(String, u64, u64, i64)> = self.db.query_row(
             "SELECT owner_epoch,owner_generation,revision,last_seq FROM runtime_owner WHERE singleton=1",
             [], |r| Ok((crate::sql_value::value(r, 0)?, crate::sql_value::value(r, 1)?, crate::sql_value::value(r, 2)?, crate::sql_value::value(r, 3)?)),
@@ -95,6 +101,7 @@ impl ReadPhase {
     /// Re-read the presented credential on this pin, retaining the ordinary
     /// active-session and expiry checks in the host admission layer.
     pub fn credential(&self, hash: [u8; 32]) -> StoreResult<Read<CredentialRecord>> {
+        let _worker_step = crate::worker_observer::span("phase.credential");
         crate::credential::read_at(&self.db, &self.info, hash)
     }
 
@@ -107,12 +114,14 @@ impl ReadPhase {
     /// On this pin: whether this credential's agent has an unreleased
     /// StopUnproved process in any session, which fences all its operations.
     pub fn credential_stop_unproved(&self, hash: [u8; 32]) -> StoreResult<bool> {
+        let _worker_step = crate::worker_observer::span("phase.stop_unproved");
         crate::credential::stop_unproved_at(&self.db, &self.info, hash)
     }
 
     /// Transfer this exact pin and its reservation to the admitted snapshot.
     /// This consumes the pre-admission phase; it cannot be reused afterward.
     pub fn into_snapshot(self, scope: ReadScope) -> StoreResult<SqliteSnapshot> {
+        let _worker_step = crate::worker_observer::span("phase.scope");
         SqliteSnapshot::from_phase(self, scope)
     }
 
@@ -120,6 +129,7 @@ impl ReadPhase {
     /// physically; a host admission phase may return its idle connection to its pool.
     /// Early errors and unwinding also drop the connection and its transaction.
     pub fn close(self) -> StoreResult<()> {
+        let _worker_step = crate::worker_observer::span("phase.close");
         self.db
             .execute_batch("ROLLBACK")
             .map_err(|e| context(sql(e), &self.path, StoreIoStage::ReadSnapshot))?;

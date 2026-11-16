@@ -395,6 +395,7 @@ impl Snapshot for SqliteSnapshot {
         self.read_resume_head(principal)
     }
     fn close(mut self) -> StoreResult<()> {
+        let _worker_step = crate::worker_observer::span("snapshot.close");
         // A deadline handler belongs to this snapshot, never the next borrower.
         self.db
             .progress_handler(0, None::<fn() -> bool>)

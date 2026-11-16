@@ -64,7 +64,7 @@ impl BlockingPool {
         T: Send + 'static,
         F: FnOnce() -> Result<T> + Send + 'static,
     {
-        let job = self.start(class, deadline, work).await?;
+        let job = self.start(class, deadline, work, None).await?;
         let result = within(deadline, job)
             .await?
             .map_err(|error| pool_error(&format!("bounded blocking job failed: {error}")))?;
@@ -80,7 +80,7 @@ impl BlockingPool {
         T: Send + 'static,
         F: FnOnce() -> Result<T> + Send + 'static,
     {
-        self.start(BlockingClass::Background, deadline, work)
+        self.start(BlockingClass::Background, deadline, work, None)
             .await?
             .await
             .map_err(|error| pool_error(&format!("owned maintenance work failed: {error}")))?
@@ -90,6 +90,7 @@ impl BlockingPool {
         class: BlockingClass,
         deadline: &Deadline,
         work: F,
+        observed: Option<Arc<std::sync::Mutex<Option<std::time::Instant>>>>,
     ) -> Result<tokio::task::JoinHandle<Result<T>>>
     where
         T: Send + 'static,
@@ -120,10 +121,51 @@ impl BlockingPool {
             )
         };
         deadline.remaining()?;
+        if let Some(mark) = observed {
+            *mark.lock().expect("worker admission observation") = Some(std::time::Instant::now());
+        }
         Ok(self.runtime.spawn_blocking(move || {
             let _permits = (permit, maintenance);
             work()
         }))
+    }
+    // Development observer: preserve the original finite/owned join semantics.
+    pub(crate) async fn run_observed<T, F>(
+        &self,
+        owned: bool,
+        deadline: &Deadline,
+        work: F,
+    ) -> Result<(T, std::time::Instant)>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T> + Send + 'static,
+    {
+        let mark = Arc::new(std::sync::Mutex::new(None));
+        let result = if owned {
+            let permit = self.admit_owned(deadline).await?;
+            *mark.lock().expect("worker admission observation") = Some(std::time::Instant::now());
+            self.run_admitted_owned(permit, work).await?
+        } else {
+            let job = self
+                .start(
+                    BlockingClass::Foreground,
+                    deadline,
+                    work,
+                    Some(Arc::clone(&mark)),
+                )
+                .await?;
+            let result = within(deadline, job)
+                .await?
+                .map_err(|error| pool_error(&format!("bounded blocking job failed: {error}")))?;
+            deadline.remaining()?;
+            result?
+        };
+        let admitted = mark
+            .lock()
+            .expect("worker admission observation")
+            .take()
+            .expect("worker was admitted");
+        Ok((result, admitted))
     }
     /// Resource-producing/closing jobs must return their custody even if the
     /// caller's clock expires during native work. Admission is deadline-bound;

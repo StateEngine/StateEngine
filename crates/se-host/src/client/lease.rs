@@ -418,7 +418,8 @@ impl BlockingConnection {
         }
         let deadline = Deadline::from_options(options)?;
         // Encode/refuse before taking custody of the connection or writing.
-        let frame = wire::encode_call(&call)?;
+        let frame =
+            se_proc::worker_observer::observe("bridge.ipc_encode", || wire::encode_call(&call))?;
         // Renew before the first send, allowing the whole write stage before
         // the server's idle expiry. Never retry an incomplete exchange: its
         // operation may already have committed, with or without a reply.
@@ -448,10 +449,14 @@ impl BlockingConnection {
         stream.set_bound(writing.native_bound());
         self.last_activity = Instant::now();
         *progress = ExchangeProgress::SendAttempted;
-        wire::write_frame_bounded(&mut stream, &frame, &writing)?;
+        se_proc::worker_observer::observe("bridge.ipc_write", || {
+            wire::write_frame_bounded(&mut stream, &frame, &writing)
+        })?;
         stream.set_bound(deadline.native_bound());
         let limit = self.hello.maximum_reply_bytes.get() as usize;
-        let bytes = wire::read_payload_bounded(&mut stream, limit, &deadline)?;
+        let bytes = se_proc::worker_observer::observe("bridge.ipc_reply_wait", || {
+            wire::read_payload_bounded(&mut stream, limit, &deadline)
+        })?;
         let response = wire::decode_response(
             bytes.as_bytes(),
             call.version,

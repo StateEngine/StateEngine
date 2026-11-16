@@ -32,6 +32,7 @@ pub use checkpoint::{
     Checkpoint, CheckpointError, CheckpointKind, CheckpointPrincipal, CheckpointSource,
     HistoricalCheckpoint, RootPublication, decode_checkpoint, encode_checkpoint,
 };
+pub mod worker_observer;
 mod error;
 mod file_identity;
 pub use file_identity::NativeFileIdentity;

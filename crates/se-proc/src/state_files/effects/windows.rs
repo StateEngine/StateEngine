@@ -46,6 +46,7 @@ fn open_shared_with_layout(
     share_write: bool,
     layout: security::Layout,
 ) -> Result<File> {
+    let _worker_step = crate::worker_observer::span("native.open");
     let name = wide(path)?;
     let descriptor = if create {
         Some(security::descriptor_for(path, false, layout)?)

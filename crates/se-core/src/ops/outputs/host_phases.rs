@@ -33,6 +33,14 @@ pub struct HostPhaseSpan {
     pub queue_us: u64,
     pub work_us: u64,
     pub resume_us: u64,
+    #[serde(default)]
+    pub semaphore_us: u64,
+    #[serde(default)]
+    pub dispatch_us: u64,
+    #[serde(default)]
+    pub observer_collect_us: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<serde_json::Value>,
 }
 impl HostPhaseTimings {
     /// Accumulate observed fragments of this same signal; None stays unmeasured.
@@ -51,6 +59,16 @@ impl HostPhaseTimings {
                         value.queue_us = value.queue_us.saturating_add(source.queue_us);
                         value.work_us = value.work_us.saturating_add(source.work_us);
                         value.resume_us = value.resume_us.saturating_add(source.resume_us);
+                        value.semaphore_us += source.semaphore_us;
+                        value.dispatch_us += source.dispatch_us;
+                        value.observer_collect_us += source.observer_collect_us;
+                        value.detail = match (value.detail.take(), source.detail) {
+                            (None, right) => right,
+                            (left, None) => left,
+                            (Some(left), Some(right)) => {
+                                Some(serde_json::json!({"fragments":[left,right]}))
+                            }
+                        };
                     }
                     None => *target = Some(source),
                 }

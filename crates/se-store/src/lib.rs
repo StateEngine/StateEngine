@@ -13,6 +13,7 @@ mod completion;
 mod connection;
 mod creator;
 mod credential;
+pub mod worker_observer;
 mod error;
 mod event;
 mod identity;

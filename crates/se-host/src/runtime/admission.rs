@@ -255,6 +255,7 @@ impl AdmissionContext {
         metadata: OperationMetadata,
         finish: impl FnOnce(se_store::ReadPhase, HostedCall) -> Result<T>,
     ) -> Result<T> {
+        let _worker_step = se_proc::worker_observer::span("host.admit_operation");
         let (peer, connection) = native;
         let mut phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
@@ -332,6 +333,7 @@ impl AdmissionContext {
         operation: ops::AnyOp,
         finish: impl FnOnce(se_store::ReadPhase, HostedCall) -> Result<T>,
     ) -> Result<T> {
+        let _worker_step = se_proc::worker_observer::span("host.admit_operation");
         let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
@@ -467,6 +469,7 @@ impl AdmissionContext {
         secret: &se_types::Secret,
         purpose: &'static str,
     ) -> Result<Admission> {
+        let _worker_step = se_proc::worker_observer::span("host.credential");
         self.credential_in(phase, secret, purpose, Pending::Refuse)
     }
     fn credential_in(
@@ -476,6 +479,7 @@ impl AdmissionContext {
         purpose: &'static str,
         pending: Pending,
     ) -> Result<Admission> {
+        let _worker_step = se_proc::worker_observer::span("host.credential");
         let hash: [u8; 32] = Hasher::digest(secret.expose()).into();
         let credential = match phase.credential(hash).map_err(|e| store_error(&e))? {
             Read::Present { value } => value,
@@ -669,6 +673,7 @@ impl AdmissionContext {
     }
 
     fn check_generation(&self, phase: &se_store::ReadPhase) -> Result<()> {
+        let _worker_step = se_proc::worker_observer::span("host.generation");
         match phase.runtime_owner().map_err(|e| store_error(&e))? {
             Read::Present { value } if value.generation == self.generation => Ok(()),
             _ => Err(SeError::invalid(

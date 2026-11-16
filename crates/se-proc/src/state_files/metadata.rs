@@ -37,6 +37,7 @@ impl NativeMetadataPin {
         Ok(Some(pin))
     }
     pub fn metadata(&self) -> Result<Metadata> {
+        let _worker_step = crate::worker_observer::span("native.metadata_pin");
         let named = self.files.inspect_metadata(&self.path)?.ok_or_else(|| {
             failure(
                 StateFileErrorCode::SourceChanged,

@@ -1,5 +1,5 @@
 //! Same-call timing around the existing bounded jobs; no worker or authority cache.
-use super::{BlockingClass, BlockingPool};
+use super::BlockingPool;
 use crate::client::lease::Deadline;
 use se_core::ops::HostPhaseSpan;
 use se_types::Result;
@@ -24,19 +24,32 @@ where
     T: Send + 'static,
     F: FnOnce() -> Result<T> + Send + 'static,
 {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let enabled =
+        *ENABLED.get_or_init(|| std::env::var("SE_OBSERVE_WORKER_STEPS").as_deref() == Ok("1"));
     let queued = Instant::now();
     let measured = move || {
         let entered = Instant::now();
-        let result = work()?;
-        Ok((result, entered, Instant::now()))
-    };
-    let (result, entered, finished) = match mode {
-        Mode::Finite => {
-            pool.run(BlockingClass::Foreground, deadline, measured)
-                .await?
+        if enabled {
+            se_proc::worker_observer::begin();
+            se_store::worker_observer::begin();
         }
-        Mode::Owned => pool.run_owned(deadline, measured).await?,
+        let result = work();
+        let collect = Instant::now();
+        let detail = if enabled {
+            Some(serde_json::json!({
+                "host_native":se_proc::worker_observer::finish(),
+                "store":se_store::worker_observer::finish()
+            }))
+        } else {
+            None
+        };
+        let collect_us = micros(collect.elapsed());
+        Ok((result?, entered, Instant::now(), detail, collect_us))
     };
+    let ((result, entered, finished, detail, collect_us), admitted) = pool
+        .run_observed(matches!(mode, Mode::Owned), deadline, measured)
+        .await?;
     let returned = Instant::now();
     Ok((
         result,
@@ -45,6 +58,10 @@ where
             queue_us: micros(entered.duration_since(queued)),
             work_us: micros(finished.duration_since(entered)),
             resume_us: micros(returned.duration_since(finished)),
+            semaphore_us: micros(admitted.duration_since(queued)),
+            dispatch_us: micros(entered.duration_since(admitted)),
+            observer_collect_us: collect_us,
+            detail,
         },
     ))
 }

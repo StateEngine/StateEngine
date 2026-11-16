@@ -178,15 +178,20 @@ pub(super) async fn finish(
                     let mut read = phase
                         .into_snapshot(read_scope(&admission))
                         .map_err(|error| store_error(&error))?;
-                    let result = kernel.committed(
-                        then,
-                        receipt,
-                        &mut Cx {
-                            read: &mut read,
-                            admission: &admission,
-                        },
-                    );
-                    close_read(result, read.close())
+                    let result = se_proc::worker_observer::observe("host.committed", || {
+                        kernel.committed(
+                            then,
+                            receipt,
+                            &mut Cx {
+                                read: &mut read,
+                                admission: &admission,
+                            },
+                        )
+                    });
+                    close_read(
+                        result,
+                        se_proc::worker_observer::observe("host.snapshot_close", || read.close()),
+                    )
                 })
                 .await
                 .map_err(|error| committed.response_error(error))?;
@@ -278,7 +283,9 @@ pub(super) fn plan(
                     se_core::ops::AnyOp::SessionContext(input) => Some(input.byte_budget),
                     _ => None,
                 };
-                match kernel.plan(operation, &mut cx, &terminal)? {
+                match se_proc::worker_observer::observe("host.plan", || {
+                    kernel.plan(operation, &mut cx, &terminal)
+                })? {
                     OpStep::Complete(mut output)
                         if matches!(
                             output,
@@ -354,7 +361,10 @@ pub(super) fn plan(
         };
         Ok((step, observations))
     });
-    let (step, observations) = close_read(result, read.close())?;
+    let (step, observations) = close_read(
+        result,
+        se_proc::worker_observer::observe("host.snapshot_close", || read.close()),
+    )?;
     Ok(Planned {
         step,
         observations,

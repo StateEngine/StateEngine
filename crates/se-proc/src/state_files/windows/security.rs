@@ -31,6 +31,7 @@ struct User {
 }
 impl User {
     fn current(path: &Path) -> Result<Self> {
+        let _worker_step = crate::worker_observer::span("native.current_user");
         let mut raw = ptr::null_mut();
         // SAFETY: native current-process pseudo handle and writable token output.
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
@@ -230,6 +231,7 @@ fn set_protected_dacl(
     Ok(())
 }
 fn sid(text: &str, path: &Path) -> Result<Allocation> {
+    let _worker_step = crate::worker_observer::span("native.sid");
     let text: Vec<_> = OsStr::new(text).encode_wide().chain(Some(0)).collect();
     let mut raw = ptr::null_mut();
     // SAFETY: terminated constant SID text; the returned SID is LocalFree-owned.
@@ -247,6 +249,7 @@ fn security(
     path: &Path,
     dacl: bool,
 ) -> Result<crate::windows_native::acl::SecurityDescriptor> {
+    let _worker_step = crate::worker_observer::span("native.security_descriptor");
     crate::windows_native::acl::SecurityDescriptor::query(
         file.as_raw_handle(),
         SE_FILE_OBJECT,
@@ -269,6 +272,7 @@ pub(super) fn verify_system_ancestor(file: &File, path: &Path) -> Result<()> {
     Ok(())
 }
 pub(in crate::state_files) fn verify_owner(file: &File, path: &Path) -> Result<()> {
+    let _worker_step = crate::worker_observer::span("native.owner");
     let user = User::current(path)?;
     let descriptor = security(file, path, false)?;
     let owner = descriptor.owner;
@@ -300,6 +304,7 @@ pub(in crate::state_files) fn verify_for(
     inherited_from_protected_parent: bool,
     layout: Layout,
 ) -> Result<()> {
+    let _worker_step = crate::worker_observer::span("native.dacl");
     let user = User::current(path)?;
     let descriptor = security(file, path, true)?;
     let control = descriptor

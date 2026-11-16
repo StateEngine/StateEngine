@@ -100,6 +100,8 @@ fn measure_eight_mcp_writers() -> Check {
         serde_json::to_vec_pretty(&json!({
             "requested": requested, "effective": workers.get(),
             "runtime_thread_cap": threads, "native_cpus": cores.get(),
+            "worker_steps": std::env::var("SE_OBSERVE_WORKER_STEPS").as_deref()==Ok("1"),
+            "bridge_steps": std::env::var("SE_OBSERVE_BRIDGE_STEPS").as_deref()==Ok("1"),
             "scope": "synthetic active sessions; no provider hooks or mixed capture"
         }))?,
     )?;

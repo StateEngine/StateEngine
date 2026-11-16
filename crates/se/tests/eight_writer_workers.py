@@ -30,12 +30,14 @@ class Rpc:
     def __init__(self, binary, home, capability):
         self.capability = capability
         self.serial = 0
+        self.last_bridge = None
         self.frames = queue.Queue(maxsize=4)
         self.errors = bytearray()
         self.error_bytes = 0
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("SE_", "STATEENGINE_", "SECODE_"))
                and k not in ("CLAUDECODE", "CODEX_THREAD_ID", "CODEX_CI")}
+        env["SE_OBSERVE_BRIDGE_STEPS"] = os.environ.get("SE_OBSERVE_BRIDGE_STEPS", "0")
         started = time.perf_counter_ns()
         self.process = subprocess.Popen(
             [binary, "--home", home, "mcp", "--stdio"], env=env,
@@ -126,6 +128,7 @@ class Rpc:
                 raise ValueError("MCP response identity mismatch")
             if "error" in frame:
                 raise ValueError("MCP refusal: " + json.dumps(frame["error"]))
+            self.last_bridge = frame.get("_worker_observation")
             return frame["result"], elapsed
 
     def tool(self, name, arguments):
@@ -137,6 +140,8 @@ class Rpc:
         text = [part["text"] for part in result["content"] if part.get("type") == "text"]
         if len(text) != 1 or json.loads(text[0]) != structured or "schema" not in structured:
             raise ValueError("structured/text receipt mismatch or missing schema")
+        if self.last_bridge is not None:
+            structured.setdefault("diagnostics", {})["bridge_steps"] = self.last_bridge
         return structured, elapsed
 
     def close(self):

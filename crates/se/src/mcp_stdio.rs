@@ -27,7 +27,20 @@ pub fn serve(mut dispatch: impl FnMut(&[u8]) -> Result<Option<serde_json::Value>
                 "a complete newline-terminated frame of at most 1 MiB",
             ));
         }
-        if let Some(reply) = dispatch(&bytes)? {
+        let observed = std::env::var("SE_OBSERVE_BRIDGE_STEPS").as_deref() == Ok("1");
+        if observed {
+            se_proc::worker_observer::begin();
+        }
+        let result = se_proc::worker_observer::observe("bridge.dispatch", || dispatch(&bytes));
+        let detail = if observed {
+            Some(se_proc::worker_observer::finish())
+        } else {
+            None
+        };
+        if let Some(mut reply) = result? {
+            if let Some(detail) = detail {
+                reply["_worker_observation"] = detail;
+            }
             write(&mut output, &reply)?;
         }
     }

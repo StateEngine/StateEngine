@@ -80,10 +80,14 @@ async fn measured_with(
     let (completion, submission) =
         timings::blocking(&context.blocking, Mode::Owned, deadline, move || {
             submit_deadline.remaining()?;
-            let record_write = record_feed.before_scoped_write(&batch.admission.scope)?;
-            pending.register(&submitted)?;
-            mail_waits.fence_remote(&revocations)?;
-            match enqueue(&writer, batch) {
+            let record_write = se_proc::worker_observer::observe("submit.record_fence", || {
+                record_feed.before_scoped_write(&batch.admission.scope)
+            })?;
+            se_proc::worker_observer::observe("submit.pending", || pending.register(&submitted))?;
+            se_proc::worker_observer::observe("submit.mail_fence", || {
+                mail_waits.fence_remote(&revocations)
+            })?;
+            match se_proc::worker_observer::observe("submit.enqueue", || enqueue(&writer, batch)) {
                 Ok(completion) => {
                     // Install the observer before returning from submission:
                     // a cancelled connection can drop this worker's result.

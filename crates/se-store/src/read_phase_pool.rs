@@ -54,6 +54,7 @@ impl SqliteReader {
 }
 impl ReadPhasePool {
     fn state(&self) -> StoreResult<MutexGuard<'_, State>> {
+        let _worker_step = crate::worker_observer::span("pool.lock");
         self.0.state.lock().map_err(|_| {
             fail(
                 StoreErrorCode::Unreadable,
@@ -64,6 +65,7 @@ impl ReadPhasePool {
     /// Native identity, fresh BEGIN and header validation occur on every checkout.
     /// The returned phase is synchronous and cannot cross an external await.
     pub fn read_phase(&self) -> StoreResult<ReadPhase> {
+        let _worker_step = crate::worker_observer::span("pool.checkout");
         let reader = &self.0.reader;
         let slot = reader.slots.acquire()?;
         let (idle, identity) = {
@@ -82,15 +84,21 @@ impl ReadPhasePool {
             })?;
             (state.idle.pop(), identity)
         };
-        identity.validate(&reader.path)?;
+        crate::worker_observer::observe("pool.native_identity", || {
+            identity.validate(&reader.path)
+        })?;
         let db = match idle {
             Some(db) => db,
             None => reader.connect()?,
         };
-        identity.validate(&reader.path)?;
+        crate::worker_observer::observe("pool.native_identity", || {
+            identity.validate(&reader.path)
+        })?;
         let mut phase = reader.read_phase_on(slot, db)?;
         // Recheck after SQLite established its fresh snapshot as well.
-        identity.validate(&reader.path)?;
+        crate::worker_observer::observe("pool.native_identity", || {
+            identity.validate(&reader.path)
+        })?;
         phase.recycle = Some(Recycle {
             pool: self.clone(),
             identity,
@@ -132,7 +140,10 @@ impl ReadPhasePool {
 }
 impl Recycle {
     pub(crate) fn release(self, db: Connection) -> StoreResult<()> {
-        self.identity.validate(&self.pool.0.reader.path)?;
+        let _worker_step = crate::worker_observer::span("pool.recycle");
+        crate::worker_observer::observe("pool.recycle_identity", || {
+            self.identity.validate(&self.pool.0.reader.path)
+        })?;
         let mut state = self.pool.state()?;
         if !state.closed && state.idle.len() < self.pool.0.reader.slots.capacity() {
             state.idle.push(db);
