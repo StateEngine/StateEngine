@@ -218,6 +218,12 @@ impl LaunchCoordinator {
                 .close_binding(binding, call(self.store.generation, deadline)?)
                 .await?;
         }
+        if let Some(transport) = &work.pending_transport {
+            self.io
+                .close(transport, call(self.store.generation, deadline)?)
+                .await?;
+            work.pending_transport = None;
+        }
         let home = self.options.home.clone();
         let session = work.meta.session.clone();
         let pin = work.pin_hash;
