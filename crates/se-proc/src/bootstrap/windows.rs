@@ -10,9 +10,8 @@ use windows_sys::Win32::{
     Storage::FileSystem::*,
     System::{Console::*, Pipes::*, Threading::*},
 };
-mod broker;
+pub(crate) mod broker;
 mod launch;
-pub use broker::{DetachedVenue, detached_venue};
 pub(super) use launch::{receive, spawn};
 
 pub(super) struct Child {
@@ -21,13 +20,13 @@ pub(super) struct Child {
     image: File,
     broker_context: Option<broker::Context>,
 }
-fn fail(api: &str, cause: io::Error) -> ProcError {
+pub(crate) fn fail(api: &str, cause: io::Error) -> ProcError {
     native(ProcErrorCode::LaunchFailed, api, cause)
 }
-fn last(api: &str) -> ProcError {
+pub(crate) fn last(api: &str) -> ProcError {
     fail(api, io::Error::last_os_error())
 }
-fn handle(raw: HANDLE, api: &'static str) -> ProcResult<OwnedHandle> {
+pub(crate) fn handle(raw: HANDLE, api: &'static str) -> ProcResult<OwnedHandle> {
     crate::windows_native::handle(raw, api).map_err(|e| fail(e.operation, e.source))
 }
 fn duplicate(raw: HANDLE, inherit: bool) -> ProcResult<OwnedHandle> {

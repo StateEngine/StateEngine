@@ -3,7 +3,7 @@ use super::*;
 use windows_sys::Win32::Security::*;
 
 #[derive(Clone, Eq, PartialEq)]
-pub(in crate::bootstrap::windows) struct Context {
+pub(crate) struct Context {
     user: (String, u32),
     logon: (u32, i32),
     session: u32,
@@ -90,7 +90,7 @@ fn token_value<T: Copy>(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> ProcRe
     // usize allocation aligns every fixed token POD used by these private callers.
     Ok(unsafe { *storage.as_ptr().cast::<T>() })
 }
-pub(in crate::bootstrap::windows) fn context(process: HANDLE) -> ProcResult<Context> {
+pub(crate) fn context(process: HANDLE) -> ProcResult<Context> {
     let mut raw = ptr::null_mut();
     // SAFETY: retained process and writable owned token output, query access only.
     if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut raw) } == 0 {

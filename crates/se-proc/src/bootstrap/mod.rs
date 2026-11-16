@@ -13,11 +13,9 @@ use unix::linux as os;
 #[cfg(target_os = "macos")]
 use unix::macos as os;
 #[cfg(windows)]
-mod windows;
+pub(crate) mod windows;
 #[cfg(windows)]
 use windows as os;
-#[cfg(windows)]
-pub use windows::{DetachedVenue, detached_venue};
 mod diagnostics;
 #[cfg(unix)]
 mod unix;
@@ -68,7 +66,7 @@ pub fn current_runtime_identity(machine: MachineId) -> ProcResult<NativeRuntimeI
     let boot_id = os::boot_id()?;
     Ok(NativeRuntimeIdentity { process, boot_id })
 }
-fn check(deadline: Instant) -> ProcResult<()> {
+pub(crate) fn check(deadline: Instant) -> ProcResult<()> {
     if Instant::now() >= deadline {
         Err(error(
             ProcErrorCode::LaunchTimedOut,
