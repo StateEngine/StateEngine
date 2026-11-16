@@ -86,6 +86,13 @@ Use se help msg send for shared floor messages, their work action and explicit
 addressees. Agents use stateengine_msg_send; their sender and project come from
 the bound session, not from a claimed identity in the arguments.
 
+Answer mail through stateengine_msg_send so the sender receives your answer in
+their inbox; a final answer in your conversation alone stays local. For local
+owner or agent mail, use the verified from.id as to and the original message ID
+as reply_to. Follow a trusted channel_reply or remote_reply route when present.
+Questions and work requests need an answer, result or refusal unless the sender
+says no reply is needed. Do not send empty replies or unnecessary acknowledgments.
+
 Writes need a request identity. The CLI prints a generated key before sending;
 MCP requires idempotency_key. If a reply is lost, retry the same intent with the
 original key. A new key can create another message. A commit receipt proves
