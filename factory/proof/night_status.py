@@ -95,14 +95,16 @@ def assess(config, directory, record, report, night, now, report_error=None):
             # Anchor to the night being assessed, not to the current hour: the night
             # label rolls at 11:00 New York, so an hour test at 15Z names the wrong
             # record and the reason is looked for under a night that has not started.
-            # The night label is a New York local day, so it is NOT a UTC date. The
-            # deadline is that local day's 15:00Z: derive the local midnight, shift
-            # to UTC, then add the hour. Using the label directly as a UTC date made
-            # 02Z look like the same night and declared a fresh run overdue.
-            midnight = datetime.combine(datetime.fromisoformat(night).date(),
-                                        datetime.min.time()).replace(tzinfo=SCHEDULE_ZONE)
-            closes_at = (midnight.astimezone(timezone.utc)
-                         + timedelta(hours=WINDOWS_CLOSED_HOUR_UTC))
+            # The night label is a New York local day, so it is neither a UTC date nor
+            # a local midnight: a 13:00Z run on the 18th is labelled the 17th. The
+            # only stable anchor is the attempt's own start, so the deadline is the
+            # first 15:00Z at or after it. A 09:30Z start closes the same day; a
+            # 20:00Z start closes the next.
+            started = datetime.fromisoformat(record["started_at"]).astimezone(timezone.utc)
+            closes_at = started.replace(hour=WINDOWS_CLOSED_HOUR_UTC, minute=0,
+                                        second=0, microsecond=0)
+            if closes_at < started:
+                closes_at += timedelta(days=1)
             closed = now.astimezone(timezone.utc) >= closes_at
             settled = any(r.get("platform") == "win32"
                           and r.get("state") not in ("planned", "running")

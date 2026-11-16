@@ -436,7 +436,14 @@ def invocation(inv, directory, run=None):
                     and context.applies(key) and context.required(key)):
                 budget_error = "required first-hour probe is missing a passing measurement"
                 entry["problems"].append(budget_error)
-    entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification, behavior_only=behavior_only,
+    # A measurement scope's published rows are its budget measurements. Leaving
+    # `results` empty hides B10 from every table, which is the same as measuring
+    # nothing even when the number exists.
+    published = ([row for row in (budget_artifact or {}).get("measurements") or []
+                  if isinstance(row, dict) and row.get("label") in FIRST_HOUR_PROBES]
+                 if mode == "measurement" else rows)
+    entry.update(results=published, scope=scope, cleanup=cleanup,
+                 qualification=qualification, behavior_only=behavior_only,
                  receipt_complete=budget_error is None and cleanup_known and qualified)
     code = inv.get("exit")
     # Judge exit 1 includes budget misses. Journey verdicts depend only on
