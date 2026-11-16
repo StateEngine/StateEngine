@@ -280,6 +280,8 @@ impl NativeStateFiles {
     /// Call after closing every SQLite/backup handle. The source must be a
     /// native staging name within this held root. A collision preserves both
     /// the winner and the staging file, returning AlreadyExists.
+    /// Publication flushes the completed file before moving its name; callers
+    /// do not need a separate data flush before closing their staging handle.
     pub fn publish_no_replace(&self, staged: &Path, destination: &Path) -> Result<()> {
         self.check(staged)?;
         self.check(destination)?;
