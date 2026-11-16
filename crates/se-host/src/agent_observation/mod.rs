@@ -198,13 +198,13 @@ pub fn observe_agent(
         }.into());
         let command = match &plan.command_home {
             Some(home) => {
-                se_core::ops::AgentCommand::launch_in_home(&plan.row.id, home, &plan.project, false)
+                se_core::ops::AgentCommand::launch_in_home(&plan.row.id, home, &plan.project, true)
             }
             None => Some(se_core::ops::AgentCommand::launch(
                 &plan.row.id,
                 None,
                 Some(&plan.project),
-                false,
+                true,
             )),
         }
         .map(|command| command.with_detach(false));

@@ -35,7 +35,7 @@ impl AgentCommand {
         }
     }
     pub const HOME_UNAVAILABLE: &str = "The data home is not UTF-8 or contains a line break; no portable CLI command can name it exactly.";
-    pub const SECODE_RESUME_UNAVAILABLE: &str = "Managed resume requires the original live service, a fenced input-free release of its exact human-stop hold, and proved client closure and capture. Reconcile the retained service before resuming, or explicitly launch with --new for a different conversation.";
+    pub const SECODE_RESUME_UNAVAILABLE: &str = "Managed resume requires the original live service, a fenced input-free release of its exact human-stop hold, and proved client closure and capture. Reconcile the retained service before resuming, or explicitly launch without --resume for a different conversation.";
     pub fn home_argument(home: &std::path::Path) -> Option<&str> {
         home.to_str().filter(|value| !value.contains(['\r', '\n']))
     }
@@ -85,9 +85,15 @@ impl AgentCommand {
     ) -> Self {
         let mut argv = Self::arguments("launch", agent, home, project);
         argv.push("--detach".into());
-        if new {
-            argv.push("--new".into());
+        if !new {
+            argv.push("--resume".into());
         }
+        Self::render(argv)
+    }
+    pub fn with_resume_session(self, session: &se_types::SessionId) -> Self {
+        let mut argv = self.argv;
+        argv.retain(|word| word != "--resume" && !word.starts_with("--resume="));
+        argv.push(format!("--resume={session}"));
         Self::render(argv)
     }
     pub fn stop(agent: &AgentId, home: Option<&str>, project: Option<&ProjectId>) -> Self {
