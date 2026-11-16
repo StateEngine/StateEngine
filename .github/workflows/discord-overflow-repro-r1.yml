@@ -1,0 +1,169 @@
+name: Repeated Linux Discord overflow consumer on main and PR head
+'on':
+  push:
+    branches:
+    - prime/discord-overflow-repro-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  repeat:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arm: main
+          pin: 970de27869cf1ab22457eb92836d9849e1513b04
+        - arm: head
+          pin: d965e82b979a70458197bd52dd100cea2330d288
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      SOURCE_ARM: ${{ matrix.arm }}
+      SOURCE_PIN: ${{ matrix.pin }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.pin }}
+        path: source
+        persist-credentials: false
+    - uses: ./source/.github/actions/rust
+    - name: Build the exact existing Linux test and retain twenty attempts
+      shell: python
+      run: |
+        """Repeat an unchanged Linux consumer and retain its synthetic provider trace."""
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        import shutil
+        import subprocess
+        import time
+
+        CASE = 'channels::discord::review::discord_wire_review_overflow_recovers_every_message'
+        TARGET = 'x86_64-unknown-linux-gnu'
+        source = Path(os.environ['GITHUB_WORKSPACE']) / 'source'
+        root = Path(os.environ['RUNNER_TEMP']) / 'discord-overflow-evidence'
+        root.mkdir(exist_ok=False)
+        arm, pin = os.environ['SOURCE_ARM'], os.environ['SOURCE_PIN']
+        report = {'arm': arm, 'source': pin, 'case': CASE, 'target': TARGET,
+                  'expected_trials': 20, 'state': 'NOT RUN', 'trials': [], 'failures': []}
+
+        def save():
+            (root / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+
+        def digest(path):
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+
+        def capture(label, command, environment):
+            started = time.monotonic()
+            with (root / (label + '.stdout')).open('wb') as out, (root / (label + '.stderr')).open('wb') as err:
+                result = subprocess.run(command, cwd=source, env=environment, stdin=subprocess.DEVNULL,
+                                        stdout=out, stderr=err)
+            report[label] = {'argv': command, 'exit': result.returncode,
+                             'seconds': time.monotonic() - started}
+            save()
+            return result.returncode
+
+        save()
+        shutil.copy2(Path(__file__), root / 'recorder.py')
+        try:
+            assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip() == pin
+            assert not subprocess.check_output(['git', 'status', '--porcelain'], cwd=source)
+            inputs = ['Cargo.lock', 'Cargo.toml', 'crates/se-host/Cargo.toml',
+                      'crates/se-host/src/channels/discord.rs',
+                      'crates/se-host/tests/judges/discord_gateway_review.py']
+            inputs += [p.relative_to(source).as_posix() for p in (source / 'crates/se-host/src/channels/discord').rglob('*.rs')]
+            for name in inputs:
+                destination = root / 'source-inputs' / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                payload = subprocess.check_output(['git', 'show', pin + ':' + name], cwd=source)
+                assert payload == (source / name).read_bytes(), name
+                destination.write_bytes(payload)
+            environment = dict(os.environ, CARGO_TARGET_DIR=str(Path(os.environ['RUNNER_TEMP']) / 'discord-overflow-target'),
+                               CARGO_BUILD_JOBS='2', CARGO_INCREMENTAL='0', RUST_BACKTRACE='1',
+                               CARGO_PROFILE_DEV_DEBUG='0', CARGO_PROFILE_TEST_DEBUG='0')
+            report['compiler'] = subprocess.check_output(['rustc', '-Vv'], text=True)
+            report['recorder_sha256'] = digest(Path(__file__))
+            command = ['cargo', 'test', '--target', TARGET, '-p', 'se-host', '--lib', '--all-features',
+                       '--locked', '--no-run', '--message-format=json']
+            assert capture('build', command, environment) == 0, 'native fixture build failed'
+            binaries = set()
+            for line in (root / 'build.stdout').read_text().splitlines():
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (item.get('reason') == 'compiler-artifact' and item.get('target', {}).get('name') == 'se_host'
+                        and item.get('profile', {}).get('test') and item.get('executable')):
+                    binaries.add(item['executable'])
+            assert len(binaries) == 1, sorted(binaries)
+            binary = binaries.pop()
+            report['binary_sha256'] = digest(Path(binary))
+            assert capture('list', [binary, '--list', '--exact', CASE], environment) == 0
+            assert CASE + ': test' in (root / 'list.stdout').read_text(), 'exact test absent'
+            report['state'] = 'RUNNING'
+            save()
+            for index in range(20):
+                trial = root / f'trial-{index:02d}'
+                trial.mkdir()
+                provider = trial / 'provider'
+                provider.mkdir()
+                scratch = Path(os.environ['RUNNER_TEMP']) / f'discord-overflow-scratch-{index:02d}'
+                scratch.mkdir(exist_ok=False)
+                trial_env = dict(environment, TMPDIR=str(scratch), CHANNEL_REVIEW_EVIDENCE=str(provider))
+                started = time.monotonic()
+                with (trial / 'stdout').open('wb') as out, (trial / 'stderr').open('wb') as err:
+                    result = subprocess.run([binary, '--exact', CASE, '--nocapture'], cwd=source,
+                                            env=trial_env, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
+                # Failed fixtures remain locally. Copy only their synthetic trace files,
+                # including the provider's own stderr, without exporting TLS private keys.
+                for fixture in scratch.iterdir():
+                    if fixture.is_dir() and not fixture.is_symlink() and fixture.name.startswith('channel-wire-'):
+                        destination = provider / fixture.name
+                        destination.mkdir(exist_ok=True)
+                        for name in ('events.json', 'provider.stderr'):
+                            path = fixture / name
+                            if path.is_file() and not path.is_symlink():
+                                shutil.copy2(path, destination / name)
+                output = (trial / 'stdout').read_text(errors='replace')
+                fixtures = sorted(p.name for p in provider.iterdir() if p.is_dir())
+                qualified = 'running 1 test' in output and len(fixtures) == 1
+                qualified = qualified and all((provider / name / 'provider.stderr').is_file() for name in fixtures)
+                row = {'index': index, 'exit': result.returncode, 'seconds': time.monotonic() - started,
+                       'one_test_and_provider_stderr_witnessed': qualified, 'fixtures': fixtures}
+                report['trials'].append(row)
+                if result.returncode != 0 or not qualified:
+                    report['failures'].append(row)
+                save()
+            report['state'] = 'OBSERVED' if len(report['trials']) == 20 else 'INCOMPLETE'
+        except BaseException as error:
+            report['state'] = 'UNQUALIFIED'
+            report['error'] = repr(error)
+            raise
+        finally:
+            save()
+            members = {p.relative_to(root).as_posix(): digest(p) for p in root.rglob('*') if p.is_file()}
+            (root / 'members.json').write_text(json.dumps(members, indent=2) + '\n')
+    - name: Upload all attempts and provider stderr
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: ${{ always() }}
+      with:
+        name: discord-overflow-repro-r1-${{ matrix.arm }}
+        path: ${{ runner.temp }}/discord-overflow-evidence
+        if-no-files-found: error
+        include-hidden-files: true
+        retention-days: 14
+    - name: Grade every expected attempt without dropping failures
+      if: ${{ always() }}
+      shell: python
+      run: |
+        import json, os
+        from pathlib import Path
+        p = Path(os.environ['RUNNER_TEMP']) / 'discord-overflow-evidence' / 'report.json'
+        r = json.loads(p.read_text())
+        assert r['state'] == 'OBSERVED' and len(r['trials']) == 20, r
+        assert all(t['one_test_and_provider_stderr_witnessed'] for t in r['trials']), r
+        assert not r['failures'], r
