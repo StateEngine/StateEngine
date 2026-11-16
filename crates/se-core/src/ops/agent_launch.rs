@@ -120,12 +120,12 @@ impl AgentLaunch {
             .map_err(|e| crate::scope::unreadable("launch intent", &e.to_string()))?;
         value["target_agent_id"] = serde_json::json!(selected);
         value["selected_agent"] = serde_json::json!(selected);
-        if self.fresh() {
-            // Explicit false and omission make the same fresh request, including
-            // a CLI retry printed for a pending MCP launch.
-            if let Some(object) = value.as_object_mut() {
-                let _ = object.remove("resume");
-            }
+        // Explicit false and omission make the same fresh request, including
+        // a CLI retry printed for a pending MCP launch.
+        if self.fresh()
+            && let Some(object) = value.as_object_mut()
+        {
+            let _ = object.remove("resume");
         }
         Ok(value)
     }

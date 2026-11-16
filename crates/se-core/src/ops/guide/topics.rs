@@ -15,8 +15,8 @@ pub(super) const TOPICS: &[Topic] = &[
 From your repository, run se init --provider claude or se init --provider codex.
 Use --repo DIR to register an existing folder from elsewhere. Setup preserves
 your repository files and Git history and saves an initial agent named main.
-Run the scoped launch command printed by init; se launch main starts or resumes
-that saved agent. Authenticate with the chosen provider when it asks.
+Run the scoped launch command printed by init; se launch main starts a fresh
+conversation for that saved agent. Authenticate with the chosen provider when it asks.
 
 Run se status to see setup, agent and runtime facts. If selection is ambiguous,
 use se --project PROJECT status with a saved project name or ID. --home DIR

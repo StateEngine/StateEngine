@@ -523,7 +523,8 @@ output schemas, run `se schema OP`, for example `se schema message.send` or
   notification. Listing or resuming does not mark messages read; reading and
   acknowledging do, while dismissal does not.
 - `working_state_set.expect` is the revision just read, or `absent` on first
-  write. Launch normally resumes the saved conversation; `new` starts another.
+  write. Launch starts fresh with StateEngine context. `resume: true` reopens the
+  latest saved provider conversation; `resume: "session-id"` selects a saved session.
   `force` explicitly consents to stopping the existing lifecycle and jobs.
 - Atlas targets retain their tagged JSON shape, such as
   `{"Symbol":{"Name":{"name":"authenticate"}}}` or `{"File":"src/auth.rs"}`.
