@@ -1,5 +1,5 @@
 //! Public receipt values shared by CLI, IPC and linked consumers. No effects or authority.
-use crate::{EventId, IdempotencyKey};
+use crate::{EventId, IdempotencyKey, Provider};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 pub const ACP_NO_SANDBOX_NOTICE: &str = "StateEngine adds no execution sandbox; permissions and sandboxing belong to the selected harness in protocol mode.";
@@ -10,15 +10,6 @@ pub use agent::*;
 pub struct Named<I> {
     pub id: I,
     pub name: String,
-}
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum Provider {
-    #[default]
-    Claude,
-    Codex,
-    SeCode,
-    Acp,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "mode", rename_all = "lowercase")]
