@@ -248,6 +248,7 @@ impl LaunchCoordinator {
                                     crate::harness::binding::Signal::Interrupt => {
                                         native.request_interrupt(prepared)
                                     }
+                                    #[cfg(target_os = "linux")]
                                     crate::harness::binding::Signal::Terminate => {
                                         native.request_termination(prepared)
                                     }

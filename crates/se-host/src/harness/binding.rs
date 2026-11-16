@@ -16,6 +16,7 @@ pub(crate) struct Observation {
 #[derive(Clone, Copy)]
 pub(crate) enum Signal {
     Interrupt,
+    #[cfg(target_os = "linux")]
     Terminate,
 }
 
