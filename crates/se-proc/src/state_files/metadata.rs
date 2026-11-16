@@ -38,6 +38,33 @@ impl NativeMetadataPin {
     }
     pub fn metadata(&self) -> Result<Metadata> {
         let _worker_step = crate::worker_observer::span("native.metadata_pin");
+        #[cfg(windows)]
+        let (named, same) = {
+            self.files.check(&self.path)?;
+            // One protected handle supplies both facts. A second named open
+            // repeats protection checks and can observe a different file.
+            let other = self
+                .files
+                .directory
+                .readback(&self.path, &self.files.root)?
+                .ok_or_else(|| {
+                    failure(
+                        StateFileErrorCode::SourceChanged,
+                        "database metadata name disappeared",
+                        &self.path,
+                    )
+                })?;
+            let named = other
+                .metadata()
+                .map_err(|e| io_error("inspect native metadata", &self.path, e))?;
+            let a = crate::observe_file_revision(&self.file)
+                .map_err(|e| io_error("inspect retained database identity", &self.path, e))?;
+            let b = crate::observe_file_revision(&other)
+                .map_err(|e| io_error("inspect named database identity", &self.path, e))?;
+            self.files.check(&self.path)?;
+            (named, a.volume == b.volume && a.file == b.file)
+        };
+        #[cfg(unix)]
         let named = self.files.inspect_metadata(&self.path)?.ok_or_else(|| {
             failure(
                 StateFileErrorCode::SourceChanged,
@@ -63,25 +90,6 @@ impl NativeMetadataPin {
                 && held.st_birthtime() == named.st_birthtime()
                 && held.st_birthtime_nsec() == named.st_birthtime_nsec();
             same
-        };
-        #[cfg(windows)]
-        let same = {
-            let other = self
-                .files
-                .directory
-                .readback(&self.path, &self.files.root)?
-                .ok_or_else(|| {
-                    failure(
-                        StateFileErrorCode::SourceChanged,
-                        "database name disappeared",
-                        &self.path,
-                    )
-                })?;
-            let a = crate::observe_file_revision(&self.file)
-                .map_err(|e| io_error("inspect retained database identity", &self.path, e))?;
-            let b = crate::observe_file_revision(&other)
-                .map_err(|e| io_error("inspect named database identity", &self.path, e))?;
-            a.volume == b.volume && a.file == b.file
         };
         if !same {
             return Err(failure(
