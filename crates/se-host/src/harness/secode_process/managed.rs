@@ -172,23 +172,17 @@ impl SecodeHarness {
         Ok(())
     }
     pub fn recover(&self, managed: Managed) -> HarnessBinding {
-        HarnessBinding {
-            claude: None,
-            codex: None,
-            acp: None,
-            secode: Some(Arc::new(Binding {
-                managed,
-                completion: stream::Completion::default(),
-                diagnostics: Mutex::new(stream::Diagnostics {
-                    recovered: true,
-                    ..Default::default()
-                }),
-                io: self.io.clone(),
-                transport: crate::ProviderTransport::console(),
-                drains: tokio::sync::Mutex::default(),
-            })),
-            _private: (),
-        }
+        HarnessBinding::new(Arc::new(Binding {
+            managed,
+            completion: stream::Completion::default(),
+            diagnostics: Mutex::new(stream::Diagnostics {
+                recovered: true,
+                ..Default::default()
+            }),
+            io: self.io.clone(),
+            transport: crate::ProviderTransport::console(),
+            drains: tokio::sync::Mutex::default(),
+        }))
     }
     pub fn profile(&self, request: &HarnessRequest) -> PathBuf {
         super::private_profile(
@@ -220,12 +214,14 @@ pub(crate) fn input(request: &HarnessRequest) -> String {
     format!("msg_{}", se_types::hex_lower(&digest[..16]))
 }
 pub(crate) fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
-    binding.secode.as_ref().ok_or_else(|| {
-        unreadable(
-            "SE Code binding",
-            "retained external-service binding absent",
-        )
-    })
+    binding
+        .get::<crate::secode_process::Binding>()
+        .ok_or_else(|| {
+            unreadable(
+                "SE Code binding",
+                "retained external-service binding absent",
+            )
+        })
 }
 impl Harness for SecodeHarness {
     fn kind(&self) -> crate::HarnessKind {
@@ -400,13 +396,7 @@ impl Harness for SecodeHarness {
                 transport: attach.transport,
                 drains: tokio::sync::Mutex::default(),
             });
-            *retained = Some(HarnessBinding {
-                claude: None,
-                codex: None,
-                acp: None,
-                secode: Some(binding.clone()),
-                _private: (),
-            });
+            *retained = Some(HarnessBinding::new(binding.clone()));
             stream::start(&binding, cx.generation).await;
             let deadline = crate::client::lease::Deadline::idle()?.stage(cx.timeout)?;
             let text = attach.request.initial_input.as_str();

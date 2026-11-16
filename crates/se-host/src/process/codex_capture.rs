@@ -13,7 +13,7 @@ impl LaunchCoordinator {
         let Some(binding) = work
             .binding
             .as_ref()
-            .and_then(|binding| binding.codex.as_ref())
+            .and_then(|binding| binding.get::<crate::codex_rpc::Binding>())
             .cloned()
         else {
             // Cold native exit has no live connection. Its protected pin and

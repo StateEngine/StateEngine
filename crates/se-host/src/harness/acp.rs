@@ -93,8 +93,7 @@ impl AcpHarness {
 }
 pub(crate) fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
     binding
-        .acp
-        .as_ref()
+        .get::<crate::harness::acp::Binding>()
         .ok_or_else(|| error("the original protocol binding is absent"))
 }
 impl Harness for AcpHarness {
@@ -226,13 +225,7 @@ impl Harness for AcpHarness {
                     .ok_or_else(|| error("protocol cwd is not UTF-8"))?
                     .into(),
             });
-            let wrap = || HarnessBinding {
-                claude: None,
-                codex: None,
-                secode: None,
-                acp: Some(binding.clone()),
-                _private: (),
-            };
+            let wrap = || HarnessBinding::new(binding.clone());
             *retained = Some(wrap());
             let until = tokio::time::Instant::now() + cx.timeout;
             let remaining = || CallContext {

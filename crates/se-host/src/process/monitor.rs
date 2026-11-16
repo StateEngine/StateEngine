@@ -80,7 +80,7 @@ impl LaunchCoordinator {
                 if let Some(binding) = state
                     .binding
                     .as_ref()
-                    .and_then(|binding| binding.claude.as_ref())
+                    .and_then(|binding| binding.get::<crate::harness::ClaudeBinding>())
                 {
                     match binding.completion.take() {
                         Ok(Some(observation)) => {
@@ -101,7 +101,7 @@ impl LaunchCoordinator {
                 if let Some(binding) = state
                     .binding
                     .as_ref()
-                    .and_then(|binding| binding.codex.as_ref())
+                    .and_then(|binding| binding.get::<crate::codex_rpc::Binding>())
                 {
                     let changed = binding.completion.take();
                     let activity = binding.active_turn();
@@ -117,7 +117,7 @@ impl LaunchCoordinator {
                 if let Some(binding) = state
                     .binding
                     .as_ref()
-                    .and_then(|binding| binding.secode.as_ref())
+                    .and_then(|binding| binding.get::<crate::secode_process::Binding>())
                 {
                     let changed = binding.completion.take();
                     let failure = binding
@@ -139,7 +139,7 @@ impl LaunchCoordinator {
                 if let Some(binding) = state
                     .binding
                     .as_ref()
-                    .and_then(|binding| binding.acp.as_ref())
+                    .and_then(|binding| binding.get::<crate::harness::acp::Binding>())
                     .cloned()
                 {
                     match binding.session.observe() {

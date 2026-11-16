@@ -11,6 +11,8 @@ pub use claude::{
     config_home as claude_config_home, conversation as claude_conversation, provider_environment,
 };
 #[cfg(feature = "listener")]
+pub(crate) use claude_harness::Binding as ClaudeBinding;
+#[cfg(feature = "listener")]
 pub use claude_harness::{
     ClaudeHarness, qualify_adoption as qualify_claude_adoption,
     transcript_location as claude_transcript_location,
@@ -181,18 +183,28 @@ pub struct HarnessAttach {
     pub transport: ProviderTransport,
     pub transcript: Read<crate::TranscriptPin>,
 }
-/// Provider streams retained through startup as well as a proven attach.
+/// One adapter's streams, retained through startup as well as a proven attach.
+/// Only the adapter modules construct it; empty and mixed bindings are impossible.
 pub struct HarnessBinding {
     #[cfg(feature = "listener")]
-    pub(crate) claude: Option<std::sync::Arc<claude_harness::Binding>>,
-    #[cfg(feature = "listener")]
-    pub(crate) codex: Option<std::sync::Arc<codex_rpc::Binding>>,
-    #[cfg(feature = "listener")]
-    pub(crate) secode: Option<std::sync::Arc<secode_process::Binding>>,
-    #[cfg(feature = "listener")]
-    pub(crate) acp: Option<std::sync::Arc<acp::Binding>>,
-    pub(crate) _private: (),
+    value: Box<dyn std::any::Any + Send + Sync>,
+    #[cfg(not(feature = "listener"))]
+    _private: (),
 }
+impl HarnessBinding {
+    #[cfg(feature = "listener")]
+    fn new<T: Send + Sync + 'static>(binding: std::sync::Arc<T>) -> Self {
+        Self {
+            value: Box::new(binding),
+        }
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn get<T: Send + Sync + 'static>(&self) -> Option<&std::sync::Arc<T>> {
+        self.value.downcast_ref()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BindingWitness {
     pub identity: SessionIdentity,

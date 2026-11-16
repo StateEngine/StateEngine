@@ -301,13 +301,7 @@ impl Harness for ClaudeHarness {
             // Startup may leave pending Windows reads. Give the coordinator
             // custody before the first I/O so its normal failed-launch cleanup
             // can cancel/drain/release the exact port, including on a panic.
-            *retained = Some(HarnessBinding {
-                claude: Some(Arc::clone(&binding)),
-                codex: None,
-                secode: None,
-                acp: None,
-                _private: (),
-            });
+            *retained = Some(HarnessBinding::new(Arc::clone(&binding)));
             let mut pending =
                 startup::initialize(&binding, &request.request.initial_input, &cx).await?;
             let readers = [ProviderStream::Output, ProviderStream::Error].map(|stream| {
@@ -330,13 +324,7 @@ impl Harness for ClaudeHarness {
                     lifecycle: request.record.lifecycle.clone(),
                     provider,
                 },
-                binding: HarnessBinding {
-                    claude: Some(binding),
-                    codex: None,
-                    secode: None,
-                    acp: None,
-                    _private: (),
-                },
+                binding: HarnessBinding::new(binding),
             })
         })
     }
@@ -414,8 +402,8 @@ pub fn transcript_location(binding: &HarnessBinding) -> Result<PathBuf> {
 
 fn claude_binding(binding: &HarnessBinding) -> Result<&Binding> {
     binding
-        .claude
-        .as_deref()
+        .get::<crate::harness::ClaudeBinding>()
+        .map(std::sync::Arc::as_ref)
         .ok_or_else(|| SeError::invalid("provider binding", "a headless Claude binding"))
 }
 

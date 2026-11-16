@@ -117,21 +117,21 @@ impl LaunchCoordinator {
         if let Some(binding) = work
             .binding
             .as_ref()
-            .and_then(|binding| binding.secode.as_ref())
+            .and_then(|binding| binding.get::<crate::secode_process::Binding>())
         {
             binding.completion.arm(&work.wake.event)?;
         }
         if let Some(binding) = work
             .binding
             .as_ref()
-            .and_then(|binding| binding.claude.as_ref())
+            .and_then(|binding| binding.get::<crate::harness::ClaudeBinding>())
         {
             binding.completion.arm(&work.wake.event)?;
         }
         if let Some(binding) = work
             .binding
             .as_ref()
-            .and_then(|binding| binding.codex.as_ref())
+            .and_then(|binding| binding.get::<crate::codex_rpc::Binding>())
         {
             binding.completion.arm(&work.wake.event)?;
         }
@@ -141,7 +141,7 @@ impl LaunchCoordinator {
         if let Some(binding) = work
             .binding
             .as_ref()
-            .and_then(|binding| binding.acp.as_ref())
+            .and_then(|binding| binding.get::<crate::harness::acp::Binding>())
         {
             binding.session.arm(&work.wake.event)?;
         }
@@ -526,12 +526,7 @@ impl LaunchCoordinator {
                 self.harness.mail_connected(&plan.session)
             } else {
                 Read::Present {
-                    value: work.binding.as_ref().is_some_and(|binding| {
-                        binding.claude.is_some()
-                            || binding.codex.is_some()
-                            || binding.secode.is_some()
-                            || binding.acp.is_some()
-                    }),
+                    value: work.binding.is_some(),
                 }
             },
             harness_policy_notice,

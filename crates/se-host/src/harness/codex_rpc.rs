@@ -442,8 +442,8 @@ async fn close(binding: &Binding, cx: &CallContext) -> Result<()> {
 }
 pub(crate) fn bound(binding: &HarnessBinding) -> Result<&Binding> {
     binding
-        .codex
-        .as_deref()
+        .get::<crate::codex_rpc::Binding>()
+        .map(std::sync::Arc::as_ref)
         .ok_or_else(|| SeError::invalid("provider binding", "the retained stock Codex binding"))
 }
 fn context(generation: se_types::Generation, timeout: Duration) -> CallContext {

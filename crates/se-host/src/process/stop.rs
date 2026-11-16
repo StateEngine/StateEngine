@@ -236,7 +236,7 @@ impl LaunchCoordinator {
                 .await
             {
                 Ok(interrupt) if interrupt.requested => {
-                    if binding.secode.is_some()
+                    if binding.get::<crate::secode_process::Binding>().is_some()
                         && let Err(error) = self.interrupt_secode_client(work, &graceful).await
                     {
                         work.stop_failure = Some(error.body);
@@ -245,7 +245,7 @@ impl LaunchCoordinator {
                     // not its persistent app-server listener. Ask the exact
                     // owned Linux scope to terminate before the force interval.
                     #[cfg(target_os = "linux")]
-                    if binding.codex.is_some() {
+                    if binding.get::<crate::codex_rpc::Binding>().is_some() {
                         let owner = work.process.clone().ok_or_else(|| {
                             error("graceful stop", "owned native reference is absent")
                         })?;
@@ -296,8 +296,7 @@ impl LaunchCoordinator {
                 }
                 Ok(_) => {
                     if binding
-                        .claude
-                        .as_ref()
+                        .get::<crate::harness::ClaudeBinding>()
                         .is_some_and(|binding| binding.attended)
                     {
                         work.stop_method = Some("native-window-scope".into());

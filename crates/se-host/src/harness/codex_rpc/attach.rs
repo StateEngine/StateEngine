@@ -95,13 +95,7 @@ impl CodexHarness {
                 lifecycle,
                 provider,
             },
-            binding: HarnessBinding {
-                claude: None,
-                codex: Some(binding),
-                secode: None,
-                acp: None,
-                _private: (),
-            },
+            binding: HarnessBinding::new(binding),
         })
     }
 }
