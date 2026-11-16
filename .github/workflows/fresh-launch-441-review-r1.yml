@@ -1,0 +1,113 @@
+name: Fresh conversation independent review r1
+on:
+  push:
+    branches: [prime/fresh-launch-441-review-r1]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  judge:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arm: base
+            source: 6b7e86c4117c0a7d61f28307ef3830e0306f57ff
+          - arm: head
+            source: 5da28da1133e24f57fa9b954be2e2041d6cb4192
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ matrix.source }}
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 0fdfa2e007f8ad455ad2044777b1da26a92a33e1
+          path: judge-source
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Build and judge the frozen arm
+        env:
+          REVIEW_ARM: ${{ matrix.arm }}
+          REVIEW_SOURCE: ${{ matrix.source }}
+          CARGO_BUILD_JOBS: '2'
+          CARGO_INCREMENTAL: '0'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_PROFILE_TEST_DEBUG: '0'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,pathlib,shutil,subprocess,sys,time
+          root=pathlib.Path('review-evidence').resolve();root.mkdir()
+          arm=os.environ['REVIEW_ARM'];source=os.environ['REVIEW_SOURCE']
+          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==source
+          judge=pathlib.Path('judge-source').resolve()
+          judge_sha=subprocess.check_output(['git','-C',str(judge),'rev-parse','HEAD'],text=True).strip()
+          overlay=['crates/se-host/tests/attended_setup_independent.rs', 'crates/se-host/tests/fresh_resume_selection_independent.rs', 'crates/se-host/tests/support/acp_correction_independent.rs', 'crates/se/tests/codex_capture_repair.py', 'crates/se/tests/codex_first_launch.py', 'crates/se/tests/first_hour_commands.py', 'crates/se/tests/fresh_conversation_independent.rs', 'crates/se/tests/judges/attended_setup.py', 'crates/se/tests/judges/claude_compaction.py', 'crates/se/tests/judges/first_hour_plain.py', 'crates/se/tests/judges/fresh_conversation.py', 'crates/se/tests/judges/fresh_conversation_provider.py', 'crates/se/tests/judges/launch_continuity.py', 'crates/se/tests/judges/launch_startup.py', 'crates/se/tests/judges/resume_wire.py', 'crates/se/tests/judges/secode_managed.py', 'crates/se/tests/launch_continuity_independent.rs']
+          inputs={}
+          for name in overlay:
+              assert '/tests/' in name and '..' not in pathlib.PurePosixPath(name).parts
+              data=(judge/name).read_bytes();inputs[name]=hashlib.sha256(data).hexdigest()
+              if arm=='head':
+                  path=pathlib.Path(name);path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(data)
+          target=pathlib.Path(os.environ['RUNNER_TEMP'])/('launch441-'+arm+'-target')
+          os.environ['CARGO_TARGET_DIR']=str(target)
+          host=subprocess.check_output(['rustc','-vV'],text=True).split('host: ',1)[1].splitlines()[0]
+          records=[]
+          def command(label,argv):
+              started=time.monotonic_ns()
+              with (root/(label+'.stdout')).open('wb') as out,(root/(label+'.stderr')).open('wb') as err:
+                  result=subprocess.run(argv,stdout=out,stderr=err,stdin=subprocess.DEVNULL)
+              records.append({'label':label,'argv':argv,'exit':result.returncode,'elapsed_ns':time.monotonic_ns()-started})
+              (root/'commands.json').write_text(json.dumps(records,indent=2)+'\n')
+              return result.returncode
+          failed=[]
+          build=['cargo','build','-p','se','--bin','se','--all-features','--locked','--target',host]
+          built=command('build-native-cli',build)==0
+          if not built:failed.append('native CLI build failed')
+          if built:
+              image=target/host/'debug/se';stripped=root/'se'
+              shutil.copy2(image,stripped)
+              if command('strip-image',['strip','--strip-debug',str(stripped)]):failed.append('image strip failed')
+              consumer=root/'consumer'
+              script=(judge if arm=='base' else pathlib.Path('.'))/'crates/se/tests/judges/fresh_conversation.py'
+              argv=['python3',str(script),'--se',str(stripped),'--output',str(consumer)]
+              if arm=='base':argv.append('--baseline')
+              code=command('public-cli-mcp-consumer',argv)
+              if not (consumer/'result.json').is_file():failed.append('consumer result absent')
+              else:
+                  result=json.loads((consumer/'result.json').read_text())
+                  closed=result.get('closure',{}).get('witnessed') is True
+                  if arm=='base':
+                      expected=['AssertionError: plain launches reused saved conversation']
+                      if not (code!=0 and result['failures']==expected and closed):failed.append('base did not witness precisely the prior default')
+                  elif code or result['failures'] or len(result['checks'])!=8 or not closed:
+                      failed.append('head public consumer or closure failed')
+          if arm=='head':
+              commands=[
+                  ['cargo','test','-p','se-host','--all-features','--locked','--target',host,'--test','fresh_resume_selection_independent','--test','attended_setup_independent','--','--nocapture'],
+                  ['cargo','test','-p','se','--all-features','--locked','--target',host,'--test','launch_continuity_independent','--test','resume_command_independent','--test','receipt_commands','--','--nocapture'],
+              ]
+              for index,argv in enumerate(commands):
+                  if command('independent-targets-'+str(index),argv):failed.append('independent target group '+str(index)+' failed')
+          report={'source':source,'judge':judge_sha,'arm':arm,'target':host,'overlay_sha256':inputs,'commands':records,'failures':failed,
+                  'scope':{'public_cli_mcp':'native protocol double and real authenticated consumers','remote':'real grant-filtered store and public launch planner; not a full network remote-launch execution','cost':'per-launch monotonic return time and provider private-memory observations; no performance qualification'},
+                  'binary_sha256':hashlib.sha256((root/'se').read_bytes()).hexdigest() if (root/'se').exists() else None}
+          (root/'report.json').write_text(json.dumps(report,indent=2)+'\n')
+          (root/'se').unlink(missing_ok=True)
+          members=[{'path':str(p.relative_to(root)),'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in sorted(root.rglob('*')) if p.is_file()]
+          (root/'manifest.json').write_text(json.dumps({'members':members},indent=2)+'\n')
+          raise SystemExit(bool(failed))
+          PYCODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: fresh-launch-441-review-r1-${{ matrix.arm }}
+          path: review-evidence
+          if-no-files-found: error
+          retention-days: 7
