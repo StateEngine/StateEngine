@@ -123,7 +123,8 @@ class Smoke:
         init = self.call(['init', '--repo', self.repo, '--name', 'native-smoke', '--agent', 'main', '--provider', 'codex'], 'init', False)
         self.saved_profile = init['profile']
         self.project = init['profile']['project']
-        require(init['outcome'] == 'created' and init['launch'] is None, 'Init did not create an unlaunched saved setup')
+        require(init['outcome'] == 'adopted' and init['agent']['outcome'] == 'created'
+                and init['launch'] is None, 'Init did not adopt the repository with an unlaunched saved agent')
         status = self.call(['status'], 'initialized-status')
         require(status['runtime']['state'] == 'stopped' and status['runtime']['process'] is None, 'Init started a runtime unexpectedly')
         require(status['project']['state'] == 'present' and status['project']['value']['id'] == self.project, 'Independent project identity differs')
@@ -204,7 +205,7 @@ class Smoke:
                 if not self.attempted_init:
                     break
                 try:
-                    value = self.call(args, label, False)
+                    value = self.call(args, label, False, terminal=label == 'remove')
                     if label == 'remove':
                         require(value['outcome'] == 'removed' and value['machine_credential']['state'] == 'removed'
                                 and value['machine_credential']['witness']['state'] == 'witnessed', 'Public removal credential witness incomplete')
@@ -213,7 +214,7 @@ class Smoke:
                 except Exception as error:
                     errors.append(str(error))
             try:
-                value = self.call(['uninstall'], 'uninstall', False)
+                value = self.call(['uninstall'], 'uninstall', False, terminal=True)
                 require(value['schema'] == 'se.uninstall/v1' and value['complete'] is True
                         and not value.get('issues'), 'Public uninstall did not complete all obligations')
                 require(not self.binary.exists(), 'Public command remains after uninstall')
