@@ -21,6 +21,9 @@ mod installation_account;
 #[cfg(any(target_os = "linux", windows))]
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
+#[cfg(windows)]
+#[path = "support/uninstall_finalizer_judges.rs"]
+mod uninstall_finalizer_judges;
 #[cfg(any(target_os = "linux", windows))]
 use runtime_host::RunningHost;
 #[cfg(any(target_os = "linux", windows))]
@@ -238,16 +241,9 @@ fn uninstall_live_host(json: bool) -> Check {
                 && diagnostic.contains("uninstall.ps1"),
             "deferred exit lost its meaning or final-verdict alternative: {printed}"
         );
-        // The system carrier never stages a helper executable. Exit 75 only
-        // delegates; independently observe the exact image and record names.
-        wait_for_absence(
-            &[installed.as_path(), record.as_path()],
-            std::time::Duration::from_secs(45),
-        )?;
-        assert!(
-            !home.join("uninstall-helper-cleanup.json").try_exists()?,
-            "system carrier created obsolete executable-helper cleanup debt"
-        );
+        // Exit 75 delegates. Observe every executable copy and its journal
+        // together with original removal, allowing the finalizer to finish.
+        uninstall_finalizer_judges::wait_for_final_absence(home, &installed, &record)?;
     }
     assert!(
         !host.live()?,
