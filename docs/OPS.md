@@ -124,7 +124,7 @@ Plain `se init` (including `--repo DIR`) is managed setup and writes nothing ins
 | `working_state.get` | `working-state [--agent AGENT]` | none — bound MCP resume includes working state | either | read | owner selector or implicit self | `Read<WorkingState>`: text and revision/absence fact | J3 |
 | `working_state.set` | `working-state set TEXT [--agent AGENT] --expect REV` | `stateengine_working_state_set` | either | write | text, expected revision or explicit absent sentinel; owner selector or implicit self | `WorkingStateReceipt`: new revision/readback; revision conflict uses the common error channel with expected/current revision and no event | J3 |
 | `history.search` | `search QUERY` | `stateengine_search` | either | read | query, authorized record-kind/time filters, page/budget | `Page<SearchHit>`: pointers/snippets, scope/window and omissions; matches are not authority | J3, J4 |
-| `history.list` | `history [--agent AGENT --since CURSOR]` | none — agents use search/resume and event_read for bounded retrieval | either | read | owner agent filter or implicit self, since/page | `Page<HistoryEvent>`: attributable turns/messages/decisions within authorized scope | J3, J4 |
+| `history.list` | `history [--agent AGENT --position CURSOR]` | none — agents use search/resume and event_read for bounded retrieval | either | read | owner agent filter or implicit self, position/page | `Page<HistoryEvent>`: attributable turns/messages/decisions within authorized scope | J3, J4 |
 | `history.event_read` | `history --event ID` | `stateengine_event_read` | either | read | event ID in authorized project/history scope | `Read<HistoryEvent>`: independent committed-event readback, checked source/window and provenance | J3, J4 |
 
 Launch starts a fresh conversation with the durable agent's StateEngine context by default. Explicit `--resume` reopens the latest saved provider conversation; `--resume SESSION` selects an exact saved session ID. MCP accepts `resume: true` or `resume: "session-id"`, and remote launch uses the same selection. If a saved resume reference cannot be verified, refuse with its remedy instead of silently starting fresh. Launch auto-starts a standalone runtime when necessary. Provider/model overrides must be compatible with the chosen conversation; changing provider cannot pretend to resume a different provider's conversation. Capture and process facts remain separate from task completion. `--preview` never binds, launches, revokes or acknowledges a session. No polling, process-per-agent engine or legacy launch spelling is implied by these operations.
@@ -143,6 +143,24 @@ Resume defaults to 4,096 UTF-8 bytes for its ordinary CLI JSON or MCP reply and 
 | `message.dismiss` | `msg dismiss ID` | `stateengine_msg_dismiss` | either | write | message ID in self inbox, restricted recipient/message/marker natural identity | `DispositionReceipt`: dismissed/archived fact without claiming read; history remains listable | J4 |
 
 Listing never creates or changes read/delivered markers, including `msg list --full` / MCP `full: true`; `message.read` remains the recipient-marking path. Full mode stops before a body that would exceed the page's byte cap and returns continuation instead of silently truncating that body; the explicit too-small-budget remedy applies when even the first full item cannot fit. Owner full-body inspection covers any message in the selected project; a session can list full bodies only for messages it sent or received. Delivered, read, dismissed, replied and task-completed are distinct; internal mail settlement records actual consumer observations rather than manufacturing a public completion verb. No PostgreSQL mirror retry flags or repair commands survive into these inputs. Working-state compare-and-set conflicts require a reread rather than an unconditional overwrite retry. Decision-ledger commands are retired; previously recorded events remain readable through `se history`.
+
+`se msg list --follow` streams the owner's own inbox in chronological, bounded
+pages over one authenticated connection. It includes read mail so another
+terminal's read marks cannot hide a new arrival, and accepts the usual sender,
+kind, body and page-size options. `--to` and `--box sent` are incompatible.
+Following never marks a message read. Each page flushes immediately and prints a
+`Follow cursor`; restart with `--cursor CURSOR` and the same filters to continue
+after the last returned message. JSON output carries that cursor in
+`window.to`. Preserve incomplete-page and body-preview facts as for an
+ordinary list; a stale or invalid cursor fails explicitly.
+
+The same command works over SSH: `ssh HOST se --project PROJECT msg list --follow`.
+Idle connections send a cursor-only keepalive every ten seconds, without reading
+the store. JSON keepalives have `type: "idle"` and `cursor`; human output repeats
+only the cursor. A closed output pipe is detected on the next keepalive.
+Interrupt, termination or terminal hangup uses the ordinary OS signal exit status
+and closes the client and its subscription, including when stdout is stalled.
+The last flushed page already contains the cursor needed to restart.
 
 ## Integration entry points
 

@@ -23,17 +23,16 @@ pub struct Choice {
 /// Listing a configured choice establishes neither installation nor support.
 pub fn choices(configuration: &ConfigFile) -> Result<Vec<Choice>> {
     configuration.validate()?;
-    let mut values: Vec<_> = [
-        (Provider::Claude, "Claude Code"),
-        (Provider::Codex, "Codex"),
-        (Provider::SeCode, "SE Code"),
-    ]
-    .into_iter()
-    .map(|(provider, title)| Choice {
-        selection: Selection::Provider { provider },
-        title: title.into(),
-    })
-    .collect();
+    let mut values: Vec<_> = se_types::HARNESS_REGISTRY
+        .iter()
+        .filter(|registration| registration.selectable)
+        .map(|registration| Choice {
+            selection: Selection::Provider {
+                provider: registration.provider,
+            },
+            title: registration.selection_title.into(),
+        })
+        .collect();
     values.extend(configuration.harnesses.keys().map(|name| Choice {
         selection: Selection::Descriptor { name: name.clone() },
         title: name.clone(),
@@ -55,7 +54,7 @@ pub fn choices(configuration: &ConfigFile) -> Result<Vec<Choice>> {
             selection: Selection::Provider {
                 provider: Provider::Acp,
             },
-            title: "Configured protocol agent".into(),
+            title: Provider::Acp.registration().selection_title.into(),
         });
     }
     Ok(values)
@@ -111,24 +110,21 @@ pub fn resolve(
     let choice = if configuration.harnesses.contains_key(name) {
         Selection::Descriptor { name: name.into() }
     } else {
-        let provider = match name {
-            "claude" => Provider::Claude,
-            "codex" => Provider::Codex,
-            "secode" => Provider::SeCode,
-            _ => {
-                if catalog::presets()?.contains_key(name) {
-                    return Err(SeError::new(se_types::Detail::FeatureUnavailable(
-                        se_types::details::FeatureUnavailable {
-                            subject: format!("harness {name}"),
-                            reason: "installed harness is not configured in this home".into(),
-                            next_step: format!(
-                                "Run se init --harness {name} for a new agent from the project owner's terminal with the same --home, then retry this operation."
-                            ),
-                        },
-                    )));
-                }
-                return Err(SeError::invalid("harness", "select a listed harness"));
+        let provider =
+            Provider::from_id(name).filter(|provider| provider.registration().selectable);
+        let Some(provider) = provider else {
+            if catalog::presets()?.contains_key(name) {
+                return Err(SeError::new(se_types::Detail::FeatureUnavailable(
+                    se_types::details::FeatureUnavailable {
+                        subject: format!("harness {name}"),
+                        reason: "installed harness is not configured in this home".into(),
+                        next_step: format!(
+                            "Run se init --harness {name} for a new agent from the project owner's terminal with the same --home, then retry this operation."
+                        ),
+                    },
+                )));
             }
+            return Err(SeError::invalid("harness", "select a listed harness"));
         };
         Selection::Provider { provider }
     };

@@ -15,7 +15,15 @@ pub(crate) use diagnostics::Diagnostics;
 use diagnostics::read_errors;
 pub(crate) use transfer::upload;
 
-pub(crate) async fn command(destination: &str, command: String) -> Result<(bool, Vec<u8>)> {
+/// One fixed SSH command: the exit status, bounded stdout, and a sanitized
+/// tail of the client's stderr. The tail keeps a refusal from hiding the
+/// cause (issue 381: "remote platform discovery failed" over a refused key).
+pub(crate) struct SshOutcome {
+    pub success: bool,
+    pub stdout: Vec<u8>,
+    pub stderr_tail: String,
+}
+pub(crate) async fn command(destination: &str, command: String) -> Result<SshOutcome> {
     validate_destination(destination)?;
     let mut child = Command::new("ssh")
         .args(["-T", "-o", "BatchMode=yes", destination, &command])
@@ -36,7 +44,7 @@ pub(crate) async fn command(destination: &str, command: String) -> Result<(bool,
     let result = timeout(Duration::from_secs(25), async {
         let mut bytes = Vec::new();
         let mut stdout = stdout.take(65537);
-        tokio::try_join!(
+        let (_, stderr_tail) = tokio::try_join!(
             async {
                 stdout
                     .read_to_end(&mut bytes)
@@ -54,7 +62,11 @@ pub(crate) async fn command(destination: &str, command: String) -> Result<(bool,
             .wait()
             .await
             .map_err(|_| unavailable("SSH completion could not be observed"))?;
-        Ok((status.success(), bytes))
+        Ok(SshOutcome {
+            success: status.success(),
+            stdout: bytes,
+            stderr_tail,
+        })
     })
     .await;
     match result {

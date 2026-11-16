@@ -12,7 +12,9 @@ pub use se_types::{DEFAULT_BLOCKING_JOBS, MAX_BLOCKING_JOBS, MIN_BLOCKING_JOBS};
 pub use se_types::Provider;
 mod acp;
 pub mod harness;
+mod providers;
 pub use acp::AcpConfig;
+pub use providers::{ProviderConfig, Providers};
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Sandbox {
@@ -74,82 +76,8 @@ pub struct LaunchConfig {
     #[serde(default)]
     pub terminal: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ProviderConfig {
-    #[serde(default)]
-    pub command: Option<String>,
-    #[serde(default)]
-    pub model: String,
-    #[serde(default = "default_profile")]
-    pub profile: String,
-    /// SE Code copies provider configuration into a new private service profile.
-    /// The seed is never used as the managed service's database or write target.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed_profile: Option<String>,
-}
 fn default_profile() -> String {
     "default".into()
-}
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Providers {
-    #[serde(default = "default_claude")]
-    pub claude: ProviderConfig,
-    #[serde(default = "default_codex")]
-    pub codex: ProviderConfig,
-    #[serde(default = "default_secode")]
-    pub secode: ProviderConfig,
-    #[serde(default = "default_acp", skip_serializing_if = "is_default_acp")]
-    pub acp: ProviderConfig,
-}
-fn default_claude() -> ProviderConfig {
-    ProviderConfig {
-        command: None,
-        model: String::new(),
-        profile: default_profile(),
-        seed_profile: None,
-    }
-}
-fn default_codex() -> ProviderConfig {
-    ProviderConfig {
-        command: None,
-        model: String::new(),
-        profile: default_profile(),
-        seed_profile: None,
-    }
-}
-fn default_secode() -> ProviderConfig {
-    ProviderConfig {
-        command: None,
-        model: String::new(),
-        profile: default_profile(),
-        seed_profile: None,
-    }
-}
-fn default_acp() -> ProviderConfig {
-    ProviderConfig {
-        command: None,
-        model: String::new(),
-        profile: default_profile(),
-        seed_profile: None,
-    }
-}
-fn is_default_acp(value: &ProviderConfig) -> bool {
-    value.command.is_none()
-        && value.model.is_empty()
-        && value.profile == "default"
-        && value.seed_profile.is_none()
-}
-impl Default for Providers {
-    fn default() -> Self {
-        Self {
-            claude: default_claude(),
-            codex: default_codex(),
-            secode: default_secode(),
-            acp: default_acp(),
-        }
-    }
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -249,10 +177,6 @@ fn invalid(subject: &str, reason: &str) -> SeError {
     ))
 }
 impl ConfigFile {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn validate(&self) -> Result<()> {
         if self.version != 1 {
             return Err(invalid("version", "expected version = 1"));
@@ -321,14 +245,11 @@ impl ConfigFile {
         self.acp.validate()?;
         harness::validate_registry(&self.harnesses)?;
         self.selected_harness(Provider::Acp, self.acp.harness.as_deref())?;
-        for (name, provider) in [
-            ("claude", &self.providers.claude),
-            ("codex", &self.providers.codex),
-            ("secode", &self.providers.secode),
-            ("acp", &self.providers.acp),
-        ] {
+        for registration in se_types::HARNESS_REGISTRY {
+            let name = registration.id;
+            let provider = self.provider(registration.provider);
             if let Some(seed) = &provider.seed_profile
-                && (name != "secode"
+                && (!registration.seed_profile
                     || seed.len() > 4096
                     || seed.chars().any(char::is_control)
                     || !std::path::Path::new(seed).is_absolute())
@@ -359,24 +280,15 @@ impl ConfigFile {
         Ok(())
     }
     pub fn provider(&self, provider: Provider) -> &ProviderConfig {
-        match provider {
-            Provider::Claude => &self.providers.claude,
-            Provider::Codex => &self.providers.codex,
-            Provider::SeCode => &self.providers.secode,
-            Provider::Acp => &self.providers.acp,
-        }
+        self.providers.get(provider)
     }
     pub fn provider_command(&self, provider: Provider) -> &str {
         self.provider(provider)
             .command
             .as_deref()
-            .unwrap_or(match provider {
-                Provider::Claude => "claude",
-                Provider::Codex => "codex",
-                Provider::SeCode => "secode",
-                Provider::Acp => "",
-            })
+            .unwrap_or(provider.registration().default_command)
     }
+
     pub fn resolve_profile(
         &self,
         name: &str,
@@ -393,7 +305,7 @@ impl ConfigFile {
                 .ok_or_else(|| invalid("profile", "saved named profile is absent"))?
         };
         let approval = profile.approval.unwrap_or(
-            if matches!(provider, Provider::Codex | Provider::SeCode) && detached {
+            if provider.registration().detached_no_approval && detached {
                 Approval::Never
             } else {
                 Approval::OnRequest

@@ -1,0 +1,47 @@
+[
+  {
+    "variant": "Claude",
+    "id": "claude",
+    "title": "Claude Code",
+    "driver": "claude-stream-json",
+    "command": "claude",
+    "omit_default_config": false,
+    "seed_profile": false,
+    "detached_no_approval": false,
+    "selection": "default"
+  },
+  {
+    "variant": "Codex",
+    "id": "codex",
+    "title": "Codex",
+    "driver": "codex-app-server",
+    "command": "codex",
+    "omit_default_config": false,
+    "seed_profile": false,
+    "detached_no_approval": true,
+    "selection": "builtin"
+  },
+  {
+    "variant": "SeCode",
+    "id": "secode",
+    "title": "SE Code",
+    "driver": "secode-native",
+    "command": "secode",
+    "omit_default_config": false,
+    "seed_profile": true,
+    "detached_no_approval": true,
+    "selection": "builtin"
+  },
+  {
+    "variant": "Acp",
+    "id": "acp",
+    "title": "ACP harness",
+    "driver": "acp-stdio",
+    "command": "",
+    "omit_default_config": true,
+    "seed_profile": false,
+    "detached_no_approval": false,
+    "selection": "configured",
+    "selection_title": "Configured protocol agent"
+  }
+]

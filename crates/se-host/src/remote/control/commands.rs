@@ -9,7 +9,7 @@ pub(crate) async fn execute(
     call: OwnerCall,
     deadline: &crate::client::lease::Deadline,
 ) -> Result<crate::OperationOutput> {
-    let _work = router.execution.mail_waits.remote_work()?;
+    let _work = router.execution.mail_waits.client_work()?;
     let OwnerCall { owner, input } = call;
     input.validate()?;
     router.check_open()?;

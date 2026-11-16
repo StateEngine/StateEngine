@@ -5,8 +5,6 @@ use se_types::Result;
 #[cfg(feature = "remote")]
 use std::sync::Arc;
 #[cfg(feature = "remote")]
-pub(crate) mod activity;
-#[cfg(feature = "remote")]
 mod channel;
 #[cfg(feature = "remote")]
 pub mod client;
