@@ -1,0 +1,47 @@
+name: Native Windows journey preflight
+'on':
+  push:
+    branches:
+    - prime/windows-journeys-453-preflight-r3
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  preflight:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    env:
+      REVIEW_SOURCE: 7a5d601a89fc0e5adb688c751dd6296e36d6aa41
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUTF8: '1'
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: 7a5d601a89fc0e5adb688c751dd6296e36d6aa41
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - name: Compile native runner inputs
+      shell: python
+      run: 'import base64,hashlib,subprocess,sys,os
+
+        from pathlib import Path
+
+        b=base64.b64decode(''aW1wb3J0IGhhc2hsaWIsanNvbixvcyxzdWJwcm9jZXNzLHN5cwpmcm9tIHBhdGhsaWIgaW1wb3J0IFBhdGgKcm9vdD1QYXRoKG9zLmVudmlyb25bJ0dJVEhVQl9XT1JLU1BBQ0UnXSk7b3V0PVBhdGgob3MuZW52aXJvblsnUlVOTkVSX1RFTVAnXSkvJ2pvdXJuZXktcHJlZmxpZ2h0JztvdXQubWtkaXIoKQphc3NlcnQgc3lzLnBsYXRmb3JtPT0nd2luMzInIGFuZCBzeXMudmVyc2lvbl9pbmZvPj0oMywxMSkKc291cmNlPXN1YnByb2Nlc3MuY2hlY2tfb3V0cHV0KFsnZ2l0JywncmV2LXBhcnNlJywnSEVBRCddLHRleHQ9VHJ1ZSkuc3RyaXAoKTthc3NlcnQgc291cmNlPT1vcy5lbnZpcm9uWydSRVZJRVdfU09VUkNFJ10KcmVwb3J0PXsnc291cmNlJzpzb3VyY2UsJ3B5dGhvbic6c3lzLnZlcnNpb24sJ3N0YWdlcyc6W10sJ2V4ZWN1dGVkX3JlYWxfam91cm5leXMnOkZhbHNlLCdxdWFsaWZpY2F0aW9uJzonc3ludGF4LCB0ZXJtaW5hbCBjb21waWxhdGlvbiBhbmQgbmF0aXZlIFdpbmRvd3MgQ2xpcHB5IG9ubHknfQpkZWYgcnVuKGxhYmVsLGFyZ3MpOgogd2l0aCAob3V0LyhsYWJlbCsnLnN0ZG91dCcpKS5vcGVuKCd3YicpIGFzIHNvLChvdXQvKGxhYmVsKycuc3RkZXJyJykpLm9wZW4oJ3diJykgYXMgc2U6cD1zdWJwcm9jZXNzLnJ1bihhcmdzLHN0ZG91dD1zbyxzdGRlcnI9c2UpCiByZXBvcnRbJ3N0YWdlcyddLmFwcGVuZCh7J2xhYmVsJzpsYWJlbCwnYXJndic6YXJncywnZXhpdCc6cC5yZXR1cm5jb2RlfSkKIHJldHVybiBwLnJldHVybmNvZGUKdHJ5OgogcGF0aHM9W3Jvb3QvJ3NjcmlwdHMvd2luZG93cy1qb3VybmV5cy5weScsKnNvcnRlZCgocm9vdC8nc2NyaXB0cy93aW5kb3dzX2pvdXJuZXlzJykuZ2xvYignKi5weScpKSwqc29ydGVkKChyb290LydzY3JpcHRzL2hhcm5lc3NfbWF0cml4JykuZ2xvYignKi5weScpKV0KIGZvciBwYXRoIGluIHBhdGhzOmNvbXBpbGUocGF0aC5yZWFkX2J5dGVzKCksc3RyKHBhdGgpLCdleGVjJykKIHJlcG9ydFsnY29tcGlsZWRfc291cmNlcyddPXtzdHIocC5yZWxhdGl2ZV90byhyb290KSk6aGFzaGxpYi5zaGEyNTYocC5yZWFkX2J5dGVzKCkpLmhleGRpZ2VzdCgpIGZvciBwIGluIHBhdGhzfQogZm9yIGFyZ3MgaW4gW1snLS1oZWxwJ10sWydydW4nLCctLWhlbHAnXSxbJ3Byb3Zpc2lvbicsJy0taGVscCddXToKICBhc3NlcnQgcnVuKCdoZWxwLScrc3RyKGxlbihyZXBvcnRbJ3N0YWdlcyddKSksW3N5cy5leGVjdXRhYmxlLCctQicsJ3NjcmlwdHMvd2luZG93cy1qb3VybmV5cy5weScsKmFyZ3NdKT09MAogY29kZT0iJEVycm9yQWN0aW9uUHJlZmVyZW5jZT0nU3RvcCc7JHRva2Vucz0kbnVsbDskZXJyb3JzPSRudWxsOyRhc3Q9W01hbmFnZW1lbnQuQXV0b21hdGlvbi5MYW5ndWFnZS5QYXJzZXJdOjpQYXJzZUZpbGUoKEpvaW4tUGF0aCAkcHdkICdzY3JpcHRzL3dpbmRvd3Nfam91cm5leXMvdGVybWluYWwucHMxJyksW3JlZl0kdG9rZW5zLFtyZWZdJGVycm9ycyk7aWYoJGVycm9ycy5Db3VudCl7dGhyb3cgKCRlcnJvcnN8T3V0LVN0cmluZyl9OyRzb3VyY2U9QCgkYXN0LkZpbmRBbGwoe3BhcmFtKCRub2RlKSAkbm9kZSAtaXMgW01hbmFnZW1lbnQuQXV0b21hdGlvbi5MYW5ndWFnZS5TdHJpbmdDb25zdGFudEV4cHJlc3Npb25Bc3RdIC1hbmQgJG5vZGUuVmFsdWUuQ29udGFpbnMoJ3B1YmxpYyBzdGF0aWMgY2xhc3MgSm91cm5leVRlcm1pbmFsJyl9LCR0cnVlKSk7aWYoJHNvdXJjZS5Db3VudCAtbmUgMSl7dGhyb3cgJ0V4cGVjdGVkIG9uZSB0ZXJtaW5hbCB0eXBlIGRlZmluaXRpb24nfTtBZGQtVHlwZSAtVHlwZURlZmluaXRpb24gJHNvdXJjZVswXS5WYWx1ZTtbQ29uc29sZV06OldyaXRlTGluZSgnTmF0aXZlIHRlcm1pbmFsIEMjIGNvbXBpbGVkJykiCiBhc3NlcnQgcnVuKCduYXRpdmUtdGVybWluYWwtY29tcGlsZScsWydwb3dlcnNoZWxsLmV4ZScsJy1Ob1Byb2ZpbGUnLCctTm9uSW50ZXJhY3RpdmUnLCctQ29tbWFuZCcsY29kZV0pPT0wCiByZXBvcnRbJ2NvbXBpbGVyJ109c3VicHJvY2Vzcy5jaGVja19vdXRwdXQoWydydXN0YycsJy12ViddLHRleHQ9VHJ1ZSk7YXNzZXJ0ICdob3N0OiB4ODZfNjQtcGMtd2luZG93cy1tc3ZjJyBpbiByZXBvcnRbJ2NvbXBpbGVyJ10KIGFzc2VydCBydW4oJ25hdGl2ZS1jbGlwcHknLFsnY2FyZ28nLCdjbGlwcHknLCctLXdvcmtzcGFjZScsJy0tYWxsLXRhcmdldHMnLCctLWFsbC1mZWF0dXJlcycsJy0tbG9ja2VkJywnLS10YXJnZXQnLCd4ODZfNjQtcGMtd2luZG93cy1tc3ZjJywnLS0nLCctRCcsJ3dhcm5pbmdzJ10pPT0wCmV4Y2VwdCBFeGNlcHRpb24gYXMgZXJyb3I6CiByZXBvcnRbJ3JlY29yZGVyX2Vycm9yJ109c3RyKGVycm9yKQpmaW5hbGx5OgogcmVwb3J0WydwYXNzZWQnXT1ub3QgcmVwb3J0LmdldCgncmVjb3JkZXJfZXJyb3InKSBhbmQgYWxsKHhbJ2V4aXQnXT09MCBmb3IgeCBpbiByZXBvcnRbJ3N0YWdlcyddKQogKG91dC8ncmVwb3J0Lmpzb24nKS53cml0ZV90ZXh0KGpzb24uZHVtcHMocmVwb3J0LGluZGVudD0yKSsnXG4nKQogKG91dC8nbWVtYmVycy5qc29uJykud3JpdGVfdGV4dChqc29uLmR1bXBzKHtwLm5hbWU6aGFzaGxpYi5zaGEyNTYocC5yZWFkX2J5dGVzKCkpLmhleGRpZ2VzdCgpIGZvciBwIGluIG91dC5pdGVyZGlyKCkgaWYgcC5pc19maWxlKCl9LGluZGVudD0yKSsnXG4nKQpwcmludChqc29uLmR1bXBzKHJlcG9ydCkpO3JhaXNlIFN5c3RlbUV4aXQoMCBpZiByZXBvcnRbJ3Bhc3NlZCddIGVsc2UgMSkK'')
+
+        assert hashlib.sha256(b).hexdigest()==''0d1f1bf27b5a640c857ef337d4608e2f0ba422f8e1d67f8401cdeb0e8ca3a084''
+
+        p=Path(os.environ[''RUNNER_TEMP''])/''journey-preflight.py'';p.write_bytes(b)
+
+        raise SystemExit(subprocess.call([sys.executable,''-B'',str(p)]))
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: windows-journeys-453-preflight-r3
+        path: ${{ runner.temp }}/journey-preflight/
+        if-no-files-found: error
+        include-hidden-files: true
