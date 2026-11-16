@@ -30,13 +30,13 @@ Add this top-level object to the same manifest:
 ```
 
 Use a real standalone release archive containing `build.json`, `manifest.json`,
-`SHA256SUMS`, `se.exe` and `install.ps1`. The driver checks HTTPS, archive digest,
-complete member inventory, native target and exact source identity. A private
-download may name `authorization_environment`; its value is used only by the
-downloader and never inherited by providers.
-For an unpublished build artifact containing the standalone ZIP, add
-`archive_member: {"name": "EXACT_PACKAGE.zip", "sha256": "PACKAGE_DIGEST"}`.
-The outer artifact and selected package are both authenticated before extraction.
+`SHA256SUMS`, `se.exe` and `install.ps1`. The driver checks archive digest,
+complete member inventory, native target and exact source identity. For an
+unpublished build, an authenticated courier downloads and verifies the artifact
+outside the Windows machine, then places the standalone ZIP in the sealed bundle.
+Use `path` with an absolute local ZIP path instead of `url`; keep the package's
+`sha256` and `source_commit`. The runner verifies the ZIP again before installation.
+Public release URLs use HTTPS. Download credentials are refused by the runner.
 
 Before each invocation a separate native credential provisioner must mint fresh
 provider access credentials. Pipe its JSON directly into
@@ -69,7 +69,7 @@ installation ownership before reusing the installation account.
 
 | Cell | Required observation |
 | --- | --- |
-| J1 | Download and install; a new terminal discovers the exact image and version through native PATH. |
+| J1 | Read the authenticated bundled release or download a public release, then install; a new terminal discovers the exact image and version through native PATH. |
 | J2 | Adopt committed, staged, unstaged and untracked Git work; a real agent writes new bytes and its assistant turn is captured. |
 | J3 | Close agents and runtime; execute public reopen argv; recover a random phrase omitted from the recall prompt. |
 | J4 | Two real agents exchange a keyed request; observe the durable message, authenticated recipient read and recipient file work. |

@@ -1,6 +1,5 @@
-"""Download and authenticate one real Windows release without source edits."""
+"""Copy or download and authenticate one real Windows release without source edits."""
 import json
-import os
 from pathlib import Path, PureWindowsPath
 import re
 import stat
@@ -15,60 +14,54 @@ from harness_matrix.io import digest, require
 class Redirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         require(urllib.parse.urlsplit(newurl).scheme == 'https', 'Release redirect is not HTTPS')
-        result = super().redirect_request(request, fp, code, msg, headers, newurl)
-        if urllib.parse.urlsplit(request.full_url).netloc != urllib.parse.urlsplit(newurl).netloc:
-            result.remove_header('Authorization')
-        return result
+        return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+
+def local_archive(value):
+    path = Path(value)
+    require(path.is_absolute() and path.suffix.lower() == '.zip',
+            'Bundled release must be an absolute ZIP path')
+    for part in [path, *path.parents]:
+        row = part.lstat()
+        require(not stat.S_ISLNK(row.st_mode)
+                and not getattr(row, 'st_file_attributes', 0) & 0x400,
+                'Bundled release path contains a link or reparse point')
+    row = path.stat()
+    require(stat.S_ISREG(row.st_mode) and row.st_nlink == 1 and row.st_size <= 512 * 1024**2,
+            'Bundled release must be a bounded plain file')
+    return path, (row.st_dev, row.st_ino, row.st_size, row.st_mtime_ns)
 
 
 def download(specification, output):
-    url = urllib.parse.urlsplit(specification['url'])
-    require(url.scheme == 'https' and url.hostname and not url.username and not url.password
-            and not url.query and not url.fragment, 'Release URL must be HTTPS without credentials or query secrets')
+    require(('path' in specification) != ('url' in specification)
+            and 'authorization_environment' not in specification,
+            'Select one bundled ZIP or public HTTPS release, without a download credential')
     expected = specification['sha256']
     require(re.fullmatch('[0-9a-f]{64}', expected), 'Exact release archive digest is required')
-    headers = {}
-    name = specification.get('authorization_environment')
-    if name:
-        require(re.fullmatch('[A-Za-z_][A-Za-z0-9_]*', name) and os.environ.get(name),
-                'Named release download credential is absent')
-        headers['Authorization'] = 'Bearer ' + os.environ[name]
+    local, identity = local_archive(specification['path']) if 'path' in specification else (None, None)
+    if local is None:
+        url = urllib.parse.urlsplit(specification['url'])
+        require(url.scheme == 'https' and url.hostname and not url.username and not url.password
+                and not url.query and not url.fragment,
+                'Release URL must be public HTTPS without credentials or query secrets')
+        source = urllib.request.build_opener(Redirect()).open(specification['url'], timeout=30)
+    else:
+        source = local.open('rb')
     path = output / 'release.zip'
-    request = urllib.request.Request(specification['url'], headers=headers)
     until = time.monotonic() + 180
-    with urllib.request.build_opener(Redirect()).open(request, timeout=30) as source, path.open('xb') as target:
+    with source, path.open('xb') as target:
         count = 0
         while True:
-            require(time.monotonic() < until, 'Release download exceeded its absolute time bound')
+            require(time.monotonic() < until, 'Release transfer exceeded its absolute time bound')
             data = source.read(1024**2)
             if not data:
                 break
             count += len(data)
-            require(count <= 512 * 1024**2, 'Release download exceeds its finite bound')
+            require(count <= 512 * 1024**2, 'Release transfer exceeds its finite bound')
             target.write(data)
-    require(digest(path) == expected, 'Downloaded release archive identity differs')
-    member = specification.get('archive_member')
-    member_digest = None
-    if member is not None:
-        require(isinstance(member, dict) and set(member) == {'name', 'sha256'}
-                and isinstance(member['name'], str) and len(member['name']) <= 256
-                and re.fullmatch(r'[A-Za-z0-9_.+-]+\.zip', member['name'])
-                and isinstance(member['sha256'], str)
-                and re.fullmatch('[0-9a-f]{64}', member['sha256']),
-                'A release artifact member requires an exact ZIP name and digest')
-        nested = output / 'package.zip'
-        with zipfile.ZipFile(path) as archive:
-            entries = [entry for entry in archive.infolist() if entry.filename == member['name']]
-            require(len(entries) == 1 and entries[0].file_size <= 512 * 1024**2
-                    and not stat.S_ISLNK(entries[0].external_attr >> 16),
-                    'Release artifact member is missing, duplicated or oversized')
-            with archive.open(entries[0]) as source, nested.open('xb') as target:
-                while data := source.read(1024**2):
-                    require(time.monotonic() < until, 'Release artifact extraction exceeded its time bound')
-                    target.write(data)
-        member_digest = digest(nested)
-        require(member_digest == member['sha256'], 'Release artifact member identity differs')
-        path = nested
+    if local is not None:
+        require(local_archive(str(local))[1] == identity, 'Bundled release changed during copy')
+    require(digest(path) == expected, 'Release archive identity differs')
     extracted = output / 'release'
     extracted.mkdir()
     inventory = set()
@@ -102,6 +95,7 @@ def download(specification, output):
         checksums[relative] = value
     actual = {str(p.relative_to(package)).replace('\\', '/') for p in package.rglob('*') if p.is_file()}
     require(actual == set(checksums) | {'SHA256SUMS'}, 'Release has missing or unlisted members')
-    return package, dict(url=specification['url'], archive_sha256=expected,
-                         archive_member_sha256=member_digest,
+    return package, dict(origin='bundled' if local is not None else 'public-https',
+                         path=str(local) if local is not None else None,
+                         url=specification.get('url'), archive_sha256=expected,
                          source_commit=build['source_commit'], build_sha256=digest(package / 'build.json'))
