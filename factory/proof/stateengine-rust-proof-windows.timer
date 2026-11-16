@@ -2,8 +2,10 @@
 Description=Continue the pinned nightly in a native Windows custody window
 
 [Timer]
+# One standing slot a day. The 19:00Z second slot is dropped: the design reserves a
+# single daily custody window, and a night that slipped into a second window would
+# publish Windows rows the Linux attempt never pinned.
 OnCalendar=*-*-* 13:00:00 UTC
-OnCalendar=*-*-* 19:00:00 UTC
 AccuracySec=1s
 RandomizedDelaySec=0
 Persistent=false

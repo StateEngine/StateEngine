@@ -50,6 +50,12 @@ def labels(config):
             for (platform, surface, selection), rows in planned(config) for _, name in rows]
 
 
+# Windows rows are only claimed inside the 13–15Z custody window. A night still
+# showing no settled Windows record after it closes is NOT MEASURED, not pending:
+# nothing will run for it later the same day.
+WINDOWS_CLOSED_HOUR_UTC = 15
+
+
 def assess(config, directory, record, report, night, now, report_error=None):
     value = {"schema": "se.nightly-proof-status/v1", "night": night,
              "checked_at": now.isoformat(), "state": "red", "run_id": directory.name,
@@ -79,6 +85,17 @@ def assess(config, directory, record, report, night, now, report_error=None):
                 if not matches or any(r["journeys"].get(str(number)) not in {"PASS", "FAIL"}
                                       for r in matches):
                     value["missing_journeys"].append("/".join(key) + ": " + name)
+        # A night that planned Windows must show a Windows record once the custody
+        # window has closed. Silence is not a pass and not a zero: name the reason
+        # so the absent row reads NOT MEASURED with the cause attached.
+        if any(key[0] == "win32" for key, _ in expected):
+            closed = now.astimezone(timezone.utc).hour >= WINDOWS_CLOSED_HOUR_UTC
+            settled = any(r.get("platform") == "win32"
+                          and r.get("state") not in ("planned", "running")
+                          for r in checked["invocations"])
+            if closed and not settled:
+                value["errors"].append(
+                    f"windows: no Windows record by {WINDOWS_CLOSED_HOUR_UTC:02d}:00Z; rows are NOT MEASURED")
         status = checked["status"]
         if record.get("state") == "interrupted":
             value["cause"] = "interrupted"

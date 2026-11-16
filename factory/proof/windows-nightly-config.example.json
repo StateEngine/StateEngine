@@ -1,0 +1,11 @@
+{
+  "windows": {
+    "producer_command": ["/usr/bin/python3", "/home/USER/.local/lib/stateengine-rust-proof/windows_producer.py"],
+    "probes": [["claude", "wave-2"], ["claude", "4"], ["codex", "4"]],
+    "timeout_seconds": 3600,
+    "claim": "msg-REPLACE-WITH-CURRENT-WINVM-SLOT-CLAIM",
+    "seat": "REPLACE-WITH-SEAT-ID",
+    "runner": "/mnt/nvme/winvm/run",
+    "window_grant": "REPLACE-WITH-THE-ONE-USE-GRANT-REFERENCE"
+  }
+}

@@ -17,16 +17,22 @@ def identity():
     return value
 
 
+# One standing custody window a day, matching the timer. A second window would let a
+# night publish Windows rows the Linux attempt never pinned.
+CUSTODY_WINDOWS = ((13, 15),)
+
+
 def slot_deadline(now=None):
     """Reserve five minutes for joining the guest and restoring shared custody."""
     now = now or datetime.now(timezone.utc)
     now = now.astimezone(timezone.utc)
-    for start, end in ((13, 15), (19, 21)):
+    for start, end in CUSTODY_WINDOWS:
         if start <= now.hour < end:
             seconds = (now.replace(hour=end, minute=0, second=0, microsecond=0) - now).total_seconds()
             if seconds > 300:
                 return time.monotonic() + seconds - 300
-    raise RuntimeError('Windows continuation requires the 13–15 or 19–21 UTC custody window')
+    hours = " or ".join(f"{start:02d}–{end:02d}" for start, end in CUSTODY_WINDOWS)
+    raise RuntimeError(f'Windows continuation requires the {hours} UTC custody window')
 
 
 def attempt(config, pointer):

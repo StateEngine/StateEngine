@@ -513,6 +513,20 @@ def summarize(run, directory):
             if eligible[key]
             and not any(row["label"] == label and row["numbers"] for row in slots[key])]
     gaps += ["FULL: independent FULL-write probe unavailable"]
+    # A Windows budget that is absent must say why. "Not configured" and
+    # "configured but no attempt in the custody window" are different facts, and
+    # both are NOT MEASURED, never zero.
+    windows_planned = any(entry.get("platform") == "win32" for entry in entries)
+    windows_measured = any(entry.get("platform") == "win32" and entry.get("receipt_complete")
+                           and not entry.get("behavior_only") for entry in entries)
+    if not windows_planned:
+        gaps.append("windows: not configured")
+    elif not windows_measured:
+        reasons = sorted({str(row.get("reason")) for entry in entries
+                          if entry.get("platform") == "win32"
+                          for row in (entry.get("results") or []) if row.get("reason")})
+        detail = "; ".join(reasons) if reasons else "no Windows attempt in the custody window"
+        gaps.append("windows: " + detail)
     if not any(entry.get("surface") == "codex" and entry["mode"] == "first-hour"
                and entry["receipt_complete"] and not entry.get("behavior_only") for entry in entries):
         gaps.append("Codex budgets: no validated first-hour budget receipt")
