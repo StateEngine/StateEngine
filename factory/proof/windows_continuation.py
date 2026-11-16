@@ -98,7 +98,7 @@ def execute(config, finalize_only=False):
         # Give ExecStopPost an explicit no-admission mapping even if the clock
         # rejects this invocation before a nightly attempt is acquired.
         save(mapping, {'empty': True})
-        deadline = slot_deadline()
+        deadline = slot_deadline(config=config)
         pointer = json.loads(pending.read_text())
         save(mapping, pointer)
     pointer = json.loads(mapping.read_text())

@@ -380,13 +380,23 @@ def invocation(inv, directory, run=None):
             or {row["journey"] for row in rows} != expected or len(rows) != len(expected)):
         entry["problems"].append("incomplete or invalid journey rows")
         return entry
-    # A measurement scope has no journey rows, so its cleanup statement is the
-    # receipt's own list. Reading it from rows would silently see no cleanup at all
-    # and pass a run that left debris behind.
-    cleanup = (receipt.get("cleanup") if mode in ("first-hour", "measurement")
-               else [row.get("cleanup") for row in rows])
-    cleanup_known = isinstance(cleanup, list) and (
-        mode in ("first-hour", "measurement") or all(isinstance(x, list) for x in cleanup))
+    # A measurement scope's shutdown evidence is the write measurement's own
+    # `cleanup_errors` inside budgets.json. The raw results.json carries no cleanup
+    # field at all, so a top-level list here would have to be invented — and an
+    # invented empty list is a clean run nothing witnessed.
+    cleanup, cleanup_known = (None, False)
+    if mode == "measurement":
+        artifact, artifact_error = read(directory / inv["output"] / "budgets.json")
+        witness = [row for row in (artifact or {}).get("measurements") or []
+                   if isinstance(row, dict) and row.get("label") == "CLI writes through running host"]
+        if not artifact_error and len(witness) == 1 and isinstance(witness[0].get("cleanup_errors"), list):
+            cleanup, cleanup_known = witness[0]["cleanup_errors"], True
+    elif mode == "first-hour":
+        cleanup = receipt.get("cleanup")
+        cleanup_known = isinstance(cleanup, list)
+    else:
+        cleanup = [row.get("cleanup") for row in rows]
+        cleanup_known = all(isinstance(x, list) for x in cleanup)
     cleanup_failed = bool(cleanup) if mode == "first-hour" else any(cleanup) if cleanup_known else False
     qualification = receipt.get("qualification")
     budget = receipt.get("budgets")
