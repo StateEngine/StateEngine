@@ -303,7 +303,7 @@ class Smoke:
                     self.record['diagnostics'][label] = dict(state='unreadable', reason=str(error))
         self.save()
 
-    def cleanup(self):
+    def cleanup(self, retain_home=False):
         errors = []
         try:
             self.commands.observer.observe()
@@ -336,7 +336,7 @@ class Smoke:
             remaining = None
             errors.append('process census: ' + str(error))
         self.record.update(cleanup=errors, process_closure=remaining)
-        if not errors and remaining == [] and not self.record.get('failure'):
+        if not errors and remaining == [] and not self.record.get('failure') and not retain_home:
             shutil.rmtree(self.home)
             require(not self.home.exists(), 'Finished fixture home remains')
         self.record['fixture_retained'] = self.home.exists()
