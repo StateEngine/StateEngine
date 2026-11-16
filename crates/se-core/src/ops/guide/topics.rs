@@ -15,8 +15,8 @@ pub(super) const TOPICS: &[Topic] = &[
 From your repository, run se init --provider claude or se init --provider codex.
 Use --repo DIR to register an existing folder from elsewhere. Setup preserves
 your repository files and Git history and saves an initial agent named main.
-Run the scoped launch command printed by init; se launch main starts or resumes
-that saved agent. Authenticate with the chosen provider when it asks.
+Run the scoped launch command printed by init; se launch main starts a fresh
+conversation for that saved agent. Authenticate with the chosen provider when it asks.
 
 Run se status to see setup, agent and runtime facts. If selection is ambiguous,
 use se --project PROJECT status with a saved project name or ID. --home DIR
@@ -30,20 +30,23 @@ Run se help init or se help launch for the installed command options.
     Topic {
         name: "launch",
         title: "Launch and stop agents",
-        summary: "Choose a provider, resume a saved conversation and inspect live work.",
+        summary: "Start fresh, explicitly resume a saved conversation and inspect live work.",
         body: r#"Use se agent list and se agent show AGENT to find saved identities and settings.
-se launch AGENT starts or resumes that agent's provider conversation and starts
-the runtime if needed. --task TEXT supplies work; --detach runs headless.
---new explicitly starts a fresh conversation for the same saved agent. A missing
-or incompatible resume reference is reported rather than silently replaced.
+se launch AGENT starts a fresh provider conversation with the agent's bounded
+StateEngine resume context, working state and unread mail. --resume reopens the
+most recent saved conversation; --resume SESSION selects an exact saved session
+ID belonging to that agent. MCP uses resume: true or resume: "session-id"; omitting
+resume starts fresh. Remote launch uses the same selection. A missing or
+incompatible resume reference is reported rather than silently replaced.
+The runtime starts if needed. --task TEXT supplies work; --detach runs headless.
 --provider and --model override a launch only when compatible with its conversation.
 
 A live agent is not a completed task. Check se status and se history for observed
 process, provider and capture facts. A default launch refuses a conflicting live
 instance and reports its scoped work. Read se help launch before replacing it.
 --force (MCP: force) explicitly consents to stopping existing sessions and their
-scoped jobs before relaunching. A terminal asks for confirmation. --new (MCP: new)
-instead selects a fresh conversation.
+scoped jobs before relaunching. A terminal asks for confirmation. Conversation
+selection is separate: omit --resume for fresh, or request --resume explicitly.
 se agent stop AGENT stops one managed agent; se down stops this data home's
 owned runtime and agent scope. Stopping work does not erase its saved history.
 
@@ -57,9 +60,10 @@ private inbox or continuity. Other targets require the owner.
         title: "Return to saved work",
         summary: "Reopen a conversation, inspect context and save working notes.",
         body: r#"After closing your terminal or restarting, use se agent list to find the saved
-agent, then se launch AGENT to reopen its conversation. se resume AGENT prints
-the command to reopen it; it does not itself launch the provider. Avoid --new
-when you want the previous conversation.
+agent, then se launch AGENT for a fresh conversation with its saved StateEngine
+context. Use se launch AGENT --resume to reopen its previous provider conversation.
+se resume AGENT prints the explicit resume command; it does not itself launch the
+provider.
 
 Owners can inspect se resume --preview AGENT without binding or acknowledging
 a session. A bound agent uses stateengine_resume to read its own continuity.
