@@ -117,6 +117,7 @@ pub(super) fn collect(
             precomputed_last: None,
             lexical,
             related,
+            downweighted: false,
         });
         output
             .values

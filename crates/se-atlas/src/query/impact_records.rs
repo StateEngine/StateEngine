@@ -92,6 +92,7 @@ pub(super) fn collect(
                     precomputed_last: None,
                     lexical: 0.0,
                     related: true,
+                    downweighted: false,
                 };
                 let mut key = super::find::key(&candidate, SearchOrder::Relevance);
                 key.integers = vec![4, 2, key.integers[1]];

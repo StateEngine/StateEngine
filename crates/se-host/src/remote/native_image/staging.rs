@@ -1,14 +1,5 @@
 //! Fixed, account-owned runtime paths; partial uploads never become executable.
 // All substituted paths are generated from hexadecimal hashes and nonces.
-pub(in crate::remote) fn receive(path: &str, windows: bool) -> String {
-    if windows {
-        powershell(&format!(
-            "$ErrorActionPreference='Stop'; $f=$null; try {{$p=Join-Path $HOME '{path}'; $f=[IO.File]::Open($p,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); [Console]::OpenStandardInput().CopyTo($f); $f.Flush($true); $f.Dispose(); exit 0}} catch {{if ($f) {{$f.Dispose()}}; exit 1}}"
-        ))
-    } else {
-        format!("umask 077; set -C; cat > {path}")
-    }
-}
 pub(in crate::remote) fn prepare(directory: &str, windows: bool, apple: bool) -> String {
     if windows {
         let script = r#"$ErrorActionPreference='Stop'; try {
