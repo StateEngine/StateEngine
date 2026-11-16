@@ -182,14 +182,20 @@ async fn observe(home: &Path, clients: &[Value]) -> Check {
     let mut command =
         tokio::process::Command::new(if cfg!(windows) { "python" } else { "python3" });
     command.arg(root.join("crates/se/tests/eight_writer_workers.py"));
+    let path = root.join("target/judge-diagnostics");
+    std::fs::create_dir_all(&path)?;
+    // Windows child pipes use Tokio's blocking workers. Direct output to files
+    // so the observer does not occupy the finite host jobs while waiting.
+    let stdout_path = path.join("mcp-writers.json");
+    let stderr_path = path.join("mcp-writers.stderr");
     let mut child = command
         .arg("--se")
         .arg(env!("CARGO_BIN_EXE_se"))
         .arg("--home")
         .arg(home)
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(Stdio::from(std::fs::File::create(&stdout_path)?))
+        .stderr(Stdio::from(std::fs::File::create(&stderr_path)?))
         .kill_on_drop(true)
         .spawn()?;
     let mut input = child.stdin.take().ok_or("observer input absent")?;
@@ -197,12 +203,8 @@ async fn observe(home: &Path, clients: &[Value]) -> Check {
         .write_all(&serde_json::to_vec(&json!({"clients":clients}))?)
         .await?;
     drop(input);
-    let output = child.wait_with_output().await?;
-    let path = root.join("target/judge-diagnostics");
-    std::fs::create_dir_all(&path)?;
-    std::fs::write(path.join("mcp-writers.json"), &output.stdout)?;
-    std::fs::write(path.join("mcp-writers.stderr"), &output.stderr)?;
-    let report: Value = serde_json::from_slice(&output.stdout)?;
+    let status = child.wait().await?;
+    let report: Value = serde_json::from_slice(&std::fs::read(stdout_path)?)?;
     let cohorts = report["cohorts"]
         .as_object()
         .ok_or("observer cohorts absent")?;
@@ -237,10 +239,7 @@ async fn observe(home: &Path, clients: &[Value]) -> Check {
     // The observer retains misses as measured values. Budget judgment belongs
     // to the independent review; an absent or failed write still fails here.
     require(
-        output
-            .status
-            .code()
-            .is_some_and(|code| code == 0 || code == 1),
+        status.code().is_some_and(|code| code == 0 || code == 1),
         "observer did not return a measurement verdict",
     )
 }
