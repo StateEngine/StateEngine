@@ -14,10 +14,6 @@ pub(super) struct Pool {
     pub truncated: bool,
 }
 impl Pool {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub fn collect(
         env: &QueryEnv<'_>,
         sql: &SqlView<'_>,
@@ -62,10 +58,7 @@ impl Pool {
             if !matches!(plan.kind, Kind::Symbol | Kind::File) {
                 continue;
             }
-            if crate::clock::now() >= end {
-                pool.truncated = true;
-                break;
-            }
+            super::candidates::admission_time(end)?;
             let (condition, _) = plan
                 .sql
                 .split_once(" WHERE ")
@@ -114,10 +107,7 @@ impl Pool {
                 if !bm25.is_finite() || bm25 > 0.0 {
                     return Err(cache_error("invalid source metadata BM25 score"));
                 }
-                if crate::clock::now() >= end {
-                    pool.truncated = true;
-                    break;
-                }
+                super::candidates::admission_time(end)?;
                 if plan.kind == Kind::Symbol && plan.tier == 2 {
                     let (_, name) = super::candidates::metadata(sql, plan.kind, rowid)?;
                     if !crate::rank::split_matches(&name, query.query.as_str()) {
@@ -175,6 +165,7 @@ impl Pool {
             precomputed_last: None,
             lexical: entry.lexical,
             related: entry.related,
+            downweighted: false,
         };
         if let Some(hit) = super::find::materialize(env, sql, snapshot, &candidate, query, mode)?
             && let HitTarget::Code(code) = hit.target

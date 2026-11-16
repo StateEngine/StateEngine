@@ -42,17 +42,11 @@ pub(super) fn collect(
                 identities.push((kind, id, true));
             }
         }
-        if crate::clock::now() >= end {
-            output.truncated = true;
-            break;
-        }
+        super::candidates::admission_time(end)?;
     }
     let mut resident = 0;
     for (kind, rowid, related) in identities {
-        if crate::clock::now() >= end {
-            output.truncated = true;
-            break;
-        }
+        super::candidates::admission_time(end)?;
         if !allowed(sql, kind, rowid, query)? {
             continue;
         }
@@ -123,6 +117,7 @@ pub(super) fn collect(
             precomputed_last: None,
             lexical,
             related,
+            downweighted: false,
         });
         output
             .values
@@ -245,7 +240,8 @@ fn neighbors(
             *limited = true;
             continue;
         }
-        if output.len() >= 256 || crate::clock::now() >= end {
+        super::candidates::admission_time(end)?;
+        if output.len() >= 256 {
             *limited = true;
             break;
         }

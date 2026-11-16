@@ -1,4 +1,4 @@
-//! Deterministic Unicode camel/snake/digit boundaries, versioned with extraction.
+//! Shared Unicode identifier boundaries for indexing and prefix matching.
 /// Borrow complete tokens; byte offsets always lie on UTF-8 boundaries.
 pub fn identifier_tokens(name: &str) -> Vec<&str> {
     let chars: Vec<_> = name.char_indices().collect();
@@ -32,13 +32,14 @@ pub fn identifier_tokens(name: &str) -> Vec<&str> {
     }
     tokens
 }
-/// The writer indexes this in symbol_fts.split_name, including the acronym.
+/// Build searchable identifier tokens, including their acronym.
 pub fn identifier_index(name: &str) -> String {
     let tokens = identifier_tokens(name);
     let acronym: String = tokens.iter().filter_map(|s| s.chars().next()).collect();
     format!("{} {acronym}", tokens.join(" "))
 }
-pub(crate) fn split_matches(name: &str, query: &str) -> bool {
+/// Match prefixes across the full name, its acronym, or consecutive tokens.
+pub fn split_matches(name: &str, query: &str) -> bool {
     let smart = query.chars().any(char::is_uppercase);
     let matches = |left: &str, right: &str| {
         if smart {
