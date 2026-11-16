@@ -63,7 +63,7 @@ impl ProviderIoPlatform for UnixProviderIo {
                 stderr: Some(std::fs::File::from(OwnedFd::from(stderr_child))),
             },
             host: ProviderTransport {
-                unix: Some(pipes),
+                unix: Some(std::sync::Arc::new(pipes)),
                 _private: (),
             },
         })
@@ -189,7 +189,7 @@ impl ProviderIoPlatform for UnixProviderIo {
 fn pipes(transport: &ProviderTransport) -> Result<&Pipes> {
     transport
         .unix
-        .as_ref()
+        .as_deref()
         .ok_or_else(|| SeError::invalid("provider transport", "one opened by this platform"))
 }
 
