@@ -1517,7 +1517,6 @@ name = "se"
 version = "0.0.1-alpha.1"
 dependencies = [
  "clap",
- "git2",
  "regex",
  "rusqlite",
  "se-atlas",
@@ -1526,6 +1525,7 @@ dependencies = [
  "se-host",
  "se-proc",
  "se-remote-cli",
+ "se-repository",
  "se-store",
  "se-types",
  "serde",
@@ -1666,6 +1666,14 @@ dependencies = [
  "serde_json",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "se-repository"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "git2",
+ "se-proc",
 ]
 
 [[package]]

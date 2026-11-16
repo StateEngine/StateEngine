@@ -11,13 +11,13 @@ use std::{
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Facts {
+pub struct Facts {
     pub head: Option<String>,
     pub branch: Option<String>,
     pub dirty: Option<bool>,
 }
 
-pub(super) enum Read {
+pub enum Read {
     Known(Facts),
     Fallback(String),
 }
@@ -47,7 +47,7 @@ impl Drop for Flight {
     }
 }
 
-pub(super) fn observe(root: &Path, deadline: Instant) -> Read {
+pub fn observe(root: &Path, deadline: Instant) -> Read {
     match read(root, deadline) {
         Ok(facts) => Read::Known(facts),
         Err(reason) => Read::Fallback(reason),

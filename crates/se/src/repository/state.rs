@@ -11,6 +11,7 @@
 #[path = "count_cache.rs"]
 mod count_cache;
 use se_core::{ops::GitView, scope};
+use se_repository as library;
 use se_types::Result;
 use std::{
     io,
@@ -19,8 +20,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::io::AsyncReadExt;
-#[path = "state/library.rs"]
-mod library;
 
 const STATUS_OBSERVATION_DEADLINE: Duration = Duration::from_secs(10);
 const STDERR_RETAIN: usize = 4096;
