@@ -81,7 +81,7 @@ pub async fn uncertain_write(
     let cancel = cancelled_options.cancelled.clone();
     let completion_deadline = se_host::client::lease::Deadline::from_options(&cancelled_options)?;
     let submitted = call()?;
-    let mut completion = Box::pin(router.execute_call(submitted, &completion_deadline));
+    let mut completion = std::pin::pin!(router.execute_call(submitted, &completion_deadline));
     // A caller may be descheduled at any await. Poll the production future,
     // observing the real receipt between polls; no clock or native fact is
     // substituted. Cancel before resuming delivery of the durable completion.

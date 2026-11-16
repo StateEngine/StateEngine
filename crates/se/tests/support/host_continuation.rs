@@ -15,7 +15,7 @@ pub async fn check(
     controls.timeout = Duration::from_secs(10);
     let cancel = controls.cancelled.clone();
     let deadline = se_host::client::lease::Deadline::from_options(&controls)?;
-    let mut completion = Box::pin(router.execute_call(call()?, &deadline));
+    let mut completion = std::pin::pin!(router.execute_call(call()?, &deadline));
     let committed_events = loop {
         if let std::task::Poll::Ready(result) = poll(completion.as_mut()).await {
             return Err(format!(
