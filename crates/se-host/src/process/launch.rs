@@ -428,6 +428,11 @@ impl LaunchCoordinator {
                 })
                 .await?
         };
+        // Retain cleanup custody before a native creation or readiness failure
+        // can drop the transport that the harness has not accepted yet.
+        if provider_pipes {
+            work.pending_transport = Some(io.host.clone());
+        }
         let native = self.native.clone();
         let ticket = self
             .store

@@ -22,10 +22,6 @@ pub fn setup_lock(files: &Files) -> StoreResult<Option<File>> {
         Read::Unknown { what } => return Err(fail(StoreErrorCode::Unreadable, &what)),
         Read::Absent { .. } => {
             let staged = files.create_staging(files.0.root())?;
-            staged
-                .file
-                .sync_all()
-                .map_err(|error| fail(StoreErrorCode::Unreadable, &error.to_string()))?;
             drop(staged.file);
             match files.publish_no_replace(&staged.path, &path) {
                 Ok(()) => (),

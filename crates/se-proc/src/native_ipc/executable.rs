@@ -2,22 +2,24 @@
 use super::{IpcNativeErrorCode, IpcNativeResult, error, image, refuse};
 use std::{
     fs::OpenOptions,
-    io::Read,
+    io::{Read, Seek},
     path::{Path, PathBuf},
 };
 
 /// File facts only, never authentication, policy or a running process proof.
-/// Change time detects same-inode edits even when modification time is restored.
+/// Native revisions or a digest under continuous writer exclusion detect edits.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ExecutableStamp {
     path: PathBuf,
     image: image::ImageKey,
+    content: Option<se_types::Sha256>,
 }
 impl ExecutableStamp {
     pub fn path(&self) -> &Path {
         &self.path
     }
     /// Aliases and scripts deliberately have no reusable qualification key.
+    /// Unavailable revisions require bounded content proof or a retained native pin.
     /// Every observation opens and reads the image; unreadability is an error.
     pub fn observe(path: &Path) -> IpcNativeResult<Option<Self>> {
         if !path.is_absolute() {
@@ -70,6 +72,17 @@ impl ExecutableStamp {
         if !native {
             return Ok(None);
         }
+        let content = if stamp.reusable() {
+            None
+        } else {
+            file.rewind()
+                .map_err(|e| error("rewind qualification image", e))?;
+            let held = file
+                .try_clone()
+                .map_err(|e| error("clone qualification image", e))?;
+            let bound = super::proof_bound(std::time::Duration::from_secs(30));
+            Some(image::hash_image(held, &bound)?)
+        };
         // Reopen the selected path as well as the retained file: a replacement
         // must not inherit the successful qualification of the old inode.
         let current = options
@@ -94,6 +107,7 @@ impl ExecutableStamp {
         Ok(Some(Self {
             path: path.to_owned(),
             image: stamp,
+            content,
         }))
     }
 }
