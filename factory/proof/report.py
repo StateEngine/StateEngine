@@ -178,9 +178,9 @@ def windows_full_write_result(row, limits, context=None):
 
 
 def probe_result(budget, row, limits, numeric, context=None):
-    # A row the producer marked unavailable measured nothing, whatever samples it
-    # still carries, so this guard comes before any budget-specific judgement.
-    if not numeric or row.get("state") == "unavailable":
+    # A row that measured nothing is refused before any budget-specific
+    # judgement, so retained samples can never be published as a verdict.
+    if not numeric or state_measured_nothing(row):
         return "NOT MEASURED"
     if budget == "B10":
         return windows_full_write_result(row, limits, context)
@@ -209,6 +209,30 @@ def probe_result(budget, row, limits, numeric, context=None):
     return "PASS" if within_limit and not cleanup else "MISS"
 
 
+# Every state a producer uses to say it measured nothing. A row carrying any of
+# these must never publish a verdict, whatever samples it still holds. This is one
+# definition on purpose: two consumers naming different sets is exactly how a B10
+# row marked unreadable published PASS while the same row through first-hour did
+# not.
+NOT_MEASURED_STATES = frozenset((
+    "unavailable", "not measured", "unreadable", "absent", "not reached"))
+
+
+def state_measured_nothing(row):
+    """Whether the producer said this row holds no measurement.
+
+    A state that is absent, or is any string in `NOT_MEASURED_STATES`, means the
+    row measured nothing. A non-string state is a malformed row rather than a
+    measurement, so it is refused too.
+    """
+    state = row.get("state")
+    if state is None:
+        return False
+    if not isinstance(state, str):
+        return True
+    return state in NOT_MEASURED_STATES
+
+
 def finite_nonnegative(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
@@ -222,9 +246,7 @@ def first_hour_probe_result(budget, row, limits, context=None):
     """
     if context is not None and not context.applies(budget):
         return "NOT MEASURED"
-    state = row.get("state")
-    if (not isinstance(limits, dict) or state is not None and not isinstance(state, str)
-            or state in ("unavailable", "not measured", "unreadable", "absent", "not reached")):
+    if not isinstance(limits, dict) or state_measured_nothing(row):
         return "NOT MEASURED"
     if budget in {"B5", "B6"}:
         return probe_result(budget, row, limits, budget_numbers(budget, row))
