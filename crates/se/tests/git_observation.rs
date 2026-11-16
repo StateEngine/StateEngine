@@ -9,7 +9,7 @@
 //! the stand-in `PATH` never reaches another case's Git.
 #![cfg(unix)]
 #[path = "../src/repository/state.rs"]
-mod git_state;
+pub mod git_state;
 #[path = "../src/repository/pipe.rs"]
 mod pipe;
 use std::{

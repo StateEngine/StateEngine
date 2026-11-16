@@ -126,7 +126,7 @@ jobs:
         run: |
           python3 -I - <<'PY'
           from pathlib import Path
-          for report in ("target/nextest/ci/junit.xml", "target/nextest/input-judges.json",
+          for report in ("target/nextest/ci/junit.xml", "ci-reports/input-judges.json",
                          "target/nextest/custom-harnesses.json"):
               Path(report).unlink(missing_ok=True)
           PY
@@ -205,8 +205,8 @@ jobs:
           else
             echo "No test report was written: the build or the test start failed before any test ran." >> "$GITHUB_STEP_SUMMARY"
           fi
-          if [[ -f target/nextest/input-judges.json ]]; then
-            python3 -I - target/nextest/input-judges.json >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          if [[ -f ci-reports/input-judges.json ]]; then
+            python3 -I - ci-reports/input-judges.json >> "$GITHUB_STEP_SUMMARY" <<'PY'
           import json, sys
           report = json.load(open(sys.argv[1], encoding="utf-8"))
           print("External fixture availability (separate from passing tests; selections may be outside the requested filter):")
@@ -231,7 +231,7 @@ jobs:
           # Tests may leave timing receipts and traces in target/judge-diagnostics/ for the reviewer.
           path: |
             target/nextest/ci/junit.xml
-            target/nextest/input-judges.json
+            ci-reports/input-judges.json
             target/nextest/custom-harnesses.json
             target/judge-diagnostics/
           retention-days: 14

@@ -94,12 +94,13 @@ pub struct HarnessRequest {
 /// Credential purpose the loopback HTTP route accepts, and only it.
 pub const MCP_BEARER_PURPOSE: &str = "http";
 /// The host's retained ends of one provider's streams. Only the platform that
-/// opened it can operate on it; dropping it closes the host ends.
+/// opened it can operate on it; the last reference owns the host ends.
+#[derive(Clone)]
 pub struct ProviderTransport {
     #[cfg(all(unix, feature = "listener"))]
-    pub(crate) unix: Option<crate::process_io::Pipes>,
+    pub(crate) unix: Option<std::sync::Arc<crate::process_io::Pipes>>,
     #[cfg(all(windows, feature = "listener"))]
-    pub(crate) windows: Option<crate::process_io::Port>,
+    pub(crate) windows: Option<std::sync::Arc<crate::process_io::Port>>,
     pub(crate) _private: (),
 }
 impl ProviderTransport {

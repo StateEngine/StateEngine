@@ -306,12 +306,6 @@ impl StateFiles for Files {
                         &format!("write manifest staging: {error}"),
                     )
                 })?;
-                staged.file.sync_all().map_err(|error| {
-                    self.1.fail(
-                        StoreErrorCode::Unreadable,
-                        &format!("sync manifest staging: {error}"),
-                    )
-                })?;
                 drop(staged.file);
                 self.0
                     .publish_no_replace(&staged.path, path)
