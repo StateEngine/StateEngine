@@ -103,13 +103,9 @@ impl HostedRuntime {
             match self.auto_start.then(|| self.activity.take()).flatten() {
                 Some(mut activity) => {
                     let channels = channels.clone();
-                    #[cfg(feature = "remote")]
                     let waits = self.execution.mail_waits.clone();
                     Box::pin(async move {
-                        #[cfg(feature = "remote")]
-                        crate::remote::activity::idle(waits, &mut activity, channels).await;
-                        #[cfg(not(feature = "remote"))]
-                        crate::channels::runtime::idle(&mut activity, channels).await;
+                        super::client_activity::idle(waits, &mut activity, channels).await;
                     })
                 }
                 None => Box::pin(std::future::pending()),
@@ -520,7 +516,20 @@ async fn connection(
             connection = exchange.reply_owner(result, &deadline).await?;
             continue;
         }
-        let output = match exchange.take_call() {
+        let call = exchange.take_call();
+        if let Ok(RoutedCall::Deferred { admitted, .. }) = &call
+            && admitted.selections.as_ref().is_some_and(|s| s.mail_follow)
+        {
+            let HostedInput::Operation(se_core::ops::AnyOp::MessageList(input)) = &admitted.input
+            else {
+                return Err(SeError::invalid("mail follow", "message list input"));
+            };
+            let input = input.clone();
+            let selections = admitted.selections.clone();
+            super::mail_follow::serve(&router, exchange, input, selections, &mut shutdown).await?;
+            return Ok(ConnectionEnd::Closed);
+        }
+        let output = match call {
             Ok(call)
                 if matches!(&call, RoutedCall::Deferred { admitted, .. }
                     if matches!(&admitted.input, HostedInput::Operation(se_core::ops::AnyOp::RemoteWatch(_)))) =>
@@ -565,7 +574,7 @@ fn shutdown_bound(stop: Option<&AuthorizedStop>) -> Result<Deadline> {
     options(timeout)
 }
 
-fn options(timeout: std::time::Duration) -> Result<Deadline> {
+pub(super) fn options(timeout: std::time::Duration) -> Result<Deadline> {
     Deadline::from_options(&ClientOptions {
         expected_generation: None,
         timeout,

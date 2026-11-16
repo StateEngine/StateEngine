@@ -1,8 +1,9 @@
 //! One synchronous call through the authenticated native client. Connection loss
 //! is returned to the caller with its existing operation key; this layer retries nothing.
 use se_core::ops::{AnyOp, AnyOutput, CliSelections};
+pub use se_host::client::operation::{decode, operation, uncertain};
 use se_host::{
-    EndpointRecord, IpcEnvelope, IpcRequest, OperationOutput, RawOperation,
+    EndpointRecord, IpcEnvelope, IpcRequest, OperationOutput,
     client::{
         BlockingIpcClient, ClientOptions,
         lease::{ClientCredential, ExchangeProgress},
@@ -169,54 +170,6 @@ pub(crate) fn forward_owner(
     Ok(output)
 }
 
-/// The complete closed input, including its original request key, is unchanged.
-/// CLI route metadata is encoded separately and must be admitted by the host.
-pub fn operation(
-    op: AnyOp,
-    selections: &CliSelections,
-    generation: se_types::Generation,
-) -> Result<IpcEnvelope> {
-    op.validate()?;
-    selections.validate()?;
-    let name = op.meta().name.to_owned();
-    let key = op.idempotency_key().cloned();
-    let mut encoded = serde_json::to_value(op).map_err(|_| invalid("serializable closed input"))?;
-    let arguments = encoded
-        .get_mut("input")
-        .map(serde_json::Value::take)
-        .ok_or_else(|| invalid("registered operation input"))?;
-    Ok(IpcEnvelope {
-        version: se_types::API_VERSION,
-        // Each forward owns a fresh connection and exactly one call.
-        request_id: 1,
-        generation,
-        authority: None,
-        presence: None,
-        cli_selections: Some(
-            serde_json::to_value(selections)
-                .map_err(|_| invalid("serializable CLI routing metadata"))?,
-        ),
-        request: IpcRequest::Operation(RawOperation {
-            name,
-            arguments,
-            key,
-        }),
-    })
-}
-
-/// `value` is the complete core family envelope. The host never strips its
-/// read/window/completeness facts or synthesizes a different family at this seam.
-pub fn decode(output: OperationOutput, expected: &str) -> Result<AnyOutput> {
-    if output.schema != expected {
-        return Err(invalid("the registered operation's output family"));
-    }
-    let decoded: AnyOutput = serde_json::from_value(output.value)
-        .map_err(|_| invalid("a complete closed core family output"))?;
-    if decoded.family().schema() != expected {
-        return Err(invalid("matching transport and core output families"));
-    }
-    Ok(decoded)
-}
 fn call_operation(call: &IpcEnvelope) -> &str {
     match &call.request {
         IpcRequest::Operation(op) => &op.name,
@@ -229,42 +182,6 @@ fn call_operation(call: &IpcEnvelope) -> &str {
 }
 fn invalid(expected: &str) -> SeError {
     SeError::invalid("CLI IPC", expected)
-}
-
-pub(crate) fn uncertain(
-    keyed: Option<&(String, se_types::IdempotencyKey)>,
-    error: SeError,
-) -> SeError {
-    match keyed {
-        Some((operation, key)) => {
-            let mut unknown = SeError::new(Detail::CommitOutcomeUnknown(
-                details::CommitOutcomeUnknown {
-                    operation: operation.clone(),
-                    key: Some(key.to_string()),
-                    natural_events: Vec::new(),
-                },
-            ));
-            // Preserve the safe public transport/decode refusal in both human
-            // and JSON output. Arbitrary internal source chains stay private.
-            let mut remedy = unknown.body.remedy(&se_types::RenderCx::default())
-                .unwrap_or_else(|failure| se_types::Remedy {
-                    text: format!("Retry the original request key; its recovery advice could not be rendered: {failure}"),
-                    command: None,
-                });
-            remedy.text = format!(
-                "Cause [{}]: {}. {}",
-                error.code().as_str(),
-                error.body.message(),
-                remedy.text
-            );
-            unknown.body = unknown.body.with_remedy(remedy);
-            if operation.starts_with("remote.") || operation == "remote authority control" {
-                unknown.body = unknown.body.with_retry(se_types::Retry::AfterReread);
-            }
-            unknown.with_cause(error)
-        }
-        None => error,
-    }
 }
 
 /// A session-only client with one outstanding request and a pinned host epoch.

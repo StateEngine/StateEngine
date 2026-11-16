@@ -2,7 +2,7 @@
 use se_core::ops::AgentCommand;
 use se_types::{Detail, Result, SeError, details};
 use std::path::Path;
-pub(super) fn repair(home: &Path) -> String {
+pub fn repair(home: &Path) -> String {
     let argv = vec![
         "se".into(),
         "doctor".into(),
@@ -17,11 +17,11 @@ pub(super) fn repair(home: &Path) -> String {
         "Stop the runtime using this home from its owning terminal or application. Then run {command} and se up for this same home. The repair requires the exclusive runtime lease; preserve the store, credentials and machine identity."
     )
 }
-pub(super) fn decode(home: &Path, bytes: &[u8]) -> Result<se_host::EndpointRecord> {
+pub fn decode(home: &Path, bytes: &[u8]) -> Result<crate::EndpointRecord> {
     let cause = if bytes.is_empty() {
         "endpoint file is empty (zero bytes)".to_owned()
     } else {
-        match se_host::client::endpoint::decode_endpoint(bytes) {
+        match super::decode_endpoint(bytes) {
             Ok(record) => return Ok(record),
             Err(error) => format!("endpoint file is unreadable: {error}"),
         }

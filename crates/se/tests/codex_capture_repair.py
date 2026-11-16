@@ -102,6 +102,8 @@ def launch(f, model, phase, conversation=None, held=False):
     model.reset(phase, held)
     key = str(uuid.uuid4())
     args = ['--project', f.project, '--key', key, 'launch', f.agent, '--detach', '--task', 'Perform phase ' + phase]
+    if conversation:
+        args.append('--resume')
     for _ in range(5):
         result = f.call(*args)
         value = json.loads(result.stdout)
@@ -182,7 +184,7 @@ def run_case(options, cold):
         backup.rename(path)
         repaired = f.ok('--project', f.project, 'stop', f.agent)
         assert repaired['complete'] and repaired['capture']['flushed'] and repaired['resume']['state'] == 'ready', repaired
-        assert '--new' not in repaired['resume']['argv']
+        assert any(word.startswith('--resume') for word in repaired['resume']['argv'])
         write(f.root / 'repaired-stop.json', repaired)
         with sqlite3.connect('file:' + str(f.home / 'state.db') + '?mode=ro', uri=True) as db:
             credentials = db.execute('SELECT purpose,state FROM credentials').fetchall()

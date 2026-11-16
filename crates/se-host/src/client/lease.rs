@@ -10,6 +10,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod follow;
+
 pub const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(300);

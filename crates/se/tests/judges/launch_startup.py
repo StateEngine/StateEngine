@@ -130,7 +130,7 @@ def run(binary, root, mode, control):
             print(f'ok - {mode}/{control}: original-key failure replay and changed-intent refusal', flush=True)
             f.ok('--project', f.project, 'status')
             (f.repo / 'startup-mode').write_text('ready')
-            launched = f.ok('--project', f.project, '--key', 'fresh-after-failure', 'launch', f.agent, '--detach', '--new')
+            launched = f.ok('--project', f.project, '--key', 'fresh-after-failure', 'launch', f.agent, '--detach')
             assert launched['state'] == 'running', launched
             ready = wait_json(f.repo / 'provider-ready.json')
             assert ready['session_discovery'] and ready['http_discovery']

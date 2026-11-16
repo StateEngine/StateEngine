@@ -148,6 +148,7 @@ pub fn reserve<R: Snapshot>(
                 session: plan.session.clone(),
                 lifecycle: plan.lifecycle.clone(),
                 attribution: attribution.clone(),
+                details: Some(plan.details()),
             },
         });
     }
