@@ -95,10 +95,11 @@ def run(args):
                 text = reply.stdout
                 (args.output / ('plain-' + key + '.txt')).write_text(reply.stdout + reply.stderr)
                 assert reply.returncode == 0, reply.stderr
+                launch_returned = time.monotonic_ns()
                 receipt = f.ok(*argv)
             else:
                 receipt = f.ok(*argv)
-            elapsed = time.monotonic_ns() - start
+            elapsed = (launch_returned if door == 'cli' and plain else time.monotonic_ns()) - start
             assert receipt['state'] == 'running', receipt
             row = observe(receipt)
             if not args.baseline:
