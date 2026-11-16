@@ -19,8 +19,9 @@ pub enum ImageStage {
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct ImageProgress {
     pub stage: ImageStage,
-    /// Bytes accepted by the owned SSH stream, not a remote publication receipt.
-    pub bytes_streamed: u64,
+    /// Bytes transferred by the owned client, not a remote publication receipt.
+    /// None while batch SFTP has no completed transfer receipt.
+    pub bytes_streamed: Option<u64>,
     pub total_bytes: Option<u64>,
     pub elapsed_ms: u64,
 }
@@ -33,18 +34,18 @@ pub async fn prepare_image(
 ) -> Result<()> {
     progress(ImageProgress {
         stage: ImageStage::Discovering,
-        bytes_streamed: 0,
+        bytes_streamed: Some(0),
         total_bytes: None,
         elapsed_ms: 0,
     })?;
-    let mut image = super::image::describe(destination, distribution).await?;
+    let image = super::image::describe(destination, distribution).await?;
     if cancelled.load(Ordering::Acquire) {
         return Err(unavailable("remote image preparation was cancelled"));
     }
     if cached_image(destination, &image).await? {
         progress(ImageProgress {
             stage: ImageStage::Cached,
-            bytes_streamed: 0,
+            bytes_streamed: Some(0),
             total_bytes: Some(image.expected),
             elapsed_ms: 0,
         })?;
@@ -56,7 +57,21 @@ pub async fn prepare_image(
         se_types::hex_lower(&crate::remote::session::entropy::<16>()?)
     );
     let result = async {
-        super::command::send_image(destination, &mut image, &upload, cancelled, progress).await?;
+        crate::ssh_transport::upload(
+            destination,
+            &image.path,
+            &upload,
+            cancelled,
+            &mut |elapsed| {
+                progress(ImageProgress {
+                    stage: ImageStage::Uploading,
+                    bytes_streamed: None,
+                    total_bytes: Some(image.expected),
+                    elapsed_ms: elapsed.as_millis().try_into().unwrap_or(u64::MAX),
+                })
+            },
+        )
+        .await?;
         if cancelled.load(Ordering::Acquire) {
             return Err(unavailable(
                 "remote image preparation was cancelled before publication",
@@ -64,7 +79,7 @@ pub async fn prepare_image(
         }
         progress(ImageProgress {
             stage: ImageStage::Verifying,
-            bytes_streamed: image.expected,
+            bytes_streamed: Some(image.expected),
             total_bytes: Some(image.expected),
             elapsed_ms: 0,
         })?;
@@ -79,7 +94,7 @@ pub async fn prepare_image(
     }
     progress(ImageProgress {
         stage: ImageStage::Ready,
-        bytes_streamed: image.expected,
+        bytes_streamed: Some(image.expected),
         total_bytes: Some(image.expected),
         elapsed_ms: 0,
     })?;

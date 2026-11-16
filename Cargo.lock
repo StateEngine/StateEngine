@@ -1548,6 +1548,7 @@ dependencies = [
  "libc",
  "rusqlite",
  "se-atlas",
+ "se-identifiers",
  "se-types",
  "serde",
  "serde_json",
@@ -1618,6 +1619,10 @@ dependencies = [
  "uuid",
  "zeroize",
 ]
+
+[[package]]
+name = "se-identifiers"
+version = "0.0.1-alpha.1"
 
 [[package]]
 name = "se-proc"

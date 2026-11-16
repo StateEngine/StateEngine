@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncReadExt;
 
 pub(in crate::remote) struct Image {
-    pub file: tokio::fs::File,
+    pub path: PathBuf,
     pub expected: u64,
     pub digest: String,
     pub windows: bool,
@@ -68,7 +68,8 @@ pub(in crate::remote) async fn describe(destination: &str, distribution: &Path) 
     };
     // A reused host may itself run from an uploaded single-platform cache.
     // Native Owner admission supplies the calling CLI's full distribution.
-    let path = image(target, distribution)?;
+    let path = std::path::absolute(image(target, distribution)?)
+        .map_err(|_| unavailable("native distribution image path is unreadable"))?;
     let mut file = tokio::fs::File::open(&path)
         .await
         .map_err(|_| unavailable("matching native distribution image is unreadable"))?;
@@ -105,7 +106,7 @@ pub(in crate::remote) async fn describe(destination: &str, distribution: &Path) 
     let digest = se_types::hex_lower(&digest.finalize());
     let windows_image = windows;
     Ok(Image {
-        file,
+        path,
         expected,
         digest,
         windows: windows_image,
