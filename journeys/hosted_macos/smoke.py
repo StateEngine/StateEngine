@@ -12,6 +12,21 @@ from native import Observer, observe
 from package import verify
 
 
+def terminal_receipt(text):
+    rendered = []
+    for character in text:
+        if character == '\b':
+            if rendered and rendered[-1] != '\n':
+                rendered.pop()
+        else:
+            rendered.append(character)
+    text = ''.join(rendered)
+    starts = list(re.finditer(r'(?m)^\{"schema":', text))
+    require(len(starts) == 1, 'Terminal output must contain one complete schema receipt')
+    start = starts[0].start()
+    return json.loads(text[start:]), text[:start]
+
+
 class Smoke:
     def __init__(self, package, checksum, output, account_registration):
         require(sys.platform == 'darwin', 'This smoke adapter requires native macOS')
@@ -47,7 +62,7 @@ class Smoke:
     def flush(self):
         save(self.output / 'smoke.json', self.record)
 
-    def command(self, argv, label, json_output=False):
+    def command(self, argv, label, json_output=False, terminal=False):
         started = time.monotonic()
         row = dict(label=label, argv=[str(v) for v in argv], state='running')
         self.calls.append(row)
@@ -63,6 +78,9 @@ class Smoke:
             require(value.returncode == 0, f'{label} failed: exit {value.returncode}; retained stdout/stderr')
             row['state'] = 'complete'
             text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', stdout.read_text()).replace('\r', '')
+            if json_output and terminal:
+                receipt, row['terminal_diagnostics'] = terminal_receipt(text)
+                return receipt
             return json.loads(text) if json_output else text
         except Exception as error:
             row.update(state='failed', reason=str(error), seconds=time.monotonic() - started)
@@ -76,7 +94,7 @@ class Smoke:
             argv += ['--project', self.project]
         if terminal:
             argv = ['/usr/bin/script', '-q', '/dev/null', *argv]
-        return self.command(argv, label, True)
+        return self.command(argv, label, True, terminal=terminal)
 
     def shell(self, label):
         text = self.command(['/bin/zsh', '-lc', 'printf "HOME=%s\\nPATH=%s\\nSE=%s\\n" "$HOME" "$PATH" "$(command -v se || :)"'], label)
