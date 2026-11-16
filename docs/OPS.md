@@ -144,6 +144,24 @@ Resume defaults to 4,096 UTF-8 bytes for its ordinary CLI JSON or MCP reply and 
 
 Listing never creates or changes read/delivered markers, including `msg list --full` / MCP `full: true`; `message.read` remains the recipient-marking path. Full mode stops before a body that would exceed the page's byte cap and returns continuation instead of silently truncating that body; the explicit too-small-budget remedy applies when even the first full item cannot fit. Owner full-body inspection covers any message in the selected project; a session can list full bodies only for messages it sent or received. Delivered, read, dismissed, replied and task-completed are distinct; internal mail settlement records actual consumer observations rather than manufacturing a public completion verb. No PostgreSQL mirror retry flags or repair commands survive into these inputs. Working-state compare-and-set conflicts require a reread rather than an unconditional overwrite retry. Decision-ledger commands are retired; previously recorded events remain readable through `se history`.
 
+`se msg list --follow` streams the owner's own inbox in chronological, bounded
+pages over one authenticated connection. It includes read mail so another
+terminal's read marks cannot hide a new arrival, and accepts the usual sender,
+kind, body and page-size options. `--to` and `--box sent` are incompatible.
+Following never marks a message read. Each page flushes immediately and prints a
+`Follow cursor`; restart with `--cursor CURSOR` and the same filters to continue
+after the last returned message. JSON output carries that cursor in
+`window.to`. Preserve incomplete-page and body-preview facts as for an
+ordinary list; a stale or invalid cursor fails explicitly.
+
+The same command works over SSH: `ssh HOST se --project PROJECT msg list --follow`.
+Idle connections send a cursor-only keepalive every ten seconds, without reading
+the store. JSON keepalives have `type: "idle"` and `cursor`; human output repeats
+only the cursor. A closed output pipe is detected on the next keepalive.
+Interrupt, termination or terminal hangup uses the ordinary OS signal exit status
+and closes the client and its subscription, including when stdout is stalled.
+The last flushed page already contains the cursor needed to restart.
+
 ## Integration entry points
 
 | Name | CLI path | MCP tool or reason for none | Auth | Effect | Inputs | Output | Journey |

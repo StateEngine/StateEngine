@@ -162,6 +162,9 @@ pub fn run(
             "warning[w-legacy-env-present]: legacy STATEENGINE_* variables are present and ignored"
         )?;
     }
+    if context.selections.mail_follow {
+        return route::mail_follow::run(&context, operation, &mut stdout, &mut stderr);
+    }
     if operation.is_client() {
         return remote::run(
             &context,

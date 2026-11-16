@@ -19,6 +19,8 @@ pub struct CliSelections {
     pub agent: Option<String>,
     pub mail_to: Option<String>,
     pub mail_list: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub mail_follow: bool,
     pub status_all: bool,
     pub control_all: bool,
     pub stop_release: bool,
@@ -41,6 +43,9 @@ impl CliSelections {
                 "--all",
                 "no simultaneous project selector",
             ));
+        }
+        if self.mail_follow && (!self.mail_list || self.mail_to.is_some()) {
+            return Err(SeError::invalid("--follow", "your own inbox without --to"));
         }
         Ok(())
     }
@@ -186,6 +191,24 @@ impl CliSelections {
                 AnyOp::MessageList(input) => {
                     input.cli_list = self.mail_list;
                     input.owner_to = self.mail_to.clone();
+                    if self.mail_follow {
+                        if !matches!(cx.admission.actor, se_store::Actor::Human(_)) {
+                            return Err(SeError::new(se_types::Detail::OwnerRequired(
+                                se_types::details::OwnerRequired {
+                                    op: "msg list --follow".into(),
+                                },
+                            )));
+                        }
+                        if !matches!(input.mailbox, MessageBox::Inbox) {
+                            return Err(SeError::invalid(
+                                "--follow",
+                                "your own inbox, not --box sent",
+                            ));
+                        }
+                        // A read mark in another terminal must not hide new mail.
+                        input.cli_list = false;
+                        input.view = MessageView::All;
+                    }
                 }
                 _ => {
                     return Err(unknown_flag(

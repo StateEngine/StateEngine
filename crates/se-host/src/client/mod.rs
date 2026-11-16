@@ -19,6 +19,7 @@ pub mod auth;
 pub mod closure;
 pub mod endpoint;
 pub mod lease;
+pub mod operation;
 pub mod presence;
 pub mod wire;
 
