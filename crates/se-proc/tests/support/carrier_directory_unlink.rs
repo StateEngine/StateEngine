@@ -55,8 +55,9 @@ fn readable_carrier_removes_only_original_empty_directories() -> Check {
 
     directory_effect(&home.0, &empty, &pins[0], "empty")??;
     directory_effect(&home.0, &occupied, &pins[1], "occupied")??;
-    let refusal = directory_effect(&home.0, &replaced, &pins[2], "replaced")?
-        .expect_err("replacement directory was adopted");
+    let Err(refusal) = directory_effect(&home.0, &replaced, &pins[2], "replaced")? else {
+        return Err("replacement directory was adopted".into());
+    };
     assert_eq!(refusal.operation, "unlink carrier directory");
     assert!(refusal.source.to_string().contains("replacement preserved"));
 
