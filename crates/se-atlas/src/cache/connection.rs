@@ -323,7 +323,14 @@ impl<'a> CacheConnection<'a> {
         };
         self.files.validate_database(&self.pin)?;
         if write {
-            let wal = self.files.wal_bytes(&self.pin)?;
+            let mut wal = self.files.wal_bytes(&self.pin)?;
+            if growth <= WAL_STOP && wal.saturating_add(growth) > WAL_STOP {
+                // One renewal quantum can commit several transactions on the
+                // same connection. Reclaim earlier commits before refusing the
+                // next one; pinned readers still have to pass the size check.
+                self.checkpoint(deadline)?;
+                wal = self.files.wal_bytes(&self.pin)?;
+            }
             if growth > WAL_STOP || wal.checked_add(growth).is_none_or(|v| v > WAL_STOP) {
                 return Err(capacity(
                     "Atlas WAL capacity; checkpoint or release external readers",
