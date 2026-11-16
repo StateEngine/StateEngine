@@ -19,7 +19,7 @@
   "crates/se-host/src/harness": 12549,
   "crates/se-host/src/remote": 10989,
   "crates/se/src/route": 11045,
-  "crates/se-proc/src/state_files": 8576,
+  "crates/se-proc/src/state_files": 9009,
   "crates/se-proc/src/platform": 7103,
   "crates/se-atlas/src/query": 6216,
   "crates/se-host/src/channels": 6066,
