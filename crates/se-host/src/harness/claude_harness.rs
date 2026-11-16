@@ -469,6 +469,7 @@ impl AdapterBinding for Arc<Binding> {
 pub(crate) struct Adoption;
 pub(crate) static ADOPTION: Adoption = Adoption;
 impl crate::adoption::Adapter for Adoption {
+    #[cfg(any(target_os = "linux", windows))]
     fn prepare(
         &self,
         command: &std::path::Path,
@@ -479,6 +480,7 @@ impl crate::adoption::Adapter for Adoption {
             config_home: claude::config_home(&std::env::vars_os().collect::<Vec<_>>())?,
         })
     }
+    #[cfg(any(target_os = "linux", windows))]
     fn hooks(
         &self,
         executable: &std::path::Path,

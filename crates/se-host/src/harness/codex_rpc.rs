@@ -545,6 +545,7 @@ impl AdapterBinding for Arc<Binding> {
 pub(crate) struct Adoption;
 pub(crate) static ADOPTION: Adoption = Adoption;
 impl crate::adoption::Adapter for Adoption {
+    #[cfg(any(target_os = "linux", windows))]
     fn prepare(&self, command: &std::path::Path) -> Result<crate::adoption::ProviderSetup> {
         let executable = crate::adoption::codex::native_executable(command)?;
         let home = crate::codex_capture::existing_home()?;
@@ -558,6 +559,7 @@ impl crate::adoption::Adapter for Adoption {
             config_home: home,
         })
     }
+    #[cfg(any(target_os = "linux", windows))]
     fn hooks(
         &self,
         executable: &std::path::Path,

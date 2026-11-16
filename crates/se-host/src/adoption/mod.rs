@@ -67,7 +67,9 @@ impl Kind {
 /// Provider-owned setup and discovery within the host's journaled installation.
 #[cfg(feature = "listener")]
 pub(crate) trait Adapter: Send + Sync {
+    #[cfg(any(target_os = "linux", windows))]
     fn prepare(&self, command: &Path) -> Result<ProviderSetup>;
+    #[cfg(any(target_os = "linux", windows))]
     fn hooks(&self, executable: &Path, home: &Path) -> Result<Vec<(String, serde_json::Value)>>;
     fn discover(&self, _home: &Path, _saved: &mut Registration, _root: &Path) -> Result<()> {
         Ok(())
@@ -79,7 +81,7 @@ pub(crate) trait Adapter: Send + Sync {
         None
     }
 }
-#[cfg(feature = "listener")]
+#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 pub(crate) struct ProviderSetup {
     pub executable: std::path::PathBuf,
     pub config_home: std::path::PathBuf,
