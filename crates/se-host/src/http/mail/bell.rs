@@ -22,6 +22,7 @@ struct Entry {
     origin: String,
     hold: PathBuf,
     expired_setup: bool,
+    connected: bool,
     nonces: VecDeque<(String, Instant)>,
 }
 pub(crate) struct Authenticated {
@@ -83,6 +84,7 @@ impl Bells {
                     origin,
                     hold,
                     expired_setup: false,
+                    connected: false,
                     nonces: VecDeque::new(),
                 },
             );
@@ -139,6 +141,14 @@ impl Bells {
             .map_err(|_| invalid("unpoisoned bell bindings"))?
             .remove(session);
         Ok(())
+    }
+    pub(crate) fn connected(&self, session: &SessionId) -> Result<bool> {
+        Ok(self
+            .entries
+            .lock()
+            .map_err(|_| invalid("unpoisoned bell bindings"))?
+            .get(session)
+            .is_some_and(|entry| entry.connected && !entry.expired_setup))
     }
     pub(crate) fn held(&self, session: &SessionId) -> Result<bool> {
         let entries = self
@@ -206,6 +216,7 @@ impl Bells {
             ));
         }
         entry.nonces.push_back((nonce.clone(), now));
+        entry.connected = true;
         Ok(Authenticated {
             bearer: Arc::clone(&entry.bearer),
             session,
