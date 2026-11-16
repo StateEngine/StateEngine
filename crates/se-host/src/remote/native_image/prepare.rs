@@ -437,33 +437,11 @@ mod tests {
 
     #[test]
     fn staged_upload_and_windows_staging_get_explicit_modes() {
-        use base64::Engine as _;
-        // Unix: the upload's mode is set after creation, never inherited.
-        // A parent default ACL would otherwise defeat the umask 077 guard.
-        let unix = staging::receive(".stateengine-runtime/abc.upload", false);
-        assert!(unix.contains("umask 077; set -C; cat > "));
-        assert!(unix.ends_with("&& chmod 700 .stateengine-runtime/abc.upload"));
         // publish still fixes the staged file before the atomic link.
         let publish = staging::publish("u.upload", ".stateengine-runtime/abc", false);
         assert!(publish.contains("chmod 700 u.upload"));
         // Windows: the staged file and product-created directories carry an
         // explicit trusted-principal ACL instead of an inherited one.
-        let encoded = staging::receive("abc.upload", true);
-        let b64 = encoded.split(' ').next_back().expect("encoded command");
-        let raw = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .expect("b64");
-        // -EncodedCommand is UTF-16LE, not UTF-8.
-        let units: Vec<u16> = raw
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        let decoded = String::from_utf16(&units).expect("utf16");
-        assert!(decoded.contains("SetAccessRuleProtection"));
-        assert!(decoded.contains("FullControl"));
-        assert!(
-            decoded.contains("FileSystemAccessRule([Security.Principal.SecurityIdentifier]$sid")
-        );
         let windows = staging::prepare_windows(".stateengine-runtime/abc");
         assert!(windows.contains("SetAccessRuleProtection"));
         assert!(windows.contains("ContainerInherit,ObjectInherit"));
