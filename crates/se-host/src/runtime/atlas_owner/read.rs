@@ -35,15 +35,19 @@ impl Service {
                     reason: CoverageReason::StaleSnapshot,
                 };
             }
-            if !working {
-                self.work.publish(&root.registration, summary.clone())?;
-            }
             roots.push(Root {
                 registration: root.registration.clone(),
                 summary,
             });
         }
         *self.readers.lock().map_err(|_| poisoned())? = Catalogue { roots };
+        Ok(())
+    }
+    pub(super) fn persist_readers(&self) -> Result<()> {
+        let roots = self.readers.lock().map_err(|_| poisoned())?.roots.clone();
+        for root in roots {
+            self.work.publish(&root.registration, root.summary)?;
+        }
         Ok(())
     }
     fn reader_root(&self, project: &ProjectId, selected: Option<&RootId>) -> Result<Root> {

@@ -6,6 +6,8 @@
 //! so the observer can never execute repository configuration, buffer an
 //! unbounded working tree, or stretch the observation against a pipe a
 //! retained descriptor keeps open.
+#[path = "count_cache.rs"]
+mod count_cache;
 use se_core::{ops::GitView, scope};
 use se_types::Result;
 use std::{
@@ -28,18 +30,39 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
     observe_within(root, deadline)
 }
 
+/// Status can reuse an exact history count from its protected data home.
+pub fn observe_cached(
+    root: &Path,
+    files: &dyn se_store::StateFiles,
+    home: &Path,
+) -> Result<Option<GitView>> {
+    observe_using(
+        root,
+        Instant::now() + STATUS_OBSERVATION_DEADLINE,
+        Some((files, home)),
+    )
+}
+
 /// The observation with its one deadline supplied, so a test can drive the
 /// bounded paths without waiting the production bound out.
 pub(crate) fn observe_within(root: &Path, deadline: Instant) -> Result<Option<GitView>> {
+    observe_using(root, deadline, None)
+}
+
+fn observe_using(
+    root: &Path,
+    deadline: Instant,
+    cache: Option<(&dyn se_store::StateFiles, &Path)>,
+) -> Result<Option<GitView>> {
     if !root.is_dir() {
         return Ok(None);
     }
     let mut candidate = Some(root);
-    let mut registered = false;
+    let mut registered = None;
     while let Some(path) = candidate {
         match std::fs::symlink_metadata(path.join(".git")) {
             Ok(_) => {
-                registered = true;
+                registered = Some(path);
                 break;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
@@ -52,12 +75,12 @@ pub(crate) fn observe_within(root: &Path, deadline: Instant) -> Result<Option<Gi
         }
         candidate = path.parent();
     }
-    if !registered {
+    let Some(repository) = registered else {
         return Ok(None);
-    }
+    };
     // One `status --porcelain=v2 --branch` carries HEAD, the branch name and
-    // whether the tree is dirty, so the observation costs two Git processes
-    // instead of four. Its cost is bounded by the working tree, not the
+    // whether the tree is dirty. Only a cache miss needs a second Git process.
+    // The status cost is bounded by the working tree, not the
     // history, and it is settled at the first entry rather than buffered.
     let StatusRead::Known {
         header,
@@ -76,20 +99,29 @@ pub(crate) fn observe_within(root: &Path, deadline: Instant) -> Result<Option<Gi
     } else {
         None
     };
-    // The commit count shown as "Existing repo: N commits" is its own bounded
-    // call; nothing else in the output depends on it.
-    let commits = match header.head.as_ref() {
-        Some(_) => match commit_count_within(root, deadline)? {
-            CountRead::Count(count) => Some(count),
-            // A history walk that outlived the deadline leaves the count
-            // unknown. A count of zero would claim an empty history, so the
-            // fact stays absent and status names it as unknown instead.
-            CountRead::Deadline => None,
-            // Git went away between the header read and the count: the
-            // repository is absent to this machine, not present with an
-            // invented count.
-            CountRead::Missing => return Ok(None),
-        },
+    // The header's exact object ID keys the count and the history walk. Using
+    // that ID instead of HEAD also avoids counting a later concurrent commit.
+    let commits = match header.head.as_deref() {
+        Some(head) => {
+            let cached = cache.and_then(|(files, home)| {
+                count_cache::CountCache::open(repository, head, files, home)
+            });
+            if let Some(count) = cached.as_ref().and_then(|cache| cache.count()) {
+                Some(count)
+            } else {
+                match commit_count_within(root, head, deadline)? {
+                    CountRead::Count(count) => {
+                        if let Some(cache) = cached {
+                            cache.save(count);
+                        }
+                        Some(count)
+                    }
+                    // An incomplete walk is unknown, never an invented zero.
+                    CountRead::Deadline => None,
+                    CountRead::Missing => return Ok(None),
+                }
+            }
+        }
         None => None,
     };
     Ok(Some(GitView {
@@ -124,20 +156,20 @@ enum CountRead {
 /// slow or stuck walk cannot hold `se status` open. A walk that misses the
 /// deadline is killed and reaped and reported as unknown, never as zero. Its
 /// output is bounded like every other metadata read.
-fn commit_count_within(root: &Path, deadline: Instant) -> Result<CountRead> {
+fn commit_count_within(root: &Path, head: &str, deadline: Instant) -> Result<CountRead> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
         .build()
         .map_err(|error| scope::unreadable("Git repository observation", &error.to_string()))?;
-    runtime.block_on(observe_count(root, deadline))
+    runtime.block_on(observe_count(root, head, deadline))
 }
 
-async fn observe_count(root: &Path, deadline: Instant) -> Result<CountRead> {
+async fn observe_count(root: &Path, head: &str, deadline: Instant) -> Result<CountRead> {
     let deadline = tokio::time::Instant::from(deadline);
     let mut command = tokio::process::Command::new("git");
     configured(root, &mut command)
-        .args(["rev-list", "--count", "HEAD"])
+        .args(["rev-list", "--count", head])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
