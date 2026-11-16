@@ -83,6 +83,7 @@ pub(crate) fn observe_within(root: &Path, deadline: Instant) -> Result<Option<Gi
     // The commit count shown as "Existing repo: N commits" is its own bounded
     // call; nothing else in the output depends on it.
     let commits = match header.head.as_ref() {
+        Some(_) if Instant::now() >= deadline => None,
         Some(_) => match commit_count_within(root, deadline)? {
             CountRead::Count(count) => Some(count),
             // A history walk that outlived the deadline leaves the count
@@ -121,6 +122,12 @@ fn status_within(root: &Path, deadline: Instant) -> Result<StatusRead> {
             },
             dirty: facts.dirty,
         }),
+        library::Read::Fallback(reason) if Instant::now() >= deadline => Err(scope::unreadable(
+            "Git repository observation",
+            &format!(
+                "deadline expired before status could be measured; state is unknown: {reason}"
+            ),
+        )),
         library::Read::Fallback(reason) => status_header_within(root, deadline).map_err(|error| {
             scope::unreadable("Git repository observation", &format!(
                 "in-process observation failed: {reason}; command-line observation failed: {error}"
