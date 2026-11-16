@@ -5,6 +5,8 @@ use std::fs::Metadata;
 pub struct NativeMetadataPin {
     files: NativeStateFiles,
     path: PathBuf,
+    #[cfg(windows)]
+    direct_metadata: bool,
     #[cfg(not(target_os = "macos"))]
     file: File,
     #[cfg(target_os = "macos")]
@@ -25,9 +27,14 @@ impl NativeMetadataPin {
         let Some(file) = files.directory.readback(path, &files.root)? else {
             return Ok(None);
         };
+        let files = NativeStateFiles::open(&files.root)?;
+        #[cfg(windows)]
+        let direct_metadata = files.directory.admit_metadata(path, &files.root)?;
         let pin = Self {
-            files: NativeStateFiles::open(&files.root)?,
+            files,
             path: path.into(),
+            #[cfg(windows)]
+            direct_metadata,
             #[cfg(not(target_os = "macos"))]
             file,
             #[cfg(target_os = "macos")]
@@ -39,20 +46,25 @@ impl NativeMetadataPin {
     pub fn metadata(&self) -> Result<Metadata> {
         #[cfg(windows)]
         let (named, same) = {
-            self.files.check(&self.path)?;
+            let other = if self.direct_metadata {
+                self.files
+                    .directory
+                    .read_admitted_metadata(&self.path, &self.files.root)?
+            } else {
+                self.files.check(&self.path)?;
+                self.files
+                    .directory
+                    .readback(&self.path, &self.files.root)?
+            };
             // One protected handle supplies both facts. A second named open
             // repeats protection checks and can observe a different file.
-            let other = self
-                .files
-                .directory
-                .readback(&self.path, &self.files.root)?
-                .ok_or_else(|| {
-                    failure(
-                        StateFileErrorCode::SourceChanged,
-                        "database metadata name disappeared",
-                        &self.path,
-                    )
-                })?;
+            let other = other.ok_or_else(|| {
+                failure(
+                    StateFileErrorCode::SourceChanged,
+                    "database metadata name disappeared",
+                    &self.path,
+                )
+            })?;
             let named = other
                 .metadata()
                 .map_err(|e| io_error("inspect native metadata", &self.path, e))?;
@@ -60,7 +72,11 @@ impl NativeMetadataPin {
                 .map_err(|e| io_error("inspect retained database identity", &self.path, e))?;
             let b = crate::observe_file_revision(&other)
                 .map_err(|e| io_error("inspect named database identity", &self.path, e))?;
-            self.files.check(&self.path)?;
+            if self.direct_metadata {
+                self.files.directory.check_metadata_name(&self.files.root)?;
+            } else {
+                self.files.check(&self.path)?;
+            }
             (named, a.volume == b.volume && a.file == b.file)
         };
         #[cfg(unix)]
