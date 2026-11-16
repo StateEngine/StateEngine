@@ -4,8 +4,8 @@ pub mod protocol;
 mod provider;
 
 use crate::{
-    AuthorizedConnection, BlockingPool, EndpointRecord, HandshakeInput, IpcConnection, IpcEnvelope,
-    IpcListener, IpcRequest, IpcResponse, IpcResult, OperationOutput,
+    AcceptedIpcStream, AuthorizedConnection, BlockingPool, EndpointRecord, HandshakeInput,
+    IpcConnection, IpcEnvelope, IpcListener, IpcRequest, IpcResponse, IpcResult, OperationOutput,
     client::{
         ClientOptions, endpoint,
         lease::{Deadline, native_error},
@@ -32,6 +32,19 @@ pub fn private_entry() -> Result<()> {
     let parent = endpoint::decode_endpoint(
         &serde_json::to_vec(&plan.parent_endpoint).map_err(|_| invalid())?,
     )?;
+    let bound = deadline()?.native_bound();
+    let _parent_image = plan
+        .parent_image
+        .adopt(&parent.epoch.owner.fields().executable.to_local()?, &bound)
+        .map_err(native_error)?;
+    let _runner_image = plan
+        .runner_image
+        .adopt(
+            &std::env::current_exe()
+                .map_err(|error| wire::io_failure("locate runner image", error))?,
+            &bound,
+        )
+        .map_err(native_error)?;
     let record = child_record(&parent)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -103,8 +116,12 @@ async fn serve(
     listener: &mut IpcListener,
     provider: &mut Option<Provider>,
 ) -> Result<()> {
+    let mut replacement = None;
     loop {
-        let accepted = listener.accept(Arc::new(AtomicBool::new(false))).await?;
+        let accepted = match replacement.take() {
+            Some(accepted) => accepted,
+            None => listener.accept(Arc::new(AtomicBool::new(false))).await?,
+        };
         let mut pending = match accepted.handshake().await {
             Ok(pending) => pending,
             Err(_) => continue,
@@ -131,20 +148,40 @@ async fn serve(
             *provider = Some(Provider::spawn(plan)?);
         }
         let active = provider.as_mut().ok_or_else(invalid)?;
-        if relay(&mut connection, active).await? {
-            return Ok(());
+        match relay(&mut connection, active, listener).await? {
+            Relay::Finished => return Ok(()),
+            Relay::Disconnected => (),
+            Relay::Replacement(accepted) => replacement = Some(*accepted),
         }
     }
 }
 
-async fn relay(connection: &mut IpcConnection, provider: &mut Provider) -> Result<bool> {
+enum Relay {
+    Finished,
+    Disconnected,
+    Replacement(Box<AcceptedIpcStream>),
+}
+
+async fn relay(
+    connection: &mut IpcConnection,
+    provider: &mut Provider,
+    listener: &mut IpcListener,
+) -> Result<Relay> {
     loop {
-        let Some((call, clock)) = (match connection.read_on_activity().await {
+        // Windows requires driving ConnectNamedPipe on the spare instance.
+        // Keep accepting during idle reads, so reconnect does not depend on an
+        // old pipe reporting EOF. A partial old frame never reaches dispatch.
+        let received = tokio::select! {
+            call = connection.read_on_activity() => call,
+            accepted = listener.accept(Arc::new(AtomicBool::new(false))) => {
+                return Ok(Relay::Replacement(Box::new(accepted?)));
+            }
+        };
+        let Some((call, clock)) = (match received {
             Ok(call) => call,
-            // A disconnected client does not close the provider's input.
-            Err(_) => return Ok(false),
+            Err(_) => return Ok(Relay::Disconnected),
         }) else {
-            return Ok(false);
+            return Ok(Relay::Disconnected);
         };
         let (value, finished) = dispatch(&call, provider).await?;
         let response = IpcResponse {
@@ -158,10 +195,14 @@ async fn relay(connection: &mut IpcConnection, provider: &mut Provider) -> Resul
             })),
         };
         if connection.reply(&response, &clock).await.is_err() {
-            return Ok(finished);
+            return Ok(if finished {
+                Relay::Finished
+            } else {
+                Relay::Disconnected
+            });
         }
         if finished {
-            return Ok(true);
+            return Ok(Relay::Finished);
         }
     }
 }

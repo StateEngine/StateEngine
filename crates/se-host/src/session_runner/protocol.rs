@@ -21,6 +21,9 @@ pub struct Bootstrap {
     /// An encoded parent endpoint supplies its measured native identity and the
     /// reserved address. The child replaces only the owner with its own proof.
     pub parent_endpoint: serde_json::Value,
+    /// Actual parent measurements, transferred with continuously retained pins.
+    pub parent_image: se_proc::native_ipc::InheritedImageProof,
+    pub runner_image: se_proc::native_ipc::InheritedImageProof,
     #[serde(with = "auth::secret_bytes")]
     pub capability: Secret,
     pub executable: NativePath,

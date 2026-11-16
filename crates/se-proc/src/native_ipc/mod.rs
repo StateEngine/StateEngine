@@ -13,6 +13,8 @@ use std::{
 
 mod image;
 use image::hash_image;
+mod inherited_image;
+pub use inherited_image::{InheritedImagePin, InheritedImageProof};
 mod ancestor;
 pub use ancestor::{provider_ancestor, provider_is_live};
 mod executable;
