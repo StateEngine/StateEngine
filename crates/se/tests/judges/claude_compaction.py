@@ -86,7 +86,7 @@ def one(f, malformed):
         assert all("PRIVATE_PROVIDER_PAYLOAD" not in turn["preview"] for turn in resumed["recent_turns"])
     # Native closure must permit a genuine fresh launch even if old capture
     # remains incomplete. A description of a hypothetical remedy is no pass.
-    launched = f.ok("--project", f.project, "launch", f.agent, "--new", "--detach", "--task", "Fresh after capture")
+    launched = f.ok("--project", f.project, "launch", f.agent, "--detach", "--task", "Fresh after capture")
     assert launched["state"] == "running" and launched["session_id"] != old, launched
     ready = wait_json(f.repo / "provider-ready.json")
     for pid in (ready["native_root_pid"], ready["helper_pid"]):

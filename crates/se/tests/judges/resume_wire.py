@@ -82,7 +82,7 @@ else:
         captured = {row["payload"]["body"]["text"] for row in history["items"]}
         assert tails <= captured, "native final capture did not retain the seeded conversation"
         # A fresh active session must see the earlier saved conversation too.
-        launched = f.ok("--project", f.project, "launch", f.agent, "--new", "--detach",
+        launched = f.ok("--project", f.project, "launch", f.agent, "--detach",
                         "--task", "Resume with retained conversation context")
         f.session = launched["session_id"]
         ready = wait_json(f.repo / "provider-ready.json")
