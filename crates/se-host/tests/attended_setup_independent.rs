@@ -80,7 +80,7 @@ fn ordinary_launch_retries_expired_and_failed_unactivated_window_setup() -> Chec
         let admission = h.f.owner_project();
         let mut snapshot = h.snapshot(&h.owner())?;
         let mut input = old.input.clone();
-        input.fresh = false;
+        input.resume = Some(se_types::ResumeSelection::Latest(true));
         input.idempotency_key = se_types::IdempotencyKey::new(format!("retry-{}", serial()))?;
         let next = process_plan::launch(
             &barrier::kernel()?,
@@ -92,7 +92,7 @@ fn ordinary_launch_retries_expired_and_failed_unactivated_window_setup() -> Chec
             },
         )?;
         assert!(matches!(next.conversation, Read::Absent { .. }));
-        assert!(!next.input.fresh && !next.input.override_live && !next.input.detach);
+        assert!(!next.input.fresh() && !next.input.override_live && !next.input.detach);
         assert_ne!(next.session, old.session);
         drop(snapshot);
         h.finish()?;
