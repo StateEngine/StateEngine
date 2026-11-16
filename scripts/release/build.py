@@ -71,6 +71,19 @@ def license_texts(package):
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"declared license text is unavailable for {key}")
         texts.setdefault(path.name, path)
+    # These native bindings carry their bundled implementation's notices below
+    # the crate root. The original texts remain inputs from the locked source.
+    bundled = {
+        "libgit2-sys": ("libgit2/COPYING",),
+        "libz-sys": ("src/zlib/LICENSE",),
+    }
+    for relative in bundled.get(package["name"], ()):
+        path = crate / relative
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"bundled license text is unavailable for {key}: {relative}")
+        if path.name in texts and digest(texts[path.name]) != digest(path):
+            raise ValueError(f"bundled license text collides for {key}: {path.name}")
+        texts[path.name] = path
     if not texts:
         raise ValueError(f"license texts missing for {key}; supply its licensed offline inputs")
     return sorted(texts.values())

@@ -1,6 +1,8 @@
 //! Bounded read-only observation of an existing Git repository: the branch,
 //! the commit count reachable from HEAD and whether uncommitted changes are
-//! present. Every Git invocation passes a top-precedence
+//! present. A fresh in-process backend scans the working tree on a single-flight
+//! thread; its answer deadline can leave that scan running with no dirty claim.
+//! Unsupported observations use bounded Git invocations with a top-precedence
 //! `core.fsmonitor=false` command parameter, which beats both repository
 //! files and an inherited `GIT_CONFIG_PARAMETERS`, and keeps output bounded,
 //! so the observer can never execute repository configuration, buffer an
@@ -15,6 +17,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::io::AsyncReadExt;
+#[path = "state/library.rs"]
+mod library;
 
 const STATUS_OBSERVATION_DEADLINE: Duration = Duration::from_secs(10);
 const STDERR_RETAIN: usize = 4096;
@@ -62,7 +66,7 @@ pub(crate) fn observe_within(root: &Path, deadline: Instant) -> Result<Option<Gi
     let StatusRead::Known {
         header,
         dirty: observed_dirty,
-    } = status_header_within(root, deadline)?
+    } = status_within(root, deadline)?
     else {
         // Git metadata is present but this machine has no Git binary: the
         // state is absent to this machine, not unreadable.
@@ -106,6 +110,23 @@ pub(crate) fn observe_within(root: &Path, deadline: Instant) -> Result<Option<Gi
 struct StatusHeader {
     head: Option<String>,
     branch: Option<String>,
+}
+
+fn status_within(root: &Path, deadline: Instant) -> Result<StatusRead> {
+    match library::observe(root, deadline) {
+        library::Read::Known(facts) => Ok(StatusRead::Known {
+            header: StatusHeader {
+                head: facts.head,
+                branch: facts.branch,
+            },
+            dirty: facts.dirty,
+        }),
+        library::Read::Fallback(reason) => status_header_within(root, deadline).map_err(|error| {
+            scope::unreadable("Git repository observation", &format!(
+                "in-process observation failed: {reason}; command-line observation failed: {error}"
+            )).with_cause(error)
+        }),
+    }
 }
 
 /// The commit count's result: a counted history, a history walk that outlived
