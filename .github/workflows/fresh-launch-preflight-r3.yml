@@ -1,0 +1,57 @@
+name: Fresh launch native preflight r2
+on:
+  push:
+    branches: [prime/fresh-launch-preflight-r3]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 54d49ae96413895159e3c9113d87840a284e0e90
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Native compilation and linting
+        run: |
+          python - <<'PYCODE'
+          import hashlib,json,os,pathlib,subprocess,sys,time
+          root=pathlib.Path('native-preflight');root.mkdir(exist_ok=True)
+          os.environ.update(CARGO_BUILD_JOBS='2',CARGO_INCREMENTAL='0',CARGO_PROFILE_DEV_DEBUG='0',CARGO_PROFILE_TEST_DEBUG='0',CARGO_TARGET_DIR=str(pathlib.Path(os.environ['RUNNER_TEMP'])/'fresh-launch-target'))
+          commands=[['rustc','--version','--verbose'],['cargo','fmt','--all','--','--check'],['cargo','clippy','--workspace','--all-targets','--all-features','--locked','--','-D','warnings'],['cargo','clippy','-p','se-host','--no-default-features','--locked','--','-D','warnings']]
+          host=subprocess.check_output(['rustc','-vV'],text=True).split('host: ',1)[1].splitlines()[0]
+          for argv in commands:
+           if argv[:2]==['cargo','clippy']:argv[2:2]=['--target',host]
+          records=[]
+          for i,argv in enumerate(commands):
+           start=time.monotonic_ns()
+           with (root/f'command-{i}.log').open('wb') as log:
+            result=subprocess.run(argv,stdout=log,stderr=subprocess.STDOUT)
+           records.append({'argv':argv,'exit':result.returncode,'elapsed_ns':time.monotonic_ns()-start})
+           (root/'commands.json').write_text(json.dumps(records,indent=2)+'\n')
+           if result.returncode:break
+          (root/'source.json').write_text(json.dumps({'source':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'platform':sys.platform},indent=2)+'\n')
+          members=[{'path':str(p.relative_to(root)),'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in sorted(root.rglob('*')) if p.is_file()]
+          (root/'manifest.json').write_text(json.dumps({'members':members},indent=2)+'\n')
+          raise SystemExit(records[-1]['exit'])
+          PYCODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: fresh-launch-preflight-r3-${{ matrix.os }}
+          path: native-preflight
+          if-no-files-found: error
+          retention-days: 7
