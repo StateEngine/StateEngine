@@ -313,6 +313,10 @@ pub type TranscriptValidator =
 /// Partial launch failure remains owned by the process arena, never dropped.
 pub trait Harness: Send + Sync {
     fn kind(&self) -> HarnessKind;
+    /// Load the complete saved canonical projection before protocol resume.
+    fn canonical_resume(&self) -> bool {
+        false
+    }
     /// Prepare adapter-owned rendezvous after launch files have been published.
     fn prepare<'a>(&'a self, _request: &'a HarnessRequest, _cx: CallContext) -> HostFuture<'a, ()> {
         Box::pin(async { Ok(()) })

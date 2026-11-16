@@ -175,7 +175,9 @@ impl LaunchCoordinator {
             mode,
             resume: plan.conversation.clone(),
             transcript_roots: plan.control.moved_from_roots.clone(),
-            replay: self.acp_replay(&plan, &work.admission, deadline).await?,
+            replay: self
+                .canonical_replay(&plan, &work.admission, deadline)
+                .await?,
             initial_input: Body::new(plan.input.task.clone().unwrap_or_else(|| {
                 "Read your StateEngine context and continue your assigned work.".into()
             }))?,
