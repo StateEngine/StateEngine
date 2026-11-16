@@ -76,6 +76,7 @@ impl CommonArgs {
             "message.list" => CliSelections {
                 mail_to: text(m, "to"),
                 mail_list: true,
+                mail_follow: flag(m, "follow"),
                 ..CliSelections::default()
             },
             _ => CliSelections::default(),
@@ -378,6 +379,7 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("work_action").long("work-action").value_parser(["admit","assign","return","question","ruling_request","ruling","finding","notify"]).help("For floor: what the message does: admit, assign, return, question, ruling_request, ruling, finding or notify"))
             .arg(Arg::new("addressees").long("addressee").action(ArgAction::Append).help("Explicit floor addressee; repeat for each")),
         "message.list" => c
+            .arg(toggle("follow").help("Stream your own inbox over one connection; resume with the last printed cursor"))
             .arg(value("to").help("Only messages to this recipient"))
             .arg(value("from").help("Only messages from this sender"))
             .arg(value("kind").value_parser([

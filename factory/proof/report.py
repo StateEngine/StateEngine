@@ -169,6 +169,11 @@ def invocation(inv, directory, run=None):
              "receipt_complete": False, "journeys": {}, "outcome": "UNKNOWN", "problems": [],
              "judge_outcome": "FAIL" if type(inv.get("exit")) is int and inv["exit"] != 0
                               else "PASS" if type(inv.get("exit")) is int and inv["exit"] == 0 else "UNKNOWN"}
+    closure = inv.get("credential_closure")
+    unreadable_scan = isinstance(closure, dict) and closure.get("state") == "unreadable"
+    if unreadable_scan:
+        entry["problems"].append(closure.get("error", "automation-output-scan-unreadable: input unspecified"))
+        entry["outcome"] = "FAIL"
     if inv.get("remote_probe"):
         receipt, error = read(directory / inv["output"] / "remote.json")
         if error:
@@ -267,6 +272,8 @@ def invocation(inv, directory, run=None):
         entry["problems"].append("required budgets did not pass")
     else:
         entry["outcome"] = "PASS"
+    if unreadable_scan:
+        entry["outcome"] = "FAIL"
     return entry
 
 

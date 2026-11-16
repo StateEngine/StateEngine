@@ -1,8 +1,8 @@
 //! Host-private detached startup. No agent may be admitted until the child
 //! receives an exact lease/endpoint commit over its inherited private channel.
+use crate::bootstrap_protocol::{self as protocol, Argument, Frame, MAX_FRAME};
 use crate::support::*;
 use crate::*;
-use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
     path::PathBuf,
@@ -24,24 +24,6 @@ mod validation;
 use validation::{endpoint_matches, validate_spec};
 
 const ENTRY: &str = "--stateengine-private-runtime-bootstrap";
-const MAX_FRAME: usize = 1024 * 1024;
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Argument(#[serde(with = "crate::checkpoint::native_path")] PathBuf);
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Frame {
-    version: u32,
-    parent: ProcessIdentity,
-    nonce: [u8; 16],
-    #[serde(with = "crate::checkpoint::decimal::u64")]
-    deadline_ms: u64,
-    arguments: Vec<Argument>,
-    #[cfg(windows)]
-    handles: [u64; 2],
-    #[cfg(windows)]
-    broker: Option<ProcessIdentity>,
-}
 /// Native self observation with the host's protected, persisted machine ID.
 /// Machine identity is never invented from hostname, hardware or a new UUID.
 pub fn current_process_identity(machine: MachineId) -> ProcResult<ProcessIdentity> {
@@ -80,22 +62,10 @@ fn check(deadline: Instant) -> ProcResult<()> {
     }
 }
 fn frame_write(file: &mut File, bytes: &[u8], deadline: Instant) -> ProcResult<()> {
-    if bytes.len() > MAX_FRAME {
-        return Err(capacity("runtime frame bytes", MAX_FRAME as u64));
-    }
-    os::write(file, &(bytes.len() as u32).to_le_bytes(), deadline)?;
-    os::write(file, bytes, deadline)
+    protocol::write_frame(bytes, |bytes| os::write(file, bytes, deadline))
 }
 fn frame_read(file: &mut File, deadline: Instant) -> ProcResult<Vec<u8>> {
-    let mut length = [0; 4];
-    os::read(file, &mut length, deadline)?;
-    let length = u32::from_le_bytes(length) as usize;
-    if length > MAX_FRAME {
-        return Err(capacity("runtime frame bytes", MAX_FRAME as u64));
-    }
-    let mut bytes = vec![0; length];
-    os::read(file, &mut bytes, deadline)?;
-    Ok(bytes)
+    protocol::read_frame(|bytes| os::read(file, bytes, deadline))
 }
 struct Created {
     native: os::Child,
@@ -115,6 +85,7 @@ pub(crate) struct Parent {
     deadline: Instant,
     identity: Option<ProcessIdentity>,
     detachment: RuntimeDetachment,
+    endpoint_notified: bool,
     commit_sent: bool,
     released: bool,
     diagnostics: diagnostics::Capture,
@@ -132,6 +103,28 @@ impl RuntimeChild {
     }
     pub fn identity(&self) -> Option<&ProcessIdentity> {
         self.state.identity.as_ref()
+    }
+    /// Wait for the child's publication wake-up on its retained private channel.
+    /// This proves no endpoint or owner: the caller must still read the protected
+    /// endpoint and authenticate its native peer before committing ownership.
+    pub fn wait_endpoint_publication(&mut self) -> ProcResult<()> {
+        check(self.state.deadline)?;
+        if !self.state.endpoint_notified {
+            let mut notification = [0];
+            os::read(
+                &mut self.state.events,
+                &mut notification,
+                self.state.deadline,
+            )?;
+            if notification != *b"E" {
+                return Err(input(
+                    "runtime endpoint notification",
+                    "unexpected startup event",
+                ));
+            }
+            self.state.endpoint_notified = true;
+        }
+        check(self.state.deadline)
     }
 }
 /// This guard belongs only to the admitted private executable entry. Dropping
@@ -260,6 +253,10 @@ impl RuntimeBootstrap {
         result
     }
     fn receive_commit(&mut self, host: HostInstanceId) -> ProcResult<RuntimeAdmission> {
+        // The host calls only after protected listener publication. This byte
+        // wakes the parent; the subsequent native endpoint/owner proof and the
+        // nonce-bound commit remain the only path to admission.
+        os::write(&mut self.events, b"E", self.deadline)?;
         let mut command = [0; 33];
         os::read(&mut self.authorization, &mut command, self.deadline)?;
         if command[0] != b'C' || command[1..17] != self.frame.nonce || command[17..] != host.0 {
@@ -361,6 +358,7 @@ impl NativeProcessApi for NativeProcessRuntime {
                 deadline: spec.deadline,
                 identity: None,
                 detachment,
+                endpoint_notified: false,
                 commit_sent: false,
                 released: false,
                 diagnostics,
@@ -430,6 +428,7 @@ impl NativeProcessApi for NativeProcessRuntime {
     ) -> Result<RuntimeReady, Box<RuntimeCommitFailure>> {
         let result = (|| {
             check(child.state.deadline)?;
+            child.wait_endpoint_publication()?;
             let identity = child
                 .state
                 .identity
