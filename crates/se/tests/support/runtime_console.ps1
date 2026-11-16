@@ -85,7 +85,9 @@ if($ConsoleChild) {
         $arguments=@('--home' , ('"'+$HomePath+'"'), 'uninstall')
         if($Mode -eq 'json') { $arguments=@('--json')+$arguments }
         $cli=Start-Process -FilePath $Image -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardError $stderrPath
-        $code=Wait-Owned $cli $Image 'uninstall'
+        # Carrier preparation itself permits 30 seconds after ordinary shutdown.
+        # The outside fixture must allow that operation to return its own verdict.
+        $code=Wait-Owned $cli $Image 'uninstall' 60000
         $consoleText=Read-OwnedConsole
         if(-not $consoleText.Contains('Runtime uninstall owned console readback control')) {
             throw 'Owned console output readback lost its control marker'
@@ -103,7 +105,7 @@ function Literal([string]$value) { return "'"+$value.Replace("'", "''")+"'" }
 $invocation="& ([ScriptBlock]::Create([IO.File]::ReadAllText($(Literal $ScriptPath)))) -Image $(Literal $Image) -HomePath $(Literal $HomePath) -Mode $Mode -ScriptPath $(Literal $ScriptPath) -ConsoleChild"
 $arguments='-NoProfile -NonInteractive -Command "'+$invocation+'"'
 $console=Start-Process -FilePath $powershell -ArgumentList $arguments -PassThru -WindowStyle Normal
-$code=Wait-Owned $console $powershell $ScriptPath 45000
+$code=Wait-Owned $console $powershell $ScriptPath 90000
 if($code -ne 0) {
     $detail = if([IO.File]::Exists($consoleErrorPath)) { [IO.File]::ReadAllText($consoleErrorPath) } else { 'Console error receipt absent' }
     throw "Native console fixture failed with exit ${code}: $detail"
