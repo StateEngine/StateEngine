@@ -31,15 +31,29 @@ impl Prepared {
         )
         .map_err(describe)?;
         let config = repository.config().map_err(describe)?;
-        // Includes and enabled per-worktree precedence evolve independently
-        // of this backend. Their presence selects the authoritative CLI, even
-        // when a condition is inactive or a value is overridden later.
+        // The library follows plain includes and these conditional includes.
+        // Inspect inactive directives too: unknown conditions must select Git
+        // rather than silently omitting configuration it could have applied.
         let mut entries = config.entries(None).map_err(describe)?;
         while let Some(entry) = entries.next() {
             let entry = entry.map_err(describe)?;
             let name = entry.name_bytes();
-            if name == b"include.path" || name.starts_with(b"includeif.") {
-                return Err("configuration includes require the command-line observer".into());
+            if let Some(condition) = name
+                .strip_prefix(b"includeif.")
+                .and_then(|name| name.strip_suffix(b".path"))
+            {
+                let supported = [b"gitdir:".as_slice(), b"gitdir/i:", b"onbranch:"]
+                    .iter()
+                    .any(|prefix| {
+                        condition
+                            .strip_prefix(*prefix)
+                            .is_some_and(|pattern| !pattern.is_empty())
+                    });
+                if !supported {
+                    return Err(
+                        "unsupported include condition requires the command-line observer".into(),
+                    );
+                }
             }
         }
         drop(entries);
