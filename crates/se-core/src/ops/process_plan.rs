@@ -209,65 +209,74 @@ pub fn launch<R: Snapshot>(
             }
         } else {
             match &control.resume_session {
-            Read::Absent { .. } => return Err(SeError::invalid("resume conversation", "a saved conversation; omit --resume to start a fresh one")),
-            Read::Present { value }
-                if value
-                    .original
-                    .as_deref()
-                    .unwrap_or(&value.current)
-                    .header
-                    .door
-                    == se_store::Door::Import
-                    && profile.provider != se_store::Provider::Codex =>
-            {
-                return Err(SeError::invalid("resume conversation",
-                    "a resumable native conversation; imported history alone cannot reopen this provider, so omit --resume for a fresh conversation"));
-            }
-            Read::Present { value } if super::agent_launch::retryable_attended_setup(value) => {
-                return Err(SeError::invalid("resume conversation",
-                    "an activated conversation; omit --resume to retry the expired window setup"));
-            }
-            Read::Present { value } => {
-                // Only an activated conversation is resumable. A revoked
-                // preparation is not silently replaced with a new conversation.
-                if !matches!(
-                    value.current.body,
-                    EventBody::SessionActivated { .. } | EventBody::SessionEnded { .. }
-                ) {
+                Read::Absent { .. } => {
                     return Err(SeError::invalid(
                         "resume conversation",
-                        "the last session never activated; omit --resume to start another conversation",
+                        "a saved conversation; omit --resume to start a fresh one",
                     ));
                 }
-                let original = value.original.as_deref().unwrap_or(&value.current);
-                match &original.body {
-                    EventBody::SessionPrepared {
-                        agent: owner,
-                        provider,
-                        ..
-                    } if owner == &agent && *provider == profile.provider => {
-                        let reference = super::session_reference::read(cx.read, value)?;
-                        if original.header.door == se_store::Door::Import {
-                            imported_reference(reference)?
-                        } else {
-                            reference
-                        }
-                    }
-                    _ => {
-                        return Err(scope::unreadable(
+                Read::Present { value }
+                    if value
+                        .original
+                        .as_deref()
+                        .unwrap_or(&value.current)
+                        .header
+                        .door
+                        == se_store::Door::Import
+                        && profile.provider != se_store::Provider::Codex =>
+                {
+                    return Err(SeError::invalid(
+                        "resume conversation",
+                        "a resumable native conversation; imported history alone cannot reopen this provider, so omit --resume for a fresh conversation",
+                    ));
+                }
+                Read::Present { value } if super::agent_launch::retryable_attended_setup(value) => {
+                    return Err(SeError::invalid(
+                        "resume conversation",
+                        "an activated conversation; omit --resume to retry the expired window setup",
+                    ));
+                }
+                Read::Present { value } => {
+                    // Only an activated conversation is resumable. A revoked
+                    // preparation is not silently replaced with a new conversation.
+                    if !matches!(
+                        value.current.body,
+                        EventBody::SessionActivated { .. } | EventBody::SessionEnded { .. }
+                    ) {
+                        return Err(SeError::invalid(
                             "resume conversation",
-                            "the original provider binding is unavailable or changed",
+                            "the last session never activated; omit --resume to start another conversation",
                         ));
                     }
+                    let original = value.original.as_deref().unwrap_or(&value.current);
+                    match &original.body {
+                        EventBody::SessionPrepared {
+                            agent: owner,
+                            provider,
+                            ..
+                        } if owner == &agent && *provider == profile.provider => {
+                            let reference = super::session_reference::read(cx.read, value)?;
+                            if original.header.door == se_store::Door::Import {
+                                imported_reference(reference)?
+                            } else {
+                                reference
+                            }
+                        }
+                        _ => {
+                            return Err(scope::unreadable(
+                                "resume conversation",
+                                "the original provider binding is unavailable or changed",
+                            ));
+                        }
+                    }
+                }
+                Read::Unreadable { .. } | Read::Unknown { .. } => {
+                    return Err(scope::unreadable(
+                        "resume conversation",
+                        "the latest provider binding is unreadable; repair it or omit --resume for a fresh conversation",
+                    ));
                 }
             }
-            Read::Unreadable { .. } | Read::Unknown { .. } => {
-                return Err(scope::unreadable(
-                    "resume conversation",
-                    "the latest provider binding is unreadable; repair it or omit --resume for a fresh conversation",
-                ));
-            }
-        }
         };
         Ok(conversation)
     })() {
@@ -277,13 +286,37 @@ pub fn launch<R: Snapshot>(
                 "Forced relaunch preserves the previous history and starts a fresh conversation because the saved binding could not be resumed: {failure}"
             ),
         },
-        Err(failure) if !control.processes.is_empty() || !control.sessions.is_empty() => Read::Unknown {
-            what: format!("Saved conversation unavailable before live-launch confirmation: {failure}"),
-        },
-        Err(failure) => return Err(SeError::new(se_types::Detail::LaunchFailed(se_types::details::LaunchFailed {
-            subject: name.clone(), reason: failure.to_string(),
-            next_step: "Repair the saved binding before resuming, or omit --resume to preserve the old history and start a fresh conversation.".into(),
-        }))),
+        Err(failure) if !control.processes.is_empty() || !control.sessions.is_empty() => {
+            Read::Unknown {
+                what: format!(
+                    "Saved conversation unavailable before live-launch confirmation: {failure}"
+                ),
+            }
+        }
+        Err(failure) => {
+            let next_step = if matches!(
+                failure.body.detail(),
+                se_types::Detail::CapabilityInvalid(_)
+            ) {
+                let mut command = super::AgentCommand::launch(&agent, None, Some(&id), false);
+                if let Some(se_types::ResumeSelection::Session(session)) = &input.resume {
+                    command = command.with_resume_session(session);
+                }
+                format!(
+                    "The saved capture source is private to its principal. Ask the project Owner to use se launch from their own terminal with the same StateEngine home: `{}`.",
+                    command.command
+                )
+            } else {
+                "Repair the saved binding before resuming, or omit --resume to preserve the old history and start a fresh conversation.".into()
+            };
+            return Err(SeError::new(se_types::Detail::LaunchFailed(
+                se_types::details::LaunchFailed {
+                    subject: name.clone(),
+                    reason: failure.to_string(),
+                    next_step,
+                },
+            )));
+        }
     };
     let saved_conversation_age = match &conversation {
         Read::Present { .. } => match &control.resume_session {
