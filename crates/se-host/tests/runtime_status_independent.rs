@@ -80,8 +80,7 @@ fn command(image: &Path, home: &Path, args: &[&str]) -> Command {
         .arg("--json")
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
-        .env("HOME", home.parent().unwrap_or(home))
-        .env("XDG_RUNTIME_DIR", "/run/user/1000");
+        .env("HOME", home.parent().unwrap_or(home));
     value
 }
 fn cli(image: &Path, home: &Path, args: &[&str]) -> Check<Value> {
