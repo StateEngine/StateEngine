@@ -1,5 +1,5 @@
-//! Core admits the finite uninstall plan; the system carrier receives only
-//! inherited exact objects and output data, never a private executable entry.
+//! Core admits the finite uninstall plan; the native carrier receives only
+//! inherited exact objects and output data. Its entry marker grants no authority.
 use crate::NativeStateFiles;
 use std::{
     fs::File,
@@ -12,6 +12,9 @@ use std::{
 use windows_sys::Win32::System::Console::*;
 use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*, System::Threading::*};
 mod cleanup;
+mod entry;
+mod entry_effects;
+pub use entry::uninstall_carrier_entry;
 mod debt;
 pub use debt::{HelperCleanupOutcome, UninstallHelperCleanup};
 mod native;

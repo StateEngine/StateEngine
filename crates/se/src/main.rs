@@ -339,6 +339,10 @@ fn main() -> std::process::ExitCode {
     if let Some(result) = se_proc::process_attach_entry(&args) {
         return std::process::ExitCode::from(if result.is_ok() { 0 } else { 126 });
     }
+    #[cfg(windows)]
+    if let Some(code) = private_entry::dispatch_uninstall_carrier(&args) {
+        return std::process::ExitCode::from(code);
+    }
     if let Err(error) = bootstrap::initialize_file_owner() {
         return finish(Err(error), &args);
     }

@@ -1,4 +1,4 @@
-//! A fixed system interpreter consumes only inherited, already admitted objects.
+//! A native child consumes only inherited, already admitted objects.
 //! Preparation is read-only for the installation; authorization follows effects.
 use super::*;
 use crate::{NativeInstallationClaim, OwnedFile};
@@ -135,8 +135,7 @@ impl NativeUninstallCarrier {
             "ready":control[3].as_raw_handle() as usize as u64,
             "report":control[4].as_raw_handle() as usize as u64,
             "nonce":nonce,"deadline":deadline,"entries":entries});
-        let path = cleanup::system_powershell()?;
-        let mut application: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut application: Vec<u16> = image.as_os_str().encode_wide().chain(Some(0)).collect();
         let mut plan_file = script_files
             .retire_empty_staging(
                 script_files
@@ -174,13 +173,20 @@ impl NativeUninstallCarrier {
         let script = script::Script::create(script_files, staging.is_some())?;
         let script_path = script.path().to_owned();
         let mut script = Some(script);
-        let mut line: Vec<u16> = format!(
-            "powershell.exe -NoLogo -NoProfile -NonInteractive -File \"{}\"",
-            script_path.display()
-        )
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
+        let until = clock() + 30000;
+        if let Err(mut failure) = cleanup::admit(&script_path, &environment, &diagnostic, until) {
+            failure.source = io::Error::other(format!(
+                "{}; {}",
+                failure.source,
+                diagnostic_text(&mut diagnostic)
+            ));
+            cleanup_artifacts(&mut failure, &mut script, &mut staging);
+            return Err(failure);
+        }
+        let mut line: Vec<u16> = format!("\"{}\" __uninstall-carrier", image.display())
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
         let process = spawn::command(
             &application,
             &mut line,
@@ -203,7 +209,6 @@ impl NativeUninstallCarrier {
         drop(owned);
         drop(control);
         let preparation = (|| {
-            let until = clock() + 30000;
             let mut ready = ready;
             loop {
                 if native::exited(&process)? {
@@ -315,7 +320,7 @@ impl NativeUninstallCarrier {
 
 // A preparation failure must also release the exact child's inherited claims.
 // A retained process handle cannot select a reused PID or another interpreter.
-fn cancel_preparation(process: &OwnedHandle) -> Result<()> {
+pub(super) fn cancel_preparation(process: &OwnedHandle) -> Result<()> {
     if native::exited(process)? {
         return Ok(());
     }

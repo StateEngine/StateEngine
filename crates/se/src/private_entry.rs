@@ -58,3 +58,18 @@ pub fn retain_package_parent(mut args: Vec<OsString>) -> std::io::Result<Vec<OsS
     args.drain(1..3);
     Ok(args)
 }
+
+/// The native carrier admits inherited capabilities and its actual creator;
+/// command arguments never name an uninstall target or supply authority.
+#[cfg(windows)]
+pub fn dispatch_uninstall_carrier(args: &[OsString]) -> Option<u8> {
+    if args.get(1).is_none_or(|arg| arg != "__uninstall-carrier") {
+        return None;
+    }
+    Some(if args.len() == 2 {
+        se_proc::uninstall_carrier_entry()
+    } else {
+        eprintln!("Native uninstall carrier accepts no public arguments");
+        78
+    })
+}

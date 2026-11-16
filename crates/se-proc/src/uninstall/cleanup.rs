@@ -57,3 +57,61 @@ pub(super) fn system_powershell() -> Result<PathBuf> {
         .join("v1.0")
         .join("powershell.exe"))
 }
+
+// Load the pinned script without target objects or a compiler process.
+pub(super) fn admit(
+    script: &Path,
+    environment: &[u16],
+    diagnostic: &File,
+    until: u64,
+) -> Result<()> {
+    let application = native::wide(&cleanup::system_powershell()?)?;
+    let mut line: Vec<u16> = format!(
+        "powershell.exe -NoLogo -NoProfile -NonInteractive -File \"{}\"",
+        script.display()
+    )
+    .encode_utf16()
+    .chain(Some(0))
+    .collect();
+    let sink = File::open(r"\\.\NUL").map_err(|e| error("open policy gate input", e))?;
+    let input = native::duplicate_same(sink.as_raw_handle(), true)?;
+    let process = spawn::command(
+        &application,
+        &mut line,
+        &input,
+        &[],
+        CREATE_NO_WINDOW,
+        Some(environment),
+        Some(diagnostic),
+    )?;
+    let outcome = (|| {
+        loop {
+            if native::exited(&process)? {
+                let mut code = 0;
+                // SAFETY: retained exact process and writable exit status output.
+                if unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut code) } == 0 {
+                    return Err(native::last("read uninstall policy status"));
+                }
+                return if code == 78 {
+                    Ok(())
+                } else {
+                    Err(refuse(
+                        "prepare uninstall carrier",
+                        "system carrier exited; installation remains unchanged",
+                    ))
+                };
+            }
+            if clock() >= until {
+                return Err(refuse(
+                    "prepare uninstall carrier",
+                    "system policy gate deadline; installation remains unchanged",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    })();
+    if outcome.is_err() {
+        super::carrier::cancel_preparation(&process)?;
+    }
+    outcome
+}
