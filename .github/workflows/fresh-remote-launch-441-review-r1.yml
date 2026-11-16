@@ -1,0 +1,91 @@
+name: Remote fresh conversation independent review r1
+on:
+  push:
+    branches: [prime/fresh-remote-launch-441-review-r1]
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  judge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 05450023bd89d666461e43f05e16c6e3ec4350be
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 0bb4e4b75b4a08155c8ee5651e3fe4304e240a20
+          path: judge-source
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Install native SSH server prerequisite
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server
+          sudo install -d -m 0755 /run/sshd
+      - name: Build frozen source and judge actual SSH consumer
+        env:
+          CARGO_BUILD_JOBS: '2'
+          CARGO_INCREMENTAL: '0'
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib,json,os,pathlib,shutil,subprocess,time
+          root=pathlib.Path('review-evidence').resolve();root.mkdir()
+          source='05450023bd89d666461e43f05e16c6e3ec4350be'
+          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==source
+          judge=pathlib.Path('judge-source').resolve()
+          judge_sha=subprocess.check_output(['git','-C',str(judge),'rev-parse','HEAD'],text=True).strip()
+          target=pathlib.Path(os.environ['RUNNER_TEMP'])/'remote-launch441-target'
+          os.environ['CARGO_TARGET_DIR']=str(target)
+          host=subprocess.check_output(['rustc','-vV'],text=True).split('host: ',1)[1].splitlines()[0]
+          commands=[];failures=[]
+          def run(label,argv):
+              started=time.monotonic_ns()
+              with (root/(label+'.stdout')).open('wb') as out,(root/(label+'.stderr')).open('wb') as err:
+                  value=subprocess.run(argv,stdin=subprocess.DEVNULL,stdout=out,stderr=err)
+              commands.append({'label':label,'argv':argv,'exit':value.returncode,'elapsed_ns':time.monotonic_ns()-started})
+              (root/'commands.json').write_text(json.dumps(commands,indent=2)+'\n')
+              return value.returncode
+          built=run('build',['cargo','build','-p','se','--bin','se','--all-features','--locked','--target',host])==0
+          if not built:failures.append('native build failed')
+          image=root/'se';image_hash=None
+          if built:
+              shutil.copy2(target/host/'debug/se',image)
+              if run('strip',['strip','--strip-debug',str(image)]):failures.append('strip failed')
+              image_hash=hashlib.sha256(image.read_bytes()).hexdigest()
+              script=judge/'crates/se/tests/judges/fresh_remote_conversation.py'
+              code=run('remote-consumer',['python3',str(script),'--se',str(image),'--output',str(root/'consumer')])
+              path=root/'consumer/result.json'
+              if not path.is_file():failures.append('remote consumer result absent')
+              else:
+                  result=json.loads(path.read_text())
+                  closure=result.get('closure',{})
+                  if code or result['failures'] or len(result['checks'])!=7 or any(closure.get(name,{}).get('witnessed') is not True for name in ('source','destination','ssh')):
+                      failures.append('remote consumer or native closure failed')
+          image.unlink(missing_ok=True)
+          # Ephemeral test-only SSH keys are never retained as evidence.
+          for path in (root/'consumer/ssh/client-key',root/'consumer/ssh/server-key'):
+              path.unlink(missing_ok=True)
+          names=['fresh_remote_conversation.py','private_ssh_fixture.py','fresh_conversation_provider.py','mail_cli.py','fixture_paths.py']
+          inputs={name:hashlib.sha256((judge/'crates/se/tests/judges'/name).read_bytes()).hexdigest() for name in names}
+          report={'source':source,'judge':judge_sha,'inputs':inputs,'target':host,'binary_sha256':image_hash,'commands':commands,'failures':failures,
+                  'scope':'Native loopback OpenSSH and saved pairing/Owner launch permission, source/destination hosts, CLI and authenticated agent MCP. Only the provider is a protocol double. Development image; elapsed/private-memory observations are not release performance qualification.'}
+          (root/'report.json').write_text(json.dumps(report,indent=2)+'\n')
+          members=[{'path':str(path.relative_to(root)),'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in sorted(root.rglob('*')) if path.is_file()]
+          (root/'manifest.json').write_text(json.dumps({'members':members},indent=2)+'\n')
+          raise SystemExit(bool(failures))
+          PYCODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: fresh-remote-launch-441-review-r1
+          path: review-evidence
+          if-no-files-found: error
+          retention-days: 7
