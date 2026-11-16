@@ -172,6 +172,14 @@ impl Service {
                     service.publish_readers(&state, true)?;
                     let result = state.work(&job, &service.owner, wake);
                     service.publish_readers(&state, false)?;
+                    // Keep live progress in memory. Only a settled pass needs
+                    // durable metadata for readers of a later cold root.
+                    let pending = result
+                        .as_ref()
+                        .is_ok_and(|plan| plan.ready || plan.delay.is_some());
+                    if !pending {
+                        service.persist_readers()?;
+                    }
                     result
                 })
                 .await;

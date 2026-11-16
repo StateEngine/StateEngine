@@ -6,6 +6,8 @@ pub mod code;
 pub use channel_error::MessagingChannelError;
 mod error;
 mod hex;
+mod launch;
+pub use launch::{LaunchDetails, ResumeSelection};
 mod id;
 mod process;
 mod read;
