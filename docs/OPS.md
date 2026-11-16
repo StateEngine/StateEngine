@@ -158,8 +158,9 @@ The same command works over SSH: `ssh HOST se --project PROJECT msg list --follo
 Idle connections send a cursor-only keepalive every ten seconds, without reading
 the store. JSON keepalives have `type: "idle"` and `cursor`; human output repeats
 only the cursor. A closed output pipe is detected on the next keepalive.
-Interrupt, termination or terminal hangup closes the client and its subscription;
-the last flushed page already contains the cursor needed to restart.
+Interrupt, termination or terminal hangup uses the ordinary OS signal exit status
+and closes the client and its subscription, including when stdout is stalled.
+The last flushed page already contains the cursor needed to restart.
 
 ## Integration entry points
 

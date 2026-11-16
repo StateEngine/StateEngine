@@ -1,10 +1,9 @@
 //! Owner inbox follow keeps one native connection and flushes every bounded
-//! page/cursor. A broken output pipe and terminal signals release that socket.
+//! page/cursor. Ordinary OS termination releases the socket even during output.
 use super::{admit, execute, setup};
 use crate::bootstrap::Bootstrap;
 use se_core::{ops::AnyOp, scope, store_error::store_error};
 use se_host::client::{BlockingConnection, BlockingIpcClient, ClientOptions, lease::Deadline};
-use se_host::terminal as signals;
 use se_store::{Actor, Scope, Snapshot};
 use se_types::{Read, Result, SeError};
 use std::{
@@ -25,18 +24,6 @@ pub(crate) fn run(
     let prepared = prepare(cx, operation, &mut diagnostic);
     let (mut connection, call, options) = match prepared {
         Ok(prepared) => prepared,
-        Err(error) => {
-            return crate::render::error::write(
-                &error,
-                &Default::default(),
-                cx.json,
-                stdout,
-                stderr,
-            );
-        }
-    };
-    let _signals = match signals::listen(options.cancelled.clone()) {
-        Ok(signals) => signals,
         Err(error) => {
             return crate::render::error::write(
                 &error,
@@ -71,7 +58,6 @@ pub(crate) fn run(
     }
     match result {
         Ok(()) => Ok(0),
-        Err(_) if options.cancelled.load(std::sync::atomic::Ordering::Acquire) => Ok(0),
         Err(error) => {
             crate::render::error::write(&error, &Default::default(), cx.json, stdout, stderr)
         }
