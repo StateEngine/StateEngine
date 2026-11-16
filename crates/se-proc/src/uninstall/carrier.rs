@@ -183,7 +183,7 @@ impl NativeUninstallCarrier {
                     return Err(failure);
                 }
             };
-            let preparation = (|| {
+            let preparation: Result<()> = (|| {
                 let mut ready = ready;
                 guardian::await_ready(&process, &mut ready, &random, until)?;
                 guardian::await_ready(&guardian.process, &mut guardian.ready, &random, until)?;
