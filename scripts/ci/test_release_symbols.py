@@ -124,7 +124,7 @@ class ExplicitArchiveMode(unittest.TestCase):
                 '[[test]]\nname="custom"\nharness=false\n')
             environment = {k: v for k, v in os.environ.items()
                            if not k.startswith(("SE_", "JUDGE_"))}
-            report = root / "target/nextest/input-judges.json"
+            report = root / "ci-reports/input-judges.json"
             for event in ("schedule", "workflow_dispatch", "pull_request"):
                 with self.subTest(event=event):
                     environment.update(GITHUB_EVENT_NAME=event, GITHUB_REF="refs/heads/main")

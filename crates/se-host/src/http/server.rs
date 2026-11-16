@@ -29,6 +29,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::{OwnedSemaphorePermit, Semaphore, watch},
 };
@@ -38,6 +39,7 @@ pub(crate) const ACTIVE_CONNECTIONS: usize = 64;
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 /// hyper's smallest legal read buffer is 8 KiB; 16 KiB bounds the header block.
 const MAX_HEADER_BYTES: usize = 16 * 1024;
+const CLOSE_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub struct HttpListener {
     listener: TcpListener,
@@ -111,7 +113,7 @@ impl HttpListener {
 /// active permit only after acquiring its separate session slot.
 pub(crate) async fn connection(
     router: HostedRouter,
-    stream: TcpStream,
+    mut stream: TcpStream,
     port: u16,
     permit: OwnedSemaphorePermit,
     mut shutdown: watch::Receiver<Option<Deadline>>,
@@ -133,26 +135,32 @@ pub(crate) async fn connection(
         .header_read_timeout(HEADER_TIMEOUT)
         .max_buf_size(MAX_HEADER_BYTES)
         .keep_alive(false);
-    let mut served = pin!(builder.serve_connection(hyper_util::rt::TokioIo::new(stream), service));
-    let finished = if shutdown.borrow().is_some() {
-        None
-    } else {
-        let mut fenced = pin!(shutdown.changed());
-        poll_fn(|cx| {
-            if let Poll::Ready(result) = served.as_mut().poll(cx) {
-                return Poll::Ready(Some(result));
+    let result = {
+        let mut served =
+            pin!(builder.serve_connection(hyper_util::rt::TokioIo::new(&mut stream), service));
+        let finished = if shutdown.borrow().is_some() {
+            None
+        } else {
+            let mut fenced = pin!(shutdown.changed());
+            poll_fn(|cx| {
+                if let Poll::Ready(result) = served.as_mut().poll(cx) {
+                    return Poll::Ready(Some(result));
+                }
+                fenced.as_mut().poll(cx).map(|_| None)
+            })
+            .await
+        };
+        match finished {
+            Some(result) => result,
+            None => {
+                served.as_mut().graceful_shutdown();
+                served.await
             }
-            fenced.as_mut().poll(cx).map(|_| None)
-        })
-        .await
-    };
-    let result = match finished {
-        Some(result) => result,
-        None => {
-            served.as_mut().graceful_shutdown();
-            served.await
         }
     };
+    if result.is_ok() {
+        finish_close(&mut stream, &mut shutdown).await;
+    }
     drop(permit);
     // A client that disconnects mid-request is an ordinary closed connection.
     result.or_else(|error| {
@@ -165,6 +173,34 @@ pub(crate) async fn connection(
             ))
         }
     })
+}
+
+/// An early response can leave request bytes in flight. Stage the close as in
+/// RFC 9112 section 9.6 so a full close does not discard the response prematurely.
+/// Discard bytes without parsing another request, within fixed time/byte bounds.
+async fn finish_close(stream: &mut TcpStream, shutdown: &mut watch::Receiver<Option<Deadline>>) {
+    if shutdown.borrow().is_some() {
+        return;
+    }
+    let drain = async {
+        stream.shutdown().await?;
+        let mut remaining = MAX_BODY_BYTES + MAX_HEADER_BYTES;
+        let mut buffer = [0_u8; 4096];
+        while remaining > 0 {
+            let limit = remaining.min(buffer.len());
+            let read = stream.read(&mut buffer[..limit]).await?;
+            if read == 0 {
+                break;
+            }
+            remaining -= read;
+        }
+        Ok::<_, std::io::Error>(())
+    };
+    tokio::select! {
+        biased;
+        _ = shutdown.changed() => {}
+        _ = tokio::time::timeout(CLOSE_TIMEOUT, drain) => {}
+    }
 }
 
 #[expect(
