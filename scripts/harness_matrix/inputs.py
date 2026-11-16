@@ -9,7 +9,7 @@ import tomllib
 
 from .io import digest, require
 
-REGISTRY = Path(__file__).resolve().parents[2] / 'crates/se-types/src/harness_registry.json'
+REGISTRY = Path(__file__).resolve().parents[2] / 'crates/se-harness-registry/src/registry.json'
 DRIVERS = {row['driver']: row['id'] for row in json.loads(REGISTRY.read_text(encoding='utf-8'))}
 RESULTS = ('PASS', 'FAIL', 'ABSENT', 'SKIPPED', 'UNREADABLE', 'NOT RUN')
 

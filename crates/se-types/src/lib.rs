@@ -1,8 +1,7 @@
 //! Shared product values. No I/O, ambient identity, runtime, clock or random source.
 //! Prefer explicit imports for Read, Cursor and Result to avoid std name collisions.
 //! Public host-facing contracts are owned by SE Code, not this crate.
-// Generated from the same data consumed by the native journey matrix.
-include!(concat!(env!("OUT_DIR"), "/harness_registry.rs"));
+pub use se_harness_registry::with_harness_registry;
 mod harness;
 pub use harness::{HARNESS_REGISTRY, HarnessRegistration, Provider};
 mod channel_error;

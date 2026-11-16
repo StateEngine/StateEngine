@@ -34,7 +34,7 @@ macro_rules! define_registry {
         },)*];
     };
 }
-with_harness_registry!(define_registry);
+crate::with_harness_registry!(define_registry);
 
 impl Provider {
     pub const fn registration(self) -> &'static HarnessRegistration {
