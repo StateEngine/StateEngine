@@ -157,7 +157,7 @@ ordinary list; a stale or invalid cursor fails explicitly.
 The same command works over SSH: `ssh HOST se --project PROJECT msg list --follow`.
 Idle connections send a cursor-only keepalive every ten seconds, without reading
 the store. JSON keepalives have `type: "idle"` and `cursor`; human output repeats
-only the cursor. This also detects a closed output pipe within ten seconds.
+only the cursor. A closed output pipe is detected on the next keepalive.
 Interrupt, termination or terminal hangup closes the client and its subscription;
 the last flushed page already contains the cursor needed to restart.
 

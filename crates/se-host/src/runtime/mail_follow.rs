@@ -71,7 +71,6 @@ pub(super) async fn serve(
         tokio::select! { biased;
             _ = shutdown.changed() => return Ok(()),
             closed = exchange.wait_for_peer_close() => { closed?; return Ok(()); },
-            changed = commits.changed() => { changed.map_err(|_| SeError::invalid("mail follow", "an open commit notifier"))?; drain = true; },
             _ = heartbeat.tick() => {
                 // Lets a closed stdout/SSH pipe retire the client even while idle.
                 send(&mut exchange, Ok(OperationOutput {
@@ -80,6 +79,7 @@ pub(super) async fn serve(
                     window: None,
                 }), false).await?;
             }
+            changed = commits.changed() => { changed.map_err(|_| SeError::invalid("mail follow", "an open commit notifier"))?; drain = true; },
         }
     }
 }
