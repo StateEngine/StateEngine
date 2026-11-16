@@ -137,6 +137,30 @@ def run(args):
                 assert 'fresh' in text.lower() and second['conversation_id'] in text, text
             check(door + ': two plain launches have distinct conversations and retain working state/unread mail')
             f.ok('--project', f.project, 'stop', child)
+            if door == 'mcp':
+                for selection, label in ((True, 'latest'), (first['session_id'], 'named')):
+                    observed = (f.repo / 'launch-observed.jsonl').read_bytes()
+                    refused = f.rpc('stateengine_agent_launch', {
+                        'target_agent_id': child, 'detach': True,
+                        'task': 'Independent conversation selection check',
+                        'resume': selection, 'idempotency_key': str(uuid.uuid4())})
+                    assert refused.get('isError'), refused
+                    body = json.dumps(refused).lower()
+                    assert 'principal' in body or 'private' in body or 'capture' in body, refused
+                    assert 'owner' in body and 'se launch' in body and '--resume' in body, refused
+                    assert (f.repo / 'launch-observed.jsonl').read_bytes() == observed
+                    check('mcp: ' + label + ' resume preserves the child capture boundary and names owner recovery')
+                # The instructed Owner recovery must actually reopen this child's
+                # conversation through the ordinary public CLI.
+                recovered, row, _ = launch(child, resume=True)
+                assert recovered['conversation_id'] == second['conversation_id'] and row['flag'] == '--resume'
+                f.ok('--project', f.project, 'stop', child)
+                refused = f.rpc('stateengine_agent_launch', {
+                    'target_agent_id': child, 'detach': True,
+                    'resume': parent['session_id'], 'idempotency_key': str(uuid.uuid4())})
+                assert refused.get('isError'), refused
+                check('mcp: another agent session cannot be selected; owner recovery works')
+                continue
             latest, row, text = launch(child, door, resume=True, plain=door == 'cli')
             assert latest['conversation_id'] == second['conversation_id'] and row['flag'] == '--resume'
             if text is not None:
