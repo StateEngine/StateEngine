@@ -94,15 +94,26 @@ impl Host {
         if venue::probe(Some(home))?.is_no_broker() {
             // This venue cannot launch a detached host; drive the product's
             // own reported foreground host instead.
-            let host = venue::Foreground::spawn(command(image, home, root).arg("up"))?;
+            let mut up = command(image, home, root);
+            up.arg("up");
+            let host = venue::Foreground::spawn(&mut up)?;
             host.start_up(
                 Instant::now() + Duration::from_secs(30),
                 Instant::now() + Duration::from_secs(15),
                 || {
-                    let value = value(command(image, home, root).arg("status").output_executable()?)?;
-                    Ok(venue::status_pid(&value)?)
+                    let value = value(
+                        command(image, home, root)
+                            .arg("status")
+                            .output_executable()?,
+                    )?;
+                    venue::status_pid(&value)
                 },
-                || Ok(command(image, home, root).arg("down").output_executable()?),
+                || {
+                    command(image, home, root)
+                        .arg("down")
+                        .output_executable()
+                        .map_err(|error| error.into())
+                },
             )?;
             foreground = Some(host);
         } else {

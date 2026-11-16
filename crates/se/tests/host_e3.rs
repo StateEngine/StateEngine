@@ -17,9 +17,6 @@ mod eight_clients_judge;
 mod executor_judge;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-#[path = "support/venue.rs"]
-mod venue;
 #[path = "../src/runtime/host.rs"]
 #[allow(
     unused_imports,
@@ -43,6 +40,9 @@ mod shutdown_write_judge;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[path = "support/host_startup.rs"]
 mod startup_judge;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "support/venue.rs"]
+mod venue;
 use fixture::*;
 use host_fixture::*;
 use se_store::*;
@@ -382,7 +382,10 @@ fn main() -> Check {
     }
     startup_judge::private_startup_refuses_missing_and_mismatched_machine()?;
     if venue.is_no_broker() {
-        println!("NOT GRADED private startup serve/retire: {}", venue.coverage());
+        println!(
+            "NOT GRADED private startup serve/retire: {}",
+            venue.coverage()
+        );
     } else {
         startup_judge::private_startup_serves_and_retires()?;
     }

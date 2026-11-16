@@ -6,10 +6,10 @@ type Check = Result<(), Box<dyn std::error::Error>>;
 mod directory;
 #[path = "../../test-support/executable.rs"]
 mod executable;
-#[path = "support/venue.rs"]
-mod venue;
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
+#[path = "support/venue.rs"]
+mod venue;
 use directory::PrivateDirectory;
 use executable::ExecutableCommand;
 

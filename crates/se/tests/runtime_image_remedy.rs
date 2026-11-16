@@ -94,6 +94,11 @@ impl Host {
             }
             std::thread::park_timeout(Duration::from_millis(10));
         }
+        // The outside observer proved the exact host exited; reap the
+        // spawned child when we hold it so Drop is only the safety net.
+        if let Some(foreground) = self.foreground.as_ref() {
+            foreground.reap();
+        }
         assert!(
             !self.home.join("endpoint.json").try_exists()?,
             "endpoint not retired"
@@ -199,16 +204,25 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
     if venue::probe(Some(&home))?.is_no_broker() {
         // This venue cannot launch a detached host; drive the product's
         // own reported foreground host instead.
-        let host = venue::Foreground::spawn(command(&installed, &home, &root, true).arg("up"))?;
+        let mut up = command(&installed, &home, &root, true);
+        up.arg("up");
+        let host = venue::Foreground::spawn(&mut up)?;
         host.start_up(
             Instant::now() + Duration::from_secs(30),
             Instant::now() + Duration::from_secs(15),
             || {
-                let value =
-                    value(command(&installed, &home, &root, true).arg("status").output_executable()?)?;
-                Ok(venue::status_pid(&value)?)
+                let value = value(
+                    command(&installed, &home, &root, true)
+                        .arg("status")
+                        .output_executable()?,
+                )?;
+                venue::status_pid(&value)
             },
-            || Ok(command(&installed, &home, &root, true).arg("down").output_executable()?),
+            || {
+                Ok(command(&installed, &home, &root, true)
+                    .arg("down")
+                    .output_executable()?)
+            },
         )?;
         foreground = Some(host);
     } else {

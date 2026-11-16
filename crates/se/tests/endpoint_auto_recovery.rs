@@ -3,10 +3,10 @@
 #![allow(dead_code, reason = "Shared native fixture serves other consumers.")]
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
-#[path = "support/venue.rs"]
-mod venue;
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
+#[path = "support/venue.rs"]
+mod venue;
 use fixture::*;
 use sha2::Digest;
 use std::{

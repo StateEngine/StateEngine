@@ -10,10 +10,10 @@ use std::{
 type Check = Result<(), Box<dyn std::error::Error>>;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
-#[path = "support/venue.rs"]
-mod venue;
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
+#[path = "support/venue.rs"]
+mod venue;
 
 fn command(image: &Path, home: &Path, json: bool) -> Command {
     let mut command = Command::new(image);

@@ -94,13 +94,13 @@ pub use stdio::*;
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod bootstrap;
+#[cfg(windows)]
+pub use bootstrap::{DetachedVenue, detached_venue};
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use bootstrap::{
     NativeRuntimeIdentity, RuntimeAdmission, RuntimeBootstrap, RuntimeStartupStderr,
     current_process_identity, current_runtime_identity,
 };
-#[cfg(windows)]
-pub use bootstrap::{DetachedVenue, detached_venue};
 #[cfg(target_os = "linux")]
 mod linux_native;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

@@ -19,11 +19,11 @@ use std::io::Write;
 #[path = "support/installation_account.rs"]
 mod installation_account;
 #[cfg(any(target_os = "linux", windows))]
-#[path = "support/venue.rs"]
-mod venue;
-#[cfg(any(target_os = "linux", windows))]
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
+#[cfg(any(target_os = "linux", windows))]
+#[path = "support/venue.rs"]
+mod venue;
 #[cfg(any(target_os = "linux", windows))]
 use runtime_host::RunningHost;
 #[cfg(any(target_os = "linux", windows))]

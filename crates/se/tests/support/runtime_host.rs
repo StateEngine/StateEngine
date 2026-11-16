@@ -61,15 +61,26 @@ impl RunningHost {
         if crate::venue::probe(Some(home))?.is_no_broker() {
             // This venue cannot launch a detached host; drive the product's
             // own reported foreground host instead.
-            let host = crate::venue::Foreground::spawn(command(image, home, true).arg("up"))?;
+            let mut up = command(image, home, true);
+            up.arg("up");
+            let host = crate::venue::Foreground::spawn(&mut up)?;
             host.start_up(
                 Instant::now() + Duration::from_secs(30),
                 Instant::now() + Duration::from_secs(15),
                 || {
-                    let value = checked(command(image, home, true).arg("status").output_executable()?)?;
-                    Ok(crate::venue::status_pid(&value)?)
+                    let value = checked(
+                        command(image, home, true)
+                            .arg("status")
+                            .output_executable()?,
+                    )?;
+                    crate::venue::status_pid(&value)
                 },
-                || Ok(command(image, home, true).arg("down").output_executable()?),
+                || {
+                    command(image, home, true)
+                        .arg("down")
+                        .output_executable()
+                        .map_err(|error| error.into())
+                },
             )?;
             foreground = Some(host);
         } else {

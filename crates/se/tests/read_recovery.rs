@@ -204,11 +204,11 @@ fn absent_down_endpoint_names_status_and_preserves_initialized_state() -> Check 
 }
 
 #[cfg(unix)]
-#[path = "support/venue.rs"]
-mod venue;
-#[cfg(unix)]
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
+#[cfg(unix)]
+#[path = "support/venue.rs"]
+mod venue;
 
 /// Protects: mismatched stale endpoint recovery reaches the actual se up user, preserves the foreign live socket, and permits restart after moving only the record under the same home lease.
 #[cfg(unix)]

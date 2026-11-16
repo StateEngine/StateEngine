@@ -385,14 +385,13 @@ mod judge {
                 && member != 0,
             "strict fixture caller was not in its job",
         )?;
-        // Classify the venue with the same broker scan the launch would run;
-        // no process is created. On a venue that cannot verify any broker the
-        // detached launch requirement is reported, not faked.
-        let probe_machine =
-            MachineId::new("persisted-cold-bootstrap-judge").map_err(error)?;
-        let venue =
-            detached_venue(&probe_machine, Instant::now() + Duration::from_secs(45))
-                .map_err(error)?;
+        // Classify the venue the way the launch would resolve it: a direct
+        // breakaway probe, then the shared broker scan. On a venue that
+        // cannot verify any broker the detached launch requirement is
+        // reported, not faked.
+        let probe_machine = MachineId::new("persisted-cold-bootstrap-judge").map_err(error)?;
+        let venue = detached_venue(&probe_machine, Instant::now() + Duration::from_secs(45))
+            .map_err(error)?;
         match venue {
             DetachedVenue::NoBroker {
                 examined,

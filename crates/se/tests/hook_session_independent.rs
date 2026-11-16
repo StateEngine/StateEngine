@@ -121,15 +121,22 @@ fn check_case(case: &str) -> Check {
     let pid = if venue::probe(Some(&f.options.state_directory))?.is_no_broker() {
         // This venue cannot launch a detached host; drive the product's
         // own reported foreground host instead.
-        let host = venue::Foreground::spawn(command(&image, &f, &root).arg("up"))?;
+        let mut up = command(&image, &f, &root);
+        up.arg("up");
+        let host = venue::Foreground::spawn(&mut up)?;
         let pid = host.start_up(
             Instant::now() + Duration::from_secs(30),
             Instant::now() + Duration::from_secs(15),
             || {
                 let value = checked(&image, &f, &root, "status", &["status"])?;
-                Ok(venue::status_pid(&value)?)
+                venue::status_pid(&value)
             },
-            || Ok(command(&image, &f, &root).arg("down").output_executable()?),
+            || {
+                command(&image, &f, &root)
+                    .arg("down")
+                    .output_executable()
+                    .map_err(|error| error.into())
+            },
         )?;
         foreground = Some(host);
         pid
@@ -179,6 +186,11 @@ fn check_case(case: &str) -> Check {
                 std::thread::park_timeout(Duration::from_millis(10));
             }
         }
+    }
+    // The outside observer proved the exact fixture owner exited; reap the
+    // spawned child so the fixture keeps no handle past that proof.
+    if let Some(host) = foreground.as_ref() {
+        host.reap();
     }
     assert!(
         !f.options

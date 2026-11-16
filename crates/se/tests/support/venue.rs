@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Venue-aware host controls. On a hosted Windows runner every same-user
 //! process is contained in the runner's job, so no detached (outside-all-jobs)
 //! runtime host can be launched from it. These controls classify the venue
@@ -41,8 +42,9 @@ impl Venue {
         }
     }
 }
-/// Classifies whether this venue can launch a detached runtime host using the
-/// same broker scan a launch would run; no process is created. `home` reads
+/// Classifies whether this venue can launch a detached runtime host the same
+/// way a launch resolves it; on a job-contained Windows venue the probe may
+/// create one short-lived breakaway child, joined before it returns. `home` reads
 /// the persisted machine id when present, otherwise a synthetic label is
 /// stamped (the probe discards the identities it reads, so the label is inert).
 pub fn probe(home: Option<&Path>) -> Check<Venue> {
@@ -61,16 +63,20 @@ pub fn probe(home: Option<&Path>) -> Check<Venue> {
             None => se_types::MachineId::new("control-venue-probe")
                 .map_err(|error| format!("venue probe label is not a machine id: {error}"))?,
         };
-        Ok(match se_proc::detached_venue(&machine, Instant::now() + Duration::from_secs(45))? {
-            se_proc::DetachedVenue::NoBroker {
-                examined,
-                unreadable,
-            } => Venue::NoBroker {
-                examined,
-                unreadable,
+        Ok(
+            match se_proc::detached_venue(&machine, Instant::now() + Duration::from_secs(45))
+                .map_err(|error| format!("classify the detached venue: {error:?}"))?
+            {
+                se_proc::DetachedVenue::NoBroker {
+                    examined,
+                    unreadable,
+                } => Venue::NoBroker {
+                    examined,
+                    unreadable,
+                },
+                _ => Venue::Detached,
             },
-            _ => Venue::Detached,
-        })
+        )
     }
     #[cfg(not(windows))]
     {
@@ -97,13 +103,13 @@ pub fn status_pid(value: &serde_json::Value) -> Check<Option<u32>> {
 /// client, exactly as the pinned no-broker contract requires.
 pub struct Foreground {
     child: Arc<Mutex<Option<Child>>>,
-    captured: Arc<Mutex<(Vec<u8>, Vec<u8)>>>,
+    captured: Arc<Mutex<(Vec<u8>, Vec<u8>)>>,
 }
 impl Foreground {
     /// Spawns an already-configured `se up` command with captured stdio.
-    pub fn spawn(mut command: Command) -> Check<Self> {
+    pub fn spawn(command: &mut Command) -> Check<Self> {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let child = command.spawn()?;
+        let mut child = command.spawn()?;
         let captured = Arc::new(Mutex::new((Vec::new(), Vec::new())));
         if let Some(mut stdout) = child.stdout.take() {
             let sink = Arc::clone(&captured);
@@ -139,8 +145,11 @@ impl Foreground {
         mut status: impl FnMut() -> Check<Option<u32>>,
     ) -> Check<u32> {
         loop {
-            let exited = self.child.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(child) = exited.as_ref()
+            let mut exited = self
+                .child
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(child) = exited.as_mut()
                 && let Some(exit) = child.try_wait()?
             {
                 return Err(self.reported(format!(
@@ -153,9 +162,8 @@ impl Foreground {
                 Err(error) => return Err(error),
             }
             if Instant::now() >= until {
-                return Err(self.reported(
-                    "foreground host did not report running within the fixture bound",
-                ));
+                return Err(self
+                    .reported("foreground host did not report running within the fixture bound"));
             }
             std::thread::park_timeout(Duration::from_millis(100));
         }
@@ -182,24 +190,19 @@ impl Foreground {
     /// Waits for the exact spawned host to exit after a public stop.
     pub fn wait_for_exit(&self, until: Instant) -> Check<()> {
         loop {
-            let mut child = self
+            let mut slot = self
                 .child
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            match child.as_mut() {
-                None => return Ok(()),
-                Some(child) => match child.try_wait()? {
-                    Some(_) => {
-                        *child = None;
-                        return Ok(());
-                    }
-                    None => (),
-                },
+            let Some(child) = slot.as_mut() else {
+                return Ok(());
+            };
+            if child.try_wait()?.is_some() {
+                *slot = None;
+                return Ok(());
             }
             if Instant::now() >= until {
-                return Err(self.reported(
-                    "exact spawned host did not exit after public shutdown",
-                ));
+                return Err(self.reported("exact spawned host did not exit after public shutdown"));
             }
             std::thread::park_timeout(Duration::from_millis(10));
         }
@@ -230,7 +233,8 @@ impl Foreground {
         }
         *child = None;
     }
-    fn reported(&self, reason: String) -> Box<dyn std::error::Error> {
+    fn reported(&self, reason: impl Into<String>) -> Box<dyn std::error::Error> {
+        let reason = reason.into();
         let (stdout, stderr) = {
             let captured = self
                 .captured
