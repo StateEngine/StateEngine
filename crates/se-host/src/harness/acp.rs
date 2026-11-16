@@ -81,6 +81,9 @@ pub(crate) fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
         .ok_or_else(|| error("the original protocol binding is absent"))
 }
 impl Harness for AcpHarness {
+    fn transcript_path(&self, _binding: &HarnessBinding) -> Result<Option<std::path::PathBuf>> {
+        Ok(None)
+    }
     fn kind(&self) -> HarnessKind {
         HarnessKind::Acp
     }

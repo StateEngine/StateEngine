@@ -260,6 +260,18 @@ impl Binding {
     }
 }
 impl Harness for CodexHarness {
+    fn prepare<'a>(&'a self, request: &'a HarnessRequest, cx: CallContext) -> HostFuture<'a, ()> {
+        Box::pin(async move { self.prepare_socket(request, &cx).await })
+    }
+    fn transcript_path(&self, binding: &HarnessBinding) -> Result<Option<PathBuf>> {
+        let path = se_core::scope::require_present(
+            bound(binding)?.rollout_path()?,
+            "Codex rollout readiness",
+            "Restore the exact provider-reported persistent thread path.",
+        )?
+        .to_local()?;
+        crate::codex_capture::location(&path, &crate::codex_capture::existing_home()?).map(Some)
+    }
     fn kind(&self) -> HarnessKind {
         HarnessKind::CodexAppServer
     }

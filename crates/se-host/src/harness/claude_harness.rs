@@ -123,6 +123,9 @@ impl Harness for ClaudeHarness {
     fn kind(&self) -> HarnessKind {
         HarnessKind::ClaudeCode
     }
+    fn transcript_path(&self, binding: &HarnessBinding) -> Result<Option<PathBuf>> {
+        transcript_location(binding).map(Some)
+    }
     fn probe<'a>(
         &'a self,
         request: ProbeRequest,

@@ -122,26 +122,21 @@ impl LaunchCoordinator {
             .as_ref()
             .ok_or_else(|| error("provider readiness", "retained binding absent"))?
             .arm(&work.wake.event)?;
-        let native_pin = if plan.capture
-            && !matches!(
-                plan.profile.provider,
-                se_store::Provider::SeCode | se_store::Provider::Acp
-            ) {
+        let transcript = if plan.capture {
             let binding = work
                 .binding
                 .as_ref()
                 .ok_or_else(|| error("capture readiness", "provider binding absent"))?;
-            let path = if plan.profile.provider == se_store::Provider::Codex {
-                let path = se_core::scope::require_present(
-                    crate::codex_rpc::bound(binding)?.rollout_path()?,
-                    "Codex rollout readiness",
-                    "Restore the exact provider-reported persistent thread path.",
-                )?
-                .to_local()?;
-                crate::codex_capture::location(&path, &crate::codex_capture::existing_home()?)?
-            } else {
-                crate::claude_transcript_location(binding)?
-            };
+            self.harness_for(plan.profile.provider)?
+                .transcript_path(binding)?
+        } else {
+            None
+        };
+        let native_pin = if let Some(path) = transcript {
+            let binding = work
+                .binding
+                .as_ref()
+                .ok_or_else(|| error("capture readiness", "provider binding absent"))?;
             let provider = plan.profile.provider;
             let conversation = outcome.witness.conversation.clone();
             let candidate_path = path.clone();

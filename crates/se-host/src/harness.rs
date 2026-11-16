@@ -303,6 +303,12 @@ pub struct ProviderInterrupt {
 /// Partial launch failure remains owned by the process arena, never dropped.
 pub trait Harness: Send + Sync {
     fn kind(&self) -> HarnessKind;
+    /// Prepare adapter-owned rendezvous after launch files have been published.
+    fn prepare<'a>(&'a self, _request: &'a HarnessRequest, _cx: CallContext) -> HostFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+    /// The adapter's native transcript, or no file for a protocol capture source.
+    fn transcript_path(&self, binding: &HarnessBinding) -> se_types::Result<Option<PathBuf>>;
     fn probe<'a>(
         &'a self,
         request: ProbeRequest,

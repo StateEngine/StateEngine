@@ -225,6 +225,9 @@ pub(crate) fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
         })
 }
 impl Harness for SecodeHarness {
+    fn transcript_path(&self, _binding: &HarnessBinding) -> Result<Option<std::path::PathBuf>> {
+        Ok(None)
+    }
     fn kind(&self) -> crate::HarnessKind {
         crate::HarnessKind::Secode
     }

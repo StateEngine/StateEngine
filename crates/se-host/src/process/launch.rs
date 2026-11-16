@@ -393,11 +393,9 @@ impl LaunchCoordinator {
                 Ok(request)
             })
             .await?;
-        if plan.profile.provider == se_store::Provider::Codex {
-            self.codex
-                .prepare_socket(&request, &call(self.store.generation, deadline)?)
-                .await?;
-        }
+        harness
+            .prepare(&request, call(self.store.generation, deadline)?)
+            .await?;
         if plan.profile.provider == se_store::Provider::SeCode {
             let images = self.secode.images(&request.executable.to_local()?)?;
             let prepared = self
