@@ -333,24 +333,6 @@ pub trait Harness: Send + Sync {
     fn transcript_validator(&self) -> TranscriptValidator {
         |_, _| Ok(())
     }
-    /// Join this adapter's completion notifications to its owned supervisor.
-    #[cfg(feature = "listener")]
-    fn arm(
-        &self,
-        binding: &HarnessBinding,
-        wake: &std::sync::Arc<tokio::sync::Notify>,
-    ) -> se_types::Result<()>;
-    /// Offer deferred initial input only after activation has committed.
-    fn start_initial<'a>(
-        &'a self,
-        _binding: &'a HarnessBinding,
-        _cx: CallContext,
-    ) -> HostFuture<'a, ()> {
-        Box::pin(async { Ok(()) })
-    }
-    fn policy_notice(&self, _binding: &HarnessBinding) -> se_types::Result<Option<String>> {
-        Ok(None)
-    }
     fn recover<'a>(
         &'a self,
         _request: HarnessRecovery<'a>,

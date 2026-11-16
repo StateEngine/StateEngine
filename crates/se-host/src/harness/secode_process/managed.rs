@@ -225,9 +225,6 @@ pub(crate) fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
         })
 }
 impl Harness for SecodeHarness {
-    fn arm(&self, binding: &HarnessBinding, wake: &Arc<tokio::sync::Notify>) -> Result<()> {
-        bound(binding)?.completion.arm(wake)
-    }
     fn recover<'a>(
         &'a self,
         request: crate::HarnessRecovery<'a>,

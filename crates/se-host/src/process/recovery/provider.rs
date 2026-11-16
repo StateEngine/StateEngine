@@ -64,10 +64,6 @@ impl LaunchCoordinator {
         )
         .await
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(in crate::process) async fn restore_provider(
         &self,
         work: &mut Work,
@@ -142,7 +138,7 @@ impl LaunchCoordinator {
                     "the original provider exited during reconnect; no replacement was adopted",
                 ));
             }
-            harness.arm(&binding, &work.wake.event)?;
+            binding.arm(&work.wake.event)?;
             Ok(())
         }
         .await;

@@ -260,16 +260,6 @@ impl Binding {
     }
 }
 impl Harness for CodexHarness {
-    fn arm(&self, binding: &HarnessBinding, wake: &Arc<tokio::sync::Notify>) -> Result<()> {
-        bound(binding)?.completion.arm(wake)
-    }
-    fn start_initial<'a>(
-        &'a self,
-        binding: &'a HarnessBinding,
-        cx: CallContext,
-    ) -> HostFuture<'a, ()> {
-        Box::pin(async move { CodexHarness::start_initial(self, binding, cx).await })
-    }
     fn recover<'a>(
         &'a self,
         request: crate::HarnessRecovery<'a>,
