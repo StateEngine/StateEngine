@@ -205,6 +205,20 @@ def feature_arguments(inputs):
     return arguments
 
 
+def release_rustflags(target, config):
+    # Without an explicit --target, cargo passes the config's target rustflags
+    # to every compiler invocation, including build scripts and host proc
+    # macros. The Apple no_uuid link flag corrupts those host units on a cold
+    # build (issue 340), so the flag lives here instead of in
+    # .cargo/config.toml: release builds always pass --target, which keeps
+    # the flag on the target units only.
+    flags = list(config.get("target", {}).get(target, {}).get("rustflags", []))
+    if target.endswith("apple-darwin") and "link-arg=-Wl,-no_uuid" not in flags:
+        # Avoid per-link UUID changes in independently rebuilt native Mac archives.
+        flags += ["-C", "link-arg=-Wl,-no_uuid"]
+    return flags
+
+
 class SeedKeyMismatch(ValueError):
     """A named seed was built from different pinned inputs; the build stays valid without it."""
 
@@ -426,7 +440,7 @@ def main():
     epoch = int(run("git", "show", "-s", "--format=%ct", "HEAD"))
     sysroot = Path(run("rustc", "+" + toolchain, "--print", "sysroot"))
     config = tomllib.loads((ROOT / ".cargo/config.toml").read_text())
-    flags = config.get("target", {}).get(args.target, {}).get("rustflags", [])
+    flags = release_rustflags(args.target, config)
     seed_key = {"schema": "se.release-build-seed-key/v2", "toolchain": toolchain,
         "compiler": compiler, "target": args.target, "profile": "distribution",
         "rustflags": flags, "cargo_config_overrides": overrides,

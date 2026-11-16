@@ -115,6 +115,14 @@ fn check_case(case: &str) -> Check {
         .as_str()
         .ok_or("agent id")?
         .parse()?;
+    #[cfg(windows)]
+    let host_child = foreground_host::ForegroundHost::start(
+        command(&image, &f, &root),
+        &f.options.state_directory,
+    )?;
+    #[cfg(windows)]
+    let up = host_child.ready().clone();
+    #[cfg(not(windows))]
     let up = checked(&image, &f, &root, "up", &["up"])?;
     let pid = u32::try_from(up["process"]["pid"].as_u64().ok_or("host PID absent")?)?;
     let native = se_proc::read_process(
@@ -160,6 +168,8 @@ fn check_case(case: &str) -> Check {
             }
         }
     }
+    #[cfg(windows)]
+    host_child.wait()?;
     assert!(
         !f.options
             .state_directory
@@ -445,3 +455,7 @@ fn hook_session_active() -> Check {
 #[path = "../../test-support/executable.rs"]
 mod executable;
 use executable::ExecutableCommand;
+
+#[cfg(windows)]
+#[path = "support/foreground_host.rs"]
+mod foreground_host;

@@ -1584,6 +1584,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-harness-registry"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "se-host"
 version = "0.0.1-alpha.1"
 dependencies = [
@@ -1709,6 +1717,7 @@ name = "se-types"
 version = "0.0.1-alpha.1"
 dependencies = [
  "schemars",
+ "se-harness-registry",
  "serde",
  "serde_json",
  "sha2",

@@ -3,21 +3,10 @@ use super::*;
 use rusqlite::OptionalExtension;
 use se_types::{AgentId, NativePath, SessionId};
 pub(crate) fn provider(value: Provider) -> &'static str {
-    match value {
-        Provider::Claude => "claude",
-        Provider::Codex => "codex",
-        Provider::SeCode => "secode",
-        Provider::Acp => "acp",
-    }
+    value.id()
 }
 pub(crate) fn parse_provider(value: &str) -> StoreResult<Provider> {
-    match value {
-        "claude" => Ok(Provider::Claude),
-        "codex" => Ok(Provider::Codex),
-        "secode" => Ok(Provider::SeCode),
-        "acp" => Ok(Provider::Acp),
-        _ => Err(invalid("stored provider")),
-    }
+    Provider::from_id(value).ok_or_else(|| invalid("stored provider"))
 }
 pub(crate) fn consent(value: Consent) -> &'static str {
     match value {

@@ -78,6 +78,8 @@ fn read_exit_until(
     }
 }
 struct Host {
+    #[cfg(windows)]
+    child: foreground_host::ForegroundHost,
     image: PathBuf,
     home: PathBuf,
     root: PathBuf,
@@ -87,11 +89,16 @@ struct Host {
 }
 impl Host {
     fn start(image: &Path, home: &Path, root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        #[cfg(windows)]
+        let child = foreground_host::ForegroundHost::start(command(image, home, root), home)?;
+        #[cfg(not(windows))]
         value(command(image, home, root).arg("up").output_executable()?)?;
         let endpoint = se_host::client::endpoint::decode_endpoint(&std::fs::read(
             home.join("endpoint.json"),
         )?)?;
         let expected = endpoint.epoch.owner.fields();
+        #[cfg(windows)]
+        assert_eq!(child.ready()["process"]["pid"], expected.pid.get());
         let observed = se_proc::NativeProcessRuntime::read_process(
             expected.machine.clone(),
             se_proc::ProcessId(expected.pid.get()),
@@ -107,6 +114,8 @@ impl Host {
             "published host PID is not running this fixture's exact image"
         );
         Ok(Self {
+            #[cfg(windows)]
+            child,
             image: image.into(),
             home: home.into(),
             root: root.into(),
@@ -158,6 +167,8 @@ impl Host {
             }
             std::thread::park_timeout(Duration::from_millis(10));
         }
+        #[cfg(windows)]
+        self.child.wait()?;
         self.stopped = true;
         Ok(())
     }
@@ -458,3 +469,7 @@ fn check(hosted: bool) -> Check {
 #[path = "../../test-support/executable.rs"]
 mod executable;
 use executable::ExecutableCommand;
+
+#[cfg(windows)]
+#[path = "support/foreground_host.rs"]
+mod foreground_host;
