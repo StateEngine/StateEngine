@@ -6,7 +6,7 @@ use std::{
     mem::{size_of, zeroed},
     os::windows::{
         ffi::OsStrExt,
-        io::{AsRawHandle, OwnedHandle},
+        io::{AsHandle, AsRawHandle, OwnedHandle},
     },
     ptr,
 };
@@ -436,6 +436,36 @@ impl NativePipeReservation {
     }
     pub fn name(&self) -> &OsStr {
         &self.name
+    }
+    /// A synchronous child standard-stream end of a retained evented pipe.
+    /// The caller creates and verifies its reactor instance first. No handle
+    /// is inheritable here; the native process launcher transfers this File.
+    pub fn stdio_client(&self, readable: bool) -> IpcNativeResult<std::fs::File> {
+        let path = wide(&self.name)?;
+        let access = if readable {
+            GENERIC_READ
+        } else {
+            GENERIC_WRITE
+        };
+        // SAFETY: the protected reservation remains owned, the NUL-terminated
+        // name outlives CreateFile, and null attributes disable inheritance.
+        let raw = unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                access | READ_CONTROL | FILE_READ_ATTRIBUTES,
+                0,
+                ptr::null(),
+                OPEN_EXISTING,
+                SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                ptr::null_mut(),
+            )
+        };
+        if raw == INVALID_HANDLE_VALUE {
+            return Err(last("connect private provider stream"));
+        }
+        let client = owned(raw, "own private provider stream")?;
+        self.verify_reactor_instance(client.as_handle())?;
+        Ok(client.into())
     }
     /// Observes the current server-instance count through this retained first
     /// instance. One means only the reservation remains at this observation;

@@ -2,43 +2,65 @@
 use super::protocol::{Bootstrap, CHUNK_BYTES, Chunk};
 use crate::client::wire;
 use se_types::{Result, SeError};
-use std::{process::Stdio, time::Duration};
+#[cfg(unix)]
+use std::process::Stdio;
+use std::time::Duration;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::NamedPipeServer as Input;
+#[cfg(unix)]
+use tokio::process::{ChildStdin as Input, Command};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    process::{Child, ChildStdin, Command},
+    process::Child,
     sync::mpsc,
     task::JoinSet,
 };
 
 pub(super) struct Provider {
     child: Child,
-    input: Option<ChildStdin>,
+    input: Option<Input>,
     output: mpsc::Receiver<Result<Chunk>>,
     readers: JoinSet<()>,
+    #[cfg(windows)]
+    _reservations: [se_proc::native_ipc::NativePipeReservation; 3],
 }
 
 impl Provider {
-    pub fn spawn(plan: &Bootstrap) -> Result<Self> {
-        let mut child = Command::new(plan.executable.to_local()?)
-            .args(&plan.arguments)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| wire::io_failure("start runner provider", error))?;
-        let (sender, output) = mpsc::channel(8);
-        let mut readers = JoinSet::new();
-        let stdout = child.stdout.take().ok_or_else(missing_pipe)?;
-        let stderr = child.stderr.take().ok_or_else(missing_pipe)?;
-        readers.spawn(read_stream(stdout, "stdout", sender.clone()));
-        readers.spawn(read_stream(stderr, "stderr", sender));
-        let input = child.stdin.take();
-        Ok(Self {
+    pub async fn spawn(plan: &Bootstrap) -> Result<Self> {
+        #[cfg(unix)]
+        let (child, input, stdout, stderr) = {
+            let mut child = Command::new(plan.executable.to_local()?)
+                .args(&plan.arguments)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|error| wire::io_failure("start runner provider", error))?;
+            let stdout = child.stdout.take().ok_or_else(missing_pipe)?;
+            let stderr = child.stderr.take().ok_or_else(missing_pipe)?;
+            let input = child.stdin.take().ok_or_else(missing_pipe)?;
+            (child, input, stdout, stderr)
+        };
+        #[cfg(windows)]
+        let super::windows_stdio::Spawned {
             child,
             input,
+            stdout,
+            stderr,
+            reservations,
+        } = super::windows_stdio::spawn(plan).await?;
+        let (sender, output) = mpsc::channel(8);
+        let mut readers = JoinSet::new();
+        readers.spawn(read_stream(stdout, "stdout", sender.clone()));
+        readers.spawn(read_stream(stderr, "stderr", sender));
+        Ok(Self {
+            child,
+            input: Some(input),
             output,
             readers,
+            #[cfg(windows)]
+            _reservations: reservations,
         })
     }
 

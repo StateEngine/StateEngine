@@ -2,6 +2,8 @@
 //! is not yet wired into agent launch, native scope recovery or durable replay.
 pub mod protocol;
 mod provider;
+#[cfg(windows)]
+mod windows_stdio;
 
 use crate::{
     AuthorizedConnection, BlockingPool, EndpointRecord, HandshakeInput, IpcConnection, IpcEnvelope,
@@ -48,10 +50,7 @@ pub fn private_entry() -> Result<()> {
     let record = child_record(&parent)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        // Windows child stdio uses blocking I/O: two retained output reads
-        // need independent slots from stdin writes and native IPC proof work.
-        // This is a fixed I/O bound; the reactor stays on the current thread.
-        .max_blocking_threads(if cfg!(windows) { 4 } else { 1 })
+        .max_blocking_threads(1)
         .thread_keep_alive(Duration::ZERO)
         .build()
         .map_err(|error| wire::io_failure("start runner reactor", error))?;
@@ -144,7 +143,7 @@ async fn serve(
             )
             .await?;
         if provider.is_none() {
-            *provider = Some(Provider::spawn(plan)?);
+            *provider = Some(Provider::spawn(plan).await?);
         }
         let active = provider.as_mut().ok_or_else(invalid)?;
         if relay(&mut connection, active).await? {
