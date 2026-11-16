@@ -5,7 +5,7 @@ use crate::bootstrap::Bootstrap;
 use se_core::{ops::AnyOp, scope, store_error::store_error};
 use se_host::client::{BlockingConnection, BlockingIpcClient, ClientOptions, lease::Deadline};
 use se_store::{Actor, Scope, Snapshot};
-use se_types::{Result, SeError};
+use se_types::{Read, Result, SeError};
 use std::{
     io::{self, Write},
     num::NonZeroU32,
@@ -112,7 +112,15 @@ fn prepare(
     selections.validate()?;
     let options = execute::options();
     let deadline = Deadline::from_options(&options)?;
-    let endpoint = super::autostart::endpoint(cx, &files, &deadline, diagnostic)?;
+    // An SSH shell may select a different runtime directory. The protected
+    // publication and native server proof identify the already-running host;
+    // only an absent publication needs the ordinary startup rendezvous.
+    let endpoint = match execute::endpoint(&files)? {
+        Read::Present { value } => value,
+        Read::Absent { .. } => super::autostart::endpoint(cx, &files, &deadline, diagnostic)?,
+        Read::Unreadable { source, reason, .. } => return Err(scope::unreadable(&source, &reason)),
+        Read::Unknown { what } => return Err(scope::unreadable("runtime endpoint", &what)),
+    };
     let mut call = crate::ipc::operation(operation, &selections, endpoint.generation)?;
     call.presence = caller.owner.as_ref().map(|owner| {
         se_host::client::presence::OwnerPresence::from_observation(owner.native_observation())
