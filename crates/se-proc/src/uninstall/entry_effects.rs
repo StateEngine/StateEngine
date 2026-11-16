@@ -136,7 +136,12 @@ pub(super) fn complete(
         .get("token")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| refuse("deliver uninstall completion", "token absent"))?;
-    let name = native::wide(Path::new(&format!(r"\\.\pipe\{pipe}")))?;
+    // This output endpoint is a local device name, not a state-file path.
+    // The validated suffix cannot change its namespace or introduce a NUL.
+    let name: Vec<u16> = format!(r"\\.\pipe\{pipe}")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
     let until = clock() + 5000;
     let mut channel = loop {
         // Identification SQOS is present before connection, preventing a pipe
