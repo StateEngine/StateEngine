@@ -10,6 +10,8 @@ use std::{
 type Check = Result<(), Box<dyn std::error::Error>>;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
+#[path = "support/venue.rs"]
+mod venue;
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
 

@@ -13,6 +13,8 @@ use std::{
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
+#[path = "support/venue.rs"]
+mod venue;
 static ROUTES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn command(image: &Path, home: &Path, root: &Path) -> Command {
@@ -81,13 +83,31 @@ struct Host {
     image: PathBuf,
     home: PathBuf,
     root: PathBuf,
+    foreground: Option<venue::Foreground>,
     identity: se_proc::ProcessIdentity,
     generation: u64,
     stopped: bool,
 }
 impl Host {
     fn start(image: &Path, home: &Path, root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        value(command(image, home, root).arg("up").output_executable()?)?;
+        let mut foreground = None;
+        if venue::probe(Some(home))?.is_no_broker() {
+            // This venue cannot launch a detached host; drive the product's
+            // own reported foreground host instead.
+            let host = venue::Foreground::spawn(command(image, home, root).arg("up"))?;
+            host.start_up(
+                Instant::now() + Duration::from_secs(30),
+                Instant::now() + Duration::from_secs(15),
+                || {
+                    let value = value(command(image, home, root).arg("status").output_executable()?)?;
+                    Ok(venue::status_pid(&value)?)
+                },
+                || Ok(command(image, home, root).arg("down").output_executable()?),
+            )?;
+            foreground = Some(host);
+        } else {
+            value(command(image, home, root).arg("up").output_executable()?)?;
+        }
         let endpoint = se_host::client::endpoint::decode_endpoint(&std::fs::read(
             home.join("endpoint.json"),
         )?)?;
@@ -110,6 +130,7 @@ impl Host {
             image: image.into(),
             home: home.into(),
             root: root.into(),
+            foreground,
             identity: observed.identity,
             generation: endpoint.generation.get(),
             stopped: false,

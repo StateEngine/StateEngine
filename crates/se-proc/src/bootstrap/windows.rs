@@ -12,6 +12,7 @@ use windows_sys::Win32::{
 };
 mod broker;
 mod launch;
+pub use broker::{DetachedVenue, detached_venue};
 pub(super) use launch::{receive, spawn};
 
 pub(super) struct Child {

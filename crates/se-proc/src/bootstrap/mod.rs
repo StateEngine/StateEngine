@@ -16,6 +16,8 @@ use unix::macos as os;
 mod windows;
 #[cfg(windows)]
 use windows as os;
+#[cfg(windows)]
+pub use windows::{DetachedVenue, detached_venue};
 mod diagnostics;
 #[cfg(unix)]
 mod unix;

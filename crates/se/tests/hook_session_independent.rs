@@ -18,6 +18,8 @@ mod process;
 #[path = "../../se-store/tests/support/capture_fixture.rs"]
 #[allow(dead_code, reason = "Only session event constructors are needed.")]
 mod session;
+#[path = "support/venue.rs"]
+mod venue;
 
 fn command(image: &Path, f: &Fixture, root: &Path) -> Command {
     let mut command = Command::new(image);
@@ -115,8 +117,26 @@ fn check_case(case: &str) -> Check {
         .as_str()
         .ok_or("agent id")?
         .parse()?;
-    let up = checked(&image, &f, &root, "up", &["up"])?;
-    let pid = u32::try_from(up["process"]["pid"].as_u64().ok_or("host PID absent")?)?;
+    let mut foreground = None;
+    let pid = if venue::probe(Some(&f.options.state_directory))?.is_no_broker() {
+        // This venue cannot launch a detached host; drive the product's
+        // own reported foreground host instead.
+        let host = venue::Foreground::spawn(command(&image, &f, &root).arg("up"))?;
+        let pid = host.start_up(
+            Instant::now() + Duration::from_secs(30),
+            Instant::now() + Duration::from_secs(15),
+            || {
+                let value = checked(&image, &f, &root, "status", &["status"])?;
+                Ok(venue::status_pid(&value)?)
+            },
+            || Ok(command(&image, &f, &root).arg("down").output_executable()?),
+        )?;
+        foreground = Some(host);
+        pid
+    } else {
+        let up = checked(&image, &f, &root, "up", &["up"])?;
+        u32::try_from(up["process"]["pid"].as_u64().ok_or("host PID absent")?)?
+    };
     let native = se_proc::read_process(
         se_types::MachineId::new("hook-review")?,
         se_proc::ProcessId(pid),

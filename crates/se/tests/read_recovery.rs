@@ -204,6 +204,9 @@ fn absent_down_endpoint_names_status_and_preserves_initialized_state() -> Check 
 }
 
 #[cfg(unix)]
+#[path = "support/venue.rs"]
+mod venue;
+#[cfg(unix)]
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
 

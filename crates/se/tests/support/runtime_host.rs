@@ -9,6 +9,9 @@ use std::{
 
 /// Holds the exact observed native instance; PID reuse never proves its exit.
 pub struct RunningHost {
+    image: std::path::PathBuf,
+    home: std::path::PathBuf,
+    foreground: Option<crate::venue::Foreground>,
     endpoint: se_host::EndpointRecord,
     key: Secret,
     identity: se_proc::ProcessIdentity,
@@ -54,7 +57,24 @@ impl RunningHost {
         result
     }
     fn start_observed(image: &Path, home: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        checked(command(image, home, true).arg("up").output_executable()?)?;
+        let mut foreground = None;
+        if crate::venue::probe(Some(home))?.is_no_broker() {
+            // This venue cannot launch a detached host; drive the product's
+            // own reported foreground host instead.
+            let host = crate::venue::Foreground::spawn(command(image, home, true).arg("up"))?;
+            host.start_up(
+                Instant::now() + Duration::from_secs(30),
+                Instant::now() + Duration::from_secs(15),
+                || {
+                    let value = checked(command(image, home, true).arg("status").output_executable()?)?;
+                    Ok(crate::venue::status_pid(&value)?)
+                },
+                || Ok(command(image, home, true).arg("down").output_executable()?),
+            )?;
+            foreground = Some(host);
+        } else {
+            checked(command(image, home, true).arg("up").output_executable()?)?;
+        }
         let endpoint = se_host::client::endpoint::decode_endpoint(&std::fs::read(
             home.join("endpoint.json"),
         )?)?;
@@ -74,6 +94,9 @@ impl RunningHost {
             "published host is not this fixture's copied image"
         );
         Ok(Self {
+            image: image.into(),
+            home: home.into(),
+            foreground,
             endpoint,
             key: Secret::new(std::fs::read(home.join("credential"))?)?,
             identity: observed.identity,
@@ -120,6 +143,23 @@ impl RunningHost {
             .live()
             .map_err(|error| format!("stop preflight: {error}"))?
         {
+            return Ok(());
+        }
+        if let Some(foreground) = &self.foreground {
+            // The foreground host is stopped through the public CLI from this
+            // separate client, exactly as the pinned no-broker contract requires.
+            let output = command(&self.image, &self.home, true)
+                .arg("down")
+                .output_executable()?;
+            if !matches!(output.status.code(), Some(0) | Some(2)) {
+                return Err(format!(
+                    "public down refused the foreground host: {} {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )
+                .into());
+            }
+            foreground.wait_for_exit(Instant::now() + Duration::from_secs(10))?;
             return Ok(());
         }
         let until = se_types::UnixMicros::new(

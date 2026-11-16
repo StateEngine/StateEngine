@@ -11,6 +11,8 @@ use std::{
 type Check = Result<(), Box<dyn std::error::Error>>;
 #[path = "../../test-support/directory.rs"]
 mod directory;
+#[path = "support/venue.rs"]
+mod venue;
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
 use directory::PrivateDirectory;

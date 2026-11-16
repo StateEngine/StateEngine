@@ -2,6 +2,8 @@
 #![cfg(windows)]
 #[path = "../../test-support/directory.rs"]
 mod cleanup_directory;
+#[path = "support/venue.rs"]
+mod venue;
 use std::{
     error::Error,
     fs,
@@ -43,6 +45,7 @@ struct Host {
     image: PathBuf,
     home: PathBuf,
     root: PathBuf,
+    foreground: Option<venue::Foreground>,
     identity: se_proc::ProcessIdentity,
     stopped: bool,
 }
@@ -192,12 +195,30 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
             "refusal published a host"
         );
     }
-    let started = value(
-        command(&installed, &home, &root, true)
-            .arg("up")
-            .output_executable()?,
-    )?;
-    assert_eq!(started["state"], "running");
+    let mut foreground = None;
+    if venue::probe(Some(&home))?.is_no_broker() {
+        // This venue cannot launch a detached host; drive the product's
+        // own reported foreground host instead.
+        let host = venue::Foreground::spawn(command(&installed, &home, &root, true).arg("up"))?;
+        host.start_up(
+            Instant::now() + Duration::from_secs(30),
+            Instant::now() + Duration::from_secs(15),
+            || {
+                let value =
+                    value(command(&installed, &home, &root, true).arg("status").output_executable()?)?;
+                Ok(venue::status_pid(&value)?)
+            },
+            || Ok(command(&installed, &home, &root, true).arg("down").output_executable()?),
+        )?;
+        foreground = Some(host);
+    } else {
+        let started = value(
+            command(&installed, &home, &root, true)
+                .arg("up")
+                .output_executable()?,
+        )?;
+        assert_eq!(started["state"], "running");
+    }
     let endpoint =
         se_host::client::endpoint::decode_endpoint(&fs::read(home.join("endpoint.json"))?)?;
     let fields = endpoint.epoch.owner.fields();
@@ -213,6 +234,7 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
         image: installed.clone(),
         home,
         root,
+        foreground,
         identity: observed.identity,
         stopped: false,
     };

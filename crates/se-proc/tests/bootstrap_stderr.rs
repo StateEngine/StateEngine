@@ -385,7 +385,34 @@ mod judge {
                 && member != 0,
             "strict fixture caller was not in its job",
         )?;
-        trial("broker")?;
+        // Classify the venue with the same broker scan the launch would run;
+        // no process is created. On a venue that cannot verify any broker the
+        // detached launch requirement is reported, not faked.
+        let probe_machine =
+            MachineId::new("persisted-cold-bootstrap-judge").map_err(error)?;
+        let venue =
+            detached_venue(&probe_machine, Instant::now() + Duration::from_secs(45))
+                .map_err(error)?;
+        match venue {
+            DetachedVenue::NoBroker {
+                examined,
+                unreadable,
+            } => println!(
+                "NOT GRADED bootstrap broker: no verified detached broker among {examined} examined same-user processes; {unreadable} process contexts unreadable"
+            ),
+            DetachedVenue::Broker => {
+                trial("broker")?;
+                println!(
+                    "bootstrap broker: 1 passed, 0 failed; caller remains in strict job; child outside all jobs and exited"
+                );
+            }
+            DetachedVenue::Direct => {
+                return Err(
+                    "caller was assigned to the strict job but the venue probe reported no job membership"
+                        .into(),
+                );
+            }
+        }
         // SAFETY: same retained caller/job after the detached child has exited.
         require(
             // SAFETY: retained private job and current-process query with writable BOOL.
@@ -393,9 +420,6 @@ mod judge {
                 && member != 0,
             "launch changed the caller's job membership",
         )?;
-        println!(
-            "bootstrap broker: 1 passed, 0 failed; caller remains in strict job; child outside all jobs and exited"
-        );
         Ok(())
     }
     pub fn run() -> Result {

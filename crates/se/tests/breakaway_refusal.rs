@@ -2,6 +2,8 @@
 #![cfg(windows)]
 #[path = "../../test-support/directory.rs"]
 mod cleanup_directory;
+#[path = "support/venue.rs"]
+mod venue;
 use std::{
     error::Error,
     fs,
@@ -241,6 +243,18 @@ impl Drop for Fixture {
 #[test]
 fn eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it() -> Result {
     let mut f = Fixture::new("broker")?;
+    let venue = venue::probe(Some(&f.home))?;
+    if venue.is_no_broker() {
+        // This venue cannot establish a detached launch context at all, so
+        // the broker half of this contract is not graded here; the pinned
+        // no-broker foreground contract still grades on every venue.
+        println!(
+            "NOT GRADED broker: {}; the detached launch requirement is exercised only in venues that can establish it",
+            venue.coverage()
+        );
+        f.finish()?;
+        return Ok(());
+    }
     f.run_strict(false)?;
     let identity = f
         .host

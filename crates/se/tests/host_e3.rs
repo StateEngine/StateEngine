@@ -17,6 +17,9 @@ mod eight_clients_judge;
 mod executor_judge;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[path = "support/venue.rs"]
+mod venue;
 #[path = "../src/runtime/host.rs"]
 #[allow(
     unused_imports,
@@ -60,7 +63,7 @@ use std::{
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-fn listener_message_working_and_hook() -> Check {
+fn listener_message_working_and_hook(venue: &venue::Venue) -> Check {
     let initialized = se_host::initialize_host_process()?;
     let f = std::mem::ManuallyDrop::new(Fixture::new()?);
     let (mut direct, lease) = f.direct()?;
@@ -273,20 +276,29 @@ fn listener_message_working_and_hook() -> Check {
         LeaseMode::Host,
         Some(f.store.clone()),
     )?);
-    cold_capture::check(
-        &f,
-        cold_capture::Capture {
-            machine_key: &machine_key,
-            session_key: &session_key,
-            conversation: &conversation,
-            transcript: &transcript,
-            first_line: &line,
-            source,
-        },
-    )?;
-    println!(
-        "PASS listener_message_working_and_hook: authenticated commits, replay, outside turn/cursor/state, storage join, endpoint retirement and lease reacquisition"
-    );
+    if venue.is_no_broker() {
+        // The venue-independent commits above are graded; only the cold
+        // native capture needs a detached launch context.
+        println!("NOT GRADED cold native capture: {}", venue.coverage());
+        println!(
+            "PASS listener_message_working_and_hook: authenticated commits, replay, outside turn/cursor/state, storage join, endpoint retirement and lease reacquisition; cold capture not graded"
+        );
+    } else {
+        cold_capture::check(
+            &f,
+            cold_capture::Capture {
+                machine_key: &machine_key,
+                session_key: &session_key,
+                conversation: &conversation,
+                transcript: &transcript,
+                first_line: &line,
+                source,
+            },
+        )?;
+        println!(
+            "PASS listener_message_working_and_hook: authenticated commits, replay, outside turn/cursor/state, storage join, endpoint retirement and lease reacquisition"
+        );
+    }
     drop(std::mem::ManuallyDrop::into_inner(f));
     Ok(())
 }
@@ -320,6 +332,7 @@ fn main() -> Check {
         });
     }
     se_proc::initialize_file_creation_owner()?;
+    let venue = venue::probe(None)?;
     if args.get(1).is_some_and(|arg| arg == "--owner-client") {
         return presence_judge::client(&args);
     }
@@ -368,16 +381,31 @@ fn main() -> Check {
         return eight_clients_judge::check();
     }
     startup_judge::private_startup_refuses_missing_and_mismatched_machine()?;
-    startup_judge::private_startup_serves_and_retires()?;
-    listener_message_working_and_hook()?;
+    if venue.is_no_broker() {
+        println!("NOT GRADED private startup serve/retire: {}", venue.coverage());
+    } else {
+        startup_judge::private_startup_serves_and_retires()?;
+    }
+    listener_message_working_and_hook(&venue)?;
     shutdown_judge::disconnected_stop()?;
     shutdown_judge::pending_drain()?;
     shutdown_judge::cancelled_stop()?;
     shutdown_write_judge::check()?;
-    recovery_judge::restart_after_crash()?;
+    if venue.is_no_broker() {
+        println!("NOT GRADED crash restart: {}", venue.coverage());
+    } else {
+        recovery_judge::restart_after_crash()?;
+    }
     eight_clients_judge::check()?;
-    println!(
-        "host_e3: 12 passed; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
-    );
+    if venue.is_no_broker() {
+        println!(
+            "host_e3: venue-independent judges passed; not graded on this venue ({}): private startup serve/retire, cold native capture, crash restart; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate",
+            venue.coverage()
+        );
+    } else {
+        println!(
+            "host_e3: 12 passed; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
+        );
+    }
     Ok(())
 }
