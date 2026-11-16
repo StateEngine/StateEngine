@@ -83,6 +83,16 @@ fn live_member(
         _ => Ok(None),
     }
 }
+fn live_group(live: &LiveObservation) -> ProcResult<Option<ProcessId>> {
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    Ok(crate::macos_process::info(live.identity.pid, deadline)?
+        .filter(|info| {
+            crate::macos_process::start(info) == live.identity.start
+                && info.pbi_status != libc::SZOMB
+        })
+        .map(|info| ProcessId(info.pbi_pgid)))
+}
+
 pub(super) fn in_group(expected: &ProcessIdentity, group: ProcessId) -> ProcResult<bool> {
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
     let Some(info) = crate::macos_process::info(expected.pid, deadline)? else {
@@ -256,17 +266,7 @@ impl Scope {
             }
             live.push(found.identity);
         }
-        for expected in &self.tracked {
-            if let Some(found) = live_member(expected, &root)?
-                && !live.contains(&found.identity)
-            {
-                self.escaped = true;
-                if live.len() == self.max_members {
-                    return Err(capacity("tracked obligations", self.max_members as u64));
-                }
-                live.push(found.identity);
-            }
-        }
+        self.observe_tracked_members(&root, group, &mut live)?;
         for registration in self
             .registrations
             .iter()
@@ -275,6 +275,39 @@ impl Scope {
             registration.rearm();
         }
         observation(self.scope.clone(), live, anchored, self.escaped)
+    }
+    fn observe_tracked_members(
+        &mut self,
+        root: &ProcessIdentity,
+        group: ProcessId,
+        live: &mut Vec<ProcessIdentity>,
+    ) -> ProcResult<()> {
+        for expected in &self.tracked {
+            let Some(found) = live_member(expected, root)? else {
+                continue;
+            };
+            let Some(current_group) = live_group(&found)? else {
+                continue;
+            };
+            // A census miss or an exec within the group is not an escape.
+            // Keep escape debt only after a live same-birth membership read.
+            if current_group != group {
+                self.escaped = true;
+            }
+            if let Some(previous) = live.iter_mut().find(|previous| {
+                previous.pid == found.identity.pid
+                    && previous.boot == found.identity.boot
+                    && previous.start == found.identity.start
+            }) {
+                *previous = found.identity;
+                continue;
+            }
+            if live.len() == self.max_members {
+                return Err(capacity("tracked obligations", self.max_members as u64));
+            }
+            live.push(found.identity);
+        }
+        Ok(())
     }
     pub fn stop(&mut self, deadline: Instant) -> ProcResult<StopDispatch> {
         self.signal(deadline, libc::SIGKILL)
