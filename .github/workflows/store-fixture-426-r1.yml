@@ -1,0 +1,73 @@
+name: Store fixture ownership native comparison
+'on':
+  push:
+    branches:
+    - prime/store-fixture-426-r1
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  PYTHONUTF8: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_TERM_COLOR: never
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: windows-2025
+          arm: base
+          sha: d051bf191945aba15bb04dbe639bfd46d2fff1f3
+        - os: windows-2025
+          arm: head
+          sha: ec435eed2f3ef7dff7eb82d92d1ba62c6cf85903
+        - os: ubuntu-24.04
+          arm: head
+          sha: ec435eed2f3ef7dff7eb82d92d1ba62c6cf85903
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      SOURCE_SHA: ${{ matrix.sha }}
+      SOURCE_ARM: ${{ matrix.arm }}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ matrix.sha }}
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: store-fixture-426-v1-${{ matrix.os }}
+        cache-workspace-crates: false
+    - name: Record pinned native checks and five existing test binaries
+      shell: python
+      run: 'import ast,base64,hashlib,os,subprocess,sys
+
+        from pathlib import Path
+
+        data=base64.b64decode(''IiIiUmVjb3JkIGV4aXN0aW5nIHN0b3JlLWZpeHR1cmUgdGVzdHMgYXQgYSBwaW5uZWQgc291cmNlIHdpdGhvdXQgcmV0cmllcy4iIiIKaW1wb3J0IGhhc2hsaWIKaW1wb3J0IGpzb24KaW1wb3J0IG9zCmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAppbXBvcnQgc2h1dGlsCmltcG9ydCBzdWJwcm9jZXNzCmltcG9ydCB0aW1lCmltcG9ydCB4bWwuZXRyZWUuRWxlbWVudFRyZWUgYXMgRVQKCnJvb3QgPSBQYXRoKG9zLmVudmlyb25bJ0dJVEhVQl9XT1JLU1BBQ0UnXSkKb3V0ID0gUGF0aChvcy5lbnZpcm9uWydSVU5ORVJfVEVNUCddKSAvICdzdG9yZS1maXh0dXJlLXJlc3VsdHMnCm91dC5ta2RpcihleGlzdF9vaz1GYWxzZSkKdGFyZ2V0ID0gJ3g4Nl82NC1wYy13aW5kb3dzLW1zdmMnIGlmIG9zLm5hbWUgPT0gJ250JyBlbHNlICd4ODZfNjQtdW5rbm93bi1saW51eC1nbnUnCnJlcG9ydCA9IHsnc291cmNlJzogb3MuZW52aXJvblsnU09VUkNFX1NIQSddLCAnYXJtJzogb3MuZW52aXJvblsnU09VUkNFX0FSTSddLAogICAgICAgICAgJ3RhcmdldCc6IHRhcmdldCwgJ3N0YWdlcyc6IFtdLCAnY2FzZXMnOiBbXSwgJ3Bhc3NlZCc6IEZhbHNlfQoKCmRlZiBzYXZlKCk6CiAgICAob3V0IC8gJ3JlcG9ydC5qc29uJykud3JpdGVfdGV4dChqc29uLmR1bXBzKHJlcG9ydCwgaW5kZW50PTIpICsgJ1xuJywgZW5jb2Rpbmc9J3V0Zi04JykKCgpkZWYgcnVuKGxhYmVsLCBhcmd2KToKICAgIHN0YWdlID0geydsYWJlbCc6IGxhYmVsLCAnYXJndic6IGFyZ3YsICdzdGF0ZSc6ICdzdGFydGVkJ30KICAgIHJlcG9ydFsnc3RhZ2VzJ10uYXBwZW5kKHN0YWdlKQogICAgc2F2ZSgpCiAgICBzdGFydGVkID0gdGltZS5tb25vdG9uaWMoKQogICAgd2l0aCAob3V0IC8gKGxhYmVsICsgJy5zdGRvdXQnKSkub3Blbignd2InKSBhcyBzdGRvdXQsIChvdXQgLyAobGFiZWwgKyAnLnN0ZGVycicpKS5vcGVuKCd3YicpIGFzIHN0ZGVycjoKICAgICAgICByZXN1bHQgPSBzdWJwcm9jZXNzLnJ1bihhcmd2LCBjd2Q9cm9vdCwgc3RkaW49c3VicHJvY2Vzcy5ERVZOVUxMLCBzdGRvdXQ9c3Rkb3V0LCBzdGRlcnI9c3RkZXJyKQogICAgc3RhZ2UudXBkYXRlKHN0YXRlPSdjb21wbGV0ZWQnLCBleGl0PXJlc3VsdC5yZXR1cm5jb2RlLCBzZWNvbmRzPXRpbWUubW9ub3RvbmljKCkgLSBzdGFydGVkKQogICAgc2F2ZSgpCgoKZGVmIHRlc3RzKGxhYmVsLCBwYWNrYWdlLCBiaW5hcmllcyk6CiAgICBqdW5pdCA9IHJvb3QgLyAndGFyZ2V0L25leHRlc3QvY2kvanVuaXQueG1sJwogICAgaWYganVuaXQuZXhpc3RzKCk6CiAgICAgICAganVuaXQudW5saW5rKCkKICAgIGFyZ3YgPSBbJ2NhcmdvJywgJ25leHRlc3QnLCAncnVuJywgJy1wJywgcGFja2FnZSwgJy0tYWxsLWZlYXR1cmVzJywgJy0tbG9ja2VkJywgJy0tdGFyZ2V0JywgdGFyZ2V0LAogICAgICAgICAgICAnLS1wcm9maWxlJywgJ2NpJywgJy0tbm8tZmFpbC1mYXN0JywgJy0tcmV0cmllcycsICcwJywgJy0tbm8tdGVzdHMnLCAnZmFpbCcsCiAgICAgICAgICAgICctLWZhaWx1cmUtb3V0cHV0JywgJ2ltbWVkaWF0ZS1maW5hbCcsICctLXN1Y2Nlc3Mtb3V0cHV0JywgJ2ZpbmFsJywKICAgICAgICAgICAgJy0tc3RhdHVzLWxldmVsJywgJ2FsbCcsICctLWZpbmFsLXN0YXR1cy1sZXZlbCcsICdhbGwnXQogICAgZm9yIGJpbmFyeSBpbiBiaW5hcmllczoKICAgICAgICBhcmd2ICs9IFsnLS10ZXN0JywgYmluYXJ5XQogICAgcnVuKGxhYmVsLCBhcmd2KQogICAgaWYgbm90IGp1bml0LmlzX2ZpbGUoKToKICAgICAgICByZXBvcnRbbGFiZWwgKyAnX2p1bml0J10gPSAnYWJzZW50JwogICAgICAgIHNhdmUoKQogICAgICAgIHJldHVybgogICAgc2h1dGlsLmNvcHkyKGp1bml0LCBvdXQgLyAobGFiZWwgKyAnLWp1bml0LnhtbCcpKQogICAgcmVwb3J0W2xhYmVsICsgJ19qdW5pdCddID0gJ3JlYWRhYmxlJwogICAgZm9yIHN1aXRlIGluIEVULnBhcnNlKGp1bml0KS5nZXRyb290KCkuaXRlcigndGVzdHN1aXRlJyk6CiAgICAgICAgZm9yIGNhc2UgaW4gc3VpdGUuZmluZGFsbCgndGVzdGNhc2UnKToKICAgICAgICAgICAgc3RhdHVzID0gbmV4dCgodGFnIGZvciB0YWcgaW4gWydmYWlsdXJlJywgJ2Vycm9yJywgJ3NraXBwZWQnXSBpZiBjYXNlLmZpbmQodGFnKSBpcyBub3QgTm9uZSksICdwYXNzZWQnKQogICAgICAgICAgICByZXBvcnRbJ2Nhc2VzJ10uYXBwZW5kKHsnc3VpdGUnOiBzdWl0ZS5nZXQoJ25hbWUnKSwgJ25hbWUnOiBjYXNlLmdldCgnbmFtZScpLCAnc3RhdHVzJzogc3RhdHVzfSkKICAgIHNhdmUoKQoKCnRyeToKICAgIGFjdHVhbCA9IHN1YnByb2Nlc3MuY2hlY2tfb3V0cHV0KFsnZ2l0JywgJ3Jldi1wYXJzZScsICdIRUFEJ10sIGN3ZD1yb290LCB0ZXh0PVRydWUpLnN0cmlwKCkKICAgIGFzc2VydCBhY3R1YWwgPT0gcmVwb3J0Wydzb3VyY2UnXSwgKGFjdHVhbCwgcmVwb3J0Wydzb3VyY2UnXSkKICAgIGFzc2VydCBub3Qgc3VicHJvY2Vzcy5jaGVja19vdXRwdXQoWydnaXQnLCAnc3RhdHVzJywgJy0tcG9yY2VsYWluJywgJy0tdW50cmFja2VkLWZpbGVzPW5vJ10sIGN3ZD1yb290KQogICAgcmVwb3J0Wydjb21waWxlciddID0gc3VicHJvY2Vzcy5jaGVja19vdXRwdXQoWydydXN0YycsICctdlYnXSwgY3dkPXJvb3QsIHRleHQ9VHJ1ZSkKICAgIGFzc2VydCAnaG9zdDogJyArIHRhcmdldCBpbiByZXBvcnRbJ2NvbXBpbGVyJ10KICAgIHJlcG9ydFsnbmV4dGVzdCddID0gc3VicHJvY2Vzcy5jaGVja19vdXRwdXQoWydjYXJnbycsICduZXh0ZXN0JywgJy0tdmVyc2lvbiddLCBjd2Q9cm9vdCwgdGV4dD1UcnVlKQogICAgZm9yIG5hbWUgaW4gWydDYXJnby5sb2NrJywgJy5jb25maWcvbmV4dGVzdC50b21sJywgJ2NyYXRlcy9zZS1zdG9yZS90ZXN0cy9zdXBwb3J0L3N0b3JlX2ZpeHR1cmUucnMnLAogICAgICAgICAgICAgICAgICdjcmF0ZXMvc2UtcHJvYy9zcmMvY3JlYXRpb25fb3duZXIucnMnXToKICAgICAgICBkZXN0ID0gb3V0IC8gJ3NvdXJjZS1pbnB1dHMnIC8gbmFtZQogICAgICAgIGRlc3QucGFyZW50Lm1rZGlyKHBhcmVudHM9VHJ1ZSwgZXhpc3Rfb2s9VHJ1ZSkKICAgICAgICBzaHV0aWwuY29weTIocm9vdCAvIG5hbWUsIGRlc3QpCiAgICBydW4oJ2Zvcm1hdCcsIFsnY2FyZ28nLCAnZm10JywgJy0tYWxsJywgJy0tJywgJy0tY2hlY2snXSkKICAgIHJ1bignY2xpcHB5JywgWydjYXJnbycsICdjbGlwcHknLCAnLXAnLCAnc2UnLCAnLXAnLCAnc2Utc3RvcmUnLCAnLS1hbGwtdGFyZ2V0cycsICctLWFsbC1mZWF0dXJlcycsCiAgICAgICAgICAgICAgICAgICAnLS1sb2NrZWQnLCAnLS10YXJnZXQnLCB0YXJnZXQsICctLScsICctRCcsICd3YXJuaW5ncyddKQogICAgdGVzdHMoJ2NsaS1taWdyYXRpb24nLCAnc2UnLCBbJ3N0b3JlX21pZ3JhdGlvbl9pbmRlcGVuZGVudCddKQogICAgdGVzdHMoJ3N0b3JlJywgJ3NlLXN0b3JlJywgWydjaGFubmVscycsICdiYWNrZ3JvdW5kX2NoZWNrcG9pbnRfaW5kZXBlbmRlbnQnLAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAnZGVmZXJyZWRfY2hlY2twb2ludF9pbmRlcGVuZGVudCcsICdzdG9yZV9wdWJsaWMnXSkKICAgIHJlcG9ydFsncGFzc2VkJ10gPSAoYWxsKHMuZ2V0KCdleGl0JykgPT0gMCBmb3IgcyBpbiByZXBvcnRbJ3N0YWdlcyddKQogICAgICAgICAgICAgICAgICAgICAgICBhbmQgcmVwb3J0LmdldCgnY2xpLW1pZ3JhdGlvbl9qdW5pdCcpID09IHJlcG9ydC5nZXQoJ3N0b3JlX2p1bml0JykgPT0gJ3JlYWRhYmxlJwogICAgICAgICAgICAgICAgICAgICAgICBhbmQgYm9vbChyZXBvcnRbJ2Nhc2VzJ10pIGFuZCBhbGwoY1snc3RhdHVzJ10gPT0gJ3Bhc3NlZCcgZm9yIGMgaW4gcmVwb3J0WydjYXNlcyddKSkKZXhjZXB0IEV4Y2VwdGlvbiBhcyBlcnJvcjoKICAgIHJlcG9ydFsncmVjb3JkZXJfZXJyb3InXSA9IHsndHlwZSc6IHR5cGUoZXJyb3IpLl9fbmFtZV9fLCAnZGV0YWlsJzogc3RyKGVycm9yKX0KZmluYWxseToKICAgIHNhdmUoKQogICAgbWVtYmVycyA9IHtwLnJlbGF0aXZlX3RvKG91dCkuYXNfcG9zaXgoKTogaGFzaGxpYi5zaGEyNTYocC5yZWFkX2J5dGVzKCkpLmhleGRpZ2VzdCgpCiAgICAgICAgICAgICAgIGZvciBwIGluIG91dC5yZ2xvYignKicpIGlmIHAuaXNfZmlsZSgpfQogICAgKG91dCAvICdtZW1iZXJzLmpzb24nKS53cml0ZV90ZXh0KGpzb24uZHVtcHMobWVtYmVycywgaW5kZW50PTIpICsgJ1xuJywgZW5jb2Rpbmc9J3V0Zi04JykKcHJpbnQoanNvbi5kdW1wcyhyZXBvcnQsIGluZGVudD0yKSkKcmFpc2UgU3lzdGVtRXhpdCgwIGlmIHJlcG9ydFsncGFzc2VkJ10gZWxzZSAxKQo='')
+
+        assert hashlib.sha256(data).hexdigest()==''800ddb09a0d090d75b120f6f28457872b82daf205257781a66e30d4ce9eb5f4f''
+
+        ast.parse(data)
+
+        script=Path(os.environ[''RUNNER_TEMP''])/''store-fixture-recorder.py''
+
+        script.write_bytes(data)
+
+        raise SystemExit(subprocess.call([sys.executable,''-B'',str(script)]))
+
+        '
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: always()
+      with:
+        name: store-fixture-${{ matrix.os }}-${{ matrix.arm }}
+        path: ${{ runner.temp }}/store-fixture-results/
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 14
