@@ -29,6 +29,7 @@ class Provider:
         self.channel_reads = 0
         self.posts = 0
         self.withheld = False
+        self.heartbeats_total = 0
         self.session = None
 
     def record(self, **event):
@@ -154,6 +155,10 @@ class Provider:
         pending = iter(item for item in dispatches if item["s"] > start)
         # A zombie arm holds everything after the first dispatch until the client
         # resumes, so the second message can only arrive through the repair.
+        # A provider that never hands on a dispatch gives the client no progress
+        # to count, which is the case the bounded loop exists for.
+        if self.mode == "zombie_all":
+            pending = iter(())
         if self.mode == "zombie" and auth["op"] == 2:
             first = next(pending, None)
             if first is not None:
@@ -206,6 +211,14 @@ class Provider:
                     self.withheld = True
                     self.record(kind="heartbeat_withheld", seq=value.get("d"))
                     continue
+                # "zombie_all" acks the first heartbeat of the very first
+                # connection and then forgets every socket, so a client that
+                # treats an acknowledgement as progress would resume forever.
+                if self.mode == "zombie_all" and self.heartbeats_total:
+                    self.record(kind="heartbeat_withheld", seq=value.get("d"))
+                    continue
+                self.heartbeats_total += 1
+
                 self.frame(stream, {"op": 11})
 
 

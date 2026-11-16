@@ -247,10 +247,11 @@ async fn payload(
         }
     }
 }
-/// How many connections in a row may end with no acknowledged heartbeat and no
-/// accepted dispatch before the bot is called unreachable. One is an ordinary
-/// provider-side reconnect; a run of them means resuming is not working, and the
-/// caller should see the outage instead of a loop that never ends.
+/// How many connections in a row may end without accepting a single dispatch
+/// before the bot is called unreachable. One is an ordinary provider-side
+/// reconnect; a run of them means resuming is not working, and the caller should
+/// see the outage instead of a loop that never ends. Only an accepted dispatch
+/// resets the count, so the loop is bounded however the provider misbehaves.
 const MAX_SILENT_RESUMES: u8 = 3;
 
 /// A live gateway socket plus the heartbeat contract the provider gave it.
@@ -343,9 +344,8 @@ async fn connect(
 /// dropped socket. Every other end returns the error the caller already mapped,
 /// so no refusal changes meaning here. A queue that cannot take the next
 /// dispatch stays terminal, because only the caller can advance its cursor.
-/// `silent` counts consecutive connections that ended without any acknowledged
-/// heartbeat or accepted dispatch, so the caller can tell a reconnect from an
-/// outage.
+/// `silent` counts consecutive connections that ended without accepting a single
+/// dispatch, so the caller can tell a working reconnect from an outage.
 async fn consume(
     transport: &Discord,
     resume: &mut Option<Resume>,
@@ -385,12 +385,10 @@ async fn consume(
             }
         };
         match value["op"].as_u64() {
-            Some(11) => {
-                link.waiting_ack = false;
-                // An acknowledged heartbeat proves the session is alive, so the
-                // consecutive-silent-connection count starts over.
-                *silent = 0;
-            }
+            // An acknowledged heartbeat keeps this socket alive but is not
+            // progress: a provider that acks once and then forgets the socket
+            // would otherwise reset the count on every attempt and loop forever.
+            Some(11) => link.waiting_ack = false,
             Some(1) => {
                 send(&mut link.socket, json!({"op":1,"d":link.last_seen})).await?;
                 link.waiting_ack = true;
@@ -431,7 +429,8 @@ async fn consume(
                 let checkpoint = resume.as_mut().ok_or(Error::ProviderProtocol)?;
                 checkpoint.seq = seq;
                 let cursor = checkpoint.cursor()?;
-                let (update, message) = if kind == "MESSAGE_CREATE" {
+                let delivered = kind == "MESSAGE_CREATE";
+                let (update, message) = if delivered {
                     (id(&data["id"])?, Some(data.clone()))
                 } else {
                     use sha2::{Digest, Sha256};
@@ -460,7 +459,13 @@ async fn consume(
                 }
                 // Only a dispatch the queue accepted may be the resume point.
                 *handed = Some(seq);
-                *silent = 0;
+                // A delivered message is progress. A READY or RESUMED checkpoint
+                // is not: a provider that resumes and immediately forgets the
+                // socket again would otherwise reset the count on every attempt
+                // and loop forever.
+                if delivered {
+                    *silent = 0;
+                }
             }
             _ => return Err(Error::ProviderProtocol),
         }

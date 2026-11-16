@@ -337,6 +337,41 @@ fn discord_wire_review_zombie_connection_resumes_without_losing_mail() -> Check 
     f.finish(outcome)
 }
 
+/// A provider that acknowledges one heartbeat per connection and then forgets the
+/// socket must end as an honest unreachable: a READY or RESUMED checkpoint is not
+/// progress, so the resume loop stays bounded instead of retrying forever.
+#[test]
+fn discord_wire_review_repeated_zombies_end_unreachable() -> Check {
+    let f = Fixture::new("zombie_all")?;
+    let outcome = runtime()?.block_on(async {
+        let mut receiver = ready(&f).await?;
+        let mut checkpoints = 0;
+        loop {
+            match tokio::time::timeout(Duration::from_secs(15), receiver.next(&f.token)).await? {
+                Ok(Some(row)) => {
+                    require(
+                        !matches!(row.content, IncomingContent::Text { .. }),
+                        "a dispatch arrived, so the provider was making progress",
+                    )?;
+                    receiver.ack(&row.cursor)?;
+                    checkpoints += 1;
+                }
+                Err(Error::ProviderUnreachable) => break,
+                _ => return Err("an endlessly zombied provider did not end unreachable".into()),
+            }
+        }
+        require(
+            checkpoints > 0,
+            "the connection was never resumed before the provider was called gone",
+        )?;
+        f.no_fixture_errors()
+    });
+    if outcome.is_err() {
+        f.report("discord_wire_review_repeated_zombies_end_unreachable");
+    }
+    f.finish(outcome)
+}
+
 /// An expired resume session is explicit and invalidated, so the subsequent
 /// attempt identifies afresh instead of retrying an impossible replay forever.
 #[test]
