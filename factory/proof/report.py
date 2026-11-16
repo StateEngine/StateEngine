@@ -142,6 +142,8 @@ def windows_full_write_result(row, limits, context=None):
     if not isinstance(writes, list):
         return "NOT MEASURED"
     ceiling_key = "full_write_windows_p95_ms_inclusive"
+    if not isinstance(limits, dict):
+        return "NOT MEASURED"
     ceiling = limits.get(ceiling_key)
     if not finite_nonnegative(ceiling):
         return "NOT MEASURED"
@@ -176,10 +178,12 @@ def windows_full_write_result(row, limits, context=None):
 
 
 def probe_result(budget, row, limits, numeric, context=None):
-    if budget == "B10":
-        return windows_full_write_result(row, limits, context)
+    # A row the producer marked unavailable measured nothing, whatever samples it
+    # still carries, so this guard comes before any budget-specific judgement.
     if not numeric or row.get("state") == "unavailable":
         return "NOT MEASURED"
+    if budget == "B10":
+        return windows_full_write_result(row, limits, context)
     if budget not in {"B5", "B6"}:
         return "PASS" if row.get("passed") is True else "MISS" if row.get("passed") is False else "NOT MEASURED"
     if not isinstance(limits, dict):
@@ -325,7 +329,7 @@ def invocation(inv, directory, run=None):
         return entry
     # One applicability value for everything downstream, built here because this
     # is where the receipt's platform became verified rather than asserted.
-    context = ProbeContext(receipt["platform"])
+    context = ProbeContext(receipt.get("platform"))
     if (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
             or any(type(row.get("journey")) is not int or row.get("result") not in ("PASS", "FAIL") for row in rows)
             or {row["journey"] for row in rows} != expected or len(rows) != len(expected)):
