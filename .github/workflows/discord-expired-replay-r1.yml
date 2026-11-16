@@ -1,0 +1,41 @@
+name: Linux expired replay diagnostic
+'on':
+  push:
+    branches:
+    - prime/discord-expired-replay-r1
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: '0'
+  CARGO_BUILD_JOBS: '2'
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: da1591f8d561326a02863b9acecbb5b5ad9eb005
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: ./.github/actions/rust
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+      with:
+        shared-key: discord-expired-replay-r1
+        cache-on-failure: true
+        cache-targets: false
+    - name: Keep native main and candidate replay evidence
+      shell: python
+      run: "import hashlib,json,os,platform,subprocess,time,traceback\nfrom pathlib import Path\nSOURCES={'base':'da1591f8d561326a02863b9acecbb5b5ad9eb005','candidate':'5272453a26874919e1ccadefe070f52e6cdcf0f3'}\nFILTER='test(=channels::discord::review::discord_wire_review_expired_replay_is_visible) | test(=channels::discord::review::discord_wire_review_cancellation_and_heartbeats)'\nroot=Path(os.environ['RUNNER_TEMP'])/'discord-expired-replay-r1'\nroot.mkdir(exist_ok=False)\nsummary={'complete':False,'sources':SOURCES,'attempts':20,'profile':'ci','retries':0,'rows':[],'platform':platform.platform(),'publication':os.environ['GITHUB_SHA'],'run':os.environ['GITHUB_RUN_ID'],'scope':'Unmodified pinned product sources; paired expired-replay/heartbeat fixture tests on native Linux with existing evidence export. A failing test is evidence, not a passing product qualification.'}\ndef save(): (root/'summary.json').write_text(json.dumps(summary,indent=2)+'\\n')\ntry:\n    assert platform.system()=='Linux'\n\
+        \    assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==SOURCES['base']\n    paths=['crates/se-host/src/channels/discord.rs','crates/se-host/src/channels/discord/gateway.rs','crates/se-host/src/channels/discord/review.rs','crates/se-host/src/channels/discord/review/fixture.rs','crates/se-host/tests/judges/discord_gateway_review.py']\n    for path in paths:\n        left=subprocess.check_output(['git','show',SOURCES['base']+':'+path])\n        right=subprocess.check_output(['git','show',SOURCES['candidate']+':'+path])\n        assert left==right,path+' changed between comparison inputs'\n        dest=root/'source'/path;dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(left)\n    (root/'product.diff').write_bytes(subprocess.check_output(['git','diff',SOURCES['base'],SOURCES['candidate']]))\n    for arm,sha in SOURCES.items():\n        work=Path(os.environ['RUNNER_TEMP'])/('discord-expired-'+arm)\n        subprocess.run(['git','worktree','add','--detach',str(work),sha],check=True)\n\
+        \        dest=root/arm;dest.mkdir()\n        env=dict(os.environ,CARGO_TARGET_DIR=str(work/'target'),CHANNEL_REVIEW_EVIDENCE=str(dest/'provider-evidence'))\n        command=['cargo','nextest','run','--target',subprocess.check_output(['rustc','--print','host-tuple'],text=True).strip(),'-p','se-host','--lib','--features','remote','--locked','--profile','ci','--retries','0','--stress-count','20','-E',FILTER]\n        row={'arm':arm,'sha':sha,'argv':command,'exit':None};summary['rows'].append(row);save()\n        with (dest/'stdout.log').open('wb') as out,(dest/'stderr.log').open('wb') as err:\n            done=subprocess.run(command,cwd=work,env=env,stdout=out,stderr=err,timeout=1200)\n        row['exit']=done.returncode\n        row['source_clean']=not subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=work,text=True)\n        assert row['source_clean'],'comparison source drift'\n        row['provider_records']=len(list((dest/'provider-evidence').glob('*/events.json')))\n\
+        \        save()\n    summary['complete']=True\nexcept Exception as error:\n    summary.update(error=repr(error),traceback=traceback.format_exc(),cleanup_unknown=isinstance(error,subprocess.TimeoutExpired))\nfinally:\n    save()\n    files={p.relative_to(root).as_posix():{'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in root.rglob('*') if p.is_file()}\n    (root/'manifest.json').write_text(json.dumps({'files':files},indent=2)+'\\n')\nraise SystemExit(0 if summary['complete'] else 1)\n"
+    - name: Retain complete diagnostic inputs and provider records
+      if: ${{ always() }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: discord-expired-replay-r1
+        path: ${{ runner.temp }}/discord-expired-replay-r1
+        include-hidden-files: true
+        retention-days: 14
+        if-no-files-found: error
