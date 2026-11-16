@@ -286,6 +286,10 @@ impl Window {
             omitted,
         })
     }
+    /// Resume after the last item returned by this window, including an empty page.
+    pub fn end_cursor(&self) -> Option<&Cursor> {
+        self.to.as_ref()
+    }
     /// Detailed producer accounting is absent in a minimal public wire Window.
     pub fn fields(&self) -> Option<&WindowFields> {
         self.fields.as_ref()

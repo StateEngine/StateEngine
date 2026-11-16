@@ -34,6 +34,7 @@ pub mod identity;
 mod init;
 #[path = "route/init_config.rs"]
 mod init_config;
+pub(crate) mod mail_follow;
 #[path = "route/owner.rs"]
 pub mod owner;
 #[path = "route/process.rs"]
