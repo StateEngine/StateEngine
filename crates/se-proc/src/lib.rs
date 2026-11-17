@@ -101,6 +101,8 @@ pub use user_manager::{runtime_user_scope_empty, verify_runtime_user_scope};
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod bootstrap;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod bootstrap_protocol;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use bootstrap::{
     NativeRuntimeIdentity, RuntimeAdmission, RuntimeBootstrap, RuntimeStartupStderr,
     current_process_identity, current_runtime_identity,

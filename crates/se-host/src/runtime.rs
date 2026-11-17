@@ -68,10 +68,14 @@ mod planning;
 pub(crate) mod status;
 #[cfg(feature = "listener")]
 pub use planning::PreparedCall;
+#[cfg(feature = "listener")]
+pub(crate) mod client_activity;
 #[cfg(all(feature = "listener", feature = "import"))]
 mod history_import;
 #[cfg(feature = "listener")]
 pub(crate) mod mail;
+#[cfg(feature = "listener")]
+mod mail_follow;
 #[cfg(feature = "listener")]
 mod remote;
 #[cfg(feature = "listener")]

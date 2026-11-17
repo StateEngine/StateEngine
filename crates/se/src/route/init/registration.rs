@@ -238,7 +238,7 @@ pub(super) fn finish(
             ));
         }
     };
-    let command = AgentCommand::launch_in_home(&agent.id, &cx.home, &id, false)
+    let command = AgentCommand::launch_in_home(&agent.id, &cx.home, &id, true)
         .ok_or_else(|| scope::unreadable("first launch command", AgentCommand::HOME_UNAVAILABLE))?;
     let node_source = repository.path.join(".stateengine/projects.jsonl");
     let import_hint = if cfg!(feature = "import") {

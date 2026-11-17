@@ -38,17 +38,18 @@ pub async fn connect(
     ));
     let verification = staging::verify(&remote, &image.digest, windows, image.apple);
     let command = if windows {
-        let (verified, detail) = ssh(destination, verification).await?;
+        let outcome = ssh(destination, verification).await?;
+        let (verified, detail) = (outcome.success, &outcome.stdout);
         if !verified {
-            return Err(super::command::verification_error(&detail));
+            return Err(super::command::verification_error(detail));
         }
         acceptance
     } else {
         image_commands::accept(&verification, &acceptance)
     };
-    let (success, bytes) = ssh(destination, command).await?;
-    let bytes = zeroize::Zeroizing::new(bytes);
-    if !success {
+    let outcome = ssh(destination, command).await?;
+    let bytes = zeroize::Zeroizing::new(outcome.stdout);
+    if !outcome.success {
         if bytes.starts_with(format!("{}\n", image_commands::VERIFY_FAILED).as_bytes()) {
             return Err(super::command::verification_error(&bytes));
         }

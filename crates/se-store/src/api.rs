@@ -470,6 +470,17 @@ pub trait Snapshot {
     /// direct created_by, both read in this snapshot; other private reads are
     /// unchanged.
     fn control_target(&mut self, target: AgentId) -> StoreResult<Read<ControlTarget>>;
+    /// One exact saved session under the same target-control authority. This
+    /// returns launch metadata only, never conversation contents.
+    fn control_session(
+        &mut self,
+        _target: AgentId,
+        _session: SessionId,
+    ) -> StoreResult<Read<ProjectionRecord>> {
+        Ok(Read::Unknown {
+            what: "exact saved-session selection is not implemented by this snapshot".into(),
+        })
+    }
     fn process(&mut self, id: LifecycleId) -> StoreResult<Read<ProjectionRecord>>;
     /// Internal recorded custody for status/agent control, not a public process.list operation.
     fn processes(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;

@@ -23,7 +23,7 @@ struct State {
     durable_revision: Option<u64>,
 }
 pub(super) struct Watch {
-    _work: Option<super::super::activity::Work>,
+    _work: Option<crate::runtime::client_activity::Work>,
     service: Service,
     state: Option<State>,
 }
@@ -45,7 +45,7 @@ impl Watch {
         // Remote wire subscriptions stay open until cancellation. A local view
         // cache survives individual IPC calls, so only those calls own activity.
         let work = matches!(&request, view_request::ViewRequest::Remote(_))
-            .then(|| service.router.execution.mail_waits.remote_work())
+            .then(|| service.router.execution.mail_waits.client_work())
             .transpose()?;
         Ok(Self {
             _work: work,
