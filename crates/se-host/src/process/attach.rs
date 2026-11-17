@@ -114,37 +114,13 @@ impl LaunchCoordinator {
         work.pending_transport = None;
         #[cfg(feature = "remote")]
         self.attach_remote_live(work);
-        if let Some(binding) = work
-            .binding
-            .as_ref()
-            .and_then(|binding| binding.secode.as_ref())
-        {
-            binding.completion.arm(&work.wake.event)?;
-        }
-        if let Some(binding) = work
-            .binding
-            .as_ref()
-            .and_then(|binding| binding.claude.as_ref())
-        {
-            binding.completion.arm(&work.wake.event)?;
-        }
-        if let Some(binding) = work
-            .binding
-            .as_ref()
-            .and_then(|binding| binding.codex.as_ref())
-        {
-            binding.completion.arm(&work.wake.event)?;
-        }
         work.meta.conversation = Read::Present {
             value: outcome.witness.conversation.clone(),
         };
-        if let Some(binding) = work
-            .binding
+        work.binding
             .as_ref()
-            .and_then(|binding| binding.acp.as_ref())
-        {
-            binding.session.arm(&work.wake.event)?;
-        }
+            .ok_or_else(|| error("provider readiness", "retained binding absent"))?
+            .arm(&work.wake.event)?;
         let native_pin = if plan.capture
             && !matches!(
                 plan.profile.provider,
@@ -459,26 +435,11 @@ impl LaunchCoordinator {
                 )
                 .await?;
         }
-        if plan.profile.provider == se_store::Provider::Codex {
-            self.codex
-                .start_initial(
-                    work.binding
-                        .as_ref()
-                        .ok_or_else(|| error("Codex initial task", "retained binding absent"))?,
-                    call(self.store.generation, deadline)?,
-                )
-                .await?;
-        }
-        if plan.profile.provider == se_store::Provider::Acp {
-            self.acp
-                .start_initial(
-                    work.binding
-                        .as_ref()
-                        .ok_or_else(|| error("ACP initial task", "retained binding absent"))?,
-                    call(self.store.generation, deadline)?,
-                )
-                .await?;
-        }
+        work.binding
+            .as_ref()
+            .ok_or_else(|| error("provider initial task", "retained binding absent"))?
+            .start_initial(call(self.store.generation, deadline)?)
+            .await?;
         let resume = se_core::ops::AgentCommand::launch_in_home(
             &plan.agent.id,
             &self.options.home,
@@ -502,21 +463,11 @@ impl LaunchCoordinator {
         } else {
             None
         };
-        let policy_notice = if plan.profile.provider == se_store::Provider::Acp {
-            Some(
-                crate::harness::acp::bound(
-                    work.binding
-                        .as_ref()
-                        .ok_or_else(|| error("ACP launch status", "binding absent"))?,
-                )?
-                .session
-                .observe()?
-                .policy_notice
-                .into(),
-            )
-        } else {
-            None
-        };
+        let policy_notice = work
+            .binding
+            .as_ref()
+            .ok_or_else(|| error("provider launch status", "binding absent"))?
+            .policy_notice()?;
         let harness_policy_notice = match (policy_notice, forced_notice) {
             (Some(policy), Some(replacement)) => Some(format!("{policy} {replacement}")),
             (policy, replacement) => policy.or(replacement),
@@ -526,12 +477,7 @@ impl LaunchCoordinator {
                 self.harness.mail_connected(&plan.session)
             } else {
                 Read::Present {
-                    value: work.binding.as_ref().is_some_and(|binding| {
-                        binding.claude.is_some()
-                            || binding.codex.is_some()
-                            || binding.secode.is_some()
-                            || binding.acp.is_some()
-                    }),
+                    value: work.binding.is_some(),
                 }
             },
             harness_policy_notice,
@@ -545,12 +491,11 @@ impl LaunchCoordinator {
             project: plan.project.clone(),
             agent: plan.agent.clone(),
             session_id: plan.session.clone(),
-            provider: match plan.profile.provider {
-                se_store::Provider::Codex => se_types::Provider::Codex,
-                se_store::Provider::Claude => se_types::Provider::Claude,
-                se_store::Provider::SeCode => se_types::Provider::SeCode,
-                se_store::Provider::Acp => se_types::Provider::Acp,
-            },
+            provider: work
+                .binding
+                .as_ref()
+                .ok_or_else(|| error("provider readiness", "retained binding absent"))?
+                .provider(),
             model: work.meta.model.clone(),
             permission_profile: plan.resolved.clone(),
             conversation_id: outcome.witness.conversation,

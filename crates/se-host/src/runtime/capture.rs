@@ -229,45 +229,49 @@ impl HostedRouter {
         call: RoutedCall,
         deadline: &Deadline,
     ) -> Result<ExecutedCall> {
-        #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        let _memory_reclaim = self
-            .memory_reclaim
-            .as_ref()
-            .map(super::memory::MemoryReclaim::after_work);
-        self.check_open()?;
-        let (admitted, hook) = match call {
-            RoutedCall::Prepared(prepared) => {
-                return prepared
-                    .execute(self.execution.clone(), Default::default())
-                    .await;
+        // Bound the state embedded in every caller, including IPC connection tasks.
+        Box::pin(async move {
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            let _memory_reclaim = self
+                .memory_reclaim
+                .as_ref()
+                .map(super::memory::MemoryReclaim::after_work);
+            self.check_open()?;
+            let (admitted, hook) = match call {
+                RoutedCall::Prepared(prepared) => {
+                    return prepared
+                        .execute(self.execution.clone(), Default::default())
+                        .await;
+                }
+                RoutedCall::Deferred { admitted, hook } => (*admitted, hook.map(|hook| *hook)),
+            };
+            if matches!(
+                &admitted.input,
+                HostedInput::Operation(se_core::ops::AnyOp::ClientWatch(_))
+            ) {
+                return super::local_client::watch(self, admitted, deadline).await;
             }
-            RoutedCall::Deferred { admitted, hook } => (*admitted, hook.map(|hook| *hook)),
-        };
-        if matches!(
-            &admitted.input,
-            HostedInput::Operation(se_core::ops::AnyOp::ClientWatch(_))
-        ) {
-            return super::local_client::watch(self, admitted, deadline).await;
-        }
-        let Some(hook) = hook else {
-            return execute(
-                self.execution.clone(),
-                ExecutionCall {
-                    admitted,
-                    deadline: deadline.clone(),
-                },
-            )
-            .await;
-        };
-        let HostedCall {
-            admission,
-            terminal,
-            selections,
-            ..
-        } = admitted;
-        self.capturing()
-            .signal(admission, terminal, selections, hook, deadline)
-            .await
+            let Some(hook) = hook else {
+                return execute(
+                    self.execution.clone(),
+                    ExecutionCall {
+                        admitted,
+                        deadline: deadline.clone(),
+                    },
+                )
+                .await;
+            };
+            let HostedCall {
+                admission,
+                terminal,
+                selections,
+                ..
+            } = admitted;
+            self.capturing()
+                .signal(admission, terminal, selections, hook, deadline)
+                .await
+        })
+        .await
     }
     fn capturing(&self) -> Capturing<'_> {
         Capturing {

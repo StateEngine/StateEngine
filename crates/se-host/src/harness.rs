@@ -1,6 +1,50 @@
 use crate::{CallContext, HarnessKind, HostFuture, SessionIdentity};
 use se_types::{Body, IdempotencyKey, NativePath, ProviderSessionId, Read, Secret, Sha256};
 use std::{ffi::OsString, path::PathBuf};
+#[cfg(feature = "listener")]
+pub(crate) mod binding {
+    //! Adapter-owned lifecycle operations on the original retained streams.
+    use se_types::{ErrorBody, SeError};
+    use std::{any::Any, sync::Arc, time::Instant};
+    use tokio::sync::Notify;
+
+    #[derive(Default)]
+    pub(crate) struct Observation {
+        pub observed_at: Option<Instant>,
+        pub idle: Option<bool>,
+        pub mail_pending: bool,
+        pub capture_pending: bool,
+        pub failure: Option<ErrorBody>,
+        pub capture_failure: Option<SeError>,
+    }
+
+    #[derive(Clone, Copy)]
+    pub(crate) enum Signal {
+        Interrupt,
+        #[cfg(target_os = "linux")]
+        Terminate,
+    }
+
+    #[derive(Clone, Copy, Default)]
+    pub(crate) struct StopPolicy {
+        pub signal: Option<Signal>,
+        pub native_window: bool,
+    }
+
+    pub(crate) trait AdapterBinding: Send + Sync {
+        fn as_any(&self) -> &dyn Any;
+        fn provider(&self) -> se_types::Provider;
+        fn arm(&self, wake: &Arc<Notify>) -> se_types::Result<()>;
+        fn observe(&self, capture: bool) -> Observation;
+        fn stop_policy(&self) -> StopPolicy;
+        fn start_initial(&self, _cx: crate::CallContext) -> crate::HostFuture<'_, ()> {
+            Box::pin(async { Ok(()) })
+        }
+        fn policy_notice(&self) -> se_types::Result<Option<String>> {
+            Ok(None)
+        }
+    }
+}
 
 /// Headless Claude launch plan: settings/MCP files, argv, readiness, transcript.
 pub mod claude;
@@ -10,6 +54,8 @@ mod claude_harness;
 pub use claude::{
     config_home as claude_config_home, conversation as claude_conversation, provider_environment,
 };
+#[cfg(feature = "listener")]
+pub(crate) use claude_harness::Binding as ClaudeBinding;
 #[cfg(feature = "listener")]
 pub use claude_harness::{
     ClaudeHarness, qualify_adoption as qualify_claude_adoption,
@@ -181,18 +227,61 @@ pub struct HarnessAttach {
     pub transport: ProviderTransport,
     pub transcript: Read<crate::TranscriptPin>,
 }
-/// Provider streams retained through startup as well as a proven attach.
+/// One adapter's streams, retained through startup as well as a proven attach.
+/// Only the adapter modules construct it; empty and mixed bindings are impossible.
 pub struct HarnessBinding {
     #[cfg(feature = "listener")]
-    pub(crate) claude: Option<std::sync::Arc<claude_harness::Binding>>,
-    #[cfg(feature = "listener")]
-    pub(crate) codex: Option<std::sync::Arc<codex_rpc::Binding>>,
-    #[cfg(feature = "listener")]
-    pub(crate) secode: Option<std::sync::Arc<secode_process::Binding>>,
-    #[cfg(feature = "listener")]
-    pub(crate) acp: Option<std::sync::Arc<acp::Binding>>,
-    pub(crate) _private: (),
+    value: Box<dyn binding::AdapterBinding>,
+    #[cfg(not(feature = "listener"))]
+    _private: (),
 }
+impl HarnessBinding {
+    #[cfg(feature = "listener")]
+    fn new<T: Send + Sync + 'static>(binding: std::sync::Arc<T>) -> Self
+    where
+        std::sync::Arc<T>: binding::AdapterBinding,
+    {
+        Self {
+            value: Box::new(binding),
+        }
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn get<T: Send + Sync + 'static>(&self) -> Option<&std::sync::Arc<T>> {
+        self.value.as_any().downcast_ref()
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn provider(&self) -> se_types::Provider {
+        self.value.provider()
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn arm(&self, wake: &std::sync::Arc<tokio::sync::Notify>) -> se_types::Result<()> {
+        self.value.arm(wake)
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn observe(&self, capture: bool) -> binding::Observation {
+        self.value.observe(capture)
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn stop_policy(&self) -> binding::StopPolicy {
+        self.value.stop_policy()
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn start_initial(&self, cx: CallContext) -> HostFuture<'_, ()> {
+        self.value.start_initial(cx)
+    }
+
+    #[cfg(feature = "listener")]
+    pub(crate) fn policy_notice(&self) -> se_types::Result<Option<String>> {
+        self.value.policy_notice()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BindingWitness {
     pub identity: SessionIdentity,
