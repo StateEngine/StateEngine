@@ -53,7 +53,10 @@ class Smoke:
                               else '.local/bin/se')
         self.binary = binary
         environment = {key: value for key, value in inherited.items()
-                       if key in ('PATH', 'SystemRoot', 'windir', 'ComSpec', 'PATHEXT', 'LANG', 'LC_ALL')
+                       if key.upper() in ('PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT',
+                                          'OS', 'SYSTEMDRIVE', 'PROGRAMDATA', 'PROGRAMFILES',
+                                          'PROGRAMFILES(X86)', 'PROCESSOR_ARCHITECTURE',
+                                          'PROCESSOR_ARCHITEW6432', 'LANG', 'LC_ALL')
                        or key in settings.get('environment', [])}
         environment.update(HOME=str(self.home), USERPROFILE=str(self.home), SE_HOME=str(self.state),
                            PATH=str(binary.parent) + os.pathsep + inherited.get('PATH', ''),
@@ -168,12 +171,19 @@ class Smoke:
     def file_turn(self, token, filename, expected, previous=None):
         deadline = time.monotonic() + self.settings.get('task_seconds', 240)
         observation = dict(state='absent')
+        # A requested text newline has two native Windows encodings. Retain the
+        # actual bytes for preservation witnesses, and read one extra byte so
+        # a correct prefix with trailing data cannot pass.
+        accepted = [expected]
+        if sys.platform == 'win32' and expected.endswith(b'\n') and not expected.endswith(b'\r\n'):
+            accepted.append(expected[:-1] + b'\r\n')
+        limit = max(map(len, accepted)) + 1
         while time.monotonic() < deadline:
             try:
                 with (self.repository / filename).open('rb') as stream:
-                    observed = stream.read(len(expected) + 1)
+                    observed = stream.read(limit)
                 observation = dict(state='present', prefix_bytes=len(observed))
-                if observed == expected:
+                if observed in accepted:
                     break
             except FileNotFoundError:
                 observation = dict(state='absent')
@@ -303,7 +313,14 @@ class Smoke:
                     self.record['diagnostics'][label] = dict(state='unreadable', reason=str(error))
         self.save()
 
-    def cleanup(self):
+    def uninstall(self):
+        argv = (['powershell.exe', '-NoProfile', '-NonInteractive', '-File',
+                 self.package / 'uninstall.ps1'] if sys.platform == 'win32'
+                else [self.binary, 'uninstall'])
+        return self.commands.run([*argv, '--home', self.state, '--json', '--yes'],
+                                 'uninstall', terminal=True)
+
+    def cleanup(self, retain_home=False):
         errors = []
         try:
             self.commands.observer.observe()
@@ -326,8 +343,7 @@ class Smoke:
                 except Exception as error:
                     errors.append(name + ': ' + str(error))
             try:
-                self.commands.run([self.binary, 'uninstall', '--home', self.state, '--json'],
-                                  'uninstall', terminal=True)
+                self.uninstall()
             except Exception as error:
                 errors.append('uninstall: ' + str(error))
         try:
@@ -336,7 +352,7 @@ class Smoke:
             remaining = None
             errors.append('process census: ' + str(error))
         self.record.update(cleanup=errors, process_closure=remaining)
-        if not errors and remaining == [] and not self.record.get('failure'):
+        if not errors and remaining == [] and not self.record.get('failure') and not retain_home:
             shutil.rmtree(self.home)
             require(not self.home.exists(), 'Finished fixture home remains')
         self.record['fixture_retained'] = self.home.exists()
