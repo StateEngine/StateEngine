@@ -106,10 +106,10 @@ impl LaunchCoordinator {
             let Some(binding) = &state.binding else {
                 return Ok(Read::Unknown { what: "Waiting for a provider connection; check provider sign-in. Explicitly stop this agent to cancel setup before retrying launch.".into() });
             };
-            if let Some(binding) = &binding.codex {
+            if let Some(binding) = binding.get::<crate::codex_rpc::Binding>() {
                 return Ok(self.with_provider_recovery(row, &job, binding.activity()?));
             }
-            if let Some(binding) = &binding.claude {
+            if let Some(binding) = binding.get::<crate::harness::ClaudeBinding>() {
                 if binding.attended {
                     return Ok(Read::Unknown { what: "The provider owns its terminal; turn progress is not observed on this connection. Inspect the existing window for sign-in, trust or permission prompts and read saved history before resubmitting input.".into() });
                 }

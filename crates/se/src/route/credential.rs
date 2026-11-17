@@ -81,6 +81,13 @@ pub fn require(files: &Files) -> Result<Secret> {
 /// Only authorized initial setup calls this after establishing that no initialized
 /// owner exists. Startup and ordinary retry paths call `require`, never regenerate.
 pub fn initialize(files: &Files) -> Result<Secret> {
+    initialize_before_publish(files, |_| Ok(()))
+}
+
+pub(super) fn initialize_before_publish(
+    files: &Files,
+    before_publish: impl FnOnce(&Secret) -> Result<()>,
+) -> Result<Secret> {
     match read(files)? {
         Read::Present { value } => return Ok(value),
         Read::Absent { .. } => (),
@@ -105,6 +112,7 @@ pub fn initialize(files: &Files) -> Result<Secret> {
         ))
         .with_cause(error)
     })?;
+    before_publish(&secret)?;
     let staged = files
         .0
         .create_staging(files.0.root())

@@ -204,6 +204,9 @@ impl LaunchCoordinator {
             work.remote_live = None;
         }
         work.process = None;
+        // Explicit ownership release must also retire a sleeping monitor.
+        work.wake.event.notify_waiters();
+        work.wake.event.notify_one();
         self.fill_release(row, work, deadline).await
     }
     pub(super) async fn fill_release(
