@@ -34,7 +34,7 @@
   "crates/se-host/src/harness/codex_rpc": 3669,
   "crates/se/src/runtime": 3247,
   "crates/se-proc/src/platform/windows": 3204,
-  "crates/se-proc/src/bootstrap": 3175,
+  "crates/se-proc/src/bootstrap": 3503,
   "crates/se-proc/src/runtime": 3168,
   "crates/se-proc/src/native_ipc": 3571,
   "crates/se-host/src/atlas_renewal": 2692,
