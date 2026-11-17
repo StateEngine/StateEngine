@@ -25,6 +25,7 @@ fn native_abi_lists_exact_rust_selections_and_protected_credential_references() 
                 vec![EventBody::ProfileSaved {
                     agent: agent.clone(),
                     profile: Profile {
+                        provider_settings: Default::default(),
                         provider: Provider::Codex,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,

@@ -175,7 +175,9 @@ impl LaunchCoordinator {
             mode,
             resume: plan.conversation.clone(),
             transcript_roots: plan.control.moved_from_roots.clone(),
-            replay: self.acp_replay(&plan, &work.admission, deadline).await?,
+            replay: self
+                .canonical_replay(&plan, &work.admission, deadline)
+                .await?,
             initial_input: Body::new(plan.input.task.clone().unwrap_or_else(|| {
                 "Read your StateEngine context and continue your assigned work.".into()
             }))?,
@@ -393,11 +395,9 @@ impl LaunchCoordinator {
                 Ok(request)
             })
             .await?;
-        if plan.profile.provider == se_store::Provider::Codex {
-            self.codex
-                .prepare_socket(&request, &call(self.store.generation, deadline)?)
-                .await?;
-        }
+        harness
+            .prepare(&request, call(self.store.generation, deadline)?)
+            .await?;
         if plan.profile.provider == se_store::Provider::SeCode {
             let images = self.secode.images(&request.executable.to_local()?)?;
             let prepared = self

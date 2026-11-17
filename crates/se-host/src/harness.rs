@@ -55,7 +55,7 @@ pub use claude::{
     config_home as claude_config_home, conversation as claude_conversation, provider_environment,
 };
 #[cfg(feature = "listener")]
-pub(crate) use claude_harness::Binding as ClaudeBinding;
+pub(crate) use claude_harness::{ADOPTION as CLAUDE_ADOPTION, Binding as ClaudeBinding};
 #[cfg(feature = "listener")]
 pub use claude_harness::{
     ClaudeHarness, qualify_adoption as qualify_claude_adoption,
@@ -299,10 +299,56 @@ pub struct ProviderInterrupt {
     pub requested: bool,
     pub vendor_event: Read<String>,
 }
+/// Reconnect only the original, natively verified provider session.
+pub struct HarnessRecovery<'a> {
+    pub identity: &'a SessionIdentity,
+    pub conversation: &'a ProviderSessionId,
+    pub transcript: Option<&'a crate::TranscriptPin>,
+    pub attended: bool,
+    pub retained: Option<&'a HarnessBinding>,
+}
+pub type TranscriptValidator =
+    fn(&mut se_proc::NativeSourcePin, &ProviderSessionId) -> se_types::Result<()>;
 /// Closed enum selection is performed by composition; no dynamic plugin loader.
 /// Partial launch failure remains owned by the process arena, never dropped.
 pub trait Harness: Send + Sync {
     fn kind(&self) -> HarnessKind;
+    /// Load the complete saved canonical projection before protocol resume.
+    fn canonical_resume(&self) -> bool {
+        false
+    }
+    /// Prepare adapter-owned rendezvous after launch files have been published.
+    fn prepare<'a>(&'a self, _request: &'a HarnessRequest, _cx: CallContext) -> HostFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+    /// The adapter's native transcript, or no file for a protocol capture source.
+    fn transcript_path(&self, binding: &HarnessBinding) -> se_types::Result<Option<PathBuf>>;
+    /// A fresh transcript may follow the provider's readiness echo.
+    fn transcript_wait(&self) -> Option<std::time::Duration> {
+        None
+    }
+    fn materialize_transcript<'a>(
+        &'a self,
+        _binding: &'a HarnessBinding,
+        _cx: CallContext,
+    ) -> HostFuture<'a, Option<se_types::SeError>> {
+        Box::pin(async { Ok(None) })
+    }
+    fn transcript_validator(&self) -> TranscriptValidator {
+        |_, _| Ok(())
+    }
+    fn recover<'a>(
+        &'a self,
+        _request: HarnessRecovery<'a>,
+        _cx: CallContext,
+    ) -> HostFuture<'a, HarnessBinding> {
+        Box::pin(async {
+            Err(se_core::scope::unreadable(
+                "provider restart control",
+                "the original stdin stream cannot be reopened; preserve the session and use its exact public stop/resume command",
+            ))
+        })
+    }
     fn probe<'a>(
         &'a self,
         request: ProbeRequest,

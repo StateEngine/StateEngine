@@ -6,7 +6,7 @@ use crate::ssh_transport::Diagnostics;
 mod authorization;
 mod bootstrap;
 pub(super) mod command;
-mod prepare;
+pub use super::native_image::prepare::{ImageProgress, ImageStage, prepare_image};
 use super::native_image::{self as image, staging, transactions as image_commands};
 pub use authorization::{
     Authorization, AuthorizationResult, LaunchPermissionsRequest, PermissionsRequest,
@@ -14,14 +14,9 @@ pub use authorization::{
 };
 pub(crate) use authorization::{launch_permissions, permissions};
 pub use bootstrap::connect;
-pub use prepare::{ImageProgress, ImageStage, prepare_image};
 use se_types::Result;
 use std::{collections::BTreeMap, net::SocketAddr, process::Stdio, sync::Arc, time::Duration};
-use tokio::{
-    process::{Child, Command},
-    sync::Mutex,
-    time::timeout,
-};
+use tokio::{process::Child, sync::Mutex, time::timeout};
 
 pub use se_remote::ssh::{ForwardConfig, validate_destination};
 
@@ -59,12 +54,12 @@ impl Forward {
         );
         // Forwarding refusals are functional input, so ambient quiet logging
         // must not suppress the diagnostic read by this owned process.
-        let mut child = Command::new("ssh")
+        let mut child = crate::ssh_transport::client("ssh")
             .args(["-N", "-T", "-o", "LogLevel=INFO", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
                 "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", "-L"])
             .arg(mapping).arg(&self.config.destination)
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
-            .kill_on_drop(true).spawn()
+            .spawn()
             .map_err(|_| unavailable("cannot start SSH; install the system SSH client and check the saved destination"))?;
         self.diagnostics = child.stderr.take().map(Diagnostics::start);
         self.child = Some(child);

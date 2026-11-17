@@ -244,6 +244,7 @@ fn from_principal<R: Snapshot>(
     Ok(AgentStatusOutput {
         agent: Read::Present {
             value: AgentRow {
+                provider_settings: profile.provider_settings.clone(),
                 harness: profile.harness.clone(),
                 provider_activity: matches!(provider, se_types::Provider::Claude | se_types::Provider::Codex).then(|| if never_launched {
                     Read::Absent { checked: "This agent has no launched provider session".into() }

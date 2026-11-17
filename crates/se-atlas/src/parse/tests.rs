@@ -45,6 +45,12 @@ fn budget() -> ParseBudget {
 }
 #[test]
 fn six_grammars_and_stable_signature_body_metadata() -> AtlasResult<()> {
+    // The budget is a wall-clock deadline, so a loaded runner could mark this tiny
+    // fixture as partially parsed. Freeze this thread's clock: the test then judges
+    // extraction, which is what it asserts, rather than the machine's speed. The
+    // pattern is the one the cache statement tests already use.
+    #[cfg(debug_assertions)]
+    let _clock = crate::clock::pause();
     let scope = scope()?;
     let cases = [
         (

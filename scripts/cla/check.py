@@ -13,12 +13,16 @@ ROOT = Path(__file__).resolve().parents[2]
 CONTEXT = "cla"
 CHECK_ERRORS = (KeyError, OSError, ValueError, urllib.error.URLError,
                 subprocess.SubprocessError)
+# The workflow's push filter: a default-branch change to these starts its own run.
+AGREEMENT_INPUTS = ("docs/cla/", "scripts/cla/", "CONTRIBUTING.md", ".github/workflows/cla.yml")
 
 
 class GitHub:
     def __init__(self):
         self.repository = os.environ["GITHUB_REPOSITORY"]
         self.token = os.environ["GITHUB_TOKEN"]
+        # The one default-branch commit the workflow resolved before checking out.
+        self.trusted = os.environ["CLA_TRUSTED_SHA"]
         self.run_url = (f"https://github.com/{self.repository}/actions/runs/"
                         + os.environ["GITHUB_RUN_ID"])
 
@@ -107,15 +111,33 @@ def exempt(github, user, association=None):
     return permission != "none"
 
 
+def verify_trusted(github, branch):
+    """Bind every trusted read to the pinned checkout, which must stay on the default branch."""
+    checkout = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", github.trusted) or checkout != github.trusted:
+        raise ValueError("agreement checkout is not the resolved default-branch commit")
+    tip = github.request(f"git/ref/heads/{branch}")["object"]["sha"]
+    if tip == github.trusted:
+        return
+    # Unrelated merges during the run are harmless; new agreement inputs are not.
+    moved = github.request(f"compare/{github.trusted}...{tip}")
+    if moved["status"] != "ahead":
+        raise ValueError("agreement checkout is no longer on the default branch; rerun the check")
+    if not isinstance(moved["files"], list) or len(moved["files"]) >= 300:
+        raise ValueError("default-branch changes since the agreement checkout are unreadable; rerun the check")
+    names = {name for row in moved["files"] for name in (row["filename"], row.get("previous_filename")) if name}
+    if any(name == path or (path.endswith("/") and name.startswith(path))
+           for name in names for path in AGREEMENT_INPUTS):
+        raise ValueError("agreement source changed; rerun against the current default branch")
+
+
 def validate_pull(github, pull):
     number, head = pull["number"], pull["head"]["sha"]
     repository = github.request("")
     branch = repository["default_branch"]
     if pull["base"]["repo"]["full_name"] != github.repository or pull["base"]["ref"] != branch:
         raise ValueError("agreement check requires a pull request targeting the default branch")
-    trusted = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-    if github.request(f"git/ref/heads/{branch}")["object"]["sha"] != trusted:
-        raise ValueError("trusted agreement checkout changed; rerun the check")
+    verify_trusted(github, branch)
     if pull["commits"] > 250:
         raise ValueError("GitHub limits this commit list to 250; split the pull request")
     commits = list(github.pages(f"pulls/{number}/commits"))
@@ -149,8 +171,7 @@ def validate_pull(github, pull):
     if (current["state"] != "open" or current["head"]["sha"] != head
             or current["base"]["sha"] != pull["base"]["sha"]):
         raise ValueError("pull request changed; the new revision needs its own check")
-    if github.request(f"git/ref/heads/{branch}")["object"]["sha"] != trusted:
-        raise ValueError("agreement source changed; rerun against the current default branch")
+    verify_trusted(github, branch)
     return not missing
 
 

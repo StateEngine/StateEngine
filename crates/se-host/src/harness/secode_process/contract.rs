@@ -418,3 +418,172 @@ fn unknown_attempt() -> bool {
 fn capability_error(reason: &str) -> se_types::SeError {
     unreadable("SE Code capability repair", reason)
 }
+
+/// A canonical provider row is either still pending or a complete immutable item.
+pub(crate) enum CaptureRow {
+    Pending { kind: String },
+    Ready(CanonicalMessage),
+}
+pub(crate) struct CanonicalMessage {
+    pub bytes: Vec<u8>,
+    pub end: u64,
+    pub role: se_store::Role,
+    pub text: se_types::Body,
+    pub vendor: String,
+}
+impl CaptureRow {
+    pub(crate) fn read(row: &Value, offset: u64) -> Result<Self> {
+        use se_core::ops::transcript::Position;
+        let kind = row["type"]
+            .as_str()
+            .ok_or_else(|| capture_error("SE Code message", "type absent"))?;
+        if !capture_settled(row, kind)? {
+            return Ok(Self::Pending { kind: kind.into() });
+        }
+        let id = row["id"]
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 256)
+            .ok_or_else(|| capture_error("SE Code message", "bounded native ID absent"))?;
+        // Catalog estimates can change independently of a durable
+        // message. Cursor bytes cover stable message facts instead.
+        let mut stable = row.clone();
+        if kind == "assistant"
+            && let Some(object) = stable.as_object_mut()
+        {
+            object.remove("cost");
+            object.remove("costStatus");
+        }
+        let bytes = serde_json::to_vec(&stable)
+            .map_err(|e| capture_error("SE Code canonical message", e))?;
+        let length = bytes.len() as u64;
+        let end = offset
+            .checked_add(length)
+            .filter(|end| *end <= 32 * 1024 * 1024)
+            .ok_or_else(|| {
+                capture_error(
+                    "SE Code capture",
+                    "canonical history exceeds the 32 MiB per-read bound; no suffix was accepted",
+                )
+            })?;
+        let (role, text, vendor) = canonical_body(row, kind, id, Position { offset, length })?;
+        Ok(Self::Ready(CanonicalMessage {
+            bytes,
+            end,
+            role,
+            text,
+            vendor,
+        }))
+    }
+}
+fn canonical_body(
+    row: &Value,
+    kind: &str,
+    id: &str,
+    position: se_core::ops::transcript::Position,
+) -> Result<(se_store::Role, se_types::Body, String)> {
+    use se_core::ops::transcript::Record;
+    use se_types::Body;
+    Ok(match kind {
+        "user" | "synthetic" => (
+            se_store::Role::User,
+            Body::new(
+                row["text"]
+                    .as_str()
+                    .ok_or_else(|| capture_error("SE Code user input", "text absent"))?
+                    .to_owned(),
+            )?,
+            id.to_owned(),
+        ),
+        "assistant" => {
+            let content = row["content"]
+                .as_array()
+                .ok_or_else(|| capture_error("SE Code assistant", "content array absent"))?;
+            let mut text = String::new();
+            for item in content {
+                if item["type"] == "text" {
+                    text.push_str(
+                        item["text"].as_str().ok_or_else(|| {
+                            capture_error("SE Code assistant text", "text absent")
+                        })?,
+                    );
+                }
+            }
+            // Keep explicit tool outcomes available even when a
+            // turn has no prose. These are canonical provider facts.
+            if content.iter().any(|item| item["type"] == "tool") {
+                text.push('\n');
+                text.push_str(
+                    &serde_json::to_string(content)
+                        .map_err(|e| capture_error("SE Code tool results", e))?,
+                );
+            }
+            (se_store::Role::Assistant, Body::new(text)?, id.to_owned())
+        }
+        _ => {
+            let mut record = Record::new("secode", Some(kind));
+            record.position = position;
+            if kind == "system" {
+                record.message = Some(
+                    row["text"]
+                        .as_str()
+                        .ok_or_else(|| capture_error("SE Code system message", "text absent"))?
+                        .to_owned(),
+                );
+            }
+            (
+                se_store::Role::System,
+                record.body()?,
+                format!("{}secode/{id}", se_store::TRANSCRIPT_EVENT_PREFIX),
+            )
+        }
+    })
+}
+fn capture_error(subject: &str, cause: impl std::fmt::Debug) -> se_types::SeError {
+    unreadable(subject, format!("{cause:?}"))
+}
+fn capture_settled(row: &Value, kind: &str) -> Result<bool> {
+    match kind {
+        "assistant" => {
+            if row
+                .pointer("/time/completed")
+                .and_then(Value::as_f64)
+                .is_none()
+            {
+                return Ok(false);
+            }
+            let content = row["content"].as_array().ok_or_else(|| {
+                capture_error("SE Code completed assistant", "content array absent")
+            })?;
+            for item in content.iter().filter(|item| item["type"] == "tool") {
+                match item.pointer("/state/status").and_then(Value::as_str) {
+                    Some("completed" | "error") => (),
+                    Some("streaming" | "running") => return Ok(false),
+                    _ => {
+                        return Err(capture_error(
+                            "SE Code tool outcome",
+                            "terminal state absent or unsupported",
+                        ));
+                    }
+                }
+            }
+            Ok(true)
+        }
+        "shell" => match row["status"].as_str() {
+            Some("running") => Ok(false),
+            Some("exited" | "timeout" | "killed") => Ok(true),
+            _ => Err(capture_error(
+                "SE Code shell outcome",
+                "status absent or unsupported",
+            )),
+        },
+        "compaction" => match row["status"].as_str() {
+            Some("running") => Ok(false),
+            Some("completed" | "failed") => Ok(true),
+            _ => Err(capture_error(
+                "SE Code context outcome",
+                "status absent or unsupported",
+            )),
+        },
+        _ => Ok(true),
+    }
+}

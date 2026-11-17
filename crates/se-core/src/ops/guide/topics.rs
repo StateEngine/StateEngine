@@ -123,6 +123,13 @@ assertions are optional checks; they never grant another identity or authority.
 Read a saved model with se config get agent.AGENT.model.
 Change it with se config set agent.AGENT.model MODEL. Saved profile and can-create fields
 are also supported. Use se help config get and se help config set for exact keys.
+Per-agent model_provider, base_url, wire_api, reasoning_effort and context_window
+are supported by config get/set and agent add flags (hyphenated on the CLI).
+Set the model_provider before its base_url/wire_api; clear those route fields before
+clearing the provider name. null inherits the native default. New values apply on
+the next launch, never change shared defaults, and contain no credentials. Codex
+supports these fields; Claude supports reasoning_effort only. MCP agent creation
+uses provider_settings with these underscore-separated keys.
 General file-setting writes are not supported by these commands. Permission
 profiles live in your data home's config.toml; a saved named profile is required
 to opt into full bypass. Default launch permissions preserve provider sandbox
