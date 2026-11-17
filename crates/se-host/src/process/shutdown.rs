@@ -1,7 +1,7 @@
 //! Join retained lifecycle jobs before the host fences capture and drains its
 //! writer. A timeout retains both the task and native ownership for retry.
-use super::supervisor::Job;
 use super::*;
+use super::{control::refusal_detail, supervisor::Job};
 use crate::client::lease::Deadline;
 use se_types::Result;
 use std::sync::atomic::Ordering;
@@ -32,12 +32,9 @@ impl LaunchCoordinator {
         let mut stopping = jobs
             .iter()
             .map(|job| async {
-                self.shutdown_job(job, deadline).await.map_err(|error| {
-                    format!(
-                        "agent {} lifecycle {}: {error}",
-                        job.target.1, job.lifecycle
-                    )
-                })
+                self.shutdown_job(job, deadline)
+                    .await
+                    .map_err(|error| shutdown_failure(job, &error))
             })
             .collect::<futures_util::stream::FuturesUnordered<_>>();
         use futures_util::StreamExt;
@@ -145,7 +142,7 @@ impl LaunchCoordinator {
                     report.stopped = report.stopped.saturating_add(1);
                 }
                 Err(error) => {
-                    report.pending.push(format!("{lifecycle}: {error}"));
+                    report.pending.push(shutdown_failure(job, &error));
                     return Ok(report);
                 }
             }
@@ -175,4 +172,19 @@ impl LaunchCoordinator {
         }
         Ok(report)
     }
+}
+
+fn shutdown_failure(job: &Job, error: &se_types::SeError) -> String {
+    let cx = se_types::RenderCx {
+        project: Some(&job.target.0),
+        agent: Some(&job.target.1),
+        commands: None,
+    };
+    format!(
+        "agent {} project {} lifecycle {}: {}",
+        job.target.1,
+        job.target.0,
+        job.lifecycle,
+        refusal_detail(error, &cx),
+    )
 }

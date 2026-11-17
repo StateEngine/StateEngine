@@ -11,6 +11,12 @@ use std::{
     ptr,
 };
 
+enum ChildExit {
+    Unobserved,
+    AwaitingReap(ExitStatus),
+    Reaped(ExitStatus),
+}
+
 pub(super) struct Child {
     pub pid: ProcessId,
     pub pin: Option<File>,
@@ -20,7 +26,7 @@ pub(super) struct Child {
     pub root: Option<ProcessIdentity>,
     pub viewer: Option<ProcessIdentity>,
     pub viewer_image: Option<std::path::PathBuf>,
-    pub status: Option<ExitStatus>,
+    exit: ChildExit,
     pub protocol: Vec<u8>,
     pub authorized: bool,
     pub deferred: bool,
@@ -340,7 +346,7 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
         root: None,
         viewer: None,
         viewer_image,
-        status: None,
+        exit: ChildExit::Unobserved,
         protocol: Vec::with_capacity(11),
         authorized: false,
         deferred,
@@ -428,8 +434,8 @@ impl Child {
         }
     }
     pub fn peek_status(&mut self) -> ProcResult<Option<ExitStatus>> {
-        if let Some(s) = &self.status {
-            return Ok(Some(s.clone()));
+        if let ChildExit::AwaitingReap(status) | ChildExit::Reaped(status) = &self.exit {
+            return Ok(Some(status.clone()));
         }
         // SAFETY: zero initialization is the documented waitid no-event state for this POD output.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -468,10 +474,16 @@ impl Child {
                 core_dumped: info.si_code == libc::CLD_DUMPED,
             }
         };
-        self.status = Some(status.clone());
+        self.exit = ChildExit::AwaitingReap(status.clone());
         Ok(Some(status))
     }
     pub fn reap(&mut self) -> ProcResult<()> {
+        if self.reaped() {
+            return Ok(());
+        }
+        let status = self
+            .peek_status()?
+            .ok_or_else(|| input("reap", "owned child has no observed terminal wait status"))?;
         // SAFETY: exact child, never -1; WNOHANG so a contradictory observation
         // becomes a refusal rather than a blocking wait.
         let rc = unsafe { libc::waitpid(self.pid.0 as i32, std::ptr::null_mut(), libc::WNOHANG) };
@@ -481,13 +493,27 @@ impl Child {
                 "owned child still live despite the supplied outside witness",
             ));
         }
-        if rc < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ECHILD) {
-            return Err(native(
-                ProcErrorCode::IdentityUnreadable,
-                "reap exact child",
-                io::Error::last_os_error(),
-            ));
+        if rc < 0 {
+            let cause = io::Error::last_os_error();
+            if cause.raw_os_error() != Some(libc::ECHILD) {
+                return Err(native(
+                    ProcErrorCode::IdentityUnreadable,
+                    "reap exact child",
+                    cause,
+                ));
+            }
         }
+        self.exit = ChildExit::Reaped(status);
         Ok(())
+    }
+    pub fn reaped_status(&mut self) -> ProcResult<Option<ExitStatus>> {
+        let status = self.peek_status()?;
+        if status.is_some() {
+            self.reap()?;
+        }
+        Ok(status)
+    }
+    pub fn reaped(&self) -> bool {
+        matches!(self.exit, ChildExit::Reaped(_))
     }
 }
