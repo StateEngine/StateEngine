@@ -9,6 +9,9 @@ path = "junit.xml"
 [test-groups.installation-custody]
 max-threads = 1
 
+# Every suite that drives the account-wide installation claim, not only the
+# two that first exposed the contention. The adoption suite takes the claim in
+# `init --adopt` and `uninstall` while its fixture home stays private.
 [[profile.default.overrides]]
-filter = 'package(=se) & ((binary(=runtime_refusals) & test(=uninstall_verifies_live_host_shutdown_before_removing_files)) | binary(=wave2_custody_cli_independent))'
+filter = 'package(=se) & ((binary(=runtime_refusals) & test(=uninstall_verifies_live_host_shutdown_before_removing_files)) | binary(=wave2_custody_cli_independent) | binary(=adoption_settings_review))'
 test-group = 'installation-custody'

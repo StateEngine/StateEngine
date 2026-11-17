@@ -233,6 +233,14 @@ pub fn scan_temporary(directory: &Path) -> Result<Vec<std::path::PathBuf>> {
     Ok(paths)
 }
 
+/// The exact account-wide claim file this account's installer and uninstaller
+/// use. Taking, holding and releasing that claim stay with
+/// [`NativeInstallationClaim`]; naming it lets an adjacent process coordinate
+/// its own work around the same account instead of guessing a path.
+pub fn installation_claim_path() -> Result<std::path::PathBuf> {
+    os::installation_claim_path()
+}
+
 /// One native-account-wide installer/uninstaller claim, independent of SE_HOME
 /// or overridden HOME. The permanent owner-only lock file is never unlinked.
 pub struct NativeInstallationClaim {

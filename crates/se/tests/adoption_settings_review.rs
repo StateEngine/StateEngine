@@ -1,6 +1,8 @@
 //! Reviewer-owned public setup/removal regression; no provider account is used.
 #![cfg(any(target_os = "linux", windows))]
 
+#[path = "support/installation_claim_guard.rs"]
+mod installation_claim_guard;
 use std::{
     error::Error,
     ffi::OsString,
@@ -177,6 +179,10 @@ impl Fixture {
 
 #[test]
 fn public_adoption_preserves_settings_bytes_and_later_user_edits() -> Check {
+    // `init --adopt` and `uninstall` take the account-wide installation claim,
+    // which a private HOME does not isolate. Overlapping suites would read
+    // another process's claim as this test's own verdict.
+    let _account = installation_claim_guard::acquire()?;
     let root = scratch()?;
     let provider = provider(&root.0)?;
     let binary = std::env::var_os("SE_ADOPTION_REVIEW_BINARY")
