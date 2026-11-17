@@ -161,14 +161,13 @@ async fn exchange(
     bytes: zeroize::Zeroizing<Vec<u8>>,
     deadline: std::time::Duration,
 ) -> se_types::Result<Vec<u8>> {
-    use super::{Command, unavailable};
+    use super::unavailable;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut child = crate::child_io::spawn(
-        Command::new("ssh")
+        crate::ssh_transport::client("ssh")
             .args(["-T", "-o", "BatchMode=yes"])
             .arg(&config.destination)
-            .arg(&config.command)
-            .kill_on_drop(true),
+            .arg(&config.command),
         crate::child_io::Pipes {
             stdin: true,
             stdout: true,

@@ -12,6 +12,16 @@ pub(crate) use diagnostics::Diagnostics;
 use diagnostics::read_errors;
 pub(crate) use transfer::upload;
 
+pub(crate) fn client(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    command.kill_on_drop(true);
+    // Every caller replaces stdio. A Windows SSH login's inherited descriptor
+    // table describes the login pipes, not this child's new handles.
+    #[cfg(windows)]
+    command.env_remove("c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE");
+    command
+}
+
 /// One fixed SSH command: the exit status, bounded stdout, and a sanitized
 /// tail of the client's stderr. The tail keeps a refusal from hiding the
 /// cause (issue 381: "remote platform discovery failed" over a refused key).
@@ -23,10 +33,9 @@ pub(crate) struct SshOutcome {
 pub(crate) async fn command(destination: &str, command: String) -> Result<SshOutcome> {
     validate_destination(destination)?;
     let mut child = crate::child_io::spawn(
-        Command::new("ssh")
+        client("ssh")
             .args(["-T", "-o", "BatchMode=yes", destination, &command])
-            .stdin(Stdio::null())
-            .kill_on_drop(true),
+            .stdin(Stdio::null()),
         crate::child_io::Pipes {
             stdin: false,
             stdout: true,

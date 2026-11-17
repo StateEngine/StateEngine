@@ -18,7 +18,7 @@ pub use bootstrap::connect;
 pub use prepare::{ImageProgress, ImageStage, prepare_image};
 use se_types::Result;
 use std::{collections::BTreeMap, net::SocketAddr, process::Stdio, sync::Arc, time::Duration};
-use tokio::{process::Command, sync::Mutex, time::timeout};
+use tokio::{sync::Mutex, time::timeout};
 
 pub use se_remote::ssh::{ForwardConfig, validate_destination};
 
@@ -57,7 +57,7 @@ impl Forward {
         // Forwarding refusals are functional input, so ambient quiet logging
         // must not suppress the diagnostic read by this owned process.
         let mut child = crate::child_io::spawn(
-            Command::new("ssh")
+            crate::ssh_transport::client("ssh")
                 .args([
                     "-N",
                     "-T",
@@ -76,8 +76,7 @@ impl Forward {
                 .arg(mapping)
                 .arg(&self.config.destination)
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .kill_on_drop(true),
+                .stdout(Stdio::null()),
             crate::child_io::Pipes {
                 stdin: false,
                 stdout: false,

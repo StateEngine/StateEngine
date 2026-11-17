@@ -5,10 +5,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    process::Command,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub(crate) async fn upload(
     destination: &str,
@@ -20,11 +17,10 @@ pub(crate) async fn upload(
     let batch = super::sftp::upload_batch(path, upload)?;
     let (sftp, ssh) = super::sftp::clients()?;
     let mut child = crate::child_io::spawn(
-        Command::new(sftp)
+        super::client(sftp)
             .args(["-b", "-", "-o", "BatchMode=yes", "-S"])
             .arg(ssh)
-            .arg(destination)
-            .kill_on_drop(true),
+            .arg(destination),
         crate::child_io::Pipes {
             stdin: true,
             stdout: true,
