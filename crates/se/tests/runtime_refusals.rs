@@ -19,6 +19,9 @@ use std::io::Write;
 #[path = "support/installation_account.rs"]
 mod installation_account;
 #[cfg(any(target_os = "linux", windows))]
+#[path = "support/installation_claim_guard.rs"]
+mod installation_claim_guard;
+#[cfg(any(target_os = "linux", windows))]
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
 #[cfg(any(target_os = "linux", windows))]
@@ -117,6 +120,9 @@ fn uninstall_verifies_live_host_shutdown_before_removing_files() -> Check {
     let _serial = RUNTIME
         .lock()
         .map_err(|_| "runtime fixture mutex poisoned")?;
+    // Uninstall takes the account-wide installation claim, which a fixture
+    // home cannot isolate from another suite running at the same time.
+    let _account = installation_claim_guard::acquire()?;
     se_proc::initialize_file_creation_owner()?;
     for json in [true, false] {
         uninstall_live_host(json)?;

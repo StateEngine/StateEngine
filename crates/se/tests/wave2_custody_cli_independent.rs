@@ -28,6 +28,8 @@ mod control;
 mod host;
 #[path = "support/installation_account.rs"]
 mod installation_account;
+#[path = "support/installation_claim_guard.rs"]
+mod installation_claim_guard;
 #[path = "support/custody_child.rs"]
 mod native;
 
@@ -293,6 +295,8 @@ impl Case {
 
 fn uninstall_refusal(unproved: bool) -> Check {
     let _serial = SERIAL.lock().map_err(|_| "fixture mutex")?;
+    // The account-wide installation claim is not isolated by the fixture home.
+    let _account = installation_claim_guard::acquire()?;
     let mut c = Case::new()?;
     if unproved {
         c.unproved()?;
@@ -330,6 +334,7 @@ fn uninstall_refusal(unproved: bool) -> Check {
 #[test]
 fn unmanaged_uninstall_refuses_cold_custody_without_history_change() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "fixture mutex")?;
+    let _account = installation_claim_guard::acquire()?;
     let mut c = Case::new()?;
     c.unproved()?;
     c.drain()?;
@@ -372,6 +377,7 @@ fn uninstall_refuses_unproved_custody_before_removing_files() -> Check {
 
 fn uninstall_completed(released: bool) -> Check {
     let _serial = SERIAL.lock().map_err(|_| "fixture mutex")?;
+    let _account = installation_claim_guard::acquire()?;
     let mut c = Case::new()?;
     if released {
         c.unproved()?;
@@ -495,6 +501,8 @@ fn observation(contradiction: bool) -> Check {
         }
     }
     if !contradiction {
+        // Only this branch takes the account-wide installation claim.
+        let _account = installation_claim_guard::acquire()?;
         let output = cli::uninstall(&c.image, &c.f)?;
         assert_eq!(output.status.code(), Some(1));
         assert_eq!(cli::json(&output)?["code"], "state-conflict");

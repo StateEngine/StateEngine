@@ -133,7 +133,7 @@ pub use creation_owner::{FileOwnerError, FileOwnerInitialization, initialize_fil
 pub use state_files::NativeMetadataPin;
 pub use state_files::effects::{
     CreatedDirectoryCleanup, DirectoryRemoval, NativeDirectoryCreation, NativeInstallationClaim,
-    OwnedFile, remove_empty_directory, scan_recovery, scan_temporary,
+    OwnedFile, installation_claim_path, remove_empty_directory, scan_recovery, scan_temporary,
 };
 pub use state_files::executable::{
     NativeExecutableCreation, NativeExecutableInvocation, NativeExecutablePin,
