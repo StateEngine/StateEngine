@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 fn consecutive_expired_starts_leave_the_custody_slot_available()
 -> Result<(), Box<dyn std::error::Error>> {
     let image = std::env::current_exe()?.canonicalize()?;
+    let mut first = None;
     for attempt in 0..3 {
         let deadline = Instant::now() - Duration::from_millis(1);
         let error = match AtlasWorker::spawn_bounded(&image, b"{}", deadline) {
@@ -16,12 +17,15 @@ fn consecutive_expired_starts_leave_the_custody_slot_available()
             Err(error) => error,
         };
         println!("attempt={attempt} kind={:?} error={error}", error.kind());
-        assert!(
-            !error
-                .to_string()
-                .contains("previous Atlas child has not been reaped"),
-            "an expired start leaked the custody slot at attempt {attempt}: {error}"
-        );
+        let observed = (error.kind(), error.to_string());
+        if let Some(expected) = &first {
+            assert_eq!(
+                &observed, expected,
+                "an expired start changed the available custody slot at attempt {attempt}"
+            );
+        } else {
+            first = Some(observed);
+        }
     }
     Ok(())
 }
