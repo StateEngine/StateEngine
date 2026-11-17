@@ -253,6 +253,7 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
             (Read::Unreadable {source,reason,error},_,_)=>Read::Unreadable {source:source.clone(),reason:reason.clone(),error:error.clone()},
             (_,_,_) if row.session.recorded_state.as_deref()==Some("prepared")=>Read::Present {value:RemoteAgentStatus::Starting},
             (Read::Present {value},_,_) if value=="exited" && matches!(&row.session.process_state,Read::Present {value} if value=="exited")=>Read::Present {value:RemoteAgentStatus::Stopped},
+            (Read::Absent {checked},_,_) if !checked.is_empty() && matches!(&row.session.process_state,Read::Present {value} if value=="exited")=>Read::Present {value:RemoteAgentStatus::Stopped},
             _=>Read::Unknown {what:"native custody/readback is incomplete; local Owner must reconcile the original session".into()},
         }
     };
