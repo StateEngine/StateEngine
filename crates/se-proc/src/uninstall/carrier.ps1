@@ -2,11 +2,15 @@
 # newly created, protected staging artifacts may be retired by this interpreter.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+[Console]::Error.WriteLine('gate-diag: before stdin')
 $inputStream = [Console]::OpenStandardInput()
+[Console]::Error.WriteLine('gate-diag: stdin opened')
 $reader = [IO.StreamReader]::new($inputStream, [Text.UTF8Encoding]::new($false, $true))
 try {
     $buffer = New-Object char[] ((2 * 1024 * 1024) + 1)
+    [Console]::Error.WriteLine('gate-diag: before read')
     $count = $reader.ReadBlock($buffer, 0, $buffer.Length)
+    [Console]::Error.WriteLine('gate-diag: read returned ' + $count)
     if ($count -eq 0) { exit 78 } # Execution-policy admission, without targets.
     if ($count -gt (2 * 1024 * 1024)) { throw 'private envelope exceeds two MiB' }
     $frame = [string]::new($buffer, 0, $count) | ConvertFrom-Json

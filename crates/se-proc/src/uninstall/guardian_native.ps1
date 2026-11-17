@@ -1,3 +1,4 @@
+[Console]::Error.WriteLine('gate-diag: parsed helper')
 # Emit fixed P/Invoke signatures in memory. No compiler process, C# source,
 # generated DLL, caller module search path or executable text is accepted.
 function Initialize-CleanupNative {
