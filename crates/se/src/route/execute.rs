@@ -205,18 +205,54 @@ fn dispatch_with_cold_recovery(
         selections.project = Some(project.clone());
     }
     if matches!(op, AnyOp::ProjectStatus(_)) {
-        let result =
-            super::status::observe_snapshot(cx, &mut snapshot, owner, &files, &caller.admission)
-                .and_then(|output| {
-                    super::session_observation::prepare(
-                        output,
-                        &mut snapshot,
-                        &caller.admission,
-                        observation_deadline,
-                    )
-                });
-        let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
-        let mut output = super::session_observation::finish(prepared, &cx.home)?;
+        // Ask the daemon concurrently with this process's own build. The local
+        // build stays authoritative, so status is still honest when the daemon
+        // is absent or stale; only the wall time changes, from the sum of the
+        // two to the longer of them.
+        let reader_for_daemon = reader.clone();
+        let selections_for_daemon = selections.clone();
+        // The observation thread and the build borrow disjoint things: the
+        // thread takes a clone of the reader, this frame keeps its own snapshot.
+        let (mut output, observed) = std::thread::scope(|scope| {
+            let pending = scope.spawn(|| {
+                // ProjectStatus neither autostarts a host nor prompts, so this
+                // request has no diagnostic of its own to report.
+                let mut quiet = |_: &str| Ok(());
+                super::hosted::forward(
+                    cx,
+                    &files,
+                    &reader_for_daemon,
+                    &caller,
+                    AnyOp::ProjectStatus(se_core::ops::ProjectStatus { all: false }),
+                    &selections_for_daemon,
+                    &mut quiet,
+                )
+            });
+            let result = super::status::observe_snapshot(
+                cx,
+                &mut snapshot,
+                owner,
+                &files,
+                &caller.admission,
+            )
+            .and_then(|output| {
+                super::session_observation::prepare(
+                    output,
+                    &mut snapshot,
+                    &caller.admission,
+                    observation_deadline,
+                )
+            });
+            let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
+            let output = super::session_observation::finish(prepared, &cx.home)?;
+            let observed = pending.join().unwrap_or_else(|_| {
+                Err(scope::unreadable(
+                    "status daemon observation",
+                    "the observation thread panicked",
+                ))
+            });
+            Ok::<_, se_types::SeError>((output, observed))
+        })?;
         let mut service_observation = None;
         if let AnyOutput::ProjectStatus(status) = &mut output
             && status.value.runtime.state == "running"
@@ -224,18 +260,9 @@ fn dispatch_with_cold_recovery(
             && status.value.removal.is_none()
         {
             // The direct native/store witness stays authoritative for status.
-            // After closing its read pin, ask the existing authenticated host
-            // for its Atlas metadata and retained session faults; never bootstrap
-            // a host here.
-            let observed = super::hosted::forward(
-                cx,
-                &files,
-                &reader,
-                &caller,
-                AnyOp::ProjectStatus(se_core::ops::ProjectStatus { all: false }),
-                &selections,
-                diagnostic,
-            );
+            // The host's Atlas metadata and retained session faults come from the
+            // request that was already in flight during the build; the host is
+            // never bootstrapped here.
             super::status::merge_resources(&mut status.value.runtime, &observed);
             status.value.atlas = match &observed {
                 Ok(AnyOutput::ProjectStatus(live)) => {
