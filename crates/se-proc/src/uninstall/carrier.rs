@@ -241,9 +241,10 @@ impl NativeUninstallCarrier {
                 std::thread::sleep(Duration::from_millis(20));
             }
             helper
-                .take()
+                .as_mut()
                 .ok_or_else(|| refuse("prepare uninstall carrier", "helper custody missing"))?
                 .remove()?;
+            helper.take();
             // The carrier retains the exact High directory until it can close
             // its anonymous input, report and diagnostic files after our exit.
             drop(staging.take());
@@ -350,10 +351,12 @@ fn cleanup_artifacts(
     helper: &mut Option<helper::Helper>,
     staging: &mut Option<staging::Staging>,
 ) {
-    if let Some(helper) = helper.take() {
-        let path = helper.path().to_owned();
-        if let Err(cause) = helper.remove() {
+    if let Some(held) = helper.as_mut() {
+        let path = held.path().to_owned();
+        if let Err(cause) = held.remove() {
             cleanup_failure(failure, cause, &path);
+        } else {
+            helper.take();
         }
     }
     if let Some(stage) = staging.take() {
