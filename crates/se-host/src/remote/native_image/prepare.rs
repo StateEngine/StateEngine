@@ -499,9 +499,12 @@ mod tests {
             2,
             "bundle must hash the upload and the incumbent only:\n{bundle}"
         );
+        // link(1) acts on the exact destination and refuses any incumbent
+        // atomically; the refusal names the destination before exiting.
         assert!(
-            bundle
-                .contains("if (chmod 700 u.upload && ln u.upload .stateengine-runtime/abc); then")
+            bundle.contains("if (chmod 700 u.upload && link u.upload .stateengine-runtime/abc || { printf 'image-publish-refused:link-failed:%s\\n' .stateengine-runtime/abc; exit 1; }); then"),
+            "publish must link the exact destination:
+{bundle}"
         );
         assert!(bundle.contains("else\n(test ! -L .stateengine-runtime/abc"));
         assert!(bundle.contains("image-verification-failed"));
