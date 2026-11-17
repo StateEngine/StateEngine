@@ -83,6 +83,14 @@ def census():
     return values
 
 
+def birth_order(value):
+    if sys.platform == 'linux':
+        return int(value)
+    if sys.platform == 'win32':
+        return value  # Native UTC timestamps have the same fixed format.
+    return time.strptime(value, '%a %b %d %H:%M:%S %Y')
+
+
 class Observer:
     def __init__(self, home):
         self.home = str(home)
@@ -95,9 +103,12 @@ class Observer:
             require(row and row['birth'] and row['command'], 'Owned process identity is unreadable')
             self.known.add((pid, row['birth']))
         while True:
-            parents = {row['pid'] for row in rows if (row['pid'], row['birth']) in self.known}
+            parents = {row['pid']: row['birth'] for row in rows
+                       if (row['pid'], row['birth']) in self.known}
             added = {(row['pid'], row['birth']) for row in rows
-                     if row['parent'] in parents and row['birth'] and row['command']}
+                     if row['parent'] in parents and row['birth'] and row['command']
+                     # An old orphan can retain a parent PID reused by this run.
+                     and birth_order(row['birth']) >= birth_order(parents[row['parent']])}
             if added.issubset(self.known):
                 break
             self.known.update(added)
