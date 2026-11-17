@@ -1,6 +1,7 @@
 //! Configured ACP executables use the same native launch lifecycle as stock harnesses.
 use super::*;
 use crate::acp::{CapturedMessage, Connection, PermissionPolicy, Session};
+use crate::harness::binding::{AdapterBinding, Observation, StopPolicy};
 use se_config::config_policy::{ConfigFile, Provider, ResolvedProfile};
 use se_types::{Result, SeError};
 use serde_json::json;
@@ -73,28 +74,10 @@ impl AcpHarness {
         }
         Ok(profile)
     }
-    pub(crate) async fn start_initial(
-        &self,
-        binding: &HarnessBinding,
-        cx: CallContext,
-    ) -> Result<()> {
-        let binding = bound(binding)?;
-        let initial = binding
-            .initial
-            .lock()
-            .map_err(|_| error("input state poisoned"))?
-            .take();
-        if let Some((key, text)) = initial {
-            // Taking the original key precedes stdio. An uncertain offer is never repeated.
-            binding.session.prompt(key, text, cx).await?;
-        }
-        Ok(())
-    }
 }
 pub(crate) fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
     binding
-        .acp
-        .as_ref()
+        .get::<crate::harness::acp::Binding>()
         .ok_or_else(|| error("the original protocol binding is absent"))
 }
 impl Harness for AcpHarness {
@@ -226,13 +209,7 @@ impl Harness for AcpHarness {
                     .ok_or_else(|| error("protocol cwd is not UTF-8"))?
                     .into(),
             });
-            let wrap = || HarnessBinding {
-                claude: None,
-                codex: None,
-                secode: None,
-                acp: Some(binding.clone()),
-                _private: (),
-            };
+            let wrap = || HarnessBinding::new(binding.clone());
             *retained = Some(wrap());
             let until = tokio::time::Instant::now() + cx.timeout;
             let remaining = || CallContext {
@@ -371,5 +348,67 @@ impl Harness for AcpHarness {
                 .await?;
             drained
         })
+    }
+}
+
+impl AdapterBinding for Arc<Binding> {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn provider(&self) -> se_types::Provider {
+        se_types::Provider::Acp
+    }
+    fn arm(&self, wake: &Arc<tokio::sync::Notify>) -> Result<()> {
+        self.session.arm(wake)
+    }
+    fn observe(&self, capture: bool) -> Observation {
+        let observed = match self.session.observe() {
+            Ok(observed) => observed,
+            Err(error) => {
+                return Observation {
+                    failure: Some(error.body),
+                    ..Default::default()
+                };
+            }
+        };
+        let completed = !observed.completed.is_empty();
+        let mut result = Observation {
+            idle: Some(observed.active_input.is_none() && !observed.cancelling),
+            mail_pending: completed,
+            capture_pending: completed && capture,
+            ..Default::default()
+        };
+        if !capture {
+            for request in &observed.completed {
+                if let Err(error) = self.session.discard_after_capture_opt_out(*request) {
+                    result.failure = Some(error.body);
+                    break;
+                }
+            }
+        }
+        if let Some(failure) = observed.failure {
+            result.failure = Some(failure);
+        }
+        result
+    }
+    fn stop_policy(&self) -> StopPolicy {
+        StopPolicy::default()
+    }
+    fn start_initial(&self, cx: CallContext) -> HostFuture<'_, ()> {
+        Box::pin(async move {
+            let initial = self
+                .initial
+                .lock()
+                .map_err(|_| error("input state poisoned"))?
+                .take();
+            if let Some((key, text)) = initial {
+                // Taking the original key precedes I/O; uncertain offers are never repeated.
+                self.session.prompt(key, text, cx).await?;
+            }
+            Ok(())
+        })
+    }
+    fn policy_notice(&self) -> Result<Option<String>> {
+        Ok(Some(self.session.observe()?.policy_notice.into()))
     }
 }

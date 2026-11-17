@@ -19,7 +19,10 @@ impl LaunchCoordinator {
         ) else {
             return;
         };
-        if let Some(binding) = work.binding.as_ref().and_then(|b| b.codex.as_ref())
+        if let Some(binding) = work
+            .binding
+            .as_ref()
+            .and_then(|b| b.get::<crate::codex_rpc::Binding>())
             && let Ok(mut live) = binding.live.lock()
         {
             *live = Some(source.clone());

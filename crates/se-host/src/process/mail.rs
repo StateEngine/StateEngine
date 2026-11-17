@@ -87,12 +87,7 @@ impl LaunchCoordinator {
             || !work.activated
             || work.session_retired
             || work.stop_key.is_some()
-            || work.binding.as_ref().is_none_or(|binding| {
-                binding.claude.is_none()
-                    && binding.codex.is_none()
-                    && binding.secode.is_none()
-                    && binding.acp.is_none()
-            })
+            || work.binding.is_none()
         {
             return Ok(());
         }
@@ -112,7 +107,7 @@ impl LaunchCoordinator {
         let codex = work
             .binding
             .as_ref()
-            .is_some_and(|binding| binding.codex.is_some());
+            .is_some_and(|binding| binding.get::<crate::codex_rpc::Binding>().is_some());
         let secode = work.secode.is_some();
         if secode {
             self.require_secode_capability_settled(work, deadline)
@@ -122,7 +117,7 @@ impl LaunchCoordinator {
             && work
                 .binding
                 .as_ref()
-                .and_then(|b| b.claude.as_ref())
+                .and_then(|b| b.get::<crate::harness::ClaudeBinding>())
                 .is_some_and(|b| b.attended)
         {
             // The attended mod consumes the same durable unread view. Never
