@@ -9,7 +9,7 @@
   "se-store": 24690,
   "se-core": 22680,
   "se": 24060,
-  "se-atlas": 16002,
+  "se-atlas": 16803,
   "se-types": 5427
  },
  "directories": {
@@ -40,7 +40,7 @@
   "crates/se-host/src/atlas_renewal": 2692,
   "crates/se-proc/src/platform/linux": 2582,
   "crates/se-host/src/client": 2533,
-  "crates/se-proc/src/atlas_worker": 2422,
+  "crates/se-proc/src/atlas_worker": 2722,
   "crates/se-host/src/acp": 2403,
   "crates/se-store/src/codec": 2348,
   "crates/se-host/src/harness/secode_process": 2248,
