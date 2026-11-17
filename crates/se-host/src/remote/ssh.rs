@@ -2,6 +2,7 @@
 //! Dropping a forward closes only SSH; it never stops a remote host or agent.
 use super::RemoteReady;
 use super::channel::unavailable;
+use crate::child_io::Child;
 use crate::ssh_transport::Diagnostics;
 mod authorization;
 mod bootstrap;
@@ -16,7 +17,7 @@ pub(crate) use authorization::{launch_permissions, permissions};
 pub use bootstrap::connect;
 use se_types::Result;
 use std::{collections::BTreeMap, net::SocketAddr, process::Stdio, sync::Arc, time::Duration};
-use tokio::{process::Child, sync::Mutex, time::timeout};
+use tokio::{sync::Mutex, time::timeout};
 
 pub use se_remote::ssh::{ForwardConfig, validate_destination};
 
@@ -54,13 +55,39 @@ impl Forward {
         );
         // Forwarding refusals are functional input, so ambient quiet logging
         // must not suppress the diagnostic read by this owned process.
-        let mut child = crate::ssh_transport::client("ssh")
-            .args(["-N", "-T", "-o", "LogLevel=INFO", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
-                "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=2", "-L"])
-            .arg(mapping).arg(&self.config.destination)
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
-            .spawn()
-            .map_err(|_| unavailable("cannot start SSH; install the system SSH client and check the saved destination"))?;
+        let mut child = crate::child_io::spawn(
+            crate::ssh_transport::client("ssh")
+                .args([
+                    "-N",
+                    "-T",
+                    "-o",
+                    "LogLevel=INFO",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ExitOnForwardFailure=yes",
+                    "-o",
+                    "ServerAliveInterval=15",
+                    "-o",
+                    "ServerAliveCountMax=2",
+                    "-L",
+                ])
+                .arg(mapping)
+                .arg(&self.config.destination)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null()),
+            crate::child_io::Pipes {
+                stdin: false,
+                stdout: false,
+                stderr: true,
+            },
+        )
+        .await
+        .map_err(|_| {
+            unavailable(
+                "cannot start SSH; install the system SSH client and check the saved destination",
+            )
+        })?;
         self.diagnostics = child.stderr.take().map(Diagnostics::start);
         self.child = Some(child);
         if self.diagnostics.is_none() {

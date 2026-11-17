@@ -265,7 +265,8 @@ pub fn observe_snapshot<S: Snapshot>(
                         let bound = se_host::client::lease::Deadline::from_options(&options)?;
                         match crate::runtime::host::read_detachment(files, &endpoint, &bound) {
                             Ok(Read::Present { value }) => {
-                                output.runtime.detachment = Some(value.detachment)
+                                output.runtime.detachment_notice = value.session_notice(files.0.root());
+                                output.runtime.detachment = Some(value.detachment);
                             }
                             Ok(Read::Absent { checked }) => output.pending.push(PendingFact {
                                 what: "host detachment".into(),

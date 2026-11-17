@@ -35,8 +35,36 @@ fn launch(pool: BlockingPool, class: BlockingClass, duration: Duration) -> se_ty
     })
 }
 async fn entered(job: &mut Job) -> Check {
-    tokio::time::timeout(Duration::from_secs(3), &mut job.entered).await??;
-    Ok(())
+    match tokio::time::timeout(Duration::from_secs(3), &mut job.entered).await {
+        Ok(Ok(())) => Ok(()),
+        // The receiver closes when the task ends without running the closure's
+        // first line; ask the task what actually happened instead of naming a
+        // cause.
+        Ok(Err(_)) => {
+            let task = tokio::time::timeout(Duration::from_secs(3), &mut job.task).await;
+            match task {
+                Ok(Ok(Ok(()))) => Err(
+                    "job never entered: the task finished without running its first line".into(),
+                ),
+                Ok(Ok(Err(error))) => {
+                    Err(format!("job never entered: the pool run returned {error}").into())
+                }
+                Ok(Err(error)) => Err(format!(
+                    "job never entered: the task {} before its first line",
+                    if error.is_panic() {
+                        "panicked"
+                    } else {
+                        "was cancelled"
+                    }
+                )
+                .into()),
+                Err(_) => {
+                    Err("job never entered: the task is still running after the join bound".into())
+                }
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 async fn blocked(job: &mut Job) -> Check {
     assert!(

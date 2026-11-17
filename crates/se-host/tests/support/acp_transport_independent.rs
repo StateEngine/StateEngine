@@ -278,6 +278,10 @@ async fn caller_timeout_keeps_the_original_reply_observable_without_resending() 
         )
         .await;
     assert!(result.is_err());
+    // The host records the native write on its own task. Give it a bounded
+    // settle before counting, so a loaded scheduler cannot make the caller
+    // timeout race the write's first poll.
+    ready(|| f.attempts().is_ok_and(|writes| !writes.is_empty())).await?;
     let writes = f.attempts()?;
     assert_eq!(writes.len(), 1);
     let offered: Value = serde_json::from_slice(&writes[0])?;

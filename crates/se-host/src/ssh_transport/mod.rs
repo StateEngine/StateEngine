@@ -1,13 +1,10 @@
 //! Owned system OpenSSH commands, file transfers and bounded diagnostics.
 //! Pairing, image verification and publication remain with their callers.
+use crate::child_io::Child;
 use se_remote::{channel::unavailable, ssh::validate_destination};
 use se_types::Result;
 use std::{process::Stdio, time::Duration};
-use tokio::{
-    io::AsyncReadExt,
-    process::{Child, Command},
-    time::timeout,
-};
+use tokio::{io::AsyncReadExt, process::Command, time::timeout};
 mod diagnostics;
 mod sftp;
 mod transfer;
@@ -35,13 +32,18 @@ pub(crate) struct SshOutcome {
 }
 pub(crate) async fn command(destination: &str, command: String) -> Result<SshOutcome> {
     validate_destination(destination)?;
-    let mut child = client("ssh")
-        .args(["-T", "-o", "BatchMode=yes", destination, &command])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| unavailable("cannot start the system SSH file-transfer client"))?;
+    let mut child = crate::child_io::spawn(
+        client("ssh")
+            .args(["-T", "-o", "BatchMode=yes", destination, &command])
+            .stdin(Stdio::null()),
+        crate::child_io::Pipes {
+            stdin: false,
+            stdout: true,
+            stderr: true,
+        },
+    )
+    .await
+    .map_err(|_| unavailable("cannot start the system SSH file-transfer client"))?;
     let stdout = child
         .stdout
         .take()

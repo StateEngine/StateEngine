@@ -60,7 +60,18 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     ) {
         writeln!(
             out,
-            "Host: runs as a session process and stops when this login session ends"
+            "Host: runs as a session process and may stop when this login session ends"
+        )?;
+        if let Some(reason) = &value.runtime.detachment_notice {
+            writeln!(out, "  Background lifetime: {reason}")?;
+        }
+    } else if matches!(
+        value.runtime.detachment,
+        Some(HostDetachment::UserManagerUnit)
+    ) {
+        writeln!(
+            out,
+            "Host: runs in its own user-manager scope and survives login-session cleanup"
         )?;
     }
     if let Some(process) = &value.runtime.process {

@@ -151,8 +151,16 @@ async fn cached_image(destination: &str, image: &Image) -> Result<bool> {
 async fn publish_image(destination: &str, image: &Image, upload: &str) -> Result<()> {
     if image.windows {
         verify_image(destination, image, upload).await?;
-        let _published = ssh(destination, staging::publish(upload, &image.remote(), true)).await?;
-        verify_image(destination, image, &image.remote()).await?;
+        let promoted = ssh(destination, staging::publish(upload, &image.remote(), true))
+            .await?
+            .success;
+        if promoted {
+            check_image(destination, image, &image.remote()).await?;
+        } else {
+            // A losing move still verifies the incumbent before success,
+            // mirroring the Unix transaction's link-lose branch.
+            verify_image(destination, image, &image.remote()).await?;
+        }
         return match ssh(destination, staging::remove(upload, true)).await {
             Ok(outcome) if outcome.success => Ok(()),
             _ => Err(cleanup_incomplete()),
@@ -183,6 +191,20 @@ async fn verify_image(destination: &str, image: &Image, path: &str) -> Result<()
     .await?;
     let (verified, detail) = (outcome.success, &outcome.stdout);
     if verified {
+        Ok(())
+    } else {
+        Err(verification_error(detail))
+    }
+}
+
+async fn check_image(destination: &str, image: &Image, path: &str) -> Result<()> {
+    let outcome = ssh(
+        destination,
+        staging::check(path, image.windows, image.apple),
+    )
+    .await?;
+    let (checked, detail) = (outcome.success, &outcome.stdout);
+    if checked {
         Ok(())
     } else {
         Err(verification_error(detail))
@@ -464,5 +486,25 @@ mod tests {
         );
         assert!(windows.contains("Refuse 'harden-failed'"));
         assert!(!windows.contains("$reason:"));
+    }
+
+    #[test]
+    fn publish_bundle_hashes_the_upload_once_and_keeps_the_incumbent_proof() {
+        let bundle =
+            image_commands::publish("u.upload", ".stateengine-runtime/abc", "deadbeef", false);
+        // The upload is hash-verified once; a winning link takes the identity
+        // check; only a losing publisher re-hashes the incumbent.
+        assert_eq!(
+            bundle.matches("sha256sum").count(),
+            2,
+            "bundle must hash the upload and the incumbent only:\n{bundle}"
+        );
+        assert!(
+            bundle
+                .contains("if (chmod 700 u.upload && ln u.upload .stateengine-runtime/abc); then")
+        );
+        assert!(bundle.contains("else\n(test ! -L .stateengine-runtime/abc"));
+        assert!(bundle.contains("image-verification-failed"));
+        assert!(bundle.contains("image-cleanup-failed"));
     }
 }
