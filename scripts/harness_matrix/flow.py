@@ -14,6 +14,31 @@ from .inputs import home_path
 PHASES = ('Launch', 'Work', 'Mail', 'Resume')
 
 
+def stop_closed(row):
+    """Whether one stop row reports a closed population.
+
+    `complete` means the enumeration ran and found nothing remaining. The public
+    stop contract also reports a witnessed empty closure when a registered agent
+    has never had a managed lifecycle: `result: already-stopped`,
+    `population: empty`, `remaining: []`, `enumeration: not-applicable`, with a
+    witness whose method is `not-applicable`. That is a measured empty set, not an
+    unrun enumeration, so it is accepted here — but only with all of those facts
+    together and a witnessed detail. Absent, unreadable and incomplete custody stay
+    failures.
+    """
+    if row.get('remaining') != []:
+        return False
+    if row.get('enumeration') == 'complete':
+        return True
+    witness = row.get('witness') or {}
+    return (row.get('result') == 'already-stopped'
+            and row.get('population') == 'empty'
+            and row.get('enumeration') == 'not-applicable'
+            and witness.get('state') == 'witnessed'
+            and witness.get('method') == 'not-applicable'
+            and isinstance(witness.get('detail'), str) and bool(witness['detail'].strip()))
+
+
 class Smoke:
     def __init__(self, output, package, entry, settings, inherited):
         self.output, self.package, self.entry, self.settings = output, package, entry, settings
@@ -291,8 +316,8 @@ class Smoke:
                     result = self.call(args, 'cleanup-' + name, terminal=name != 'down', project=name == 'stop')
                     if name == 'stop':
                         require(result.get('complete') is True and isinstance(result.get('stops'), list)
-                                and all(row.get('remaining') == [] and row.get('enumeration') == 'complete'
-                                        for row in result['stops']), 'Stop closure is incomplete')
+                                and all(stop_closed(row) for row in result['stops']),
+                                'Stop closure is incomplete')
                     if name == 'down':
                         require(result.get('complete') is True and result.get('witness', {}).get('state') == 'witnessed'
                                 and isinstance(result.get('stops'), list)
