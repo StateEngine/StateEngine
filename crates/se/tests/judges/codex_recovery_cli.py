@@ -1,5 +1,7 @@
 """Independent public-CLI crash recovery and slow-live-provider control on Linux."""
 import argparse
+import fcntl
+import threading
 import json
 import os
 from pathlib import Path
@@ -156,8 +158,32 @@ class Judge:
                 self.signal(process, signal.SIGSTOP)
                 self.stopped.append(process)
         self.result["after_crash"] = owned_rows(self.root)
+        samples = []
+        done = threading.Event()
+        def sample():
+            while not done.is_set():
+                row = {"time": time.monotonic(), "runtime": observe(runtime["pid"])}
+                try:
+                    with (self.home / "runtime.lock").open("rb") as lock:
+                        try:
+                            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            row["lease"] = "free"
+                            fcntl.flock(lock, fcntl.LOCK_UN)
+                        except BlockingIOError:
+                            row["lease"] = "held"
+                except OSError as error:
+                    row["lease_error"] = str(error)
+                samples.append(row)
+                done.wait(.01)
+        observer = threading.Thread(target=sample)
+        observer.start()
         started = time.monotonic()
-        up = self.call("up")
+        try:
+            up = self.call("up")
+        finally:
+            done.set()
+            observer.join()
+            self.result["lease_samples"] = samples
         self.result["up_exit"] = up.returncode
         self.result["up_seconds"] = time.monotonic() - started
         if up.returncode:
