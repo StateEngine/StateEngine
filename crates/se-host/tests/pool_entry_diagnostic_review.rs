@@ -1,8 +1,11 @@
 //! Independent delayed-admission control for the test entry diagnostic.
 #![cfg(feature = "runtime")]
 pub use se_host::client;
+#[path = "../src/runtime/pool.rs"]
+#[allow(dead_code)]
+mod actual_pool;
 mod probe {
-    use se_host::{BlockingClass, BlockingPool};
+    use super::actual_pool::{BlockingClass, BlockingPool};
     #[allow(dead_code)]
     mod actual_helper {
         include!("../src/runtime/pool_tests.rs");
