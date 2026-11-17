@@ -14,7 +14,7 @@ pub fn read_launch_receipt<R: Snapshot>(
 ) -> Result<(CommitReceipt, LaunchAttribution)> {
     let receipt = scope::require_present(
         cx.read
-            .operation_receipt(cx.admission.actor.clone(), native_key)
+            .operation_receipt(cx.admission.actor.clone(), native_key.clone())
             .map_err(|e| store_error(&e))?,
         "remote launch reservation receipt",
         scope::COMMITTED_READ_RECOVERY,
@@ -29,7 +29,7 @@ pub fn read_launch_receipt<R: Snapshot>(
         "remote launch attribution event",
         scope::COMMITTED_READ_RECOVERY,
     )?;
-    let EventBody::RemoteLaunchAttributed { record: origin } = event.body else {
+    let EventBody::RemoteLaunchAttributed { record: mut origin } = event.body else {
         return Err(SeError::invalid(
             "remote launch origin",
             "the committed native reservation attribution",
@@ -48,7 +48,33 @@ pub fn read_launch_receipt<R: Snapshot>(
             "the exact original source, destination, session and native lifecycle",
         ));
     }
+    observe_details(cx, native_key, launched, &mut origin)?;
     Ok((receipt, origin))
+}
+
+fn observe_details<R: Snapshot>(
+    cx: &mut Cx<'_, R>,
+    native_key: IdempotencyKey,
+    launched: RemoteLaunchStarted,
+    origin: &mut LaunchAttribution,
+) -> Result<()> {
+    if origin.details.is_some() && launch_activated(cx, native_key, launched)? {
+        let session = scope::require_present(
+            cx.read
+                .control_session(origin.target.agent.clone(), origin.session.clone())
+                .map_err(|error| store_error(&error))?,
+            "original remote launch session",
+            scope::COMMITTED_READ_RECOVERY,
+        )?;
+        let conversation = crate::ops::session_reference::read(cx.read, &session)?;
+        if let Some(details) = &mut origin.details {
+            details.conversation = conversation;
+            // Remote launches are headless. Atomic activation follows the
+            // provider handshake and both authenticated first-use requests.
+            details.mail_notifications = se_types::Read::Present { value: true };
+        }
+    }
+    Ok(())
 }
 
 /// C1 reserves custody; only atomic native activation proves a witnessed start.

@@ -35,19 +35,8 @@ pub fn up(
     }
     let mut options = execute::options();
     let bound = Deadline::from_options(&options)?;
-    let mut endpoint_recovery = None;
-    let endpoint = super::autostart::endpoint_with_origin(
-        cx,
-        files,
-        &bound,
-        diagnostic,
-        crate::runtime::host::StartupOrigin::Explicit,
-        &mut endpoint_recovery,
-    )
-    .map_err(|error| discovery::after_recovery(cx, endpoint_recovery.as_ref(), error))?;
-    options.timeout = bound.remaining()?;
-    let process = discovery::authenticate(cx, files, &endpoint, &options, &bound)
-        .map_err(|error| discovery::after_recovery(cx, endpoint_recovery.as_ref(), error))?;
+    let (endpoint, endpoint_recovery, process) =
+        rendezvous(cx, files, &mut options, &bound, diagnostic)?;
     #[cfg(feature = "remote")]
     if let Some(notice) = se_host::remote::startup_notice(files, &cx.home)? {
         diagnostic(&notice).map_err(|error| {
@@ -66,6 +55,134 @@ pub fn up(
         endpoint_recovery,
     }
     .into())
+}
+/// One request owns the latest retention receipt, including a failed startup's
+/// receipt. Merge it before inspecting the result so every exit reports it.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+struct Rendezvous {
+    recovery: Option<se_core::ops::EndpointRecovery>,
+}
+/// Preserve the failed phase before rendering retention as `state-conflict`.
+/// Startup and deadline failures cannot authorize another bootstrap.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+enum Phase {
+    /// `autostart` could not route or start: it already decided what to do.
+    Startup(SeError),
+    /// The request clock ran out after retention.
+    Deadline(SeError),
+    /// Credential and process-observation failures are not endpoint failures.
+    Authentication { error: SeError, unreachable: bool },
+}
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+impl Rendezvous {
+    fn new() -> Self {
+        Self { recovery: None }
+    }
+    /// Route and authenticate, absorbing a receipt before any error is read.
+    fn attempt(
+        &mut self,
+        cx: &Bootstrap,
+        files: &Files,
+        options: &mut se_host::client::ClientOptions,
+        bound: &Deadline,
+        diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+    ) -> std::result::Result<(se_host::EndpointRecord, ProcessView), Phase> {
+        let mut routed = None;
+        let endpoint = super::autostart::endpoint_with_origin(
+            cx,
+            files,
+            bound,
+            diagnostic,
+            crate::runtime::host::StartupOrigin::Explicit,
+            &mut routed,
+        );
+        // Merged before the error is read: the failed attempt may be the one that
+        // retained the record.
+        if routed.is_some() {
+            self.recovery = routed;
+        }
+        let endpoint = endpoint.map_err(Phase::Startup)?;
+        options.timeout = bound.remaining().map_err(Phase::Deadline)?;
+        let process =
+            discovery::authenticate(cx, files, &endpoint, options, bound).map_err(|error| {
+                // Read before rendering: rendering replaces the code with
+                // `state-conflict`, and only the endpoint-unreachable cause may
+                // authorize a retry.
+                let unreachable = discovery::endpoint_unreachable(&error);
+                Phase::Authentication { error, unreachable }
+            })?;
+        Ok((endpoint, process))
+    }
+    /// Render any phase from the one receipt this request owns.
+    fn refuse(&self, cx: &Bootstrap, phase: Phase) -> SeError {
+        let error = match phase {
+            Phase::Startup(error) | Phase::Deadline(error) => error,
+            Phase::Authentication { error, .. } => error,
+        };
+        discovery::after_recovery(cx, self.recovery.as_ref(), error)
+    }
+}
+/// Retry one unreachable endpoint only after its host releases the lease.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn rendezvous(
+    cx: &Bootstrap,
+    files: &Files,
+    options: &mut se_host::client::ClientOptions,
+    bound: &Deadline,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<(
+    se_host::EndpointRecord,
+    Option<se_core::ops::EndpointRecovery>,
+    ProcessView,
+)> {
+    let mut rendezvous = Rendezvous::new();
+    let first = rendezvous.attempt(cx, files, options, bound, diagnostic);
+    let (endpoint, process) = match first {
+        Ok(value) => value,
+        // Every phase other than a refused authentication is final as it stands.
+        Err(phase @ (Phase::Startup(_) | Phase::Deadline(_))) => {
+            return Err(rendezvous.refuse(cx, phase));
+        }
+        Err(Phase::Authentication {
+            error: refusal,
+            unreachable: true,
+        }) => {
+            match discovery::route(cx) {
+                // A held lease is a live host that answered nothing: the original
+                // refusal names what to do, and retrying would report a second
+                // failure as if it were the first.
+                Ok(se_host::EndpointRoute::Live(_)) => {
+                    return Err(rendezvous.refuse(
+                        cx,
+                        Phase::Authentication {
+                            error: refusal,
+                            unreachable: true,
+                        },
+                    ));
+                }
+                Ok(se_host::EndpointRoute::Start { recovery }) => {
+                    if recovery.is_some() {
+                        rendezvous.recovery = recovery;
+                    }
+                }
+                Err(error) => return Err(rendezvous.refuse(cx, Phase::Startup(error))),
+            }
+            rendezvous
+                .attempt(cx, files, options, bound, diagnostic)
+                .map_err(|phase| rendezvous.refuse(cx, phase))?
+        }
+        // An authentication call that failed for any other reason (credential
+        // preparation, process observation) is not a refusal from the endpoint
+        // and must not retain or start anything.
+        Err(
+            phase @ Phase::Authentication {
+                unreachable: false, ..
+            },
+        ) => {
+            return Err(rendezvous.refuse(cx, phase));
+        }
+    };
+    Ok((endpoint, rendezvous.recovery, process))
 }
 /// The public CLI keeps its original process as the sole standalone host.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]

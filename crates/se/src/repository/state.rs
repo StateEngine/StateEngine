@@ -1,6 +1,8 @@
 //! Bounded read-only observation of an existing Git repository: the branch,
 //! the commit count reachable from HEAD and whether uncommitted changes are
-//! present. Every Git invocation passes a top-precedence
+//! present. A fresh in-process backend scans the working tree on a single-flight
+//! thread; its answer deadline can leave that scan running with no dirty claim.
+//! Unsupported observations use bounded Git invocations with a top-precedence
 //! `core.fsmonitor=false` command parameter, which beats both repository
 //! files and an inherited `GIT_CONFIG_PARAMETERS`, and keeps output bounded,
 //! so the observer can never execute repository configuration, buffer an
@@ -9,6 +11,7 @@
 #[path = "count_cache.rs"]
 mod count_cache;
 use se_core::{ops::GitView, scope};
+use se_repository as library;
 use se_types::Result;
 use std::{
     io,
@@ -78,14 +81,12 @@ fn observe_using(
     let Some(repository) = registered else {
         return Ok(None);
     };
-    // One `status --porcelain=v2 --branch` carries HEAD, the branch name and
-    // whether the tree is dirty. Only a cache miss needs a second Git process.
-    // The status cost is bounded by the working tree, not the
-    // history, and it is settled at the first entry rather than buffered.
+    // Header and dirtiness come from the fresh native observer, or one bounded
+    // `status --porcelain=v2 --branch` fallback. History counting is separate.
     let StatusRead::Known {
         header,
         dirty: observed_dirty,
-    } = status_header_within(root, deadline)?
+    } = status_within(root, deadline)?
     else {
         // Git metadata is present but this machine has no Git binary: the
         // state is absent to this machine, not unreadable.
@@ -109,7 +110,7 @@ fn observe_using(
             if let Some(count) = cached.as_ref().and_then(|cache| cache.count()) {
                 Some(count)
             } else {
-                match commit_count_within(root, head, deadline)? {
+                match observe_blocking(observe_count(root, head, deadline))? {
                     CountRead::Count(count) => {
                         if let Some(cache) = cached {
                             cache.save(count);
@@ -140,12 +141,45 @@ struct StatusHeader {
     branch: Option<String>,
 }
 
+fn status_within(root: &Path, deadline: Instant) -> Result<StatusRead> {
+    match library::observe(root, deadline) {
+        library::Read::Known(facts) => Ok(StatusRead::Known {
+            header: StatusHeader {
+                head: facts.head,
+                branch: facts.branch,
+            },
+            dirty: facts.dirty,
+        }),
+        library::Read::Fallback(reason) if Instant::now() >= deadline => Err(scope::unreadable(
+            "Git repository observation",
+            &format!(
+                "deadline expired before status could be measured; state is unknown: {reason}"
+            ),
+        )),
+        library::Read::Fallback(reason) => observe_blocking(observe_status(root, deadline))
+            .map_err(|error| {
+                scope::unreadable("Git repository observation", &format!(
+                "in-process observation failed: {reason}; command-line observation failed: {error}"
+            )).with_cause(error)
+            }),
+    }
+}
+
 /// The commit count's result: a counted history, a history walk that outlived
 /// the deadline, or the absence of a Git binary on this machine.
 enum CountRead {
     Count(u64),
     Deadline,
     Missing,
+}
+
+fn observe_blocking<T>(observation: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(|error| scope::unreadable("Git repository observation", &error.to_string()))?;
+    runtime.block_on(observation)
 }
 
 /// Count the commits reachable from HEAD under the observation's deadline.
@@ -156,15 +190,6 @@ enum CountRead {
 /// slow or stuck walk cannot hold `se status` open. A walk that misses the
 /// deadline is killed and reaped and reported as unknown, never as zero. Its
 /// output is bounded like every other metadata read.
-fn commit_count_within(root: &Path, head: &str, deadline: Instant) -> Result<CountRead> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()
-        .map_err(|error| scope::unreadable("Git repository observation", &error.to_string()))?;
-    runtime.block_on(observe_count(root, head, deadline))
-}
-
 async fn observe_count(root: &Path, head: &str, deadline: Instant) -> Result<CountRead> {
     let deadline = tokio::time::Instant::from(deadline);
     let mut command = tokio::process::Command::new("git");
@@ -274,15 +299,6 @@ async fn observe_count(root: &Path, head: &str, deadline: Instant) -> Result<Cou
 /// preserved, with Git's own stderr tail, and reported as unreadable rather
 /// than converted to zero. A run that cannot settle a fact before the deadline
 /// reports that fact as unknown, never as clean or as an unborn branch.
-fn status_header_within(root: &Path, deadline: Instant) -> Result<StatusRead> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()
-        .map_err(|error| scope::unreadable("Git repository observation", &error.to_string()))?;
-    runtime.block_on(observe_status(root, deadline))
-}
-
 async fn observe_status(root: &Path, deadline: Instant) -> Result<StatusRead> {
     let deadline = tokio::time::Instant::from(deadline);
     let Some(mut child) = spawn_status(root)? else {

@@ -96,7 +96,7 @@ impl Channels {
                 &kernel,
                 AgentLaunch {
                     target_agent_id: Some(selected.agent),
-                    fresh: false,
+                    resume: Some(se_types::ResumeSelection::Latest(true)),
                     model: None,
                     task: None,
                     detach: true,

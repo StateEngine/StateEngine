@@ -162,7 +162,7 @@ def run(options):
                 task_file = f.repo / 'sum.txt'
                 task_file.unlink(missing_ok=True)
                 args = [str(f.se), '--home', str(f.home), '--project', f.project,
-                        *(['--json'] if as_json else []), 'launch', f.agent, '--new', '--detach', '--task',
+                        *(['--json'] if as_json else []), 'launch', f.agent, '--detach', '--task',
                         'Write sum.txt containing exactly 5 followed by a newline, read it back and reply SUM_DONE.']
                 result = subprocess.run(args, env=f.env, stdin=subprocess.DEVNULL, capture_output=True, timeout=90)
                 prefix = directory / ('json' if as_json else 'plain')

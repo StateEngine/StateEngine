@@ -117,7 +117,7 @@ impl Harness {
             &kernel,
             AgentLaunch {
                 target_agent_id: Some(self.target.clone()),
-                fresh: true,
+                resume: None,
                 model: None,
                 task: Some("real consumer fixture".into()),
                 detach: true,

@@ -40,6 +40,8 @@ fn value(output: Output) -> Check<serde_json::Value> {
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 struct Host {
+    #[cfg(windows)]
+    child: foreground_host::ForegroundHost,
     image: PathBuf,
     home: PathBuf,
     root: PathBuf,
@@ -100,6 +102,8 @@ impl Host {
             .write(true)
             .open(self.home.join("runtime.lock"))?;
         lease.try_lock()?;
+        #[cfg(windows)]
+        self.child.wait()?;
         self.stopped = true;
         Ok(())
     }
@@ -192,6 +196,12 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
             "refusal published a host"
         );
     }
+    #[cfg(windows)]
+    let child =
+        foreground_host::ForegroundHost::start(command(&installed, &home, &root, true), &home)?;
+    #[cfg(windows)]
+    let started = child.ready().clone();
+    #[cfg(not(windows))]
     let started = value(
         command(&installed, &home, &root, true)
             .arg("up")
@@ -210,6 +220,8 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
         return Err("single-link copy did not start a live host".into());
     };
     let mut host = Host {
+        #[cfg(windows)]
+        child,
         image: installed.clone(),
         home,
         root,
@@ -228,3 +240,7 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
 #[path = "../../test-support/executable.rs"]
 mod executable;
 use executable::ExecutableCommand;
+
+#[cfg(windows)]
+#[path = "support/foreground_host.rs"]
+mod foreground_host;

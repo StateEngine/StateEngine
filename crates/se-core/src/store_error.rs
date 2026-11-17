@@ -277,7 +277,7 @@ struct ExistingAgent<'a> {
 }
 impl se_types::OperationCommand for ExistingAgent<'_> {
     fn cli_argv(&self) -> Vec<String> {
-        crate::ops::AgentCommand::launch(self.agent, None, Some(self.project), false).argv
+        crate::ops::AgentCommand::launch(self.agent, None, Some(self.project), true).argv
     }
 }
 

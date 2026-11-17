@@ -12,6 +12,7 @@ $ErrorActionPreference='Stop'
 $stderrPath=Join-Path (Split-Path $HomePath -Parent) "$Mode-uninstall.stderr"
 $exitPath=Join-Path (Split-Path $HomePath -Parent) "$Mode-uninstall.exit"
 $stdoutPath=Join-Path (Split-Path $HomePath -Parent) "$Mode-uninstall.console"
+$consoleErrorPath=Join-Path (Split-Path $HomePath -Parent) "$Mode-uninstall.console-error"
 function Read-OwnedConsole {
     Add-Type -TypeDefinition @'
 using System;
@@ -70,34 +71,45 @@ function Wait-Owned($child, [string]$expectedImage, [string]$marker, [int]$timeo
 }
 $powershell=Join-Path $PSHOME 'powershell.exe'
 if($ConsoleChild) {
-    if([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
-        throw 'Runtime uninstall fixture requires a real native console'
+    try {
+        if([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+            throw 'Runtime uninstall fixture requires a real native console'
+        }
+        [Console]::WriteLine('Runtime uninstall owned console readback control')
+        # Exercise the identical NoNewWindow + redirected-stderr exit reader with
+        # a real known-nonzero child before trusting any uninstall observation.
+        $probeError=Join-Path (Split-Path $HomePath -Parent) "$Mode-exit-probe.stderr"
+        $probe=Start-Process -FilePath $powershell -ArgumentList @('-NoProfile','-NonInteractive','-Command','exit 7') -PassThru -NoNewWindow -RedirectStandardError $probeError
+        $probeCode=Wait-Owned $probe $powershell 'exit 7'
+        if($probeCode -ne 7) { throw "Native exit-code control lost 7: got $probeCode" }
+        $arguments=@('--home' , ('"'+$HomePath+'"'), 'uninstall')
+        if($Mode -eq 'json') { $arguments=@('--json')+$arguments }
+        $cli=Start-Process -FilePath $Image -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardError $stderrPath
+        # Carrier preparation itself permits 30 seconds after ordinary shutdown.
+        # The outside fixture must allow that operation to return its own verdict.
+        $code=Wait-Owned $cli $Image 'uninstall' 60000
+        $consoleText=Read-OwnedConsole
+        if(-not $consoleText.Contains('Runtime uninstall owned console readback control')) {
+            throw 'Owned console output readback lost its control marker'
+        }
+        [IO.File]::WriteAllText($stdoutPath, $consoleText, [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($exitPath, [string]$code)
+        exit 0
+    } catch {
+        $detail = $_.ToString()+[Environment]::NewLine+$_.InvocationInfo.PositionMessage+[Environment]::NewLine+$_.ScriptStackTrace
+        [IO.File]::WriteAllText($consoleErrorPath, $detail, [Text.UTF8Encoding]::new($false))
+        throw
     }
-    [Console]::WriteLine('Runtime uninstall owned console readback control')
-    # Exercise the identical NoNewWindow + redirected-stderr exit reader with
-    # a real known-nonzero child before trusting any uninstall observation.
-    $probeError=Join-Path (Split-Path $HomePath -Parent) "$Mode-exit-probe.stderr"
-    $probe=Start-Process -FilePath $powershell -ArgumentList @('-NoProfile','-NonInteractive','-Command','exit 7') -PassThru -NoNewWindow -RedirectStandardError $probeError
-    $probeCode=Wait-Owned $probe $powershell 'exit 7'
-    if($probeCode -ne 7) { throw "Native exit-code control lost 7: got $probeCode" }
-    $arguments=@('--home' , ('"'+$HomePath+'"'), 'uninstall')
-    if($Mode -eq 'json') { $arguments=@('--json')+$arguments }
-    $cli=Start-Process -FilePath $Image -ArgumentList $arguments -PassThru -NoNewWindow -RedirectStandardError $stderrPath
-    $code=Wait-Owned $cli $Image 'uninstall'
-    $consoleText=Read-OwnedConsole
-    if(-not $consoleText.Contains('Runtime uninstall owned console readback control')) {
-        throw 'Owned console output readback lost its control marker'
-    }
-    [IO.File]::WriteAllText($stdoutPath, $consoleText, [Text.UTF8Encoding]::new($false))
-    [IO.File]::WriteAllText($exitPath, [string]$code)
-    exit 0
 }
 function Literal([string]$value) { return "'"+$value.Replace("'", "''")+"'" }
 $invocation="& ([ScriptBlock]::Create([IO.File]::ReadAllText($(Literal $ScriptPath)))) -Image $(Literal $Image) -HomePath $(Literal $HomePath) -Mode $Mode -ScriptPath $(Literal $ScriptPath) -ConsoleChild"
 $arguments='-NoProfile -NonInteractive -Command "'+$invocation+'"'
 $console=Start-Process -FilePath $powershell -ArgumentList $arguments -PassThru -WindowStyle Normal
-$code=Wait-Owned $console $powershell $ScriptPath 45000
-if($code -ne 0) { throw "Native console fixture failed with exit $code" }
+$code=Wait-Owned $console $powershell $ScriptPath 90000
+if($code -ne 0) {
+    $detail = if([IO.File]::Exists($consoleErrorPath)) { [IO.File]::ReadAllText($consoleErrorPath) } else { 'Console error receipt absent' }
+    throw "Native console fixture failed with exit ${code}: $detail"
+}
 [Console]::Out.Write([IO.File]::ReadAllText($stdoutPath))
 [Console]::Error.Write([IO.File]::ReadAllText($stderrPath))
 $measuredExit=[IO.File]::ReadAllText($exitPath)
