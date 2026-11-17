@@ -214,6 +214,7 @@ pub fn from_matches_with_key(
                 .transpose()?,
             limit: number(m, "limit")?,
             cursor: text(m, "cursor").map(Cursor::new).transpose()?,
+            newest: flag(m, "newest"),
             owner_agent: None,
         }),
         "history.event_read" => AnyOp::EventRead(EventRead {

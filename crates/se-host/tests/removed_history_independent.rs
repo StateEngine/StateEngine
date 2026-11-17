@@ -92,6 +92,7 @@ fn removed_project_keeps_exact_and_paged_message_history_readable() -> Check {
             since: None,
             limit: 100,
             cursor: None,
+            newest: false,
             owner_agent: None,
         },
         &mut Cx {

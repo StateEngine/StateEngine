@@ -23,18 +23,25 @@ impl SqliteSnapshot {
     ) -> StoreResult<HistoryStream> {
         let s = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let mut binding = format!(
-            "history:{}:{:?}:{:?}:{:?}:{:?}:{:?}",
+            "history:{}:{:?}:{:?}:{:?}:{:?}:{:?}:{:?}",
             codec::encode(&s)?,
             self.scope.admission.actor,
             query.agent,
             query.session,
             (&query.kinds, &query.families, query.transcript),
-            query.since.as_ref().map(StorePosition::sequence)
+            query.since.as_ref().map(StorePosition::sequence),
+            query.direction
         );
         if let Some(text) = search {
             binding.push_str(&format!(":search:{}", codec::encode(&text)?));
         }
-        let (h, mut after) = self.window(budget, &binding, false)?;
+        let (h, cursor_last) = self.window(budget, &binding, false)?;
+        // A newest-first cursor carries the page frontier (its oldest
+        // returned event); `since` stays the shared exclusive floor.
+        let frontier = (query.direction == HistoryDirection::NewestFirst
+            && budget.page.after.is_some())
+        .then_some(cursor_last);
+        let mut after = cursor_last;
         if let Some(position) = &query.since {
             if !position.belongs(&self.info) {
                 return Err(fail(
@@ -50,6 +57,14 @@ impl SqliteSnapshot {
                 "history start is beyond snapshot",
             ));
         }
+        // Newest-first resumes below the frontier from the shared floor.
+        if frontier.is_some() {
+            after = query
+                .since
+                .as_ref()
+                .map(StorePosition::sequence)
+                .unwrap_or(0);
+        }
         let p = match &self.scope.admission.scope {
             Scope::Registry => None,
             _ => Some(self.project_bytes()?),
@@ -57,10 +72,20 @@ impl SqliteSnapshot {
         let exact_session = query.session.as_ref().filter(|_| {
             !query.kinds.is_empty() && query.kinds.iter().all(|k| *k == EventKind::SessionTurn)
         });
+        // Newest-first resumes strictly below the cursor frontier; every other
+        // read includes the snapshot high.
+        let (upper_op, upper) = match frontier {
+            Some(frontier) => ("<", frontier),
+            None => ("<=", h),
+        };
         let mut sql = if exact_session.is_some() {
-            "SELECT e.entity_revision,e.seq,e.seq FROM turn_data t INDEXED BY turn_data_session_seq JOIN events e ON e.seq=t.event_seq WHERE t.project_id IS ? AND t.event_seq>? AND t.event_seq<=?".to_string()
+            format!(
+                "SELECT e.entity_revision,e.seq,e.seq FROM turn_data t INDEXED BY turn_data_session_seq JOIN events e ON e.seq=t.event_seq WHERE t.project_id IS ? AND t.event_seq>? AND t.event_seq{upper_op}?"
+            )
         } else {
-            "SELECT e.entity_revision,e.seq,e.seq FROM events e WHERE e.project_id IS ? AND e.seq>? AND e.seq<=?".to_string()
+            format!(
+                "SELECT e.entity_revision,e.seq,e.seq FROM events e WHERE e.project_id IS ? AND e.seq>? AND e.seq{upper_op}?"
+            )
         };
         if exact_session.is_none() {
             sql.push_str(" AND e.kind NOT IN ('runtime.owner','runtime.handover')");
@@ -69,7 +94,7 @@ impl SqliteSnapshot {
             p.map(rusqlite::types::Value::Blob)
                 .unwrap_or(rusqlite::types::Value::Null),
             rusqlite::types::Value::Integer(after as i64),
-            rusqlite::types::Value::Integer(h as i64),
+            rusqlite::types::Value::Integer(upper as i64),
         ];
         if let Some(agent) = &query.agent {
             let a = self.agent_bytes(agent)?;
@@ -84,22 +109,22 @@ impl SqliteSnapshot {
             // to find even an empty agent history. UNION also deduplicates mail
             // the agent sent to itself and shared-work deliveries.
             sql.push_str(&format!(" AND e.seq IN (
-                SELECT seq FROM events INDEXED BY events_actor_seq WHERE project_id=? AND actor_id=? AND seq>? AND seq<=?
-                UNION SELECT sent_seq FROM {mail} INDEXED BY {recipient_index} WHERE project_id=? AND recipient_id=? AND sent_seq>? AND sent_seq<=?
-                UNION SELECT event_seq FROM turn_data INDEXED BY turn_data_agent_seq WHERE project_id=? AND agent_id=? AND event_seq>? AND event_seq<=?
-                UNION SELECT event_seq FROM process_data WHERE principal_id=? AND event_seq>? AND event_seq<=?)"));
+                SELECT seq FROM events INDEXED BY events_actor_seq WHERE project_id=? AND actor_id=? AND seq>? AND seq{upper_op}?
+                UNION SELECT sent_seq FROM {mail} INDEXED BY {recipient_index} WHERE project_id=? AND recipient_id=? AND sent_seq>? AND sent_seq{upper_op}?
+                UNION SELECT event_seq FROM turn_data INDEXED BY turn_data_agent_seq WHERE project_id=? AND agent_id=? AND event_seq>? AND event_seq{upper_op}?
+                UNION SELECT event_seq FROM process_data WHERE principal_id=? AND event_seq>? AND event_seq{upper_op}?)"));
             for _ in 0..3 {
                 params.extend([
                     Value::Blob(project.clone()),
                     Value::Blob(a.clone()),
                     Value::Integer(after as i64),
-                    Value::Integer(h as i64),
+                    Value::Integer(upper as i64),
                 ]);
             }
             params.extend([
                 Value::Blob(a),
                 Value::Integer(after as i64),
-                Value::Integer(h as i64),
+                Value::Integer(upper as i64),
             ]);
         }
         if let Some(session) = &query.session {
@@ -119,19 +144,19 @@ impl SqliteSnapshot {
                 "messages"
             };
             sql.push_str(&format!(" AND (e.actor_id=?
-                OR EXISTS(SELECT 1 FROM {mail} d WHERE d.sent_seq=e.seq AND d.project_id=? AND d.recipient_id=? AND d.sent_seq>? AND d.sent_seq<=?)
-                OR EXISTS(SELECT 1 FROM turn_data d WHERE d.event_seq=e.seq AND d.project_id=? AND d.agent_id=? AND d.event_seq>? AND d.event_seq<=?)
+                OR EXISTS(SELECT 1 FROM {mail} d WHERE d.sent_seq=e.seq AND d.project_id=? AND d.recipient_id=? AND d.sent_seq>? AND d.sent_seq{upper_op}?)
+                OR EXISTS(SELECT 1 FROM turn_data d WHERE d.event_seq=e.seq AND d.project_id=? AND d.agent_id=? AND d.event_seq>? AND d.event_seq{upper_op}?)
                 OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=e.seq AND d.principal_id=?))"));
             params.extend([
                 rusqlite::types::Value::Blob(a.clone()),
                 rusqlite::types::Value::Blob(self.project_bytes()?),
                 rusqlite::types::Value::Blob(a.clone()),
                 rusqlite::types::Value::Integer(after as i64),
-                rusqlite::types::Value::Integer(h as i64),
+                rusqlite::types::Value::Integer(upper as i64),
                 rusqlite::types::Value::Blob(self.project_bytes()?),
                 rusqlite::types::Value::Blob(a.clone()),
                 rusqlite::types::Value::Integer(after as i64),
-                rusqlite::types::Value::Integer(h as i64),
+                rusqlite::types::Value::Integer(upper as i64),
                 rusqlite::types::Value::Blob(a),
             ]);
         }
@@ -166,10 +191,14 @@ impl SqliteSnapshot {
         }
 
         sql.push_str(if exact_session.is_some() {
-            " ORDER BY t.event_seq LIMIT ?"
+            " ORDER BY t.event_seq"
         } else {
-            " ORDER BY e.seq LIMIT ?"
+            " ORDER BY e.seq"
         });
+        if query.direction == HistoryDirection::NewestFirst {
+            sql.push_str(" DESC");
+        }
+        sql.push_str(" LIMIT ?");
         Ok(HistoryStream {
             binding,
             high: h,

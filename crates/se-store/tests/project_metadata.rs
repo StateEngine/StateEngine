@@ -141,6 +141,7 @@ fn metadata_access_does_not_open_event_or_private_body_visibility() -> Check {
             families: vec![],
             transcript: se_store::TranscriptFilter::All,
             since: None,
+            direction: HistoryDirection::OldestFirst,
         },
         budget(20, 65536, None)?,
     )?;
