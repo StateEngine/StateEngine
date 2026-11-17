@@ -103,6 +103,7 @@ fn noise_accompanies_real_turns_and_a_live_noise_only_tail_waits() -> Check {
                 EventBody::ProfileSaved {
                     agent: f.a.clone(),
                     profile: Profile {
+                        provider_settings: Default::default(),
                         provider: Provider::Claude,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,

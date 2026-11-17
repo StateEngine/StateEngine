@@ -128,6 +128,7 @@ fn discovery(config: se_config::config_policy::ConfigFile) -> Check {
         EventBody::ProfileSaved {
             agent: f.b.clone(),
             profile: se_store::Profile {
+                provider_settings: Default::default(),
                 provider: Provider::Claude,
                 model: None,
                 permission: PermissionProfile::WorkspaceWrite,

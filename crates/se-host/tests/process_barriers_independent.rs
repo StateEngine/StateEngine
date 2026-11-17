@@ -227,6 +227,7 @@ fn embedded_session_bind_is_atomic_and_credential_free() -> Check {
     h.write(vec![EventBody::ProfileSaved {
         agent: h.target.clone(),
         profile: Profile {
+            provider_settings: Default::default(),
             provider: Provider::SeCode,
             model: None,
             permission: PermissionProfile::WorkspaceWrite,

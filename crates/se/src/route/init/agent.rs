@@ -75,6 +75,7 @@ pub(super) fn initial_agent(
             let kernel =
                 Kernel::new(execute::facts()?)?.with_configuration(configuration.clone())?;
             let op = AnyOp::AgentCreate(AgentCreate {
+                provider_settings: Default::default(),
                 harness: input.harness.clone(),
                 name: input.agent.clone(),
                 provider: input.provider,

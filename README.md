@@ -250,6 +250,28 @@ se down
 This stops StateEngine's background service and its active agents while retaining
 saved work. The next launch starts the service again.
 
+## Per-agent model settings
+
+A saved agent can use a Codex model provider without changing other agents or
+shared provider defaults. Replace `AGENT`, `LOCAL_MODEL` and the example endpoint:
+
+```sh
+se agent add AGENT --provider codex --model LOCAL_MODEL --model-provider local --base-url http://127.0.0.1:8080/v1 --wire-api responses --reasoning-effort high --context-window 200000
+```
+
+Read or change a saved value with `se config get agent.AGENT.model_provider` or
+`se config set agent.AGENT.reasoning_effort high`. The other supported keys are
+`base_url`, `wire_api` and `context_window`. Use `null` to inherit the provider
+default; clear `base_url` and `wire_api` before clearing their `model_provider`.
+Changes apply on the next launch; they do not reconfigure a running session.
+Endpoints must contain no credentials, query or fragment; authentication stays
+with the provider's own setup. MCP creation uses the same keys inside
+`provider_settings`. Claude supports `reasoning_effort` (low, medium, high or max);
+the Codex routing and context fields are refused for other providers.
+
+Profiles containing these overrides require a version of StateEngine that
+supports them. Older readers refuse those profiles rather than drop settings.
+
 ## Optional protocol agents
 
 An ACP agent is a separately installed assistant that speaks Agent Client Protocol

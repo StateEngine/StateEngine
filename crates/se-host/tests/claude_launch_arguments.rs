@@ -45,6 +45,7 @@ fn window_task_cannot_supply_claude_options_on_new_or_resumed_launches()
         executable: NativePath::from_local(directory.join("claude"))?,
         cwd: NativePath::from_local(directory.clone())?,
         profile: se_store::Profile {
+            provider_settings: Default::default(),
             provider: se_store::Provider::Claude,
             model: Some("configured-model".into()),
             permission: se_store::PermissionProfile::WorkspaceWrite,

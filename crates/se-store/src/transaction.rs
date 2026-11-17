@@ -504,9 +504,14 @@ impl Engine {
                     },
                     true,
                 )?;
-                // Descriptor-bound profiles must refuse older readers instead of
-                // losing their harness selection through an unknown JSON field.
+                // Profiles with explicit harnesses or provider overrides refuse older
+                // readers instead of silently losing their launch settings.
                 let schema_version = match &e.body {
+                    EventBody::ProfileSaved { profile, .. }
+                        if !profile.provider_settings.is_empty() =>
+                    {
+                        3
+                    }
                     EventBody::ProfileSaved { profile, .. } if profile.harness.is_some() => 2,
                     _ => 1,
                 };

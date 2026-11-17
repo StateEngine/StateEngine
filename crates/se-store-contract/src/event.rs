@@ -75,6 +75,8 @@ pub enum PermissionProfile {
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Profile {
+    #[serde(default, skip_serializing_if = "se_types::ProviderSettings::is_empty")]
+    pub provider_settings: se_types::ProviderSettings,
     pub provider: Provider,
     /// Immutable adapter selection; absence retains the legacy provider configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]

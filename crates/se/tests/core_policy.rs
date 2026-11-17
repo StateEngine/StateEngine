@@ -54,6 +54,7 @@ fn setup() -> Outcome<(Fixture, SqliteDirect, Arc<Lease>)> {
             vec![EventBody::ProfileSaved {
                 agent: f.a.clone(),
                 profile: Profile {
+                    provider_settings: Default::default(),
                     provider: Provider::Codex,
                     model: None,
                     permission: PermissionProfile::WorkspaceWrite,
@@ -126,6 +127,7 @@ fn receipt_case(family: &str) -> Check {
     let key = IdempotencyKey::new(format!("receipt-{family}"))?;
     let op = match family {
         "agent" => AnyOp::AgentCreate(AgentCreate {
+            provider_settings: Default::default(),
             harness: None,
             name: "receipt-agent".into(),
             provider: None,

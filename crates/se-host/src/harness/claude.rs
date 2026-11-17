@@ -92,6 +92,10 @@ pub fn invocation(
     environment: Vec<(OsString, OsString)>,
 ) -> Result<ProviderInvocation> {
     let request = launch.request;
+    request
+        .profile
+        .provider_settings
+        .validate(se_types::Provider::Claude)?;
     let path = |name: &str| launch.launch_directory.join(name).into_os_string();
     let mut arguments: Vec<OsString> = if request.mode == se_proc::LaunchMode::Window {
         Vec::new()
@@ -141,6 +145,15 @@ pub fn invocation(
     }
     if let Some(model) = &request.profile.model {
         arguments.extend(["--model".into(), model.into()]);
+    }
+    if let Some(effort) = request
+        .profile
+        .provider_settings
+        .reasoning_effort
+        .as_ref()
+        .or(request.profile.effort.as_ref())
+    {
+        arguments.extend(["--effort".into(), effort.into()]);
     }
     if request.mode == se_proc::LaunchMode::Window {
         // Task text is a positional prompt, even when it resembles a permission
@@ -444,6 +457,7 @@ mod transcript_location_tests {
             executable: NativePath::from_local(cwd.join("claude"))?,
             cwd: NativePath::from_local(cwd.to_path_buf())?,
             profile: se_store::Profile {
+                provider_settings: Default::default(),
                 provider: se_store::Provider::Claude,
                 model: None,
                 permission: se_store::PermissionProfile::WorkspaceWrite,
