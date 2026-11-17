@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import changes
+from test_concurrency import expression
 
 spec = importlib.util.spec_from_file_location("ci_check", Path(__file__).with_name("check.py"))
 check = importlib.util.module_from_spec(spec)
@@ -36,7 +37,7 @@ class Concurrency(unittest.TestCase):
 
             return re.sub(r"\$\{\{(.*?)\}\}", expression, group)
 
-        events = ["push", "pull_request", "workflow_dispatch", "schedule"]
+        events = ["push", "pull_request", "merge_group", "workflow_dispatch", "schedule"]
         self.assertEqual(len({key(event) for event in events}), len(events))
         # PR pushes still converge on one group, scoped to the source repository.
         pr = {"github.head_ref": "feature", "github.ref_name": "1/merge",
@@ -90,6 +91,20 @@ class Routing(unittest.TestCase):
         event = self.event()
         self.assertFalse(changes.affected({"pull_request": {"base": {"sha": self.base},
                                                           "head": {"sha": event["after"]}}}, "pull_request"))
+
+    def test_merge_group_uses_queue_base_and_group_head(self):
+        prose = self.event()
+        group = {"merge_group": {"base_sha": self.base, "head_sha": prose["after"]}}
+        self.assertFalse(changes.affected(group, "merge_group"))
+        # A later pull request in the same group brings Rust into the group's diff.
+        group["merge_group"]["head_sha"] = self.event("lib.rs")["after"]
+        self.assertTrue(changes.affected(group, "merge_group"))
+
+    def test_unresolved_merge_group_diff_runs_everything(self):
+        for event in [{"merge_group": {}},
+                      {"merge_group": {"base_sha": "0" * 40, "head_sha": self.base}}]:
+            with self.subTest(event=event):
+                self.assertEqual(self.detector(event, "merge_group"), {"rust": "true", "windows": "true"})
 
     def test_main_always_runs(self):
         self.assertTrue(changes.affected(dict(self.event(), ref="refs/heads/main"), "push"))
@@ -405,12 +420,113 @@ class FinalStatus(unittest.TestCase):
         jobs["linux-box"]["result"] = "cancelled"
         self.assertFalse(check.accepted(jobs))
 
+    def guard(self):
+        jobs = self.jobs()
+        for name in ("test", "macos-test"):
+            jobs[name]["result"] = "skipped"
+        jobs["remote-test"] = {"result": "skipped"}
+        return jobs
+
+    def run_gate(self, jobs, mode):
+        return subprocess.run([sys.executable, str(Path(check.__file__).resolve())],
+                              env={**os.environ, "RESULTS": json.dumps(jobs), "CHECK_MODE": mode},
+                              capture_output=True, text=True, timeout=10).returncode
+
+    def test_main_guard_accepts_lint_and_cache_refresh_without_the_suite(self):
+        jobs = self.guard()
+        self.assertTrue(check.accepted(jobs, guard=True))
+        self.assertEqual(self.run_gate(jobs, "guard"), 0)
+        # Every other mode, including an unknown one, still requires the full suite.
+        self.assertFalse(check.accepted(jobs))
+        for mode in ("full", "", "unknown"):
+            with self.subTest(mode=mode):
+                self.assertEqual(self.run_gate(jobs, mode), 1)
+        box = self.guard()
+        box["linux-route"]["outputs"]["route"] = "box"
+        box["linux-box"] = {"result": "success", "outputs": {"status": "passed", "windows": "passed"}}
+        for name in ("fmt", "clippy", "archive", "windows-clippy"):
+            box[name]["result"] = "skipped"
+        self.assertTrue(check.accepted(box, guard=True))
+
+    def test_main_guard_refuses_failed_lint_or_unexpected_suite_runs(self):
+        for name in ("changes", "fmt", "clippy", "windows-clippy", "archive"):
+            for status in ("failure", "cancelled", "skipped"):
+                with self.subTest(name=name, status=status):
+                    jobs = self.guard()
+                    jobs[name]["result"] = status
+                    self.assertFalse(check.accepted(jobs, guard=True))
+        for name in ("test", "macos-test", "remote-test"):
+            for status in ("success", "failure", "cancelled"):
+                with self.subTest(name=name, status=status):
+                    jobs = self.guard()
+                    jobs[name]["result"] = status
+                    self.assertFalse(check.accepted(jobs, guard=True))
+
     def test_route_transport_failure_falls_back_but_unexplained_skip_does_not(self):
         jobs = self.jobs()
         jobs["linux-route"] = {"result": "failure", "outputs": {}}
         self.assertTrue(check.accepted(jobs))
         jobs["linux-route"]["result"] = "skipped"
         self.assertFalse(check.accepted(jobs))
+
+
+class MergeQueueWorkflow(unittest.TestCase):
+    """The workflow text that decides which jobs a merge group and a main push run."""
+
+    def setUp(self):
+        self.text = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+
+    def job(self, name):
+        match = re.search(r"^  " + re.escape(name) + r":\n(.*?)(?=^  [a-z][\w-]*:\n|\Z)",
+                          self.text, re.M | re.S)
+        self.assertIsNotNone(match, name)
+        return match[1]
+
+    def value(self, job, key):
+        match = re.search(r"^ {4,}" + re.escape(key) + r": \$\{\{(.*?)\}\}$", self.job(job), re.M)
+        self.assertIsNotNone(match, f"{job}.{key}")
+        return match[1]
+
+    def context(self, event):
+        return {"github.event_name": event, "github.repository": "owner/repo"}
+
+    def test_merge_group_requests_checks(self):
+        self.assertRegex(self.text, r"(?m)^  merge_group:\n    types: \[checks_requested\]$")
+
+    def test_only_main_pushes_report_under_another_name_and_mode(self):
+        for event in ("pull_request", "merge_group", "schedule", "workflow_dispatch", "push"):
+            with self.subTest(event=event):
+                push = event == "push"
+                self.assertEqual(expression(self.value("check", "name"), self.context(event)),
+                                 "main guard" if push else "check")
+                self.assertEqual(expression(self.value("check", "CHECK_MODE"), self.context(event)),
+                                 "guard" if push else "full")
+
+    def test_main_push_skips_only_suite_jobs(self):
+        for name in ("test", "windows-archive", "windows-test", "macos", "macos-test", "remote-test"):
+            with self.subTest(job=name):
+                self.assertIn("github.event_name != 'push'", self.value(name, "if"))
+        for name in ("changes", "linux-route", "linux-box", "fmt", "clippy", "windows-clippy",
+                     "archive", "check"):
+            with self.subTest(job=name):
+                self.assertNotIn("'push'", self.value(name, "if"))
+
+    def test_trusted_checkouts_use_the_queue_base(self):
+        for name in ("changes", "check"):
+            with self.subTest(job=name):
+                ref = self.value(name, "ref")
+                self.assertEqual(expression(ref, {"github.event.merge_group.base_sha": "b" * 40}),
+                                 "b" * 40)
+                self.assertEqual(expression(ref, {"github.event.pull_request.base.sha": "a" * 40}),
+                                 "a" * 40)
+
+    def test_merge_groups_never_save_caches_only_their_own_ref_could_restore(self):
+        for name in ("clippy", "windows-clippy", "archive", "macos", "macos-test", "remote-test"):
+            with self.subTest(job=name):
+                save = self.value(name, "save-if")
+                self.assertFalse(expression(save, self.context("merge_group")))
+                for event in ("pull_request", "push", "schedule"):
+                    self.assertTrue(expression(save, self.context(event)))
 
 
 if __name__ == "__main__":

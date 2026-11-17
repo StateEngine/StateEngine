@@ -3,7 +3,7 @@
 use super::{
     execute,
     files::{DirectLease, Files},
-    owner, select, setup,
+    first_init, owner, select, setup,
 };
 use crate::bootstrap::Bootstrap;
 use se_core::{
@@ -147,6 +147,7 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
         !recovered_changes.is_empty(),
     )?;
     let files = &lease.files;
+    first_init::resumable(files)?;
     let observed = match &before {
         setup::Setup::Absent(_) => owner::observe(&[])?,
         setup::Setup::Present(reader) => owner::from_inventory(&owner::inventory(reader, files)?)?,
@@ -192,7 +193,9 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
         }
         setup::Setup::Absent(_) => {
             super::identity::initialize_machine(files)?;
-            super::credential::initialize(files)?;
+            super::credential::initialize_before_publish(files, |secret| {
+                first_init::prepare(files, secret)
+            })?;
         }
     }
     let options = StoreOptions {
@@ -214,19 +217,22 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
             }
             Read::Unknown { what } => return Err(scope::unreadable("setup store", &what)),
         };
-    lease.identity.store = Some(store.info().map_err(|e| store_error(&e))?.id);
-    let result = registration::finish(
-        cx,
-        registration::Plan {
-            input: &input,
-            repository: &repository,
-            configuration: &configuration,
-        },
-        &observed,
-        &mut store,
-        &lease,
-        recovered_changes,
-    );
+    let info = store.info().map_err(|e| store_error(&e))?;
+    lease.identity.store = Some(info.id.clone());
+    let result = first_init::complete(files, &info).and_then(|()| {
+        registration::finish(
+            cx,
+            registration::Plan {
+                input: &input,
+                repository: &repository,
+                configuration: &configuration,
+            },
+            &observed,
+            &mut store,
+            &lease,
+            recovered_changes,
+        )
+    });
     let closed = store.close().map_err(|e| store_error(&e));
     match result {
         Ok(mut value) => {
