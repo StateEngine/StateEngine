@@ -20,9 +20,12 @@ def git(*args):
 
 def changed_paths(event, name):
     """Return the diff's paths, or None when this event must run everything."""
-    if name == "pull_request":
-        base = event["pull_request"]["base"]["sha"]
-        head = event["pull_request"]["head"]["sha"]
+    if name in {"pull_request", "merge_group"}:
+        if name == "pull_request":
+            base, head = event["pull_request"]["base"]["sha"], event["pull_request"]["head"]["sha"]
+        else:
+            # The queue's group commit holds every pull request ahead of it on this base.
+            base, head = event["merge_group"]["base_sha"], event["merge_group"]["head_sha"]
         base = git("merge-base", base, head).decode().strip()
     elif name == "push" and event.get("ref") != "refs/heads/main":
         base, head = event["before"], event["after"]

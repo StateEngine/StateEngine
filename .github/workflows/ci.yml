@@ -3,6 +3,10 @@ name: CI
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  # The merge queue runs the full suite on the exact tree main receives, so a push to
+  # main repeats only lint and refreshes caches that pull requests restore.
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
@@ -54,7 +58,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Candidate policy cannot exempt its own checks.
-          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'main' }}
           fetch-depth: 0
           persist-credentials: false
       - name: Detect changes (unresolved diffs run everything)
@@ -137,6 +141,7 @@ jobs:
         id: cache
         with:
           shared-key: hosted-debug-v1
+          save-if: ${{ github.event_name != 'merge_group' }}
       - name: Strict Linux Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Minimal host Clippy
@@ -159,6 +164,7 @@ jobs:
         id: cache
         with:
           shared-key: hosted-debug-v1
+          save-if: ${{ github.event_name != 'merge_group' }}
       - name: Strict Windows MSVC Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Cache observation
@@ -167,7 +173,7 @@ jobs:
 
   atlas-worker:
     needs: [changes, fmt]
-    if: ${{ always() && !cancelled() && needs.changes.outputs.rust != 'false' && needs.fmt.result == 'success' }}
+    if: ${{ always() && !cancelled() && github.event_name != 'push' && needs.changes.outputs.rust != 'false' && needs.fmt.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -183,6 +189,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: hosted-atlas-worker-release-s-v1
+          save-if: ${{ github.event_name != 'merge_group' }}
       - name: Build the compact native worker input without LTO
         run: |
           target="$(rustc --print host-tuple)"
@@ -238,7 +245,12 @@ jobs:
         with:
           shared-key: hosted-linux-archive-v1
           cache-workspace-crates: true
+          save-if: ${{ github.event_name != 'merge_group' }}
+      # Main pushes compile only to seed a missing default-feature cache entry; an exact
+      # hit is never re-saved, and the nightly archive builds all features instead.
       - name: Compile once per platform, including custom harness executables
+        id: compile
+        if: ${{ github.event_name != 'push' || steps.cache.outputs.cache-hit != 'true' }}
         run: |
           target="$(rustc --print host-tuple)"
           if ! command -v strace >/dev/null; then
@@ -252,7 +264,7 @@ jobs:
             -o target/cargo-timings/linker-processes.trace \
             cargo nextest archive --timings --target "$target" --workspace ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '--all-features' || '' }} --locked --archive-file tests.tar.zst
       - name: Retain compilation and linker timings
-        if: ${{ always() }}
+        if: ${{ always() && steps.compile.outcome != 'skipped' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-build-timings
@@ -260,10 +272,12 @@ jobs:
           retention-days: 1
           if-no-files-found: warn
       - name: Check documentation examples and compile-fail API boundaries
+        if: ${{ github.event_name != 'push' }}
         run: |
           target="$(rustc --print host-tuple)"
           cargo test --target "$target" --workspace ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '--all-features' || '' }} --locked --doc
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ github.event_name != 'push' }}
         with:
           name: tests-ubuntu-24.04
           path: tests.tar.zst
@@ -276,7 +290,7 @@ jobs:
 
   test:
     needs: [archive, atlas-worker]
-    if: ${{ always() && !cancelled() && needs.archive.result == 'success' && needs.atlas-worker.result == 'success' }}
+    if: ${{ always() && !cancelled() && github.event_name != 'push' && needs.archive.result == 'success' && needs.atlas-worker.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -310,7 +324,7 @@ jobs:
   windows-archive:
     name: Windows archive (informational)
     needs: [changes, linux-box, windows-clippy]
-    if: ${{ always() && !cancelled() && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && (needs.windows-clippy.result == 'success' || (needs.windows-clippy.result == 'skipped' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed')) }}
+    if: ${{ always() && !cancelled() && github.event_name != 'push' && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && (needs.windows-clippy.result == 'success' || (needs.windows-clippy.result == 'skipped' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed')) }}
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -359,7 +373,7 @@ jobs:
   windows-test:
     name: Windows ${{ matrix.mode == 'full' && 'runtime' || 'smoke' }} (informational, shard ${{ matrix.shard }})
     needs: [changes, linux-box, windows-clippy, windows-archive]
-    if: ${{ always() && !cancelled() && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && (needs.windows-clippy.result == 'success' || (needs.windows-clippy.result == 'skipped' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed')) }}
+    if: ${{ always() && !cancelled() && github.event_name != 'push' && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && (needs.windows-clippy.result == 'success' || (needs.windows-clippy.result == 'skipped' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -383,7 +397,7 @@ jobs:
   # Dispatch from main with job=macos and target_ref to test branches with older workflows.
   macos:
     name: macOS portability (informational)
-    if: ${{ !cancelled() && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
+    if: ${{ !cancelled() && github.event_name != 'push' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -396,6 +410,7 @@ jobs:
         id: cache
         with:
           shared-key: hosted-macos-compile-v1
+          save-if: ${{ github.event_name != 'merge_group' }}
       - name: Compile full-feature macOS workspace (promotion pending)
         run: |
           target="$(rustc --print host-tuple)"
@@ -424,7 +439,7 @@ jobs:
 
   macos-test:
     needs: changes
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' }}
+    if: ${{ !cancelled() && github.event_name != 'push' && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' }}
     runs-on: macos-15
     timeout-minutes: 20
     steps:
@@ -435,6 +450,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: hosted-macos-tests-v1
+          save-if: ${{ github.event_name != 'merge_group' }}
       - name: Register the disposable runner account
         run: |
           identity="$(id -u)"
@@ -466,12 +482,14 @@ jobs:
           if-no-files-found: warn
 
   remote-test:
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' }}
+    needs: [changes, atlas-worker]
+    if: ${{ !cancelled() && github.event_name != 'push' && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' && needs.atlas-worker.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      SE_ATLAS_WORKER_BIN: ${{ github.workspace }}/.atlas-worker/se
     steps:
-      # Only the existing proved Rust exemption can skip these tests.
+      # Only the proved Rust exemption, or a main push after the merge queue, skips these tests.
       - name: Check out the remote test source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -480,6 +498,17 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: hosted-remote-tests-v1
+          save-if: ${{ github.event_name != 'merge_group' }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: atlas-worker-linux
+          path: .atlas-worker
+      - name: Prepare the required native worker input
+        run: |
+          test -s "$SE_ATLAS_WORKER_BIN"
+          test "$(cat .atlas-worker/source.txt)" = "$(git rev-parse HEAD)"
+          sha256sum --check .atlas-worker/sha256.txt
+          chmod 700 "$SE_ATLAS_WORKER_BIN"
       - name: Run host and remote tests with the remote feature
         run: |
           started=$SECONDS
@@ -499,8 +528,10 @@ jobs:
           if-no-files-found: warn
 
   # Required: strict Clippy (Windows too when the diff can affect it) and Linux archive/tests.
+  # Main pushes report under another name, so `check` on a main commit (which releases
+  # require) always means the merge queue or nightly ran the full suite on that tree.
   check:
-    name: check
+    name: ${{ github.event_name == 'push' && 'main guard' || 'check' }}
     if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.job == 'macos') && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test, macos-test, remote-test]
     runs-on: ubuntu-24.04
@@ -509,9 +540,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # The candidate cannot replace the final consumer of job outcomes.
-          ref: ${{ github.event.pull_request.base.sha || 'main' }}
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'main' }}
           persist-credentials: false
       - name: Require all applicable jobs
         env:
           RESULTS: ${{ toJSON(needs) }}
+          CHECK_MODE: ${{ github.event_name == 'push' && 'guard' || 'full' }}
         run: python -I scripts/ci/check.py
