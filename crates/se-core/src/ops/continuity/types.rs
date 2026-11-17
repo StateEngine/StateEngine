@@ -124,6 +124,13 @@ pub struct ContinuityWorkingState {
     pub value: WorkingStateValue,
     pub complete: bool,
     pub bytes: u64,
+    /// Whether saved work changed since the caller's `since` cursor. Always
+    /// serialized: `true` or `false` is a witnessed comparison, and `null` is
+    /// the unknown answer, never a silent omission. `changed_why` then names
+    /// which fact was missing, so "unknown" cannot read as "unchanged".
+    pub changed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_why: Option<String>,
     pub command: Option<String>,
     pub argv: Option<Vec<String>>,
 }

@@ -61,6 +61,14 @@ pub(super) fn resume_at(
     match &value.working_state {
         Read::Present { value } => {
             writeln!(out, "Working state (revision {}):", value.value.revision)?;
+            // A delta caller holds only its cursor, so say plainly whether this
+            // text arrived after that cursor. Never imply a comparison nobody made.
+            match (value.changed, value.changed_why.as_deref()) {
+                (Some(true), _) => writeln!(out, "Changed since your cursor.")?,
+                (Some(false), _) => writeln!(out, "Unchanged since your cursor.")?,
+                (None, Some(why)) => writeln!(out, "Change since your cursor unknown: {why}.")?,
+                (None, None) => (),
+            }
             writeln!(out, "{}", value.value.text)?;
             if let Some(command) = &value.command {
                 writeln!(out, "Full working state: {command}")?;

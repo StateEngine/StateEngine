@@ -523,3 +523,124 @@ fn bound_resume_and_session_context_share_scoped_commands_and_exact_budgets() ->
     drop(lease);
     Ok(())
 }
+
+/// One saved-work profile so resume has a real agent to report on.
+fn working_cursor_profile(f: &Fixture, store: &mut SqliteDirect, lease: &Lease) -> Check {
+    store.append(
+        f.batch(
+            f.owner_project(),
+            Some(request("working-cursor-baseline-profile")?),
+            vec![EventBody::ProfileSaved {
+                agent: f.a.clone(),
+                profile: Profile {
+                    provider_settings: Default::default(),
+                    provider: Provider::Claude,
+                    model: None,
+                    permission: PermissionProfile::WorkspaceWrite,
+                    harness: None,
+                    named_profile: "default".into(),
+                    effort: None,
+                },
+                expected: Expected::Absent,
+            }],
+        )?,
+        lease,
+    )?;
+    Ok(())
+}
+/// Resume once through the real kernel, preserving the caller's own cursor.
+fn resume_json(
+    f: &Fixture,
+    read: &mut SqliteSnapshot,
+    admission: &se_store::Admission,
+    since: Option<se_types::Cursor>,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    use se_core::{
+        admission::HumanTerminal,
+        commit::{Cx, OpStep},
+        dispatch::Kernel,
+        ops::{AnyOp, continuity::Resume},
+    };
+    let kernel = Kernel::read_only_at(se_types::UnixMicros::new(1_800_000_000_000_000)?)
+        .with_command_home(&f.options.state_directory);
+    let step = kernel.plan(
+        AnyOp::Resume(Resume {
+            source_failure: None,
+            limit: 20,
+            since,
+            byte_budget: 32768,
+            preview_agent: None,
+        }),
+        &mut Cx { read, admission },
+        &HumanTerminal::Refused {
+            reason: "bound agent read".into(),
+        },
+    )?;
+    let OpStep::Complete(output) = step else {
+        return Err("resume produced effects".into());
+    };
+    Ok(serde_json::to_value(output)?)
+}
+/// Protects: a resume holding only its cursor can tell new saved work from an
+/// unchanged note. Three answers stay distinct: changed, unchanged, and null
+/// when the caller supplied no cursor, never rounded to "unchanged".
+#[test]
+fn resume_reports_working_state_change_since_the_cursor() -> Check {
+    let f = Fixture::new()?;
+    let (mut store, lease) = f.direct()?;
+    working_cursor_profile(&f, &mut store, &lease)?;
+    let session = capture::session()?;
+    let source = capture::record()?;
+    capture::active(&f, &mut store, &lease, &session, source)?;
+    let mut scope = f.self_scope(&f.a);
+    scope.admission.session = Some(session);
+    let admission = scope.admission.clone();
+    let mut read = store.snapshot(scope.clone())?;
+    let before = resume_json(&f, &mut read, &admission, None)?;
+    assert!(
+        before["working_state"]["value"].is_null(),
+        "fixture already had saved work: {before}"
+    );
+    let cursor = serde_json::from_value::<se_types::Cursor>(before["cursor"].clone())?;
+    read.close()?;
+    // Save work after that cursor.
+    store.append(
+        f.working(
+            "state saved after the cursor λ",
+            Expected::Absent,
+            "working-cursor-write",
+        )?,
+        &*lease,
+    )?;
+    let mut read = store.snapshot(scope)?;
+    let changed = resume_json(&f, &mut read, &admission, Some(cursor))?;
+    assert_eq!(
+        changed["working_state"]["value"]["text"], "state saved after the cursor λ",
+        "resume did not return the new saved work: {changed}"
+    );
+    assert_eq!(
+        changed["working_state"]["value"]["changed"], true,
+        "a caller holding only its cursor cannot tell the note changed: {changed}"
+    );
+    // A cursor taken after that write sees the same note, so it is unchanged.
+    let settled = serde_json::from_value::<se_types::Cursor>(changed["cursor"].clone())?;
+    let unchanged = resume_json(&f, &mut read, &admission, Some(settled))?;
+    assert_eq!(
+        unchanged["working_state"]["value"]["text"],
+        "state saved after the cursor λ"
+    );
+    assert_eq!(
+        unchanged["working_state"]["value"]["changed"], false,
+        "an unchanged note must say so rather than repeat the change: {unchanged}"
+    );
+    // No cursor asks no question: the comparison is null, never false.
+    let without = resume_json(&f, &mut read, &admission, None)?;
+    assert!(
+        without["working_state"]["value"]["changed"].is_null(),
+        "resume invented a comparison the caller never asked for: {without}"
+    );
+    read.close()?;
+    store.close()?;
+    drop(lease);
+    Ok(())
+}
