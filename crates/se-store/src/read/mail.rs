@@ -123,6 +123,7 @@ impl crate::mail::MailSnapshot for SqliteSnapshot {
                 kind: None,
                 unread_only: true,
                 full_body: false,
+                direction: MailDirection::OldestFirst,
             },
             budget,
             true,

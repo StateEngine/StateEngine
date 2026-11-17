@@ -546,6 +546,7 @@ pub fn query(recipient: Option<Actor>, unread: bool) -> MessageQuery {
         kind: None,
         unread_only: unread,
         full_body: true,
+        direction: MailDirection::OldestFirst,
     }
 }
 pub fn present<T>(value: Read<T>) -> Result<T, Box<dyn Error>> {

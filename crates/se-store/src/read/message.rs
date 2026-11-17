@@ -44,7 +44,7 @@ impl SqliteSnapshot {
         let p = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let binding = format!(
-            "live:mail:{}",
+            "live:mail:{}:{:?}",
             codec::encode(&(
                 &scope,
                 &query.recipient,
@@ -52,7 +52,8 @@ impl SqliteSnapshot {
                 &query.kind,
                 query.unread_only,
                 query.full_body
-            ))?
+            ))?,
+            query.direction
         );
         let binding = if pending {
             format!("delivery-pending:{binding}")
@@ -144,7 +145,11 @@ impl SqliteSnapshot {
                     pending,
                 )?
             };
-            rows.sort_by_key(|r| r.0);
+            if query.direction == MailDirection::NewestFirst {
+                rows.sort_by_key(|r| i64::MAX - r.0);
+            } else {
+                rows.sort_by_key(|r| r.0);
+            }
             rows.dedup_by_key(|r| r.0);
             rows.truncate(budget.page.limit.get() as usize + 1);
             Ok(rows)
@@ -258,7 +263,13 @@ impl SqliteSnapshot {
             &binding,
             page::PageFacts {
                 h,
-                after,
+                // A newest-first continuation carries its frontier in the
+                // cursor; the read window reports the shared floor.
+                after: if query.direction == MailDirection::NewestFirst {
+                    0
+                } else {
+                    after
+                },
                 last,
                 bytes,
                 stop,
@@ -309,7 +320,11 @@ impl SqliteSnapshot {
                 " AND m.delivered_seq IS NULL"
             });
         }
-        statement.push_str(" GROUP BY d.sent_seq ORDER BY d.sent_seq LIMIT ?");
+        if query.direction == MailDirection::NewestFirst {
+            statement.push_str(" GROUP BY d.sent_seq ORDER BY d.sent_seq DESC LIMIT ?");
+        } else {
+            statement.push_str(" GROUP BY d.sent_seq ORDER BY d.sent_seq LIMIT ?");
+        }
         args.push(Value::Integer(i64::from(budget.page.limit.get()) + 1));
         let mut q = self
             .db
@@ -372,19 +387,26 @@ pub(super) fn mail_sql(
     } else {
         "mail_project_seq"
     };
+    // A newest-first cursor carries the page frontier (its oldest returned
+    // delivery); the next page resumes strictly below it from the floor.
+    let (lower, upper_op, upper) = if query.direction == MailDirection::NewestFirst && after > 0 {
+        (0, "<", after)
+    } else {
+        (after, "<=", h)
+    };
     let mut statement = if unread {
         format!(
-            "SELECT {projection} FROM message_deliveries d INDEXED BY mail_unread WHERE d.project_id=? AND d.read_seq IS NULL AND d.dismissed_seq IS NULL AND d.sent_seq>? AND d.sent_seq<=?"
+            "SELECT {projection} FROM message_deliveries d INDEXED BY mail_unread WHERE d.project_id=? AND d.read_seq IS NULL AND d.dismissed_seq IS NULL AND d.sent_seq>? AND d.sent_seq{upper_op}?"
         )
     } else {
         format!(
-            "SELECT {projection} FROM message_deliveries d INDEXED BY {index} WHERE d.project_id=? AND d.sent_seq>? AND d.sent_seq<=?"
+            "SELECT {projection} FROM message_deliveries d INDEXED BY {index} WHERE d.project_id=? AND d.sent_seq>? AND d.sent_seq{upper_op}?"
         )
     };
     let mut args = vec![
         Value::Blob(p.into()),
-        Value::Integer(after as i64),
-        Value::Integer(h as i64),
+        Value::Integer(lower as i64),
+        Value::Integer(upper as i64),
     ];
     if let Some(to) = to {
         statement.push_str(" AND d.recipient_id=?");

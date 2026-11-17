@@ -58,6 +58,7 @@ pub(super) fn unread<R: Snapshot>(
                 400
             }),
             cursor: None,
+            newest: false,
             owner_to: identity
                 .principal
                 .preview

@@ -32,6 +32,7 @@ impl MessageInbox {
             limit: self.limit,
             preview_chars: self.preview_chars,
             cursor: self.cursor.clone(),
+            newest: false,
             owner_to: self.agent.clone(),
         }
     }

@@ -5,7 +5,7 @@ use super::{
     receipt,
 };
 use crate::{commit::Cx, scope, store_error::store_error};
-use se_store::{Actor, MessageQuery, ReadBudget, Snapshot, StoredText};
+use se_store::{Actor, MailDirection, MessageQuery, ReadBudget, Snapshot, StoredText};
 use se_types::{Detail, Page, PageRequest, Result, SeError, details};
 use std::{num::NonZeroU32, time::Duration};
 
@@ -113,6 +113,9 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
     if matches!(input.view, MessageView::All) {
         full_command.push("--all".into());
     }
+    if input.newest {
+        full_command.push("--newest".into());
+    }
     if let Some(cursor) = &input.cursor {
         full_command.extend(["--cursor".into(), cursor.to_string()]);
     }
@@ -122,6 +125,11 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
         kind,
         unread_only: matches!(input.view, MessageView::Unread),
         full_body: true,
+        direction: if input.newest {
+            MailDirection::NewestFirst
+        } else {
+            MailDirection::OldestFirst
+        },
     };
     let count_query = MessageQuery {
         unread_only: true,

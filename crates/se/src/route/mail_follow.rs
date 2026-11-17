@@ -69,6 +69,14 @@ fn prepare(
     operation: AnyOp,
     diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
 ) -> Result<(BlockingConnection, se_host::IpcEnvelope, ClientOptions)> {
+    if let AnyOp::MessageList(input) = &operation
+        && input.newest
+    {
+        return Err(SeError::invalid(
+            "mail follow",
+            "follow streams oldest-first, so a newest-first cursor would miss mail sent after the first page; drop --newest for one-shot newest-first pages",
+        ));
+    }
     let setup::Setup::Present((files, (reader, mut phase))) = setup::inspect_phase(
         &cx.home,
         se_core::ops::receipt::timestamp(execute::now_us()?)?,

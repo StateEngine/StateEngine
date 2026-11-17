@@ -86,6 +86,7 @@ pub(super) fn page<R: ReadStore>(
                     kind: None,
                     unread_only: true,
                     full_body: false,
+                    direction: MailDirection::OldestFirst,
                 }) {
                     Ok(count) => owner_unread = Some(count),
                     Err(error) => errors.push(store_error(&error).body),

@@ -151,6 +151,7 @@ fn listing(mailbox: MessageBox) -> MessageList {
         limit: 20,
         preview_chars: None,
         cursor: None,
+        newest: false,
         owner_to: None,
     }
 }

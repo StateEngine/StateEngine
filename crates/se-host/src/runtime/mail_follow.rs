@@ -14,6 +14,12 @@ pub(super) async fn serve(
     selections: Option<se_core::ops::CliSelections>,
     shutdown: &mut watch::Receiver<Option<Deadline>>,
 ) -> Result<()> {
+    if input.newest {
+        return Err(SeError::invalid(
+            "mail follow",
+            "follow streams oldest-first, so a newest-first cursor would miss mail sent after the first page; drop newest for one-shot newest-first pages",
+        ));
+    }
     let selections = serde_json::to_value(&selections)
         .map_err(|error| SeError::invalid("mail follow selections", &error.to_string()))?;
     let mut commits = router.execution.mail_waits.commits.subscribe();

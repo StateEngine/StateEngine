@@ -1,5 +1,11 @@
 use crate::*;
 use se_types::{AgentId, EventId, MessageId, Page, ProjectId, Read, SessionId};
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MailDirection {
+    #[default]
+    OldestFirst,
+    NewestFirst,
+}
 #[derive(Clone, Debug)]
 pub struct MessageQuery {
     pub recipient: Option<Actor>,
@@ -7,6 +13,9 @@ pub struct MessageQuery {
     pub kind: Option<String>,
     pub unread_only: bool,
     pub full_body: bool,
+    /// OldestFirst is the default; NewestFirst reads from the newest message
+    /// and resumes below the cursor's oldest returned message.
+    pub direction: MailDirection,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HistoryFamily {

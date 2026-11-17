@@ -239,6 +239,7 @@ fn from_principal<R: Snapshot>(
             kind: None,
             unread_only: true,
             full_body: false,
+            direction: se_store::MailDirection::OldestFirst,
         })
         .map_err(|error| store_error(&error))?;
     Ok(AgentStatusOutput {
