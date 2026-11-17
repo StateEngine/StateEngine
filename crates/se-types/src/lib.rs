@@ -13,6 +13,8 @@ mod launch;
 pub use launch::{LaunchDetails, ResumeSelection};
 mod id;
 mod process;
+mod provider_settings;
+pub use provider_settings::ProviderSettings;
 mod read;
 mod receipt;
 pub mod remote;

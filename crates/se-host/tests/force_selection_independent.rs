@@ -103,6 +103,7 @@ fn embedded_binding_retirement_is_not_a_native_stop() -> Check {
     h.write(vec![EventBody::ProfileSaved {
         agent: h.target.clone(),
         profile: Profile {
+            provider_settings: Default::default(),
             provider: Provider::SeCode,
             model: None,
             permission: PermissionProfile::WorkspaceWrite,
@@ -193,6 +194,7 @@ fn busy_protocol_launch_reaches_confirmation_before_detach_validation() -> Check
         h.write(vec![EventBody::ProfileSaved {
             agent: h.target.clone(),
             profile: Profile {
+                provider_settings: Default::default(),
                 provider,
                 model: None,
                 permission: PermissionProfile::WorkspaceWrite,
@@ -251,6 +253,7 @@ fn fresh_protocol_launch_still_requires_an_explicit_headless_mode() -> Check {
         h.write(vec![EventBody::ProfileSaved {
             agent: h.target.clone(),
             profile: Profile {
+                provider_settings: Default::default(),
                 provider,
                 model: None,
                 permission: PermissionProfile::WorkspaceWrite,

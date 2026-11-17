@@ -81,6 +81,7 @@ fn seed_mail(f: &Fixture) -> Check {
                 EventBody::ProfileSaved {
                     agent: f.a.clone(),
                     profile: Profile {
+                        provider_settings: Default::default(),
                         provider: Provider::Claude,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,

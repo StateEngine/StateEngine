@@ -213,8 +213,23 @@ pub struct RuntimeReadyProof {
 }
 pub struct RuntimeReady {
     pub detachment: RuntimeDetachment,
+    pub lifetime: RuntimeLifetime,
     pub identity: crate::ProcessIdentity,
     pub host: HostInstanceId,
+}
+/// Observed background lifetime, separate from per-agent containment authority.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeLifetime {
+    pub user_scope: Option<RuntimeUserScope>,
+    pub session_reason: Option<String>,
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeUserScope {
+    pub unit: String,
+    pub invocation: String,
+    pub cgroup: String,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeDetachment {

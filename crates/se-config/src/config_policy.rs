@@ -352,7 +352,8 @@ pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
         .strip_prefix("agent.")
         .and_then(|key| key.rsplit_once('.'))
         && !name.is_empty()
-        && matches!(field, "model" | "profile" | "can-create")
+        && (matches!(field, "model" | "profile" | "can-create")
+            || se_types::ProviderSettings::is_field(field))
     {
         return Ok(ConfigKeyMeta {
             human_only: true,
@@ -367,7 +368,7 @@ pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
         ["providers", "secode", "seed_profile"] => (true, false),
         ["acp", "arguments" | "environment" | "mode"] => (true, false),
         ["profiles", name, "sandbox" | "network" | "approval" | "bypass" | "git_write"] if !name.is_empty() => (true, false),
-        _ => return Err(SeError::new(Detail::InputUnknownField(details::InputUnknownField { op: "config".into(), field: key.into(), next_step: "Use se help config for available commands; saved agent fields are model, profile and can-create.".into() }))),
+        _ => return Err(SeError::new(Detail::InputUnknownField(details::InputUnknownField { op: "config".into(), field: key.into(), next_step: "Use se help config for available commands; saved agent fields are model, profile, can-create, model_provider, base_url, wire_api, reasoning_effort and context_window.".into() }))),
     };
     Ok(ConfigKeyMeta {
         human_only,

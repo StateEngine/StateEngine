@@ -89,6 +89,7 @@ fn partial_agent_page_refuses_a_running_total() -> fixture::Check {
                 vec![se_store::EventBody::ProfileSaved {
                     agent: agent.clone(),
                     profile: se_store::Profile {
+                        provider_settings: Default::default(),
                         provider: se_store::Provider::Claude,
                         model: None,
                         permission: se_store::PermissionProfile::WorkspaceWrite,

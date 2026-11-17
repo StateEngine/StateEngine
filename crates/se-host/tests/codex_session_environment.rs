@@ -19,6 +19,7 @@ fn external_stdio_gets_only_the_new_public_session_in_both_surfaces()
         executable: NativePath::from_local(cwd.join("codex"))?,
         cwd: NativePath::from_local(cwd.clone())?,
         profile: se_store::Profile {
+            provider_settings: Default::default(),
             provider: se_store::Provider::Codex,
             model: None,
             permission: se_store::PermissionProfile::WorkspaceWrite,
@@ -107,6 +108,7 @@ fn a_named_windows_sandbox_reaches_the_providers_launch_settings()
         executable: NativePath::from_local(cwd.join("codex"))?,
         cwd: NativePath::from_local(cwd.clone())?,
         profile: se_store::Profile {
+            provider_settings: Default::default(),
             provider: se_store::Provider::Codex,
             model: None,
             permission: se_store::PermissionProfile::WorkspaceWrite,

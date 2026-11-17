@@ -11,6 +11,7 @@ fn setup(
             vec![EventBody::ProfileSaved {
                 agent: f.a.clone(),
                 profile: Profile {
+                    provider_settings: Default::default(),
                     provider: Provider::Claude,
                     model: None,
                     permission: PermissionProfile::WorkspaceWrite,
@@ -209,6 +210,7 @@ fn changed_profile_rolls_back_phone_launch_preparation_and_preserves_original_ma
             vec![EventBody::ProfileSaved {
                 agent: f.a.clone(),
                 profile: Profile {
+                    provider_settings: Default::default(),
                     provider: Provider::Claude,
                     model: None,
                     permission: PermissionProfile::ReadOnly,

@@ -3,7 +3,7 @@
 use super::*;
 use crate::client::lease::Deadline;
 use crate::harness::binding::{AdapterBinding, Observation, Signal, StopPolicy};
-use crate::{Harness, HarnessBinding, HarnessRequest, ProviderIoPlatform};
+use crate::{CallContext, Harness, HarnessBinding, HarnessRequest, HostFuture, ProviderIoPlatform};
 use se_types::{NativePath, Read, Result};
 use std::{
     collections::BTreeMap,
@@ -225,6 +225,24 @@ pub(crate) fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
         })
 }
 impl Harness for SecodeHarness {
+    fn recover<'a>(
+        &'a self,
+        request: crate::HarnessRecovery<'a>,
+        _cx: CallContext,
+    ) -> HostFuture<'a, HarnessBinding> {
+        Box::pin(async move {
+            let binding = request.retained.ok_or_else(|| {
+                unreadable("SE Code provider recovery", "original binding absent")
+            })?;
+            Ok(SecodeHarness::recover(
+                self,
+                bound(binding)?.managed.clone(),
+            ))
+        })
+    }
+    fn transcript_path(&self, _binding: &HarnessBinding) -> Result<Option<std::path::PathBuf>> {
+        Ok(None)
+    }
     fn kind(&self) -> crate::HarnessKind {
         crate::HarnessKind::Secode
     }

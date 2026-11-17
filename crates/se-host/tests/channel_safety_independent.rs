@@ -123,6 +123,7 @@ fn setup(f: &Fixture, agent_session: bool) -> Check {
         EventBody::ProfileSaved {
             agent: f.a.clone(),
             profile: Profile {
+                provider_settings: Default::default(),
                 provider: se_store::Provider::Claude,
                 model: None,
                 permission: PermissionProfile::WorkspaceWrite,

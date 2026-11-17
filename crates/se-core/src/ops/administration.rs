@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentCreate {
+    #[serde(default, skip_serializing_if = "provider_settings_empty")]
+    pub provider_settings: Box<se_types::ProviderSettings>,
     /// Native provider choice or named declarative ACP harness, saved with this agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
@@ -16,6 +18,9 @@ pub struct AgentCreate {
     pub provider: Option<Provider>,
     pub model: Option<String>,
     pub idempotency_key: IdempotencyKey,
+}
+fn provider_settings_empty(settings: &se_types::ProviderSettings) -> bool {
+    settings.is_empty()
 }
 impl Validate for AgentCreate {
     fn validate(&self) -> Result<()> {

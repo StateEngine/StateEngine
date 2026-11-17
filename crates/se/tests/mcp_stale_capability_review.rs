@@ -124,6 +124,7 @@ fn provision(f: &Fixture, life_us: i64) -> Result<String, Box<dyn std::error::Er
         EventBody::ProfileSaved {
             agent: f.b.clone(),
             profile: se_store::Profile {
+                provider_settings: Default::default(),
                 provider: Provider::Claude,
                 model: None,
                 harness: None,

@@ -279,6 +279,7 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
         executable: NativePath::from_local(executable.clone())?,
         cwd: NativePath::from_local(root.clone())?,
         profile: se_store::Profile {
+            provider_settings: Default::default(),
             provider: se_store::Provider::Claude,
             model: None,
             permission: se_store::PermissionProfile::WorkspaceWrite,

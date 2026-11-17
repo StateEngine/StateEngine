@@ -81,6 +81,7 @@ fn preview_succeeds_when_only_turns_are_omitted_for_packet_budget() -> Check {
             vec![EventBody::ProfileSaved {
                 agent: f.a.clone(),
                 profile: Profile {
+                    provider_settings: Default::default(),
                     provider: Provider::Claude,
                     model: None,
                     permission: PermissionProfile::WorkspaceWrite,
@@ -244,6 +245,7 @@ fn every_resume_recovery_argv_reaches_the_selected_home_without_writing() -> Che
             vec![EventBody::ProfileSaved {
                 agent: f.a.clone(),
                 profile: Profile {
+                    provider_settings: Default::default(),
                     provider: Provider::Claude,
                     model: None,
                     permission: PermissionProfile::WorkspaceWrite,

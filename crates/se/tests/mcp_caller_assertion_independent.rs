@@ -123,6 +123,7 @@ fn stdio_caller_assertion_tracks_the_authenticated_binding() -> Check {
         EventBody::ProfileSaved {
             agent: f.b.clone(),
             profile: se_store::Profile {
+                provider_settings: Default::default(),
                 provider: Provider::Claude,
                 model: None,
                 harness: None,

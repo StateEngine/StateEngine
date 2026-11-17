@@ -14,6 +14,8 @@ pub mod adoption;
 #[cfg(feature = "runtime")]
 mod agent_observation;
 pub mod channels;
+#[cfg(feature = "listener")]
+mod child_io;
 pub mod client;
 pub mod remote;
 #[cfg(feature = "remote")]

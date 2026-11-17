@@ -64,6 +64,37 @@ impl Kind {
         }
     }
 }
+/// Provider-owned setup and discovery within the host's journaled installation.
+#[cfg(feature = "listener")]
+pub(crate) trait Adapter: Send + Sync {
+    #[cfg(any(target_os = "linux", windows))]
+    fn prepare(&self, command: &Path) -> Result<ProviderSetup>;
+    #[cfg(any(target_os = "linux", windows))]
+    fn hooks(&self, executable: &Path, home: &Path) -> Result<Vec<(String, serde_json::Value)>>;
+    fn discover(&self, _home: &Path, _saved: &mut Registration, _root: &Path) -> Result<()> {
+        Ok(())
+    }
+    fn active(&self, _home: &Path, _project: &ProjectId) -> Result<bool> {
+        Ok(true)
+    }
+    fn notice(&self) -> Option<String> {
+        None
+    }
+}
+#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+pub(crate) struct ProviderSetup {
+    pub executable: std::path::PathBuf,
+    pub config_home: std::path::PathBuf,
+}
+#[cfg(feature = "listener")]
+impl Kind {
+    fn adapter(self) -> &'static dyn Adapter {
+        match self {
+            Self::Claude => &crate::harness::CLAUDE_ADOPTION,
+            Self::Codex => &crate::harness::codex_rpc::ADOPTION,
+        }
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Project {

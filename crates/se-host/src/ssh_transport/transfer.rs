@@ -2,14 +2,10 @@
 use super::{close, read_errors, unavailable};
 use se_types::Result;
 use std::{
-    process::Stdio,
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    process::Command,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub(crate) async fn upload(
     destination: &str,
@@ -20,20 +16,23 @@ pub(crate) async fn upload(
 ) -> Result<()> {
     let batch = super::sftp::upload_batch(path, upload)?;
     let (sftp, ssh) = super::sftp::clients()?;
-    let mut child = Command::new(sftp)
-        .args(["-b", "-", "-o", "BatchMode=yes", "-S"])
-        .arg(ssh)
-        .arg(destination)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| {
-            unavailable(
-                "cannot start the system SFTP client; install the OpenSSH client tools and retry",
-            )
-        })?;
+    let mut child = crate::child_io::spawn(
+        super::client(sftp)
+            .args(["-b", "-", "-o", "BatchMode=yes", "-S"])
+            .arg(ssh)
+            .arg(destination),
+        crate::child_io::Pipes {
+            stdin: true,
+            stdout: true,
+            stderr: true,
+        },
+    )
+    .await
+    .map_err(|_| {
+        unavailable(
+            "cannot start the system SFTP client; install the OpenSSH client tools and retry",
+        )
+    })?;
     let mut input = child
         .stdin
         .take()
