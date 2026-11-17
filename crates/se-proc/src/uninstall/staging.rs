@@ -49,7 +49,7 @@ pub(super) fn elevated() -> Result<bool> {
     }
     Ok(elevation.TokenIsElevated != 0)
 }
-fn open_directory(path: &Path, delete: bool, share_delete: bool) -> Result<File> {
+pub(super) fn open_directory(path: &Path, delete: bool, share_delete: bool) -> Result<File> {
     let file = File::from(native::handle(
         // SAFETY: terminated no-follow directory path and explicit read/delete access.
         unsafe {

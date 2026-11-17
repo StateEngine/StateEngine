@@ -46,7 +46,8 @@ mod owner_probe;
 mod uninstall;
 #[cfg(windows)]
 pub use uninstall::{
-    HelperCleanupOutcome, NativeUninstallCarrier, UninstallHelperCleanup, UninstallNativeError,
+    HelperCleanupOutcome, NativeUninstallCarrier, UNINSTALL_CARRIER_ENTRY, UninstallHelperCleanup,
+    UninstallNativeError, uninstall_carrier_entry,
 };
 mod ownership;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
