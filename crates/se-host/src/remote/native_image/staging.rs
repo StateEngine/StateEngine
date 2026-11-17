@@ -145,9 +145,16 @@ $s=Join-Path $HOME '{upload}'; $d=Join-Path $HOME '{path}';
 }} catch {{exit 1}}"#
         ))
     } else {
-        // link(2) refuses an incumbent atomically. Source and destination are
-        // in the same directory; no existing image or provider is overwritten.
-        format!("chmod 700 {upload} && ln {upload} {path}")
+        // `link(1)` calls link(2) on the exact destination path and never descends
+        // into a directory, so a file, directory or symlink already there is
+        // refused atomically and nothing is left inside an incumbent directory.
+        // `ln` cannot be used: a bare `ln` links INSIDE an incumbent directory and
+        // succeeds, and `ln -T` exists on GNU only, so a per-platform split would
+        // leave a check-then-link race on macOS. `link` is the same tool on both.
+        format!(
+            "chmod 700 {upload} && link {upload} {path} || \
+{{ printf 'image-publish-refused:link-failed:%s\\n' {path}; exit 1; }}"
+        )
     }
 }
 pub(in crate::remote) fn remove(upload: &str, windows: bool) -> String {

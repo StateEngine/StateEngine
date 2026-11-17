@@ -462,6 +462,20 @@ mod tests {
         // publish still fixes the staged file before the atomic link.
         let publish = staging::publish("u.upload", ".stateengine-runtime/abc", false);
         assert!(publish.contains("chmod 700 u.upload"));
+        // Publication must act on the exact destination path. A bare `ln` links
+        // INSIDE an incumbent directory and succeeds; `ln -T` is GNU-only, so a
+        // per-platform split leaves a check-then-link race. `link(1)` calls link(2)
+        // on the exact path on both platforms and refuses any incumbent atomically.
+        assert!(
+            publish.contains("link u.upload .stateengine-runtime/abc"),
+            "publish must call link(1) on the exact destination"
+        );
+        assert!(!publish.contains("ln "), "no ln variant may remain");
+        assert!(
+            !publish.contains("test -e"),
+            "a precheck would reintroduce a race"
+        );
+        assert!(publish.contains("image-publish-refused:link-failed"));
         // Windows: the staged file and product-created directories carry an
         // explicit trusted-principal ACL instead of an inherited one.
         let windows = staging::prepare_windows(".stateengine-runtime/abc");
@@ -485,9 +499,12 @@ mod tests {
             2,
             "bundle must hash the upload and the incumbent only:\n{bundle}"
         );
+        // link(1) acts on the exact destination and refuses any incumbent
+        // atomically; the refusal names the destination before exiting.
         assert!(
-            bundle
-                .contains("if (chmod 700 u.upload && ln u.upload .stateengine-runtime/abc); then")
+            bundle.contains("if (chmod 700 u.upload && link u.upload .stateengine-runtime/abc || { printf 'image-publish-refused:link-failed:%s\\n' .stateengine-runtime/abc; exit 1; }); then"),
+            "publish must link the exact destination:
+{bundle}"
         );
         assert!(bundle.contains("else\n(test ! -L .stateengine-runtime/abc"));
         assert!(bundle.contains("image-verification-failed"));
