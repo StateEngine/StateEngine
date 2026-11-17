@@ -32,30 +32,107 @@ impl Rows {
         Ok(())
     }
 }
-fn reply(worker: &mut AtlasWorker, deadline: Instant) -> AtlasResult<protocol::Reply> {
+struct CpuClock {
+    start: Duration,
+    spent: Duration,
+    limit: Duration,
+}
+impl CpuClock {
+    fn observe(&mut self, worker: &AtlasWorker) -> AtlasResult<()> {
+        let current = worker.cpu_time().map_err(failure)?;
+        self.spent = current
+            .checked_sub(self.start)
+            .ok_or_else(|| failure("worker CPU clock moved backwards"))?;
+        if self.spent >= self.limit {
+            return Err(cpu_expired(self.limit));
+        }
+        Ok(())
+    }
+}
+fn reply(
+    worker: &mut AtlasWorker,
+    deadline: Instant,
+    mut cpu: Option<&mut CpuClock>,
+) -> AtlasResult<protocol::Reply> {
     loop {
+        if let Some(cpu) = &mut cpu {
+            cpu.observe(worker)?;
+        }
         if Instant::now() >= deadline {
             return Err(expired());
         }
-        if let Some(bytes) = worker.receive().map_err(failure)? {
+        if let Some(bytes) = worker
+            .receive()
+            .map_err(|error| channel_error(error, deadline))?
+        {
             return serde_json::from_slice(&bytes).map_err(failure);
         }
         if worker.try_reap().map_err(failure)?.is_some() {
             return Err(failure("parse child exited before complete output"));
         }
-        worker.wait_ready(deadline).map_err(failure)?;
+        worker
+            .wait_ready(deadline.min(Instant::now() + Duration::from_millis(10)))
+            .map_err(failure)?;
     }
+}
+pub(super) fn channel_error(error: std::io::Error, deadline: Instant) -> SeError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    ) && Instant::now() >= deadline
+    {
+        expired()
+    } else {
+        failure(error)
+    }
+}
+#[derive(Clone, Copy)]
+pub(super) struct Context<'a> {
+    pub source: &'a Source,
+    pub snapshot: &'a SourceSnapshot,
+    pub language: Language,
+    pub budget: ParseBudget,
+    pub profile: ParserProfile,
+    pub deadline: Instant,
 }
 pub(super) fn read(
     worker: &mut AtlasWorker,
-    source: &Source,
-    snapshot: &SourceSnapshot,
-    language: Language,
-    budget: ParseBudget,
-    profile: ParserProfile,
-    deadline: Instant,
+    context: Context<'_>,
+    remaining: Duration,
+    consumed: &mut Duration,
 ) -> AtlasResult<ParsedFile> {
-    let first = reply(worker, deadline)?;
+    let deadline = context.deadline;
+    match reply(worker, deadline, None)? {
+        protocol::Reply::Ready => (),
+        protocol::Reply::Failed { error } => return Err(SeError::from(error)),
+        _ => return Err(failure("parse worker readiness absent")),
+    }
+    let mut cpu = CpuClock {
+        start: worker.cpu_time().map_err(failure)?,
+        spent: Duration::ZERO,
+        limit: remaining,
+    };
+    worker
+        .send_control(b"source", deadline)
+        .map_err(|error| channel_error(error, deadline))?;
+    let result = read_rows(worker, context, &mut cpu);
+    *consumed = cpu.spent;
+    result
+}
+fn read_rows(
+    worker: &mut AtlasWorker,
+    context: Context<'_>,
+    cpu: &mut CpuClock,
+) -> AtlasResult<ParsedFile> {
+    let Context {
+        source,
+        snapshot,
+        language,
+        budget,
+        profile,
+        deadline,
+    } = context;
+    let first = reply(worker, deadline, Some(cpu))?;
     let coverage = match first {
         protocol::Reply::Start {
             file,
@@ -87,7 +164,7 @@ pub(super) fn read(
         maximum: budget.max_rows.min(profile.max_rows),
     };
     loop {
-        match reply(worker, deadline)? {
+        match reply(worker, deadline, Some(cpu))? {
             protocol::Reply::Symbol(row) => {
                 span(&row.span, snapshot)?;
                 let strings = row.name.capacity()
@@ -134,7 +211,9 @@ pub(super) fn read(
                 return Ok(parsed);
             }
             protocol::Reply::Failed { error } => return Err(SeError::from(error)),
-            protocol::Reply::Start { .. } => return Err(failure("duplicate parse result header")),
+            protocol::Reply::Start { .. } | protocol::Reply::Ready => {
+                return Err(failure("duplicate parse result header"));
+            }
         }
     }
 }

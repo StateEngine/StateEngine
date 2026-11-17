@@ -61,6 +61,14 @@ pub(super) fn file(
             read => read,
         }
     };
+    if matches!(&observed, Err(error) if matches!(error.body.detail(),
+        Detail::DeadlineExceeded(detail) if detail.op == "Atlas source read"))
+    {
+        if budget.max_work < policy.parse.max_work {
+            return observed.map(|_| ());
+        }
+        return Err(crate::atlas_parse::stall(budget.max_work));
+    }
     if !matches!(&observed, Ok(SourceRead::Removed)) {
         connection.read(deadline, |sql| {
             let existing: bool = sql
@@ -169,9 +177,10 @@ pub(super) fn file(
                     .map(|_| ())
                 });
             };
-            budget.max_work = budget
-                .max_work
-                .min(deadline.saturating_duration_since(se_atlas::clock::now()));
+            // The source read was bounded by this slice. Preserve the actual
+            // file policy for the parser so it can distinguish a slice ending
+            // early from exhausting the file's own work allowance.
+            budget.max_work = policy.parse.max_work;
             timely(deadline)?;
             let mut parsed = match parser.parse(source, &snapshot, language, budget, deadline) {
                 Ok(parsed) => parsed,

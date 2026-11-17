@@ -53,6 +53,31 @@ pub struct AtlasWorker {
     lease: Lease,
 }
 impl AtlasWorker {
+    /// CPU consumed by the retained, unreaped worker in native nanoseconds.
+    pub fn cpu_time(&self) -> io::Result<Duration> {
+        if self.reaped {
+            return Err(invalid("Atlas worker CPU time unavailable after reap"));
+        }
+        // SAFETY: exact aligned native output for the retained unreaped child.
+        let mut usage: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+        // SAFETY: the PID is retained and the output matches the requested version.
+        if unsafe {
+            libc::proc_pid_rusage(
+                self.child.id() as i32,
+                libc::RUSAGE_INFO_V4,
+                (&mut usage as *mut libc::rusage_info_v4).cast(),
+            )
+        } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Duration::from_nanos(
+            usage
+                .ri_user_time
+                .checked_add(usage.ri_system_time)
+                .ok_or_else(|| invalid("worker CPU time overflow"))?,
+        ))
+    }
     pub fn spawn(image: &Path, payload: &[u8], deadline: Instant) -> io::Result<Self> {
         Self::spawn_with_deadline(image, payload, deadline, None)
     }

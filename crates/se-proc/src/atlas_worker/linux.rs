@@ -204,6 +204,33 @@ impl AtlasWorker {
     pub fn birth_ticks(&self) -> u64 {
         self.birth_ticks
     }
+    /// CPU consumed by the retained, unreaped worker, excluding time descheduled.
+    pub fn cpu_time(&self) -> io::Result<Duration> {
+        if self.reaped {
+            return Err(invalid("Atlas worker CPU time unavailable after reap"));
+        }
+        let mut clock: libc::clockid_t = 0;
+        // SAFETY: the retained unreaped child cannot have its PID recycled.
+        let status =
+            unsafe { libc::clock_getcpuclockid(self.child.id() as libc::pid_t, &mut clock) };
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status));
+        }
+        // SAFETY: exact writable native timespec for the child's CPU clock.
+        let mut time: libc::timespec = unsafe { std::mem::zeroed() };
+        // SAFETY: the CPU clock is valid and the timespec is writable.
+        if unsafe { libc::clock_gettime(clock, &mut time) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let seconds =
+            u64::try_from(time.tv_sec).map_err(|_| invalid("negative worker CPU time"))?;
+        let nanos =
+            u32::try_from(time.tv_nsec).map_err(|_| invalid("invalid worker CPU nanoseconds"))?;
+        if nanos >= 1_000_000_000 {
+            return Err(invalid("invalid worker CPU nanoseconds"));
+        }
+        Ok(Duration::new(seconds, nanos))
+    }
     pub fn peak_observed_bytes(&self) -> u64 {
         self.peak
     }

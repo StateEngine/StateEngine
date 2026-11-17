@@ -94,12 +94,25 @@ impl State {
         again |= self.advance_project(context, owner)?;
         // The same controller supplies both event and quantum paths; checkout
         // locks discovered by the driver reach the scheduler before publication.
-        if self.controller.runtime().child_pid().is_none()
-            // Source checks, contained parsing, exact reap and atomic commit
-            // share the same finite turn; a shorter restart could starve a file.
-            && let Err(error) = drive_quantum(&mut self.controller, MAX_WORK_QUANTUM)
-        {
-            eprintln!("Code index source work paused: {error}");
+        let retry_wait = self
+            .work_retry_after
+            .and_then(|end| end.checked_duration_since(Instant::now()));
+        if self.controller.runtime().child_pid().is_none() && retry_wait.is_none() {
+            self.work_retry_after = None;
+            match drive_quantum(&mut self.controller, MAX_WORK_QUANTUM) {
+                Ok(Some(report))
+                    if self
+                        .controller
+                        .summary(&report.root)?
+                        .coverage
+                        .reasons
+                        .contains(&CoverageReason::SchedulingStall) =>
+                {
+                    self.work_retry_after = Some(Instant::now() + Duration::from_secs(1));
+                }
+                Ok(_) => (),
+                Err(error) => eprintln!("Code index source work paused: {error}"),
+            }
         }
         let before = self.controller.runtime().child_pid();
         if let Err(error) = crate::atlas_runtime::drive_child(&mut self.controller) {
@@ -145,7 +158,13 @@ impl State {
         } else {
             self.controller.next_work()
         } {
-            NextWork::Ready => (true, None),
+            NextWork::Ready => match self
+                .work_retry_after
+                .and_then(|end| end.checked_duration_since(Instant::now()))
+            {
+                Some(wait) => (false, Some(wait)),
+                None => (true, None),
+            },
             NextWork::AfterEventDebounce(wait) => (false, Some(wait)),
             NextWork::Park => (false, None),
         };

@@ -45,6 +45,10 @@ pub(crate) fn run(channel: &mut WorkerChannel, bytes: &[u8]) -> AtlasResult<u8> 
         if !request.parse_only || request.profile.language != request.language {
             return Err(failure("parse-only request and matching profile required"));
         }
+        // The parent starts charging CPU only after the worker is ready; process
+        // setup and teardown are not source work.
+        send(channel, protocol::Reply::Ready)?;
+        channel.await_source_read().map_err(failure)?;
         let source = request.source()?;
         let SourceRead::Bytes(snapshot) = source.read(&request.path, request.budget)? else {
             return Err(failure(

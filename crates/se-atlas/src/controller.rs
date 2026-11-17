@@ -502,7 +502,10 @@ pub fn quantum_expired(error: &se_types::SeError) -> bool {
         se_types::Detail::DeadlineExceeded(detail) => {
             matches!(
                 detail.op.as_str(),
-                "Atlas SQL" | "Atlas source read" | "Atlas parse attempt"
+                "Atlas SQL"
+                    | "Atlas source read"
+                    | "Atlas parse attempt"
+                    | "Atlas scheduling stall"
             )
         }
         se_types::Detail::AtlasResourceBudget(detail) => {

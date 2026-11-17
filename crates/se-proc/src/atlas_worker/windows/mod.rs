@@ -77,6 +77,38 @@ pub struct AtlasWorker {
     lease: Lease,
 }
 impl AtlasWorker {
+    /// CPU consumed by this exact retained process, in native 100 ns units.
+    pub fn cpu_time(&self) -> io::Result<Duration> {
+        // SAFETY: native FILETIME records are valid when zero initialized.
+        let (mut created, mut exited, mut kernel, mut user): (
+            FILETIME,
+            FILETIME,
+            FILETIME,
+            FILETIME,
+        ) = unsafe { zeroed() };
+        // SAFETY: retained process handle and four writable native records.
+        if unsafe {
+            GetProcessTimes(
+                self.process.as_raw_handle().cast(),
+                &mut created,
+                &mut exited,
+                &mut kernel,
+                &mut user,
+            )
+        } == 0
+        {
+            return Err(last("read Atlas worker CPU time"));
+        }
+        let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+        let total = ticks(kernel)
+            .checked_add(ticks(user))
+            .ok_or_else(|| invalid("worker CPU time overflow"))?;
+        Ok(Duration::from_nanos(
+            total
+                .checked_mul(100)
+                .ok_or_else(|| invalid("worker CPU time overflow"))?,
+        ))
+    }
     pub fn spawn(image: &Path, payload: &[u8], deadline: Instant) -> io::Result<Self> {
         Self::spawn_with_deadline(image, payload, deadline, None)
     }

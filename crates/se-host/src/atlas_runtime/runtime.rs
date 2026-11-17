@@ -128,6 +128,12 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
         })();
         match result {
             Err(error) if se_atlas::controller::quantum_expired(&error) => {
+                let reason = if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall")
+                {
+                    CoverageReason::SchedulingStall
+                } else {
+                    CoverageReason::TimeLimit
+                };
                 let root = self
                     .roots
                     .iter_mut()
@@ -137,20 +143,10 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
                 // readiness and the controller's unfinished work for the next
                 // finite slice, with an explicit non-current observation.
                 if !matches!(root.summary.state, IndexState::Partial { .. }) {
-                    root.summary.state = IndexState::VerificationNeeded {
-                        reason: CoverageReason::TimeLimit,
-                    };
+                    root.summary.state = IndexState::VerificationNeeded { reason };
                 }
-                if !root
-                    .summary
-                    .coverage
-                    .reasons
-                    .contains(&CoverageReason::TimeLimit)
-                {
-                    root.summary
-                        .coverage
-                        .reasons
-                        .push(CoverageReason::TimeLimit);
+                if !root.summary.coverage.reasons.contains(&reason) {
+                    root.summary.coverage.reasons.push(reason);
                 }
                 Ok(Step {
                     report: WorkReport {
