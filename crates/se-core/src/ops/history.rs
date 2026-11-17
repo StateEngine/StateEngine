@@ -28,6 +28,27 @@ pub struct HistoryList {
 fn default_limit() -> u16 {
     20
 }
+pub(crate) fn position_cursor(value: String) -> Result<Cursor> {
+    if looks_like_time(&value) {
+        return Err(SeError::invalid(
+            "--position",
+            "an opaque history position cursor, the position value from se history --event; this command has no time-based flag",
+        ));
+    }
+    Cursor::new(value)
+}
+fn looks_like_time(value: &str) -> bool {
+    if value.bytes().any(|byte| byte == b':') {
+        return true;
+    }
+    let bytes = value.as_bytes();
+    bytes.len() >= 10
+        && bytes[0..4].iter().all(|b| b.is_ascii_digit())
+        && bytes[4] == b'-'
+        && bytes[5..7].iter().all(|b| b.is_ascii_digit())
+        && bytes[7] == b'-'
+        && bytes[8..10].iter().all(|b| b.is_ascii_digit())
+}
 impl Validate for HistoryList {
     fn validate(&self) -> Result<()> {
         if !(1..=100).contains(&self.limit) || self.kinds.len() > 52 {
