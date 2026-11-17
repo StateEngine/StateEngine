@@ -127,6 +127,7 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
                     }
                 };
                 Ok(se_store::Profile {
+                    provider_settings: Default::default(),
                     provider: stored,
                     model: None,
                     permission,

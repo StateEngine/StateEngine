@@ -25,6 +25,7 @@ fn request(f: &Fixture, sequence: u8) -> Check<HarnessRequest> {
         executable: NativePath::from_local(f.image.clone())?,
         cwd: NativePath::from_local(f.root.clone())?,
         profile: se_store::Profile {
+            provider_settings: Default::default(),
             provider: se_store::Provider::Codex,
             model: Some("fixture-model".into()),
             permission: se_store::PermissionProfile::WorkspaceWrite,

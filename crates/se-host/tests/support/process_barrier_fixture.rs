@@ -57,6 +57,7 @@ impl Harness {
             EventBody::ProfileSaved {
                 agent: h.target.clone(),
                 profile: Profile {
+                    provider_settings: Default::default(),
                     provider: Provider::Claude,
                     model: None,
                     permission: PermissionProfile::WorkspaceWrite,

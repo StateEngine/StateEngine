@@ -85,6 +85,7 @@ pub fn create<R: Snapshot>(
         crate::harness_selection::resolve(configuration, input.provider, input.harness.as_deref())?;
     let provider = binding.provider;
     let harness = binding.harness;
+    input.provider_settings.validate(provider)?;
     let defaults = configuration.provider(provider);
     let permission = match configuration
         .resolve_profile(&defaults.profile, provider, false)?
@@ -115,6 +116,7 @@ pub fn create<R: Snapshot>(
         EventBody::ProfileSaved {
             agent,
             profile: Profile {
+                provider_settings: *input.provider_settings,
                 provider: match provider {
                     Provider::Claude => se_store::Provider::Claude,
                     Provider::Codex => se_store::Provider::Codex,

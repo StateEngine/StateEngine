@@ -559,6 +559,7 @@ fn plain_status_labels_the_owner_unread_scope() -> Check {
                 vec![EventBody::ProfileSaved {
                     agent: agent.clone(),
                     profile: Profile {
+                        provider_settings: Default::default(),
                         provider: Provider::Codex,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,

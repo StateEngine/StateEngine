@@ -20,12 +20,13 @@ pub(crate) enum Field {
     Model,
     Profile,
     CanCreate,
+    ProviderSetting(&'static str),
 }
 impl Field {
     pub(crate) fn default_value(self) -> Option<Value> {
         match self {
             Self::CanCreate => Some(Value::Bool(false)),
-            Self::Model | Self::Profile => None,
+            Self::Model | Self::Profile | Self::ProviderSetting(_) => None,
         }
     }
     pub(crate) fn parse(key: &str) -> Result<(&str, Self)> {
@@ -55,15 +56,22 @@ impl Field {
             .strip_prefix("agent.")
             .and_then(|key| key.rsplit_once('.'))
             .filter(|(selector, _)| !selector.is_empty())
-            .ok_or_else(|| invalid_key("agent.<AGENT>.model, .profile or .can-create"))?;
+            .ok_or_else(|| invalid_key("agent.<AGENT>.model, .profile, .can-create, .model_provider, .base_url, .wire_api, .reasoning_effort or .context_window"))?;
         Ok((
             selector,
             match field {
                 "model" => Self::Model,
                 "profile" => Self::Profile,
                 "can-create" => Self::CanCreate,
+                "model_provider" => Self::ProviderSetting("model_provider"),
+                "base_url" => Self::ProviderSetting("base_url"),
+                "wire_api" => Self::ProviderSetting("wire_api"),
+                "reasoning_effort" => Self::ProviderSetting("reasoning_effort"),
+                "context_window" => Self::ProviderSetting("context_window"),
                 _ => {
-                    return Err(invalid_key("agent.<AGENT>.model, .profile or .can-create"));
+                    return Err(invalid_key(
+                        "agent.<AGENT>.model, .profile, .can-create, .model_provider, .base_url, .wire_api, .reasoning_effort or .context_window",
+                    ));
                 }
             },
         ))
@@ -72,6 +80,17 @@ impl Field {
         match (self, body) {
             (Self::Model, EventBody::ProfileSaved { profile, .. }) => {
                 Ok(serde_json::json!(profile.model))
+            }
+            (Self::ProviderSetting(field), EventBody::ProfileSaved { profile, .. }) => {
+                let settings = serde_json::to_value(&profile.provider_settings)
+                    .map_err(|error| scope::unreadable("provider settings", &error.to_string()))?;
+                Ok(settings.get(field).cloned().unwrap_or_else(|| {
+                    if field == "reasoning_effort" {
+                        serde_json::json!(profile.effort)
+                    } else {
+                        Value::Null
+                    }
+                }))
             }
             (Self::Profile, EventBody::ProfileSaved { profile, .. }) => {
                 Ok(Value::String(profile.named_profile.clone()))
@@ -89,7 +108,9 @@ impl Field {
         cx: &mut Cx<'_, R>,
     ) -> Result<Read<ProjectionRecord>> {
         match self {
-            Self::Model | Self::Profile => cx.read.profile(agent.clone()),
+            Self::Model | Self::Profile | Self::ProviderSetting(_) => {
+                cx.read.profile(agent.clone())
+            }
             Self::CanCreate => cx.read.grant(
                 Actor::Agent(agent.clone()),
                 GrantKey::AgentCanCreate(agent.clone()),
@@ -225,7 +246,7 @@ pub fn set<R: Snapshot>(
             },
             expected,
         },
-        Field::Model | Field::Profile => {
+        Field::Model | Field::Profile | Field::ProviderSetting(_) => {
             let saved = scope::require_present(
                 record,
                 "saved agent profile",
@@ -244,6 +265,26 @@ pub fn set<R: Snapshot>(
                     super::inputs::bounded("model", &input.value, 256, false)?;
                     Some(input.value.clone())
                 }
+            } else if let Field::ProviderSetting(field) = field {
+                // An explicit update supersedes the legacy saved effort, including null.
+                if field == "reasoning_effort" {
+                    profile.effort = None;
+                }
+                let mut settings = serde_json::to_value(&profile.provider_settings)
+                    .map_err(|error| scope::unreadable("provider settings", &error.to_string()))?;
+                settings[field] = if input.value == "null" {
+                    Value::Null
+                } else if field == "context_window" {
+                    serde_json::json!(input.value.parse::<u64>().map_err(|_| SeError::invalid(
+                        "context_window",
+                        "a positive token count or null"
+                    ))?)
+                } else {
+                    Value::String(input.value.clone())
+                };
+                profile.provider_settings = serde_json::from_value(settings).map_err(|_| {
+                    SeError::invalid("provider settings", "valid typed provider settings")
+                })?;
             } else {
                 let provider = match profile.provider {
                     se_store::Provider::Claude => se_config::config_policy::Provider::Claude,
@@ -259,6 +300,9 @@ pub fn set<R: Snapshot>(
                 };
                 profile.named_profile = input.value.clone();
             }
+            profile
+                .provider_settings
+                .validate(profile.provider.into())?;
             EventBody::ProfileSaved {
                 agent,
                 profile,

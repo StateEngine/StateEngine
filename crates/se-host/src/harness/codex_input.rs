@@ -124,6 +124,8 @@ fn sandbox(launch: &CodexLaunch<'_>) -> Result<Value> {
 /// An unreadable saved thread never silently starts a new conversation.
 pub fn thread(launch: &CodexLaunch<'_>) -> Result<(&'static str, Value)> {
     let policy = sandbox(launch)?;
+    let settings = &launch.request.profile.provider_settings;
+    settings.validate(se_types::Provider::Codex)?;
     let mut config = json!({
         "sandbox_workspace_write": {
             "network_access":launch.resolved.network,
@@ -132,6 +134,25 @@ pub fn thread(launch: &CodexLaunch<'_>) -> Result<(&'static str, Value)> {
         },
         "sandbox_read_only": {"network_access":launch.resolved.network},
     });
+    if let Some(name) = &settings.model_provider {
+        config["model_provider"] = json!(name);
+        if settings.base_url.is_some() || settings.wire_api.is_some() {
+            let mut route = json!({"name":name});
+            if let Some(url) = &settings.base_url {
+                route["base_url"] = json!(url);
+            }
+            if let Some(api) = &settings.wire_api {
+                route["wire_api"] = json!(api);
+            }
+            config["model_providers"] = json!({name: route});
+        }
+    }
+    if let Some(effort) = &settings.reasoning_effort {
+        config["model_reasoning_effort"] = json!(effort);
+    }
+    if let Some(window) = settings.context_window {
+        config["model_context_window"] = json!(window);
+    }
     if let Some(roots) = policy.get("writableRoots") {
         config["sandbox_workspace_write"]["writable_roots"] = roots.clone();
     }
@@ -176,6 +197,9 @@ pub fn thread(launch: &CodexLaunch<'_>) -> Result<(&'static str, Value)> {
     if let Some(model) = &launch.request.profile.model {
         params["model"] = json!(model);
     }
+    if let Some(provider) = &settings.model_provider {
+        params["modelProvider"] = json!(provider);
+    }
     match &launch.request.resume {
         Read::Absent { .. } => Ok(("thread/start", params)),
         Read::Present { value } => {
@@ -207,23 +231,31 @@ pub fn verify_thread(launch: &CodexLaunch<'_>, result: &Value) -> Result<Provide
     }
     // Name the exact field that differs, with both sides, so a refusal tells the
     // reader what the provider actually accepted instead of only that it differs.
-    let mismatches = [
+    let mut wanted = vec![
         ("approvalPolicy", json!(approval(launch.resolved))),
         ("sandbox", expected),
         ("cwd", json!(path(&launch.request.cwd.to_local()?)?)),
-    ]
-    .into_iter()
-    .filter_map(|(field, wanted)| {
-        let actual = result.get(field);
-        (actual != Some(&wanted)).then(|| {
-            format!(
-                "{field}: expected {}, provider echoed {}",
-                wanted,
-                actual.map_or_else(|| "nothing".to_owned(), Value::to_string)
-            )
+    ];
+    let settings = &launch.request.profile.provider_settings;
+    if let Some(provider) = &settings.model_provider {
+        wanted.push(("modelProvider", json!(provider)));
+    }
+    if let Some(effort) = &settings.reasoning_effort {
+        wanted.push(("reasoningEffort", json!(effort)));
+    }
+    let mismatches = wanted
+        .into_iter()
+        .filter_map(|(field, wanted)| {
+            let actual = result.get(field);
+            (actual != Some(&wanted)).then(|| {
+                format!(
+                    "{field}: expected {}, provider echoed {}",
+                    wanted,
+                    actual.map_or_else(|| "nothing".to_owned(), Value::to_string)
+                )
+            })
         })
-    })
-    .collect::<Vec<_>>();
+        .collect::<Vec<_>>();
     if !mismatches.is_empty() {
         return Err(incompatible(
             &format!(
@@ -261,7 +293,14 @@ pub fn turn(
     if let Some(model) = &launch.request.profile.model {
         params["model"] = json!(model);
     }
-    if let Some(effort) = &launch.request.profile.effort {
+    if let Some(effort) = launch
+        .request
+        .profile
+        .provider_settings
+        .reasoning_effort
+        .as_ref()
+        .or(launch.request.profile.effort.as_ref())
+    {
         params["effort"] = json!(effort);
     }
     Ok(params)

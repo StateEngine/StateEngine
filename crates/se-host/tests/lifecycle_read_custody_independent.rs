@@ -29,6 +29,7 @@ fn profiles(f: &Fixture) -> Check {
 }
 fn profile() -> Profile {
     Profile {
+        provider_settings: Default::default(),
         provider: Provider::Codex,
         model: None,
         permission: PermissionProfile::WorkspaceWrite,
