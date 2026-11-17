@@ -76,6 +76,23 @@ fn running(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
         )?;
     }
     write::profile(&value.permission_profile, out)?;
+    writeln!(
+        out,
+        "Model: {}",
+        value.model.as_deref().unwrap_or("provider default")
+    )?;
+    match &value.mail_notifications {
+        se_types::Read::Present { value } => writeln!(
+            out,
+            "Mail notifications: {}",
+            if *value { "connected" } else { "not connected" }
+        )?,
+        other => writeln!(
+            out,
+            "Mail notifications: unavailable ({})",
+            read_reason(other)
+        )?,
+    }
     if let Some(notice) = &value.harness_policy_notice {
         writeln!(out, "{notice}")?;
     }
@@ -83,7 +100,7 @@ fn running(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
         out,
         "Conversation: {} ({}",
         value.conversation_id,
-        if value.resumed { "resumed" } else { "new" }
+        if value.resumed { "resumed" } else { "fresh" }
     )?;
     if value.resumed {
         match &value.saved_conversation_age {

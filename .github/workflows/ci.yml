@@ -402,11 +402,44 @@ jobs:
           retention-days: 3
           if-no-files-found: warn
 
+  remote-test:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      # Only the existing proved Rust exemption can skip these tests.
+      - name: Check out the remote test source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: hosted-remote-tests-v1
+      - name: Run host and remote tests with the remote feature
+        run: |
+          started=$SECONDS
+          trap 'code=$?; echo "Remote feature compile and tests: $((SECONDS - started)) seconds (exit $code)" >> "$GITHUB_STEP_SUMMARY"' EXIT
+          target="$(rustc --print host-tuple)"
+          filter="$(python3 scripts/ci/custom.py filter)"
+          cargo nextest run --target "$target" -p se-host -p se-remote --features remote --locked --profile ci -E "$filter"
+      - name: Judge authenticated runtime status
+        run: python3 scripts/ci/runtime_status.py
+      - name: Retain runtime status judge evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-status-judge
+          path: ci-reports/runtime-status
+          retention-days: 3
+          if-no-files-found: warn
+
   # Required: strict Clippy (Windows too when the diff can affect it) and Linux archive/tests.
   check:
     name: check
     if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.job == 'macos') && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
-    needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test, macos-test]
+    needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test, macos-test, remote-test]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

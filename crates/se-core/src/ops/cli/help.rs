@@ -59,7 +59,9 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
             "Read the current session's saved context; owners use --preview AGENT"
         }
         "agent.list" => "List the saved agents in this project",
-        "agent.launch" => "Start or resume a saved agent; --detach runs without opening a window",
+        "agent.launch" => {
+            "Start a saved agent fresh; --resume reopens a conversation; --detach runs without a window"
+        }
         "agent.stop" => "Stop a selected agent's running session",
         "agent.wake" => "Offer a running agent's pending mail and report the committed result",
         "project.remove" => "Unregister projects while preserving repository files and history",

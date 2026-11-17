@@ -515,9 +515,13 @@ impl LaunchCoordinator {
             false,
         )
         .filter(|_| plan.profile.provider != se_store::Provider::SeCode)
-        .map(|command| command.with_detach(plan.input.detach));
+        .map(|command| {
+            command
+                .with_resume_session(&plan.session)
+                .with_detach(plan.input.detach)
+        });
         let forced_notice = if plan.input.override_live
-            && !plan.input.fresh
+            && !plan.input.fresh()
             && matches!(plan.control.resume_session, Read::Present { .. })
         {
             match &plan.conversation {
@@ -547,6 +551,18 @@ impl LaunchCoordinator {
             (policy, replacement) => policy.or(replacement),
         };
         Ok(LaunchResult {
+            mail_notifications: if attended {
+                self.harness.mail_connected(&plan.session)
+            } else {
+                Read::Present {
+                    value: work.binding.as_ref().is_some_and(|binding| {
+                        binding.claude.is_some()
+                            || binding.codex.is_some()
+                            || binding.secode.is_some()
+                            || binding.acp.is_some()
+                    }),
+                }
+            },
             harness_policy_notice,
             secode_binding: secode_binding.map(|value| Read::Present { value }),
             takeover: work.takeover.clone(),

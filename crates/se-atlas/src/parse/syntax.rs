@@ -39,11 +39,15 @@ pub(super) fn literal<'a>(node: Node<'_>, bytes: &'a [u8]) -> Option<&'a str> {
     let value = &value[1..value.len() - 1];
     (!value.contains(['\\', '\0', '\n', '\r'])).then_some(value)
 }
-pub(super) fn exported(node: Node<'_>, bytes: &[u8]) -> bool {
-    node.parent().is_some_and(|n| {
+pub(super) fn exported(node: Node<'_>, ancestors: &[Node<'_>], bytes: &[u8]) -> bool {
+    ancestors.last().is_some_and(|n| {
         matches!(n.kind(), "export_statement" | "ambient_declaration")
             || matches!(n.kind(), "lexical_declaration" | "variable_declaration")
-                && n.parent().is_some_and(|p| p.kind() == "export_statement")
+                && ancestors
+                    .iter()
+                    .rev()
+                    .nth(1)
+                    .is_some_and(|p| p.kind() == "export_statement")
     }) || node
         .child_by_field_name("name")
         .is_some_and(|n| !text(n, bytes).starts_with('_'))
@@ -170,6 +174,7 @@ pub(super) enum SyntaxQualifier<'a> {
 }
 pub(super) fn reference<'a, 'b>(
     node: Node<'a>,
+    ancestors: &[Node<'a>],
     bytes: &'b [u8],
 ) -> Option<(Node<'a>, ReferenceKind, SyntaxQualifier<'b>)> {
     let kind = match node.kind() {
@@ -188,14 +193,14 @@ pub(super) fn reference<'a, 'b>(
         "call_expression" | "call" => ReferenceKind::Call,
         "new_expression" => ReferenceKind::Call,
         "type_identifier" => {
-            let parent = node.parent()?;
+            let parent = ancestors.last().copied()?;
             if parent.child_by_field_name("name") == Some(node) {
                 return None;
             }
             return Some((node, ReferenceKind::TypeUse, SyntaxQualifier::Unqualified));
         }
         "identifier" | "shorthand_property_identifier" => {
-            let parent = node.parent()?;
+            let parent = ancestors.last().copied()?;
             if parent.kind() == "type" {
                 return Some((node, ReferenceKind::TypeUse, SyntaxQualifier::Unqualified));
             }
@@ -262,6 +267,7 @@ pub(super) fn reference<'a, 'b>(
 /// Keys, type syntax and default-value expressions are not declaration names.
 pub(super) fn pattern_binding<'a>(
     node: Node<'a>,
+    ancestors: &[Node<'a>],
     language: Language,
     bytes: &[u8],
 ) -> Option<Declaration<'a>> {
@@ -272,8 +278,7 @@ pub(super) fn pattern_binding<'a>(
         return None;
     }
     let mut child = node;
-    for _ in 0..32 {
-        let parent = child.parent()?;
+    for (index, parent) in ancestors.iter().copied().enumerate().rev().take(32) {
         let (field, kind) = match parent.kind() {
             "variable_declarator" => ("name", SymbolKind::Variable),
             "let_declaration" => ("pattern", SymbolKind::Variable),
@@ -333,14 +338,15 @@ pub(super) fn pattern_binding<'a>(
             name_override: None,
             kind,
             body: None,
-            exported: exported(parent, bytes),
+            exported: exported(parent, &ancestors[..index], bytes),
         });
     }
     None
 }
 
-pub(super) fn default_export(node: Node<'_>, bytes: &[u8]) -> bool {
-    node.parent()
+pub(super) fn default_export(ancestors: &[Node<'_>], bytes: &[u8]) -> bool {
+    ancestors
+        .last()
         .filter(|p| p.kind() == "export_statement")
         .is_some_and(|p| {
             let mut cursor = p.walk();
