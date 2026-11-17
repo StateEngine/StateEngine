@@ -97,7 +97,7 @@ impl AtlasWorker {
                 "absolute image, bounded frame and <=15 minute deadline required",
             ));
         }
-        let mut lease = Lease::acquire()?;
+        let mut lease = acquire_lease()?;
         remaining(deadline)?;
         let parent = std::process::id();
         let envelope = Envelope {

@@ -44,6 +44,17 @@ mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{AtlasWorker, WorkerChannel};
 
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+fn acquire_lease() -> io::Result<lease::Lease> {
+    lease::Lease::acquire().map_err(|error| {
+        if error.kind() == io::ErrorKind::WouldBlock {
+            invalid("previous Atlas child has not been reaped")
+        } else {
+            error
+        }
+    })
+}
+
 /// Measurement used before entering a native parser allocation. It matches
 /// the platform's cold limit; resident observation is named as such on macOS.
 pub fn memory_usage() -> io::Result<(u64, &'static str)> {

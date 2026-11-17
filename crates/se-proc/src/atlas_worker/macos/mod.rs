@@ -89,7 +89,7 @@ impl AtlasWorker {
                 "absolute image, bounded frame and <=15 minute deadline required",
             ));
         }
-        let lease = Lease::acquire()?;
+        let lease = acquire_lease()?;
         remaining(deadline)?;
         let peer = crate::native_ipc::observe_ipc_self_bounded(&IpcIoBound {
             deadline,
