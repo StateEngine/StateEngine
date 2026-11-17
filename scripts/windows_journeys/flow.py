@@ -221,8 +221,7 @@ class Journeys(Smoke):
             value = self.call(['history', '--event', event], 'retained-history')
             require(value.get('event_id') == event and value.get('payload') == payload,
                     'Saved conversation event changed or is unavailable after removal')
-        self.commands.run([self.binary, 'uninstall', '--home', self.state, '--json'],
-                          'uninstall', terminal=True)
+        self.uninstall()
         require(not self.binary.exists(), 'Uninstall retained the installed command')
         require(self.user_path() == self.original_path, 'Uninstall did not restore the original USER Path')
         require(self.commands.observer.observe() == [], 'Owned processes remain after uninstall')

@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)')
 
 
 class InterruptedRun(BaseException):
@@ -102,7 +102,8 @@ class Observer:
                 break
             self.known.update(added)
         for row in rows:
-            if (row['pid'], row['birth']) in self.known:
+            if ((row['pid'], row['birth']) in self.known
+                    and not row['state'].startswith(('Z', 'X', 'x'))):
                 require(row['command'] is not None, 'Known process command became unreadable')
         return [row for row in rows if not row['state'].startswith(('Z', 'X', 'x'))
                 and ((row['pid'], row['birth']) in self.known

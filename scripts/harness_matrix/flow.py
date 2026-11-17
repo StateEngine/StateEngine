@@ -53,7 +53,10 @@ class Smoke:
                               else '.local/bin/se')
         self.binary = binary
         environment = {key: value for key, value in inherited.items()
-                       if key in ('PATH', 'SystemRoot', 'windir', 'ComSpec', 'PATHEXT', 'LANG', 'LC_ALL')
+                       if key.upper() in ('PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT',
+                                          'OS', 'SYSTEMDRIVE', 'PROGRAMDATA', 'PROGRAMFILES',
+                                          'PROGRAMFILES(X86)', 'PROCESSOR_ARCHITECTURE',
+                                          'PROCESSOR_ARCHITEW6432', 'LANG', 'LC_ALL')
                        or key in settings.get('environment', [])}
         environment.update(HOME=str(self.home), USERPROFILE=str(self.home), SE_HOME=str(self.state),
                            PATH=str(binary.parent) + os.pathsep + inherited.get('PATH', ''),
@@ -303,6 +306,13 @@ class Smoke:
                     self.record['diagnostics'][label] = dict(state='unreadable', reason=str(error))
         self.save()
 
+    def uninstall(self):
+        argv = (['powershell.exe', '-NoProfile', '-NonInteractive', '-File',
+                 self.package / 'uninstall.ps1'] if sys.platform == 'win32'
+                else [self.binary, 'uninstall'])
+        return self.commands.run([*argv, '--home', self.state, '--json', '--yes'],
+                                 'uninstall', terminal=True)
+
     def cleanup(self, retain_home=False):
         errors = []
         try:
@@ -326,8 +336,7 @@ class Smoke:
                 except Exception as error:
                     errors.append(name + ': ' + str(error))
             try:
-                self.commands.run([self.binary, 'uninstall', '--home', self.state, '--json'],
-                                  'uninstall', terminal=True)
+                self.uninstall()
             except Exception as error:
                 errors.append('uninstall: ' + str(error))
         try:
