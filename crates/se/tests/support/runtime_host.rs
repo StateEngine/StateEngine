@@ -1,5 +1,7 @@
+#[cfg(not(windows))]
+use crate::checked;
 use crate::executable::ExecutableCommand;
-use crate::{Check, checked, command};
+use crate::{Check, command};
 use se_types::Secret;
 use std::{
     path::Path,
@@ -9,6 +11,8 @@ use std::{
 
 /// Holds the exact observed native instance; PID reuse never proves its exit.
 pub struct RunningHost {
+    #[cfg(windows)]
+    child: foreground_host::ForegroundHost,
     endpoint: se_host::EndpointRecord,
     key: Secret,
     identity: se_proc::ProcessIdentity,
@@ -54,11 +58,16 @@ impl RunningHost {
         result
     }
     fn start_observed(image: &Path, home: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        #[cfg(windows)]
+        let child = foreground_host::ForegroundHost::start(command(image, home, true), home)?;
+        #[cfg(not(windows))]
         checked(command(image, home, true).arg("up").output_executable()?)?;
         let endpoint = se_host::client::endpoint::decode_endpoint(&std::fs::read(
             home.join("endpoint.json"),
         )?)?;
         let expected = endpoint.epoch.owner.fields();
+        #[cfg(windows)]
+        assert_eq!(child.ready()["process"]["pid"], expected.pid.get());
         let observed = se_proc::NativeProcessRuntime::read_process_until(
             expected.machine.clone(),
             se_proc::ProcessId(expected.pid.get()),
@@ -74,6 +83,8 @@ impl RunningHost {
             "published host is not this fixture's copied image"
         );
         Ok(Self {
+            #[cfg(windows)]
+            child,
             endpoint,
             key: Secret::new(std::fs::read(home.join("credential"))?)?,
             identity: observed.identity,
@@ -120,6 +131,8 @@ impl RunningHost {
             .live()
             .map_err(|error| format!("stop preflight: {error}"))?
         {
+            #[cfg(windows)]
+            self.child.wait()?;
             return Ok(());
         }
         let until = se_types::UnixMicros::new(
@@ -146,6 +159,8 @@ impl RunningHost {
             }
             std::thread::park_timeout(Duration::from_millis(10));
         }
+        #[cfg(windows)]
+        self.child.wait()?;
         Ok(())
     }
 }
@@ -159,3 +174,7 @@ impl Drop for RunningHost {
         }
     }
 }
+
+#[cfg(windows)]
+#[path = "foreground_host.rs"]
+mod foreground_host;

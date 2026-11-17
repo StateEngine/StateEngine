@@ -70,12 +70,9 @@ pub fn list(
         "runtime.blocking_jobs",
         option(&configuration.runtime.blocking_jobs),
     );
-    for (name, provider) in [
-        ("claude", &configuration.providers.claude),
-        ("codex", &configuration.providers.codex),
-        ("secode", &configuration.providers.secode),
-        ("acp", &configuration.providers.acp),
-    ] {
+    for registration in se_types::HARNESS_REGISTRY {
+        let name = registration.id;
+        let provider = configuration.provider(registration.provider);
         row(
             &mut rows,
             &format!("providers.{name}.command"),
@@ -264,12 +261,7 @@ fn option<T: serde::Serialize>(value: &Option<T>) -> Read<Value> {
     }
 }
 fn provider_wire(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Claude => "claude",
-        Provider::Codex => "codex",
-        Provider::SeCode => "secode",
-        Provider::Acp => "acp",
-    }
+    provider.id()
 }
 fn sandbox_wire(sandbox: Sandbox) -> &'static str {
     match sandbox {
