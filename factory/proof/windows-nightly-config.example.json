@@ -1,0 +1,8 @@
+{
+  "windows": {
+    "release_repository": "<owner>/<repository>",
+    "release_ref": "main",
+    "github_token_command": ["<absolute path to GitHub App token helper>"],
+    "provider_workflow_sha256": "<reviewed provider workflow SHA-256>"
+  }
+}

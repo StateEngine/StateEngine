@@ -201,12 +201,17 @@ def run_nightly(config, prepared_build=None, native_only=False):
                 record['matrix_judge'] = pin_tree(matrix['judge_git'], matrix['judge_ref'],
                                                   directory / 'matrix-judge-source')
             source, judge = (Path(record[name]["worktree"]) for name in ("product", "judge"))
+            if config.get("windows") is not None:
+                from windows_release import prepare
+                try:
+                    record["windows_release"] = prepare(config, source, record["product"]["commit"], record["started_at"])
+                except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+                    record["windows_release"] = {"state": "unavailable", "error": str(error)}
             record["judge"]["rust_map_sha256"] = digest(judge / "journeys/maps/rust.json")
             record["judge"]["files_sha256"] = {str(path.relative_to(judge)): digest(path)
                 for path in sorted((judge / "journeys").rglob("*")) if path.is_file()}
             save(directory / "run.json", record)
-            native_invocations = [row for row in record["invocations"]
-                                  if row.get("native_receipt") and not row.get("windows_probe")]
+            native_invocations = [row for row in record["invocations"] if row.get("native_receipt")]
             for invocation, probe in zip(native_invocations, config.get("native_receipts", []), strict=True):
                 import_receipt(invocation, probe["path"], directory, record, state)
                 checkpoint(state, directory, record, config)
@@ -241,7 +246,7 @@ def run_nightly(config, prepared_build=None, native_only=False):
                 "exposure": {"se": "{home}/.local/bin/se"}})
             save(directory / "run.json", record)
             for invocation in record["invocations"]:
-                if invocation.get("native_receipt"):
+                if invocation.get("native_receipt") or invocation.get("hosted_provider") is True:
                     continue
                 if invocation.get("remote_probe"):
                     invoke_remote(config, record, directory, bundle / "se", env, invocation, deadline)
@@ -269,8 +274,6 @@ def main():
     parser.add_argument("--prepared-build", type=Path, help="reuse a native release with the exact selected source pin")
     parser.add_argument("--report", type=Path, help="regenerate a retained run's reports without executing product code")
     parser.add_argument("--service-exit", action="store_true")
-    parser.add_argument("--windows-continuation", action="store_true")
-    parser.add_argument("--windows-service-exit", action="store_true")
     parser.add_argument("--native-receipts-only", action="store_true", help="import native observations without a local build or judge")
     args = parser.parse_args()
     if args.report:
@@ -288,9 +291,6 @@ def main():
     forbidden = [name for name in os.environ if name.startswith(prefixes) or name in names]
     if forbidden:
         parser.error("start from an OS scheduler outside managed agent trees with no fleet/session environment")
-    if args.windows_continuation or args.windows_service_exit:
-        from windows_continuation import execute
-        return execute(config, finalize_only=args.windows_service_exit)
     if args.native_receipts_only:
         config = {**config, "probes": [], "native_only": True}
     return run_nightly(config, args.prepared_build, args.native_receipts_only)

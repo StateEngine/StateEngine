@@ -1,6 +1,7 @@
 """Summarize independent receipts; incomplete evidence never becomes a pass."""
 import json
 import math
+import zipfile
 from pathlib import Path
 from native import validate as validate_native
 from matrix_adapter import observation as matrix_observation
@@ -14,7 +15,8 @@ FIRST_HOUR_PROBES = frozenset((
     "CLI --version", "CLI contextual read verbs", "CLI writes through running host",
     "standalone persistent processes", "idle no session", "standalone RSS no session",
     "persistent processes after 1 seat(s)", "standalone RSS one session", "idle one session"))
-SELECTIONS = {"first-hour": ("first-hour", {1, 2, 3, 4, 5}),
+SELECTIONS = {"windows-journeys": ("windows-journeys", {1, 2, 3, 4, 5}),
+              "first-hour": ("first-hour", {1, 2, 3, 4, 5}),
               "wave-2": ("rust-wave-2", {1, 2, 3, 5}),
               "remote": ("remote", {1}),
               "4": ("selected", {4})}
@@ -317,6 +319,33 @@ def invocation(inv, directory, run=None):
     if unreadable_scan:
         entry["problems"].append(closure.get("error", "automation-output-scan-unreadable: input unspecified"))
         entry["outcome"] = "FAIL"
+    if inv.get("hosted_provider") is True:
+        entry["behavior_only"] = True
+        if inv.get("state") != "finished" or run is None:
+            entry["problems"].append(inv.get("error", "hosted provider receipt not witnessed"))
+            return entry
+        try:
+            from hosted_provider import observation
+            selected, phases = observation(inv, directory, run)
+            if inv.get("exit") != selected['exit']:
+                raise ValueError("hosted provider exit differs from the retained receipt")
+            entry["journeys"] = {str(number): (phases[key]['result'] if phases[key]['result'] in ('PASS', 'FAIL')
+                                                else 'UNKNOWN')
+                                 for number, key in enumerate(('J1', 'J2', 'J3', 'J4', 'J5'), 1)}
+            entry["results"] = [{"journey": int(number), "result": result, "cleanup": []}
+                                for number, result in entry["journeys"].items() if result in ('PASS', 'FAIL')]
+            entry["receipt_complete"] = all(value in ('PASS', 'FAIL') for value in entry["journeys"].values())
+            entry["outcome"] = ('PASS' if selected['result'] == 'PASS' else
+                                'FAIL' if selected['result'] == 'FAIL' else 'UNKNOWN')
+            if entry["outcome"] == 'PASS' and (inv['hosted_workflow_conclusion'] != 'success'
+                                                or inv['hosted_job_conclusion'] != 'success'):
+                entry["outcome"] = 'UNKNOWN'
+            entry["judge_outcome"] = entry["outcome"]
+            if entry["outcome"] != 'PASS':
+                entry["problems"].append('hosted provider journey or workflow did not pass')
+        except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
+            entry["problems"].append('hosted provider evidence: ' + str(error))
+        return entry
     if inv.get("remote_probe"):
         receipt, error = read(directory / inv["output"] / "remote.json")
         if error:
@@ -345,6 +374,7 @@ def invocation(inv, directory, run=None):
     if (receipt.get("platform") != inv.get("platform") or receipt.get("implementation") != "rust"
             or receipt.get("surface") != inv.get("surface")
             or not isinstance(scope, dict) or scope.get("mode") != mode or mode == "unsupported"
+            or scope.get("writes_only") is True
             or not isinstance(selected, list) or any(type(number) is not int for number in selected)
             or len(selected) != len(expected) or set(selected) != expected):
         entry["problems"].append("identity, selection or scope mismatch")
@@ -357,8 +387,12 @@ def invocation(inv, directory, run=None):
             or {row["journey"] for row in rows} != expected or len(rows) != len(expected)):
         entry["problems"].append("incomplete or invalid journey rows")
         return entry
-    cleanup = receipt.get("cleanup") if mode == "first-hour" else [row.get("cleanup") for row in rows]
-    cleanup_known = isinstance(cleanup, list) and (mode == "first-hour" or all(isinstance(x, list) for x in cleanup))
+    if mode == "first-hour":
+        cleanup = receipt.get("cleanup")
+        cleanup_known = isinstance(cleanup, list)
+    else:
+        cleanup = [row.get("cleanup") for row in rows]
+        cleanup_known = all(isinstance(x, list) for x in cleanup)
     cleanup_failed = bool(cleanup) if mode == "first-hour" else any(cleanup) if cleanup_known else False
     qualification = receipt.get("qualification")
     budget = receipt.get("budgets")
@@ -398,7 +432,8 @@ def invocation(inv, directory, run=None):
                     and context.applies(key) and context.required(key)):
                 budget_error = "required first-hour probe is missing a passing measurement"
                 entry["problems"].append(budget_error)
-    entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification, behavior_only=behavior_only,
+    entry.update(results=rows, scope=scope, cleanup=cleanup,
+                 qualification=qualification, behavior_only=behavior_only,
                  receipt_complete=budget_error is None and cleanup_known and qualified)
     code = inv.get("exit")
     # Judge exit 1 includes budget misses. Journey verdicts depend only on
@@ -469,6 +504,8 @@ def summarize(run, directory):
                 state = "NOT RUN" if not expected else "FAIL" if "FAIL" in values else "UNKNOWN"
                 if "FAIL" not in values and "INTERRUPTED" in values:
                     state = "INTERRUPTED"
+                if expected and all(value == "NOT RUN" for value in values):
+                    state = "NOT RUN"
                 if expected and all(value == "PASS" for value in values):
                     state = "PASS"
                 cells[platform] = {"state": state, "evidence": evidence}
@@ -513,6 +550,24 @@ def summarize(run, directory):
             if eligible[key]
             and not any(row["label"] == label and row["numbers"] for row in slots[key])]
     gaps += ["FULL: independent FULL-write probe unavailable"]
+    # Hosted provider journeys witness behavior but do not measure budgets.
+    windows_planned = any(entry.get("platform") == "win32" for entry in entries)
+    windows_measured = any(entry.get("platform") == "win32" and entry.get("receipt_complete")
+                           and not entry.get("behavior_only") for entry in entries)
+    if not windows_planned:
+        gaps.append("windows: not configured")
+    elif not windows_measured:
+        # A refusal's cause sits on the entry itself (`error`) or in its `problems`,
+        # not on a result row. Reporting an attempted-but-refused run as "no attempt"
+        # states a false fact, so both places are read.
+        reasons = sorted({str(value)
+                          for entry in entries if entry.get("platform") == "win32"
+                          for value in [entry.get("error"), *(entry.get("problems") or []),
+                                        *(row.get("error") or row.get("reason")
+                                          for row in (entry.get("results") or []))]
+                          if value})
+        detail = "; ".join(reasons) if reasons else "hosted journeys do not measure Windows budgets"
+        gaps.append("windows: " + detail)
     if not any(entry.get("surface") == "codex" and entry["mode"] == "first-hour"
                and entry["receipt_complete"] and not entry.get("behavior_only") for entry in entries):
         gaps.append("Codex budgets: no validated first-hour budget receipt")

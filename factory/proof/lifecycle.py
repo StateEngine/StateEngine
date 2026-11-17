@@ -8,7 +8,7 @@ from pathlib import Path
 
 from report import exit_status, publish, read, summarize
 from matrix_adapter import plan as matrix_plan
-from windows_adapter import plan as windows_plan
+from hosted_provider import plan as windows_plan
 
 
 def save(path, value):
@@ -168,11 +168,4 @@ def service_exit(config):
         record["state"] = "interrupted"
         record["errors"].append("service=" + result + " exit=" + code + ":" + status)
     checkpoint(state, directory, record, config)
-    if any(row.get('windows_probe') for row in record['invocations']):
-        from windows_continuation import queue
-        try:
-            queue(config, directory, record)
-        except Exception as error:
-            record['errors'].append('Windows service queue: ' + str(error))
-            checkpoint(state, directory, record, config)
     return 0

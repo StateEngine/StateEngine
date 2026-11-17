@@ -15,6 +15,7 @@ PROVIDERS = {"claude": "Claude Code", "codex": "Codex", "secode": "SE Code",
              "acp": "ACP", "qwen": "Qwen Code", "goose": "Goose"}
 PLATFORMS = {"linux": "Linux", "win32": "Windows", "darwin": "macOS"}
 SCOPES = {"first-hour": ("First hour", list(enumerate(FIRST_HOUR, 1))),
+          "windows-journeys": ("Windows journeys", list(enumerate(NAMES, 1))),
           "wave-2": ("Stock journeys", [(n, NAMES[n - 1]) for n in (1, 2, 3, 5)]),
           "4": ("Two agents", [(4, NAMES[3])]),
           "remote": ("Remote", [(1, "Connect, launch, live output, message, reconnect")])}
@@ -133,8 +134,9 @@ def render(config, now=None):
                                and entry.get("selection") == selection and entry.get("surface") == provider
                                and entry.get("platform") == platform]
                     samples = [cell(entry, evidence[0], number) for entry in matched] if evidence else []
-                    value = next((state for state in ("FAIL", "UNREADABLE", "MISSING")
-                                  if state in samples), "PASS" if samples else expected.get(key, "NOT RUN"))
+                    value = next((state for state in ("FAIL", "UNREADABLE", "MISSING", "NOT RUN")
+                                  if state in samples), "PASS" if samples and all(state == "PASS" for state in samples)
+                                 else expected.get(key, "NOT RUN"))
                     values.append(value)
                 lines.append("| " + " | ".join([name, PROVIDERS[provider], *values]) + " |")
     if unsupported:
