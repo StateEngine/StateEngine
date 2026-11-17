@@ -14,8 +14,8 @@ use se_core::{
     store_error::store_error,
 };
 use se_store::{
-    Actor, EventBody, EventKind, HistoryQuery, ReadBudget, Scope, Snapshot, StoredEvent,
-    TranscriptFilter,
+    Actor, EventBody, EventKind, HistoryDirection, HistoryQuery, ReadBudget, Scope, Snapshot,
+    StoredEvent, TranscriptFilter,
     mail::{MailTransport, OfferEvidence, OfferReport},
 };
 use se_types::Result;
@@ -41,6 +41,7 @@ fn offers_for<R: Snapshot>(
                     families: vec![],
                     transcript: TranscriptFilter::All,
                     since: None,
+                    direction: HistoryDirection::OldestFirst,
                 },
                 ReadBudget {
                     page: se_types::PageRequest {

@@ -13,6 +13,7 @@ fn selected(agent: &AgentId) -> HistoryQuery {
         families: vec![HistoryFamily::Messages],
         transcript: TranscriptFilter::All,
         since: None,
+        direction: HistoryDirection::OldestFirst,
     }
 }
 

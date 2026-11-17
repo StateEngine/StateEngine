@@ -66,6 +66,7 @@ fn history(snapshot: &mut impl Snapshot) -> Result<Vec<EventId>, Box<dyn std::er
                 families: vec![],
                 transcript: se_store::TranscriptFilter::All,
                 since: None,
+                direction: HistoryDirection::OldestFirst,
             },
             budget(100, 1_048_576, None)?,
         )?

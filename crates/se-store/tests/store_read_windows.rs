@@ -19,6 +19,7 @@ fn history() -> HistoryQuery {
         families: vec![],
         transcript: TranscriptFilter::All,
         since: None,
+        direction: HistoryDirection::OldestFirst,
     }
 }
 fn search(text: &str) -> SearchQuery {

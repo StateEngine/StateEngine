@@ -361,7 +361,8 @@ fn input_command(name: &str, c: Command) -> Command {
                     .help("An opaque history position cursor, the position value from se history --event, scoped to this caller and project; not a time"),
             )
             .arg(value("limit").default_value("20").help("Maximum events in this page"))
-            .arg(value("cursor").help("Cursor from a previous page of this same read")),
+            .arg(value("cursor").help("Cursor from a previous page of this same read"))
+            .arg(toggle("newest").help("Read the page newest-first; the cursor continues toward the oldest event")),
         "message.read" => c
             .arg(positional("msg_id", 1, true).help("Message ID from se msg list or inbox"))
             .arg(value("budget").default_value("262144").help("Maximum serialized reply bytes, checked before marking read")),

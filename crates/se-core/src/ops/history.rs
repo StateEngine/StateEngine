@@ -3,7 +3,7 @@
 use super::{HistoryEvent, inputs::Validate};
 use crate::{commit::Cx, scope, store_error::store_error};
 use schemars::JsonSchema;
-use se_store::{HistoryQuery, PositionPurpose, ReadBudget, Snapshot};
+use se_store::{HistoryDirection, HistoryQuery, PositionPurpose, ReadBudget, Snapshot};
 use se_types::{AgentId, Cursor, Page, PageRequest, Result, SeError, SessionId};
 use serde::{Deserialize, Serialize};
 use std::{num::NonZeroU32, time::Duration};
@@ -21,6 +21,9 @@ pub struct HistoryList {
     pub limit: u16,
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    /// Read the page newest-first; the cursor continues toward the oldest event.
+    #[serde(default)]
+    pub newest: bool,
     #[serde(skip)]
     #[schemars(skip)]
     pub owner_agent: Option<AgentId>,
@@ -107,6 +110,11 @@ pub fn list<R: Snapshot>(input: HistoryList, cx: &mut Cx<'_, R>) -> Result<Histo
             .map(|cursor| cx.read.cursor_position(cursor, PositionPurpose::History))
             .transpose()
             .map_err(|error| store_error(&error))?,
+        direction: if input.newest {
+            HistoryDirection::NewestFirst
+        } else {
+            HistoryDirection::OldestFirst
+        },
     };
     let page = cx
         .read

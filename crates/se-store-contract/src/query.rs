@@ -29,6 +29,12 @@ pub enum TranscriptFilter {
     Chat,
     Metadata,
 }
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HistoryDirection {
+    #[default]
+    OldestFirst,
+    NewestFirst,
+}
 #[derive(Clone, Debug)]
 pub struct HistoryQuery {
     pub agent: Option<AgentId>,
@@ -38,6 +44,9 @@ pub struct HistoryQuery {
     pub families: Vec<HistoryFamily>,
     pub transcript: TranscriptFilter,
     pub since: Option<StorePosition>,
+    /// OldestFirst is the default; NewestFirst reads from the newest event
+    /// toward `since` and resumes at the cursor's oldest returned event.
+    pub direction: HistoryDirection,
 }
 #[derive(Clone, Debug)]
 pub struct SearchQuery {

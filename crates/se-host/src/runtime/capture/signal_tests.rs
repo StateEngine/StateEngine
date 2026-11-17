@@ -161,7 +161,7 @@ fn scenario(case: &'static str) -> Check {
                 );
                 if case == "held" {
                     let mut read = execution.reader.snapshot(f.self_scope(&f.a))?;
-                    let history = read.history(HistoryQuery { agent:Some(f.a.clone()), session:Some(session.clone()), kinds:vec![EventKind::CaptureFailed], families:vec![], transcript:TranscriptFilter::All, since:None }, budget(20, 100_000, None)?)?;
+                    let history = read.history(HistoryQuery { agent:Some(f.a.clone()), session:Some(session.clone()), kinds:vec![EventKind::CaptureFailed], families:vec![], transcript:TranscriptFilter::All, since:None, direction:HistoryDirection::OldestFirst }, budget(20, 100_000, None)?)?;
                     assert_eq!(history.items().len(), 1, "terminal busy capture did not record capture.failed while the host remained live");
                     read.close()?;
                 }
@@ -208,6 +208,7 @@ fn scenario(case: &'static str) -> Check {
                         families: vec![],
                         transcript: TranscriptFilter::All,
                         since: None,
+                        direction: HistoryDirection::OldestFirst,
                     },
                     budget(20, 100_000, None)?,
                 )?;

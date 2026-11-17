@@ -1,6 +1,6 @@
 //! One committed record per chunk bounds transient bodies and preserves source order.
 use super::*;
-use se_store::{EventKind, HistoryQuery, ReadBudget, TranscriptFilter};
+use se_store::{EventKind, HistoryDirection, HistoryQuery, ReadBudget, TranscriptFilter};
 use std::{num::NonZeroU32, time::Duration};
 
 /// Only the host's admitted owner maintenance read feeds an index. Ordinary
@@ -82,6 +82,7 @@ fn next_scoped<R: Snapshot>(
                 families: vec![],
                 transcript: TranscriptFilter::Metadata,
                 since,
+                direction: HistoryDirection::OldestFirst,
             },
             ReadBudget {
                 page: se_types::PageRequest {

@@ -13,6 +13,7 @@ fn query() -> SearchQuery {
             families: vec![],
             transcript: TranscriptFilter::All,
             since: None,
+            direction: HistoryDirection::OldestFirst,
         },
     }
 }
