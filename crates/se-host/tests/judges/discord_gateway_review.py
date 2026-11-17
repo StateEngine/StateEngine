@@ -19,6 +19,24 @@ import time
 TOKEN = "synthetic-discord-token-for-local-tests-only"
 
 
+class Link:
+    """This socket's own step label and heartbeat count.
+
+    Only a label: it names where something happened for a failure message. The
+    fixture never decides from it whether an error is a fault, because a
+    connection's normal end and a provider fault are not distinguishable here
+    without guessing what the client intended.
+    """
+
+    def __init__(self):
+        self.step = "upgrade"
+        self.heartbeats = 0
+
+    def enter(self, step):
+        self.step = step
+        return self
+
+
 class Provider:
     def __init__(self, root, mode):
         self.root, self.mode = root, mode
@@ -30,7 +48,6 @@ class Provider:
         self.posts = 0
         self.withheld = False
         self.heartbeats_total = 0
-        self.heartbeats_on_link = 0
         self.session = None
 
     def record(self, **event):
@@ -116,7 +133,10 @@ class Provider:
                  else 2 if self.mode in ("resume", "zombie") else 1)
         return [self.message(seq) for seq in range(2, count + 2)]
 
-    def gateway(self, handler):
+    def gateway(self, handler, link):
+        # Every step is recorded on this connection's own state so a
+        # provider-side fault is reported with the step it happened in, and a
+        # concurrent socket cannot overwrite or relabel it.
         key = handler.headers.get("Sec-WebSocket-Key", "")
         assert handler.headers.get("Sec-WebSocket-Version") == "13"
         accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
@@ -128,13 +148,16 @@ class Provider:
         handler.wfile.flush()
         stream = handler.connection
         self.sockets.append(stream)
+        link.enter("hello")
         self.frame(stream, {"op": 10, "d": {"heartbeat_interval": 200}})
+        link.enter("first client frame")
         opcode, raw = self.read_frame(stream)
-        assert opcode == 1
+        assert opcode == 1, "first client frame was not text"
+        link.enter("client auth")
         auth = json.loads(raw)
-        assert auth["d"]["token"] == TOKEN
+        assert auth["d"]["token"] == TOKEN, "client auth token differs"
         self.connections += 1
-        self.heartbeats_on_link = 0
+        link.heartbeats = 0
         self.record(kind="gateway_auth", op=auth["op"], seq=auth["d"].get("seq"),
                     session=auth["d"].get("session_id"), intents=auth["d"].get("intents"))
         if auth["op"] == 2:
@@ -178,6 +201,7 @@ class Provider:
         stream.settimeout(0.02)
         next_message = time.monotonic() + (0.15 if self.mode == "burst" else 0.01)
         waiting = None
+        link.enter("connected")
         while not (self.root / "stop").exists():
             if time.monotonic() >= next_message:
                 if waiting is None:
@@ -195,16 +219,20 @@ class Provider:
             try:
                 opcode, raw = self.read_frame(stream)
             except socket.timeout:
+                # The bounded poll that this loop is built on; not an error.
                 continue
             except (EOFError, OSError):
-                return
+                # A terminal read error is recorded by the connection's single
+                # recorder above, which names the step. Never swallowed here.
+                raise
             if opcode == 8:
                 return
             if opcode == 9:
                 self.frame(stream, raw, 10)
             elif opcode == 1:
+                link.enter("client heartbeat")
                 value = json.loads(raw)
-                assert value["op"] == 1
+                assert value["op"] == 1, "client sent a non-heartbeat text frame"
                 self.record(kind="heartbeat", seq=value.get("d"))
                 # "zombie" withholds exactly one acknowledgement per connection,
                 # which is the provider's zombied-connection condition: the next
@@ -224,10 +252,10 @@ class Provider:
                 # followed by fresh ACK control traffic. A client that counted an
                 # acknowledgement as progress would never stop retrying even
                 # though no message ever arrives.
-                if self.mode == "zombie_ack_each" and self.heartbeats_on_link:
+                if self.mode == "zombie_ack_each" and link.heartbeats:
                     self.record(kind="heartbeat_withheld", seq=value.get("d"))
                     continue
-                self.heartbeats_on_link += 1
+                link.heartbeats += 1
                 self.heartbeats_total += 1
 
                 self.frame(stream, {"op": 11})
@@ -256,17 +284,26 @@ def main():
             self.end_headers()
             try:
                 self.wfile.write(data)
-            except (OSError, ssl.SSLError):
-                pass
+            except (OSError, ssl.SSLError) as error:
+                # The client going away mid-reply is still an observed fact;
+                # record it rather than discarding it.
+                provider.record(kind="connection_error", step="http reply",
+                                error=type(error).__name__, text=str(error)[:200])
 
         def do_GET(self):
             if self.headers.get("Upgrade", "").lower() == "websocket":
+                # This socket's own label and history: a concurrent connection
+                # cannot change what this one was doing.
+                link = Link()
                 try:
-                    provider.gateway(self)
-                except (OSError, EOFError):
-                    pass
-                except Exception as error:
-                    provider.record(kind="fixture_error", error=type(error).__name__)
+                    provider.gateway(self, link)
+                except BaseException as error:
+                    # Recorded, never classified. A socket error here may be the
+                    # client leaving or the fixture failing, and this layer cannot
+                    # tell which without guessing; naming the step and the error
+                    # hands the judgement to whoever reads a failing test.
+                    provider.record(kind="connection_error", step=link.step,
+                                    error=type(error).__name__, text=str(error)[:200])
                 self.close_connection = True
                 return
             assert self.headers.get("Authorization") == "Bot " + TOKEN
@@ -328,7 +365,10 @@ def main():
                 stream.shutdown(socket.SHUT_RDWR)
                 stream.close()
             except OSError:
-                pass
+                # Process teardown after the run, not a path the control reads:
+                # every request has already been answered or recorded. Closing
+                # an already-closed socket has nothing left to report.
+                continue
         server.server_close()
 
 
