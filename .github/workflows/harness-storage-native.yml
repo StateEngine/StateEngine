@@ -1,0 +1,38 @@
+name: Native harness storage checks
+'on':
+  push:
+    branches: [diag/harness-storage-native-r2]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 7da8c2b03f522ec332c6ee50dd16d6edd2eb1ef7
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Run native checks
+        shell: python
+        run: |
+          import base64,hashlib,os,subprocess,sys
+          from pathlib import Path
+          source=base64.b64decode('ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmltcG9ydCBvcyxzdWJwcm9jZXNzLGpzb24saGFzaGxpYixzeXMKcm9vdD1QYXRoKG9zLmVudmlyb25bJ0dJVEhVQl9XT1JLU1BBQ0UnXSk7b3V0PVBhdGgob3MuZW52aXJvblsnUlVOTkVSX1RFTVAnXSkvJ2hhcm5lc3Mtc3RvcmFnZS1uYXRpdmUnO291dC5ta2RpcigpO3NvdXJjZT0nN2RhOGMyYjAzZjUyMmVjMzMyYzZlZTUwZGQxNmQ2ZWRkMmViMWVmNycKYXNzZXJ0IHN1YnByb2Nlc3MuY2hlY2tfb3V0cHV0KFsnZ2l0JywncmV2LXBhcnNlJywnSEVBRCddLGN3ZD1yb290LHRleHQ9VHJ1ZSkuc3RyaXAoKT09c291cmNlCnJlcG9ydD17J3NvdXJjZSc6c291cmNlLCdwbGF0Zm9ybSc6c3lzLnBsYXRmb3JtLCdjb21waWxlcic6c3VicHJvY2Vzcy5jaGVja19vdXRwdXQoWydydXN0YycsJy12ViddLHRleHQ9VHJ1ZSksJ3N0YWdlcyc6W119CmFzc2VydCAnaG9zdDogeDg2XzY0LXBjLXdpbmRvd3MtbXN2YycgaW4gcmVwb3J0Wydjb21waWxlciddCmZvciBuYW1lLGFyZ3MgaW4gWygnY2xpcHB5JyxbJ2NhcmdvJywnY2xpcHB5JywnLS13b3Jrc3BhY2UnLCctLWFsbC10YXJnZXRzJywnLS1hbGwtZmVhdHVyZXMnLCctLWxvY2tlZCcsJy0tdGFyZ2V0JywneDg2XzY0LXBjLXdpbmRvd3MtbXN2YycsJy0tJywnLUQnLCd3YXJuaW5ncyddKSwoJ3N0b3JlLXRlc3RzJyxbJ2NhcmdvJywndGVzdCcsJy1wJywnc2Utc3RvcmUnLCctLWFsbC1mZWF0dXJlcycsJy0tbG9ja2VkJywnLS10YXJnZXQnLCd4ODZfNjQtcGMtd2luZG93cy1tc3ZjJywnLS0nLCctLW5vY2FwdHVyZSddKSwoJ21pZ3JhdGlvbi1jbGknLFsnY2FyZ28nLCd0ZXN0JywnLXAnLCdzZScsJy0tdGVzdCcsJ3N0b3JlX21pZ3JhdGlvbl9pbmRlcGVuZGVudCcsJy0tYWxsLWZlYXR1cmVzJywnLS1sb2NrZWQnLCctLXRhcmdldCcsJ3g4Nl82NC1wYy13aW5kb3dzLW1zdmMnLCctLScsJy0tbm9jYXB0dXJlJ10pXToKIHdpdGggKG91dC8obmFtZSsnLnN0ZG91dCcpKS5vcGVuKCd3YicpIGFzIHNvLChvdXQvKG5hbWUrJy5zdGRlcnInKSkub3Blbignd2InKSBhcyBzZToKICByZXN1bHQ9c3VicHJvY2Vzcy5ydW4oYXJncyxjd2Q9cm9vdCxzdGRvdXQ9c28sc3RkZXJyPXNlKQogcmVwb3J0WydzdGFnZXMnXS5hcHBlbmQoeyduYW1lJzpuYW1lLCdhcmd2JzphcmdzLCdleGl0JzpyZXN1bHQucmV0dXJuY29kZX0pCiBpZiByZXN1bHQucmV0dXJuY29kZTpicmVhawoob3V0LydyZXBvcnQuanNvbicpLndyaXRlX3RleHQoanNvbi5kdW1wcyhyZXBvcnQsaW5kZW50PTIpKQoob3V0LydtZW1iZXJzLmpzb24nKS53cml0ZV90ZXh0KGpzb24uZHVtcHMoe3AubmFtZTpoYXNobGliLnNoYTI1NihwLnJlYWRfYnl0ZXMoKSkuaGV4ZGlnZXN0KCkgZm9yIHAgaW4gb3V0Lml0ZXJkaXIoKSBpZiBwLmlzX2ZpbGUoKX0saW5kZW50PTIpKQpyYWlzZSBTeXN0ZW1FeGl0KDAgaWYgbGVuKHJlcG9ydFsnc3RhZ2VzJ10pPT0zIGFuZCBhbGwoc1snZXhpdCddPT0wIGZvciBzIGluIHJlcG9ydFsnc3RhZ2VzJ10pIGVsc2UgMSkK')
+          assert hashlib.sha256(source).hexdigest()=='16aafa6cf801def9bb29a3a5191112bd8975d1c134fd907b1a1f0f815e21fa5c'
+          path=Path(os.environ['RUNNER_TEMP'])/'harness-native.py'
+          path.write_bytes(source)
+          raise SystemExit(subprocess.call([sys.executable,'-B',str(path)]))
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: harness-storage-native-windows
+          path: ${{ runner.temp }}/harness-storage-native/
+          if-no-files-found: error
