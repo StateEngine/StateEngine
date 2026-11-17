@@ -18,6 +18,52 @@ SELECTIONS = {"first-hour": ("first-hour", {1, 2, 3, 4, 5}),
               "wave-2": ("rust-wave-2", {1, 2, 3, 5}),
               "remote": ("remote", {1}),
               "4": ("selected", {4})}
+# Budgets that only one platform can answer, and therefore only that platform's
+# rows may feed them. `B10` is a Windows full-write ceiling measured from the same
+# CLI-write samples; a Linux or macOS row carries no Windows relation, and its
+# honest "not measured" is neither a missing probe nor a vote against a Windows
+# result.
+PLATFORM_BUDGETS = {"B10": "win32"}
+
+
+class ProbeContext:
+    """What one invocation's budget rows may be judged against.
+
+    Built once, at the receipt boundary, from the platform the receipt itself was
+    verified to have (`invocation()` already refuses a receipt whose platform
+    differs from the requested one). Every consumer takes this value rather than
+    re-reading a row or re-deriving the platform, because applicability decided in
+    more than one place is what drifted three times before.
+
+    `platform` is the verified platform, or None when it is not yet established;
+    None applies to nothing platform-specific rather than to everything.
+    """
+
+    __slots__ = ("platform",)
+
+    def __init__(self, platform):
+        self.platform = platform
+
+    def __repr__(self):
+        # Never let a context print its way into a report or a diagnostic.
+        return f"ProbeContext({self.platform!r})"
+
+    def applies(self, budget):
+        """Whether this context's rows may feed `budget` at all."""
+        if budget not in PLATFORM_BUDGETS:
+            return True
+        return self.platform == PLATFORM_BUDGETS[budget]
+
+    def required(self, budget):
+        """Whether `budget` must pass for this receipt to be complete.
+
+        A platform-only budget is never required coverage: it can only be measured
+        in one venue, so its absence or its miss is a fact about that venue, not a
+        missing required probe. It is still judged wherever it applies — a real
+        Windows miss stays a MISS with its own probe rather than being discarded
+        along with an otherwise valid receipt.
+        """
+        return budget not in PLATFORM_BUDGETS
 LABELS = {
     "B1": ("embedded A/B",), "B2": ("embedded A/B",),
     "B3": ("standalone persistent processes", "persistent processes after 1 seat(s)",
@@ -29,7 +75,8 @@ LABELS = {
     "B7": ("CLI --version", "CLI contextual read verbs"),
     "B8": ("host restart re-adoption",),
     "B9": ("CLI writes through running host", "in-session kept-open writes",
-           "Claude stop hook through running host"), "FULL": (),
+           "Claude stop hook through running host"),
+    "B10": ("CLI writes through running host",), "FULL": (),
 }
 
 
@@ -67,7 +114,8 @@ def budget_numbers(budget, row):
         "B3": ("count", "added_processes"), "B4": ("rss_bytes",),
         "B5": ("cpu_percent_one_core",), "B6": ("wakeups",),
         "B7": ("reads",), "B8": ("readoption", "readopt", "cutover", "elapsed_ms"),
-        "B9": ("writes", "samples", "p95", "ceiling_ms"), "FULL": (),
+        "B9": ("writes", "samples", "p95", "ceiling_ms"),
+        "B10": ("writes", "samples", "p95", "ceiling_ms"), "FULL": (),
     }
     return {path: value for path, value in numbers(row).items()
             if any(part in path for part in selectors[budget])
@@ -75,9 +123,67 @@ def budget_numbers(budget, row):
 
 
 
-def probe_result(budget, row, limits, numeric):
-    if not numeric or row.get("state") == "unavailable":
+def windows_full_write_result(row, limits, context=None):
+    """B10: native Windows serial send against the Windows full-write ceiling.
+
+    The producer reports this budget as a named relation on the existing serial
+    send row, so it reuses that row's samples rather than adding a second
+    clients=1 entry: the write consumer reads exactly one serial and one
+    eight-client cohort, and an extra entry would make both unmeasurable. Only a
+    native Windows row that carries the relation can answer, and the relation
+    must repeat the row's own p95 and describe the cohort it rides on.
+    """
+    # Applicability comes from the verified invocation context, never from a tag
+    # the row carries: a Windows receipt with an unrelated platform tag on one row
+    # is still a Windows receipt.
+    if context is not None and not context.applies("B10"):
         return "NOT MEASURED"
+    writes = row.get("writes")
+    if not isinstance(writes, list):
+        return "NOT MEASURED"
+    ceiling_key = "full_write_windows_p95_ms_inclusive"
+    if not isinstance(limits, dict):
+        return "NOT MEASURED"
+    ceiling = limits.get(ceiling_key)
+    if not finite_nonnegative(ceiling):
+        return "NOT MEASURED"
+    seen = False
+    for sample in writes:
+        if not isinstance(sample, dict):
+            continue
+        relation = sample.get("full_write_windows")
+        if relation is None:
+            continue
+        seen = True
+        if not isinstance(relation, dict):
+            return "NOT MEASURED"
+        raw, value = sample.get("samples"), sample.get("p95_ms")
+        count = 30 * sample.get("clients", 0) if type(sample.get("clients")) is int else 0
+        # The relation is judged on the row it rides on, and it may not drift from it.
+        if (sample.get("action") != "send" or sample.get("clients") != 1 or not count
+                or relation.get("budget") != ceiling_key
+                or relation.get("ceiling_ms_inclusive") != ceiling
+                or not finite_nonnegative(value) or relation.get("p95_ms") != value
+                or not isinstance(raw, list) or len(raw) != count
+                or not finite_nonnegative(sample.get("ceiling_ms_inclusive"))
+                or any(not isinstance(s, dict) or type(s.get("code")) is not int
+                       or s["code"] != 0 or s.get("error") or s.get("routing_error")
+                       or not finite_nonnegative(s.get("ms")) for s in raw)):
+            return "NOT MEASURED"
+        if value != sorted(s["ms"] for s in raw)[math.ceil(count * 0.95) - 1]:
+            return "NOT MEASURED"
+        if relation.get("passed") is not True or sample.get("passed") is not True or value > ceiling:
+            return "MISS"
+    return "PASS" if seen else "NOT MEASURED"
+
+
+def probe_result(budget, row, limits, numeric, context=None):
+    # A row that measured nothing is refused before any budget-specific
+    # judgement, so retained samples can never be published as a verdict.
+    if not numeric or state_measured_nothing(row):
+        return "NOT MEASURED"
+    if budget == "B10":
+        return windows_full_write_result(row, limits, context)
     if budget not in {"B5", "B6"}:
         return "PASS" if row.get("passed") is True else "MISS" if row.get("passed") is False else "NOT MEASURED"
     if not isinstance(limits, dict):
@@ -103,19 +209,50 @@ def probe_result(budget, row, limits, numeric):
     return "PASS" if within_limit and not cleanup else "MISS"
 
 
+# Every state a producer uses to say it measured nothing. A row carrying any of
+# these must never publish a verdict, whatever samples it still holds. This is one
+# definition on purpose: two consumers naming different sets is exactly how a B10
+# row marked unreadable published PASS while the same row through first-hour did
+# not.
+NOT_MEASURED_STATES = frozenset((
+    "unavailable", "not measured", "unreadable", "absent", "not reached"))
+
+
+def state_measured_nothing(row):
+    """Whether the producer said this row holds no measurement.
+
+    A state that is absent, or is any string in `NOT_MEASURED_STATES`, means the
+    row measured nothing. A non-string state is a malformed row rather than a
+    measurement, so it is refused too.
+    """
+    state = row.get("state")
+    if state is None:
+        return False
+    if not isinstance(state, str):
+        return True
+    return state in NOT_MEASURED_STATES
+
+
 def finite_nonnegative(value):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0
 
 
-def first_hour_probe_result(budget, row, limits):
-    """Validate current first-hour measurements without changing legacy receipts."""
-    state = row.get("state")
-    if (not isinstance(limits, dict) or state is not None and not isinstance(state, str)
-            or state in ("unavailable", "not measured", "unreadable", "absent", "not reached")):
+def first_hour_probe_result(budget, row, limits, context=None):
+    """Validate current first-hour measurements without changing legacy receipts.
+
+    `context` is the one applicability value for this invocation. Without it the
+    budget is judged as before, which keeps legacy callers working; with it, a
+    row that cannot answer this budget is not judged at all.
+    """
+    if context is not None and not context.applies(budget):
+        return "NOT MEASURED"
+    if not isinstance(limits, dict) or state_measured_nothing(row):
         return "NOT MEASURED"
     if budget in {"B5", "B6"}:
         return probe_result(budget, row, limits, budget_numbers(budget, row))
     label = row.get("label")
+    if budget == "B10":
+        return windows_full_write_result(row, limits)
     if budget in {"B7", "B9"}:
         read = budget == "B7"
         samples = row.get("reads" if read else "writes")
@@ -164,11 +301,22 @@ def first_hour_probe_result(budget, row, limits):
 
 
 def invocation(inv, directory, run=None):
+    """Summarize one invocation.
+
+    The returned entry is emitted verbatim into report.json, so it may only hold
+    JSON values. The applicability context is deliberately *not* stored on it;
+    `invocation_context()` rebuilds it from the same verified receipt platform.
+    """
     mode, expected = SELECTIONS.get(inv.get("selection"), ("unsupported", set(range(1, 6))))
     entry = {**inv, "mode": mode, "expected": sorted(expected), "results": [],
              "receipt_complete": False, "journeys": {}, "outcome": "UNKNOWN", "problems": [],
              "judge_outcome": "FAIL" if type(inv.get("exit")) is int and inv["exit"] != 0
                               else "PASS" if type(inv.get("exit")) is int and inv["exit"] == 0 else "UNKNOWN"}
+    closure = inv.get("credential_closure")
+    unreadable_scan = isinstance(closure, dict) and closure.get("state") == "unreadable"
+    if unreadable_scan:
+        entry["problems"].append(closure.get("error", "automation-output-scan-unreadable: input unspecified"))
+        entry["outcome"] = "FAIL"
     if inv.get("remote_probe"):
         receipt, error = read(directory / inv["output"] / "remote.json")
         if error:
@@ -201,6 +349,9 @@ def invocation(inv, directory, run=None):
             or len(selected) != len(expected) or set(selected) != expected):
         entry["problems"].append("identity, selection or scope mismatch")
         return entry
+    # One applicability value for everything downstream, built here because this
+    # is where the receipt's platform became verified rather than asserted.
+    context = ProbeContext(receipt.get("platform"))
     if (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
             or any(type(row.get("journey")) is not int or row.get("result") not in ("PASS", "FAIL") for row in rows)
             or {row["journey"] for row in rows} != expected or len(rows) != len(expected)):
@@ -240,9 +391,11 @@ def invocation(inv, directory, run=None):
                 budget_error = "first-hour required probes differ from the reporter contract"
                 entry["problems"].append(budget_error)
             if isinstance(budget, dict) and budget.get("passed") is True and any(
-                    first_hour_probe_result(key, row, budget_artifact.get("limits")) != "PASS"
+                    first_hour_probe_result(key, row, budget_artifact.get("limits"), context) != "PASS"
                     for row in budget_artifact["measurements"] if row["label"] in FIRST_HOUR_PROBES
-                    for key, expected_labels in LABELS.items() if row["label"] in expected_labels):
+                    for key, expected_labels in LABELS.items()
+                    if row["label"] in expected_labels
+                    and context.applies(key) and context.required(key)):
                 budget_error = "required first-hour probe is missing a passing measurement"
                 entry["problems"].append(budget_error)
     entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification, behavior_only=behavior_only,
@@ -267,7 +420,19 @@ def invocation(inv, directory, run=None):
         entry["problems"].append("required budgets did not pass")
     else:
         entry["outcome"] = "PASS"
+    if unreadable_scan:
+        entry["outcome"] = "FAIL"
     return entry
+
+
+def invocation_context(entry):
+    """The applicability context for one summarized invocation.
+
+    Derived from the platform `invocation()` already verified against the receipt.
+    It is a judgement input, never a report value: keeping it out of the entry is
+    what lets the entry be JSON-serialized unchanged.
+    """
+    return ProbeContext(entry.get("platform"))
 
 
 def summarize(run, directory):
@@ -327,18 +492,26 @@ def summarize(run, directory):
                 if not isinstance(row, dict) or row.get("label") not in labels:
                     continue
                 numeric = budget_numbers(budget, row)
+                slot_context = invocation_context(entry)
                 slots[budget].append({"output": entry["output"], "surface": entry["surface"],
-                    "platform": entry.get("platform"),
+                    "platform": entry.get("platform"), "context": slot_context,
                     "label": row["label"], "numbers": numeric,
                     "box_load": entry.get("box_load"),
                     "machine_context": machine_context(row, entry.get("platform")),
                     "sample_state": "observed" if numeric else row.get("state", "unavailable"),
-                    "probe_result": first_hour_probe_result(budget, row, measured.get("limits"))
+                    "probe_result": first_hour_probe_result(budget, row, measured.get("limits"), slot_context)
                     if entry["mode"] == "first-hour" and not entry.get("behavior_only")
-                    else probe_result(budget, row, measured.get("limits"), numeric),
+                    else probe_result(budget, row, measured.get("limits"), numeric, slot_context),
                     "invocation_outcome": entry["outcome"], "reason": row.get("reason"), "limits": measured.get("limits")})
+    # A budget that no invocation could answer in this run is a named gap only
+    # when some invocation was eligible to answer it. Asking for a Windows number
+    # from a Linux-only run would be a gap the run could never close.
+    eligible = {key: any(invocation_context(entry).applies(key) for entry in entries
+                         if entry.get("receipt_complete"))
+                for key in LABELS}
     gaps = [f"{key}: {label}" for key, labels in LABELS.items() for label in labels
-            if not any(row["label"] == label and row["numbers"] for row in slots[key])]
+            if eligible[key]
+            and not any(row["label"] == label and row["numbers"] for row in slots[key])]
     gaps += ["FULL: independent FULL-write probe unavailable"]
     if not any(entry.get("surface") == "codex" and entry["mode"] == "first-hour"
                and entry["receipt_complete"] and not entry.get("behavior_only") for entry in entries):
@@ -350,12 +523,20 @@ def summarize(run, directory):
     budgets = []
     for key, probes in slots.items():
         missing = any(gap.startswith(key + ":") for gap in gaps)
+        # A budget that only one platform answers is decided by that platform's
+        # rows alone. Rows from elsewhere are not weaker votes or missing probes:
+        # they are not evidence about this budget, so they never reach it.
+        applicable = [p for p in probes if p["context"].applies(key)]
         state = "NOT MEASURED"
-        if any(p["probe_result"] == "MISS" for p in probes):
+        if any(p["probe_result"] == "MISS" for p in applicable):
             state = "MISS"
-        elif not missing and probes and all(p["probe_result"] == "PASS" for p in probes):
+        elif not missing and applicable and all(p["probe_result"] == "PASS" for p in applicable):
             state = "PASS"
-        budgets.append({"id": key, "state": state, "probes": probes})
+        # The context travels with the probe while it is being decided and is not
+        # serialized: it is a judgement input, not a measurement.
+        budgets.append({"id": key, "state": state,
+                        "probes": [{k: v for k, v in probe.items() if k != "context"}
+                                   for probe in applicable]})
     matrix = matrix_observation(run, directory)
     if matrix is not None:
         status['errors'].extend('harness matrix: ' + value for value in matrix['errors'])

@@ -37,7 +37,7 @@ fn every_resume_variant_parses_as_the_exact_agent_launch() -> Check {
                     panic!("resume argv selected another operation");
                 };
                 assert!(input.detach);
-                assert_eq!(input.fresh, fresh);
+                assert_eq!(input.fresh(), fresh);
                 assert!(input.target_agent_id.is_none());
                 assert!(!command.argv.iter().any(|arg| arg == "--agent"));
             }
@@ -129,7 +129,7 @@ fn public_status_list_and_show_keep_the_selected_installation() -> Check {
         assert_eq!(parsed.common.project.as_deref(), Some(project));
         assert_eq!(parsed.common.selections.agent.as_deref(), Some(agent));
         assert!(
-            matches!(parsed.operation, AnyOp::AgentLaunch(input) if input.detach && input.fresh)
+            matches!(parsed.operation, AnyOp::AgentLaunch(input) if input.detach && input.fresh())
         );
     }
     #[cfg(unix)]

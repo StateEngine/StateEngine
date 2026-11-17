@@ -14,7 +14,7 @@ impl LaunchCoordinator {
     ) -> Result<Option<Vec<CapturedMessage>>> {
         self.acp_replay_inner(plan, admission, deadline).await.map_err(|mut error| {
             error.body = error.body.with_remedy(se_types::Remedy {
-                text: "Restore the original complete capture and retry, or start a separate conversation with se launch <agent> --new. No new input was offered.".into(),
+                text: "Restore the original complete capture and retry, or start a separate conversation with se launch <agent>. No new input was offered.".into(),
                 command: Some(se_types::Cmd::Manual),
             });
             error
@@ -69,14 +69,14 @@ impl LaunchCoordinator {
                 .store
                 .read(admission.clone(), deadline, move |cx| {
                     if cursor.is_none() {
-                        let prior=se_core::scope::require_present(cx.read.capture_source(previous_source).map_err(|e|se_core::store_error::store_error(&e))?,"ACP saved capture","Restore its original capture binding or start a new conversation with --new.")?;
+                        let prior=se_core::scope::require_present(cx.read.capture_source(previous_source).map_err(|e|se_core::store_error::store_error(&e))?,"ACP saved capture","Restore its original capture binding or start a new conversation without --resume.")?;
                         let original=prior.original.as_deref().unwrap_or(&prior.current);
                         if !matches!(&original.body,EventBody::CaptureSource { consent:se_store::Consent::Capture,native_ref,.. } if native_ref==&wanted) {
-                            return Err(error("ACP replay","The previous session did not consent to canonical capture. Start a new conversation with --new; no saved input was offered again."));
+                            return Err(error("ACP replay","The previous session did not consent to canonical capture. Start a new conversation without --resume; no saved input was offered again."));
                         }
                         match cx.read.capture_outcome(previous_source, None).map_err(|e|se_core::store_error::store_error(&e))? {
                             Read::Present { value } if matches!(&value.body,EventBody::CaptureFailed { .. }) => {
-                                return Err(error("ACP replay","The previous protocol capture is incomplete. Preserve its observed partial history and use --new for a separate conversation; interrupted input will not be replayed."));
+                                return Err(error("ACP replay","The previous protocol capture is incomplete. Preserve its observed partial history and omit --resume for a separate conversation; interrupted input will not be replayed."));
                             }
                             Read::Present { value } if matches!(&value.body,EventBody::CaptureVerified { source,session,.. } if *source==previous_source && session==&saved_session) => (),
                             Read::Absent { .. } => (),

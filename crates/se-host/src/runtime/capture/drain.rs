@@ -12,9 +12,8 @@ impl Capturing<'_> {
         hook: crate::ClaudeHookInput,
         deadline: &Deadline,
     ) -> Result<ExecutedCall> {
-        let batch = self
-            .batch(admission, terminal, selections, hook, deadline)
-            .await?;
+        // Keep the capture batch state off every enclosing router future.
+        let batch = Box::pin(self.batch(admission, terminal, selections, hook, deadline)).await?;
         if batch.complete {
             return Ok(batch.result);
         }
@@ -37,9 +36,9 @@ impl Capturing<'_> {
                 claimed_transcript: hook.claimed_transcript.clone(),
                 payload: serde_json::Value::Null,
             };
-            let result = self
-                .batch(admission.clone(), terminal.clone(), None, signal, deadline)
-                .await;
+            let result =
+                Box::pin(self.batch(admission.clone(), terminal.clone(), None, signal, deadline))
+                    .await;
             let batch = match result {
                 Ok(batch) => batch,
                 Err(error) => {

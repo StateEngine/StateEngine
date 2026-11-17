@@ -22,7 +22,7 @@ pub enum AcceptedPeer {
 }
 pub struct HostedConnection {
     pub(super) connection: IpcConnection,
-    grant: ConnectionGrant,
+    pub(super) grant: ConnectionGrant,
 }
 pub struct AuthorizedStop {
     pending: PendingIpcHandshake,
@@ -551,7 +551,8 @@ fn prepare_route(
     }
     // Long polls, remote exchanges and pinned-source capture retain their
     // specialized fresh checks. None may carry this finite pin across awaits.
-    let deferred = hook.is_some()
+    let deferred = admitted.selections.as_ref().is_some_and(|s| s.mail_follow)
+        || hook.is_some()
         || matches!(&admitted.input,
         HostedInput::Operation(operation) if operation.is_remote()
             || matches!(operation, se_core::ops::AnyOp::ClientWatch(_)));
@@ -597,7 +598,7 @@ pub(crate) fn encode_executed(completed: ExecutedCall) -> Result<OperationOutput
         window,
     })
 }
-fn envelope(error: &SeError) -> Result<ErrorEnvelope> {
+pub(super) fn envelope(error: &SeError) -> Result<ErrorEnvelope> {
     ErrorEnvelope::new(error.body.clone(), &RenderCx::default())
 }
 impl HostedRouter {

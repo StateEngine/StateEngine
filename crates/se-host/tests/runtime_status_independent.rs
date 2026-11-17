@@ -1,5 +1,5 @@
-//! Protects: 50 A.3 / B5 — CLI and serving hosts use canonical names; only
-//! hosted status supplies real self-accounting, including the embedded mirror.
+//! Protects: CLI status retains authenticated resource samples from the exact
+//! standalone or embedded host, and unavailable observations never become zeros.
 #![cfg(all(feature = "secode", target_os = "linux"))]
 #[path = "support/shutdown_linked_fixture.rs"]
 mod linked_fixture;
@@ -63,6 +63,12 @@ fn cleanup(root: &cleanup_directory::PrivateDirectory) -> Check {
         root.join("status.json"),
         artifacts.join(format!("{name}.status.json")),
     )?;
+    for extra in ["absent.json", "stopped.json"] {
+        let path = root.join(extra);
+        if path.try_exists()? {
+            fs::copy(path, artifacts.join(format!("{name}.{extra}")))?;
+        }
+    }
     root.finish(Ok(()))
 }
 fn command(image: &Path, home: &Path, args: &[&str]) -> Command {
@@ -74,8 +80,7 @@ fn command(image: &Path, home: &Path, args: &[&str]) -> Command {
         .arg("--json")
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
-        .env("HOME", home.parent().unwrap_or(home))
-        .env("XDG_RUNTIME_DIR", "/run/user/1000");
+        .env("HOME", home.parent().unwrap_or(home));
     value
 }
 fn cli(image: &Path, home: &Path, args: &[&str]) -> Check<Value> {
@@ -148,7 +153,7 @@ fn hosted(home: &Path) -> Check<Value> {
 }
 
 /// Protects: B5/B6 — the external idle runner samples the actual public host
-/// reader, without making the direct CLI pretend to know another PID's rusage.
+/// reader independently of the CLI resource merge.
 #[test]
 #[ignore = "public IPC adapter invoked by runtime_idle.mjs with an owned home"]
 fn hosted_status_reader() -> Check {
@@ -167,29 +172,37 @@ fn hosted_status_reader() -> Check {
 }
 fn inspect(direct: &Value, served: &Value, name: &str, pid: u32) -> Vec<String> {
     let mut failures = vec![];
-    for (surface, value) in [("direct", direct), ("hosted", served)] {
-        if value["runtime"]["host"] != name {
-            failures.push(format!(
-                "{surface} runtime.host: expected {name}, got {}",
-                value["runtime"]["host"]
-            ));
+    for (surface, value) in [("CLI", direct), ("hosted", served)] {
+        let runtime = &value["runtime"];
+        if runtime["host"] != name || runtime["state"] != "running" {
+            failures.push(format!("{surface} did not identify a running {name} host"));
         }
-        if value["runtime"]["process"]["pid"] != pid {
-            failures.push(format!(
-                "{surface} status did not name exact native host {pid}"
-            ));
+        if runtime["process"]["pid"] != pid {
+            failures.push(format!("{surface} did not name exact native host {pid}"));
+        }
+        if runtime["generation"].as_u64().is_none() {
+            failures.push(format!("{surface} host generation absent"));
+        }
+        inspect_resources(surface, runtime, &mut failures);
+    }
+    for field in ["process", "generation"] {
+        if direct["runtime"][field] != served["runtime"][field] {
+            failures.push(format!("CLI and hosted {field} observations differ"));
         }
     }
-    if direct["runtime"].get("resources").is_some() {
-        failures.push("direct file-only status invented host self-accounting".into());
-    }
-    let Some(resources) = served["runtime"]
-        .get("resources")
-        .and_then(Value::as_object)
-    else {
-        failures.push("hosted resources unavailable; not a zero measurement".into());
-        return failures;
+    failures
+}
+
+fn inspect_resources(surface: &str, runtime: &Value, failures: &mut Vec<String>) {
+    let Some(resources) = runtime.get("resources").and_then(Value::as_object) else {
+        failures.push(format!("{surface} authenticated host resources absent"));
+        return;
     };
+    if runtime.get("resources_unavailable").is_some() {
+        failures.push(format!(
+            "{surface} has both a sample and an unavailable reason"
+        ));
+    }
     for field in [
         "self_voluntary_switches",
         "self_involuntary_switches",
@@ -198,24 +211,40 @@ fn inspect(direct: &Value, served: &Value, name: &str, pid: u32) -> Vec<String> 
         "rss_bytes",
     ] {
         if resources.get(field).and_then(Value::as_u64).is_none() {
-            failures.push(format!("hosted kernel counter missing/invalid: {field}"));
+            failures.push(format!("{surface} kernel counter missing/invalid: {field}"));
         }
     }
     if resources.get("method") != Some(&json!("linux:getrusage(RUSAGE_SELF)+/proc/self/statm")) {
-        failures.push("wrong Linux self-accounting source".into());
+        failures.push(format!(
+            "{surface} has the wrong Linux self-accounting source"
+        ));
     }
-    if resources
+    if !resources
         .get("sampled_at")
         .and_then(Value::as_str)
-        .is_none()
+        .is_some_and(|s| !s.is_empty())
     {
-        failures.push("self-accounting sample timestamp absent".into());
+        failures.push(format!("{surface} sample timestamp absent"));
     }
     if resources.get("rss_bytes").and_then(Value::as_u64) == Some(0) {
-        failures.push("live host RSS falsely zero".into());
+        failures.push(format!("{surface} live host RSS falsely zero"));
     }
-    failures
 }
+
+fn inspect_stopped(value: &Value) {
+    let runtime = &value["runtime"];
+    assert_eq!(runtime["state"], "stopped", "{value}");
+    assert!(runtime["host"].is_null(), "stopped host name: {value}");
+    assert!(
+        runtime["process"].is_null(),
+        "stopped host process: {value}"
+    );
+    assert!(
+        runtime.get("resources").is_none(),
+        "stopped host counters: {value}"
+    );
+}
+
 fn outside_closed(root: &Path, home: &Path) -> Check {
     if home.join("endpoint.json").try_exists()? {
         return Err("host endpoint remains after shutdown".into());
@@ -229,7 +258,7 @@ fn outside_closed(root: &Path, home: &Path) -> Check {
 }
 
 #[test]
-/// Protects: 50 A.3 — standalone CLI/IPC names agree and only IPC reports host counters.
+/// Protects: standalone CLI and IPC report samples from the same native host.
 fn standalone_direct_and_hosted_status_obey_section_50() -> Check {
     let binary = image("SE_RUNTIME_JUDGE_SE")?;
     let setup = std::env::var_os("SE_RUNTIME_JUDGE_SETUP_SE")
@@ -238,7 +267,11 @@ fn standalone_direct_and_hosted_status_obey_section_50() -> Check {
     let root = root("daemon")?;
     let home = initialize(&setup, &root)?;
     let absent = cli(&binary, &home, &["status"])?;
-    assert!(absent["runtime"]["host"].is_null());
+    inspect_stopped(&absent);
+    fs::write(
+        root.join("absent.json"),
+        serde_json::to_vec_pretty(&absent)?,
+    )?;
     cli(&binary, &home, &["up"])?;
     let observation = (|| -> Check<_> {
         let direct = cli(&binary, &home, &["status"])?;
@@ -253,6 +286,12 @@ fn standalone_direct_and_hosted_status_obey_section_50() -> Check {
     })();
     let stopped = cli(&binary, &home, &["down"]);
     stopped?;
+    let stopped_status = cli(&binary, &home, &["status"])?;
+    inspect_stopped(&stopped_status);
+    fs::write(
+        root.join("stopped.json"),
+        serde_json::to_vec_pretty(&stopped_status)?,
+    )?;
     outside_closed(&root, &home)?;
     let failures = observation?;
     assert!(
@@ -265,7 +304,7 @@ fn standalone_direct_and_hosted_status_obey_section_50() -> Check {
 }
 
 #[test]
-/// Protects: 50 A.3 — embedded CLI/IPC names agree without changing the direct-read contract.
+/// Protects: embedded CLI and IPC report samples from the same native host.
 fn embedded_direct_and_hosted_status_obey_section_50() -> Check {
     let binary = image("SE_RUNTIME_JUDGE_SE")?;
     let setup = std::env::var_os("SE_RUNTIME_JUDGE_SETUP_SE")
@@ -346,6 +385,12 @@ fn embedded_direct_and_hosted_status_obey_section_50() -> Check {
             )?,
         )?;
         outside_closed(&root, &home)?;
+        let stopped_status = cli(&binary, &home, &["status"])?;
+        inspect_stopped(&stopped_status);
+        fs::write(
+            root.join("stopped.json"),
+            serde_json::to_vec_pretty(&stopped_status)?,
+        )?;
         let failures = inspect(&direct, &served, "secode", std::process::id());
         assert!(
             failures.is_empty(),
@@ -356,4 +401,47 @@ fn embedded_direct_and_hosted_status_obey_section_50() -> Check {
         cleanup(&root)?;
         Ok::<(), Box<dyn std::error::Error>>(())
     })
+}
+
+/// Protects: a transport failure cannot turn an unavailable authenticated sample into zero counters.
+#[test]
+fn unreachable_host_resources_remain_unavailable() -> Check {
+    let binary = image("SE_RUNTIME_JUDGE_SE")?;
+    let root = root("unavailable")?;
+    let home = initialize(&binary, &root)?;
+    cli(&binary, &home, &["up"])?;
+    let path = home.join("endpoint.json");
+    let original = fs::read(&path)?;
+    let mut endpoint = decode_endpoint(&original)?;
+    let pid = endpoint.epoch.owner.fields().pid.get();
+    let observation = (|| -> Check<Value> {
+        endpoint.address = se_host::IpcEndpoint::UnixSocket(se_types::NativePath::from_local(
+            root.join("missing.sock"),
+        )?);
+        fs::write(
+            &path,
+            se_host::client::endpoint::encode_endpoint(&endpoint)?.as_bytes(),
+        )?;
+        cli(&binary, &home, &["status"])
+    })();
+    // Restore this fixture's exact endpoint before asking its owner to shut down.
+    fs::write(&path, &original)?;
+    let stopped = cli(&binary, &home, &["down"]);
+    stopped?;
+    outside_closed(&root, &home)?;
+    let value = observation?;
+    fs::write(root.join("status.json"), serde_json::to_vec_pretty(&value)?)?;
+    assert_eq!(value["runtime"]["state"], "running", "{value}");
+    assert_eq!(value["runtime"]["process"]["pid"], pid, "{value}");
+    assert!(
+        value["runtime"].get("resources").is_none(),
+        "fabricated counters: {value}"
+    );
+    assert!(
+        value["runtime"]["resources_unavailable"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "missing unavailable reason: {value}"
+    );
+    cleanup(&root)
 }

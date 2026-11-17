@@ -448,7 +448,7 @@ async fn missing_load_capability_names_the_real_new_conversation_option() -> Che
         .err()
         .ok_or("load must refuse")?;
     let text = failure.to_string();
-    assert!(text.contains("--new"));
+    assert!(text.contains("--resume"));
     assert!(!text.contains("--fresh"));
     assert_eq!(f.writes()?.len(), before);
     f.stop().await

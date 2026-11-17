@@ -64,7 +64,7 @@ impl LaunchCoordinator {
         // native termination or file cleanup subsequently remains unproved.
         if !work.active && !work.session_retired {
             let reconnecting = work.plan.as_ref().is_some_and(|plan| {
-                !plan.input.fresh
+                !plan.input.fresh()
                     && !plan.input.detach
                     && matches!(&plan.control.latest_session, se_types::Read::Present { value }
                         if se_core::ops::agent_launch::retryable_attended_setup(value))
@@ -461,14 +461,14 @@ impl LaunchCoordinator {
         self.reconcile_stopped_secode_mail(work, deadline).await?;
         let reason = match &work.capture_failure {
             Some(_) if work.secode_service_lost => format!(
-                "{reason}; original SE Code service lost; final capture and uncertain input remain unproved; preserve the original history and use an explicit --new conversation"
+                "{reason}; original SE Code service lost; final capture and uncertain input remain unproved; preserve the original history and start a fresh conversation by omitting --resume"
             ),
             Some(error) if work.meta.provider == se_store::Provider::SeCode => format!(
                 "{reason}; capture incomplete ({}); restore the original authenticated service and retry stop to reconcile its retained cursor",
                 error.code().as_str()
             ),
             Some(error) if work.meta.provider == se_store::Provider::Acp => format!(
-                "{reason}; protocol capture incomplete ({}); preserve the partial history and use --new to start a separate conversation without replaying interrupted input",
+                "{reason}; protocol capture incomplete ({}); preserve the partial history and use to start a separate conversation without replaying interrupted input",
                 error.code().as_str()
             ),
             Some(error) => format!(
