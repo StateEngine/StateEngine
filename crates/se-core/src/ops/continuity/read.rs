@@ -101,14 +101,21 @@ pub(super) fn gather<R: Snapshot>(
     // The store's global head may be another agent's private event. The
     // target's resume head advances with its own turns, state, sessions and
     // mail, and is the admitted checkpoint for this target-bound cursor.
-    let head = scope::require_present(
+    let resume_head = scope::require_present(
         cx.read
             .resume_head(Actor::Agent(agent.clone()))
             .map_err(|e| store_error(&e))?,
         "continuity checkpoint",
         "Restore the selected agent's registered resume head before retrying context.",
-    )?
-    .through;
+    )?;
+    // A caller's cursor is a saved-work baseline only when both positions come
+    // from this store the cursor already belongs to. Anything else is unknown,
+    // never rounded to "unchanged".
+    let working_baseline = match (&since, &resume_head.working_state) {
+        (Some(cursor), Some(working)) => Some((cursor.sequence(), working.sequence())),
+        _ => None,
+    };
+    let head = resume_head.through;
     let cursor = cx
         .read
         .position_cursor(&head, purpose)
@@ -133,12 +140,27 @@ pub(super) fn gather<R: Snapshot>(
     }
     let working = receipt::working_state_get(agent.clone(), cx)?
         .value
-        .map(|value| ContinuityWorkingState {
-            bytes: value.text.len() as u64,
-            value,
-            complete: true,
-            command: None,
-            argv: None,
+        .map(|value| {
+            // No cursor asks no question, so there is no comparison to report.
+            // A cursor whose saved-work checkpoint is missing gets the unknown
+            // answer by name instead of a guessed "unchanged".
+            let (changed, changed_why) = match working_baseline {
+                Some((cursor, working)) => (Some(working > cursor), None),
+                None if input.since.is_none() => (None, None),
+                None => (
+                    None,
+                    Some("this cursor has no saved-work checkpoint to compare against".into()),
+                ),
+            };
+            ContinuityWorkingState {
+                bytes: value.text.len() as u64,
+                value,
+                complete: true,
+                changed,
+                changed_why,
+                command: None,
+                argv: None,
+            }
         });
     let mail = unread(identity, limit, input.byte_budget, cx)?;
     let unread_total = mail.unread_total.ok_or_else(|| {
