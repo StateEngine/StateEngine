@@ -28,7 +28,7 @@ pub fn inherited_console_command(program: impl AsRef<OsStr>) -> std::io::Result<
         if unsafe { windows_sys::Win32::System::Console::GetConsoleCP() } == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                "background helper requires an inherited console; start the host through native runtime bootstrap",
+                "background helper has no console to inherit; ask the owner to run se down, then se up, and retry",
             ));
         }
     }
