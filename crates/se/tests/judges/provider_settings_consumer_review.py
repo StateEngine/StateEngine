@@ -88,7 +88,8 @@ def run(args):
         config = fixture.home / 'config.toml'
         config.write_text(config.read_text().replace('[providers.codex]',
             '[providers.codex]\ncommand = ' + json.dumps(str(codex_image)), 1))
-        for command in [('agent', 'add', '--help'), ('launch', '--help'), ('config', 'set', '--help')]:
+        for command in [('agent', 'add', '--help'), ('launch', '--help'), ('stop', '--help'),
+                        ('config', 'set', '--help')]:
             assert fixture.call(*command).returncode == 0
         fixture.ok('up')
         owner_grant(fixture, True)
@@ -173,7 +174,7 @@ def run(args):
                             assert receipt['conversation_id'] == previous['conversation_id'], receipt
                         result['checks'].append({'case': label, 'resume': resume,
                             'observed': observed, 'turns': turns})
-                        stopped = fixture.ok('--project', fixture.project, 'agent', 'stop', agent)
+                        stopped = fixture.ok('--project', fixture.project, 'stop', agent)
                         assert stopped['complete'], stopped
                         previous = receipt
                 except Exception as error:
