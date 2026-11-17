@@ -17,6 +17,37 @@ pub struct DetachmentObservation {
     pub detachment: HostDetachment,
     /// Present only for a native SessionOnly observation, never inferred from OS.
     pub inherited_cgroup: Option<bool>,
+    #[serde(default)]
+    pub lifetime: se_proc::RuntimeLifetime,
+}
+impl DetachmentObservation {
+    pub fn session_notice(&self, home: &Path) -> Option<String> {
+        if !matches!(self.detachment, HostDetachment::SessionOnly) {
+            return None;
+        }
+        let foreground = se_core::ops::AgentCommand::home_argument(home)
+            .and_then(se_core::ops::AgentCommand::quoted_word)
+            .map_or_else(
+                || se_core::ops::AgentCommand::HOME_UNAVAILABLE.to_owned(),
+                |home| format!("After stopping this host with `se --home {home} down`, keep it attached to your terminal with `se --home {home} up --foreground`."),
+            );
+        #[cfg(target_os = "linux")]
+        {
+            Some(format!(
+                "{} Background work may stop when this login ends. Enable lingering for this account with `loginctl enable-linger`, then stop and restart this host under its owner. {foreground}",
+                self.lifetime
+                    .session_reason
+                    .as_deref()
+                    .unwrap_or("No lasting user-manager scope was observed.")
+            ))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Some(format!(
+                "Background survival after logout is not guaranteed on this platform. {foreground}"
+            ))
+        }
+    }
 }
 #[derive(Serialize, Deserialize)]
 enum Schema {
@@ -68,18 +99,22 @@ pub(super) fn publish(
         se_proc::RuntimeDetachment::WindowsBroker => DetachmentObservation {
             detachment: HostDetachment::WindowsBroker,
             inherited_cgroup: None,
+            lifetime: ready.lifetime.clone(),
         },
         se_proc::RuntimeDetachment::WindowsBreakaway => DetachmentObservation {
             detachment: HostDetachment::WindowsBreakaway,
             inherited_cgroup: None,
+            lifetime: ready.lifetime.clone(),
         },
         se_proc::RuntimeDetachment::UserManagerUnit => DetachmentObservation {
             detachment: HostDetachment::UserManagerUnit,
             inherited_cgroup: None,
+            lifetime: ready.lifetime.clone(),
         },
         se_proc::RuntimeDetachment::SessionOnly { inherited_cgroup } => DetachmentObservation {
             detachment: HostDetachment::SessionOnly,
             inherited_cgroup: Some(inherited_cgroup),
+            lifetime: ready.lifetime.clone(),
         },
     };
     let files = crate::route::files::Files::open(home).map_err(|error| store_error(&error))?;
@@ -136,6 +171,25 @@ pub fn read_detachment(
             "inherited cgroup fact disagrees with observed detachment mode",
         ));
     }
+    if matches!(
+        record.observation.detachment,
+        HostDetachment::UserManagerUnit
+    ) != record.observation.lifetime.user_scope.is_some()
+    {
+        return Err(scope::unreadable(
+            "runtime detachment record",
+            "user-manager lifetime lacks its exact native unit observation",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(scope) = &record.observation.lifetime.user_scope {
+        se_proc::verify_runtime_user_scope(
+            scope,
+            se_proc::ProcessId(endpoint.epoch.owner.fields().pid.get()),
+            bound.at(),
+        )
+        .map_err(|e| scope::unreadable("runtime user scope observation", &format!("{e:?}")))?;
+    }
     if read_bytes(files, bound)?.as_deref() != Some(bytes.as_slice()) {
         return Err(scope::unreadable(
             "runtime detachment record",
@@ -154,7 +208,27 @@ pub fn retire_detachment(files: &crate::route::files::Files, bound: &Deadline) -
     let Some(bytes) = read_bytes(files, bound)? else {
         return Ok(false);
     };
-    let _: Record = se_host::client::wire::decode_json(&bytes, MAX_BYTES)?;
+    let record: Record = se_host::client::wire::decode_json(&bytes, MAX_BYTES)?;
+    if matches!(
+        record.observation.detachment,
+        HostDetachment::UserManagerUnit
+    ) != record.observation.lifetime.user_scope.is_some()
+    {
+        return Err(scope::unreadable(
+            "runtime observation cleanup",
+            "user-manager lifetime disagrees with the recorded native scope",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(unit) = &record.observation.lifetime.user_scope
+        && !se_proc::runtime_user_scope_empty(unit)
+            .map_err(|e| scope::unreadable("runtime user scope cleanup", &format!("{e:?}")))?
+    {
+        return Err(scope::unreadable(
+            "runtime user scope cleanup",
+            "the exact runtime cgroup still contains processes",
+        ));
+    }
     let path = files.0.root().join(NAME);
     let pin = se_proc::OwnedFile::open(&path)
         .map_err(|e| scope::unreadable("runtime observation cleanup", &e.to_string()))?

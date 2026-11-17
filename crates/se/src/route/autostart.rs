@@ -159,6 +159,7 @@ pub(super) fn endpoint_with_origin(
                     Ok(started) => {
                         report_started(
                             &started,
+                            &cx.home,
                             endpoint_recovery.as_ref(),
                             origin,
                             bound,
@@ -174,11 +175,20 @@ pub(super) fn endpoint_with_origin(
 }
 fn report_started(
     started: &crate::runtime::host::StartedHost,
+    home: &std::path::Path,
     recovery: Option<&se_core::ops::EndpointRecovery>,
     origin: StartupOrigin,
     bound: &Deadline,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<()> {
+    if let Read::Present { value } = &started.detachment_record
+        && let Some(notice) = value.session_notice(home)
+    {
+        diagnostic(&notice).map_err(|error| {
+            se_core::scope::unreadable("host lifetime diagnostic", &error.to_string())
+                .with_cause(error)
+        })?;
+    }
     if matches!(origin, StartupOrigin::Explicit) {
         super::process::from_identity(&started.ready.identity, bound)?;
     }
