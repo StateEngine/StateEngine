@@ -20,14 +20,24 @@ TOKEN = "synthetic-discord-token-for-local-tests-only"
 
 
 class Link:
-    """State owned by one socket. A second connection must never relabel it."""
+    """State owned by one socket. A second connection must never relabel it.
+
+    `serving` answers one question and only one: did this connection get past
+    the handshake, so that a socket error is the client leaving rather than the
+    fixture failing? `phase` is a label for diagnostics and must never change
+    that answer, or an ordinary close during heartbeat handling would be
+    reclassified as a provider fault.
+    """
 
     def __init__(self):
         self.phase = "upgrade"
+        self.serving = False
         self.heartbeats = 0
 
-    def enter(self, phase):
+    def enter(self, phase, serving=None):
         self.phase = phase
+        if serving is not None:
+            self.serving = serving
         return self
 
 
@@ -195,7 +205,7 @@ class Provider:
         stream.settimeout(0.02)
         next_message = time.monotonic() + (0.15 if self.mode == "burst" else 0.01)
         waiting = None
-        link.enter("connected")
+        link.enter("connected", serving=True)
         while not (self.root / "stop").exists():
             if time.monotonic() >= next_message:
                 if waiting is None:
@@ -291,7 +301,7 @@ def main():
                     # fault. Before that, the same error means the fixture never
                     # served this handshake, which used to be swallowed into a
                     # bare ProviderUnreachable.
-                    if link.phase != "connected":
+                    if not link.serving:
                         provider.record(kind="fixture_error", phase=link.phase,
                                         error=type(error).__name__, text=str(error)[:200])
                 except BaseException as error:
