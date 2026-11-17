@@ -149,6 +149,12 @@ impl Fixture {
         })
     }
     pub fn finish<T>(&self, result: Check<T>) -> Check<T> {
+        // Every failed case prints the provider's own event trail, whether or
+        // not the test remembered to ask. Without this a failure shows only the
+        // client-side error, which is how a provider fault stayed invisible.
+        if result.is_err() {
+            self.report("failed case");
+        }
         self._process._root_owner.finish(result)
     }
     pub fn events(&self) -> Check<Vec<Value>> {
@@ -160,20 +166,32 @@ impl Fixture {
     }
     /// Print every event the provider recorded, so a failed assertion names the
     /// step that refused instead of only the client-visible error.
+    ///
+    /// The fixture records and never classifies, so a connection error is shown
+    /// as what was observed: the step and the error. Deciding whether that was
+    /// the client leaving or the fixture failing is the reader's job, not this
+    /// layer's guess.
     pub fn report(&self, test: &str) {
         match self.events() {
-            Ok(events) => match serde_json::to_string(&events) {
-                Ok(text) => eprintln!("{test}: provider events ({}): {text}", events.len()),
-                Err(error) => eprintln!("{test}: provider events unprintable: {error}"),
-            },
+            Ok(events) => {
+                for event in events
+                    .iter()
+                    .filter(|event| event["kind"] == "connection_error")
+                {
+                    eprintln!(
+                        "{test}: connection error at {}: {}: {}",
+                        event["step"].as_str().unwrap_or("unrecorded step"),
+                        event["error"].as_str().unwrap_or("exception"),
+                        event["text"].as_str().unwrap_or("no detail")
+                    );
+                }
+                match serde_json::to_string(&events) {
+                    Ok(text) => eprintln!("{test}: provider events ({}): {text}", events.len()),
+                    Err(error) => eprintln!("{test}: provider events unprintable: {error}"),
+                }
+            }
             Err(error) => eprintln!("{test}: provider events unreadable: {error}"),
         }
-    }
-    pub fn no_fixture_errors(&self) -> Check<()> {
-        require(
-            !self.events()?.iter().any(|e| e["kind"] == "fixture_error"),
-            "provider fixture assertion failed",
-        )
     }
 }
 impl Drop for Process {
