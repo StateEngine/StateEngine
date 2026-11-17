@@ -38,6 +38,8 @@ runs:
       run: |
         features=()
         if [[ "$CI_ALL_FEATURES" == true ]]; then features+=(--all-features); fi
+        execution=()
+        if [[ "$CI_TEST_MODE" == full ]]; then execution+=(--no-fail-fast); fi
         filter="$(python scripts/ci/custom.py filter "${features[@]}")"
         if [[ "$RUNNER_OS" == Windows && "$CI_TEST_MODE" == smoke ]]; then
           smoke='kind(lib)'
@@ -45,7 +47,7 @@ runs:
           smoke="$smoke or (binary(=breakaway_refusal) and test(=no_eligible_broker_reports_named_refusal_and_current_legal_alternatives))"
           filter="($filter) and ($smoke)"
         fi
-        cargo nextest run --archive-file tests.tar.zst --extract-to . --workspace-remap "$PWD" --profile ci --partition slice:${{ inputs.shard }}/2 -E "$filter"
+        cargo nextest run --archive-file tests.tar.zst --extract-to . --workspace-remap "$PWD" --profile ci --partition slice:${{ inputs.shard }}/2 -E "$filter" "${execution[@]}"
     - name: Run custom harnesses once (their main functions serialize their own cases)
       if: ${{ !cancelled() && inputs.shard == '1' && inputs.mode != 'smoke' }}
       shell: bash
