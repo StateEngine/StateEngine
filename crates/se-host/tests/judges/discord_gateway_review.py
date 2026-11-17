@@ -19,6 +19,18 @@ import time
 TOKEN = "synthetic-discord-token-for-local-tests-only"
 
 
+class Link:
+    """State owned by one socket. A second connection must never relabel it."""
+
+    def __init__(self):
+        self.phase = "upgrade"
+        self.heartbeats = 0
+
+    def enter(self, phase):
+        self.phase = phase
+        return self
+
+
 class Provider:
     def __init__(self, root, mode):
         self.root, self.mode = root, mode
@@ -29,9 +41,7 @@ class Provider:
         self.channel_reads = 0
         self.posts = 0
         self.withheld = False
-        self.phase = "unstarted"
         self.heartbeats_total = 0
-        self.heartbeats_on_link = 0
         self.session = None
 
     def record(self, **event):
@@ -117,11 +127,10 @@ class Provider:
                  else 2 if self.mode in ("resume", "zombie") else 1)
         return [self.message(seq) for seq in range(2, count + 2)]
 
-    def gateway(self, handler):
-        # Every step is recorded by name so a provider-side fault is reported
-        # with the step it happened in instead of vanishing into a bare
-        # exception class. The control fails loudly; this only names where.
-        self.phase = "upgrade"
+    def gateway(self, handler, link):
+        # Every step is recorded on this connection's own state so a
+        # provider-side fault is reported with the step it happened in, and a
+        # concurrent socket cannot overwrite or relabel it.
         key = handler.headers.get("Sec-WebSocket-Key", "")
         assert handler.headers.get("Sec-WebSocket-Version") == "13"
         accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
@@ -133,16 +142,16 @@ class Provider:
         handler.wfile.flush()
         stream = handler.connection
         self.sockets.append(stream)
-        self.phase = "hello"
+        link.enter("hello")
         self.frame(stream, {"op": 10, "d": {"heartbeat_interval": 200}})
-        self.phase = "first client frame"
+        link.enter("first client frame")
         opcode, raw = self.read_frame(stream)
         assert opcode == 1, "first client frame was not text"
-        self.phase = "client auth"
+        link.enter("client auth")
         auth = json.loads(raw)
         assert auth["d"]["token"] == TOKEN, "client auth token differs"
         self.connections += 1
-        self.heartbeats_on_link = 0
+        link.heartbeats = 0
         self.record(kind="gateway_auth", op=auth["op"], seq=auth["d"].get("seq"),
                     session=auth["d"].get("session_id"), intents=auth["d"].get("intents"))
         if auth["op"] == 2:
@@ -186,7 +195,7 @@ class Provider:
         stream.settimeout(0.02)
         next_message = time.monotonic() + (0.15 if self.mode == "burst" else 0.01)
         waiting = None
-        self.phase = "connected"
+        link.enter("connected")
         while not (self.root / "stop").exists():
             if time.monotonic() >= next_message:
                 if waiting is None:
@@ -212,7 +221,7 @@ class Provider:
             if opcode == 9:
                 self.frame(stream, raw, 10)
             elif opcode == 1:
-                self.phase = "client heartbeat"
+                link.enter("client heartbeat")
                 value = json.loads(raw)
                 assert value["op"] == 1, "client sent a non-heartbeat text frame"
                 self.record(kind="heartbeat", seq=value.get("d"))
@@ -234,10 +243,10 @@ class Provider:
                 # followed by fresh ACK control traffic. A client that counted an
                 # acknowledgement as progress would never stop retrying even
                 # though no message ever arrives.
-                if self.mode == "zombie_ack_each" and self.heartbeats_on_link:
+                if self.mode == "zombie_ack_each" and link.heartbeats:
                     self.record(kind="heartbeat_withheld", seq=value.get("d"))
                     continue
-                self.heartbeats_on_link += 1
+                link.heartbeats += 1
                 self.heartbeats_total += 1
 
                 self.frame(stream, {"op": 11})
@@ -271,24 +280,25 @@ def main():
 
         def do_GET(self):
             if self.headers.get("Upgrade", "").lower() == "websocket":
+                # This socket's own state: a concurrent connection cannot change
+                # what phase this one was in when it failed.
+                link = Link()
                 try:
-                    provider.gateway(self)
+                    provider.gateway(self, link)
                 except (OSError, EOFError) as error:
-                    # Once the link is serving, the client closing the socket is
+                    # Once this link is serving, the client closing the socket is
                     # the control's own end of a connection, not a provider
                     # fault. Before that, the same error means the fixture never
-                    # served the handshake at all, which is exactly the failure
-                    # that used to be swallowed into a bare ProviderUnreachable.
-                    if provider.phase == "connected":
-                        provider.phase = "closed by client"
-                    else:
-                        provider.record(kind="fixture_error", phase=provider.phase,
+                    # served this handshake, which used to be swallowed into a
+                    # bare ProviderUnreachable.
+                    if link.phase != "connected":
+                        provider.record(kind="fixture_error", phase=link.phase,
                                         error=type(error).__name__, text=str(error)[:200])
                 except BaseException as error:
                     # A test double must fail like the real thing: a fault here
                     # would be an outage in production, so it is recorded with its
                     # phase and text and then asserted by every consumer.
-                    provider.record(kind="fixture_error", phase=provider.phase,
+                    provider.record(kind="fixture_error", phase=link.phase,
                                     error=type(error).__name__, text=str(error)[:200])
                 self.close_connection = True
                 return
