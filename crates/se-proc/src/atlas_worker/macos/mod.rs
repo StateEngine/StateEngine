@@ -1,4 +1,5 @@
 //! macOS native socket custody; the index builder is shared with every platform.
+use super::lease::Lease;
 use super::*;
 use crate::native_ipc::{IpcIoBound, IpcPeerSide};
 use std::{
@@ -8,22 +9,10 @@ use std::{
         unix::{net::UnixStream, process::CommandExt},
     },
     process::{Child, Command, ExitStatus, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 mod limits;
-static CHILD_ACTIVE: AtomicBool = AtomicBool::new(false);
-struct Lease(bool);
-impl Drop for Lease {
-    fn drop(&mut self) {
-        if self.0 {
-            CHILD_ACTIVE.store(false, Ordering::Release);
-        }
-    }
-}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope {
@@ -100,11 +89,8 @@ impl AtlasWorker {
                 "absolute image, bounded frame and <=15 minute deadline required",
             ));
         }
-        if CHILD_ACTIVE.swap(true, Ordering::AcqRel) {
-            return Err(invalid("previous Atlas child has not been reaped"));
-        }
+        let lease = Lease::acquire()?;
         remaining(deadline)?;
-        let lease = Lease(true);
         let peer = crate::native_ipc::observe_ipc_self_bounded(&IpcIoBound {
             deadline,
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -398,7 +384,7 @@ impl AtlasWorker {
 impl Drop for AtlasWorker {
     fn drop(&mut self) {
         if !self.reaped && self.cancel().is_err() {
-            self.lease.0 = false;
+            self.lease.retain_on_failed_reap();
         }
     }
 }

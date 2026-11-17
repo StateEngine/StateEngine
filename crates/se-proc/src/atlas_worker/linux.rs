@@ -19,7 +19,7 @@ pub struct AtlasWorker {
     incoming: Vec<u8>,
     reaped: bool,
     peak: u64,
-    _lease: Lease,
+    lease: Option<Lease>,
     birth_ticks: u64,
     exit: File,
     diagnostics: super::diagnostics::Diagnostics,
@@ -97,8 +97,8 @@ impl AtlasWorker {
                 "absolute image, bounded frame and <=15 minute deadline required",
             ));
         }
-        remaining(deadline)?;
         let mut lease = Lease::acquire()?;
+        remaining(deadline)?;
         let parent = std::process::id();
         let envelope = Envelope {
             parent,
@@ -187,7 +187,7 @@ impl AtlasWorker {
             incoming: Vec::with_capacity(FRAME_BYTES + 4),
             reaped: false,
             peak: 0,
-            _lease: lease,
+            lease: Some(lease),
             birth_ticks: 0,
             exit,
             diagnostics,
@@ -359,7 +359,7 @@ impl AtlasWorker {
         let status = self.child.try_wait()?;
         if status.is_some() {
             self.reaped = true;
-            self._lease.release();
+            self.lease.take();
         }
         Ok(status)
     }
@@ -403,15 +403,18 @@ impl AtlasWorker {
                 }
             }
             self.reaped = true;
-            self._lease.release();
+            self.lease.take();
         }
         Ok(())
     }
 }
 impl Drop for AtlasWorker {
     fn drop(&mut self) {
-        if !self.reaped && self.cancel().is_err() {
-            self._lease.retain_on_failed_reap();
+        if !self.reaped
+            && self.cancel().is_err()
+            && let Some(lease) = &mut self.lease
+        {
+            lease.retain_on_failed_reap();
         }
     }
 }

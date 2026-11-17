@@ -1,4 +1,5 @@
 //! Private native pipe and atomically assigned job; no provider or host runtime.
+use super::lease::Lease;
 use super::*;
 use crate::native_ipc::{IpcIoBound, NativePipeStream};
 use std::{
@@ -9,10 +10,7 @@ use std::{
     },
     process::ExitStatus,
     ptr,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 use windows_sys::Win32::{
@@ -52,15 +50,6 @@ struct Envelope {
     birth: u64,
     image: se_types::NativePath,
     payload: serde_json::Value,
-}
-static CHILD_ACTIVE: AtomicBool = AtomicBool::new(false);
-struct Lease(bool);
-impl Drop for Lease {
-    fn drop(&mut self) {
-        if self.0 {
-            CHILD_ACTIVE.store(false, Ordering::Release);
-        }
-    }
 }
 pub struct AtlasWorker {
     process: OwnedHandle,
@@ -131,11 +120,8 @@ impl AtlasWorker {
                 "absolute image, bounded frame and <=15 minute deadline required",
             ));
         }
-        if CHILD_ACTIVE.swap(true, Ordering::AcqRel) {
-            return Err(invalid("previous Atlas child has not been reaped"));
-        }
+        let lease = Lease::acquire()?;
         remaining(deadline)?;
-        let lease = Lease(true);
         let peer = crate::native_ipc::observe_ipc_self_bounded(&bound(
             deadline.min(Instant::now() + Duration::from_secs(2)),
         ))
@@ -418,7 +404,7 @@ impl AtlasWorker {
 impl Drop for AtlasWorker {
     fn drop(&mut self) {
         if !self.reaped && self.cancel().is_err() {
-            self.lease.0 = false;
+            self.lease.retain_on_failed_reap();
         }
     }
 }

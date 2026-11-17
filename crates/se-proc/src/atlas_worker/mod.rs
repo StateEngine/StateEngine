@@ -29,7 +29,7 @@ mod diagnostics;
 pub use allocator::{
     release_pages as release_allocator_pages, reusable_arena_bytes, virtual_bytes,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub(crate) mod lease;
 #[cfg(target_os = "linux")]
 mod linux;

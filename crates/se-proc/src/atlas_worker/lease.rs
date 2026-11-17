@@ -16,12 +16,6 @@ impl Lease {
         }
         Ok(Self(true))
     }
-    pub(crate) fn release(&mut self) {
-        if self.0 {
-            ACTIVE.store(false, Ordering::Release);
-            self.0 = false;
-        }
-    }
     /// A failed native reap retains the reservation, even after Rust custody
     /// drops. It must never admit another independently capped child.
     pub(crate) fn retain_on_failed_reap(&mut self) {
@@ -30,6 +24,8 @@ impl Lease {
 }
 impl Drop for Lease {
     fn drop(&mut self) {
-        self.release();
+        if self.0 {
+            ACTIVE.store(false, Ordering::Release);
+        }
     }
 }
