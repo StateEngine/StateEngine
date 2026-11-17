@@ -181,6 +181,7 @@ pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
                 kind: Default::default(),
                 refs: vec![],
                 reply_to: None,
+                supersedes: None,
                 work: None,
                 idempotency_key: key("cold-independent")?,
             }),

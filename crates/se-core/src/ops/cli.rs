@@ -376,6 +376,7 @@ fn input_command(name: &str, c: Command) -> Command {
             ]).help("Message kind: note, task, question, answer, blocker, done, handoff or finding"))
             .arg(Arg::new("refs").long("ref").action(ArgAction::Append).help("Message ID this one references; repeat for each"))
             .arg(value("reply_to").long("reply-to").help("Message ID this one directly answers"))
+            .arg(value("supersedes").help("ID of an earlier direct message from you to the same recipient that this one replaces; it stops being active unread work and stays in history"))
             .arg(value("work_action").long("work-action").value_parser(["admit","assign","return","question","ruling_request","ruling","finding","notify"]).help("For floor: what the message does: admit, assign, return, question, ruling_request, ruling, finding or notify"))
             .arg(Arg::new("addressees").long("addressee").action(ArgAction::Append).help("Explicit floor addressee; repeat for each")),
         "message.list" => c

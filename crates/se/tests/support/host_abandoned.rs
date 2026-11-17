@@ -20,6 +20,7 @@ pub async fn check(f: &Fixture, session: &SessionId, runtime: &se_host::HostedRu
                         kind: Default::default(),
                         refs: vec![],
                         reply_to: None,
+                        supersedes: None,
                         work: None,
                         idempotency_key: key(request)?,
                     },

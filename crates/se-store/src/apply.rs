@@ -465,6 +465,9 @@ pub(crate) fn apply(
             if !is_remote_reply {
                 count(c, project()?, &recipient, 1, seq)?;
             }
+            if let Some(old) = &header.supersedes {
+                message::supersede_from_header(c, header, old, &message, seq, revision)?;
+            }
         }
         body @ MessageSuperseded { .. } => {
             message::supersede(c, header, body, seq, revision, facts)?

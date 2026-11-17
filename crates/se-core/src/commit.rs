@@ -53,6 +53,10 @@ pub struct MessageSend {
     #[serde(default)]
     pub refs: Vec<String>,
     pub reply_to: Option<MessageId>,
+    /// An earlier direct message from this same sender to this same recipient
+    /// that this one replaces; the original stops being active unread work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<MessageId>,
     /// One shared work message and its recipients; labels grant no authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<se_types::WorkAddressing>,

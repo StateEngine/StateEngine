@@ -248,6 +248,9 @@ pub fn from_matches_with_key(
             reply_to: text(m, "reply_to")
                 .map(se_types::MessageId::from_legacy)
                 .transpose()?,
+            supersedes: text(m, "supersedes")
+                .map(se_types::MessageId::from_legacy)
+                .transpose()?,
             idempotency_key: key()?,
         }),
         "message.inbox" => AnyOp::MessageInbox(MessageInbox {
