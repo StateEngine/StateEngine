@@ -29,6 +29,7 @@ class Provider:
         self.channel_reads = 0
         self.posts = 0
         self.withheld = False
+        self.phase = "unstarted"
         self.heartbeats_total = 0
         self.heartbeats_on_link = 0
         self.session = None
@@ -117,6 +118,10 @@ class Provider:
         return [self.message(seq) for seq in range(2, count + 2)]
 
     def gateway(self, handler):
+        # Every step is recorded by name so a provider-side fault is reported
+        # with the step it happened in instead of vanishing into a bare
+        # exception class. The control fails loudly; this only names where.
+        self.phase = "upgrade"
         key = handler.headers.get("Sec-WebSocket-Key", "")
         assert handler.headers.get("Sec-WebSocket-Version") == "13"
         accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
@@ -128,11 +133,14 @@ class Provider:
         handler.wfile.flush()
         stream = handler.connection
         self.sockets.append(stream)
+        self.phase = "hello"
         self.frame(stream, {"op": 10, "d": {"heartbeat_interval": 200}})
+        self.phase = "first client frame"
         opcode, raw = self.read_frame(stream)
-        assert opcode == 1
+        assert opcode == 1, "first client frame was not text"
+        self.phase = "client auth"
         auth = json.loads(raw)
-        assert auth["d"]["token"] == TOKEN
+        assert auth["d"]["token"] == TOKEN, "client auth token differs"
         self.connections += 1
         self.heartbeats_on_link = 0
         self.record(kind="gateway_auth", op=auth["op"], seq=auth["d"].get("seq"),
@@ -178,6 +186,7 @@ class Provider:
         stream.settimeout(0.02)
         next_message = time.monotonic() + (0.15 if self.mode == "burst" else 0.01)
         waiting = None
+        self.phase = "connected"
         while not (self.root / "stop").exists():
             if time.monotonic() >= next_message:
                 if waiting is None:
@@ -203,8 +212,9 @@ class Provider:
             if opcode == 9:
                 self.frame(stream, raw, 10)
             elif opcode == 1:
+                self.phase = "client heartbeat"
                 value = json.loads(raw)
-                assert value["op"] == 1
+                assert value["op"] == 1, "client sent a non-heartbeat text frame"
                 self.record(kind="heartbeat", seq=value.get("d"))
                 # "zombie" withholds exactly one acknowledgement per connection,
                 # which is the provider's zombied-connection condition: the next
@@ -263,10 +273,23 @@ def main():
             if self.headers.get("Upgrade", "").lower() == "websocket":
                 try:
                     provider.gateway(self)
-                except (OSError, EOFError):
-                    pass
-                except Exception as error:
-                    provider.record(kind="fixture_error", error=type(error).__name__)
+                except (OSError, EOFError) as error:
+                    # Once the link is serving, the client closing the socket is
+                    # the control's own end of a connection, not a provider
+                    # fault. Before that, the same error means the fixture never
+                    # served the handshake at all, which is exactly the failure
+                    # that used to be swallowed into a bare ProviderUnreachable.
+                    if provider.phase == "connected":
+                        provider.phase = "closed by client"
+                    else:
+                        provider.record(kind="fixture_error", phase=provider.phase,
+                                        error=type(error).__name__, text=str(error)[:200])
+                except BaseException as error:
+                    # A test double must fail like the real thing: a fault here
+                    # would be an outage in production, so it is recorded with its
+                    # phase and text and then asserted by every consumer.
+                    provider.record(kind="fixture_error", phase=provider.phase,
+                                    error=type(error).__name__, text=str(error)[:200])
                 self.close_connection = True
                 return
             assert self.headers.get("Authorization") == "Bot " + TOKEN

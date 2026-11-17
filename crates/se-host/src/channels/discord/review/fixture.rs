@@ -149,6 +149,12 @@ impl Fixture {
         })
     }
     pub fn finish<T>(&self, result: Check<T>) -> Check<T> {
+        // Every failed case prints the provider's own event trail, whether or
+        // not the test remembered to ask. Without this a failure shows only the
+        // client-side error, which is how a provider fault stayed invisible.
+        if result.is_err() {
+            self.report("failed case");
+        }
         self._process._root_owner.finish(result)
     }
     pub fn events(&self) -> Check<Vec<Value>> {
@@ -162,17 +168,48 @@ impl Fixture {
     /// step that refused instead of only the client-visible error.
     pub fn report(&self, test: &str) {
         match self.events() {
-            Ok(events) => match serde_json::to_string(&events) {
-                Ok(text) => eprintln!("{test}: provider events ({}): {text}", events.len()),
-                Err(error) => eprintln!("{test}: provider events unprintable: {error}"),
-            },
+            Ok(events) => {
+                // Faults first and in words: the raw trail is long, and the one
+                // line a reader needs must not be buried in it.
+                for event in events
+                    .iter()
+                    .filter(|event| event["kind"] == "fixture_error")
+                {
+                    eprintln!(
+                        "{test}: PROVIDER FAULT at {}: {}: {}",
+                        event["phase"].as_str().unwrap_or("unrecorded step"),
+                        event["error"].as_str().unwrap_or("exception"),
+                        event["text"].as_str().unwrap_or("no detail")
+                    );
+                }
+                match serde_json::to_string(&events) {
+                    Ok(text) => eprintln!("{test}: provider events ({}): {text}", events.len()),
+                    Err(error) => eprintln!("{test}: provider events unprintable: {error}"),
+                }
+            }
             Err(error) => eprintln!("{test}: provider events unreadable: {error}"),
         }
     }
+    /// A provider fault is an outage the control must not absorb: it is named
+    /// with the step it happened in and the provider's own text, so a failure
+    /// points at the fixture instead of hiding behind `ProviderUnreachable`.
     pub fn no_fixture_errors(&self) -> Check<()> {
+        let events = self.events()?;
+        let faults: Vec<String> = events
+            .iter()
+            .filter(|event| event["kind"] == "fixture_error")
+            .map(|event| {
+                format!(
+                    "{} at {}: {}",
+                    event["error"].as_str().unwrap_or("exception"),
+                    event["phase"].as_str().unwrap_or("unrecorded step"),
+                    event["text"].as_str().unwrap_or("no detail")
+                )
+            })
+            .collect();
         require(
-            !self.events()?.iter().any(|e| e["kind"] == "fixture_error"),
-            "provider fixture assertion failed",
+            faults.is_empty(),
+            &format!("provider fixture faulted: {}", faults.join("; ")),
         )
     }
 }
