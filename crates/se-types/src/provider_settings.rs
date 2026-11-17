@@ -93,18 +93,17 @@ impl ProviderSettings {
             ));
         }
         if let Some(effort) = self.reasoning_effort.as_deref() {
-            let supported = if provider == Provider::Claude {
-                matches!(effort, "low" | "medium" | "high" | "max")
-            } else {
-                matches!(
-                    effort,
-                    "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
-                )
-            };
-            if !supported {
+            if effort.is_empty() || effort.len() > 64 || effort.chars().any(char::is_control) {
                 return Err(SeError::invalid(
                     "reasoning_effort",
-                    "use a supported effort for the saved provider: Claude low/medium/high/max; Codex none/minimal/low/medium/high/xhigh",
+                    "1..64 UTF-8 bytes without control characters; the provider validates supported labels",
+                ));
+            }
+            if provider == Provider::Claude && !matches!(effort, "low" | "medium" | "high" | "max")
+            {
+                return Err(SeError::invalid(
+                    "reasoning_effort",
+                    "Claude supports low, medium, high or max",
                 ));
             }
         }
