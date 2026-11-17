@@ -13,7 +13,7 @@ pub(in crate::remote) fn cached(directory: &str, path: &str, digest: &str, apple
 
 pub(in crate::remote) fn publish(upload: &str, path: &str, digest: &str, apple: bool) -> String {
     let staged = staging::verify(upload, digest, false, apple);
-    let publish = staging::publish(upload, path, false, apple);
+    let publish = staging::publish(upload, path, false);
     let published = staging::verify(path, digest, false, apple);
     let remove = staging::remove(upload, false);
     // Each verification has its own shell scope: its refusal must not bypass

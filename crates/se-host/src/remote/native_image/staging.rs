@@ -101,7 +101,7 @@ hash=$({hash} {path}) && test "${{hash%% *}}" = {digest}"#
         )
     }
 }
-pub(in crate::remote) fn publish(upload: &str, path: &str, windows: bool, apple: bool) -> String {
+pub(in crate::remote) fn publish(upload: &str, path: &str, windows: bool) -> String {
     if windows {
         powershell(&format!(
             r#"$ErrorActionPreference='Stop'; try {{
@@ -109,21 +109,15 @@ $s=Join-Path $HOME '{upload}'; $d=Join-Path $HOME '{path}';
 [IO.File]::Move($s,$d); exit 0
 }} catch {{exit 1}}"#
         ))
-    } else if apple {
-        // macOS ln has no -T, so the destination is checked first. A plain `ln`
-        // would link INSIDE an incumbent directory and report success; the
-        // second link(2) still refuses an incumbent file atomically, so the race
-        // between the check and the link cannot overwrite an existing image.
-        format!(
-            "chmod 700 {upload} && if test -e {path} || test -L {path}; then \
-printf 'image-publish-refused:destination-exists:%s\\n' {path}; exit 1; fi && \
-ln {upload} {path} || {{ printf 'image-publish-refused:link-failed:%s\\n' {path}; exit 1; }}"
-        )
     } else {
-        // `ln -T` treats the destination as a file, so an incumbent file or
-        // directory is refused atomically rather than being linked into.
+        // `link(1)` calls link(2) on the exact destination path and never descends
+        // into a directory, so a file, directory or symlink already there is
+        // refused atomically and nothing is left inside an incumbent directory.
+        // `ln` cannot be used: a bare `ln` links INSIDE an incumbent directory and
+        // succeeds, and `ln -T` exists on GNU only, so a per-platform split would
+        // leave a check-then-link race on macOS. `link` is the same tool on both.
         format!(
-            "chmod 700 {upload} && ln -T {upload} {path} || \
+            "chmod 700 {upload} && link {upload} {path} || \
 {{ printf 'image-publish-refused:link-failed:%s\\n' {path}; exit 1; }}"
         )
     }
