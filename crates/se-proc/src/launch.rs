@@ -33,13 +33,36 @@ pub struct ResourceLimits {
 pub enum LaunchMode {
     Headless,
     /// Redirected streams with an independent hidden Windows console for
-    /// native Ctrl+C cancellation. Equivalent to Headless on Unix.
+    /// console tools and native Ctrl+C cancellation. Equivalent to Headless on Unix.
     HeadlessConsole,
     Window,
 }
 impl LaunchMode {
     pub fn is_headless(self) -> bool {
         self != Self::Window
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn creation_flags(self) -> u32 {
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_CONSOLE, CREATE_NO_WINDOW};
+        if self == Self::Headless {
+            CREATE_NO_WINDOW
+        } else {
+            CREATE_NEW_CONSOLE
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn configure_startup(
+        self,
+        startup: &mut windows_sys::Win32::System::Threading::STARTUPINFOW,
+    ) -> u32 {
+        use windows_sys::Win32::System::Threading::STARTF_USESHOWWINDOW;
+        if self == Self::HeadlessConsole {
+            startup.dwFlags |= STARTF_USESHOWWINDOW;
+            startup.wShowWindow = windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE as u16;
+        }
+        self.creation_flags()
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

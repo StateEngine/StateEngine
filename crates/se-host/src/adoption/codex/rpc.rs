@@ -66,7 +66,7 @@ pub(super) fn call(
     run(async move {
         let discovery = method == "hooks/list";
         let settings = config_home.join("config.toml");
-        let mut command = Command::new(executable);
+        let mut command = Command::from(se_proc::probe_command(executable));
         command.args(["app-server", "--stdio"]);
         if discovery {
             command.arg("--strict-config");

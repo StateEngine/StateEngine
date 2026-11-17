@@ -36,7 +36,7 @@ impl LaunchCoordinator {
             .await?;
         let mode = if window.is_some() {
             se_proc::LaunchMode::Window
-        } else if plan.profile.provider == se_store::Provider::SeCode {
+        } else if cfg!(windows) || plan.profile.provider == se_store::Provider::SeCode {
             se_proc::LaunchMode::HeadlessConsole
         } else {
             se_proc::LaunchMode::Headless

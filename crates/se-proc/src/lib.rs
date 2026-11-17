@@ -49,9 +49,11 @@ pub use uninstall::{
     HelperCleanupOutcome, NativeUninstallCarrier, UNINSTALL_CARRIER_ENTRY, UninstallHelperCleanup,
     UninstallNativeError, uninstall_carrier_entry,
 };
+mod background_command;
 mod ownership;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod process_command;
+pub use background_command::{inherited_console_command, probe_command};
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use process_command::read_process_command;
 #[cfg(target_os = "linux")]

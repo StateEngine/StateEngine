@@ -90,7 +90,9 @@ pub(super) fn start(
             ptr::null(),
             ptr::null(),
             1,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+            EXTENDED_STARTUPINFO_PRESENT
+                | crate::LaunchMode::Headless.creation_flags()
+                | CREATE_UNICODE_ENVIRONMENT,
             environment.as_ptr().cast(),
             directory.as_ptr(),
             &startup.StartupInfo,

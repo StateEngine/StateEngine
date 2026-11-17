@@ -152,6 +152,8 @@ pub(super) fn run(
     startup.lpAttributeList = attributes.pointer();
     // SAFETY: writable native POD process/thread result.
     let mut process: PROCESS_INFORMATION = unsafe { zeroed() };
+    // This explicitly requested installer retains the caller's interactive
+    // console behavior; it is not a background host helper or provider probe.
     // SAFETY: terminated application and mutable command line, retained handle
     // allowlist and startup buffers. Inherit only stdio and the claim duplicate.
     if unsafe {

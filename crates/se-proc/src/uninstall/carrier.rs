@@ -197,7 +197,7 @@ impl NativeUninstallCarrier {
             &mut line,
             &input,
             &handles,
-            CREATE_NO_WINDOW,
+            crate::LaunchMode::Headless.creation_flags(),
             Some(&environment),
             Some(&diagnostic),
         );

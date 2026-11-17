@@ -267,20 +267,11 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
             .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
     }
     startup.lpAttributeList = attributes.pointer();
-    if spec.mode == LaunchMode::HeadlessConsole {
-        startup.StartupInfo.dwFlags |= STARTF_USESHOWWINDOW;
-        startup.StartupInfo.wShowWindow =
-            windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE as u16;
-    }
     // SAFETY: native process output is POD; ownership is taken only on success.
     let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
     let flags = CREATE_UNICODE_ENVIRONMENT
         | EXTENDED_STARTUPINFO_PRESENT
-        | if spec.mode == LaunchMode::Headless {
-            CREATE_NO_WINDOW
-        } else {
-            CREATE_NEW_CONSOLE
-        };
+        | spec.mode.configure_startup(&mut startup.StartupInfo);
     let application = wide(spec.executable.as_os_str());
     let cwd = wide(spec.cwd.as_os_str());
     let create = |flags, info: &mut PROCESS_INFORMATION| {

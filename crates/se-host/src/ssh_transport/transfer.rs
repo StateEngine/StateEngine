@@ -17,7 +17,7 @@ pub(crate) async fn upload(
     let batch = super::sftp::upload_batch(path, upload)?;
     let (sftp, ssh) = super::sftp::clients()?;
     let mut child = crate::child_io::spawn(
-        super::client(sftp)
+        super::client(sftp)?
             .args(["-b", "-", "-o", "BatchMode=yes", "-S"])
             .arg(ssh)
             .arg(destination),

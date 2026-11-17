@@ -164,7 +164,7 @@ async fn exchange(
     use super::unavailable;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut child = crate::child_io::spawn(
-        crate::ssh_transport::client("ssh")
+        crate::ssh_transport::client("ssh")?
             .args(["-T", "-o", "BatchMode=yes"])
             .arg(&config.destination)
             .arg(&config.command),
