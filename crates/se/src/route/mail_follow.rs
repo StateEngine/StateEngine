@@ -74,7 +74,7 @@ fn prepare(
     {
         return Err(SeError::invalid(
             "mail follow",
-            "follow streams oldest-first, so a newest-first cursor would miss mail sent after the first page; drop --newest for one-shot newest-first pages",
+            "follow streams oldest-first, so a newest-first cursor would miss mail sent after the first page; drop --follow for one-shot newest-first pages",
         ));
     }
     let setup::Setup::Present((files, (reader, mut phase))) = setup::inspect_phase(
