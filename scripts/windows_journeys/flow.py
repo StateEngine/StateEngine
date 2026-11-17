@@ -255,6 +255,7 @@ class Journeys(Smoke):
                 if self.record.get('process_closure') == [] or self.removed:
                     self.record['credential_closure'] = self.credentials.close()
                     self.commands.environment.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
+                    self.commands.environment.pop('ANTHROPIC_API_KEY', None)
             except Exception as error:
                 self.record['cleanup_error'] = str(error)
             passed = all(row['result'] == 'PASS' and row.get('tokens', {}).get('state') != 'unavailable'

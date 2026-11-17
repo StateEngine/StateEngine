@@ -77,7 +77,24 @@ def without_refresh(value):
     return value
 
 
+def api_key(provider, credential):
+    name = 'api_key' if provider == 'claude' else 'OPENAI_API_KEY'
+    key = credential.get(name)
+    if key is None:
+        return None
+    require(isinstance(key, str) and 0 < len(key) <= 8192
+            and not any(character.isspace() for character in key), 'API key is unreadable')
+    if provider == 'claude':
+        require(set(credential) == {'api_key'}, 'Claude API and subscription credentials cannot be mixed')
+    else:
+        require(credential.get('auth_mode') in (None, 'apikey') and credential.get('tokens') is None,
+                'Codex API and subscription credentials cannot be mixed')
+    return key
+
+
 def expiry(provider, credential):
+    if api_key(provider, credential) is not None:
+        return None
     if provider == 'claude':
         require(set(credential) == {'oauth_token'}
                 and isinstance(credential['oauth_token'], str) and credential['oauth_token'],
@@ -150,8 +167,12 @@ class Credentials:
 
     def environment(self):
         self.ready()
-        return ({'CLAUDE_CODE_OAUTH_TOKEN': self.value['credential']['oauth_token']}
-                if self.provider == 'claude' else {})
+        if self.provider != 'claude':
+            return {}
+        credential = self.value['credential']
+        key = api_key(self.provider, credential)
+        return ({'ANTHROPIC_API_KEY': key} if key is not None
+                else {'CLAUDE_CODE_OAUTH_TOKEN': credential['oauth_token']})
 
     def install(self, home):
         self.ready()
@@ -162,7 +183,8 @@ class Credentials:
             self.target = directory / 'auth.json'
             # Native TokenData requires a string field, even without renewal authority.
             credential = self.value['credential']
-            credential = {**credential, 'tokens': {**credential['tokens'], 'refresh_token': ''}}
+            if isinstance(credential.get('tokens'), dict):
+                credential = {**credential, 'tokens': {**credential['tokens'], 'refresh_token': ''}}
             descriptor = os.open(self.target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
                 json.dump(credential, stream)

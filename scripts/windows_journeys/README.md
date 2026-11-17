@@ -54,8 +54,19 @@ creates a protected current-user/SYSTEM seed. Stdout reports only path, digest
 and expiry. Use that identity in the private manifest. Never put credential
 values in the manifest, shell arguments or repository.
 
-The Codex copy emits its required `refresh_token` string as empty. No refresh
-token bytes are copied, and the seed itself contains no refresh-token field.
+Dedicated API keys can use the same stdin-only provisioning command. Claude
+accepts `credential: {"api_key": "SYNTHETIC_EXAMPLE_KEY"}` plus the completed
+onboarding object. Codex accepts its native API-key object,
+`credential: {"auth_mode": "apikey", "OPENAI_API_KEY": "SYNTHETIC_EXAMPLE_KEY"}`.
+The provisioner never reads the normal account's credential files. API keys have
+unknown expiry, and API and subscription credentials cannot be mixed. The
+selected configuration supplies the model for each provider.
+
+Claude API keys enter only `ANTHROPIC_API_KEY` in the private process tree;
+Codex API keys enter only its protected native file. Subscription Codex copies
+emit the required `refresh_token` string as empty. No refresh token bytes are
+copied, and the seed itself contains no refresh-token field. After the driver
+has closed its private credential copy, the caller deletes its owned seed.
 
 Seed age must be at most five minutes at run start. Codex gets an independent
 protected native file; Claude gets only the private process environment. Seed
@@ -74,6 +85,9 @@ installation ownership before reusing the installation account.
 | J3 | Close agents and runtime; execute public reopen argv; recover a random phrase omitted from the recall prompt. |
 | J4 | Two real agents exchange a keyed request; observe the durable message, authenticated recipient read and recipient file work. |
 | J5 | Remove and uninstall; preserve user files, Git and exact saved event payloads; restore USER Path and prove process/credential closure. |
+
+Text tasks accept LF or CRLF for their final newline on Windows, reject extra
+bytes, and retain the actual file digest for later preservation checks.
 
 Tiny prompts bound paid work. Each cell records native token-counter deltas and
 their observation interval; cached/reasoning subsets are kept separate. Missing

@@ -171,12 +171,19 @@ class Smoke:
     def file_turn(self, token, filename, expected, previous=None):
         deadline = time.monotonic() + self.settings.get('task_seconds', 240)
         observation = dict(state='absent')
+        # A requested text newline has two native Windows encodings. Retain the
+        # actual bytes for preservation witnesses, and read one extra byte so
+        # a correct prefix with trailing data cannot pass.
+        accepted = [expected]
+        if sys.platform == 'win32' and expected.endswith(b'\n') and not expected.endswith(b'\r\n'):
+            accepted.append(expected[:-1] + b'\r\n')
+        limit = max(map(len, accepted)) + 1
         while time.monotonic() < deadline:
             try:
                 with (self.repository / filename).open('rb') as stream:
-                    observed = stream.read(len(expected) + 1)
+                    observed = stream.read(limit)
                 observation = dict(state='present', prefix_bytes=len(observed))
-                if observed == expected:
+                if observed in accepted:
                     break
             except FileNotFoundError:
                 observation = dict(state='absent')
