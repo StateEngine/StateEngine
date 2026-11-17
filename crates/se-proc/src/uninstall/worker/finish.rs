@@ -27,8 +27,12 @@ pub(super) fn send(
             "invalid local output channel",
         ));
     }
-    let name = PathBuf::from(format!(r"\\.\pipe\{pipe}"));
-    let wide = native::wide(&name)?;
+    // This is a local pipe namespace, not a filesystem path. The validated
+    // ASCII suffix and fixed prefix cannot contain an embedded NUL.
+    let wide: Vec<u16> = format!(r"\\.\pipe\{pipe}")
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     // SAFETY: bounded literal local named-pipe name and finite wait.
     if unsafe { WaitNamedPipeW(wide.as_ptr(), 5000) } == 0 {
         return Err(native::last("wait for uninstall completion reader"));
