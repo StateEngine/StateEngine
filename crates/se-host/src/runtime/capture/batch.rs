@@ -40,6 +40,7 @@ impl Capturing<'_> {
         };
         let mut host_phases = se_core::ops::HostPhaseTimings::default();
         let mut last = None;
+        let mut last_busy: Option<se_types::ErrorBody> = None;
         let mut commits = Vec::new();
         let mut natural_keys = Vec::new();
         let mut committed_events = Vec::new();
@@ -76,6 +77,25 @@ impl Capturing<'_> {
                     },
                 )
                 .await;
+                let read = match (read, last_busy.clone()) {
+                    (Err(error), Some(busy))
+                        if error.code() == se_types::Code::DeadlineExceeded =>
+                    {
+                        // The held source is retried until the budget is spent;
+                        // bounded pool admission can spend it first. Report the
+                        // busy cause so a load-flipped retry keeps one stable
+                        // failure identity for the caller and the retained
+                        // receipt.
+                        Err(busy.into())
+                    }
+                    (read, _) => read,
+                };
+                if let Err(error) = &read
+                    && error.code() == se_types::Code::StoreBusy
+                    && last_busy.is_none()
+                {
+                    last_busy = Some(error.body.clone());
+                }
                 let (next, capture_read) = match read {
                     Err(error) if self.wait_if_busy(&error, deadline).await => continue,
                     result => result?,
