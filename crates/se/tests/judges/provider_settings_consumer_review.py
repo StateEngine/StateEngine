@@ -1,17 +1,57 @@
 """Public saved settings through actual owned native protocol doubles; no inference."""
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
+import pty
+import select
 import shutil
 import subprocess
 import sys
+import termios
 import time
 import uuid
 
 from agent_create_cli import owner_grant
 from fixture_paths import private_runtime_directory
 from mail_cli import Fixture, provider_bootstrap
+
+
+def owner_set(fixture, key, value):
+    master, slave = pty.openpty()
+
+    def terminal():
+        os.setsid()
+        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
+    argv = [str(fixture.se), '--json', '--home', str(fixture.home), '--project',
+            fixture.project, 'config', 'set', key, value]
+    child = subprocess.Popen(argv, env=fixture.env, cwd=fixture.repo,
+        stdin=slave, stdout=slave, stderr=slave, preexec_fn=terminal)
+    os.close(slave)
+    captured = bytearray()
+    try:
+        until = time.monotonic() + 40
+        while time.monotonic() < until:
+            if select.select([master], [], [], .1)[0]:
+                try:
+                    block = os.read(master, 65536)
+                except OSError:
+                    break
+                if not block:
+                    break
+                captured.extend(block)
+            elif child.poll() is not None:
+                break
+        if child.poll() is None:
+            actual = Path(f'/proc/{child.pid}/cmdline').read_bytes().split(b'\0')
+            assert [v.decode() for v in actual if v] == argv
+            child.terminate()
+        child.wait(timeout=5)
+        assert child.returncode == 0, captured.decode()
+    finally:
+        os.close(master)
 
 
 def run(args):
@@ -109,8 +149,7 @@ def run(args):
                         created = response['structuredContent']
                     agent = created['agent']['id']
                     # Exercise the owner update consumer as well as both creation doors.
-                    fixture.ok('--project', fixture.project, 'config', 'set',
-                        'agent.' + agent + '.reasoning_effort', effort)
+                    owner_set(fixture, 'agent.' + agent + '.reasoning_effort', effort)
                     saved = fixture.ok('--project', fixture.project, 'config', 'get',
                         'agent.' + agent + '.reasoning_effort')
                     assert saved['value'] == {'state': 'present', 'value': effort}, saved
