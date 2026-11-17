@@ -129,6 +129,39 @@ impl Kernel {
             body,
         })
     }
+    pub(crate) fn request_identity(
+        &self,
+        operation: &'static str,
+        key: IdempotencyKey,
+        intent: &serde_json::Value,
+    ) -> Result<RequestIdentity> {
+        let bytes = serde_json::to_vec(
+            &serde_json::json!({"operation":operation,"codec_version":1,"arguments":intent}),
+        )
+        .map_err(|e| scope::unreadable("normalized operation intent", &e.to_string()))?;
+        Ok(RequestIdentity {
+            key,
+            intent: IntentDigest {
+                operation,
+                codec_version: 1,
+                sha256: Sha256::digest(bytes).into(),
+            },
+        })
+    }
+    pub(crate) fn batch_with_identity<R: Snapshot>(
+        &self,
+        identity: RequestIdentity,
+        event: NewEvent,
+        cx: &Cx<'_, R>,
+    ) -> Result<AtomicBatch> {
+        Ok(AtomicBatch {
+            expected_incarnation: cx.read.info().incarnation,
+            admission: cx.admission.clone(),
+            request: Some(identity),
+            events: vec![event],
+            import_checkpoint: None,
+        })
+    }
     pub(crate) fn batch<R: Snapshot>(
         &self,
         operation: &'static str,
@@ -137,24 +170,8 @@ impl Kernel {
         event: NewEvent,
         cx: &Cx<'_, R>,
     ) -> Result<AtomicBatch> {
-        let bytes = serde_json::to_vec(
-            &serde_json::json!({"operation":operation,"codec_version":1,"arguments":intent}),
-        )
-        .map_err(|e| scope::unreadable("normalized operation intent", &e.to_string()))?;
-        Ok(AtomicBatch {
-            expected_incarnation: cx.read.info().incarnation,
-            admission: cx.admission.clone(),
-            request: Some(RequestIdentity {
-                key,
-                intent: IntentDigest {
-                    operation,
-                    codec_version: 1,
-                    sha256: Sha256::digest(bytes).into(),
-                },
-            }),
-            events: vec![event],
-            import_checkpoint: None,
-        })
+        let identity = self.request_identity(operation, key, &intent)?;
+        self.batch_with_identity(identity, event, cx)
     }
 }
 pub(crate) fn admitted<R: Snapshot>(cx: &Cx<'_, R>) -> Result<()> {
@@ -293,17 +310,14 @@ impl CoreOps for Kernel {
             })
             .collect::<Result<Vec<_>>>()?;
         drop(registry);
-        let supersede_event = if let Some(old) = input.supersedes.as_ref() {
-            let recipient = recipient
-                .as_ref()
-                .ok_or_else(|| SeError::invalid("supersedes", "a checked direct recipient"))?;
-            Some(supersede_target(cx, old, recipient)?)
-        } else {
-            None
-        };
         let kind = serde_json::to_value(&input.kind)
             .map_err(|e| scope::unreadable("message kind", &e.to_string()))?;
-        let mut intent = serde_json::json!({"kind":kind,"body":input.body,"refs":refs,"reply_to":input.reply_to,"supersedes":input.supersedes});
+        let mut intent = serde_json::json!({"kind":kind,"body":input.body,"refs":refs,"reply_to":input.reply_to});
+        if let Some(old) = &input.supersedes {
+            // An absent field stays out of the intent so ordinary sends digest
+            // exactly as before it existed and same-key retries still replay.
+            intent["supersedes"] = serde_json::json!(old);
+        }
         if input.quiet {
             intent["quiet"] = serde_json::Value::Bool(true);
         }
@@ -314,6 +328,37 @@ impl CoreOps for Kernel {
             intent["work"] = serde_json::json!(input.work);
         }
         let key = input.idempotency_key;
+        let identity = self.request_identity("message.send", key.clone(), &intent)?;
+        // Look the receipt up before validating, so an exact retry of a committed
+        // send replays the original result instead of re-checking replacement.
+        let supersede_event = match (
+            cx.read
+                .resolve_request(&identity)
+                .map_err(|e| store_error(&e))?,
+            input.supersedes.as_ref(),
+        ) {
+            (Read::Present { .. }, _) => None,
+            (Read::Absent { .. }, None) => None,
+            (Read::Absent { .. }, Some(old)) => {
+                let recipient = recipient
+                    .as_ref()
+                    .ok_or_else(|| SeError::invalid("supersedes", "a checked direct recipient"))?;
+                Some(supersede_target(cx, old, recipient)?)
+            }
+            (other, _) => Err(
+                match scope::require_present(
+                    other,
+                    "original request receipt",
+                    "Resolve the original request after restoring store access.",
+                ) {
+                    Ok(_) => SeError::invalid(
+                        "supersession request",
+                        "a store that keeps request receipts consistent",
+                    ),
+                    Err(error) => error,
+                },
+            )?,
+        };
         let kind = kind
             .as_str()
             .ok_or_else(|| SeError::invalid("message kind", "registered string"))?
@@ -345,7 +390,7 @@ impl CoreOps for Kernel {
         if let Some(old) = supersede_event {
             event.header.supersedes = Some(old);
         }
-        let batch = self.batch("message.send", key.clone(), intent, event, cx)?;
+        let batch = self.batch_with_identity(identity, event, cx)?;
         Ok(OpStep::Commit {
             batch,
             then: MessageSendThen { request: key },
