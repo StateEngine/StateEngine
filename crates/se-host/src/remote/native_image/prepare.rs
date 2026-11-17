@@ -151,7 +151,11 @@ async fn cached_image(destination: &str, image: &Image) -> Result<bool> {
 async fn publish_image(destination: &str, image: &Image, upload: &str) -> Result<()> {
     if image.windows {
         verify_image(destination, image, upload).await?;
-        let _published = ssh(destination, staging::publish(upload, &image.remote(), true)).await?;
+        let _published = ssh(
+            destination,
+            staging::publish(upload, &image.remote(), true, false),
+        )
+        .await?;
         verify_image(destination, image, &image.remote()).await?;
         return match ssh(destination, staging::remove(upload, true)).await {
             Ok(outcome) if outcome.success => Ok(()),
@@ -438,8 +442,22 @@ mod tests {
     #[test]
     fn staged_upload_and_windows_staging_get_explicit_modes() {
         // publish still fixes the staged file before the atomic link.
-        let publish = staging::publish("u.upload", ".stateengine-runtime/abc", false);
+        let publish = staging::publish("u.upload", ".stateengine-runtime/abc", false, false);
         assert!(publish.contains("chmod 700 u.upload"));
+        // The destination must be treated as a file: a plain `ln` would link INSIDE
+        // an incumbent directory and report success.
+        assert!(
+            publish.contains("ln -T u.upload"),
+            "Linux publish must use ln -T"
+        );
+        assert!(!publish.contains("&& ln u.upload"), "a bare ln is the bug");
+        let apple = staging::publish("u.upload", ".stateengine-runtime/abc", false, true);
+        assert!(!apple.contains("ln -T"), "macOS ln has no -T");
+        assert!(
+            apple.contains("test -e .stateengine-runtime/abc"),
+            "macOS refuses first"
+        );
+        assert!(apple.contains("image-publish-refused:destination-exists"));
         // Windows: the staged file and product-created directories carry an
         // explicit trusted-principal ACL instead of an inherited one.
         let windows = staging::prepare_windows(".stateengine-runtime/abc");

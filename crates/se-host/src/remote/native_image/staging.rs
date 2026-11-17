@@ -101,7 +101,7 @@ hash=$({hash} {path}) && test "${{hash%% *}}" = {digest}"#
         )
     }
 }
-pub(in crate::remote) fn publish(upload: &str, path: &str, windows: bool) -> String {
+pub(in crate::remote) fn publish(upload: &str, path: &str, windows: bool, apple: bool) -> String {
     if windows {
         powershell(&format!(
             r#"$ErrorActionPreference='Stop'; try {{
@@ -109,10 +109,23 @@ $s=Join-Path $HOME '{upload}'; $d=Join-Path $HOME '{path}';
 [IO.File]::Move($s,$d); exit 0
 }} catch {{exit 1}}"#
         ))
+    } else if apple {
+        // macOS ln has no -T, so the destination is checked first. A plain `ln`
+        // would link INSIDE an incumbent directory and report success; the
+        // second link(2) still refuses an incumbent file atomically, so the race
+        // between the check and the link cannot overwrite an existing image.
+        format!(
+            "chmod 700 {upload} && if test -e {path} || test -L {path}; then \
+printf 'image-publish-refused:destination-exists:%s\\n' {path}; exit 1; fi && \
+ln {upload} {path} || {{ printf 'image-publish-refused:link-failed:%s\\n' {path}; exit 1; }}"
+        )
     } else {
-        // link(2) refuses an incumbent atomically. Source and destination are
-        // in the same directory; no existing image or provider is overwritten.
-        format!("chmod 700 {upload} && ln {upload} {path}")
+        // `ln -T` treats the destination as a file, so an incumbent file or
+        // directory is refused atomically rather than being linked into.
+        format!(
+            "chmod 700 {upload} && ln -T {upload} {path} || \
+{{ printf 'image-publish-refused:link-failed:%s\\n' {path}; exit 1; }}"
+        )
     }
 }
 pub(in crate::remote) fn remove(upload: &str, windows: bool) -> String {
