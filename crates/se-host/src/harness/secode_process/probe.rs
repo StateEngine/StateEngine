@@ -158,17 +158,22 @@ pub(crate) async fn command_with_environment(
         .command()
         .map_err(|e| unreadable("SE Code command image custody", e))?;
     deadline.remaining()?;
-    let mut child = tokio::process::Command::from(command)
-        .args(arguments)
-        .env_clear()
-        .envs(super::provider_environment())
-        .envs(environment.iter().cloned())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| unreadable("SE Code command", e))?;
+    let mut child = crate::child_io::spawn(
+        tokio::process::Command::from(command)
+            .args(arguments)
+            .env_clear()
+            .envs(super::provider_environment())
+            .envs(environment.iter().cloned())
+            .stdin(Stdio::null())
+            .kill_on_drop(true),
+        crate::child_io::Pipes {
+            stdin: false,
+            stdout: true,
+            stderr: true,
+        },
+    )
+    .await
+    .map_err(|e| unreadable("SE Code command", e))?;
     // Creation has completed while custody is still held. Release Windows
     // exclusion before waiting for the command, so provider updates can proceed.
     let readback = executable

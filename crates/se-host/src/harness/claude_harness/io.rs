@@ -2,13 +2,7 @@
 use super::{Binding, READ_CHUNK, claude};
 use crate::{CallContext, ProviderStream, StreamRead};
 use se_types::{Body, Result, SeError};
-use std::{
-    ffi::OsString,
-    path::Path,
-    process::Output,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{ffi::OsString, path::Path, process::Output, sync::Arc, time::Duration};
 
 pub(super) async fn write_frame(binding: &Binding, body: &Body, cx: &CallContext) -> Result<()> {
     let frame = claude::input_frame(body)?;
@@ -80,18 +74,19 @@ pub(super) fn within(cx: &CallContext, remaining: Duration) -> CallContext {
     }
 }
 
-pub(super) fn version_output(command: &Path, timeout: Duration) -> Result<String> {
+pub(super) async fn version_output(command: &Path, timeout: Duration) -> Result<String> {
     let output = probe_output(
         command,
         &["--version"],
         None,
         timeout,
         "Claude version probe",
-    )?;
+    )
+    .await?;
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-pub(super) fn authentication(
+pub(super) async fn authentication(
     command: &Path,
     environment: &[(OsString, OsString)],
     timeout: Duration,
@@ -102,11 +97,12 @@ pub(super) fn authentication(
         Some(environment),
         timeout,
         "Claude authentication status",
-    )?;
+    )
+    .await?;
     authentication_status(&output.stdout, output.status.code())
 }
 
-pub(super) fn plugin(
+pub(super) async fn plugin(
     command: &Path,
     plugin: &Path,
     environment: &[(OsString, OsString)],
@@ -121,7 +117,8 @@ pub(super) fn plugin(
         Some(environment),
         timeout,
         "Claude mail plugin validation",
-    )?;
+    )
+    .await?;
     if output.status.success() {
         Ok(())
     } else {
@@ -160,48 +157,81 @@ fn authentication_status(bytes: &[u8], code: Option<i32>) -> Result<()> {
     }
 }
 
-fn probe_output(
+async fn probe_output(
     command: &Path,
     arguments: &[&str],
     environment: Option<&[(OsString, OsString)]>,
     timeout: Duration,
     subject: &str,
 ) -> Result<Output> {
-    let mut process = std::process::Command::new(command);
+    use tokio::io::AsyncReadExt;
+    if timeout.is_zero() {
+        return Err(SeError::invalid(subject, "an unexpired probe deadline"));
+    }
+    let until = tokio::time::Instant::now() + timeout;
+    let run_until = until - (timeout / 10).min(Duration::from_millis(500));
+    let mut process = tokio::process::Command::new(command);
     if let Some(environment) = environment {
         process.env_clear().envs(environment.iter().cloned());
     }
-    let mut child = process
-        .args(arguments)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| {
-            se_core::scope::unreadable("Claude executable", &e.to_string()).with_cause(e)
-        })?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            Ok(None) => {
-                // Our own direct child, reaped below; never a name-matched kill.
-                let _ = child.kill();
-                let _ = child.wait();
+    let mut child = crate::child_io::spawn(
+        process
+            .args(arguments)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true),
+        crate::child_io::Pipes {
+            stdin: false,
+            stdout: true,
+            stderr: false,
+        },
+    )
+    .await
+    .map_err(|e| se_core::scope::unreadable(subject, &e.to_string()))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| SeError::invalid(subject, "the retained output pipe"))?
+        .take(65537);
+    let mut bytes = Vec::new();
+    let result = tokio::time::timeout_at(run_until, async {
+        stdout
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|e| se_core::scope::unreadable(subject, &e.to_string()))?;
+        if bytes.len() > 65536 {
+            return Err(SeError::invalid(subject, "output within 64 KiB"));
+        }
+        child
+            .wait()
+            .await
+            .map_err(|e| se_core::scope::unreadable(subject, &e.to_string()))
+    })
+    .await;
+    let status = match result {
+        Ok(Ok(status)) => status,
+        failed => {
+            let _ = child.start_kill();
+            if !matches!(
+                tokio::time::timeout_at(until, child.wait()).await,
+                Ok(Ok(_))
+            ) {
                 return Err(SeError::invalid(
                     subject,
-                    "an answer within the probe timeout",
+                    "the exact probe child's witnessed exit before retrying",
                 ));
             }
-            Err(e) => {
-                return Err(se_core::scope::unreadable(subject, &e.to_string()));
-            }
+            return Err(match failed {
+                Ok(Err(error)) => error,
+                _ => SeError::invalid(subject, "an answer within the probe timeout"),
+            });
         }
-    }
-    child
-        .wait_with_output()
-        .map_err(|e| se_core::scope::unreadable(subject, &e.to_string()))
+    };
+    Ok(Output {
+        status,
+        stdout: bytes,
+        stderr: Vec::new(),
+    })
 }
 
 pub(super) fn parse_version(text: &str) -> Option<(u16, u16, u16)> {

@@ -2,7 +2,7 @@
 use super::unavailable;
 use se_types::{Detail, Result, SeError, details};
 use std::time::Duration;
-use tokio::{io::AsyncReadExt, process::ChildStderr, sync::watch, task::JoinHandle};
+use tokio::{io::AsyncReadExt, sync::watch, task::JoinHandle};
 
 pub(super) async fn read_errors(
     destination: &str,
@@ -76,7 +76,7 @@ pub(crate) struct Diagnostics {
 }
 
 impl Diagnostics {
-    pub(crate) fn start(mut stderr: ChildStderr) -> Self {
+    pub(crate) fn start(mut stderr: impl tokio::io::AsyncRead + Unpin + Send + 'static) -> Self {
         let (sender, observation) = watch::channel(Observation::default());
         let task = tokio::spawn(async move {
             // Preserve only a short overlap for a refusal split across reads.

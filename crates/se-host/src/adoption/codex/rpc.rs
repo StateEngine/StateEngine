@@ -1,9 +1,9 @@
 //! Bounded short-lived provider RPC with exact replies and joined children.
 use super::*;
-use std::{process::Stdio, time::Duration};
+use std::time::Duration;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::{ChildStderr, ChildStdin, ChildStdout, Command},
+    process::Command,
 };
 const MAX: usize = crate::client::wire::MAX_FRAME_BYTES;
 // Cold discovery measured up to eight seconds under load. Keep its independent
@@ -12,7 +12,7 @@ const DISCOVERY_SECONDS: u64 = 30;
 const DISCOVERY_SHUTDOWN_SECONDS: u64 = 10;
 const DIAGNOSTIC_BYTES: u64 = 8192;
 
-async fn request(writer: &mut ChildStdin, value: Value) -> Result<()> {
+async fn request(writer: &mut crate::child_io::Input, value: Value) -> Result<()> {
     let mut bytes =
         serde_json::to_vec(&value).map_err(|_| invalid("serializable native provider input"))?;
     if bytes.len() > MAX {
@@ -22,7 +22,7 @@ async fn request(writer: &mut ChildStdin, value: Value) -> Result<()> {
     writer.write_all(&bytes).await.map_err(io)?;
     writer.flush().await.map_err(io)
 }
-async fn response(reader: &mut BufReader<ChildStdout>, id: u64) -> Result<Value> {
+async fn response(reader: &mut BufReader<crate::child_io::Output>, id: u64) -> Result<Value> {
     let mut total = 0;
     for _ in 0..256 {
         let mut line = Vec::new();
@@ -71,26 +71,30 @@ pub(super) fn call(
         if discovery {
             command.arg("--strict-config");
         }
-        let mut child = command
-            .current_dir(cwd)
-            .env_clear()
-            .envs(
-                crate::harness::codex_input::provider_environment()
-                    .into_iter()
-                    .filter(|(name, _)| {
-                        !name
-                            .to_string_lossy()
-                            .to_ascii_uppercase()
-                            .starts_with("OPENAI_")
-                    }),
-            )
-            .env("CODEX_HOME", config_home)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(io)?;
+        let mut child = crate::child_io::spawn(
+            command
+                .current_dir(cwd)
+                .env_clear()
+                .envs(
+                    crate::harness::codex_input::provider_environment()
+                        .into_iter()
+                        .filter(|(name, _)| {
+                            !name
+                                .to_string_lossy()
+                                .to_ascii_uppercase()
+                                .starts_with("OPENAI_")
+                        }),
+                )
+                .env("CODEX_HOME", config_home)
+                .kill_on_drop(true),
+            crate::child_io::Pipes {
+                stdin: true,
+                stdout: true,
+                stderr: true,
+            },
+        )
+        .await
+        .map_err(io)?;
         let stderr = child
             .stderr
             .take()
@@ -155,7 +159,9 @@ pub(super) fn call(
     })
 }
 
-async fn collect_diagnostics(mut stderr: ChildStderr) -> std::io::Result<Option<Vec<u8>>> {
+async fn collect_diagnostics(
+    mut stderr: impl tokio::io::AsyncRead + Unpin,
+) -> std::io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
     let mut block = [0; 4096];
     let mut exceeded = false;

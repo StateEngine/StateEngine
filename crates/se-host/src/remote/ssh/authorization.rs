@@ -161,17 +161,21 @@ async fn exchange(
     bytes: zeroize::Zeroizing<Vec<u8>>,
     deadline: std::time::Duration,
 ) -> se_types::Result<Vec<u8>> {
-    use super::{Stdio, unavailable};
+    use super::unavailable;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut child = crate::ssh_transport::client("ssh")
-        .args(["-T", "-o", "BatchMode=yes"])
-        .arg(&config.destination)
-        .arg(&config.command)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| unavailable("cannot start protected SSH authorization"))?;
+    let mut child = crate::child_io::spawn(
+        crate::ssh_transport::client("ssh")
+            .args(["-T", "-o", "BatchMode=yes"])
+            .arg(&config.destination)
+            .arg(&config.command),
+        crate::child_io::Pipes {
+            stdin: true,
+            stdout: true,
+            stderr: true,
+        },
+    )
+    .await
+    .map_err(|_| unavailable("cannot start protected SSH authorization"))?;
     let exchange = tokio::time::timeout(deadline, async {
         let mut input = child.stdin.take()
             .ok_or_else(|| unavailable("SSH authorization input pipe is absent"))?;

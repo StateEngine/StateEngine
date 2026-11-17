@@ -55,16 +55,21 @@ pub async fn probe(command: &Path, budget: Duration) -> Result<ProviderVersion> 
     let end = Instant::now() + budget;
     // Reserve part of the same five-second ceiling for killing and reaping.
     let run_end = end - (budget / 10).min(Duration::from_millis(500));
-    let mut child = Command::new(command)
-        .arg("--version")
-        .env_clear()
-        .envs(provider_environment())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| se_core::scope::unreadable("Codex executable probe", &e.to_string()))?;
+    let mut child = crate::child_io::spawn(
+        Command::new(command)
+            .arg("--version")
+            .env_clear()
+            .envs(provider_environment())
+            .stdin(Stdio::null())
+            .kill_on_drop(true),
+        crate::child_io::Pipes {
+            stdin: false,
+            stdout: true,
+            stderr: true,
+        },
+    )
+    .await
+    .map_err(|e| se_core::scope::unreadable("Codex executable probe", &e.to_string()))?;
     let stdout = child
         .stdout
         .take()
