@@ -247,13 +247,21 @@ fn real_http_refuses_a_replaced_inode_even_after_its_first_refusal_empties_idle(
             "database metadata identity changed at {}: SourceChanged",
             f.options.state_directory.join("state.db").display(),
         );
+        // The retained reader can refuse the same replacement through its own
+        // open path, carrying the opened file identity in its context.
+        let expected_identity = format!(
+            "database file identity changed; path=\"state.db\", opened_path=\"{state_db}\", stage=Open, sqlite_extended_code=unavailable, native_os_code=unavailable",
+            state_db = f.options.state_directory.join("state.db").display(),
+        );
         let expected = match &exit.failure {
             None => Ok(Vec::new()),
             Some(error)
                 if is_injected_missing_path(error, &f.options.state_directory)
                     || matches!(error.body.detail(), se_types::Detail::SourceUnreadable(detail)
                     if detail.subject == "store SourceChanged"
-                        && (detail.reason == expected_reason || detail.reason == expected_missing)) =>
+                        && (detail.reason == expected_reason
+                            || detail.reason == expected_missing
+                            || detail.reason == expected_identity)) =>
             {
                 eprintln!("retained injected database pathname refusal observed");
                 Ok(vec![error.to_string()])
