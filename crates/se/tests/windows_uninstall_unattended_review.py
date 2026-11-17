@@ -49,7 +49,7 @@ def main(args):
     args.out.mkdir(parents=True, exist_ok=True)
     report = {"fixture": "candidate native image and public scripts", "passed": False,
               "console_emulation": False, "provider_launched": False, "calls": []}
-    root = Path(tempfile.mkdtemp(prefix="se-unattended-review-"))
+    root = Path(tempfile.mkdtemp(prefix="se-unattended-review-")).resolve(strict=True)
     report["fixture_directory"] = str(root)
     bundle = root / "archive with spaces"
     bundle.mkdir()
@@ -110,11 +110,12 @@ def main(args):
         image = local / "StateEngine/bin/se.exe"
         record = home / "standalone-install.json"
         plan = json.loads(record.read_bytes())
-        assert plan["schema"] == "stateengine-install/v1"
-        files = [Path(item["path"]) for item in plan["files"]]
-        assert image in files and len(files) == len(set(files))
-        assert all(path.is_relative_to(root) for path in files), "installation escaped the fresh fixture"
         report["installation_record"] = plan
+        assert plan["schema"] == "stateengine-install/v1"
+        files = [Path(item["path"]).resolve(strict=True) for item in plan["files"]]
+        assert any(os.path.samefile(image, path) for path in files), "record lacks the installed image"
+        assert len(files) == len(set(files)), "record repeats an installed path"
+        assert all(path.is_relative_to(root) for path in files), "installation escaped the fresh fixture"
         for item in plan["files"]:
             assert observed(Path(item["path"]))["sha256"] == item["sha256"]
         version, _, _ = call("version", [str(image), "--version"])
