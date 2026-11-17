@@ -27,10 +27,8 @@ def windows_shell():
 
 
 def powershell(script, *args):
-    # Windows PowerShell must build its own module path when launched from pwsh.
-    environment = {key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"}
     result = subprocess.run([windows_shell(), "-NoProfile", "-NonInteractive", "-Command",
-                             script, *args], capture_output=True, text=True, timeout=15, env=environment)
+                             script, *args], capture_output=True, text=True, timeout=15)
     if result.returncode:
         raise RuntimeError("native account registration: " + result.stderr.strip())
     return result.stdout.strip()

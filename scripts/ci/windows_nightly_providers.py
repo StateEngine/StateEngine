@@ -18,7 +18,9 @@ KEYS = ('CI_ANTHROPIC_API_KEY', 'CI_OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENA
 
 
 def clean_environment():
-    return {key: value for key, value in os.environ.items() if key.upper() not in KEYS}
+    # Let Windows PowerShell construct its own module path, even under pwsh.
+    return {key: value for key, value in os.environ.items()
+            if key.upper() not in KEYS and key.upper() != 'PSMODULEPATH'}
 
 
 def require(condition, message):
