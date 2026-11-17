@@ -10,9 +10,18 @@ use tokio_tungstenite::WebSocketStream;
 pub type Socket = WebSocketStream<FramedIo<BudgetIo<TcpStream>>>;
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 pub fn unavailable(reason: &str) -> SeError {
+    unavailable_with_next_step(
+        reason,
+        "Check the saved SSH destination and machine name. Keep the original request key when retrying a send.",
+    )
+}
+/// Non-send operations (the initial bootstrap) carry their own next step;
+/// the detail shape stays one listener-unavailable.
+pub fn unavailable_with_next_step(reason: &str, next_step: &str) -> SeError {
     SeError::new(Detail::ListenerUnavailable(details::ListenerUnavailable {
-        subject: "remote machine connection".into(), reason: reason.into(),
-        next_step: "Check the saved SSH destination and machine name. Keep the original request key when retrying a send.".into(),
+        subject: "remote machine connection".into(),
+        reason: reason.into(),
+        next_step: next_step.into(),
     }))
 }
 /// Resource pressure refuses one operation without changing its authority.
