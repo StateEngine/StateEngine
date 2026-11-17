@@ -1,7 +1,6 @@
 //! Protocol completion/canonical capture composition, with native custody unchanged.
 use super::*;
 mod capture;
-mod replay;
 mod status;
 
 impl LaunchCoordinator {
@@ -33,7 +32,7 @@ impl LaunchCoordinator {
             .await?;
         // Refuse known capture/budget failures before stopping an incumbent.
         // Launch reads again after final capture; a live tail is never frozen here.
-        if let Err(failure) = self.acp_replay(plan, admission, deadline).await {
+        if let Err(failure) = self.canonical_replay(plan, admission, deadline).await {
             if !plan.input.override_live {
                 return Err(failure);
             }

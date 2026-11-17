@@ -7,7 +7,7 @@ use crate::ssh_transport::Diagnostics;
 mod authorization;
 mod bootstrap;
 pub(super) mod command;
-mod prepare;
+pub use super::native_image::prepare::{ImageProgress, ImageStage, prepare_image};
 use super::native_image::{self as image, staging, transactions as image_commands};
 pub use authorization::{
     Authorization, AuthorizationResult, LaunchPermissionsRequest, PermissionsRequest,
@@ -15,7 +15,6 @@ pub use authorization::{
 };
 pub(crate) use authorization::{launch_permissions, permissions};
 pub use bootstrap::connect;
-pub use prepare::{ImageProgress, ImageStage, prepare_image};
 use se_types::Result;
 use std::{collections::BTreeMap, net::SocketAddr, process::Stdio, sync::Arc, time::Duration};
 use tokio::{sync::Mutex, time::timeout};

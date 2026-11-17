@@ -121,6 +121,7 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
                 EventBody::ProfileSaved {
                     agent: f.a.clone(),
                     profile: Profile {
+                        provider_settings: Default::default(),
                         provider: se_store::Provider::Claude,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,

@@ -60,6 +60,7 @@ fn setup() -> Result<(Fixture, SqliteDirect, Arc<Lease>), Box<dyn std::error::Er
             vec![EventBody::ProfileSaved {
                 agent: f.a.clone(),
                 profile: Profile {
+                    provider_settings: Default::default(),
                     provider: Provider::Claude,
                     model: None,
                     permission: PermissionProfile::WorkspaceWrite,

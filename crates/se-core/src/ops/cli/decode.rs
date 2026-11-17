@@ -327,6 +327,19 @@ pub fn from_matches_with_key(
             idempotency_key: key()?,
         }),
         "agent.create" => AnyOp::AgentCreate(AgentCreate {
+            provider_settings: Box::new(se_types::ProviderSettings {
+                model_provider: text(m, "model-provider"),
+                base_url: text(m, "base-url"),
+                wire_api: text(m, "wire-api"),
+                reasoning_effort: text(m, "reasoning-effort"),
+                context_window: text(m, "context-window")
+                    .map(|value| {
+                        value.parse::<u64>().map_err(|_| {
+                            SeError::invalid("context-window", "a positive token count")
+                        })
+                    })
+                    .transpose()?,
+            }),
             harness: text(m, "harness"),
             name: required(m, "name")?,
             provider: text(m, "provider")

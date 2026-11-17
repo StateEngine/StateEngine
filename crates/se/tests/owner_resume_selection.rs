@@ -34,6 +34,7 @@ fn owner_resume_refusal_lists_saved_agents_with_the_exact_home_and_project() -> 
                 vec![EventBody::ProfileSaved {
                     agent: agent.clone(),
                     profile: Profile {
+                        provider_settings: Default::default(),
                         provider: Provider::Claude,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,

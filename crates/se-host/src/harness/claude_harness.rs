@@ -123,6 +123,12 @@ impl Harness for ClaudeHarness {
     fn kind(&self) -> HarnessKind {
         HarnessKind::ClaudeCode
     }
+    fn transcript_path(&self, binding: &HarnessBinding) -> Result<Option<PathBuf>> {
+        transcript_location(binding).map(Some)
+    }
+    fn transcript_wait(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(10))
+    }
     fn probe<'a>(
         &'a self,
         request: ProbeRequest,
@@ -455,5 +461,32 @@ impl AdapterBinding for Arc<Binding> {
             native_window: self.attended,
             ..Default::default()
         }
+    }
+}
+
+pub(crate) struct Adoption;
+pub(crate) static ADOPTION: Adoption = Adoption;
+impl crate::adoption::Adapter for Adoption {
+    #[cfg(any(target_os = "linux", windows))]
+    fn prepare(
+        &self,
+        command: &std::path::Path,
+    ) -> se_types::Result<crate::adoption::ProviderSetup> {
+        qualify_adoption(command)?;
+        Ok(crate::adoption::ProviderSetup {
+            executable: command.to_owned(),
+            config_home: claude::config_home(&std::env::vars_os().collect::<Vec<_>>())?,
+        })
+    }
+    #[cfg(any(target_os = "linux", windows))]
+    fn hooks(
+        &self,
+        executable: &std::path::Path,
+        home: &std::path::Path,
+    ) -> se_types::Result<Vec<(String, serde_json::Value)>> {
+        crate::adoption::settings::hooks(executable, home)
+    }
+    fn notice(&self) -> Option<String> {
+        Some("Review and trust the StateEngine hooks in Claude Code when the provider asks; declining keeps the provider usable with the integration inactive".into())
     }
 }

@@ -106,6 +106,7 @@ fn check(image: Option<std::path::PathBuf>) -> Check {
                 vec![EventBody::ProfileSaved {
                     agent: agent.clone(),
                     profile: Profile {
+                        provider_settings: Default::default(),
                         provider: se_store::Provider::Codex,
                         model: None,
                         permission: PermissionProfile::WorkspaceWrite,
