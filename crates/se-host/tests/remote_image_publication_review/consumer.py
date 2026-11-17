@@ -1,4 +1,4 @@
-"""Native filesystem consumer; the optional interleaver delegates to the real ln."""
+"""Native filesystem consumer; the optional interleaver delegates to the native hard-link utility."""
 import argparse
 import hashlib
 import json
@@ -48,15 +48,15 @@ def install_incumbent(root, case):
 
 
 def interleave(arguments):
-    root, native_ln, *words = arguments
+    root, native_tool, *words = arguments
     root = Path(root)
     config = json.loads((root / 'interleave.json').read_text())
     install_incumbent(root, config['case'].removeprefix('race-'))
-    witness = {'argv': words, 'incumbent': snapshot(root / 'cache/se'),
+    witness = {'native_tool': native_tool, 'argv': words, 'incumbent': snapshot(root / 'cache/se'),
                'foreign': snapshot(root / 'foreign')}
     (root / 'at-link.json').write_text(json.dumps(witness))
     # Preserve every argument and use the platform's actual hard-link utility.
-    os.execv(native_ln, [native_ln, *words])
+    os.execv(native_tool, [native_tool, *words])
 
 
 def run(options):
@@ -67,8 +67,8 @@ def run(options):
     upload.write_bytes(PAYLOAD)
     upload.chmod(0o600)
     native_path = '/usr/bin:/bin:/usr/sbin:/sbin'
-    native_ln = shutil.which('ln', path=native_path)
-    assert native_ln
+    native_tools = {name: shutil.which(name, path=native_path) for name in ('ln', 'link')}
+    assert all(native_tools.values()), 'native hard-link utility absent'
     racing = options.case.startswith('race-')
     if not racing:
         install_incumbent(root, options.case)
@@ -78,10 +78,11 @@ def run(options):
         shim = root / 'tools'
         shim.mkdir(mode=0o700)
         (root / 'interleave.json').write_text(json.dumps({'case': options.case}))
-        command = ' '.join(shlex.quote(s) for s in
-            [sys.executable, str(Path(__file__).resolve()), '--shim', str(root), native_ln])
-        (shim / 'ln').write_text('#!/bin/sh\nexec ' + command + ' "$@"\n')
-        (shim / 'ln').chmod(0o700)
+        for name, native_tool in native_tools.items():
+            command = ' '.join(shlex.quote(s) for s in
+                [sys.executable, str(Path(__file__).resolve()), '--shim', str(root), native_tool])
+            (shim / name).write_text('#!/bin/sh\nexec ' + command + ' "$@"\n')
+            (shim / name).chmod(0o700)
         env['PATH'] = str(shim) + ':' + native_path
     output = subprocess.run(['/bin/sh', str(options.command.resolve())], cwd=root,
         env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
@@ -98,7 +99,7 @@ def run(options):
     else:
         checks['incumbent_unchanged'] = before['incumbent'] == after['incumbent']
     checks['foreign_unchanged'] = before['foreign'] == after['foreign']
-    result = {'case': options.case, 'platform': sys.platform, 'native_ln': native_ln,
+    result = {'case': options.case, 'platform': sys.platform, 'native_tools': native_tools,
               'exit': output.returncode, 'stdout': output.stdout.decode(),
               'stderr': output.stderr.decode(), 'before': before, 'after': after,
               'checks': checks, 'passed': all(checks.values()),
