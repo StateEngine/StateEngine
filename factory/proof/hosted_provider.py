@@ -51,10 +51,13 @@ def verify_runner(receipt, run):
     names.update({'windows-journeys.py', 'harness-matrix.py', 'harness-matrix-report.py',
                   'ci/installation_account.py', *['harness_matrix/' + name for name in
                   ('flow.py', 'inputs.py', 'io.py', 'report.py', 'native_processes.ps1')]})
+    registry = '../crates/se-harness-registry/src/registry.json'
+    names.add(registry)
     if not entries or set(receipt.get('runner_sha256', {})) != names:
         raise ValueError('provider runner source inventory differs from the product pin')
     for name in names:
-        expected = hashlib.sha256(git('show', commit + ':scripts/' + name)).hexdigest()
+        source = 'crates/se-harness-registry/src/registry.json' if name == registry else 'scripts/' + name
+        expected = hashlib.sha256(git('show', commit + ':' + source)).hexdigest()
         if receipt['runner_sha256'].get(name) != expected:
             raise ValueError('provider runner source digest differs from the product pin')
 
