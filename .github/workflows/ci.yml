@@ -378,11 +378,11 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2]
-        # Hosted runners keep every step in a Windows job, so runtime detachment is qualified
-        # in the VM; the hosted runtime run is manual and diagnostic only.
-        mode: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["smoke", "full"]' || '["smoke"]') }}
+        # Pull requests run the smoke set. The merge queue and the nightly run the whole
+        # Windows suite, informational until it is green; detachment is also qualified in the VM.
+        mode: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["smoke", "full"]' || (github.event_name == 'merge_group' || github.event_name == 'schedule') && '["full"]' || '["smoke"]') }}
     runs-on: windows-2025
-    timeout-minutes: 6
+    timeout-minutes: ${{ matrix.mode == 'full' && 40 || 6 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
