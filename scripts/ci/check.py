@@ -4,7 +4,8 @@ import os
 import sys
 
 
-def accepted(jobs):
+def accepted(jobs, guard=False):
+    """Guard mode is a main push: the merge queue already ran the suite on this tree."""
     expected = {"changes", "linux-route", "linux-box", "fmt", "clippy", "windows-clippy", "archive", "test", "macos-test"}
     if not expected <= set(jobs) <= expected | {"remote-test"} or jobs["changes"]["result"] != "success":
         return False
@@ -13,9 +14,12 @@ def accepted(jobs):
         return all(j["result"] == "skipped" for n, j in jobs.items() if n != "changes")
     if outputs.get("rust") != "true":
         return False
-    if "remote-test" in jobs and jobs["remote-test"].get("result") != "success":
+    suite = "skipped" if guard else "success"
+    if "remote-test" in jobs and jobs["remote-test"].get("result") != suite:
         return False
-    if jobs["macos-test"].get("result") != "success":
+    if jobs["macos-test"].get("result") != suite:
+        return False
+    if guard and jobs["test"].get("result") != "skipped":
         return False
     routing, box = jobs["linux-route"], jobs["linux-box"]
     route = routing.get("outputs", {}).get("route", "")
@@ -29,7 +33,7 @@ def accepted(jobs):
             return False
     elif windows != "success" and not (windows == "skipped" and box_windows):
         return False
-    linux = [jobs[n]["result"] for n in ("fmt", "clippy", "archive", "test")]
+    linux = [jobs[n]["result"] for n in ("fmt", "clippy", "archive") + (() if guard else ("test",))]
     if route == "box" and routing["result"] == "success":
         if status == "failed":
             return False
@@ -49,4 +53,4 @@ if __name__ == "__main__":
     results = json.loads(os.environ["RESULTS"])
     for name, result in results.items():
         print(f"{name}: {result['result']}")
-    sys.exit(0 if accepted(results) else 1)
+    sys.exit(0 if accepted(results, guard=os.environ.get("CHECK_MODE") == "guard") else 1)

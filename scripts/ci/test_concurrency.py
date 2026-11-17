@@ -147,6 +147,19 @@ class DeliveryOrder(unittest.TestCase):
         for context in contexts[3:]:
             self.assertFalse(expression(self.workflow.cancel, context))
 
+    def test_each_merge_group_is_its_own_uncancelled_run(self):
+        def group(ref):
+            return {"github.event_name": "merge_group", "github.repository": "owner/repo",
+                    "github.ref": "refs/heads/" + ref, "github.ref_name": ref}
+
+        first = group("gh-readonly-queue/main/pr-7-" + "a" * 40)
+        second = group("gh-readonly-queue/main/pr-8-" + "b" * 40)
+        main = {"github.event_name": "push", "github.repository": "owner/repo",
+                "github.ref_name": "main"}
+        self.assertEqual(len({self.workflow.key(c) for c in (first, second, main)}), 3)
+        for context in (first, second):
+            self.assertFalse(expression(self.workflow.cancel, context))
+
     def test_ready_and_synchronize_triggers_are_present(self):
         self.assertIn("ready_for_review", self.workflow.triggers)
         self.assertIn("synchronize", self.workflow.triggers)
