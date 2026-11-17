@@ -219,9 +219,12 @@ class Provider:
             try:
                 opcode, raw = self.read_frame(stream)
             except socket.timeout:
+                # The bounded poll that this loop is built on; not an error.
                 continue
             except (EOFError, OSError):
-                return
+                # A terminal read error is recorded by the connection's single
+                # recorder above, which names the step. Never swallowed here.
+                raise
             if opcode == 8:
                 return
             if opcode == 9:
@@ -281,8 +284,11 @@ def main():
             self.end_headers()
             try:
                 self.wfile.write(data)
-            except (OSError, ssl.SSLError):
-                pass
+            except (OSError, ssl.SSLError) as error:
+                # The client going away mid-reply is still an observed fact;
+                # record it rather than discarding it.
+                provider.record(kind="connection_error", step="http reply",
+                                error=type(error).__name__, text=str(error)[:200])
 
         def do_GET(self):
             if self.headers.get("Upgrade", "").lower() == "websocket":
@@ -359,7 +365,10 @@ def main():
                 stream.shutdown(socket.SHUT_RDWR)
                 stream.close()
             except OSError:
-                pass
+                # Process teardown after the run, not a path the control reads:
+                # every request has already been answered or recorded. Closing
+                # an already-closed socket has nothing left to report.
+                continue
         server.server_close()
 
 
