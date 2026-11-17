@@ -235,6 +235,7 @@ impl Channels {
                     kind: MessageKind::Task,
                     refs: vec![],
                     reply_to: None,
+                    supersedes: None,
                     work: None,
                     idempotency_key: key,
                 };

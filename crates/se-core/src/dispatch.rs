@@ -7,9 +7,9 @@ use crate::{
 };
 use se_store::{
     Actor, AtomicBatch, CommitReceipt, Door, EventBody, EventHeader, Expected, InputText,
-    IntentDigest, NewEvent, RequestIdentity, Revision, Snapshot,
+    IntentDigest, NewEvent, RequestIdentity, Revision, Snapshot, StoreErrorCode,
 };
-use se_types::{AgentId, EventId, IdempotencyKey, MessageId, Result, SeError};
+use se_types::{AgentId, EventId, IdempotencyKey, MessageId, Read, Result, SeError};
 use sha2::{Digest, Sha256};
 use std::num::NonZeroU64;
 
@@ -129,6 +129,39 @@ impl Kernel {
             body,
         })
     }
+    pub(crate) fn request_identity(
+        &self,
+        operation: &'static str,
+        key: IdempotencyKey,
+        intent: &serde_json::Value,
+    ) -> Result<RequestIdentity> {
+        let bytes = serde_json::to_vec(
+            &serde_json::json!({"operation":operation,"codec_version":1,"arguments":intent}),
+        )
+        .map_err(|e| scope::unreadable("normalized operation intent", &e.to_string()))?;
+        Ok(RequestIdentity {
+            key,
+            intent: IntentDigest {
+                operation,
+                codec_version: 1,
+                sha256: Sha256::digest(bytes).into(),
+            },
+        })
+    }
+    pub(crate) fn batch_with_identity<R: Snapshot>(
+        &self,
+        identity: RequestIdentity,
+        event: NewEvent,
+        cx: &Cx<'_, R>,
+    ) -> Result<AtomicBatch> {
+        Ok(AtomicBatch {
+            expected_incarnation: cx.read.info().incarnation,
+            admission: cx.admission.clone(),
+            request: Some(identity),
+            events: vec![event],
+            import_checkpoint: None,
+        })
+    }
     pub(crate) fn batch<R: Snapshot>(
         &self,
         operation: &'static str,
@@ -137,24 +170,8 @@ impl Kernel {
         event: NewEvent,
         cx: &Cx<'_, R>,
     ) -> Result<AtomicBatch> {
-        let bytes = serde_json::to_vec(
-            &serde_json::json!({"operation":operation,"codec_version":1,"arguments":intent}),
-        )
-        .map_err(|e| scope::unreadable("normalized operation intent", &e.to_string()))?;
-        Ok(AtomicBatch {
-            expected_incarnation: cx.read.info().incarnation,
-            admission: cx.admission.clone(),
-            request: Some(RequestIdentity {
-                key,
-                intent: IntentDigest {
-                    operation,
-                    codec_version: 1,
-                    sha256: Sha256::digest(bytes).into(),
-                },
-            }),
-            events: vec![event],
-            import_checkpoint: None,
-        })
+        let identity = self.request_identity(operation, key, &intent)?;
+        self.batch_with_identity(identity, event, cx)
     }
 }
 pub(crate) fn admitted<R: Snapshot>(cx: &Cx<'_, R>) -> Result<()> {
@@ -167,6 +184,113 @@ pub(crate) fn admitted<R: Snapshot>(cx: &Cx<'_, R>) -> Result<()> {
         )),
     }
 }
+/// Resolves a send destination: floor work mail names the registered agents,
+/// direct mail resolves the selector, and an unauthenticated remote reply
+/// contact is refused before any recipient is chosen.
+fn resolve_recipient<R: Snapshot>(
+    cx: &mut Cx<'_, R>,
+    input: &MessageSend,
+) -> Result<Option<Actor>> {
+    if let Some(work) = &input.work {
+        for agent in &work.addressees {
+            if scope::selected_actor(cx, agent.as_str())? != Actor::Agent(agent.clone()) {
+                return Err(SeError::invalid(
+                    "work.addressees",
+                    "registered canonical agents in this project",
+                ));
+            }
+        }
+        return Ok(None);
+    }
+    let remote = input
+        .reply_to
+        .as_ref()
+        .map(|original| {
+            cx.read
+                .remote_reply_recipient(original.clone(), &input.to)
+                .map_err(|error| store_error(&error))
+        })
+        .transpose()?
+        .flatten();
+    if remote.is_none()
+        && input.to.split_once('/').is_some_and(|(host, rest)| {
+            host.len() == 64 && host.bytes().all(|b| b.is_ascii_hexdigit()) && rest.contains('/')
+        })
+    {
+        return Err(SeError::new(se_types::Detail::CapabilityInvalid(se_types::details::CapabilityInvalid {
+            subject: "remote reply contact".into(),
+            reason: "this recipient has no authenticated message from that source address".into(),
+            next_step: "Reply from the original recipient's current session using the sender address and original message ID as reply_to. The destination Owner can restore revoked source access with se remote permissions --local in a terminal on the destination.".into(),
+        })));
+    }
+    match remote {
+        Some(actor) => Ok(Some(actor)),
+        None => Ok(Some(scope::selected_actor(cx, &input.to)?)),
+    }
+}
+/// Checks a replacement target through the sender's own read port: it must be
+/// a direct message the sender wrote to the same recipient, not yet replaced.
+fn supersede_target<R: Snapshot>(
+    cx: &mut Cx<'_, R>,
+    old: &MessageId,
+    recipient: &Actor,
+) -> Result<EventId> {
+    let record = match cx.read.message(old.clone()) {
+        Ok(Read::Present { value }) => value,
+        Ok(Read::Absent { checked }) => {
+            return Err(SeError::invalid(
+                "supersedes",
+                &format!(
+                    "a message ID that exists in this project; the target was not found ({checked}); list your sent mail with se msg list --box sent"
+                ),
+            ));
+        }
+        Ok(Read::Unknown { what } | Read::Unreadable { reason: what, .. }) => {
+            return Err(scope::unreadable("supersession target", &what));
+        }
+        Err(error) if error.code == StoreErrorCode::ScopeMismatch => {
+            return Err(SeError::invalid(
+                "supersedes",
+                "a message you sent; the target is not readable from this seat — list your sent mail with se msg list --box sent",
+            ));
+        }
+        Err(error) => return Err(store_error(&error)),
+    };
+    if record.work.is_some() {
+        return Err(SeError::invalid(
+            "supersedes",
+            "a direct message; floor work mail keeps its own lifecycle",
+        ));
+    }
+    if record.sender != cx.admission.actor {
+        return Err(SeError::invalid(
+            "supersedes",
+            &format!(
+                "a message you sent; the target was sent by {} — ask that sender to supersede it, or reply to it with your new instruction",
+                scope::actor_id(&record.sender)
+            ),
+        ));
+    }
+    if record.recipient != *recipient {
+        return Err(SeError::invalid(
+            "supersedes",
+            &format!(
+                "a message you sent to the same recipient; the target was sent to {}",
+                scope::actor_id(&record.recipient)
+            ),
+        ));
+    }
+    if let Some(replacement) = &record.superseded_by {
+        return Err(SeError::invalid(
+            "supersedes",
+            &format!(
+                "a message that has no replacement yet; the target is already replaced by {} — supersede that replacement instead",
+                replacement.as_str()
+            ),
+        ));
+    }
+    Ok(record.event.clone())
+}
 impl CoreOps for Kernel {
     fn message_send<R: Snapshot>(
         &self,
@@ -175,45 +299,7 @@ impl CoreOps for Kernel {
     ) -> Result<OpStep<MessageSendOutput, MessageSendThen>> {
         input.validate()?;
         admitted(cx)?;
-        let recipient = if let Some(work) = &input.work {
-            for agent in &work.addressees {
-                if scope::selected_actor(cx, agent.as_str())? != Actor::Agent(agent.clone()) {
-                    return Err(SeError::invalid(
-                        "work.addressees",
-                        "registered canonical agents in this project",
-                    ));
-                }
-            }
-            None
-        } else {
-            let remote = input
-                .reply_to
-                .as_ref()
-                .map(|original| {
-                    cx.read
-                        .remote_reply_recipient(original.clone(), &input.to)
-                        .map_err(|error| store_error(&error))
-                })
-                .transpose()?
-                .flatten();
-            if remote.is_none()
-                && input.to.split_once('/').is_some_and(|(host, rest)| {
-                    host.len() == 64
-                        && host.bytes().all(|b| b.is_ascii_hexdigit())
-                        && rest.contains('/')
-                })
-            {
-                return Err(SeError::new(se_types::Detail::CapabilityInvalid(se_types::details::CapabilityInvalid {
-                    subject: "remote reply contact".into(),
-                    reason: "this recipient has no authenticated message from that source address".into(),
-                    next_step: "Reply from the original recipient's current session using the sender address and original message ID as reply_to. The destination Owner can restore revoked source access with se remote permissions --local in a terminal on the destination.".into(),
-                })));
-            }
-            Some(match remote {
-                Some(actor) => actor,
-                None => scope::selected_actor(cx, &input.to)?,
-            })
-        };
+        let recipient = resolve_recipient(cx, &input)?;
         let registry = cx.read.legacy_registry().map_err(|e| store_error(&e))?;
         let refs = input
             .refs
@@ -227,6 +313,11 @@ impl CoreOps for Kernel {
         let kind = serde_json::to_value(&input.kind)
             .map_err(|e| scope::unreadable("message kind", &e.to_string()))?;
         let mut intent = serde_json::json!({"kind":kind,"body":input.body,"refs":refs,"reply_to":input.reply_to});
+        if let Some(old) = &input.supersedes {
+            // An absent field stays out of the intent so ordinary sends digest
+            // exactly as before it existed and same-key retries still replay.
+            intent["supersedes"] = serde_json::json!(old);
+        }
         if input.quiet {
             intent["quiet"] = serde_json::Value::Bool(true);
         }
@@ -237,6 +328,37 @@ impl CoreOps for Kernel {
             intent["work"] = serde_json::json!(input.work);
         }
         let key = input.idempotency_key;
+        let identity = self.request_identity("message.send", key.clone(), &intent)?;
+        // Look the receipt up before validating, so an exact retry of a committed
+        // send replays the original result instead of re-checking replacement.
+        let supersede_event = match (
+            cx.read
+                .resolve_request(&identity)
+                .map_err(|e| store_error(&e))?,
+            input.supersedes.as_ref(),
+        ) {
+            (Read::Present { .. }, _) => None,
+            (Read::Absent { .. }, None) => None,
+            (Read::Absent { .. }, Some(old)) => {
+                let recipient = recipient
+                    .as_ref()
+                    .ok_or_else(|| SeError::invalid("supersedes", "a checked direct recipient"))?;
+                Some(supersede_target(cx, old, recipient)?)
+            }
+            (other, _) => Err(
+                match scope::require_present(
+                    other,
+                    "original request receipt",
+                    "Resolve the original request after restoring store access.",
+                ) {
+                    Ok(_) => SeError::invalid(
+                        "supersession request",
+                        "a store that keeps request receipts consistent",
+                    ),
+                    Err(error) => error,
+                },
+            )?,
+        };
         let kind = kind
             .as_str()
             .ok_or_else(|| SeError::invalid("message kind", "registered string"))?
@@ -264,8 +386,11 @@ impl CoreOps for Kernel {
                 quiet: input.quiet,
             }
         };
-        let event = self.event(body, cx)?;
-        let batch = self.batch("message.send", key.clone(), intent, event, cx)?;
+        let mut event = self.event(body, cx)?;
+        if let Some(old) = supersede_event {
+            event.header.supersedes = Some(old);
+        }
+        let batch = self.batch_with_identity(identity, event, cx)?;
         Ok(OpStep::Commit {
             batch,
             then: MessageSendThen { request: key },

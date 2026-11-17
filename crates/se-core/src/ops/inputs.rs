@@ -251,6 +251,12 @@ impl Validate for MessageSend {
             }
             (_, None) => {}
         }
+        if self.supersedes.is_some() && self.work.is_some() {
+            return Err(SeError::invalid(
+                "supersedes",
+                "a direct message only; floor work mail cannot be replaced this way",
+            ));
+        }
         if self.refs.len() > 20 {
             return Err(SeError::invalid("refs", "at most 20 event ids"));
         }
