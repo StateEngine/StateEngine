@@ -96,8 +96,9 @@ def main():
     args = parser.parse_args()
     require(sys.platform == 'win32' and os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted',
             'A disposable hosted Windows VM is required')
-    require(os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('GITHUB_EVENT_NAME') == 'schedule'
-            and os.environ.get('GITHUB_REF') == 'refs/heads/main', 'The scheduled main workflow is required')
+    require(os.environ.get('GITHUB_ACTIONS') == 'true'
+            and os.environ.get('GITHUB_EVENT_NAME') in ('schedule', 'workflow_dispatch')
+            and os.environ.get('GITHUB_REF') == 'refs/heads/main', 'A main nightly workflow is required')
     commit = os.environ.get('NIGHTLY_SOURCE_SHA', '')
     scheduled_head = os.environ.get('GITHUB_SHA', '')
     require(re.fullmatch(r'[a-f0-9]{40}', commit) and re.fullmatch(r'[a-f0-9]{40}', scheduled_head)

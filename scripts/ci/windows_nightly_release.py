@@ -20,7 +20,7 @@ def main():
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository) or not workflow_id.isdigit():
         raise RuntimeError('Scheduled workflow identity is invalid')
     schedule = json.loads(gh('api', f'repos/{repository}/actions/runs/{workflow_id}'))
-    if (schedule.get('event') != 'schedule' or schedule.get('head_branch') != 'main'
+    if (schedule.get('event') not in ('schedule', 'workflow_dispatch') or schedule.get('head_branch') != 'main'
             or schedule.get('head_sha') != os.environ.get('GITHUB_SHA')):
         raise RuntimeError('Scheduled main workflow identity differs')
     started = datetime.fromisoformat(schedule['created_at'].replace('Z', '+00:00')).astimezone(timezone.utc)
