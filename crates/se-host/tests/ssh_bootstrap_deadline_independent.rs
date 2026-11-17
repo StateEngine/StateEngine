@@ -171,3 +171,12 @@ fn completed_client_keeps_output_and_status() -> Check {
     )?;
     require(value["stderr_tail"] == "note", value.to_string())
 }
+
+#[test]
+fn oversized_stdout_refuses_while_client_remains_alive() -> Check {
+    let value = observe("overflow")?;
+    require(
+        value["reason"] == "SSH output exceeded its bounded bootstrap response",
+        value.to_string(),
+    )
+}
