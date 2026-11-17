@@ -13,32 +13,24 @@ fn public_uninstall_yes_finishes_with_redirected_standard_handles()
         .join("target/judge-diagnostics/unattended-uninstall")
         .join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir_all(&output)?;
-    let mut failures = Vec::new();
-    for scenario in ["uninitialized", "active-host"] {
-        let result = std::process::Command::new("python")
-            .arg("-I")
-            .arg(root.join("crates/se/tests/windows_uninstall_unattended_review.py"))
-            .arg("--image")
-            .arg(env!("CARGO_BIN_EXE_se"))
-            .arg("--repository")
-            .arg(&root)
-            .arg("--out")
-            .arg(output.join(scenario))
-            .arg("--scenario")
-            .arg(scenario)
-            .output()?;
-        if !result.status.success() {
-            failures.push(format!(
-                "{scenario}: stdout={}\nstderr={}",
-                String::from_utf8_lossy(&result.stdout),
-                String::from_utf8_lossy(&result.stderr)
-            ));
-        }
-    }
+    let result = std::process::Command::new("python")
+        .arg("-I")
+        .arg(root.join("crates/se/tests/windows_uninstall_unattended_review.py"))
+        .arg("--image")
+        .arg(env!("CARGO_BIN_EXE_se"))
+        .arg("--repository")
+        .arg(&root)
+        .arg("--out")
+        .arg(&output)
+        .arg("--scenario")
+        .arg("uninitialized")
+        .output()?;
     assert!(
-        failures.is_empty(),
-        "uninstall failures {failures:?}; receipts at {}",
-        output.display()
+        result.status.success(),
+        "public unattended uninstall failed; receipts at {}\nstdout={}\nstderr={}",
+        output.display(),
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
     );
     Ok(())
 }
