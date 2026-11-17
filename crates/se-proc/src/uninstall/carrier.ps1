@@ -24,6 +24,9 @@ public static class SeUninstallObjects {
  [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr ReOpenFile(IntPtr file,uint access,uint share,uint flags);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetFileInformationByHandle(IntPtr file,int kind,ref uint flags,uint size);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(IntPtr file);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr GetStdHandle(int kind);
+ [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool DuplicateHandle(IntPtr source,IntPtr file,IntPtr target,out IntPtr copy,uint access,bool inherit,uint options);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool FlushFileBuffers(IntPtr file);
  [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern IntPtr CreateFileW(string path,uint access,uint share,IntPtr security,uint creation,uint flags,IntPtr template);
  [DllImport("kernel32.dll",SetLastError=true)] public static extern uint WaitForSingleObject(IntPtr process,uint milliseconds);
@@ -66,6 +69,16 @@ public static class SeUninstallObjects {
   } finally { CloseHandle(file); }
  }
  public static void Flush(IntPtr file) { if(!FlushFileBuffers(file)) Error(); }
+ public static FileStream Input() {
+  var source=GetStdHandle(-10); IntPtr copy;
+  if(!DuplicateHandle(GetCurrentProcess(),source,GetCurrentProcess(),out copy,0,false,2)) Error();
+  if(!CloseHandle(source)) { CloseHandle(copy); Error(); }
+  return new FileStream(new SafeFileHandle(copy,true),FileAccess.Read);
+ }
+ public static void CloseStandard(int kind) {
+  var handle=GetStdHandle(kind);
+  if(handle!=IntPtr.Zero && handle!=new IntPtr(-1) && !CloseHandle(handle) && Marshal.GetLastWin32Error()!=6) Error();
+ }
  public static void Absent(string path) {
   var file=CreateFileW(path,0x80,7,IntPtr.Zero,3,0x2200000,IntPtr.Zero);
   if(file==new IntPtr(-1)) {
@@ -88,8 +101,9 @@ $completion = $null
 $report = $null
 $failure = $null
 try {
-    $inputReader = [IO.StreamReader]::new([Console]::OpenStandardInput(),[Text.Encoding]::UTF8)
+    $inputReader = [IO.StreamReader]::new([SeUninstallObjects]::Input(),[Text.Encoding]::UTF8)
     $line = $inputReader.ReadLine()
+    $inputReader.Dispose()
     if ($null -eq $line -or $line.Length -gt 2097152) { throw 'Inherited carrier frame is absent or exceeds its bound' }
     $frame = $line | ConvertFrom-Json
     if ($frame.nonce -cnotmatch '^[0-9a-f]{64}$') { throw 'Invalid private carrier nonce' }
@@ -106,12 +120,12 @@ try {
     $claim = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new([IntPtr]::new([int64]$frame.claim),$true)
     $held.Add($claim)
     $entries = @($frame.entries)
-    if ($entries.Count -lt 4 -or $entries.Count -gt 132) { throw 'Carrier object inventory is outside its finite bound' }
+    if ($entries.Count -lt 4 -or $entries.Count -gt 133) { throw 'Carrier object inventory is outside its finite bound' }
     foreach ($entry in $entries) {
         $handle = [Microsoft.Win32.SafeHandles.SafeFileHandle]::new([IntPtr]::new([int64]$entry.handle),$true)
         $held.Add($handle)
-        $directory = $entry.kind -in @('directory','flush')
-        if ($entry.kind -notin @('image','record','directory','flush') -or
+        $directory = $entry.kind -in @('directory','flush','staging')
+        if ($entry.kind -notin @('image','record','directory','flush','staging') -or
             [SeUninstallObjects]::Identity($handle.DangerousGetHandle(),$directory) -cne $entry.identity) { throw 'Inherited carrier object identity differs' }
         if (-not $directory -and [SeUninstallObjects]::Digest($handle.DangerousGetHandle()) -cne $entry.sha256) { throw 'Inherited carrier object bytes differ' }
     }
@@ -145,6 +159,7 @@ try {
     $reportReader = [IO.StreamReader]::new($reportStream,[Text.Encoding]::UTF8)
     $held.Add($reportReader)
     $line = $reportReader.ReadLine()
+    $reportReader.Dispose()
     if ($null -eq $line -or $line.Length -gt 2097152) { throw 'Private completion report is absent or exceeds its bound' }
     $authorization = $line | ConvertFrom-Json
     if ($authorization.nonce -cne $frame.nonce) { throw 'Parent authorization nonce differs' }
@@ -168,6 +183,19 @@ try {
         $code = [SeUninstallObjects]::Unlink($handle,$entry.path,$true)
         if ($code -eq 145) { [SeUninstallObjects]::SameName($entry.path,$entry.identity) }
         else { [SeUninstallObjects]::Absent($entry.path) }
+    }
+    $stages = @($entries | Where-Object { $_.kind -eq 'staging' })
+    if ($stages.Count -gt 1) { throw 'At most one private staging directory is allowed' }
+    if ($stages.Count -eq 1) {
+        # The diagnostic is only needed while preparing the carrier. Closing it
+        # releases the last anonymous file before removing the exact directory.
+        [Console]::SetError([IO.TextWriter]::Null)
+        [SeUninstallObjects]::CloseStandard(-12)
+        $stage = $stages[0]
+        $handle = [IntPtr]::new([int64]$stage.handle)
+        [SeUninstallObjects]::SameName($stage.path,$stage.identity)
+        if ([SeUninstallObjects]::Unlink($handle,$stage.path,$true) -ne 0) { throw 'Private staging directory remains nonempty' }
+        [SeUninstallObjects]::Absent($stage.path)
     }
 } catch {
     $failure = $_.Exception.Message

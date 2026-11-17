@@ -103,6 +103,13 @@ impl NativeUninstallCarrier {
                 owned.push(copy);
             }
         }
+        if let Some(stage) = &staging {
+            let copy = native::duplicate_same(stage.pin().as_raw_handle(), true)?;
+            let mut observed = entry(stage.pin(), &stage.directory.path, "staging", None)?;
+            observed.handle = copy.as_raw_handle() as usize as u64;
+            entries.push(observed);
+            owned.push(copy);
+        }
         // Keep both original parent directories available for native flushes.
         for path in [image.parent(), record_path.parent()].into_iter().flatten() {
             let file = crate::state_files::windows::effects::uninstall_directory(path)
@@ -233,12 +240,9 @@ impl NativeUninstallCarrier {
                 .take()
                 .ok_or_else(|| refuse("prepare uninstall carrier", "script custody missing"))?
                 .remove()?;
-            if let Some(stage) = staging.take() {
-                let directory = stage.directory.path.clone();
-                drop(stage);
-                crate::remove_empty_directory(&directory)
-                    .map_err(|cause| pending(custody(cause), &directory))?;
-            }
+            // The carrier retains the exact High directory until it can close
+            // its anonymous input, report and diagnostic files after our exit.
+            drop(staging.take());
             Ok(())
         })();
         if let Err(mut failure) = preparation {
@@ -337,10 +341,6 @@ fn cancel_preparation(process: &OwnedHandle) -> Result<()> {
     }
 }
 
-fn pending(mut failure: UninstallNativeError, path: &Path) -> UninstallNativeError {
-    failure.pending_paths.push(path.to_owned());
-    failure
-}
 fn cleanup_artifacts(
     failure: &mut UninstallNativeError,
     script: &mut Option<script::Script>,
