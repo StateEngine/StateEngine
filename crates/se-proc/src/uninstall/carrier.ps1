@@ -100,6 +100,7 @@ $held = [Collections.Generic.List[IDisposable]]::new()
 $completion = $null
 $report = $null
 $failure = $null
+$stagePath = $null
 try {
     $inputReader = [IO.StreamReader]::new([SeUninstallObjects]::Input(),[Text.Encoding]::UTF8)
     $line = $inputReader.ReadLine()
@@ -192,6 +193,7 @@ try {
         [Console]::SetError([IO.TextWriter]::Null)
         [SeUninstallObjects]::CloseStandard(-12)
         $stage = $stages[0]
+        $stagePath = $stage.path
         $handle = [IntPtr]::new([int64]$stage.handle)
         [SeUninstallObjects]::SameName($stage.path,$stage.identity)
         if ([SeUninstallObjects]::Unlink($handle,$stage.path,$true) -ne 0) { throw 'Private staging directory remains nonempty' }
@@ -210,7 +212,7 @@ finally {
                 $pipe.Connect(5000)
                 $reply = @{ schema='se.uninstall-completion/v2'; token=$completion.token;
                     complete=($null -eq $failure); error=$failure; image=$images[0].path;
-                    record=$records[0].path; helper=$null; directory=$null; achieved=$report.achieved }
+                    record=$records[0].path; helper=$null; directory=$stagePath; achieved=$report.achieved }
                 $bytes = [Text.Encoding]::UTF8.GetBytes(($reply | ConvertTo-Json -Depth 64 -Compress)+"`n")
                 $pipe.Write($bytes,0,$bytes.Length); $pipe.Flush()
             } finally { $pipe.Dispose() }
