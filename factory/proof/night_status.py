@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 from zoneinfo import ZoneInfo
 
 SCHEDULE_ZONE = ZoneInfo("America/New_York")
@@ -30,6 +31,7 @@ def planned(config):
     first = ("Install", "Adopt", "Work", "Restart and recall", "Remove")
     stock = ("Install", "Adopt", "Come back", "Two agents", "Remove")
     scopes = {"first-hour": list(enumerate(first, 1)),
+              "windows-journeys": list(enumerate(stock, 1)),
               "wave-2": [(n, stock[n - 1]) for n in (1, 2, 3, 5)],
               "4": [(4, stock[3])],
               "remote": [(1, "Connect, launch, live output, message, reconnect")]}
@@ -40,7 +42,7 @@ def planned(config):
         probes.append(("linux", remote.get("surface", "claude"), "remote"))
     probes += [(p["platform"], p["surface"], p["selection"])
                for p in config.get("native_receipts", [])]
-    from windows_adapter import plan as windows_plan
+    from hosted_provider import plan as windows_plan
     probes += [(p["platform"], p["surface"], p["selection"]) for p in windows_plan(config)]
     return [(key, scopes[key[2]]) for key in probes]
 
@@ -79,6 +81,21 @@ def assess(config, directory, record, report, night, now, report_error=None):
                 if not matches or any(r["journeys"].get(str(number)) not in {"PASS", "FAIL"}
                                       for r in matches):
                     value["missing_journeys"].append("/".join(key) + ": " + name)
+        # A night that planned Windows must show a hosted record by the deadline.
+        # Silence is not a pass or a zero; retain the reason for the missing row.
+        if any(key[0] == "win32" for key, _ in expected):
+            started = datetime.fromisoformat(record["started_at"]).astimezone(SCHEDULE_ZONE)
+            closes_at = started.replace(hour=11, minute=0,
+                                        second=0, microsecond=0)
+            if closes_at < started:
+                closes_at += timedelta(days=1)
+            closed = now.astimezone(SCHEDULE_ZONE) >= closes_at
+            windows_rows = [r for r in checked["invocations"] if r.get("hosted_provider")]
+            settled = bool(windows_rows) and all(r.get("state") in ("finished", "unavailable", "timed-out", "interrupted")
+                                                 for r in windows_rows)
+            if closed and not settled:
+                value["errors"].append(
+                    "windows: no hosted Windows record by the nightly deadline; rows are NOT MEASURED")
         status = checked["status"]
         if record.get("state") == "interrupted":
             value["cause"] = "interrupted"
@@ -199,6 +216,22 @@ def check(config, now=None):
         if started > now:
             value["cause"] = "future"
             raise ValueError("latest attempt starts in the future")
+        deadline = started.astimezone(SCHEDULE_ZONE).replace(hour=11, minute=0, second=0, microsecond=0)
+        if deadline < started:
+            deadline += timedelta(days=1)
+        if (now >= deadline and record.get('state') == 'finished'
+                and any(row.get('hosted_provider') and row.get('state') == 'planned'
+                        for row in record.get('invocations', []))):
+            from hosted_provider import acquire
+            from lifecycle import checkpoint
+            with (state / 'nightly.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                current, read_error = read(directory / 'run.json')
+                if read_error or current.get('service_invocation_id') != record.get('service_invocation_id'):
+                    raise ValueError('nightly attempt changed before hosted import')
+                record = current
+                acquire(config, record, directory, time.monotonic() + 180,
+                        lambda: checkpoint(state, directory, record, config))
         report, error = read(directory / "report.json")
         value = assess(config, directory, record, report, night, now, report_error=error)
     except FileNotFoundError as error:
