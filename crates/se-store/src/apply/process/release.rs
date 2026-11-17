@@ -72,8 +72,26 @@ pub(super) fn apply(
     if !marker.is_object() {
         return refuse("custody carries no ownership release");
     }
+    let owner: Option<(u64, String)> = c
+        .query_row(
+            "SELECT owner_generation,owner_epoch FROM runtime_owner WHERE singleton=1",
+            [],
+            |row| Ok((crate::sql_value::value(row, 0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    let Some((generation, epoch)) = owner else {
+        return refuse("the current runtime owner is absent");
+    };
+    if generation != lease.generation {
+        return refuse("the current runtime owner differs from the writer lease");
+    }
+    let epoch: se_types::HostEpoch = serde_json::from_str(&epoch)
+        .map_err(|error| invalid(format!("runtime owner epoch is not valid: {error}")))?;
+    // Native host generations identify process custody; the writer generation
+    // is a separate monotonic store fence, not the native epoch's generation.
     if marker["lifecycle"] != lifecycle
-        || marker["generation"].as_u64() != Some(lease.generation)
+        || marker["generation"].as_u64() != Some(epoch.generation.get())
         || marker["revision"].as_u64() != Some(rev)
     {
         return refuse("the release names another lifecycle, host generation or revision");
