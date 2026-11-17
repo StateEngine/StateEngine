@@ -53,6 +53,7 @@ pub fn missing(home: String, generated_at: String, checked: String) -> StatusOut
             reason: Some("StateEngine has not been initialized in this home.".into()),
         },
         runtime: RuntimeView {
+            detachment_notice: None,
             state: "unknown".into(),
             detachment: None,
             host: None,

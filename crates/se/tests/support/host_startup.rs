@@ -287,7 +287,25 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
         ready.endpoint.epoch.owner.fields().pid.get(),
         ready.ready.identity.pid.0
     );
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    match ready.ready.detachment {
+        se_proc::RuntimeDetachment::UserManagerUnit => {
+            let scope = ready
+                .ready
+                .lifetime
+                .user_scope
+                .as_ref()
+                .ok_or("user-manager detachment has no native scope observation")?;
+            assert!(ready.ready.lifetime.session_reason.is_none());
+            se_proc::verify_runtime_user_scope(scope, ready.ready.identity.pid, bound()?.at())
+                .map_err(|error| format!("native runtime user scope: {error:?}"))?;
+        }
+        se_proc::RuntimeDetachment::SessionOnly { .. } => {
+            assert!(ready.ready.lifetime.user_scope.is_none());
+        }
+        _ => return Err("Linux startup reported a non-Linux detachment mode".into()),
+    }
+    #[cfg(target_os = "macos")]
     assert!(matches!(
         ready.ready.detachment,
         se_proc::RuntimeDetachment::SessionOnly { .. }
