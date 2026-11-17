@@ -2,6 +2,7 @@
 # user pathname, program text or deletion plan is accepted from command arguments.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$tempBefore = @(Get-ChildItem -LiteralPath $env:TEMP -Force | ForEach-Object { $_.Name })
 Add-Type -TypeDefinition @'
 using System;
 using System.IO;
@@ -96,6 +97,7 @@ public static class SeUninstallObjects {
  }
 }
 '@
+$tempAfter = @(Get-ChildItem -LiteralPath $env:TEMP -Force | ForEach-Object { $_.Name })
 $held = [Collections.Generic.List[IDisposable]]::new()
 $completion = $null
 $report = $null
@@ -198,7 +200,12 @@ try {
         [SeUninstallObjects]::SameName($stage.path,$stage.identity)
         if ([SeUninstallObjects]::Unlink($handle,$stage.path,$true) -ne 0) {
             $names = @([IO.Directory]::EnumerateFileSystemEntries($stage.path) | ForEach-Object { [IO.Path]::GetFileName($_) })
-            throw ('Private staging directory remains nonempty; cwd=' + [Environment]::CurrentDirectory + '; location=' + (Get-Location).Path + '; stage=' + $stage.path + '; entries=' + ($names -join ','))
+            $details = @(Get-ChildItem -LiteralPath $stage.path -Force | ForEach-Object {
+                $item = $_
+                $children = if ($item.PSIsContainer) { @(Get-ChildItem -LiteralPath $item.FullName -Force | ForEach-Object { $_.Name }) -join ',' } else { '' }
+                $item.Name + ':' + $item.Attributes.ToString() + ':[' + $children + ']'
+            })
+            throw ('Private staging directory remains nonempty; cwd=' + [Environment]::CurrentDirectory + '; location=' + (Get-Location).Path + '; stage=' + $stage.path + '; entries=' + ($names -join ',') + '; before=' + ($tempBefore -join ',') + '; after=' + ($tempAfter -join ',') + '; details=' + ($details -join ','))
         }
         [SeUninstallObjects]::Absent($stage.path)
     }
