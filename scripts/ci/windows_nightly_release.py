@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tomllib
 
 from nightly_release_validation import extract_artifact, validate
 
@@ -24,23 +25,44 @@ def main():
             or schedule.get('head_sha') != os.environ.get('GITHUB_SHA')):
         raise RuntimeError('Scheduled main workflow identity differs')
     started = datetime.fromisoformat(schedule['created_at'].replace('Z', '+00:00')).astimezone(timezone.utc)
-    label = 'nightly-' + started.date().isoformat()
+    label = 'nightly-' + started.date().isoformat() + '-' + workflow_id
     runs = json.loads(gh('run', 'list', '--repo', repository, '--workflow', 'release.yml',
                          '--event', 'workflow_dispatch', '--branch', 'main', '--limit', '100',
-                         '--json', 'databaseId,displayTitle,headSha,createdAt'))
+                         '--json', 'databaseId,displayTitle,headSha,createdAt,status,conclusion'))
     candidates = [run for run in runs if run.get('displayTitle') == label
-                  and datetime.fromisoformat(run['createdAt'].replace('Z', '+00:00')).date() == started.date()]
+                  and datetime.fromisoformat(run['createdAt'].replace('Z', '+00:00')).date() == started.date()
+                  and not (run.get('status') == 'completed' and run.get('conclusion') == 'cancelled')]
+    if not candidates:
+        scheduled_head = os.environ.get('GITHUB_SHA')
+        branch = json.loads(gh('api', f'repos/{repository}/commits/main'))
+        if branch.get('sha') != scheduled_head:
+            raise RuntimeError('Main moved after the nightly workflow was started')
+        version = tomllib.loads(Path('Cargo.toml').read_text(encoding='utf-8'))['workspace']['package']['version']
+        if not isinstance(version, str) or not re.fullmatch(r'[A-Za-z0-9.+-]+', version):
+            raise RuntimeError('Workspace release version is invalid')
+        body = json.dumps({'ref':'main','inputs':{'version':version,'nightly':label},'return_run_details':True})
+        dispatched = subprocess.run(['gh','api','--method','POST','-H','X-GitHub-Api-Version: 2026-03-10',
+                                     f'repos/{repository}/actions/workflows/release.yml/dispatches','--input','-'],
+                                    input=body.encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    timeout=90, check=True)
+        run_id = json.loads(dispatched.stdout).get('workflow_run_id')
+        if type(run_id) is not int or run_id <= 0:
+            raise RuntimeError('Nightly release dispatch returned no run identity')
+        candidates = [{'databaseId':run_id, 'headSha':scheduled_head}]
     if len(candidates) != 1:
         raise RuntimeError('The scheduled night does not have exactly one named release run')
     release = candidates[0]
     run_id, commit = release.get('databaseId'), release.get('headSha')
-    if type(run_id) is not int or run_id <= 0 or not isinstance(commit, str) or not re.fullmatch('[a-f0-9]{40}', commit):
+    if (type(run_id) is not int or run_id <= 0 or not isinstance(commit, str)
+            or not re.fullmatch('[a-f0-9]{40}', commit) or commit != os.environ.get('GITHUB_SHA')):
         raise RuntimeError('The release run has invalid identities')
     subprocess.run(['gh', 'run', 'watch', str(run_id), '--repo', repository, '--exit-status'],
                    stdin=subprocess.DEVNULL, timeout=10800, check=True)
     url = f'repos/{repository}/actions/runs/{run_id}'
     observed = json.loads(gh('api', url))
-    if (observed.get('head_sha') != commit or observed.get('status') != 'completed'
+    if (observed.get('head_sha') != commit or observed.get('head_branch') != 'main'
+            or observed.get('event') != 'workflow_dispatch' or observed.get('display_title') != label
+            or observed.get('status') != 'completed'
             or observed.get('conclusion') != 'success'
             or str(observed.get('path', '')).split('@')[0] != '.github/workflows/release.yml'):
         raise RuntimeError('Hosted release did not finish successfully on the selected source')

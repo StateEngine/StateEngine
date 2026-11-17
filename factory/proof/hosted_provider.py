@@ -147,12 +147,11 @@ def acquire(config, run, directory, deadline, checkpoint):
     settings = config['windows']
     repo = settings['release_repository']
     started = datetime.fromisoformat(run['started_at']).astimezone(timezone.utc)
-    datestring = started.date().isoformat()
     try:
         from github_access import environment
         env = environment(settings)
         candidates = json.loads(gh('run', 'list', '--repo', repo, '--workflow', 'windows-nightly.yml',
-                                   '--event', 'schedule', '--branch', 'main', '--created', datestring,
+                                   '--event', 'schedule', '--branch', 'main',
                                    '--limit', '100', '--json', 'databaseId,createdAt', env=env))
         candidates = [item for item in candidates if datetime.fromisoformat(item['createdAt'].replace('Z', '+00:00'))
                       >= started.replace(microsecond=0)]
@@ -187,6 +186,24 @@ def acquire(config, run, directory, deadline, checkpoint):
         if (len(providers) != 1 or providers[0].get('status') != 'completed'
                 or providers[0].get('conclusion') not in ('success', 'failure')):
             raise ValueError('protected provider job did not complete')
+        release_rows = json.loads(gh('run', 'list', '--repo', repo, '--workflow', 'release.yml',
+                                     '--event', 'workflow_dispatch', '--branch', 'main', '--limit', '100',
+                                     '--json', 'databaseId,displayTitle,headSha,status,conclusion,createdAt', env=env))
+        workflow_started = datetime.fromisoformat(metadata['created_at'].replace('Z', '+00:00'))
+        if workflow_started.tzinfo is None:
+            raise ValueError('scheduled workflow creation time has no timezone')
+        label = 'nightly-' + workflow_started.astimezone(timezone.utc).date().isoformat() + '-' + str(workflow)
+        releases = [row for row in release_rows if row.get('displayTitle') == label
+                    and not (row.get('status') == 'completed' and row.get('conclusion') == 'cancelled')]
+        if len(releases) != 1 or type(releases[0].get('databaseId')) is not int:
+            raise ValueError('this night has no unique non-cancelled release')
+        release = releases[0]
+        source = (run.get('product') or {}).get('commit')
+        if (release.get('headSha') != source or release.get('status') != 'completed'
+                or release.get('conclusion') != 'success'):
+            raise ValueError('nightly release is not a successful build of the pinned source')
+        run['windows_release'] = {'state':'available','run_id':str(release['databaseId']),
+                                  'source_commit':source,'label':label}
         artifacts = json.loads(gh('api', url + '/artifacts', env=env)).get('artifacts', [])
         matches = [item for item in artifacts if item.get('name') == 'windows-nightly-proof' and item.get('expired') is False]
         if len(matches) != 1:
