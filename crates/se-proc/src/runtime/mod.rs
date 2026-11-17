@@ -1,6 +1,7 @@
 mod arena;
 mod launch_stop;
 pub(crate) mod notify;
+mod observation;
 mod recovery;
 mod validate;
 #[cfg(target_os = "linux")]
@@ -44,6 +45,7 @@ impl NativeProcessRuntime {
                 "original deadline elapsed",
             ));
         }
+        let root = self.describe(process)?.root;
         loop {
             #[cfg(all(test, windows))]
             let observed = owned_observation_tests::sample(self, process);
@@ -51,15 +53,10 @@ impl NativeProcessRuntime {
             let observed = self.observe(process);
             let original = match observed {
                 Ok(observed) => return Ok(observed),
-                Err(error)
-                    if cfg!(windows)
-                        && error.code == ProcErrorCode::IdentityUnreadable
-                        && error.native.as_ref().is_some_and(|failure| {
-                            failure.api == "QueryFullProcessImageNameW" && failure.code == Some(5)
-                        }) =>
-                {
-                    error
-                }
+                // A descendant may exec between image reads. Re-observe the
+                // whole owned scope without renewing the caller's bound; root
+                // image changes and birth replacement still refuse immediately.
+                Err(error) if observation::settling(&error, &root) => error,
                 Err(error) => return Err(error),
             };
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());

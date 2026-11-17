@@ -78,7 +78,7 @@ impl LaunchCoordinator {
             let Some(binding) = state
                 .binding
                 .as_ref()
-                .and_then(|binding| binding.acp.as_ref())
+                .and_then(|binding| binding.get::<crate::harness::acp::Binding>())
             else {
                 return Ok(Read::Unknown {
                     what: "The original native lifecycle has no initialized protocol connection"

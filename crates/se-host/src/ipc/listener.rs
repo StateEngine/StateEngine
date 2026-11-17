@@ -11,8 +11,11 @@ use crate::client::{
 use channel::{bounded, receive, send};
 #[path = "listener/connection.rs"]
 mod connection;
+#[path = "listener/refusal.rs"]
+mod refusal;
 #[path = "listener/retirement.rs"]
 mod retirement;
+use refusal::send_refusal;
 #[cfg(windows)]
 #[path = "listener/startup.rs"]
 mod startup;
@@ -230,7 +233,7 @@ impl AcceptedIpcStream {
             let error = capacity_error("IPC pre-authentication capacity is occupied");
             let envelope =
                 se_types::ErrorEnvelope::new(error.body.clone(), &se_types::RenderCx::default())?;
-            send(&stream, &auth::encode_hello_refusal(&envelope)?, &deadline).await?;
+            send_refusal(&stream, &auth::encode_hello_refusal(&envelope)?, &deadline).await?;
             return Err(error);
         };
         let permit = bounded(&deadline, self.blocking.clone().acquire_owned())
@@ -352,7 +355,7 @@ impl PendingIpcHandshake {
                 wire::DEFAULT_REPLY_BYTES as usize,
             )?,
         };
-        send(&self.stream, &frame, &self.deadline).await
+        send_refusal(&self.stream, &frame, &self.deadline).await
     }
     /// The unforgeable crate-local admission value comes from the runtime's
     /// current core authorization. No external caller can manufacture it.
@@ -372,7 +375,7 @@ impl PendingIpcHandshake {
                     error.body.clone(),
                     &se_types::RenderCx::default(),
                 )?;
-                send(
+                send_refusal(
                     &self.stream,
                     &auth::encode_hello_refusal(&envelope)?,
                     &self.deadline,

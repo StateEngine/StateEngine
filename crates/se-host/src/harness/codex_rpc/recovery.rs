@@ -123,13 +123,7 @@ impl CodexHarness {
                 let _ = close(&binding, &cx).await;
                 return Err(error);
             }
-            Ok(HarnessBinding {
-                claude: None,
-                codex: Some(binding),
-                secode: None,
-                acp: None,
-                _private: (),
-            })
+            Ok(HarnessBinding::new(binding))
         }
     }
 }
