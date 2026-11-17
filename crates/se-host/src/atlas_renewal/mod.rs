@@ -16,7 +16,7 @@ use se_atlas::{
     errors::AtlasResult,
     lifecycle::*,
     model::*,
-    parse::{ParserProfile, SemanticParser},
+    parse::ParserProfile,
     scheduler::Scheduled,
     source::RegisteredSource,
     update::{batch, file, observation},
@@ -92,7 +92,7 @@ enum Phase {
 }
 pub struct NativeRenewal {
     started: Option<se_types::UnixMicros>,
-    profiles: Vec<ParserProfile>,
+    parser: crate::atlas_parse::Parser,
     roots: Vec<Root>,
     mappings: Vec<Mapping>,
     cycle: Option<Cycle>,
@@ -124,7 +124,7 @@ impl NativeRenewal {
             .and_then(|n| se_types::UnixMicros::new(n).ok());
         Ok(Self {
             started,
-            profiles,
+            parser: crate::atlas_parse::Parser::new(profiles),
             roots: Vec::with_capacity(2),
             mappings: Vec::new(),
             cycle: None,
@@ -297,6 +297,7 @@ impl NativeRenewal {
                 "the same root",
             ));
         }
+        self.parser.close(deadline)?;
         // Native handles close even when an absent cache cannot lend SQL.
         if let Some(index) = self.roots.iter().position(|r| &r.id == root) {
             self.roots[index].native = None;

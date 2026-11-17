@@ -257,6 +257,7 @@ fn state(index: &IndexSummary) -> String {
             }
             CoverageReason::ChangedDuringRead => "source bytes changed during the read",
             CoverageReason::TimeLimit => "source work reached its time limit",
+            CoverageReason::SchedulingStall => "source work stalled while waiting for the worker",
             CoverageReason::SourceBytesLimit => "source exceeds the admitted byte limit",
             _ => continue,
         };

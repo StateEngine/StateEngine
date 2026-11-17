@@ -1,4 +1,4 @@
-//! One finite parse, no source persistence and no resident parser pool.
+//! Parser primitive for a contained caller; the parent enforces its deadline.
 mod budget;
 mod extract;
 mod imports;
@@ -22,7 +22,7 @@ pub struct SemanticParser {
 }
 impl SemanticParser {
     /// The contained adapter can cancel before a native allocator is exhausted.
-    /// This supplements profile/time limits and does not grant an admission.
+    /// This supplements profile/memory limits and does not grant an admission.
     pub fn set_resource_guard(&mut self, guard: fn() -> AtlasResult<()>) {
         self.resource_guard = Some(guard);
     }
@@ -153,7 +153,6 @@ impl AtlasParser for SemanticParser {
         if let Some(guard) = self.resource_guard {
             guard()?;
         }
-        let deadline = crate::clock::now() + budget.max_work;
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&grammar(language))
@@ -166,11 +165,7 @@ impl AtlasParser for SemanticParser {
                 resource_error = Some(error);
                 return ControlFlow::Break(());
             }
-            if crate::clock::now() >= deadline {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
+            ControlFlow::Continue(())
         };
         let tree = parser.parse_with_options(
             &mut |offset, _| snapshot.bytes.get(offset..).unwrap_or_default(),
@@ -181,13 +176,17 @@ impl AtlasParser for SemanticParser {
             return Err(error);
         }
         let Some(tree) = tree else {
-            return Ok(defer(CoverageReason::ParseWorkLimit));
+            return Err(failure(
+                &snapshot.path,
+                language,
+                "native parser returned no tree".into(),
+            ));
         };
         let arena = budget::Arena::new(
             profile.extraction_bytes,
             budget.max_rows.min(profile.max_rows),
         );
-        let result = extract::extract(&self.scope, snapshot, language, &tree, deadline, arena);
+        let result = extract::extract(&self.scope, snapshot, language, &tree, arena);
         // Tree and parser are owned by this call. Neither a failed parse nor a
         // caller forgetting release_scratch can retain them between work quanta.
         drop(tree);

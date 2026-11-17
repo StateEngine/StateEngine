@@ -8,6 +8,9 @@ pub struct ColdJob {
     expected: Option<Vec<u8>>,
     history: Option<super::history::Plan>,
     deadline: Instant,
+    parse_deadline: Option<Instant>,
+    parse_stall_deadline: Option<Instant>,
+    parse_cpu_start: Option<Duration>,
     completion: Option<IndexSummary>,
     completed: u64,
     discovered: u64,
@@ -56,18 +59,26 @@ impl ColdJob {
             return Err(failure("expected cold epoch is stale before spawn"));
         }
         let deadline = Instant::now() + Duration::from_secs(900);
-        let worker = se_proc::atlas_worker::AtlasWorker::spawn(
+        let worker = se_proc::atlas_worker::AtlasWorker::spawn_bounded(
             image,
             &serde_json::to_vec(&request).map_err(failure)?,
             deadline,
         )
-        .map_err(failure)?;
+        .map_err(|error| {
+            crate::atlas_parse::cleanup_error(
+                error,
+                deadline.saturating_duration_since(Instant::now()),
+            )
+        })?;
         Ok(Self {
             worker,
             request,
             expected,
             history,
             deadline,
+            parse_deadline: None,
+            parse_stall_deadline: None,
+            parse_cpu_start: None,
             completion: None,
             completed: 0,
             discovered: 0,
@@ -82,21 +93,59 @@ impl ColdJob {
     pub(crate) fn discovered_files(&self) -> u64 {
         self.discovered
     }
+    pub fn parse_deadline(&self) -> Option<Instant> {
+        self.parse_deadline
+    }
+    pub fn next_deadline(&self) -> Instant {
+        self.parse_deadline
+            .unwrap_or(self.deadline)
+            .min(self.deadline)
+    }
+    pub fn cancellation_deadline(&self) -> Instant {
+        self.parse_stall_deadline.map_or(self.deadline, |end| {
+            (end + Duration::from_millis(300)).min(self.deadline)
+        })
+    }
     pub fn wait_ready(&mut self, deadline: Instant) -> AtlasResult<bool> {
         self.worker
-            .wait_ready(deadline)
-            .map_err(|error| self.native_failure(error))
+            .wait_ready(deadline.min(self.next_deadline()))
+            .map_err(|error| self.native_io_failure(error))
     }
     #[cfg(unix)]
     pub fn readiness_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         self.worker.readiness_fd()
     }
     pub fn cancel(&mut self) -> AtlasResult<()> {
-        self.worker.cancel().map_err(failure)
+        self.cancel_until(
+            (Instant::now() + Duration::from_millis(200)).min(self.cancellation_deadline()),
+        )
     }
     /// Shutdown lends its remaining host budget to exact native cancellation.
     pub fn cancel_until(&mut self, deadline: Instant) -> AtlasResult<()> {
-        self.worker.cancel_until(deadline).map_err(failure)
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        self.worker
+            .cancel_until(deadline)
+            .map_err(|error| crate::atlas_parse::cleanup_error(error, remaining))
+    }
+    fn reject(&mut self, reason: &'static str) -> SeError {
+        let rejected = failure(reason);
+        match self.cancel() {
+            Ok(()) => rejected,
+            Err(cancel) => rejected.with_cause(cancel),
+        }
+    }
+    fn native_io_failure(&mut self, error: std::io::Error) -> SeError {
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ) {
+            crate::atlas_parse::cleanup_error(
+                error,
+                self.deadline.saturating_duration_since(Instant::now()),
+            )
+        } else {
+            self.native_failure(error)
+        }
     }
     fn native_failure(&mut self, reason: impl std::fmt::Display) -> SeError {
         let stderr = self.stderr_report();
@@ -116,6 +165,43 @@ impl ColdJob {
             },
         ))
     }
+    fn check_file_work(&mut self) -> AtlasResult<()> {
+        let Some(start) = self.parse_cpu_start else {
+            return Ok(());
+        };
+        let end = self
+            .parse_stall_deadline
+            .ok_or_else(|| failure("cold file stall deadline absent"))?;
+        let current = match self.worker.cpu_time() {
+            Ok(current) => current,
+            Err(error) => {
+                if let Some(status) = self.worker.try_reap().map_err(failure)? {
+                    return Err(self.native_failure(format!("cold child exited {status}")));
+                }
+                return Err(failure(error));
+            }
+        };
+        let cpu = current
+            .checked_sub(start)
+            .ok_or_else(|| failure("cold worker CPU clock moved backwards"))?;
+        let error = if cpu >= Duration::from_millis(250) {
+            Some(crate::atlas_parse::cpu_expired(Duration::from_millis(200)))
+        } else if Instant::now() >= self.deadline {
+            Some(crate::atlas_parse::stall(Duration::from_secs(900)))
+        } else if Instant::now() >= end {
+            Some(crate::atlas_parse::stall(Duration::from_secs(5)))
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            if let Err(cancel) = self.cancel_until(self.cancellation_deadline()) {
+                return Err(cancel.with_cause(error));
+            }
+            return Err(error);
+        }
+        self.parse_deadline = Some((Instant::now() + Duration::from_millis(10)).min(end));
+        Ok(())
+    }
     #[expect(
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
@@ -124,17 +210,51 @@ impl ColdJob {
         while let Some(bytes) = self
             .worker
             .receive()
-            .map_err(|error| self.native_failure(format!("cold channel failure: {error}")))?
+            .map_err(|error| self.native_io_failure(error))?
         {
             let reply: protocol::Reply = serde_json::from_slice(&bytes).map_err(failure)?;
             match reply {
                 protocol::Reply::Working { job, path, phase } => {
                     if job != self.request.job {
-                        self.cancel()?;
-                        return Err(failure("foreign cold phase report"));
+                        return Err(self.reject("foreign cold phase report"));
                     }
                     if let Some(path) = path {
                         self.last_path = Some(path);
+                    }
+                    if matches!(phase, protocol::Phase::SourceRead) {
+                        if self.parse_cpu_start.is_some() {
+                            return Err(failure("duplicate source read phase"));
+                        }
+                        // The worker is waiting; setup CPU is outside the file budget.
+                        self.parse_cpu_start = Some(self.worker.cpu_time().map_err(failure)?);
+                        let end = (Instant::now() + Duration::from_secs(5)).min(self.deadline);
+                        self.parse_stall_deadline = Some(end);
+                        self.parse_deadline =
+                            Some((Instant::now() + Duration::from_millis(10)).min(end));
+                        self.worker.send_control(b"source", end).map_err(|error| {
+                            crate::atlas_parse::cleanup_error(
+                                error,
+                                end.saturating_duration_since(Instant::now()),
+                            )
+                        })?;
+                    } else if matches!(phase, protocol::Phase::Parse) {
+                        if self.parse_cpu_start.is_none() {
+                            return Err(failure("parse phase without source read authorization"));
+                        }
+                    } else {
+                        self.parse_deadline = None;
+                        self.parse_stall_deadline = None;
+                        self.parse_cpu_start = None;
+                        if matches!(phase, protocol::Phase::Resolve | protocol::Phase::Commit) {
+                            self.worker.send_control(b"source", self.deadline).map_err(
+                                |error| {
+                                    crate::atlas_parse::cleanup_error(
+                                        error,
+                                        self.deadline.saturating_duration_since(Instant::now()),
+                                    )
+                                },
+                            )?;
+                        }
                     }
                     self.last_phase = phase;
                 }
@@ -149,10 +269,9 @@ impl ColdJob {
                         || discovered > u64::from(self.request.max_files)
                         || completed > u64::from(self.request.max_files) * 2
                     {
-                        self.cancel()?;
-                        return Err(failure(
-                            "cold progress does not match the one-use job/bounds",
-                        ));
+                        return Err(
+                            self.reject("cold progress does not match the one-use job/bounds")
+                        );
                     }
                     self.discovered = discovered;
                     self.completed = completed;
@@ -176,13 +295,12 @@ impl ColdJob {
                                     }
                                 )))
                     {
-                        self.cancel()?;
-                        return Err(failure(
-                            "cold completion does not match job/root/epoch or explicit partial discovery",
-                        ));
+                        return Err(self.reject("cold completion does not match job/root/epoch or explicit partial discovery"));
                     }
                     self.completion = Some(*summary);
-                    self.worker.acknowledge_completion().map_err(failure)?;
+                    self.worker.acknowledge_completion().map_err(|error| {
+                        crate::atlas_parse::cleanup_error(error, Duration::from_millis(200))
+                    })?;
                     self.peak_observed_bytes = self.worker.peak_observed_bytes();
                 }
                 protocol::Reply::Failed { job, error } => {
@@ -193,10 +311,15 @@ impl ColdJob {
                     } else {
                         failure("foreign failed cold job")
                     };
+                    if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall")
+                    {
+                        return Err(error);
+                    }
                     return Err(self.native_failure(&error).with_cause(error));
                 }
             }
         }
+        self.check_file_work()?;
         let Some(status) = self
             .worker
             .try_reap()

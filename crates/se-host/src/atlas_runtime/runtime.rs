@@ -128,6 +128,12 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
         })();
         match result {
             Err(error) if se_atlas::controller::quantum_expired(&error) => {
+                let reason = if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall")
+                {
+                    CoverageReason::SchedulingStall
+                } else {
+                    CoverageReason::TimeLimit
+                };
                 let root = self
                     .roots
                     .iter_mut()
@@ -137,20 +143,10 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
                 // readiness and the controller's unfinished work for the next
                 // finite slice, with an explicit non-current observation.
                 if !matches!(root.summary.state, IndexState::Partial { .. }) {
-                    root.summary.state = IndexState::VerificationNeeded {
-                        reason: CoverageReason::TimeLimit,
-                    };
+                    root.summary.state = IndexState::VerificationNeeded { reason };
                 }
-                if !root
-                    .summary
-                    .coverage
-                    .reasons
-                    .contains(&CoverageReason::TimeLimit)
-                {
-                    root.summary
-                        .coverage
-                        .reasons
-                        .push(CoverageReason::TimeLimit);
+                if !root.summary.coverage.reasons.contains(&reason) {
+                    root.summary.coverage.reasons.push(reason);
                 }
                 Ok(Step {
                     report: WorkReport {
@@ -284,6 +280,17 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             "record erasure requires the bounded L6 record-feed maintenance path",
         ))
     }
+    fn child_custody_pending(&self, root: &RootId) -> bool {
+        #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+        {
+            self.child_failure.is_some() && self.active.as_ref().is_some_and(|(_, id)| id == root)
+        }
+        #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+        {
+            let _ = root;
+            false
+        }
+    }
     fn child_request(&mut self) -> AtlasResult<Option<WorkerRequest>> {
         Ok(self.pending.take())
     }
@@ -321,6 +328,23 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
                     }
                     WorkerExit::Failed { error } => {
                         root.summary.state = IndexState::Suspended { reason: error }
+                    }
+                    WorkerExit::Stalled => {
+                        root.summary.state = IndexState::VerificationNeeded {
+                            reason: CoverageReason::SchedulingStall,
+                        };
+                        if !root
+                            .summary
+                            .coverage
+                            .reasons
+                            .contains(&CoverageReason::SchedulingStall)
+                        {
+                            root.summary
+                                .coverage
+                                .reasons
+                                .push(CoverageReason::SchedulingStall);
+                        }
+                        receipt = ScheduleReceipt::ReconciliationRequired;
                     }
                     _ => {
                         root.summary.state = IndexState::VerificationNeeded {

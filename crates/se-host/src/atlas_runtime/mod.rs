@@ -54,7 +54,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
     pub fn new(
         home: PathBuf,
         image: PathBuf,
-        driver: D,
+        mut driver: D,
         profile: Option<SqlProfile>,
     ) -> AtlasResult<Self> {
         if !home.is_absolute() || !image.is_absolute() {
@@ -62,6 +62,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                 "absolute owned home and installed image required",
             ));
         }
+        driver.bind_parser_image(&image)?;
         Ok(Self {
             home,
             #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
@@ -161,6 +162,14 @@ impl<D: RenewalDriver> NativeRuntime<D> {
         self.child.as_ref().map(|c| c.pid())
     }
     #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+    pub fn child_deadline(&self) -> Option<Instant> {
+        self.child.as_ref().map(|child| child.next_deadline())
+    }
+    #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+    pub fn child_parse_deadline(&self) -> Option<Instant> {
+        self.child.as_ref().and_then(|child| child.parse_deadline())
+    }
+    #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
     pub fn wait_child_ready(&mut self, deadline: Instant) -> AtlasResult<bool> {
         self.child
             .as_mut()
@@ -223,7 +232,12 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             Err(error) => {
                 return Ok(Some(WorkerEvent::Exited {
                     job,
-                    outcome: WorkerExit::Failed { error: error.body },
+                    outcome: if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall")
+                    {
+                        WorkerExit::Stalled
+                    } else {
+                        WorkerExit::Failed { error: error.body }
+                    },
                 }));
             }
         };
@@ -283,17 +297,42 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                 }))
             }
             Err(error) => {
+                let stalled = matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall");
                 self.child_failure = Some(error.body.clone());
-                if let Err(cancel) = child.cancel() {
-                    // Keep exact child custody and the original protocol/native
-                    // failure; cleanup latency must not erase the crash cause.
+                if let Err(cancel) = child.cancel_until(child.cancellation_deadline()) {
+                    // Retain the original failure and child custody while cleanup waits.
+                    if matches!(cancel.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall")
+                        && let Some(root) = self
+                            .roots
+                            .iter_mut()
+                            .find(|root| root.summary.root == child.request.root)
+                    {
+                        root.summary.state = IndexState::VerificationNeeded {
+                            reason: CoverageReason::SchedulingStall,
+                        };
+                        if !root
+                            .summary
+                            .coverage
+                            .reasons
+                            .contains(&CoverageReason::SchedulingStall)
+                        {
+                            root.summary
+                                .coverage
+                                .reasons
+                                .push(CoverageReason::SchedulingStall);
+                        }
+                    }
                     return Err(cancel.with_cause(error));
                 }
                 self.child.take();
                 self.child_failure = None;
                 Ok(Some(WorkerEvent::Exited {
                     job,
-                    outcome: WorkerExit::Failed { error: error.body },
+                    outcome: if stalled {
+                        WorkerExit::Stalled
+                    } else {
+                        WorkerExit::Failed { error: error.body }
+                    },
                 }))
             }
         }
@@ -334,6 +373,10 @@ pub fn drive_child<D: RenewalDriver>(controller: &mut NativeController<D>) -> At
 }
 
 pub trait RenewalDriver {
+    /// Use the same installed image already owned by the native runtime.
+    fn bind_parser_image(&mut self, _image: &std::path::Path) -> AtlasResult<()> {
+        Ok(())
+    }
     fn step(
         &mut self,
         source: &RegisteredSource<NativeAtlasSource>,

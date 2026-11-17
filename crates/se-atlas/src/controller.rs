@@ -46,6 +46,10 @@ pub trait Runtime {
     ) -> AtlasResult<CloseResult>;
     fn remove(&mut self, root: &RootId) -> AtlasResult<CacheRemoval>;
     fn forget(&mut self, root: &RootId, events: &[se_types::EventId]) -> AtlasResult<CacheRemoval>;
+    /// Exact child cleanup still owns the root after a stalled deadline.
+    fn child_custody_pending(&self, _root: &RootId) -> bool {
+        false
+    }
     fn child_request(&mut self) -> AtlasResult<Option<WorkerRequest>>;
     fn child_event(&mut self, event: WorkerEvent) -> AtlasResult<(RootId, ScheduleReceipt)>;
 }
@@ -86,6 +90,7 @@ impl<R: Runtime> Controller<R> {
             .as_ref()
             .is_some_and(|work| &work.root == root)
             || self.scheduler.pending(root)
+            || self.runtime.child_custody_pending(root)
     }
     /// Lookup only: never registers or activates a root on a query path.
     pub fn registered_root(
@@ -132,7 +137,16 @@ impl<R: Runtime> Controller<R> {
                 ));
         let native_progress = matches!((&summary.state, &root.summary.state),
             (IndexState::ColdIndexing { job: observed, .. }, IndexState::ColdIndexing { job: published, .. }) if observed == published);
-        if !retain_failure && !native_progress {
+        let native_stall = matches!(
+            (&summary.state, &root.summary.state),
+            (
+                IndexState::VerificationNeeded {
+                    reason: CoverageReason::SchedulingStall
+                },
+                IndexState::ColdIndexing { .. }
+            )
+        );
+        if !retain_failure && !native_progress && !native_stall {
             summary.state = root.summary.state.clone();
         }
         Ok(summary)
@@ -316,7 +330,12 @@ impl<R: Runtime> AtlasController for Controller<R> {
                     // source work. Keep the error visible and retry on the next
                     // host work turn with a fresh, finite allowance.
                     root.summary.state = IndexState::VerificationNeeded {
-                        reason: CoverageReason::TimeLimit,
+                        reason: if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall")
+                        {
+                            CoverageReason::SchedulingStall
+                        } else {
+                            CoverageReason::TimeLimit
+                        },
                     };
                     self.in_flight = Some(work);
                     return Err(error);
@@ -452,6 +471,13 @@ impl<R: Runtime> AtlasController for Controller<R> {
             }),
             _ => None,
         };
+        let stalled = matches!(
+            &event,
+            WorkerEvent::Exited {
+                outcome: WorkerExit::Stalled,
+                ..
+            }
+        );
         let (id, receipt) = self.runtime.child_event(event)?;
         self.root(&id)?;
         if let Some(state) = failed {
@@ -468,7 +494,20 @@ impl<R: Runtime> AtlasController for Controller<R> {
             receipt,
             ScheduleReceipt::Queued | ScheduleReceipt::ReconciliationRequired
         ) {
-            self.enqueue(id, SourceHint::Reconcile(ReconcileReason::HostRestart))?;
+            self.enqueue(
+                id.clone(),
+                SourceHint::Reconcile(ReconcileReason::HostRestart),
+            )?;
+        }
+        if stalled
+            && let Some(root) = self
+                .roots
+                .iter_mut()
+                .find(|root| root.registration.root == id)
+        {
+            root.summary.state = IndexState::VerificationNeeded {
+                reason: CoverageReason::SchedulingStall,
+            };
         }
         Ok(receipt)
     }
@@ -500,7 +539,13 @@ fn empty_coverage() -> Coverage {
 pub fn quantum_expired(error: &se_types::SeError) -> bool {
     match error.body.detail() {
         se_types::Detail::DeadlineExceeded(detail) => {
-            matches!(detail.op.as_str(), "Atlas SQL" | "Atlas source read")
+            matches!(
+                detail.op.as_str(),
+                "Atlas SQL"
+                    | "Atlas source read"
+                    | "Atlas parse attempt"
+                    | "Atlas scheduling stall"
+            )
         }
         se_types::Detail::AtlasResourceBudget(detail) => {
             detail.resource == "renewal work deadline" && detail.available == 0

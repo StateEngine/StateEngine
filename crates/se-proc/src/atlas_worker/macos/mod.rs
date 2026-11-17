@@ -1,4 +1,5 @@
 //! macOS native socket custody; the index builder is shared with every platform.
+use super::lease::Lease;
 use super::*;
 use crate::native_ipc::{IpcIoBound, IpcPeerSide};
 use std::{
@@ -8,22 +9,10 @@ use std::{
         unix::{net::UnixStream, process::CommandExt},
     },
     process::{Child, Command, ExitStatus, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 mod limits;
-static CHILD_ACTIVE: AtomicBool = AtomicBool::new(false);
-struct Lease(bool);
-impl Drop for Lease {
-    fn drop(&mut self) {
-        if self.0 {
-            CHILD_ACTIVE.store(false, Ordering::Release);
-        }
-    }
-}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Envelope {
@@ -45,28 +34,68 @@ pub struct AtlasWorker {
     tail: super::stderr::StderrTail,
     exit: File,
     deadline: Instant,
+    cancellation_deadline: Option<Instant>,
+    startup_error: Option<io::Error>,
     incoming: Vec<u8>,
     reaped: bool,
     peak: u64,
     lease: Lease,
 }
 impl AtlasWorker {
+    /// CPU consumed by the retained, unreaped worker in native nanoseconds.
+    pub fn cpu_time(&self) -> io::Result<Duration> {
+        if self.reaped {
+            return Err(invalid("Atlas worker CPU time unavailable after reap"));
+        }
+        // SAFETY: exact aligned native output for the retained unreaped child.
+        let mut usage: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+        // SAFETY: the PID is retained and the output matches the requested version.
+        if unsafe {
+            libc::proc_pid_rusage(
+                self.child.id() as i32,
+                libc::RUSAGE_INFO_V4,
+                (&mut usage as *mut libc::rusage_info_v4).cast(),
+            )
+        } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Duration::from_nanos(
+            usage
+                .ri_user_time
+                .checked_add(usage.ri_system_time)
+                .ok_or_else(|| invalid("worker CPU time overflow"))?,
+        ))
+    }
     pub fn spawn(image: &Path, payload: &[u8], deadline: Instant) -> io::Result<Self> {
+        Self::spawn_with_deadline(image, payload, deadline, None)
+    }
+    /// The same worker, with cancellation inside the caller's original clock.
+    pub fn spawn_bounded(image: &Path, payload: &[u8], deadline: Instant) -> io::Result<Self> {
+        Self::spawn_with_deadline(image, payload, deadline, Some(deadline))
+    }
+
+    fn spawn_with_deadline(
+        image: &Path,
+        payload: &[u8],
+        deadline: Instant,
+        cancellation_deadline: Option<Instant>,
+    ) -> io::Result<Self> {
         if !image.is_absolute()
             || payload.len() > FRAME_BYTES
-            || deadline <= Instant::now()
             || deadline.saturating_duration_since(Instant::now()) > Duration::from_secs(900)
         {
             return Err(invalid(
                 "absolute image, bounded frame and <=15 minute deadline required",
             ));
         }
-        if CHILD_ACTIVE.swap(true, Ordering::AcqRel) {
-            return Err(invalid("previous Atlas child has not been reaped"));
-        }
-        let lease = Lease(true);
-        let peer =
-            crate::native_ipc::observe_ipc_self_bounded(&bound()).map_err(io::Error::other)?;
+        let lease = acquire_lease()?;
+        remaining(deadline)?;
+        let peer = crate::native_ipc::observe_ipc_self_bounded(&IpcIoBound {
+            deadline,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        })
+        .map_err(peer_error)?;
         let envelope = Envelope {
             parent: std::process::id(),
             birth: peer.started().clone(),
@@ -79,7 +108,7 @@ impl AtlasWorker {
             return Err(invalid("cold envelope exceeds 65536 bytes"));
         }
         let (channel, child_channel) = UnixStream::pair()?;
-        channel.set_write_timeout(Some(Duration::from_secs(2)))?;
+        channel.set_write_timeout(Some(remaining(deadline)?))?;
         let fd = child_channel.as_raw_fd();
         // Prepared before fork: the child executes only native async-safe calls.
         // SAFETY: valid initialized native rlimit output.
@@ -129,6 +158,8 @@ impl AtlasWorker {
             stderr: None,
             tail: super::stderr::StderrTail::new(),
             deadline,
+            cancellation_deadline,
+            startup_error: None,
             incoming: Vec::with_capacity(FRAME_BYTES + 4),
             reaped: false,
             peak: 0,
@@ -144,7 +175,7 @@ impl AtlasWorker {
         if unsafe { libc::fcntl(stderr.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
             return Err(io::Error::last_os_error());
         }
-        write_frame(&mut worker.channel, &encoded)?;
+        worker.startup_error = worker.send_control(&encoded, deadline).err();
         worker.channel.set_nonblocking(true)?;
         Ok(worker)
     }
@@ -191,6 +222,18 @@ impl AtlasWorker {
         Ok(self.peak)
     }
     pub fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
+        // Returning custody lets the caller cancel and reap within its own
+        // deadline even when the child refuses the initial envelope.
+        if let Some(error) = self.startup_error.take() {
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "Atlas startup channel failed: {error}; {}",
+                    self.failure_diagnostic()
+                        .unwrap_or_else(|error| format!("stderr unreadable: {error}"))
+                ),
+            ));
+        }
         self.drain_stderr()?;
         if Instant::now() >= self.deadline {
             self.cancel()?;
@@ -237,13 +280,30 @@ impl AtlasWorker {
             }
         }
     }
+    /// Send only on the retained private channel, borrowing the caller's clock.
+    pub fn send_control(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<()> {
+        let remaining = deadline
+            .min(self.deadline)
+            .saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Atlas control deadline elapsed",
+            ));
+        }
+        self.channel.set_nonblocking(false)?;
+        self.channel.set_write_timeout(Some(remaining))?;
+        let result = write_frame(&mut self.channel, bytes);
+        self.channel.set_nonblocking(true)?;
+        result
+    }
     pub fn acknowledge_completion(&mut self) -> io::Result<()> {
         self.observe_memory()?;
-        self.channel.set_nonblocking(false)?;
-        self.channel
-            .set_write_timeout(Some(Duration::from_millis(200)))?;
-        write_frame(&mut self.channel, b"reap")?;
-        self.channel.set_nonblocking(true)
+        self.send_control(
+            b"reap",
+            self.deadline
+                .min(Instant::now() + Duration::from_millis(200)),
+        )
     }
     pub fn try_reap(&mut self) -> io::Result<Option<ExitStatus>> {
         let status = self.child.try_wait()?;
@@ -278,7 +338,11 @@ impl AtlasWorker {
         Ok(())
     }
     pub fn cancel(&mut self) -> io::Result<()> {
-        self.cancel_until(Instant::now() + Duration::from_millis(200))
+        let end = Instant::now() + Duration::from_millis(200);
+        self.cancel_until(
+            self.cancellation_deadline
+                .map_or(end, |bound| bound.min(end)),
+        )
     }
     /// Keep exact custody until reap or the caller's existing shutdown deadline.
     pub fn cancel_until(&mut self, deadline: Instant) -> io::Result<()> {
@@ -320,7 +384,7 @@ impl AtlasWorker {
 impl Drop for AtlasWorker {
     fn drop(&mut self) {
         if !self.reaped && self.cancel().is_err() {
-            self.lease.0 = false;
+            self.lease.retain_on_failed_reap();
         }
     }
 }
@@ -364,6 +428,13 @@ impl WorkerChannel {
     }
     pub fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
         write_frame(&mut self.0, bytes)
+    }
+    /// Source reading starts only after its owner arms the shared file clock.
+    pub fn await_source_read(&mut self) -> io::Result<()> {
+        if read_frame(&mut self.0)? != b"source" {
+            return Err(invalid("parent source read authorization absent"));
+        }
+        Ok(())
     }
     pub fn await_reap(&mut self) -> io::Result<()> {
         if read_frame(&mut self.0)? != b"reap" {

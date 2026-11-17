@@ -72,6 +72,8 @@ pub mod atlas_cold;
 #[cfg(feature = "listener")]
 mod atlas_continuity;
 pub mod atlas_hooks;
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+mod atlas_parse;
 pub mod atlas_queries;
 pub mod atlas_records;
 #[cfg(target_os = "linux")]

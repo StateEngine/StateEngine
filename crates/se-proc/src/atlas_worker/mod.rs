@@ -12,6 +12,10 @@ mod stderr;
 pub const ENTRY: &str = "--stateengine-private-atlas-cold";
 pub const FRAME_BYTES: usize = 65536;
 pub const MEMORY_BYTES: u64 = 64_000_000;
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+mod cpu;
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+pub use cpu::current_cpu_time;
 // The release image maps about 51 MB before its parser/SQL allocations. Keep
 // growth headroom above the observed 64.03 MB admission requirement, including
 // its unchanged 8 MB margin; resident memory remains capped separately at 64 MB.
@@ -25,7 +29,7 @@ mod diagnostics;
 pub use allocator::{
     release_pages as release_allocator_pages, reusable_arena_bytes, virtual_bytes,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub(crate) mod lease;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -39,6 +43,17 @@ pub use windows::{AtlasWorker, WorkerChannel};
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{AtlasWorker, WorkerChannel};
+
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+fn acquire_lease() -> io::Result<lease::Lease> {
+    lease::Lease::acquire().map_err(|error| {
+        if error.kind() == io::ErrorKind::WouldBlock {
+            invalid("previous Atlas child has not been reaped")
+        } else {
+            error
+        }
+    })
+}
 
 /// Measurement used before entering a native parser allocation. It matches
 /// the platform's cold limit; resident observation is named as such on macOS.
@@ -86,6 +101,22 @@ pub fn read_frame(reader: &mut impl Read) -> io::Result<Vec<u8>> {
     let mut bytes = vec![0; length];
     reader.read_exact(&mut bytes)?;
     Ok(bytes)
+}
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+fn remaining(deadline: Instant) -> io::Result<std::time::Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|duration| !duration.is_zero())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "Atlas worker deadline elapsed"))
+}
+#[cfg(any(windows, target_os = "macos"))]
+fn peer_error(error: crate::native_ipc::IpcNativeError) -> io::Error {
+    let kind = if error.code == crate::native_ipc::IpcNativeErrorCode::TimedOut {
+        io::ErrorKind::TimedOut
+    } else {
+        io::ErrorKind::Other
+    };
+    io::Error::new(kind, error)
 }
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)

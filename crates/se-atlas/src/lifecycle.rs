@@ -174,6 +174,7 @@ pub enum WorkerExit {
     Failed {
         error: crate::errors::AtlasFailure,
     },
+    Stalled,
     Cancelled,
     Lost,
 }
@@ -262,7 +263,7 @@ pub trait AtlasSource {
     ) -> AtlasResult<Option<SourceChunk>>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SymbolRecord {
     pub id: SymbolId,
     pub parent: Option<SymbolId>,
@@ -277,7 +278,7 @@ pub struct SymbolRecord {
     pub doc_line: String,
     pub lexical_scope: u32,
 }
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ImportRecord {
     pub spelling: String,
     pub local_name: Option<String>,
@@ -291,25 +292,25 @@ pub struct ImportRecord {
     pub reexport: bool,
     pub wildcard: bool,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ImportKind {
     Esm,
     CommonJs,
     Rust,
     Python,
 }
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct LexicalScope {
     pub parent: Option<u32>,
     pub span: Span,
 }
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum ReferenceQualifier {
     Unqualified,
     Namespace(Vec<String>),
     Dynamic,
 }
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ParsedReference {
     pub site: Reference,
     pub lexical_scope: u32,

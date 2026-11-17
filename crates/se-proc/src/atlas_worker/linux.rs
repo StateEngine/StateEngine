@@ -14,10 +14,12 @@ pub struct AtlasWorker {
     child: Child,
     channel: UnixStream,
     deadline: Instant,
+    cancellation_deadline: Option<Instant>,
+    startup_error: Option<io::Error>,
     incoming: Vec<u8>,
     reaped: bool,
     peak: u64,
-    _lease: Lease,
+    lease: Option<Lease>,
     birth_ticks: u64,
     exit: File,
     diagnostics: super::diagnostics::Diagnostics,
@@ -47,6 +49,14 @@ fn birth(pid: u32) -> io::Result<u64> {
         .map_err(|_| invalid("native birth malformed"))
 }
 impl AtlasWorker {
+    pub fn spawn(image: &Path, payload: &[u8], deadline: Instant) -> io::Result<Self> {
+        Self::spawn_with_deadline(image, payload, deadline, None)
+    }
+    /// The same worker, with cancellation inside the caller's original clock.
+    pub fn spawn_bounded(image: &Path, payload: &[u8], deadline: Instant) -> io::Result<Self> {
+        Self::spawn_with_deadline(image, payload, deadline, Some(deadline))
+    }
+
     pub fn wait_ready(&self, deadline: Instant) -> io::Result<bool> {
         let mut fd = libc::pollfd {
             fd: self.channel.as_raw_fd(),
@@ -73,17 +83,22 @@ impl AtlasWorker {
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    pub fn spawn(image: &Path, payload: &[u8], deadline: Instant) -> io::Result<Self> {
+    fn spawn_with_deadline(
+        image: &Path,
+        payload: &[u8],
+        deadline: Instant,
+        cancellation_deadline: Option<Instant>,
+    ) -> io::Result<Self> {
         if !image.is_absolute()
             || payload.len() > FRAME_BYTES
-            || deadline <= Instant::now()
             || deadline.saturating_duration_since(Instant::now()) > Duration::from_secs(900)
         {
             return Err(invalid(
                 "absolute image, bounded frame and <=15 minute deadline required",
             ));
         }
-        let mut lease = Lease::acquire()?;
+        let mut lease = acquire_lease()?;
+        remaining(deadline)?;
         let parent = std::process::id();
         let envelope = Envelope {
             parent,
@@ -99,7 +114,7 @@ impl AtlasWorker {
             return Err(invalid("cold envelope exceeds 65536 bytes"));
         }
         let (channel, child_channel) = UnixStream::pair()?;
-        channel.set_write_timeout(Some(Duration::from_secs(2)))?;
+        channel.set_write_timeout(Some(remaining(deadline)?))?;
         let fd = child_channel.as_raw_fd();
         let (diagnostics, stderr) = super::diagnostics::Diagnostics::pipe()?;
         let mut command = Command::new(image);
@@ -167,17 +182,19 @@ impl AtlasWorker {
             child,
             channel,
             deadline,
+            cancellation_deadline,
+            startup_error: None,
             incoming: Vec::with_capacity(FRAME_BYTES + 4),
             reaped: false,
             peak: 0,
-            _lease: lease,
+            lease: Some(lease),
             birth_ticks: 0,
             exit,
             diagnostics,
             _parent: parent,
         };
         worker.birth_ticks = birth(worker.child.id())?;
-        write_frame(&mut worker.channel, &encoded)?;
+        worker.startup_error = worker.send_control(&encoded, deadline).err();
         worker.channel.set_nonblocking(true)?;
         Ok(worker)
     }
@@ -186,6 +203,33 @@ impl AtlasWorker {
     }
     pub fn birth_ticks(&self) -> u64 {
         self.birth_ticks
+    }
+    /// CPU consumed by the retained, unreaped worker, excluding time descheduled.
+    pub fn cpu_time(&self) -> io::Result<Duration> {
+        if self.reaped {
+            return Err(invalid("Atlas worker CPU time unavailable after reap"));
+        }
+        let mut clock: libc::clockid_t = 0;
+        // SAFETY: the retained unreaped child cannot have its PID recycled.
+        let status =
+            unsafe { libc::clock_getcpuclockid(self.child.id() as libc::pid_t, &mut clock) };
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status));
+        }
+        // SAFETY: exact writable native timespec for the child's CPU clock.
+        let mut time: libc::timespec = unsafe { std::mem::zeroed() };
+        // SAFETY: the CPU clock is valid and the timespec is writable.
+        if unsafe { libc::clock_gettime(clock, &mut time) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let seconds =
+            u64::try_from(time.tv_sec).map_err(|_| invalid("negative worker CPU time"))?;
+        let nanos =
+            u32::try_from(time.tv_nsec).map_err(|_| invalid("invalid worker CPU nanoseconds"))?;
+        if nanos >= 1_000_000_000 {
+            return Err(invalid("invalid worker CPU nanoseconds"));
+        }
+        Ok(Duration::new(seconds, nanos))
     }
     pub fn peak_observed_bytes(&self) -> u64 {
         self.peak
@@ -227,6 +271,17 @@ impl AtlasWorker {
         Ok(self.peak)
     }
     pub fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
+        // Returning custody lets the caller cancel and reap within its own
+        // deadline even when the child refuses the initial envelope.
+        if let Some(error) = self.startup_error.take() {
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "Atlas startup channel failed: {error}; {}",
+                    self.stderr_report()
+                ),
+            ));
+        }
         self.diagnostics.drain();
         if Instant::now() >= self.deadline {
             self.cancel()?;
@@ -271,13 +326,30 @@ impl AtlasWorker {
             }
         }
     }
+    /// Send only on the retained private channel, borrowing the caller's clock.
+    pub fn send_control(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<()> {
+        let remaining = deadline
+            .min(self.deadline)
+            .saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Atlas control deadline elapsed",
+            ));
+        }
+        self.channel.set_nonblocking(false)?;
+        self.channel.set_write_timeout(Some(remaining))?;
+        let result = write_frame(&mut self.channel, bytes);
+        self.channel.set_nonblocking(true)?;
+        result
+    }
     pub fn acknowledge_completion(&mut self) -> io::Result<()> {
         self.observe_memory()?;
-        self.channel.set_nonblocking(false)?;
-        self.channel
-            .set_write_timeout(Some(Duration::from_millis(200)))?;
-        write_frame(&mut self.channel, b"reap")?;
-        self.channel.set_nonblocking(true)
+        self.send_control(
+            b"reap",
+            self.deadline
+                .min(Instant::now() + Duration::from_millis(200)),
+        )
     }
     pub fn stderr_report(&mut self) -> String {
         self.diagnostics.report()
@@ -287,12 +359,16 @@ impl AtlasWorker {
         let status = self.child.try_wait()?;
         if status.is_some() {
             self.reaped = true;
-            self._lease.release();
+            self.lease.take();
         }
         Ok(status)
     }
     pub fn cancel(&mut self) -> io::Result<()> {
-        self.cancel_until(Instant::now() + Duration::from_millis(200))
+        let end = Instant::now() + Duration::from_millis(200);
+        self.cancel_until(
+            self.cancellation_deadline
+                .map_or(end, |bound| bound.min(end)),
+        )
     }
     /// Keep exact custody until reap or the caller's existing shutdown deadline.
     pub fn cancel_until(&mut self, deadline: Instant) -> io::Result<()> {
@@ -327,15 +403,18 @@ impl AtlasWorker {
                 }
             }
             self.reaped = true;
-            self._lease.release();
+            self.lease.take();
         }
         Ok(())
     }
 }
 impl Drop for AtlasWorker {
     fn drop(&mut self) {
-        if !self.reaped && self.cancel().is_err() {
-            self._lease.retain_on_failed_reap();
+        if !self.reaped
+            && self.cancel().is_err()
+            && let Some(lease) = &mut self.lease
+        {
+            lease.retain_on_failed_reap();
         }
     }
 }
@@ -393,6 +472,13 @@ impl WorkerChannel {
     }
     pub fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
         write_frame(&mut self.0, bytes)
+    }
+    /// Source reading starts only after its owner arms the shared file clock.
+    pub fn await_source_read(&mut self) -> io::Result<()> {
+        if read_frame(&mut self.0)? != b"source" {
+            return Err(invalid("parent source read authorization absent"));
+        }
+        Ok(())
     }
     pub fn await_reap(&mut self) -> io::Result<()> {
         if read_frame(&mut self.0)? != b"reap" {

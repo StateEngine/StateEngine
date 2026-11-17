@@ -136,9 +136,15 @@ fn runtime(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
+    // Native parsing runs in the real compact CLI image supplied by CI.
+    // Missing input is a failure; a test executable cannot serve this entry.
+    let image = std::env::var_os("SE_ATLAS_WORKER_BIN")
+        .filter(|path| !path.is_empty())
+        .ok_or("SE_ATLAS_WORKER_BIN must name the compact candidate CLI image")?;
+    let image = std::path::PathBuf::from(image).canonicalize()?;
     Ok(NativeRuntime::new(
         home.to_owned(),
-        std::env::current_exe()?,
+        image,
         NativeRenewal::new(profiles)?,
         Some(SqlProfile::from_qualified_overhead(1)?),
     )?)
