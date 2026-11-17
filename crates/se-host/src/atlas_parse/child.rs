@@ -50,7 +50,16 @@ pub(crate) fn run(channel: &mut WorkerChannel, bytes: &[u8]) -> AtlasResult<u8> 
         send(channel, protocol::Reply::Ready)?;
         channel.await_source_read().map_err(failure)?;
         let source = request.source()?;
-        let SourceRead::Bytes(snapshot) = source.read(&request.path, request.budget)? else {
+        let read =
+            source.read_with_wall_timeout(&request.path, request.budget, Duration::from_secs(5));
+        let read = read.map_err(|error| {
+            if matches!(error.body.detail(), Detail::DeadlineExceeded(detail) if detail.op == "Atlas source read") {
+                stall(Duration::from_secs(5))
+            } else {
+                error
+            }
+        })?;
+        let SourceRead::Bytes(snapshot) = read else {
             return Err(failure(
                 "parse source is no longer readable within its reservation",
             ));

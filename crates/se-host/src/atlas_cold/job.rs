@@ -9,6 +9,8 @@ pub struct ColdJob {
     history: Option<super::history::Plan>,
     deadline: Instant,
     parse_deadline: Option<Instant>,
+    parse_stall_deadline: Option<Instant>,
+    parse_cpu_start: Option<Duration>,
     completion: Option<IndexSummary>,
     completed: u64,
     discovered: u64,
@@ -70,6 +72,8 @@ impl ColdJob {
             history,
             deadline,
             parse_deadline: None,
+            parse_stall_deadline: None,
+            parse_cpu_start: None,
             completion: None,
             completed: 0,
             discovered: 0,
@@ -93,7 +97,7 @@ impl ColdJob {
             .min(self.deadline)
     }
     pub fn cancellation_deadline(&self) -> Instant {
-        self.parse_deadline.map_or(self.deadline, |end| {
+        self.parse_stall_deadline.map_or(self.deadline, |end| {
             (end + Duration::from_millis(300)).min(self.deadline)
         })
     }
@@ -135,17 +139,48 @@ impl ColdJob {
             },
         ))
     }
+    fn check_file_work(&mut self) -> AtlasResult<()> {
+        let Some(start) = self.parse_cpu_start else {
+            return Ok(());
+        };
+        let end = self
+            .parse_stall_deadline
+            .ok_or_else(|| failure("cold file stall deadline absent"))?;
+        let current = match self.worker.cpu_time() {
+            Ok(current) => current,
+            Err(error) => {
+                if let Some(status) = self.worker.try_reap().map_err(failure)? {
+                    return Err(self.native_failure(format!("cold child exited {status}")));
+                }
+                return Err(failure(error));
+            }
+        };
+        let cpu = current
+            .checked_sub(start)
+            .ok_or_else(|| failure("cold worker CPU clock moved backwards"))?;
+        let error = if cpu >= Duration::from_millis(250) {
+            Some(crate::atlas_parse::cpu_expired(Duration::from_millis(200)))
+        } else if Instant::now() >= self.deadline {
+            Some(failure("cold indexing job deadline exceeded"))
+        } else if Instant::now() >= end {
+            Some(crate::atlas_parse::stall(Duration::from_secs(5)))
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            self.worker
+                .cancel_until(self.cancellation_deadline())
+                .map_err(failure)?;
+            return Err(error);
+        }
+        self.parse_deadline = Some((Instant::now() + Duration::from_millis(10)).min(end));
+        Ok(())
+    }
     #[expect(
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
     pub fn poll(&mut self) -> AtlasResult<Option<IndexSummary>> {
-        if self.parse_deadline.is_some_and(|end| Instant::now() >= end) {
-            self.worker
-                .cancel_until(self.cancellation_deadline())
-                .map_err(failure)?;
-            return Err(crate::atlas_parse::expired());
-        }
         while let Some(bytes) = self
             .worker
             .receive()
@@ -161,28 +196,30 @@ impl ColdJob {
                     if let Some(path) = path {
                         self.last_path = Some(path);
                     }
-                    if self.parse_deadline.is_some_and(|end| Instant::now() >= end) {
-                        self.worker
-                            .cancel_until(self.cancellation_deadline())
-                            .map_err(failure)?;
-                        return Err(crate::atlas_parse::expired());
-                    }
                     if matches!(phase, protocol::Phase::SourceRead) {
-                        if self.parse_deadline.is_some() {
+                        if self.parse_cpu_start.is_some() {
                             return Err(failure("duplicate source read phase"));
                         }
-                        // The child is still waiting for authorization. Source
-                        // I/O and native parsing share this one work allowance;
-                        // the remaining 300 ms belongs to exact cancellation.
-                        let end = (Instant::now() + Duration::from_millis(200)).min(self.deadline);
-                        self.parse_deadline = Some(end);
+                        // The worker is waiting; setup CPU is outside the file budget.
+                        self.parse_cpu_start = Some(self.worker.cpu_time().map_err(failure)?);
+                        let end = (Instant::now() + Duration::from_secs(5)).min(self.deadline);
+                        self.parse_stall_deadline = Some(end);
+                        self.parse_deadline =
+                            Some((Instant::now() + Duration::from_millis(10)).min(end));
                         self.worker.send_control(b"source", end).map_err(failure)?;
                     } else if matches!(phase, protocol::Phase::Parse) {
-                        if self.parse_deadline.is_none() {
+                        if self.parse_cpu_start.is_none() {
                             return Err(failure("parse phase without source read authorization"));
                         }
                     } else {
                         self.parse_deadline = None;
+                        self.parse_stall_deadline = None;
+                        self.parse_cpu_start = None;
+                        if matches!(phase, protocol::Phase::Resolve | protocol::Phase::Commit) {
+                            self.worker
+                                .send_control(b"source", self.deadline)
+                                .map_err(failure)?;
+                        }
                     }
                     self.last_phase = phase;
                 }
@@ -241,10 +278,15 @@ impl ColdJob {
                     } else {
                         failure("foreign failed cold job")
                     };
+                    if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall")
+                    {
+                        return Err(error);
+                    }
                     return Err(self.native_failure(&error).with_cause(error));
                 }
             }
         }
+        self.check_file_work()?;
         let Some(status) = self
             .worker
             .try_reap()

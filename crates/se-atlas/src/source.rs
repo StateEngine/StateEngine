@@ -114,26 +114,13 @@ impl<A: SourceAccess> RegisteredSource<A> {
             reason,
         })
     }
-    /// None opens the registered root itself. Names stream from a retained
-    /// no-follow directory cursor under the caller's item/time/memory budget.
-    pub fn open_directory(
+    /// Read one file with a separately bounded wall-clock stall limit.
+    pub fn read_with_wall_timeout(
         &self,
-        path: Option<&RelativePath>,
-    ) -> AtlasResult<Option<Box<dyn SourceDirectory + '_>>> {
-        if self.access.physical_root()? != self.scope.physical_root {
-            return Err(SeError::invalid(
-                "Atlas source enumeration",
-                "the unchanged registered physical root",
-            ));
-        }
-        self.access.open_directory(path)
-    }
-}
-impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
-    fn case_mode(&self) -> CaseMode {
-        self.access.case_mode()
-    }
-    fn read(&self, path: &RelativePath, budget: ParseBudget) -> AtlasResult<SourceRead> {
+        path: &RelativePath,
+        budget: ParseBudget,
+        wall: Duration,
+    ) -> AtlasResult<SourceRead> {
         if budget.max_source_bytes == 0
             || budget.max_source_bytes > 512 * 1024
             || budget.max_work.is_zero()
@@ -144,7 +131,13 @@ impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
                 "1..524288 source bytes and 1..200 ms",
             ));
         }
-        let deadline = crate::clock::now() + budget.max_work;
+        if wall.is_zero() || wall > Duration::from_secs(5) {
+            return Err(SeError::invalid(
+                "Atlas source wall timeout",
+                "greater than zero and at most five seconds",
+            ));
+        }
+        let deadline = crate::clock::now() + wall;
         let Some(mut file) = self.open(path)? else {
             return Ok(SourceRead::Removed);
         };
@@ -170,16 +163,9 @@ impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
                 "source allocation of {} bytes refused within the {}-byte reservation: {error}",
                 before.size, budget.reserved_bytes
             )))?;
-        let hash = stream(
-            &mut *file,
-            path,
-            before.size,
-            deadline,
-            budget.max_work,
-            |chunk| {
-                bytes.extend_from_slice(chunk);
-            },
-        )?;
+        let hash = stream(&mut *file, path, before.size, deadline, wall, |chunk| {
+            bytes.extend_from_slice(chunk);
+        })?;
         if file.identity()? != before || !file.validate_path()? {
             return Err(changed());
         }
@@ -189,6 +175,28 @@ impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
             content_hash: hash,
             bytes,
         }))
+    }
+    /// None opens the registered root itself. Names stream from a retained
+    /// no-follow directory cursor under the caller's item/time/memory budget.
+    pub fn open_directory(
+        &self,
+        path: Option<&RelativePath>,
+    ) -> AtlasResult<Option<Box<dyn SourceDirectory + '_>>> {
+        if self.access.physical_root()? != self.scope.physical_root {
+            return Err(SeError::invalid(
+                "Atlas source enumeration",
+                "the unchanged registered physical root",
+            ));
+        }
+        self.access.open_directory(path)
+    }
+}
+impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
+    fn case_mode(&self) -> CaseMode {
+        self.access.case_mode()
+    }
+    fn read(&self, path: &RelativePath, budget: ParseBudget) -> AtlasResult<SourceRead> {
+        self.read_with_wall_timeout(path, budget, budget.max_work)
     }
     fn verify(&self, snapshot: &SourceSnapshot) -> AtlasResult<SourceVerification> {
         let Some(mut file) = self.open(&snapshot.path)? else {

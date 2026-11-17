@@ -292,6 +292,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                 }))
             }
             Err(error) => {
+                let stalled = matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall");
                 self.child_failure = Some(error.body.clone());
                 if let Err(cancel) = child.cancel_until(child.cancellation_deadline()) {
                     // Keep exact child custody and the original protocol/native
@@ -302,7 +303,11 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                 self.child_failure = None;
                 Ok(Some(WorkerEvent::Exited {
                     job,
-                    outcome: WorkerExit::Failed { error: error.body },
+                    outcome: if stalled {
+                        WorkerExit::Stalled
+                    } else {
+                        WorkerExit::Failed { error: error.body }
+                    },
                 }))
             }
         }

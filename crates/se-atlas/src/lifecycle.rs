@@ -174,6 +174,7 @@ pub enum WorkerExit {
     Failed {
         error: crate::errors::AtlasFailure,
     },
+    Stalled,
     Cancelled,
     Lost,
 }

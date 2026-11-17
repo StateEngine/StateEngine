@@ -11,10 +11,11 @@ use se_atlas::{
 use se_proc::atlas_worker::AtlasWorker;
 use se_proc::atlas_worker::WorkerChannel;
 use se_types::{Detail, SeError, details};
+use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::{
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Instant,
 };
 type Source = RegisteredSource<crate::atlas_source::NativeAtlasSource>;
 pub(crate) use child::run as run_child;
@@ -246,20 +247,19 @@ fn finish_worker(worker: &mut AtlasWorker, deadline: Instant) -> AtlasResult<()>
         worker.wait_ready(deadline).map_err(failure)?;
     }
 }
+#[cfg(target_os = "linux")]
 pub(crate) fn expired() -> SeError {
     SeError::new(Detail::DeadlineExceeded(details::DeadlineExceeded {
         op: "Atlas parse attempt".into(),
         deadline_ms: 500,
     }))
 }
-#[cfg(target_os = "linux")]
-fn cpu_expired(limit: Duration) -> SeError {
+pub(crate) fn cpu_expired(limit: Duration) -> SeError {
     SeError::new(Detail::DeadlineExceeded(details::DeadlineExceeded {
         op: "Atlas parse CPU".into(),
         deadline_ms: limit.as_millis().min(u128::from(u64::MAX)) as u64,
     }))
 }
-#[cfg(target_os = "linux")]
 pub(crate) fn stall(limit: Duration) -> SeError {
     SeError::new(Detail::DeadlineExceeded(details::DeadlineExceeded {
         op: "Atlas scheduling stall".into(),

@@ -126,6 +126,15 @@ impl State {
             for root in &mut self.roots {
                 root.feed_pending = true;
                 root.feed_stalled = false;
+                if self
+                    .controller
+                    .summary(&root.registration.root)?
+                    .coverage
+                    .reasons
+                    .contains(&CoverageReason::SchedulingStall)
+                {
+                    self.work_retry_after = Some(Instant::now() + Duration::from_secs(1));
+                }
             }
         }
         if child.is_none() {

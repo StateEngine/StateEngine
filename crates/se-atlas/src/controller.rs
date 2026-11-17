@@ -316,7 +316,12 @@ impl<R: Runtime> AtlasController for Controller<R> {
                     // source work. Keep the error visible and retry on the next
                     // host work turn with a fresh, finite allowance.
                     root.summary.state = IndexState::VerificationNeeded {
-                        reason: CoverageReason::TimeLimit,
+                        reason: if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall")
+                        {
+                            CoverageReason::SchedulingStall
+                        } else {
+                            CoverageReason::TimeLimit
+                        },
                     };
                     self.in_flight = Some(work);
                     return Err(error);
@@ -452,6 +457,13 @@ impl<R: Runtime> AtlasController for Controller<R> {
             }),
             _ => None,
         };
+        let stalled = matches!(
+            &event,
+            WorkerEvent::Exited {
+                outcome: WorkerExit::Stalled,
+                ..
+            }
+        );
         let (id, receipt) = self.runtime.child_event(event)?;
         self.root(&id)?;
         if let Some(state) = failed {
@@ -468,7 +480,20 @@ impl<R: Runtime> AtlasController for Controller<R> {
             receipt,
             ScheduleReceipt::Queued | ScheduleReceipt::ReconciliationRequired
         ) {
-            self.enqueue(id, SourceHint::Reconcile(ReconcileReason::HostRestart))?;
+            self.enqueue(
+                id.clone(),
+                SourceHint::Reconcile(ReconcileReason::HostRestart),
+            )?;
+        }
+        if stalled
+            && let Some(root) = self
+                .roots
+                .iter_mut()
+                .find(|root| root.registration.root == id)
+        {
+            root.summary.state = IndexState::VerificationNeeded {
+                reason: CoverageReason::SchedulingStall,
+            };
         }
         Ok(receipt)
     }

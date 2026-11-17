@@ -17,7 +17,8 @@ pub(super) fn file(
 ) -> AtlasResult<()> {
     let language = se_atlas::policy::language(path);
     phase(protocol::Phase::SourceRead)?;
-    let read = source.read(path, parse_budget());
+    cpu::start()?;
+    let read = source.read_with_wall_timeout(path, parse_budget(), Duration::from_secs(5));
     match read {
         Ok(SourceRead::Bytes(snapshot)) if language.is_some() => {
             let language = language.ok_or_else(|| failure("language disappeared"))?;
@@ -25,7 +26,20 @@ pub(super) fn file(
                 db.release_cold_memory(sql_deadline())?;
                 se_proc::atlas_worker::release_allocator_pages();
                 phase(protocol::Phase::Parse)?;
-                let mut parsed = parser.parse(&snapshot, language, parse_budget())?;
+                let mut parsed = match cpu::check()
+                    .and_then(|()| parser.parse(&snapshot, language, parse_budget()))
+                {
+                    Ok(parsed) => parsed,
+                    Err(error) if cpu::is_limit(&error) => deferred(source, &snapshot, language),
+                    Err(error) => return Err(error),
+                };
+                match cpu::check() {
+                    Ok(()) => (),
+                    Err(error) if cpu::is_limit(&error) => {
+                        parsed = deferred(source, &snapshot, language)
+                    }
+                    Err(error) => return Err(error),
+                }
                 if request.generated_prefixes.iter().any(|p| {
                     path.as_str() == p.as_str()
                         || path
@@ -135,6 +149,10 @@ pub(super) fn file(
                 observation::removed(sql, &source.scope, path, true, 0).map(|_| ())
             })?;
         }
+        Err(error) if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas source read") =>
+        {
+            return Err(crate::atlas_parse::stall(Duration::from_secs(5)));
+        }
         Err(error) => {
             phase(protocol::Phase::Commit)?;
             db.write(65536, sql_deadline(), |sql| {
@@ -151,6 +169,24 @@ pub(super) fn file(
         }
     }
     Ok(())
+}
+fn deferred(
+    source: &RegisteredSource<NativeAtlasSource>,
+    snapshot: &SourceSnapshot,
+    language: Language,
+) -> ParsedFile {
+    ParsedFile {
+        file: source.scope.file_id(&snapshot.path),
+        language,
+        content_hash: snapshot.content_hash,
+        coverage: FileCoverage::Deferred {
+            reason: CoverageReason::ParseWorkLimit,
+        },
+        symbols: Vec::new(),
+        imports: Vec::new(),
+        references: Vec::new(),
+        scopes: Vec::new(),
+    }
 }
 /// Preserve a named per-file failure after rollback; an index-wide native/SQL
 /// refusal still stops the job if this bounded metadata transaction cannot run.

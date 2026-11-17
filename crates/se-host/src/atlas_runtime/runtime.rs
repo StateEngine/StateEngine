@@ -318,6 +318,23 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
                     WorkerExit::Failed { error } => {
                         root.summary.state = IndexState::Suspended { reason: error }
                     }
+                    WorkerExit::Stalled => {
+                        root.summary.state = IndexState::VerificationNeeded {
+                            reason: CoverageReason::SchedulingStall,
+                        };
+                        if !root
+                            .summary
+                            .coverage
+                            .reasons
+                            .contains(&CoverageReason::SchedulingStall)
+                        {
+                            root.summary
+                                .coverage
+                                .reasons
+                                .push(CoverageReason::SchedulingStall);
+                        }
+                        receipt = ScheduleReceipt::ReconciliationRequired;
+                    }
                     _ => {
                         root.summary.state = IndexState::VerificationNeeded {
                             reason: CoverageReason::StaleSnapshot,

@@ -1,5 +1,7 @@
 //! One derived cold epoch. Only the native private child invokes `run_child`.
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+mod cpu;
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 mod finish;
 #[cfg(target_os = "linux")]
 mod history;
@@ -63,6 +65,7 @@ pub(crate) fn parse_budget() -> ParseBudget {
 }
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub(crate) fn parser_memory_guard() -> AtlasResult<()> {
+    cpu::check()?;
     let (used, measurement) = se_proc::atlas_worker::memory_usage().map_err(failure)?;
     // Reserve space for cancellation, fallible extraction, SQL and a native
     // allocation between Tree-sitter's progress checks, including realloc copy.
@@ -104,7 +107,9 @@ pub fn private_entry() -> AtlasResult<u8> {
         if matches!(
             reply,
             protocol::Reply::Working {
-                phase: protocol::Phase::SourceRead,
+                phase: protocol::Phase::SourceRead
+                    | protocol::Phase::Resolve
+                    | protocol::Phase::Commit,
                 ..
             }
         ) {
