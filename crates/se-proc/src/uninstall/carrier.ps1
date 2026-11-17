@@ -196,7 +196,10 @@ try {
         $stagePath = $stage.path
         $handle = [IntPtr]::new([int64]$stage.handle)
         [SeUninstallObjects]::SameName($stage.path,$stage.identity)
-        if ([SeUninstallObjects]::Unlink($handle,$stage.path,$true) -ne 0) { throw 'Private staging directory remains nonempty' }
+        if ([SeUninstallObjects]::Unlink($handle,$stage.path,$true) -ne 0) {
+            $names = @([IO.Directory]::EnumerateFileSystemEntries($stage.path) | ForEach-Object { [IO.Path]::GetFileName($_) })
+            throw ('Private staging directory remains nonempty; cwd=' + [Environment]::CurrentDirectory + '; location=' + (Get-Location).Path + '; stage=' + $stage.path + '; entries=' + ($names -join ','))
+        }
         [SeUninstallObjects]::Absent($stage.path)
     }
 } catch {
