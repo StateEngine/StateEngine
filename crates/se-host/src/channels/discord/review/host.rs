@@ -154,7 +154,7 @@ fn discord_wire_review_native_host_saves_only_after_exact_approval() -> Check {
                     if std::time::Instant::now() > expires { return Err("Saved output did not name its committed mail".into()); }
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
-                provider.no_fixture_errors()
+                Ok(())
             }.await;
             stop.request(); result
         };

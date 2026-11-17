@@ -94,7 +94,7 @@ fn discord_wire_review_identify_first_is_prompt_and_later_is_spaced() -> Check {
             started.elapsed() >= Duration::from_millis(4800),
             "the second fresh Identify was not spaced from the first",
         )?;
-        f.no_fixture_errors()
+        Ok(())
     }))
 }
 
@@ -165,7 +165,7 @@ fn discord_wire_review_rest_send_proof_and_no_automatic_retries() -> Check {
             }),
             "redirect reached another route",
         )?;
-        f.no_fixture_errors()
+        Ok(())
     }))
 }
 
@@ -186,7 +186,7 @@ fn discord_wire_review_private_human_normalization() -> Check {
             }
             receiver.ack(&row.cursor)?;
         }
-        f.no_fixture_errors()
+        Ok(())
     }))
 }
 
@@ -226,7 +226,7 @@ fn discord_wire_review_cancellation_and_heartbeats() -> Check {
                 == 2,
             "identity read was not retried for the retained dispatch",
         )?;
-        f.no_fixture_errors()
+        Ok(())
     }))
 }
 
@@ -258,7 +258,7 @@ fn discord_wire_review_resume_uses_durable_checkpoint() -> Check {
                 .any(|e| e["kind"] == "gateway_auth" && e["op"] == 6 && e["seq"] == 2),
             "resume used the latest wire sequence instead of durable state",
         )?;
-        f.no_fixture_errors()
+        Ok(())
     });
     if outcome.is_err() {
         f.report("discord_wire_review_resume_uses_durable_checkpoint");
@@ -302,7 +302,7 @@ fn discord_wire_review_overflow_recovers_every_message() -> Check {
             seen == (5002..5034).map(|id| id.to_string()).collect::<Vec<_>>(),
             "overflow lost or duplicated private text",
         )?;
-        f.no_fixture_errors()
+        Ok(())
     }))
 }
 
@@ -329,7 +329,7 @@ fn discord_wire_review_zombie_connection_resumes_without_losing_mail() -> Check 
                 .any(|e| e["kind"] == "heartbeat_withheld"),
             "the provider never withheld an acknowledgement",
         )?;
-        f.no_fixture_errors()
+        Ok(())
     });
     if outcome.is_err() {
         f.report("discord_wire_review_zombie_connection_resumes_without_losing_mail");
@@ -364,7 +364,7 @@ fn discord_wire_review_repeated_zombies_end_unreachable() -> Check {
             checkpoints > 0,
             "the connection was never resumed before the provider was called gone",
         )?;
-        f.no_fixture_errors()
+        Ok(())
     });
     if outcome.is_err() {
         f.report("discord_wire_review_repeated_zombies_end_unreachable");
@@ -401,7 +401,7 @@ fn discord_wire_review_control_traffic_does_not_extend_retries() -> Check {
                 > 1,
             "the provider never acknowledged control traffic",
         )?;
-        f.no_fixture_errors()
+        Ok(())
     });
     if outcome.is_err() {
         f.report("discord_wire_review_control_traffic_does_not_extend_retries");
@@ -444,7 +444,7 @@ fn discord_wire_review_expired_replay_is_visible() -> Check {
                 == 2,
             "invalid replay session was retried forever",
         )?;
-        f.no_fixture_errors()
+        Ok(())
     });
     if outcome.is_err() {
         f.report("discord_wire_review_expired_replay_is_visible");

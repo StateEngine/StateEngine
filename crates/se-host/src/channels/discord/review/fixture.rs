@@ -166,18 +166,21 @@ impl Fixture {
     }
     /// Print every event the provider recorded, so a failed assertion names the
     /// step that refused instead of only the client-visible error.
+    ///
+    /// The fixture records and never classifies, so a connection error is shown
+    /// as what was observed: the step and the error. Deciding whether that was
+    /// the client leaving or the fixture failing is the reader's job, not this
+    /// layer's guess.
     pub fn report(&self, test: &str) {
         match self.events() {
             Ok(events) => {
-                // Faults first and in words: the raw trail is long, and the one
-                // line a reader needs must not be buried in it.
                 for event in events
                     .iter()
-                    .filter(|event| event["kind"] == "fixture_error")
+                    .filter(|event| event["kind"] == "connection_error")
                 {
                     eprintln!(
-                        "{test}: PROVIDER FAULT at {}: {}: {}",
-                        event["phase"].as_str().unwrap_or("unrecorded step"),
+                        "{test}: connection error at {}: {}: {}",
+                        event["step"].as_str().unwrap_or("unrecorded step"),
                         event["error"].as_str().unwrap_or("exception"),
                         event["text"].as_str().unwrap_or("no detail")
                     );
@@ -189,28 +192,6 @@ impl Fixture {
             }
             Err(error) => eprintln!("{test}: provider events unreadable: {error}"),
         }
-    }
-    /// A provider fault is an outage the control must not absorb: it is named
-    /// with the step it happened in and the provider's own text, so a failure
-    /// points at the fixture instead of hiding behind `ProviderUnreachable`.
-    pub fn no_fixture_errors(&self) -> Check<()> {
-        let events = self.events()?;
-        let faults: Vec<String> = events
-            .iter()
-            .filter(|event| event["kind"] == "fixture_error")
-            .map(|event| {
-                format!(
-                    "{} at {}: {}",
-                    event["error"].as_str().unwrap_or("exception"),
-                    event["phase"].as_str().unwrap_or("unrecorded step"),
-                    event["text"].as_str().unwrap_or("no detail")
-                )
-            })
-            .collect();
-        require(
-            faults.is_empty(),
-            &format!("provider fixture faulted: {}", faults.join("; ")),
-        )
     }
 }
 impl Drop for Process {

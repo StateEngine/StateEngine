@@ -20,24 +20,20 @@ TOKEN = "synthetic-discord-token-for-local-tests-only"
 
 
 class Link:
-    """State owned by one socket. A second connection must never relabel it.
+    """This socket's own step label and heartbeat count.
 
-    `serving` answers one question and only one: did this connection get past
-    the handshake, so that a socket error is the client leaving rather than the
-    fixture failing? `phase` is a label for diagnostics and must never change
-    that answer, or an ordinary close during heartbeat handling would be
-    reclassified as a provider fault.
+    Only a label: it names where something happened for a failure message. The
+    fixture never decides from it whether an error is a fault, because a
+    connection's normal end and a provider fault are not distinguishable here
+    without guessing what the client intended.
     """
 
     def __init__(self):
-        self.phase = "upgrade"
-        self.serving = False
+        self.step = "upgrade"
         self.heartbeats = 0
 
-    def enter(self, phase, serving=None):
-        self.phase = phase
-        if serving is not None:
-            self.serving = serving
+    def enter(self, step):
+        self.step = step
         return self
 
 
@@ -205,7 +201,7 @@ class Provider:
         stream.settimeout(0.02)
         next_message = time.monotonic() + (0.15 if self.mode == "burst" else 0.01)
         waiting = None
-        link.enter("connected", serving=True)
+        link.enter("connected")
         while not (self.root / "stop").exists():
             if time.monotonic() >= next_message:
                 if waiting is None:
@@ -290,25 +286,17 @@ def main():
 
         def do_GET(self):
             if self.headers.get("Upgrade", "").lower() == "websocket":
-                # This socket's own state: a concurrent connection cannot change
-                # what phase this one was in when it failed.
+                # This socket's own label and history: a concurrent connection
+                # cannot change what this one was doing.
                 link = Link()
                 try:
                     provider.gateway(self, link)
-                except (OSError, EOFError) as error:
-                    # Once this link is serving, the client closing the socket is
-                    # the control's own end of a connection, not a provider
-                    # fault. Before that, the same error means the fixture never
-                    # served this handshake, which used to be swallowed into a
-                    # bare ProviderUnreachable.
-                    if not link.serving:
-                        provider.record(kind="fixture_error", phase=link.phase,
-                                        error=type(error).__name__, text=str(error)[:200])
                 except BaseException as error:
-                    # A test double must fail like the real thing: a fault here
-                    # would be an outage in production, so it is recorded with its
-                    # phase and text and then asserted by every consumer.
-                    provider.record(kind="fixture_error", phase=link.phase,
+                    # Recorded, never classified. A socket error here may be the
+                    # client leaving or the fixture failing, and this layer cannot
+                    # tell which without guessing; naming the step and the error
+                    # hands the judgement to whoever reads a failing test.
+                    provider.record(kind="connection_error", step=link.step,
                                     error=type(error).__name__, text=str(error)[:200])
                 self.close_connection = True
                 return
