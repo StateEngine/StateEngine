@@ -1,11 +1,16 @@
 //! Shared product values. No I/O, ambient identity, runtime, clock or random source.
 //! Prefer explicit imports for Read, Cursor and Result to avoid std name collisions.
 //! Public host-facing contracts are owned by SE Code, not this crate.
+pub use se_harness_registry::with_harness_registry;
+mod harness;
+pub use harness::{HARNESS_REGISTRY, HarnessRegistration, Provider};
 mod channel_error;
 pub mod code;
 pub use channel_error::MessagingChannelError;
 mod error;
 mod hex;
+mod launch;
+pub use launch::{LaunchDetails, ResumeSelection};
 mod id;
 mod process;
 mod read;

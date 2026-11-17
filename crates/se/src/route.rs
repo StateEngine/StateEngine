@@ -17,7 +17,7 @@ pub mod direct;
 mod doctor;
 #[path = "route/empty_home.rs"]
 mod empty_home;
-mod endpoint_diagnostic;
+use se_host::client::endpoint::diagnostic as endpoint_diagnostic;
 #[path = "route/execute.rs"]
 pub mod execute;
 #[path = "route/files.rs"]
@@ -35,6 +35,7 @@ pub mod identity;
 mod init;
 #[path = "route/init_config.rs"]
 mod init_config;
+pub(crate) mod mail_follow;
 #[path = "route/owner.rs"]
 pub mod owner;
 #[path = "route/process.rs"]

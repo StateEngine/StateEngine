@@ -424,6 +424,16 @@ jobs:
           target="$(rustc --print host-tuple)"
           filter="$(python3 scripts/ci/custom.py filter)"
           cargo nextest run --target "$target" -p se-host -p se-remote --features remote --locked --profile ci -E "$filter"
+      - name: Judge authenticated runtime status
+        run: python3 scripts/ci/runtime_status.py
+      - name: Retain runtime status judge evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-status-judge
+          path: ci-reports/runtime-status
+          retention-days: 3
+          if-no-files-found: warn
 
   # Required: strict Clippy (Windows too when the diff can affect it) and Linux archive/tests.
   check:

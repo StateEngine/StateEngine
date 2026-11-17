@@ -76,6 +76,7 @@ impl CommonArgs {
             "message.list" => CliSelections {
                 mail_to: text(m, "to"),
                 mail_list: true,
+                mail_follow: flag(m, "follow"),
                 ..CliSelections::default()
             },
             _ => CliSelections::default(),
@@ -319,8 +320,8 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("map_human").long("map-human").action(ArgAction::Append).help("Historical human ID=existing target human ID; repeat for each explicit correspondence")),
         "project.status" => c.arg(toggle("all").help("Also summarize every registered project, with its owner-mail counts")),
         "agent.launch" => c
-            .arg(positional("agent", 1, true).help("Saved agent name or ID to start or resume"))
-            .arg(toggle("new").help("Start a fresh provider conversation instead of resuming the saved one"))
+            .arg(positional("agent", 1, true).help("Saved agent name or ID to start in a fresh conversation"))
+            .arg(value("resume").num_args(0..=1).default_missing_value("latest").value_name("SESSION").help("Reopen the latest saved conversation, or the one identified by SESSION"))
             .arg(value("provider").help("Override the saved provider for this launch: claude, codex, secode or acp"))
             .arg(value("model").help("Override the saved model for this launch"))
             .arg(value("task").help("Task text handed to the agent for this launch"))
@@ -348,7 +349,7 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(toggle("keep-integrations").help("Keep registered integrations while removing the project")),
         "history.event_read" => c.arg(
             value("event")
-                .conflicts_with_all(["agent", "session", "kind", "since", "limit", "cursor"])
+                .conflicts_with_all(["agent", "session", "kind", "position", "limit", "cursor"])
                 .help("One committed event ID from se history"),
         ),
         "history.list" => c
@@ -356,8 +357,8 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("session").help("Session ID to filter on"))
             .arg(value("kind").action(ArgAction::Append).help("Event kind to include; repeat for several"))
             .arg(
-                value("since")
-                    .help("An event position from se history, scoped to this caller and project"),
+                value("position")
+                    .help("An opaque history position cursor, the position value from se history --event, scoped to this caller and project; not a time"),
             )
             .arg(value("limit").default_value("20").help("Maximum events in this page"))
             .arg(value("cursor").help("Cursor from a previous page of this same read")),
@@ -378,6 +379,7 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("work_action").long("work-action").value_parser(["admit","assign","return","question","ruling_request","ruling","finding","notify"]).help("For floor: what the message does: admit, assign, return, question, ruling_request, ruling, finding or notify"))
             .arg(Arg::new("addressees").long("addressee").action(ArgAction::Append).help("Explicit floor addressee; repeat for each")),
         "message.list" => c
+            .arg(toggle("follow").help("Stream your own inbox over one connection; resume with the last printed cursor"))
             .arg(value("to").help("Only messages to this recipient"))
             .arg(value("from").help("Only messages from this sender"))
             .arg(value("kind").value_parser([
