@@ -49,14 +49,16 @@ pub(super) fn elevated() -> Result<bool> {
     }
     Ok(elevation.TokenIsElevated != 0)
 }
-fn open_directory(path: &Path, delete: bool) -> Result<File> {
+pub(super) fn open_directory(path: &Path, delete: bool, share_delete: bool) -> Result<File> {
     let file = File::from(native::handle(
         // SAFETY: terminated no-follow directory path and explicit read/delete access.
         unsafe {
             CreateFileW(
                 native::wide(path)?.as_ptr(),
                 GENERIC_READ | READ_CONTROL | if delete { DELETE } else { 0 },
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                FILE_SHARE_READ
+                    | FILE_SHARE_WRITE
+                    | if share_delete { FILE_SHARE_DELETE } else { 0 },
                 ptr::null(),
                 OPEN_EXISTING,
                 FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
@@ -175,7 +177,7 @@ impl Staging {
         if unsafe { CreateDirectoryW(native::wide(&path)?.as_ptr(), &attributes) } == 0 {
             return Err(native::last("create High uninstall staging directory"));
         }
-        let pin = open_directory(&path, false)?;
+        let pin = open_directory(&path, false, true)?;
         verify_high(&pin, true)?;
         let id = directory_id(&pin)?;
         let files = NativeStateFiles::open(&path).map_err(custody)?;
@@ -188,9 +190,12 @@ impl Staging {
     pub fn files(&self) -> &NativeStateFiles {
         &self.files
     }
+    pub fn pin(&self) -> &File {
+        &self._pin
+    }
 }
 pub(super) fn verify_directory(custody: &DirectoryCustody) -> Result<File> {
-    let pin = open_directory(&custody.path, false)?;
+    let pin = open_directory(&custody.path, false, false)?;
     if directory_id(&pin)? != custody.id {
         return Err(refuse(
             "verify elevated staging custody",
@@ -201,7 +206,7 @@ pub(super) fn verify_directory(custody: &DirectoryCustody) -> Result<File> {
     Ok(pin)
 }
 pub(super) fn cleanup_directory(custody: &DirectoryCustody) -> Result<()> {
-    let pin = match open_directory(&custody.path, true) {
+    let pin = match open_directory(&custody.path, true, false) {
         Ok(pin) => pin,
         Err(cause)
             if cause.source.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32)

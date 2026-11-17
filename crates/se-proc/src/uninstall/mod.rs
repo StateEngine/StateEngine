@@ -1,5 +1,5 @@
-//! Core admits the finite uninstall plan; the system carrier receives only
-//! inherited exact objects and output data, never a private executable entry.
+//! Core admits the finite uninstall plan; the native carrier receives only
+//! inherited exact objects and output data.
 use crate::NativeStateFiles;
 use std::{
     fs::File,
@@ -14,8 +14,11 @@ use windows_sys::Win32::{Foundation::*, Storage::FileSystem::*, System::Threadin
 mod cleanup;
 mod debt;
 pub use debt::{HelperCleanupOutcome, UninstallHelperCleanup};
+mod helper;
 mod native;
-mod script;
+mod worker;
+pub use worker::entry as uninstall_carrier_entry;
+pub const UNINSTALL_CARRIER_ENTRY: &str = "--stateengine-private-uninstall";
 mod spawn;
 mod staging;
 

@@ -1,4 +1,4 @@
-//! Fixed system interpreter and minimal environment for the readable carrier.
+//! Minimal environment for the native carrier.
 use super::*;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
@@ -39,21 +39,4 @@ pub(super) fn environment(root: &Path) -> Result<Vec<u16>> {
     }
     block.push(0);
     Ok(block)
-}
-pub(super) fn system_powershell() -> Result<PathBuf> {
-    let mut path = vec![0u16; 32768];
-    // SAFETY: initialized UTF-16 output with explicit native capacity.
-    let count = unsafe {
-        windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
-            path.as_mut_ptr(),
-            path.len() as u32,
-        )
-    } as usize;
-    if count == 0 || count >= path.len() {
-        return Err(native::last("resolve system cleanup executable"));
-    }
-    Ok(PathBuf::from(std::ffi::OsString::from_wide(&path[..count]))
-        .join("WindowsPowerShell")
-        .join("v1.0")
-        .join("powershell.exe"))
 }

@@ -343,6 +343,17 @@ fn main() -> std::process::ExitCode {
         return finish(Err(error), &args);
     }
     #[cfg(windows)]
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == se_proc::UNINSTALL_CARRIER_ENTRY)
+    {
+        return std::process::ExitCode::from(if args.len() == 2 {
+            se_proc::uninstall_carrier_entry() as u8
+        } else {
+            78
+        });
+    }
+    #[cfg(windows)]
     if let Some(result) = private_entry::dispatch_console_interrupt(&args) {
         return finish(result, &args);
     }

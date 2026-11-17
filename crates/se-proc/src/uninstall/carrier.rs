@@ -1,12 +1,8 @@
-//! A fixed system interpreter consumes only inherited, already admitted objects.
+//! A pinned native carrier consumes only inherited, already admitted objects.
 //! Preparation is read-only for the installation; authorization follows effects.
 use super::*;
 use crate::{NativeInstallationClaim, OwnedFile};
 use std::os::windows::ffi::OsStrExt;
-
-#[cfg(test)]
-#[path = "../../tests/support/carrier_directory_unlink.rs"]
-mod directory_judges;
 
 #[derive(serde::Serialize)]
 struct Entry {
@@ -103,6 +99,13 @@ impl NativeUninstallCarrier {
                 owned.push(copy);
             }
         }
+        if let Some(stage) = &staging {
+            let copy = native::duplicate_same(stage.pin().as_raw_handle(), true)?;
+            let mut observed = entry(stage.pin(), &stage.directory.path, "staging", None)?;
+            observed.handle = copy.as_raw_handle() as usize as u64;
+            entries.push(observed);
+            owned.push(copy);
+        }
         // Keep both original parent directories available for native flushes.
         for path in [image.parent(), record_path.parent()].into_iter().flatten() {
             let file = crate::state_files::windows::effects::uninstall_directory(path)
@@ -135,8 +138,6 @@ impl NativeUninstallCarrier {
             "ready":control[3].as_raw_handle() as usize as u64,
             "report":control[4].as_raw_handle() as usize as u64,
             "nonce":nonce,"deadline":deadline,"entries":entries});
-        let path = cleanup::system_powershell()?;
-        let mut application: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         let mut plan_file = script_files
             .retire_empty_staging(
                 script_files
@@ -171,16 +172,26 @@ impl NativeUninstallCarrier {
                     .map_err(custody)?,
             )
             .map_err(custody)?;
-        let script = script::Script::create(script_files, staging.is_some())?;
-        let script_path = script.path().to_owned();
-        let mut script = Some(script);
-        let mut line: Vec<u16> = format!(
-            "powershell.exe -NoLogo -NoProfile -NonInteractive -File \"{}\"",
-            script_path.display()
-        )
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
+        let helper =
+            match helper::Helper::create(script_files, staging.is_some(), &mut target, digest) {
+                Ok(helper) => helper,
+                Err(mut failure) => {
+                    cleanup_artifacts(&mut failure, &mut None, &mut staging);
+                    return Err(failure);
+                }
+            };
+        let helper_path = helper.path().to_owned();
+        let mut helper = Some(helper);
+        let mut application: Vec<u16> = helper_path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let mut line = vec![u16::from(b'"')];
+        line.extend(helper_path.as_os_str().encode_wide());
+        line.extend("\" ".encode_utf16());
+        line.extend(super::UNINSTALL_CARRIER_ENTRY.encode_utf16());
+        line.push(0);
         let process = spawn::command(
             &application,
             &mut line,
@@ -193,7 +204,7 @@ impl NativeUninstallCarrier {
         let process = match process {
             Ok(process) => process,
             Err(mut failure) => {
-                cleanup_artifacts(&mut failure, &mut script, &mut staging);
+                cleanup_artifacts(&mut failure, &mut helper, &mut staging);
                 return Err(failure);
             }
         };
@@ -229,16 +240,14 @@ impl NativeUninstallCarrier {
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            script
-                .take()
-                .ok_or_else(|| refuse("prepare uninstall carrier", "script custody missing"))?
+            helper
+                .as_mut()
+                .ok_or_else(|| refuse("prepare uninstall carrier", "helper custody missing"))?
                 .remove()?;
-            if let Some(stage) = staging.take() {
-                let directory = stage.directory.path.clone();
-                drop(stage);
-                crate::remove_empty_directory(&directory)
-                    .map_err(|cause| pending(custody(cause), &directory))?;
-            }
+            helper.take();
+            // The carrier retains the exact High directory until it can close
+            // its anonymous input, report and diagnostic files after our exit.
+            drop(staging.take());
             Ok(())
         })();
         if let Err(mut failure) = preparation {
@@ -249,12 +258,12 @@ impl NativeUninstallCarrier {
                         failure.source,
                         diagnostic_text(&mut diagnostic)
                     ));
-                    cleanup_artifacts(&mut failure, &mut script, &mut staging);
+                    cleanup_artifacts(&mut failure, &mut helper, &mut staging);
                 }
                 Err(cause) => {
                     failure.source = io::Error::other(format!("{}; {}", failure.source, cause));
-                    if script.is_some() {
-                        failure.pending_paths.push(script_path.clone());
+                    if helper.is_some() {
+                        failure.pending_paths.push(helper_path.clone());
                     }
                     if let Some(stage) = &staging {
                         failure.pending_paths.push(stage.directory.path.clone());
@@ -337,19 +346,17 @@ fn cancel_preparation(process: &OwnedHandle) -> Result<()> {
     }
 }
 
-fn pending(mut failure: UninstallNativeError, path: &Path) -> UninstallNativeError {
-    failure.pending_paths.push(path.to_owned());
-    failure
-}
 fn cleanup_artifacts(
     failure: &mut UninstallNativeError,
-    script: &mut Option<script::Script>,
+    helper: &mut Option<helper::Helper>,
     staging: &mut Option<staging::Staging>,
 ) {
-    if let Some(script) = script.take() {
-        let path = script.path().to_owned();
-        if let Err(cause) = script.remove() {
+    if let Some(held) = helper.as_mut() {
+        let path = held.path().to_owned();
+        if let Err(cause) = held.remove() {
             cleanup_failure(failure, cause, &path);
+        } else {
+            helper.take();
         }
     }
     if let Some(stage) = staging.take() {
