@@ -206,7 +206,7 @@ impl LaunchCoordinator {
             && let Some(binding) = work
                 .binding
                 .as_ref()
-                .and_then(|binding| binding.acp.as_ref())
+                .and_then(|binding| binding.get::<crate::harness::acp::Binding>())
             && let Err(pending) = binding.require_capture_settled()
         {
             return Err(work

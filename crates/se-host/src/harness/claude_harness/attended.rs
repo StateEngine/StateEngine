@@ -109,13 +109,7 @@ impl ClaudeHarness {
                 lifecycle: request.record.lifecycle,
                 provider,
             },
-            binding: HarnessBinding {
-                claude: Some(binding),
-                codex: None,
-                secode: None,
-                acp: None,
-                _private: (),
-            },
+            binding: HarnessBinding::new(binding),
         })
     }
 }
