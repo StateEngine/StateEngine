@@ -62,7 +62,7 @@ class WorkflowRoutingReview(unittest.TestCase):
                     dict(script=script, enabled=enabled, event=event, origin=origin, fork=fork, attempt=attempt))
 
     def test_busy_and_rerun_owned_work_stays_on_the_box_without_api_observation(self):
-        for event in ["pull_request", "push", "schedule", "workflow_dispatch"]:
+        for event in ["pull_request", "merge_group", "push", "schedule", "workflow_dispatch"]:
             for attempt in ["1", "2"]:
                 with self.subTest(event=event, attempt=attempt):
                     self.assertEqual(self.route(event=event, attempt=attempt), "box")

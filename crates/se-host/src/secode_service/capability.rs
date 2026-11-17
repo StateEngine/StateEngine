@@ -76,7 +76,7 @@ impl LaunchCoordinator {
                 && let Some(binding) = work
                     .binding
                     .as_ref()
-                    .and_then(|binding| binding.secode.as_ref())
+                    .and_then(|binding| binding.get::<crate::secode_process::Binding>())
             {
                 // Canonical reads remain live even when the original pipe ended.
                 binding.completion.nudge();

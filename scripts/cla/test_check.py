@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import os
 from pathlib import Path
+import re
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -46,12 +47,17 @@ class API:
         self.latest = {}
         self.permissions = {}
         self.permission_reads = []
+        # The default branch tip, and how it compares with the pinned checkout once it moves.
+        self.tip = self.trusted
+        self.comparison = {"status": "ahead", "files": []}
 
     def request(self, path, payload=None):
         if path == "":
             return {"default_branch": "main"}
         if path == "git/ref/heads/main":
-            return {"object": {"sha": self.trusted}}
+            return {"object": {"sha": self.tip}}
+        if path == f"compare/{self.trusted}...{self.tip}" and self.tip != self.trusted:
+            return deepcopy(self.comparison)
         if path.startswith("pulls/") and path.count("/") == 1:
             return deepcopy(self.pulls[int(path.split("/")[1])])
         if path.startswith("collaborators/") and path.endswith("/permission"):
@@ -207,6 +213,85 @@ class Signatures(unittest.TestCase):
         with self.assertRaises(OSError):
             checker.check_pull(api, 1)
         self.assertEqual(api.latest[(api.head, checker.CONTEXT)], "pending")
+
+
+class TrustedSource(unittest.TestCase):
+    """The pinned default-branch checkout while other pull requests merge."""
+
+    def setUp(self):
+        env = patch.dict(os.environ, {"CLA_INTERNAL_APP_BOT_ID": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def merging(self, *files):
+        """A signed pull request whose default branch advances after the first trusted read."""
+        api = API()
+        del api.pulls[2]
+        api.comparison["files"] = [dict(row) if isinstance(row, dict) else {"filename": row}
+                                   for row in files]
+        original = api.request
+
+        def request(path, payload=None):
+            result = original(path, payload)
+            if path == "git/ref/heads/main":
+                api.tip = "e" * 40
+            return result
+
+        api.request = request
+        return api
+
+    def test_unrelated_merge_during_the_run_keeps_the_pinned_result(self):
+        api = self.merging("crates/example/src/lib.rs", "README.md")
+        self.assertTrue(checker.check_pull(api, 1))
+        self.assertEqual(api.latest[(api.head, checker.CONTEXT)], "success")
+
+    def test_merge_changing_an_agreement_input_refuses(self):
+        for row in ["docs/cla/individual.md", "scripts/cla/check.py", "CONTRIBUTING.md",
+                    ".github/workflows/cla.yml",
+                    {"filename": "docs/archive/entity.md", "previous_filename": "docs/cla/entity.md"}]:
+            with self.subTest(row=row):
+                api = self.merging("crates/example/src/lib.rs", row)
+                with self.assertRaisesRegex(ValueError, "agreement source changed"):
+                    checker.check_pull(api, 1)
+                self.assertEqual(api.latest[(api.head, checker.CONTEXT)], "pending")
+
+    def test_checkout_off_the_default_branch_refuses(self):
+        for status in ["behind", "diverged", "identical", ""]:
+            with self.subTest(status=status):
+                api = self.merging()
+                api.comparison["status"] = status
+                with self.assertRaisesRegex(ValueError, "no longer on the default branch"):
+                    checker.check_pull(api, 1)
+
+    def test_unreadable_change_list_refuses(self):
+        for files in [[f"crates/example/src/{n}.rs" for n in range(300)], None]:
+            with self.subTest(count=None if files is None else len(files)):
+                api = self.merging()
+                api.comparison["files"] = files
+                with self.assertRaisesRegex(ValueError, "unreadable"):
+                    checker.check_pull(api, 1)
+
+    def test_checkout_must_be_the_resolved_commit(self):
+        for pinned in ["f" * 40, "", "main"]:
+            with self.subTest(pinned=pinned):
+                api = API()
+                del api.pulls[2]
+                api.trusted = api.tip = pinned
+                with self.assertRaisesRegex(ValueError, "not the resolved default-branch commit"):
+                    checker.check_pull(api, 1)
+
+    def test_absent_pin_refuses_before_any_read(self):
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": "example/project", "GITHUB_TOKEN": "x",
+                                     "GITHUB_RUN_ID": "1"}):
+            os.environ.pop("CLA_TRUSTED_SHA", None)
+            with self.assertRaises(KeyError):
+                checker.GitHub()
+
+    def test_agreement_inputs_match_the_workflow_push_filter(self):
+        workflow = (checker.ROOT / ".github/workflows/cla.yml").read_text()
+        paths = re.search(r"^    paths: \[(.*)\]$", workflow, re.M)[1]
+        self.assertEqual({path.strip(" '").removesuffix("**") for path in paths.split(",")},
+                         set(checker.AGREEMENT_INPUTS))
 
 
 if __name__ == "__main__":

@@ -96,6 +96,7 @@ pub(in crate::route) fn quarantine(files: &Files) -> Result<Vec<String>> {
 }
 
 pub(super) fn missing_database(files: &Files, init: bool, recovered: bool) -> Result<()> {
+    let first_init = init && crate::route::first_init::resumable(files)?;
     let stages = staging(files)?;
     if !stages.is_empty() && !init {
         return Err(conflict(
@@ -159,6 +160,9 @@ pub(super) fn missing_database(files: &Files, init: bool, recovered: bool) -> Re
         "endpoint.json",
         "backups/backup-index.json",
     ] {
+        if name == "credential" && first_init {
+            continue;
+        }
         match files
             .readback(&root.join(name))
             .map_err(|e| store_error(&e))?
