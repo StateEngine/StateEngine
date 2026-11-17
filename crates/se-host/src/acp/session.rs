@@ -212,7 +212,7 @@ impl Session {
                         state.opening = false;
                         return Err(failure(
                             "ACP resume",
-                            "The agent does not advertise loadSession. Use --new to start a separate conversation, or configure an agent that can load the saved conversation. No new input was offered.",
+                            "The agent does not advertise loadSession. Omit --resume to start a separate conversation, or configure an agent that can load the saved conversation. No new input was offered.",
                         ));
                     }
                     valid_id(id)?;

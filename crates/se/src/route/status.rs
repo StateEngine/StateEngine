@@ -128,7 +128,8 @@ pub fn observe_snapshot<S: Snapshot>(
             let git = if root.is_empty() {
                 None
             } else {
-                match super::git_state::observe(std::path::Path::new(&root)) {
+                match super::git_state::observe_cached(std::path::Path::new(&root), files, &cx.home)
+                {
                     Ok(observed) => {
                         if let Some(view) = &observed
                             && view.head.is_some()
@@ -398,7 +399,7 @@ pub(super) fn finish<R: ReadStore>(
     if value.removal.is_none() {
         if let Some(row) = value.agents.as_ref().and_then(|page| page.items().first()) {
             let command = if row.session.state == "never-launched" {
-                AgentCommand::launch_in_home(&row.id, &cx.home, &scope::project(admission)?, false)
+                AgentCommand::launch_in_home(&row.id, &cx.home, &scope::project(admission)?, true)
             } else {
                 None
             };

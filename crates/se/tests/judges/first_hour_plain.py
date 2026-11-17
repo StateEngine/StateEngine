@@ -226,7 +226,7 @@ def run(args):
             words = shlex.split(command)
             assert words[0] == 'se' and words[words.index('--home') + 1] == str(f.home), words
             assert words[words.index('--project') + 1] == f.project, words
-            assert words[words.index('launch') + 1] in [f.agent, 'Recipient'] and '--new' not in words, words
+            assert words[words.index('launch') + 1] in [f.agent, 'Recipient'] and any(word.startswith('--resume') for word in words), words
             shown = f.ok('--project', f.project, 'agent', 'show', f.agent)['agent']['value']
             assert shown['session']['state'] == 'stopped', 'resume advice unexpectedly launched a process'
             reopened = subprocess.run([str(f.se), '--json', *words[1:]], env=f.env,

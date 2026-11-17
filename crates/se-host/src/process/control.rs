@@ -452,7 +452,7 @@ pub(super) fn fill_stopped(
         let remedy = if work.meta.provider == se_store::Provider::SeCode {
             "Restore the original authenticated service and retry stop to capture its pending records."
         } else if work.meta.provider == se_store::Provider::Acp {
-            "The closed protocol source cannot supply another terminal reply. Preserve captured history and use se launch <agent> --new for a separate conversation without replaying the interrupted input."
+            "The closed protocol source cannot supply another terminal reply. Preserve captured history and use se launch <agent> for a separate conversation without replaying the interrupted input."
         } else {
             "Restore the original transcript and retry stop to capture its pending records."
         };
@@ -471,7 +471,7 @@ pub(super) fn fill_stopped(
                 &work.meta.project.id,
                 true,
             );
-            row.resume.reason = Some("The original service and client scopes exited. Final capture and uncertain input remain unproved; preserve the original profile and captured history. Use --new to start a different conversation without replaying the old input; ordinary down can close the lost service.".into());
+            row.resume.reason = Some("The original service and client scopes exited. Final capture and uncertain input remain unproved; preserve the original profile and captured history. Use to start a different conversation without replaying the old input; ordinary down can close the lost service.".into());
             if let Some(next) = next {
                 row.resume.command = next.command;
                 row.resume.argv = next.argv;
@@ -504,7 +504,7 @@ pub(super) fn fill_stopped(
         }
         _ => {
             row.resume.state = "unavailable".into();
-            row.resume.reason=Some("The launch never activated a proven original conversation; use --new for a fresh attempt.".into());
+            row.resume.reason=Some("The launch never activated a proven original conversation; omit --resume for a fresh attempt.".into());
             row.resume.conversation_id = None;
         }
     }

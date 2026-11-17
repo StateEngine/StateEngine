@@ -5,19 +5,19 @@ mod fixture;
 #[path = "../src/installation_error.rs"]
 mod installation_error;
 use fixture::*;
-use se_proc::OwnedFile;
+use se_proc::{NativeStateFiles, OwnedFile};
 use se_types::{Class, Code, Retry};
+use std::io::Write;
 
 #[test]
 fn native_lock_contention_is_retryable_and_releases_without_removing_the_lock() -> Check {
     let f = Fixture::new()?;
-    let path = f.home.join("installation-test-record");
-    std::fs::write(&path, b"original record")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    let files = NativeStateFiles::open(&f.options.state_directory)?;
+    let path = f.options.state_directory.join("installation-test-record");
+    let mut staged = files.create_staging(&f.options.state_directory)?;
+    staged.file.write_all(b"original record")?;
+    drop(staged.file);
+    files.publish_no_replace(&staged.path, &path)?;
     let mut held = OwnedFile::open(&path)?.ok_or("record missing")?;
     held.claim_installation_record()?;
     let error = match OwnedFile::open(&path) {

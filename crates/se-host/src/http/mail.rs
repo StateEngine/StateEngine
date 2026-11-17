@@ -16,14 +16,14 @@ pub(crate) mod bell;
 pub(crate) struct Waits {
     #[cfg(feature = "remote")]
     return_mail: AtomicBool,
-    #[cfg(feature = "remote")]
-    pub(crate) remote_activity: crate::remote::activity::Activity,
+    pub(crate) client_activity: crate::runtime::client_activity::Activity,
     pub(crate) bells: Arc<bell::Bells>,
     #[cfg(feature = "remote")]
     remote_control: std::sync::OnceLock<Arc<crate::remote::control::Control>>,
     #[cfg(feature = "remote")]
     forwards: std::sync::OnceLock<Arc<crate::remote::ssh::Forwards>>,
     remote: std::sync::OnceLock<Arc<crate::remote::broker::RemoteBroker>>,
+    pub(crate) commits: tokio::sync::watch::Sender<u64>,
     maximum: usize,
     sessions: Mutex<BTreeMap<(ProjectId, SessionId), Arc<Signal>>>,
     // Cancelled predecessors may still be encoding/closing their connection.
@@ -121,14 +121,14 @@ impl Waits {
         Arc::new(Self {
             #[cfg(feature = "remote")]
             return_mail: AtomicBool::new(false),
-            #[cfg(feature = "remote")]
-            remote_activity: crate::remote::activity::Activity::new(),
+            client_activity: crate::runtime::client_activity::Activity::new(),
             bells: bell::Bells::new(maximum),
             #[cfg(feature = "remote")]
             remote_control: std::sync::OnceLock::new(),
             #[cfg(feature = "remote")]
             forwards: std::sync::OnceLock::new(),
             remote: std::sync::OnceLock::new(),
+            commits: tokio::sync::watch::channel(0).0,
             maximum,
             sessions: Mutex::new(BTreeMap::new()),
             retained: Arc::new(Semaphore::new(maximum.saturating_mul(2))),
@@ -179,6 +179,8 @@ impl Waits {
         })
     }
     pub(crate) fn committed(&self, recipients: &[crate::runtime::MailRecipient]) -> Result<()> {
+        self.commits
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
         // Every successful completion, including quiet mail and captures, wakes
         // remote replay. The existing completion observer survives cancellation.
         #[cfg(feature = "remote")]

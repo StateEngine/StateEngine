@@ -22,7 +22,7 @@ fn reply(state: &str) -> Result<Value, Box<dyn std::error::Error>> {
         "provider": "claude",
         "retry": {
             "target_agent_id": agent,
-            "new": false,
+            "resume": true,
             "model": null,
             "task": "Complete the original request",
             "detach": false,

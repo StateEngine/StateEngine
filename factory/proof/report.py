@@ -5,6 +5,7 @@ from pathlib import Path
 from native import validate as validate_native
 from matrix_adapter import observation as matrix_observation
 from remote_report import summarize as remote_summary
+from budget_context import observation as machine_context, render as render_budget_context
 
 PLATFORMS = ("linux", "win32", "darwin")
 NAMES = ("Install", "Adopt", "Come back", "Two agents", "Remove")
@@ -55,7 +56,7 @@ def numbers(value, prefix=""):
     if isinstance(value, dict):
         return {key: number for name, item in value.items()
                 if name not in {"processes", "added", "before", "after", "pid", "parent", "birth",
-                                "samples", "rows", "agent", "event", "arguments", "receipt"}
+                                "samples", "rows", "agent", "event", "arguments", "receipt", "machine_context"}
                 for key, number in numbers(item, f"{prefix}.{name}" if prefix else name).items()}
     return {}
 
@@ -168,6 +169,11 @@ def invocation(inv, directory, run=None):
              "receipt_complete": False, "journeys": {}, "outcome": "UNKNOWN", "problems": [],
              "judge_outcome": "FAIL" if type(inv.get("exit")) is int and inv["exit"] != 0
                               else "PASS" if type(inv.get("exit")) is int and inv["exit"] == 0 else "UNKNOWN"}
+    closure = inv.get("credential_closure")
+    unreadable_scan = isinstance(closure, dict) and closure.get("state") == "unreadable"
+    if unreadable_scan:
+        entry["problems"].append(closure.get("error", "automation-output-scan-unreadable: input unspecified"))
+        entry["outcome"] = "FAIL"
     if inv.get("remote_probe"):
         receipt, error = read(directory / inv["output"] / "remote.json")
         if error:
@@ -266,6 +272,8 @@ def invocation(inv, directory, run=None):
         entry["problems"].append("required budgets did not pass")
     else:
         entry["outcome"] = "PASS"
+    if unreadable_scan:
+        entry["outcome"] = "FAIL"
     return entry
 
 
@@ -330,6 +338,7 @@ def summarize(run, directory):
                     "platform": entry.get("platform"),
                     "label": row["label"], "numbers": numeric,
                     "box_load": entry.get("box_load"),
+                    "machine_context": machine_context(row, entry.get("platform")),
                     "sample_state": "observed" if numeric else row.get("state", "unavailable"),
                     "probe_result": first_hour_probe_result(budget, row, measured.get("limits"))
                     if entry["mode"] == "first-hour" and not entry.get("behavior_only")
@@ -387,6 +396,7 @@ def grid(report):
         for row in table["rows"]:
             lines.append("| " + row["name"] + " | " + " | ".join(row["platforms"][p]["state"] for p in PLATFORMS) + " |")
         lines.append("")
+    lines += render_budget_context(report["budgets"])
     if report.get("remote_timings"):
         lines += ["Remote timings (milliseconds; clock estimates retain their qualification):", "",
                   "| Surface | Attach | Pending echo | Live output | Reconnect |", "| --- | --- | --- | --- | --- |"]

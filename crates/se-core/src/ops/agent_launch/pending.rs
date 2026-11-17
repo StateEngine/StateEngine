@@ -78,10 +78,13 @@ fn retry_command(
     plan: &LaunchPlan,
     home: &std::path::Path,
 ) -> Option<AgentCommand> {
-    let mut argv =
-        AgentCommand::launch_in_home(&plan.agent.id, home, &plan.project.id, retry.fresh)?
-            .with_detach(retry.detach)
-            .argv;
+    let mut command =
+        AgentCommand::launch_in_home(&plan.agent.id, home, &plan.project.id, retry.fresh())?
+            .with_detach(retry.detach);
+    if let Some(se_types::ResumeSelection::Session(session)) = &retry.resume {
+        command = command.with_resume_session(session);
+    }
+    let mut argv = command.argv;
     argv.extend(["--key".into(), retry.idempotency_key.to_string()]);
     for (flag, value) in [("--model", &retry.model), ("--task", &retry.task)] {
         if let Some(value) = value {

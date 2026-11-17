@@ -9,7 +9,7 @@
 //! the stand-in `PATH` never reaches another case's Git.
 #![cfg(unix)]
 #[path = "../src/repository/state.rs"]
-mod git_state;
+pub mod git_state;
 #[path = "../src/repository/pipe.rs"]
 mod pipe;
 use std::{
@@ -121,6 +121,16 @@ fn real_git() -> Result<String, Box<dyn Error>> {
 /// runs exactly it, and prints the `GitView` it saw or the error it refused
 /// with.
 fn in_child(case: &str, want: &str, root: &Path) -> Result<String, Box<dyn Error>> {
+    // These shims exercise the bounded CLI fallback. Select its unsupported
+    // native-library configuration rather than relying on the default backend.
+    let configured = Command::new(real_git()?)
+        .arg("-C")
+        .arg(root)
+        .args(["config", "core.sparseCheckout", "true"])
+        .output()?;
+    if !configured.status.success() {
+        return Err("could not configure the CLI fallback fixture".into());
+    }
     let binary = std::env::current_exe()?;
     let output = Command::new(binary)
         .args(["--exact", CHILD, "--ignored", "--nocapture", "--skip"])

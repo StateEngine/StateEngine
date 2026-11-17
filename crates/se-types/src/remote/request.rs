@@ -103,6 +103,8 @@ impl RemoteWatch {
 #[serde(deny_unknown_fields)]
 pub struct RemoteLaunch {
     pub target: RemoteTarget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume: Option<crate::ResumeSelection>,
     pub idempotency_key: IdempotencyKey,
 }
 

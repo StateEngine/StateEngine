@@ -38,6 +38,8 @@ pub use file_identity::NativeFileIdentity;
 mod identity;
 mod launch;
 mod native_error;
+#[cfg(windows)]
+mod native_file_revision;
 pub mod native_ipc;
 mod owner_probe;
 #[cfg(windows)]
@@ -94,6 +96,8 @@ pub use stdio::*;
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod bootstrap;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod bootstrap_protocol;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use bootstrap::{
     NativeRuntimeIdentity, RuntimeAdmission, RuntimeBootstrap, RuntimeStartupStderr,
