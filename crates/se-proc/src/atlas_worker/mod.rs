@@ -91,6 +91,22 @@ pub fn read_frame(reader: &mut impl Read) -> io::Result<Vec<u8>> {
     reader.read_exact(&mut bytes)?;
     Ok(bytes)
 }
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+fn remaining(deadline: Instant) -> io::Result<std::time::Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|duration| !duration.is_zero())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "Atlas worker deadline elapsed"))
+}
+#[cfg(any(windows, target_os = "macos"))]
+fn peer_error(error: crate::native_ipc::IpcNativeError) -> io::Error {
+    let kind = if error.code == crate::native_ipc::IpcNativeErrorCode::TimedOut {
+        io::ErrorKind::TimedOut
+    } else {
+        io::ErrorKind::Other
+    };
+    io::Error::new(kind, error)
+}
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }

@@ -280,6 +280,17 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             "record erasure requires the bounded L6 record-feed maintenance path",
         ))
     }
+    fn child_custody_pending(&self, root: &RootId) -> bool {
+        #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+        {
+            self.child_failure.is_some() && self.active.as_ref().is_some_and(|(_, id)| id == root)
+        }
+        #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+        {
+            let _ = root;
+            false
+        }
+    }
     fn child_request(&mut self) -> AtlasResult<Option<WorkerRequest>> {
         Ok(self.pending.take())
     }

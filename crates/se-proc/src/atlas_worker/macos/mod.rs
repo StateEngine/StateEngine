@@ -94,7 +94,6 @@ impl AtlasWorker {
     ) -> io::Result<Self> {
         if !image.is_absolute()
             || payload.len() > FRAME_BYTES
-            || deadline <= Instant::now()
             || deadline.saturating_duration_since(Instant::now()) > Duration::from_secs(900)
         {
             return Err(invalid(
@@ -104,12 +103,13 @@ impl AtlasWorker {
         if CHILD_ACTIVE.swap(true, Ordering::AcqRel) {
             return Err(invalid("previous Atlas child has not been reaped"));
         }
+        remaining(deadline)?;
         let lease = Lease(true);
         let peer = crate::native_ipc::observe_ipc_self_bounded(&IpcIoBound {
             deadline,
             cancelled: Arc::new(AtomicBool::new(false)),
         })
-        .map_err(io::Error::other)?;
+        .map_err(peer_error)?;
         let envelope = Envelope {
             parent: std::process::id(),
             birth: peer.started().clone(),
@@ -122,7 +122,7 @@ impl AtlasWorker {
             return Err(invalid("cold envelope exceeds 65536 bytes"));
         }
         let (channel, child_channel) = UnixStream::pair()?;
-        channel.set_write_timeout(Some(deadline.saturating_duration_since(Instant::now())))?;
+        channel.set_write_timeout(Some(remaining(deadline)?))?;
         let fd = child_channel.as_raw_fd();
         // Prepared before fork: the child executes only native async-safe calls.
         // SAFETY: valid initialized native rlimit output.

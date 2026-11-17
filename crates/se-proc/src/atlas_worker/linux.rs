@@ -91,13 +91,13 @@ impl AtlasWorker {
     ) -> io::Result<Self> {
         if !image.is_absolute()
             || payload.len() > FRAME_BYTES
-            || deadline <= Instant::now()
             || deadline.saturating_duration_since(Instant::now()) > Duration::from_secs(900)
         {
             return Err(invalid(
                 "absolute image, bounded frame and <=15 minute deadline required",
             ));
         }
+        remaining(deadline)?;
         let mut lease = Lease::acquire()?;
         let parent = std::process::id();
         let envelope = Envelope {
@@ -114,7 +114,7 @@ impl AtlasWorker {
             return Err(invalid("cold envelope exceeds 65536 bytes"));
         }
         let (channel, child_channel) = UnixStream::pair()?;
-        channel.set_write_timeout(Some(deadline.saturating_duration_since(Instant::now())))?;
+        channel.set_write_timeout(Some(remaining(deadline)?))?;
         let fd = child_channel.as_raw_fd();
         let (diagnostics, stderr) = super::diagnostics::Diagnostics::pipe()?;
         let mut command = Command::new(image);

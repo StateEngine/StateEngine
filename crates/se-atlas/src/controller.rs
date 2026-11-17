@@ -46,6 +46,10 @@ pub trait Runtime {
     ) -> AtlasResult<CloseResult>;
     fn remove(&mut self, root: &RootId) -> AtlasResult<CacheRemoval>;
     fn forget(&mut self, root: &RootId, events: &[se_types::EventId]) -> AtlasResult<CacheRemoval>;
+    /// Exact child cleanup still owns the root after a stalled deadline.
+    fn child_custody_pending(&self, _root: &RootId) -> bool {
+        false
+    }
     fn child_request(&mut self) -> AtlasResult<Option<WorkerRequest>>;
     fn child_event(&mut self, event: WorkerEvent) -> AtlasResult<(RootId, ScheduleReceipt)>;
 }
@@ -86,6 +90,7 @@ impl<R: Runtime> Controller<R> {
             .as_ref()
             .is_some_and(|work| &work.root == root)
             || self.scheduler.pending(root)
+            || self.runtime.child_custody_pending(root)
     }
     /// Lookup only: never registers or activates a root on a query path.
     pub fn registered_root(
@@ -132,7 +137,16 @@ impl<R: Runtime> Controller<R> {
                 ));
         let native_progress = matches!((&summary.state, &root.summary.state),
             (IndexState::ColdIndexing { job: observed, .. }, IndexState::ColdIndexing { job: published, .. }) if observed == published);
-        if !retain_failure && !native_progress {
+        let native_stall = matches!(
+            (&summary.state, &root.summary.state),
+            (
+                IndexState::VerificationNeeded {
+                    reason: CoverageReason::SchedulingStall
+                },
+                IndexState::ColdIndexing { .. }
+            )
+        );
+        if !retain_failure && !native_progress && !native_stall {
             summary.state = root.summary.state.clone();
         }
         Ok(summary)

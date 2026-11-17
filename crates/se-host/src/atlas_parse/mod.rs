@@ -59,7 +59,10 @@ impl Parser {
     }
     pub fn close(&mut self, deadline: Instant) -> AtlasResult<()> {
         if let Some(worker) = &mut self.worker {
-            worker.cancel_until(deadline).map_err(failure)?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            worker
+                .cancel_until(deadline)
+                .map_err(|error| cleanup_error(error, remaining))?;
         }
         self.worker.take();
         Ok(())
@@ -172,7 +175,7 @@ impl Parser {
                 &serde_json::to_vec(&request).map_err(failure)?,
                 deadline,
             )
-            .map_err(failure)?,
+            .map_err(|error| start_error(error, deadline))?,
         );
         let worker = self
             .worker
@@ -248,6 +251,10 @@ fn finish_worker(worker: &mut AtlasWorker, deadline: Instant) -> AtlasResult<()>
     }
 }
 #[cfg(target_os = "linux")]
+fn start_error(error: std::io::Error, deadline: Instant) -> SeError {
+    cleanup_error(error, deadline.saturating_duration_since(Instant::now()))
+}
+#[cfg(target_os = "linux")]
 pub(crate) fn expired() -> SeError {
     SeError::new(Detail::DeadlineExceeded(details::DeadlineExceeded {
         op: "Atlas parse attempt".into(),
@@ -259,6 +266,16 @@ pub(crate) fn cpu_expired(limit: Duration) -> SeError {
         op: "Atlas parse CPU".into(),
         deadline_ms: limit.as_millis().min(u128::from(u64::MAX)) as u64,
     }))
+}
+pub(crate) fn cleanup_error(error: std::io::Error, limit: Duration) -> SeError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    ) {
+        stall(limit).with_cause(error)
+    } else {
+        failure(error)
+    }
 }
 pub(crate) fn stall(limit: Duration) -> SeError {
     SeError::new(Detail::DeadlineExceeded(details::DeadlineExceeded {

@@ -232,7 +232,12 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             Err(error) => {
                 return Ok(Some(WorkerEvent::Exited {
                     job,
-                    outcome: WorkerExit::Failed { error: error.body },
+                    outcome: if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall")
+                    {
+                        WorkerExit::Stalled
+                    } else {
+                        WorkerExit::Failed { error: error.body }
+                    },
                 }));
             }
         };
@@ -295,8 +300,28 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                 let stalled = matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall");
                 self.child_failure = Some(error.body.clone());
                 if let Err(cancel) = child.cancel_until(child.cancellation_deadline()) {
-                    // Keep exact child custody and the original protocol/native
-                    // failure; cleanup latency must not erase the crash cause.
+                    // Retain the original failure and child custody while cleanup waits.
+                    if matches!(cancel.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas scheduling stall")
+                        && let Some(root) = self
+                            .roots
+                            .iter_mut()
+                            .find(|root| root.summary.root == child.request.root)
+                    {
+                        root.summary.state = IndexState::VerificationNeeded {
+                            reason: CoverageReason::SchedulingStall,
+                        };
+                        if !root
+                            .summary
+                            .coverage
+                            .reasons
+                            .contains(&CoverageReason::SchedulingStall)
+                        {
+                            root.summary
+                                .coverage
+                                .reasons
+                                .push(CoverageReason::SchedulingStall);
+                        }
+                    }
                     return Err(cancel.with_cause(error));
                 }
                 self.child.take();

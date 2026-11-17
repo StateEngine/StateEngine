@@ -125,7 +125,6 @@ impl AtlasWorker {
     ) -> io::Result<Self> {
         if !image.is_absolute()
             || payload.len() > FRAME_BYTES
-            || deadline <= Instant::now()
             || deadline.saturating_duration_since(Instant::now()) > Duration::from_secs(900)
         {
             return Err(invalid(
@@ -135,11 +134,12 @@ impl AtlasWorker {
         if CHILD_ACTIVE.swap(true, Ordering::AcqRel) {
             return Err(invalid("previous Atlas child has not been reaped"));
         }
+        remaining(deadline)?;
         let lease = Lease(true);
         let peer = crate::native_ipc::observe_ipc_self_bounded(&bound(
             deadline.min(Instant::now() + Duration::from_secs(2)),
         ))
-        .map_err(io::Error::other)?;
+        .map_err(peer_error)?;
         let se_types::StartIdentity::Windows { creation_filetime } = peer.started() else {
             return Err(invalid("Windows parent creation time absent"));
         };
