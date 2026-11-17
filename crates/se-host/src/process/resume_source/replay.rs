@@ -6,13 +6,13 @@ use se_store::{Admission, EventBody, Snapshot, StoredText};
 use se_types::{PageRequest, Read};
 use std::num::NonZeroU32;
 impl LaunchCoordinator {
-    pub(in crate::process) async fn acp_replay(
+    pub(in crate::process) async fn canonical_replay(
         &self,
         plan: &LaunchPlan,
         admission: &Admission,
         deadline: &Deadline,
     ) -> Result<Option<Vec<CapturedMessage>>> {
-        self.acp_replay_inner(plan, admission, deadline).await.map_err(|mut error| {
+        self.canonical_replay_inner(plan, admission, deadline).await.map_err(|mut error| {
             error.body = error.body.with_remedy(se_types::Remedy {
                 text: "Restore the original complete capture and retry, or start a separate conversation with se launch <agent>. No new input was offered.".into(),
                 command: Some(se_types::Cmd::Manual),
@@ -24,13 +24,13 @@ impl LaunchCoordinator {
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    async fn acp_replay_inner(
+    async fn canonical_replay_inner(
         &self,
         plan: &LaunchPlan,
         admission: &Admission,
         deadline: &Deadline,
     ) -> Result<Option<Vec<CapturedMessage>>> {
-        if plan.profile.provider != se_store::Provider::Acp {
+        if !self.harness_for(plan.profile.provider)?.canonical_resume() {
             return Ok(None);
         }
         let conversation = match &plan.conversation {
@@ -54,6 +54,7 @@ impl LaunchCoordinator {
         };
         let previous_source =
             process_commit::session_credential_id(previous_session, "capture-source")?;
+        let provider = plan.profile.provider;
         let mut after = None;
         let mut messages = Vec::new();
         let mut total = 0usize;
@@ -87,7 +88,7 @@ impl LaunchCoordinator {
                         .read
                         .conversation_turns(
                             agent,
-                            se_store::Provider::Acp,
+                            provider,
                             &wanted,
                             se_store::ReadBudget {
                                 page: PageRequest {
@@ -105,7 +106,7 @@ impl LaunchCoordinator {
                     for event in page.items() {
                         let EventBody::SessionTurn {
                             session,
-                            provider: se_store::Provider::Acp,
+                            provider: found,
                             role,
                             text,
                             ..
@@ -113,7 +114,7 @@ impl LaunchCoordinator {
                         else {
                             continue;
                         };
-                        if !matches!(role, se_store::Role::User | se_store::Role::Assistant) {
+                        if found != &provider || !matches!(role, se_store::Role::User | se_store::Role::Assistant) {
                             continue;
                         }
                         let source = se_core::scope::require_present(

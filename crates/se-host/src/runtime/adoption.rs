@@ -153,6 +153,7 @@ impl HostedRouter {
                 ops::agent::create(
                     &kernel,
                     ops::AgentCreate {
+                        provider_settings: Default::default(),
                         harness: None,
                         name: format!(
                             "{}-{}",

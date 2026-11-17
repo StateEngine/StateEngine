@@ -26,20 +26,12 @@ pub fn prepare(
             ));
         }
     };
-    let mut provider = super::resolve_provider_for(kind, configuration, file)?;
-    let config_home = match kind {
-        Kind::Claude => {
-            crate::qualify_claude_adoption(&provider)?;
-            crate::claude_config_home(&std::env::vars_os().collect::<Vec<_>>())?
-        }
-        Kind::Codex => {
-            provider = super::codex::native_executable(&provider)?;
-            let home = crate::codex_capture::existing_home()?;
-            super::settings::prepare(&home, &home.join(kind.settings()))?;
-            super::codex::qualify(&provider)?;
-            home
-        }
-    };
+    let adapter = kind.adapter();
+    let provider = super::resolve_provider_for(kind, configuration, file)?;
+    let super::ProviderSetup {
+        executable: provider,
+        config_home,
+    } = adapter.prepare(&provider)?;
     if !config_home.is_absolute() {
         return Err(SeError::invalid(
             "provider settings home",
@@ -52,10 +44,7 @@ pub fn prepare(
         kind,
         provider,
         config_home,
-        entries: match kind {
-            Kind::Claude => super::settings::hooks(&image, home)?,
-            Kind::Codex => super::codex::hooks(&image, home)?,
-        },
+        entries: adapter.hooks(&image, home)?,
     })
 }
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -82,6 +71,7 @@ pub fn install(
     project: &se_types::ProjectId,
 ) -> Result<Installed> {
     let kind = plan.kind;
+    let adapter = kind.adapter();
     let path = plan.config_home.join(kind.settings());
     let expected_hooks = plan.entries.clone();
     let mut registration = registration(home, root, &plan, project)?;
@@ -106,8 +96,8 @@ pub fn install(
         changed
     };
     let installed = super::settings::missing(&path, &expected_hooks)?.is_empty();
-    let discovery = if kind == Kind::Codex && installed {
-        super::codex::trust(home, &mut registration, root)
+    let discovery = if installed {
+        adapter.discover(home, &mut registration, root)
     } else {
         Ok(())
     };
@@ -118,7 +108,7 @@ pub fn install(
     }
     // A persisted refusal is retryable evidence, never a successful install.
     discovery?;
-    let active = kind == Kind::Claude || super::status::witnessed(home, kind, project)?;
+    let active = adapter.active(home, project)?;
     let integration = integration(kind, &path, changed, installed, active)?;
     let next = NextStep {
         text: format!("Start {} directly in this project", kind.label()),
@@ -133,8 +123,8 @@ pub fn install(
     } else {
         "Registered project adoption; capture and mail remain unconfirmed until the provider runs its installed hooks".into()
     }];
-    if kind == Kind::Claude {
-        changes.push(format!("Review and trust the StateEngine hooks in {} when the provider asks; declining keeps the provider usable with the integration inactive", kind.label()));
+    if let Some(notice) = adapter.notice() {
+        changes.push(notice);
     }
     Ok(Installed {
         integration,

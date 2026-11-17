@@ -1,5 +1,6 @@
 //! Diagnose a missing retained transcript before any new provider preparation.
 use super::*;
+mod replay;
 use crate::client::lease::Deadline;
 use se_core::ops::{AgentCommand, agent_launch::LaunchPlan};
 use se_store::Admission;

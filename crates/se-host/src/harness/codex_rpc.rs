@@ -260,6 +260,45 @@ impl Binding {
     }
 }
 impl Harness for CodexHarness {
+    fn recover<'a>(
+        &'a self,
+        request: crate::HarnessRecovery<'a>,
+        cx: CallContext,
+    ) -> HostFuture<'a, HarnessBinding> {
+        Box::pin(async move {
+            CodexHarness::recover(
+                self,
+                request.identity,
+                request.conversation,
+                request.transcript,
+                request.attended,
+                cx,
+            )
+            .await
+        })
+    }
+    fn prepare<'a>(&'a self, request: &'a HarnessRequest, cx: CallContext) -> HostFuture<'a, ()> {
+        Box::pin(async move { self.prepare_socket(request, &cx).await })
+    }
+    fn transcript_path(&self, binding: &HarnessBinding) -> Result<Option<PathBuf>> {
+        let path = se_core::scope::require_present(
+            bound(binding)?.rollout_path()?,
+            "Codex rollout readiness",
+            "Restore the exact provider-reported persistent thread path.",
+        )?
+        .to_local()?;
+        crate::codex_capture::location(&path, &crate::codex_capture::existing_home()?).map(Some)
+    }
+    fn materialize_transcript<'a>(
+        &'a self,
+        binding: &'a HarnessBinding,
+        cx: CallContext,
+    ) -> HostFuture<'a, Option<SeError>> {
+        Box::pin(async move { bound(binding)?.materialize_fresh_rollout(&cx).await })
+    }
+    fn transcript_validator(&self) -> crate::TranscriptValidator {
+        crate::codex_capture::validate_header
+    }
     fn kind(&self) -> HarnessKind {
         HarnessKind::CodexAppServer
     }
@@ -500,5 +539,43 @@ impl AdapterBinding for Arc<Binding> {
             let result = self.request("turn/start", params, &cx).await?;
             self.accept_turn_response(&result)
         })
+    }
+}
+
+pub(crate) struct Adoption;
+pub(crate) static ADOPTION: Adoption = Adoption;
+impl crate::adoption::Adapter for Adoption {
+    #[cfg(any(target_os = "linux", windows))]
+    fn prepare(&self, command: &std::path::Path) -> Result<crate::adoption::ProviderSetup> {
+        let executable = crate::adoption::codex::native_executable(command)?;
+        let home = crate::codex_capture::existing_home()?;
+        crate::adoption::settings::prepare(
+            &home,
+            &home.join(crate::adoption::Kind::Codex.settings()),
+        )?;
+        crate::adoption::codex::qualify(&executable)?;
+        Ok(crate::adoption::ProviderSetup {
+            executable,
+            config_home: home,
+        })
+    }
+    #[cfg(any(target_os = "linux", windows))]
+    fn hooks(
+        &self,
+        executable: &std::path::Path,
+        home: &std::path::Path,
+    ) -> Result<Vec<(String, serde_json::Value)>> {
+        crate::adoption::codex::hooks(executable, home)
+    }
+    fn discover(
+        &self,
+        home: &std::path::Path,
+        saved: &mut crate::adoption::Registration,
+        root: &std::path::Path,
+    ) -> Result<()> {
+        crate::adoption::codex::trust(home, saved, root)
+    }
+    fn active(&self, home: &std::path::Path, project: &se_types::ProjectId) -> Result<bool> {
+        crate::adoption::status::witnessed(home, crate::adoption::Kind::Codex, project)
     }
 }

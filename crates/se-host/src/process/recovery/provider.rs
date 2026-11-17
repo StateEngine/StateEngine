@@ -64,10 +64,6 @@ impl LaunchCoordinator {
         )
         .await
     }
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(in crate::process) async fn restore_provider(
         &self,
         work: &mut Work,
@@ -112,30 +108,19 @@ impl LaunchCoordinator {
             "provider recovery conversation",
             "Restore the original saved session before reconnecting.",
         )?;
-        let binding = match work.meta.provider {
-            se_store::Provider::SeCode => self.secode.recover(
-                work.secode
-                    .clone()
-                    .ok_or_else(|| error("SE Code provider recovery", "original binding absent"))?,
-            ),
-            se_store::Provider::Codex => {
-                self.codex
-                    .recover(
-                        &identity,
-                        &conversation,
-                        work.transcript.as_ref(),
-                        work.meta.attended,
-                        super::super::launch_util::call(self.store.generation, deadline)?,
-                    )
-                    .await?
-            }
-            _ => {
-                return Err(error(
-                    "Claude restart control",
-                    "the original stdin stream cannot be reopened; preserve the session and use its exact public stop/resume command",
-                ));
-            }
-        };
+        let harness = self.harness_for(work.meta.provider)?;
+        let binding = harness
+            .recover(
+                crate::HarnessRecovery {
+                    identity: &identity,
+                    conversation: &conversation,
+                    transcript: work.transcript.as_ref(),
+                    attended: work.meta.attended,
+                    retained: work.binding.as_ref(),
+                },
+                super::super::launch_util::call(self.store.generation, deadline)?,
+            )
+            .await?;
         let confirmed = async {
             let native = self.native.clone();
             let observed = self
@@ -153,12 +138,7 @@ impl LaunchCoordinator {
                     "the original provider exited during reconnect; no replacement was adopted",
                 ));
             }
-            if let Some(codex) = binding.get::<crate::codex_rpc::Binding>() {
-                codex.completion.arm(&work.wake.event)?;
-            }
-            if let Some(secode) = binding.get::<crate::secode_process::Binding>() {
-                secode.completion.arm(&work.wake.event)?;
-            }
+            binding.arm(&work.wake.event)?;
             Ok(())
         }
         .await;

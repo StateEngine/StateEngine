@@ -155,6 +155,7 @@ fn resume_capture(backend: Provider, tools: bool) -> Check {
             vec![EventBody::ProfileSaved {
                 agent: f.a.clone(),
                 profile: Profile {
+                    provider_settings: Default::default(),
                     provider: backend,
                     model: None,
                     permission: PermissionProfile::WorkspaceWrite,

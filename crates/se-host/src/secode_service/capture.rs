@@ -1,12 +1,9 @@
 //! Canonical authenticated messages, not JSONL, feed the existing capture
 //! cursor and immutable native-turn deduplication. No transcript file is made.
 use super::*;
-use se_core::ops::{
-    hook,
-    transcript::{Position, Record},
-};
+use se_core::ops::hook;
 use se_store::{EventBody, Snapshot};
-use se_types::{Body, Read};
+use se_types::Read;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -77,92 +74,31 @@ impl LaunchCoordinator {
                         "ten-thousand message read bound reached; original cursor remains retained",
                     ));
                 }
-                let kind = row["type"]
-                    .as_str()
-                    .ok_or_else(|| error("SE Code message", "type absent"))?;
-                if !settled(row, kind)? {
-                    if work.process_retired
-                        || work.native_already_reconciled
-                        || work.session_retired
-                    {
-                        return Err(error(
-                            "SE Code final capture",
-                            format!(
-                                "a {kind} message remains incomplete after client exit and execution settlement"
-                            ),
-                        ));
-                    }
-                    return Ok(());
-                }
-                let id = row["id"]
-                    .as_str()
-                    .filter(|id| !id.is_empty() && id.len() <= 256)
-                    .ok_or_else(|| error("SE Code message", "bounded native ID absent"))?;
-                // Catalog estimates can change independently of a durable
-                // message. Cursor bytes cover stable message facts instead.
-                let mut stable = row.clone();
-                if kind == "assistant"
-                    && let Some(object) = stable.as_object_mut()
-                {
-                    object.remove("cost");
-                    object.remove("costStatus");
-                }
-                let bytes = serde_json::to_vec(&stable)
-                    .map_err(|e| error("SE Code canonical message", e))?;
-                let length = bytes.len() as u64;
-                let end = offset.checked_add(length).filter(|end| *end <= 32 * 1024 * 1024).ok_or_else(|| error("SE Code capture", "canonical history exceeds the 32 MiB per-read bound; no suffix was accepted"))?;
-                let (role, text, vendor) = match kind {
-                    "user" | "synthetic" => (
-                        se_store::Role::User,
-                        Body::new(
-                            row["text"]
-                                .as_str()
-                                .ok_or_else(|| error("SE Code user input", "text absent"))?
-                                .to_owned(),
-                        )?,
-                        id.to_owned(),
-                    ),
-                    "assistant" => {
-                        let content = row["content"]
-                            .as_array()
-                            .ok_or_else(|| error("SE Code assistant", "content array absent"))?;
-                        let mut text = String::new();
-                        for item in content {
-                            if item["type"] == "text" {
-                                text.push_str(item["text"].as_str().ok_or_else(|| {
-                                    error("SE Code assistant text", "text absent")
-                                })?);
-                            }
+                let message = match crate::harness::secode_process::CaptureRow::read(row, offset)? {
+                    crate::harness::secode_process::CaptureRow::Ready(message) => message,
+                    crate::harness::secode_process::CaptureRow::Pending { kind } => {
+                        if work.process_retired
+                            || work.native_already_reconciled
+                            || work.session_retired
+                        {
+                            return Err(error(
+                                "SE Code final capture",
+                                format!(
+                                    "a {kind} message remains incomplete after client exit and execution settlement"
+                                ),
+                            ));
                         }
-                        // Keep explicit tool outcomes available even when a
-                        // turn has no prose. These are canonical provider facts.
-                        if content.iter().any(|item| item["type"] == "tool") {
-                            text.push('\n');
-                            text.push_str(
-                                &serde_json::to_string(content)
-                                    .map_err(|e| error("SE Code tool results", e))?,
-                            );
-                        }
-                        (se_store::Role::Assistant, Body::new(text)?, id.to_owned())
-                    }
-                    _ => {
-                        let mut record = Record::new("secode", Some(kind));
-                        record.position = Position { offset, length };
-                        if kind == "system" {
-                            record.message = Some(
-                                row["text"]
-                                    .as_str()
-                                    .ok_or_else(|| error("SE Code system message", "text absent"))?
-                                    .to_owned(),
-                            );
-                        }
-                        (
-                            se_store::Role::System,
-                            record.body()?,
-                            format!("{}secode/{id}", se_store::TRANSCRIPT_EVENT_PREFIX),
-                        )
+                        return Ok(());
                     }
                 };
+                let crate::harness::secode_process::CanonicalMessage {
+                    bytes,
+                    end,
+                    role,
+                    text,
+                    vendor,
+                } = message;
+                let length = bytes.len() as u64;
                 let digest = Sha256::digest(&bytes).into();
                 let session = identity.session.clone();
                 let conversation = se_types::ProviderSessionId::new(managed.session.clone())?;
@@ -256,51 +192,5 @@ impl LaunchCoordinator {
             }
             cursor = Some(next);
         }
-    }
-}
-fn settled(row: &Value, kind: &str) -> Result<bool> {
-    match kind {
-        "assistant" => {
-            if row
-                .pointer("/time/completed")
-                .and_then(Value::as_f64)
-                .is_none()
-            {
-                return Ok(false);
-            }
-            let content = row["content"]
-                .as_array()
-                .ok_or_else(|| error("SE Code completed assistant", "content array absent"))?;
-            for item in content.iter().filter(|item| item["type"] == "tool") {
-                match item.pointer("/state/status").and_then(Value::as_str) {
-                    Some("completed" | "error") => (),
-                    Some("streaming" | "running") => return Ok(false),
-                    _ => {
-                        return Err(error(
-                            "SE Code tool outcome",
-                            "terminal state absent or unsupported",
-                        ));
-                    }
-                }
-            }
-            Ok(true)
-        }
-        "shell" => match row["status"].as_str() {
-            Some("running") => Ok(false),
-            Some("exited" | "timeout" | "killed") => Ok(true),
-            _ => Err(error(
-                "SE Code shell outcome",
-                "status absent or unsupported",
-            )),
-        },
-        "compaction" => match row["status"].as_str() {
-            Some("running") => Ok(false),
-            Some("completed" | "failed") => Ok(true),
-            _ => Err(error(
-                "SE Code context outcome",
-                "status absent or unsupported",
-            )),
-        },
-        _ => Ok(true),
     }
 }

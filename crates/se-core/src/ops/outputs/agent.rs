@@ -44,6 +44,8 @@ pub struct ResumeCommand {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AgentRow {
+    #[serde(default, skip_serializing_if = "se_types::ProviderSettings::is_empty")]
+    pub provider_settings: se_types::ProviderSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

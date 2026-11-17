@@ -322,6 +322,10 @@ pub(crate) fn apply(
             codec::aux(c, seq, facts)?;
         }
         ProfileSaved { agent, profile, .. } => {
+            profile
+                .provider_settings
+                .validate(profile.provider.into())
+                .map_err(|_| invalid("invalid saved provider settings"))?;
             if matches!(profile.permission, PermissionProfile::NamedFullBypass)
                 && profile.named_profile.is_empty()
             {

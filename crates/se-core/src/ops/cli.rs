@@ -408,21 +408,26 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("limit").default_value("20").help("Maximum agents in this page"))
             .arg(value("cursor").help("Cursor from a previous page of this same read")),
         "config.get" => c
-            .arg(positional("setting_key", 1, true).help("Saved agent setting: agent.<AGENT>.model, agent.<AGENT>.profile or agent.<AGENT>.can-create; example: se config get agent.main.model"))
+            .arg(positional("setting_key", 1, true).help("Saved agent setting: agent.<AGENT>.model, .profile, .can-create, .model_provider, .base_url, .wire_api, .reasoning_effort or .context_window"))
             .arg(toggle("origin").help("Report where the value comes from")),
         "config.list" => c
             .arg(toggle("origin").help("Report where the settings come from"))
             .arg(value("limit").default_value("100").help("Maximum settings rows in this page"))
             .arg(value("cursor").help("Cursor from a previous page of this same read")),
         "config.set" => {
-            c.arg(positional("setting_key", 1, true).help("Saved agent setting: agent.<AGENT>.model, agent.<AGENT>.profile or agent.<AGENT>.can-create. Edit permission profiles directly in your state home's config.toml."))
-                .arg(positional("setting_value", 2, true).help("Model string or null for the default, an existing named permission profile, or true/false for can-create"))
+            c.arg(positional("setting_key", 1, true).help("Saved agent setting: agent.<AGENT>.model, agent.<AGENT>.profile, .can-create, .model_provider, .base_url, .wire_api, .reasoning_effort or .context_window. Edit permission profiles directly in your state home's config.toml."))
+                .arg(positional("setting_value", 2, true).help("Model/provider/endpoint/effort string, positive context token count, null to inherit, an existing permission profile, or true/false for can-create"))
         }
         "agent.create" => c
             .arg(value("harness").help("Choose claude, codex, secode or a configured protocol harness"))
             .arg(positional("name", 1, true).help("Name for the new saved agent"))
             .arg(value("provider").value_parser(["claude", "codex", "secode", "acp"]).help("Provider for the new agent: claude, codex, secode or acp"))
-            .arg(value("model").help("Model for the new agent")),
+            .arg(value("model").help("Model for the new agent"))
+            .arg(value("model-provider").help("Per-agent Codex model provider name"))
+            .arg(value("base-url").help("Non-secret provider endpoint; requires --model-provider"))
+            .arg(value("wire-api").help("Provider wire protocol: responses"))
+            .arg(value("reasoning-effort").help("Per-agent reasoning effort"))
+            .arg(value("context-window").help("Per-agent positive token count")),
         "agent.rename" => c
             .arg(positional("agent", 1, true).help("Saved agent name or ID to rename"))
             .arg(positional("name", 2, true).help("New display name for the saved agent")),

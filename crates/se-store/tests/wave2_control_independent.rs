@@ -50,6 +50,7 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
             EventBody::ProfileSaved {
                 agent: child.clone(),
                 profile: Profile {
+                    provider_settings: Default::default(),
                     provider: Provider::Claude,
                     model: Some("private-model".into()),
                     permission: PermissionProfile::WorkspaceWrite,
@@ -516,6 +517,7 @@ fn resume_selector_skips_revoked_preparation_that_never_activated() -> Check {
             EventBody::ProfileSaved {
                 agent: child.clone(),
                 profile: Profile {
+                    provider_settings: Default::default(),
                     provider: Provider::Claude,
                     model: None,
                     permission: PermissionProfile::WorkspaceWrite,
