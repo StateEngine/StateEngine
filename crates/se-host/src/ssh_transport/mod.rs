@@ -1,5 +1,6 @@
 //! Owned system OpenSSH commands, file transfers and bounded diagnostics.
 //! Pairing, image verification and publication remain with their callers.
+use crate::child_io::Child;
 use se_remote::{
     channel::{unavailable, unavailable_with_next_step},
     ssh::validate_destination,
@@ -15,7 +16,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, ReadBuf},
-    process::{Child, ChildStderr, ChildStdout, Command},
+    process::Command,
     time::timeout,
 };
 mod diagnostics;
@@ -71,13 +72,18 @@ async fn run(
     bound: Duration,
 ) -> Result<SshOutcome> {
     validate_destination(destination)?;
-    let mut child = client(program)
-        .args(["-T", "-o", "BatchMode=yes", destination, &command])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| unavailable("cannot start the system SSH file-transfer client"))?;
+    let mut child = crate::child_io::spawn(
+        client(program)
+            .args(["-T", "-o", "BatchMode=yes", destination, &command])
+            .stdin(Stdio::null()),
+        crate::child_io::Pipes {
+            stdin: false,
+            stdout: true,
+            stderr: true,
+        },
+    )
+    .await
+    .map_err(|_| unavailable("cannot start the system SSH file-transfer client"))?;
     let stdout = child
         .stdout
         .take()
@@ -146,7 +152,7 @@ async fn run(
 
 /// Bounded stdout drain: the cap stays the reader's stop condition, and the
 /// pipe feeds the deadline evidence as it is read.
-async fn drain_stdout(stdout: ChildStdout, ev: &Mutex<DeadlineEvidence>) -> Result<()> {
+async fn drain_stdout(stdout: impl AsyncRead + Unpin, ev: &Mutex<DeadlineEvidence>) -> Result<()> {
     let mut limited = stdout.take(65537);
     let mut chunk = [0u8; 8192];
     loop {
@@ -174,7 +180,7 @@ async fn drain_stdout(stdout: ChildStdout, ev: &Mutex<DeadlineEvidence>) -> Resu
 /// counting wrapper keeps the deadline evidence current as bytes arrive.
 async fn drain_stderr(
     destination: &str,
-    stderr: ChildStderr,
+    stderr: impl AsyncRead + Unpin,
     ev: &Arc<Mutex<DeadlineEvidence>>,
 ) -> Result<String> {
     read_errors(

@@ -18,26 +18,31 @@ pub(super) async fn has_saved_mode(
     }
     let until = tokio::time::Instant::now() + timeout;
     let query_until = until - (timeout / 10).min(Duration::from_millis(500));
-    let mut child = tokio::process::Command::new(command)
-        .args([
-            "--safe-mode",
-            "-p",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--no-session-persistence",
-        ])
-        .current_dir(cwd)
-        .env_clear()
-        .envs(environment.iter().cloned())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| unreadable(&e.to_string()))?;
+    let mut child = crate::child_io::spawn(
+        tokio::process::Command::new(command)
+            .args([
+                "--safe-mode",
+                "-p",
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--no-session-persistence",
+            ])
+            .current_dir(cwd)
+            .env_clear()
+            .envs(environment.iter().cloned())
+            .stderr(Stdio::null())
+            .kill_on_drop(true),
+        crate::child_io::Pipes {
+            stdin: true,
+            stdout: true,
+            stderr: false,
+        },
+    )
+    .await
+    .map_err(|e| unreadable(&e.to_string()))?;
     let checked = tokio::time::timeout_at(query_until, async {
         let mut input = child.stdin.take().ok_or_else(|| invalid("native settings stdin"))?;
         input.write_all(b"{\"type\":\"control_request\",\"request_id\":\"settings\",\"request\":{\"subtype\":\"get_settings\"}}\n")
