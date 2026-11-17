@@ -153,10 +153,10 @@ impl LaunchCoordinator {
                     "the original provider exited during reconnect; no replacement was adopted",
                 ));
             }
-            if let Some(codex) = &binding.codex {
+            if let Some(codex) = binding.get::<crate::codex_rpc::Binding>() {
                 codex.completion.arm(&work.wake.event)?;
             }
-            if let Some(secode) = &binding.secode {
+            if let Some(secode) = binding.get::<crate::secode_process::Binding>() {
                 secode.completion.arm(&work.wake.event)?;
             }
             Ok(())

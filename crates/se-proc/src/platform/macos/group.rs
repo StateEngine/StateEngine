@@ -94,6 +94,14 @@ fn live_group(live: &LiveObservation) -> ProcResult<Option<ProcessId>> {
 }
 
 pub(super) fn in_group(expected: &ProcessIdentity, group: ProcessId) -> ProcResult<bool> {
+    matches_group(expected, group, true)
+}
+
+fn matches_group(
+    expected: &ProcessIdentity,
+    group: ProcessId,
+    require_image: bool,
+) -> ProcResult<bool> {
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
     let Some(info) = crate::macos_process::info(expected.pid, deadline)? else {
         return Ok(false);
@@ -103,7 +111,9 @@ pub(super) fn in_group(expected: &ProcessIdentity, group: ProcessId) -> ProcResu
     }
     Ok(
         matches!(crate::read_process(expected.machine.clone(), expected.pid)?,
-        ProcessRead::Present(live) if live.identity == *expected),
+        ProcessRead::Present(live) if live.identity.boot == expected.boot
+            && live.identity.start == expected.start
+            && (!require_image || live.identity.image == expected.image)),
     )
 }
 
@@ -228,7 +238,7 @@ impl Scope {
         let mut retained = Vec::with_capacity(self.tracked.len());
         for expected in &self.tracked {
             if let Some(live) = live_member(expected, &root)? {
-                anchored |= in_group(&live.identity, group)?;
+                anchored |= matches_group(&live.identity, group, live.identity.pid == root.pid)?;
                 retained.push(expected.clone());
             }
         }
@@ -242,7 +252,9 @@ impl Scope {
             else {
                 continue;
             };
-            if !in_group(&found.identity, group)? {
+            // Descendants may legitimately exec. Membership is pinned by
+            // birth and native group; only the reserved root pins its image.
+            if !matches_group(&found.identity, group, found.identity.pid == root.pid)? {
                 continue;
             }
             if found.identity.pid == root.pid && found.identity.image != root.image {
@@ -338,7 +350,7 @@ impl Scope {
         let mut tied = false;
         for expected in &self.tracked {
             if let Some(live) = live_member(expected, &root)?
-                && in_group(&live.identity, group)?
+                && matches_group(&live.identity, group, live.identity.pid == root.pid)?
             {
                 tied = true;
                 break;
