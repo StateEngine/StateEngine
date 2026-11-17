@@ -72,6 +72,12 @@ def main(args):
     environment = {k: v for k, v in os.environ.items()
                    if not k.startswith(("SE_", "STATEENGINE_", "CODEX_", "CLAUDE"))}
     environment.update(LOCALAPPDATA=str(local), SE_HOME=str(home))
+    # Nextest adds the build output to PATH. A fresh installation must not
+    # discover that separate candidate image as an existing installation.
+    windows = Path(os.environ["WINDIR"])
+    environment["PATH"] = os.pathsep.join(str(path) for path in
+        (windows / "System32", windows, windows / "System32/WindowsPowerShell/v1.0"))
+    report["fixture_process_path"] = environment["PATH"]
     shell = str(Path(os.environ["WINDIR"]) / "System32/WindowsPowerShell/v1.0/powershell.exe")
     before_path = user_path()
     report.update(image_sha256=digest(args.image), manifest=manifest, path_before=before_path)
