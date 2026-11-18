@@ -109,6 +109,79 @@ async fn a_silent_daemon_cannot_extend_one_callers_deadline() -> Check {
     Ok(())
 }
 
+/// A daemon that ends mid-call is a named stopped state with a relaunch step,
+/// not a usage mistake: the person using the agent needs to know the login's
+/// process is gone, and that the conversation was not silently moved.
+#[cfg(unix)]
+#[tokio::test]
+async fn daemon_death_is_a_named_state_with_a_relaunch_step() -> Check {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let directory = std::env::temp_dir().join(format!(
+        "se-daemon-ended-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory)?;
+    let path = directory.join("control.sock");
+    let listener = tokio::net::UnixListener::bind(&path)?;
+    let peer = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = tokio_tungstenite::accept_async(stream).await?;
+        while let Some(message) = socket.next().await {
+            let Ok(Message::Text(text)) = message else {
+                continue;
+            };
+            let value: serde_json::Value = serde_json::from_str(&text)?;
+            if value.get("method").and_then(|m| m.as_str()) == Some("initialize") {
+                let reply = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": value["id"].clone(),
+                    "result": { "userAgent": "ending-peer/1" },
+                });
+                socket.send(Message::text(reply.to_string())).await?;
+            } else if value.get("method").is_some() {
+                // The process ends while this request is still outstanding.
+                socket.close(None).await?;
+                return Ok::<_, Box<dyn Error + Send + Sync>>(());
+            }
+        }
+        Ok(())
+    });
+
+    let mut daemon = Daemon::connect(&path, cx()?).await?;
+    let error = match daemon
+        .request("thread/start", serde_json::json!({ "cwd": "/tmp" }), &cx()?)
+        .await
+    {
+        Ok(_) => return Err("a request to an ended daemon must be refused".into()),
+        Err(error) => error,
+    };
+    let se_types::Detail::ProviderIncompatible(failure) = error.body.detail() else {
+        return Err(format!(
+            "expected a named provider state, got {:?}",
+            error.body.detail()
+        )
+        .into());
+    };
+    assert!(
+        failure.reason.contains("app-server stopped"),
+        "the reason names what happened: {}",
+        failure.reason
+    );
+    assert!(
+        failure.next_step.to_lowercase().contains("relaunch"),
+        "the step says what a person can do: {}",
+        failure.next_step
+    );
+    peer.abort();
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
 /// Two agents on one login are two threads in one process, and stopping one
 /// never stops the other or the daemon.
 #[tokio::test]

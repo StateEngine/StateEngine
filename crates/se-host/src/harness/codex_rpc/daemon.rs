@@ -20,6 +20,22 @@ fn invalid(expected: &str) -> SeError {
     SeError::invalid("Codex daemon connection", expected)
 }
 
+/// The shared daemon ended while this agent was using it.
+///
+/// This is a named stopped state, not a usage mistake: the login's one process
+/// is gone, so every agent that was attached to it has nothing to talk to. The
+/// step names what a person can do now; (b) adds automatic reattach later, and
+/// nothing here pretends this call can continue on a replacement server.
+fn ended(detail: &str) -> SeError {
+    SeError::new(se_types::Detail::ProviderIncompatible(
+        se_types::details::ProviderIncompatible {
+            subject: "Codex shared daemon".into(),
+            reason: format!("the login's app-server stopped while this agent was attached ({detail})"),
+            next_step: "Relaunch the agent; its conversation is retained and is not automatically reattached to a new server".into(),
+        },
+    ))
+}
+
 /// One retained connection to a login's daemon.
 ///
 /// The socket path is protected state; a failed connect is a named refusal
@@ -93,7 +109,7 @@ impl Daemon {
             }
             let left = end.saturating_duration_since(tokio::time::Instant::now());
             if left.is_zero() {
-                return Err(invalid("the daemon answered within the original deadline"));
+                return Err(invalid("an answer within the original deadline"));
             }
             if !self
                 .next_frame(&CallContext {
@@ -103,7 +119,7 @@ impl Daemon {
                 })
                 .await?
             {
-                return Err(invalid("the daemon closed before answering"));
+                return Err(ended("it closed before answering"));
             }
         }
     }
@@ -142,7 +158,7 @@ impl Daemon {
                 break;
             }
             if !self.next_frame(cx).await? {
-                return Err(invalid("the daemon closed during its greeting"));
+                return Err(ended("it closed during its greeting"));
             }
         }
         self.notify("initialized", Value::Null, cx).await
