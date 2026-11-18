@@ -108,6 +108,18 @@ def real_run(args, output, nightly):
     return result
 
 
+def stage_receipt(path, report, keys, interruption):
+    if interruption is not None:
+        report = dict(report, interrupted=True, interruption_signal=interruption)
+        if report['result'] == 'PASS':
+            report['result'] = 'INCOMPLETE'
+    encoded = (json.dumps(report, indent=2, allow_nan=False) + '\n').encode('utf-8')
+    require(len(encoded) <= 16 * 1024**2, 'Published provider receipt exceeds its finite bound')
+    require_safe_output([encoded], keys)
+    path.write_bytes(encoded)
+    return report['result']
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--surface', choices=tuple(PROVIDERS), required=True)
@@ -125,11 +137,12 @@ def main():
     output.mkdir(mode=0o700)
     protect(output)
     active = False
+    accepts_cancellation = True
     interruption = None
 
     def interrupt(signum, _frame):
         nonlocal interruption
-        if interruption is None:
+        if accepts_cancellation and interruption is None:
             interruption = signum
             if active:
                 raise InterruptedRun('Provider journey interrupted by signal ' + str(signum))
@@ -159,10 +172,6 @@ def main():
             seed_cleanup_failed = present(seed_root)
         except OSError:
             seed_cleanup_failed = True
-    if interruption is not None:
-        report.update(interrupted=True, interruption_signal=interruption)
-        if report['result'] == 'PASS':
-            report['result'] = 'INCOMPLETE'
     if seed_cleanup_failed:
         report.update(result='FAIL', seed_cleanup='Private seed cleanup is incomplete')
     report['provider'] = args.surface
@@ -174,16 +183,19 @@ def main():
                 report['failed_command'] = failed
         except (OSError, RuntimeError, TypeError, ValueError):
             report['failed_command_state'] = 'unreadable'
-    encoded = (json.dumps(report, indent=2, allow_nan=False) + '\n').encode('utf-8')
-    require(len(encoded) <= 16 * 1024**2, 'Published provider receipt exceeds its finite bound')
-    require_safe_output([encoded], keys)
     publish = output / 'publish'
     publish.mkdir(mode=0o700)
     temporary = publish / 'results.json.partial'
-    temporary.write_bytes(encoded)
+    staged_interruption = interruption
+    result = stage_receipt(temporary, report, keys, staged_interruption)
+    # Freeze the outcome after staging and before atomic publication. A signal
+    # delivered while staging must be included before the receipt becomes visible.
+    accepts_cancellation = False
+    if staged_interruption != interruption:
+        result = stage_receipt(temporary, report, keys, interruption)
     temporary.rename(publish / 'results.json')
-    print(json.dumps(dict(provider=args.surface, result=report['result'])))
-    return 0 if report['result'] == 'PASS' else 1
+    print(json.dumps(dict(provider=args.surface, result=result)))
+    return 0 if result == 'PASS' else 1
 
 
 if __name__ == '__main__':
