@@ -10,6 +10,7 @@ use se_store::{Admission, EventBody};
 use se_types::{Result, SeError};
 use sha2::Digest;
 use std::sync::atomic::Ordering;
+mod reboot;
 mod replacement;
 mod selection;
 type Stopped =
@@ -26,6 +27,11 @@ impl LaunchCoordinator {
         self.harness_for(plan.profile.provider)?;
         if !plan.replayed {
             self.require_force_selection(&plan)?;
+            if plan.input.force_selection.is_none()
+                && self.finish_rebooted_launch(&plan, deadline).await?
+            {
+                plan = self.replan_launch(&plan, &admission, deadline).await?;
+            }
         }
         if plan.replayed || (plan.control.processes.is_empty() && plan.control.sessions.is_empty())
         {

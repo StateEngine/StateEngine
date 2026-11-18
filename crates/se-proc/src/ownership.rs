@@ -65,6 +65,9 @@ pub struct ProcessRecord {
     pub owner: ProcessIdentity,
     pub generation: GenerationId,
     pub root: ProcessIdentity,
+    /// A Darwin boot-session UUID survives wall-clock corrections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macos_boot_session: Option<se_types::BootId>,
     pub scope: ScopeIdentity,
     /// Older records have no tracking history; absence grants no cold exit proof.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -242,6 +245,8 @@ pub enum ScopeExitBasis {
     ObservedEmpty,
     /// Linux only: the still-pinned original cgroup object was removed.
     RemovedPinnedLinuxCgroup,
+    /// The same machine is running a different native boot.
+    Reboot,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -294,6 +299,11 @@ pub struct StopWitness {
     #[serde(with = "crate::checkpoint::decimal::u128")]
     pub observed_at_unix_ns: u128,
     pub guarantee: ContainmentGuarantee,
+}
+impl StopWitness {
+    pub fn ended_by_reboot(&self) -> bool {
+        self.scope_exit.exit_basis == Some(ScopeExitBasis::Reboot)
+    }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StopObservation {
@@ -490,6 +500,8 @@ pub struct TransferReceipt {
 pub struct RootCheckpoint {
     pub scope: ScopeCheckpoint,
     pub pre_exec: ProcessIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macos_boot_session: Option<se_types::BootId>,
     #[serde(with = "crate::checkpoint::native_path")]
     pub intended_executable: PathBuf,
 }

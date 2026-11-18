@@ -22,6 +22,36 @@ pub enum BootIdentity {
     /// not a guessed boot time, supplies Windows object continuity.
     WindowsAbsoluteCreationClock,
 }
+impl BootIdentity {
+    pub(crate) fn matches_reboot_id(&self, boot: &se_types::BootId) -> bool {
+        match self {
+            Self::Linux { boot_id } => {
+                boot.as_str() == format!("linux:{}", se_types::hex_lower(boot_id))
+            }
+            Self::MacOs { .. } => macos_boot_session(boot),
+            Self::WindowsAbsoluteCreationClock => boot
+                .as_str()
+                .strip_prefix("windows:")
+                .is_some_and(|id| boot_guid(id, 35, &[8, 13, 18])),
+        }
+    }
+}
+pub(crate) fn macos_boot_session(boot: &se_types::BootId) -> bool {
+    boot.as_str()
+        .strip_prefix("macos:")
+        .is_some_and(|id| boot_guid(id, 36, &[8, 13, 18, 23]))
+}
+fn boot_guid(value: &str, bytes: usize, separators: &[usize]) -> bool {
+    value.len() == bytes
+        && value.bytes().enumerate().all(|(i, b)| {
+            if separators.contains(&i) {
+                b == b'-'
+            } else {
+                b.is_ascii_digit() || matches!(b, b'a'..=b'f')
+            }
+        })
+        && value.bytes().any(|b| !matches!(b, b'0' | b'-'))
+}
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum StartIdentity {
@@ -72,9 +102,17 @@ pub struct LiveObservation {
 #[serde(deny_unknown_fields)]
 pub enum ExitEvidence {
     KernelHandleSignalled,
-    NativeExitedRecord { state: NativeState },
+    NativeExitedRecord {
+        state: NativeState,
+    },
     Absent,
-    Replaced { observed: ProcessIdentity },
+    Replaced {
+        observed: ProcessIdentity,
+    },
+    BootChanged {
+        previous: se_types::BootId,
+        observed: se_types::BootId,
+    },
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

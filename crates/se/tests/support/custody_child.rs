@@ -63,6 +63,7 @@ pub fn identity(
         Sha256::digest(std::fs::read(format!("/proc/{}/cmdline", child.0.id()))?).into();
     let lifecycle = LifecycleId::from_parts(1_700_000_000_000 + serial(), [81; 10])?;
     let record = p::ProcessRecord {
+        macos_boot_session: None,
         format_version: 1,
         lifecycle: lifecycle.clone(),
         host: p::HostInstanceId([7; 16]),

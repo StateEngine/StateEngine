@@ -114,18 +114,7 @@ impl LaunchCoordinator {
             .map_err(|e| error("startup native checkpoint", e));
             let outcome = match decoded.and_then(|value| recovery_source(value, &retained)) {
                 Ok(source) => {
-                    let native = self.native.clone();
-                    let generation = self.options.epoch.generation;
-                    self.store
-                        .pool
-                        .run_owned(deadline, move || {
-                            let plan = native
-                                .plan_recovery(source)
-                                .map_err(|e| error("native recovery plan", e))?;
-                            native
-                                .recover(plan, generation)
-                                .map_err(|e| error("native custody recovery", e))
-                        })
+                    self.observe_recovery(source, &retained.identity, deadline)
                         .await
                 }
                 Err(error) => Err(error),
@@ -303,7 +292,7 @@ impl LaunchCoordinator {
                 Ok(RecoveryOutcome::Exited(witness)) => {
                     work.native_already_reconciled = true;
                     work.last_witness = Some((*witness).clone());
-                    work.stop_method = Some("native-reconciliation".into());
+                    work.stop_method = Some(recovery_method(&witness).into());
                     // Trusted capture opens at listener publication. Keep the
                     // exited lifecycle until its monitor can capture the tail;
                     // startup must not retire it behind the readiness fence.
@@ -352,6 +341,59 @@ impl LaunchCoordinator {
         }
         Ok(report)
     }
+    pub(super) async fn observe_recovery(
+        &self,
+        source: RecoverySource,
+        identity: &se_store::ProcessIdentityRecord,
+        deadline: &Deadline,
+    ) -> Result<RecoveryOutcome> {
+        let current = &self.options.epoch.owner.fields().boot;
+        let previous = match &identity.instance {
+            se_store::RecordedIdentity::Present(instance)
+                if cfg!(target_os = "macos") || &instance.fields().boot != current =>
+            {
+                Some(instance.clone())
+            }
+            _ => None,
+        };
+        let native = self.native.clone();
+        let generation = self.options.epoch.generation;
+        self.store
+            .pool
+            .run_owned(deadline, move || {
+                if let Some(instance) = previous {
+                    let fields = instance.fields();
+                    let root = match &source {
+                        RecoverySource::Record(record) => Some((&record.root, record.argv_sha256)),
+                        RecoverySource::RootPrepared(prepared) => {
+                            Some((&prepared.pre_exec, *fields.argv_sha256.as_bytes()))
+                        }
+                        _ => None,
+                    };
+                    if let Some((root, argv)) = root {
+                        if native_record::instance(root, argv, &fields.boot)? != instance {
+                            return Err(error(
+                                "reboot recovery",
+                                "native checkpoint differs from the recorded root",
+                            ));
+                        }
+                        if let Some(witness) = native
+                            .witness_reboot(&source, &fields.boot)
+                            .map_err(|e| error("native reboot witness", e))?
+                        {
+                            return Ok(RecoveryOutcome::Exited(Box::new(witness)));
+                        }
+                    }
+                }
+                let plan = native
+                    .plan_recovery(source)
+                    .map_err(|e| error("native recovery plan", e))?;
+                native
+                    .recover(plan, generation)
+                    .map_err(|e| error("native custody recovery", e))
+            })
+            .await
+    }
     fn retain_orphan(&self, lifecycle: &se_types::LifecycleId) -> Result<()> {
         let mut orphans = self
             .orphans
@@ -399,6 +441,10 @@ impl LaunchCoordinator {
         let key = format!("recovered/{}", work.meta.lifecycle);
         let wake = work.wake.clone();
         let job = Arc::new(Job {
+            ended_by_reboot: work
+                .last_witness
+                .as_ref()
+                .is_some_and(se_proc::StopWitness::ended_by_reboot),
             fault: std::sync::Mutex::new(work.recover_provider.then(|| {
                 format!(
                     "Restoring {:?} provider control for agent {} ({}) in its original session {}",
@@ -439,6 +485,13 @@ impl LaunchCoordinator {
                 .send_modify(|count| *count = count.saturating_add(1));
         }
         Ok(job)
+    }
+}
+pub(super) fn recovery_method(witness: &se_proc::StopWitness) -> &'static str {
+    if witness.ended_by_reboot() {
+        process_commit::ENDED_BY_REBOOT
+    } else {
+        "native-reconciliation"
     }
 }
 pub(super) fn recovery_source(

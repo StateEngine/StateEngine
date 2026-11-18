@@ -13,6 +13,7 @@ use std::{
 pub(crate) struct Arena {
     pub config: HostConfig,
     pub owner: ProcessIdentity,
+    pub macos_boot_session: Option<se_types::BootId>,
     pub driver: crate::platform::Driver,
     pub slots: Mutex<HashMap<LifecycleId, SlotEntry>>,
     pub revision: AtomicU64,

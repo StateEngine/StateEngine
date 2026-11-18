@@ -2,6 +2,7 @@ mod arena;
 mod launch_stop;
 pub(crate) mod notify;
 mod observation;
+mod reboot;
 mod recovery;
 mod validate;
 #[cfg(target_os = "linux")]

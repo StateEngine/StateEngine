@@ -63,21 +63,8 @@ impl LaunchCoordinator {
                 .chain(embedded.iter().map(|binding| binding.report()))
                 .collect(),
         )?;
-        let input = plan.input.clone();
-        let seed = plan.seed.clone();
-        let configuration = self.options.configuration.clone();
         let mut next = self
-            .store
-            .read(admission.clone(), deadline, move |cx| {
-                let mut facts = crate::runtime::start::allocate_facts()?;
-                facts.event = seed;
-                se_core::ops::process_plan::launch(
-                    &se_core::dispatch::Kernel::new(facts)?,
-                    input,
-                    &configuration,
-                    cx,
-                )
-            })
+            .replan_launch(&plan, &admission, deadline)
             .await
             .map_err(|failure| successor_failure(&report, failure))?;
         if report.new_conversation {
@@ -105,5 +92,27 @@ impl LaunchCoordinator {
         .await
         .map_err(|failure| successor_failure(&report, failure))
         .map(AnyOutput::from)
+    }
+    pub(super) async fn replan_launch(
+        &self,
+        plan: &LaunchPlan,
+        admission: &Admission,
+        deadline: &Deadline,
+    ) -> Result<LaunchPlan> {
+        let input = plan.input.clone();
+        let seed = plan.seed.clone();
+        let configuration = self.options.configuration.clone();
+        self.store
+            .read(admission.clone(), deadline, move |cx| {
+                let mut facts = crate::runtime::start::allocate_facts()?;
+                facts.event = seed;
+                se_core::ops::process_plan::launch(
+                    &se_core::dispatch::Kernel::new(facts)?,
+                    input,
+                    &configuration,
+                    cx,
+                )
+            })
+            .await
     }
 }

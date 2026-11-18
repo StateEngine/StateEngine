@@ -85,24 +85,14 @@ impl LaunchCoordinator {
             self.restore_secode_work(&mut work, deadline).await?;
         }
         let source = super::recovery::recovery_source(checkpoint, &row)?;
-        let native = self.native.clone();
-        let generation = self.options.epoch.generation;
         let outcome = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
-                let plan = native
-                    .plan_recovery(source)
-                    .map_err(|e| error("cold exit recovery plan", e))?;
-                native
-                    .recover(plan, generation)
-                    .map_err(|e| error("cold exit observation", e))
-            })
+            .observe_recovery(source, &row.identity, deadline)
             .await?;
         match outcome {
             se_proc::RecoveryOutcome::Exited(witness) => {
                 work.native_already_reconciled = true;
                 work.last_witness = Some((*witness).clone());
+                work.stop_method = Some(super::recovery::recovery_method(&witness).into());
                 if let Err(error) = self.finish(&mut work, *witness, deadline).await {
                     work.cleanup_failure = Some(error.body);
                 }

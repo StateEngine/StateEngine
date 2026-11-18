@@ -14,6 +14,14 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
         .ok_or_else(|| invalid("a launched session target"))?;
     plan.row.session.process = None;
     plan.row.session.observed_at = None;
+    if plan.row.session.end_reason.as_deref() == Some(se_core::ops::process_commit::ENDED_BY_REBOOT)
+    {
+        plan.row.session.state = "stopped".into();
+        plan.row.session.liveness = Read::Present {
+            value: "exited".into(),
+        };
+        return Ok(());
+    }
     plan.row.session.state = if plan.row.session.recorded_state.as_deref() == Some("prepared") {
         "starting"
     } else {
