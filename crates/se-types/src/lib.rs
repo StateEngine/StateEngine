@@ -23,7 +23,7 @@ mod sqlite_path;
 mod surface;
 mod work_message;
 pub use error::*;
-pub use hex::hex_lower;
+pub use hex::{decode_hex, hex_lower, is_lower_hex};
 pub use id::*;
 pub use process::*;
 pub use read::*;

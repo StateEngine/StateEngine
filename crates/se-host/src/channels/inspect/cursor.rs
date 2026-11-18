@@ -53,23 +53,10 @@ pub(super) fn encode(
     Ok(value)
 }
 fn hex(value: &str) -> Result<Vec<u8>> {
-    if !value.len().is_multiple_of(2)
-        || !value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
+    if !se_types::is_lower_hex(value) {
         return Err(channel_error(ChannelError::InvalidInput));
     }
-    value
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|chunk| {
-            std::str::from_utf8(chunk)
-                .ok()
-                .and_then(|s| u8::from_str_radix(s, 16).ok())
-                .ok_or_else(|| channel_error(ChannelError::InvalidInput))
-        })
-        .collect()
+    se_types::decode_hex(value).ok_or_else(|| channel_error(ChannelError::InvalidInput))
 }
 impl Channels {
     pub(super) fn decode_cursor(

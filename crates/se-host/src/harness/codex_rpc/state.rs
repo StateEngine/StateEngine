@@ -67,9 +67,6 @@ impl Binding {
             .progress
             .view("Codex"))
     }
-    pub fn ignored_notifications(&self) -> Result<IgnoredNotifications> {
-        Ok(self.state.lock().map_err(|_| poisoned())?.ignored)
-    }
     pub fn conversation(&self) -> Result<ProviderSessionId> {
         self.state
             .lock()

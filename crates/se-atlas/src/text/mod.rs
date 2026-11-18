@@ -37,13 +37,6 @@ pub struct TextFileResult {
     pub line_limited: bool,
     pub(crate) lexical: Option<lexical::Document>,
 }
-pub fn search_file(
-    file: Box<dyn SourceFile + '_>,
-    request: TextRequest<'_>,
-) -> AtlasResult<TextFileResult> {
-    let matcher = compile_pattern(request.query, request.regex, !request.regex)?;
-    search_with_matcher(file, request, &matcher)
-}
 /// A bounded query compiles its expression once, then reuses it across files.
 /// Compiling per file can consume the entire source-scan deadline before IO.
 pub(crate) fn compile_pattern(
@@ -60,13 +53,6 @@ pub(crate) fn compile_pattern(
         .map_err(|e| {
             se_types::SeError::invalid("Atlas text query", &format!("a bounded expression: {e}"))
         })
-}
-pub(crate) fn search_with_matcher(
-    file: Box<dyn SourceFile + '_>,
-    request: TextRequest<'_>,
-    matcher: &RegexMatcher,
-) -> AtlasResult<TextFileResult> {
-    search_with_terms(file, request, matcher, None)
 }
 #[expect(
     clippy::too_many_lines,

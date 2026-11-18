@@ -17,14 +17,3 @@ pub struct ConfigPageOutput {
     #[serde(flatten)]
     pub page: Page<ConfigValueOutput>,
 }
-impl ConfigValueOutput {
-    pub fn into_envelope(self) -> super::super::Envelope<Self> {
-        super::super::Envelope::new(
-            crate::registry::Family {
-                name: "se.config-value",
-                major: 1,
-            },
-            self,
-        )
-    }
-}

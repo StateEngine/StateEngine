@@ -236,9 +236,12 @@ pub fn uninstall(home: &Path) -> Result<Vec<IntegrationEffect>> {
 }
 
 fn now_us() -> Result<i64> {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| super::invalid("an observation clock after the Unix epoch"))?;
-    i64::try_from(elapsed.as_micros())
-        .map_err(|_| super::invalid("a representable observation clock"))
+    se_core::clock::now_us().map_err(|error| match error {
+        se_core::clock::ClockError::BeforeEpoch(_) => {
+            super::invalid("an observation clock after the Unix epoch")
+        }
+        se_core::clock::ClockError::OutOfRange => {
+            super::invalid("a representable observation clock")
+        }
+    })
 }

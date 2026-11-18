@@ -66,16 +66,6 @@ impl IpcConnection {
     pub fn negotiated(&self) -> &ServerHello {
         &self.hello
     }
-    /// Runtime rechecks G, revocation and scope for each returned envelope before
-    /// dispatch. A per-call invalid credential must not use connection authority.
-    pub async fn read_request(&mut self, deadline: &Deadline) -> Result<IpcEnvelope> {
-        self.read_request_or_closed(deadline).await?.ok_or_else(|| {
-            wire::io_failure(
-                "IPC request channel closed",
-                std::io::ErrorKind::UnexpectedEof.into(),
-            )
-        })
-    }
     /// EOF before any next-frame byte is an ordinary connection close. Partial
     /// headers and bodies still refuse; no incomplete call can reach dispatch.
     pub async fn read_request_or_closed(
