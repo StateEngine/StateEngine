@@ -162,6 +162,11 @@ pub(crate) fn body(
         _ => {
             let v = facts(c, seq)?;
             match kind {
+                "project.captain_changed" => ProjectCaptainChanged {
+                    project: field(&v, "project")?,
+                    captain: field(&v, "captain")?,
+                    expected: field(&v, "expected")?,
+                },
                 "project.updated" => ProjectUpdated {
                     project: field(&v, "project")?,
                     name: field(&v, "name")?,

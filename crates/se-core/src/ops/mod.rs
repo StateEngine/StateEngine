@@ -5,6 +5,10 @@ pub mod atlas;
 pub mod atlas_hook;
 pub use atlas::*;
 pub use atlas_hook::{AtlasAugment, AtlasHookOutput, AtlasHookTarget};
+pub mod captain;
+pub use captain::{
+    CaptainClear, CaptainClearOutput, CaptainSet, CaptainSetOutput, CaptainShow, CaptainShowOutput,
+};
 pub mod client;
 pub use client::ClientWatchCall;
 pub mod remote;
@@ -221,6 +225,9 @@ ops! {
     #[cfg(feature = "import")]
     ImportNode => ImportNode, ImportReceipt, ("store.import_node",leaf(&["import"]),no_mcp("Explicit owner migration preserves the original Node history."),Owner,false,Never,Custody,Home,HostAutoStart,"se.import",Import,&["J2","J3","J4"]);
     ProjectInit => ProjectInit, InitOutput, ("project.init",leaf(&["init"]),no_mcp("Owner setup registers the managed workspace."),Owner,false,Never,Write,Home,None,"se.init",Init,&["J2"]);
+    CaptainSet => CaptainSet, CaptainSetOutput, ("captain.set",leaf(&["captain","set"]),no_mcp("Only the owner can change the project captain; use se captain set from an owner terminal."),Owner,false,Never,Write,Project,HostForWrites,"se.captain-set",Captain,&["J3"]);
+    CaptainClear => CaptainClear, CaptainClearOutput, ("captain.clear",leaf(&["captain","clear"]),no_mcp("Only the owner can clear the project captain; use se captain clear from an owner terminal."),Owner,false,Never,Write,Project,HostForWrites,"se.captain-clear",Captain,&["J3"]);
+    CaptainShow => CaptainShow, CaptainShowOutput, ("captain.show",leaf(&["captain","show"]),tool("stateengine_captain_show","Show project captain","Read the project's captain."),Either,false,Never,Read,Project,None,"se.captain-show",Captain,&["J3"]);
     ProjectMove => ProjectMove, MoveOutput, ("project.move",leaf(&["project","move"]),no_mcp("Owner terminal operation: re-attach the project to a moved repository folder after verifying its recorded git identity."),Owner,false,Never,Write,Project,None,"se.project-move",ProjectMove,&["J3"]);
     DiagnosticBundle => DiagnosticBundle, DiagnosticBundleOutput, ("diagnostic.bundle",leaf(&["diagnostic-bundle"]),no_mcp("Home-wide owner diagnostics must not leak into a project session; ask the user to run the installed CLI and share the file."),Owner,false,Never,Read,Home,None,"se.diagnostic-bundle",Bundle,&["J5"]);
     DoctorInspect => DoctorInspect, Diagnosis, ("doctor.inspect",leaf(&["doctor"]),no_mcp("Owner installation diagnosis uses the installed CLI."),Owner,false,Never,Read,Home,None,"se.diagnosis",Diagnosis,&["J5"]);
@@ -308,6 +315,8 @@ impl AnyOp {
             Self::AgentStop(v) => Some(&v.idempotency_key),
             Self::ProjectRemove(v) => Some(&v.idempotency_key),
             Self::ConfigSet(v) => Some(&v.idempotency_key),
+            Self::CaptainSet(v) => Some(&v.idempotency_key),
+            Self::CaptainClear(v) => Some(&v.idempotency_key),
             _ => None,
         }
     }

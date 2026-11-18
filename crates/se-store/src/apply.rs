@@ -205,6 +205,49 @@ pub(crate) fn apply(
         b @ (ProcessRegistered { .. } | ProcessTransition { .. }) => {
             process::apply(c, header, b, seq, revision, authority)?
         }
+        ProjectCaptainChanged {
+            project: target,
+            captain,
+            ..
+        } => {
+            let p = project()?;
+            if key(c, "project", target.as_str(), &[0], false)? != *p
+                || !project::is_owner(c, header, p)?
+            {
+                return Err(fail(
+                    StoreErrorCode::ScopeMismatch,
+                    "only the project owner can change its captain",
+                ));
+            }
+            match captain {
+                Some(Actor::Agent(ref agent)) => {
+                    let principal = actor_key(&Actor::Agent(agent.clone()))?;
+                    let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM principals WHERE project_id=? AND principal_id=? AND principal_kind='agent')", rusqlite::params![p, principal], |r| r.get(0)).map_err(sql)?;
+                    if !exists {
+                        return Err(fail(
+                            StoreErrorCode::ReferenceMissing,
+                            "choose a registered project agent",
+                        ));
+                    }
+                }
+                Some(Actor::Human(ref human)) if header.actor == Actor::Human(human.clone()) => {}
+                Some(_) => {
+                    return Err(fail(
+                        StoreErrorCode::ScopeMismatch,
+                        "captain must be the project owner or a registered project agent",
+                    ));
+                }
+                None => {}
+            }
+            let changed = c.execute("INSERT INTO project_captain(project_id,revision,last_seq) VALUES(?,?,?) ON CONFLICT(project_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq WHERE project_captain.revision=excluded.revision-1", crate::sql_value::sql_params![p,revision,seq]).map_err(sql)?;
+            if changed != 1 {
+                return Err(fail(
+                    StoreErrorCode::InvalidTransition,
+                    "captain revision changed before update",
+                ));
+            }
+            codec::aux(c, seq, facts)?;
+        }
         ProjectRegistered {
             project: p,
             roots,

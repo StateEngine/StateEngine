@@ -47,6 +47,14 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         RemoteSecurity { .. } => crate::remote::revision(c, e),
         RemoteMessageAttributed { .. } | RemoteLaunchAttributed { .. } => Ok(1),
         RemoteMailboxRecorded { .. } => Ok(1),
+        ProjectCaptainChanged {
+            project,
+            expected: want,
+            ..
+        } => {
+            let p = key(c, "project", project.as_str(), &[0], false)?;
+            expected(c, "project_captain", "project_id=?", &[&p], *want)
+        }
         ProjectRegistered {
             project,
             expected: want,

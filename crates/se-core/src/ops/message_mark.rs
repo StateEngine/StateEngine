@@ -398,3 +398,18 @@ pub fn committed<S: Snapshot>(
         Ok(marker.into())
     }
 }
+
+pub(crate) fn map_mark(
+    step: crate::commit::OpStep<crate::ops::AnyOutput, crate::ops::message_mark::MarkThen>,
+) -> Result<
+    crate::commit::OpStep<crate::ops::AnyOutput, crate::ports::Then, crate::ports::CustodyPlan>,
+> {
+    Ok(match step {
+        crate::commit::OpStep::Complete(output) => crate::commit::OpStep::Complete(output),
+        crate::commit::OpStep::Commit { batch, then } => crate::commit::OpStep::Commit {
+            batch,
+            then: crate::ports::Then::MessageMark(then),
+        },
+        crate::commit::OpStep::Custody(never) => match never {},
+    })
+}

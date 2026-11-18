@@ -93,6 +93,7 @@ impl SqliteSnapshot {
                     return Ok(about);
                 }
                 match &e.body {
+                    EventBody::ProjectCaptainChanged { .. } => true,
                     EventBody::MessageSent { recipient, .. } => *recipient == who,
                     EventBody::WorkMessageSent { work, .. } => work.addressees.contains(a),
                     EventBody::WorkingStateSet { agent, .. }

@@ -23,6 +23,14 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
         RemoteMessageAttributed { record } => {
             ("remote.message_attributed", json!({"record":record}))
         }
+        ProjectCaptainChanged {
+            project,
+            captain,
+            expected,
+        } => (
+            "project.captain_changed",
+            json!({"project":project,"captain":captain,"expected":expected}),
+        ),
         ProjectRegistered {
             project,
             name,

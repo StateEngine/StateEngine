@@ -4,6 +4,7 @@ use crate::{
     ops::{ProjectInit, ProjectStatus, RuntimeDown, RuntimeUp, Uninstall},
 };
 pub enum Then {
+    Captain(crate::ops::captain::CaptainThen),
     AgentConfig(crate::ops::agent_config::AgentConfigThen),
     AgentCreate(crate::ops::agent::AgentCreateThen),
     AgentRename(crate::ops::agent::AgentRenameThen),
