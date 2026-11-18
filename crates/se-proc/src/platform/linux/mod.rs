@@ -280,7 +280,7 @@ impl Scope {
     }
     pub fn unpublished_exit(&mut self) -> ProcResult<Option<(ProcessId, ExitStatus)>> {
         if let Some(child) = &mut self.child {
-            return Ok(child.peek_status()?.map(|s| (child.pid, s)));
+            return Ok(child.reaped_status()?.map(|s| (child.pid, s)));
         }
         Ok(None)
     }
@@ -413,10 +413,12 @@ impl Scope {
     }
     pub fn root_exit_ready(&mut self) -> ProcResult<bool> {
         // procfs may mark our retained child a zombie just before waitid
-        // exposes its status. Preserve that observation as pending, then use
-        // the cached native status for every complete witness and release.
+        // exposes its status. Once status is available, reap this exact child
+        // independently of scope closure: an escaped descendant may keep scope
+        // custody unproved indefinitely. Its cached status and pidfd remain
+        // retained; reaping does not release the scope or erase escape debt.
         let ready = match &mut self.child {
-            Some(child) => child.peek_status()?.is_some(),
+            Some(child) => child.reaped_status()?.is_some(),
             None => true,
         };
         if !ready {
@@ -436,7 +438,11 @@ impl Scope {
             return Ok(Some(ProcessObservation::Exited {
                 expected,
                 evidence: ExitEvidence::NativeExitedRecord {
-                    state: NativeState::ExitedAwaitingReap,
+                    state: if child.reaped() {
+                        NativeState::Exited
+                    } else {
+                        NativeState::ExitedAwaitingReap
+                    },
                 },
                 status,
                 observed_at_unix_ns: now()?,

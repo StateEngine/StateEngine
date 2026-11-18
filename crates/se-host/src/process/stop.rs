@@ -400,12 +400,33 @@ impl LaunchCoordinator {
                     deadline,
                 )
                 .await?;
-                return Err(se_core::scope::unreadable(
+                let mut failure = se_core::scope::unreadable(
                     "exact scope stop",
                     &format!(
                         "closure remains unproved at the achieved native bound; dispatch={dispatch:?}; observation={observed:?}"
                     ),
-                ));
+                );
+                if matches!(&observed, StopObservation::Bounded(witness)
+                    if matches!(witness.guarantee, se_proc::ContainmentGuarantee::Uncontained { .. }))
+                {
+                    let release = se_core::ops::AgentCommand::stop_in_home(
+                        &work.meta.agent.id,
+                        &self.options.home,
+                        &work.meta.project.id,
+                    )
+                    .map(|command| format!("{} --release", command.command));
+                    failure.body = failure.body.with_remedy(se_types::Remedy {
+                        text: format!(
+                            "The root exited, but the uncontained scope retains unproved descendants. Inspect them before retrying this stop. Only an owner who accepts that scope closure remains unproved may explicitly release custody{}; release does not stop unobserved descendants or prove their exit.",
+                            release.as_ref().map_or_else(
+                                || "; use the same home and project with stop AGENT --release".into(),
+                                |command| format!(" with {command}"),
+                            )
+                        ),
+                        command: None,
+                    });
+                }
+                return Err(failure);
             }
             (ticket, observed) = self.stop_observation(ticket, deadline).await?;
         }
