@@ -124,6 +124,9 @@ pub fn change<R: Snapshot>(
         .read
         .operation_receipt(cx.admission.actor.clone(), key.clone())
         .map_err(|e| store_error(&e))?;
+    if selector.is_none() && matches!(&replay, Read::Absent { .. }) {
+        super::assignment::require_closed(cx, "captain clear")?;
+    }
     let captain = match replay {
         Read::Present { value } => {
             let event = super::receipt::committed_event(cx.read, &value)?;

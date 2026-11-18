@@ -8,6 +8,7 @@ type ResumeRow = (
     u64,
 );
 mod access;
+mod assignment;
 mod atlas_resume;
 mod capture;
 mod channel;
@@ -47,6 +48,8 @@ use std::{marker::PhantomData, rc::Rc, time::Instant};
 pub struct SqliteSnapshot {
     pub(crate) db: Connection,
     remote_launch_grant: Option<se_types::RemoteGrantId>,
+    assignment_captain: std::cell::OnceCell<Option<Actor>>,
+    assignment_floor_exists: std::cell::OnceCell<bool>,
     recycle: Option<crate::read_phase_pool::Recycle>,
     info: StoreInfo,
     scope: ReadScope,
@@ -73,6 +76,8 @@ impl SqliteSnapshot {
         Ok(Self {
             db: phase.db,
             remote_launch_grant: None,
+            assignment_captain: std::cell::OnceCell::new(),
+            assignment_floor_exists: std::cell::OnceCell::new(),
             recycle: phase.recycle,
             info: phase.info,
             scope,
@@ -98,6 +103,8 @@ impl SqliteSnapshot {
             ));
         }
         self.scope.admission.scope = Scope::Project(project);
+        self.assignment_captain.take();
+        self.assignment_floor_exists.take();
         Ok(())
     }
 }

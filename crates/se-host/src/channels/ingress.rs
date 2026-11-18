@@ -229,7 +229,7 @@ impl Channels {
                 let message = facts.message.clone();
                 let kernel = Kernel::new(facts)?;
                 let send = MessageSend {
-                    to: state.target.agent.to_string(),
+                    to: Some(state.target.agent.to_string()),
                     body,
                     quiet: false,
                     kind: MessageKind::Task,

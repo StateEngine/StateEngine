@@ -42,6 +42,7 @@ pub fn inventory<R: Snapshot>(
             },
         )));
     }
+    super::assignment::require_closed(cx, "remove project")?;
     let root = match &head.current.body {
         EventBody::ProjectRegistered { roots, .. } | EventBody::ProjectUpdated { roots, .. } => {
             roots

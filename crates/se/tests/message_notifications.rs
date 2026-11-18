@@ -29,6 +29,8 @@ fn kernel() -> Result<Kernel, Box<dyn std::error::Error>> {
         message: message()?,
         agent: agent()?,
         profile_event: event()?,
+        notification_event: event()?,
+        notification_message: message()?,
         occurred_at_us: 1_700_000_000_000_000,
         door: Door::Cli,
     })?)

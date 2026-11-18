@@ -392,3 +392,23 @@ pub fn channel_reply_instruction<R: se_store::Snapshot>(
 ) -> se_types::Result<Option<String>> {
     Ok(channel_reply(cx, id, recipient)?.map(|route| route.instruction))
 }
+
+/// Exit status reflects unread totals, unreadable bodies and page completeness.
+pub(crate) fn exit_code(value: &super::MessagePage) -> u8 {
+    let page = &value.page;
+    let unread = page
+        .items()
+        .iter()
+        .filter(|row| row.disposition.state == "unread")
+        .count() as u64;
+    if page
+        .items()
+        .iter()
+        .any(|row| row.unreadable.is_some() || (value.view.full && !row.body.complete))
+        || (value.view.r#box == "inbox" && value.unread_total.is_none_or(|total| total > unread))
+    {
+        2
+    } else {
+        page.window().exit_code(false)
+    }
+}

@@ -135,7 +135,7 @@ Resume defaults to 4,096 UTF-8 bytes for its ordinary CLI JSON or MCP reply and 
 
 | Name | CLI path | MCP tool or reason for none | Auth | Effect | Inputs | Output | Journey |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `message.send` | `msg send TO BODY [--kind KIND --ref ID --reply-to ID]` | `stateengine_msg_send` | either | write | authorized recipient, body, kind, references, optional reply target; REQUIRED request identity; sender bound by authority | `MessageReceipt`: message/event ID, committed/deduplicated state; notification debt/offer distinct from read | J4 |
+| `message.send` | `msg send [TO] BODY [--kind KIND --ref ID --reply-to ID]` | `stateengine_msg_send` | either | write | authorized recipient, body, kind, references, optional reply target; REQUIRED request identity; sender bound by authority | `MessageReceipt`: message/event ID, committed/deduplicated state; notification debt/offer distinct from read | J4 |
 | `message.inbox` | `msg inbox [AGENT] [--full]` | none — msg_list supplies the bound recipient's unread view | either | read | owner inspection target or implicit self, full-body choice, page | `Page<Message>`: recipient unread window, body completeness and continuation; CLI exits 2 if incomplete | J4 |
 | `message.list` | `msg list [--to TO --from FROM --kind KIND --full]` | `stateengine_msg_list` — `full: bool` selects complete bodies | either | read | authorized filters, unread/all view, page, body budget, full-body choice; owner may inspect any project message, session only messages it sent or received | `Page<Message>`: matching records with explicit disposition/body/window facts; full mode returns complete bodies within the byte-capped page and continuation | J4 |
 | `message.read` | `msg read ID` | `stateengine_msg_read` | either | write | message ID addressed to the authenticated recipient | `MessageRead`: full bounded message and committed/idempotent read marker; truncated body explicitly incomplete | J4 |
@@ -253,12 +253,18 @@ This table is compatibility metadata, **not executable aliases**. Recognized old
 
 The CLI retains replacement hints only for commands with a supported replacement above. Other obsolete inputs go through the current generated grammar and receive its ordinary unknown-command or unknown-flag refusal with current help, before opening state. No catalog of obsolete operator commands is compiled into the CLI. No old MCP tool is advertised, and no unlisted command/tool, legacy actor/root flag, environment switch or Node module name grants another operation.
 
+## Assignments
+
+A project captain or its owner can open work with `se assignment write --action open --assignee AGENT --body TEXT`. The assignee uses the same command with `--assignment EVENT_ID` and `--action accept`, `done`, `block`, or `hand-back`. Blocked work needs a reason; an assignee can accept it again after the blocker clears. Each change records a floor message. `se assignment list` shows open and blocked work; the assignment ID identifies the opening event for `se event read`. Use `--cursor` for the next page.
+
+Crew can omit the recipient for a `question`, `blocker`, or `done` message to send it to the current captain. Explicit recipients and verified reply routes continue to work. A missing or changed captain produces a refusal rather than guessing a destination.
+
 ## Generated command inventory
 
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 54 operations (48 core, 6 Atlas), 26 MCP tools (21 core, 5 Atlas). Planned: 9 operations, 3 MCP tools.
+Registered: 56 operations (50 core, 6 Atlas), 28 MCP tools (23 core, 5 Atlas). Planned: 9 operations, 3 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -283,6 +289,8 @@ Registered: 54 operations (48 core, 6 Atlas), 26 MCP tools (21 core, 5 Atlas). P
 | `project.init` | init | none | owner | write |
 | `captain.set` | captain set | none | owner | write |
 | `captain.clear` | captain clear | none | owner | write |
+| `assignment.write` | assignment write | `stateengine_assignment_write` | either | write |
+| `assignment.list` | assignment list | `stateengine_assignment_list` | either | read |
 | `captain.show` | captain show | `stateengine_captain_show` | either | read |
 | `project.move` | project move | none | owner | write |
 | `diagnostic.bundle` | diagnostic-bundle | none | owner | read |
@@ -321,7 +329,7 @@ Planned operations (design tables, not yet registered): `credential.rotate`, `hi
 
 Planned MCP tools: `stateengine_agent_status`, `stateengine_search`, `stateengine_session_turn`
 
-Registered without a design-table row: `atlas.augment` (no CLI or MCP exposure), `remote.prepare_send` (no CLI or MCP exposure), `remote.launch` (CLI `remote launch`), `captain.set` (CLI `captain set`), `captain.clear` (CLI `captain clear`), `captain.show` (CLI `captain show`), `project.move` (CLI `project move`)
+Registered without a design-table row: `atlas.augment` (no CLI or MCP exposure), `remote.prepare_send` (no CLI or MCP exposure), `remote.launch` (CLI `remote launch`), `captain.set` (CLI `captain set`), `captain.clear` (CLI `captain clear`), `assignment.write` (CLI `assignment write`), `assignment.list` (CLI `assignment list`), `captain.show` (CLI `captain show`), `project.move` (CLI `project move`)
 
-Registered MCP tools not named in the design tables: `stateengine_captain_show`, `stateengine_remote_launch`, `stateengine_working_state_get`
+Registered MCP tools not named in the design tables: `stateengine_assignment_list`, `stateengine_assignment_write`, `stateengine_captain_show`, `stateengine_remote_launch`, `stateengine_working_state_get`
 <!-- END GENERATED: ops-inventory -->

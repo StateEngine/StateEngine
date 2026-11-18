@@ -22,6 +22,8 @@ pub(super) fn public<R: Snapshot>(
 ) -> Result<(&'static str, Value)> {
     use EventBody::*;
     Ok(match &event.body {
+        AssignmentOpened { assignment, assignee, captain, floor_event, .. } => ("assignment.opened", json!({"assignment":assignment,"assignee":assignee,"captain":crate::ops::captain::actor_ref(read, captain)?,"floor_event":floor_event,"revision":event.revision.value})),
+        AssignmentTransitioned { assignment, action, captain, floor_event, .. } => ("assignment.transitioned", json!({"assignment":assignment,"action":action,"captain":crate::ops::captain::actor_ref(read, captain)?,"floor_event":floor_event,"revision":event.revision.value})),
         ProjectCaptainChanged { captain, .. } => ("project.captain_changed", json!({"captain": captain.as_ref().map(|actor| crate::ops::captain::actor_ref(read, actor)).transpose()?, "revision": event.revision.value})),
         ChannelRecorded{change}=>("channel.recorded",json!({"change":change})),
         MessageSent { message, recipient, kind, body, refs, reply_to, quiet } => ("message.sent", json!({"message_id":message,"to":receipt::actor_ref(read,recipient)?,"kind":kind,"body":text(body)?,"refs":refs,"reply_to":reply_to,"quiet":quiet})),

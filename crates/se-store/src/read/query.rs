@@ -42,7 +42,9 @@ impl SqliteSnapshot {
             } else {
                 self.record(seq)?
             };
-            let original = if matches!(first, "first_seq" | "requested_seq") && sort != seq as u64 {
+            let original = if matches!(first, "first_seq" | "requested_seq" | "opened_seq")
+                && sort != seq as u64
+            {
                 Some(Box::new(if table == "principals" {
                     self.principal_metadata(sort as i64)?
                 } else {
@@ -153,6 +155,9 @@ pub(super) fn kind_name(k: EventKind) -> &'static str {
         EventKind::RemoteMailboxRecorded => "remote.mailbox_recorded",
         EventKind::RemoteMessageAttributed => "remote.message_attributed",
         EventKind::ProjectCaptainChanged => "project.captain_changed",
+        EventKind::CaptainMessageRouted => "captain.message_routed",
+        EventKind::AssignmentOpened => "assignment.opened",
+        EventKind::AssignmentTransitioned => "assignment.transitioned",
         EventKind::ProjectRegistered => "project.registered",
         EventKind::ProjectUpdated => "project.updated",
         EventKind::ProjectMoved => "project.moved",

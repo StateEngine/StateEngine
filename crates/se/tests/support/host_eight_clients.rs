@@ -246,7 +246,7 @@ fn write(
         } else {
             AnyOp::MessageSend(se_core::ops::MessageSend {
                 quiet: false,
-                to: agent.as_str().into(),
+                to: Some(agent.as_str().into()),
                 body: body.clone(),
                 kind: Default::default(),
                 refs: vec![],

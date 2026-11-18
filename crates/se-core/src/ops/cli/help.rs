@@ -26,6 +26,8 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
     Some(match name {
         "captain.set" => "Set the project captain",
         "captain.clear" => "Clear the project captain",
+        "assignment.write" => "Open or update an assignment",
+        "assignment.list" => "List open assignments",
         "captain.show" => "Show the project captain",
         "remote.list" => "List the agents allowed by a saved remote binding",
         "remote.watch" => "Read one bounded live/durable page; disconnect never stops work",

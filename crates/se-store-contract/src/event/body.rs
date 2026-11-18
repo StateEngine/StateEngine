@@ -10,6 +10,9 @@ pub enum EventKind {
     RemoteLaunchAttributed,
     RemoteMailboxRecorded,
     ProjectCaptainChanged,
+    AssignmentOpened,
+    AssignmentTransitioned,
+    CaptainMessageRouted,
     ProjectRegistered,
     ProjectUpdated,
     ProjectMoved,
@@ -88,6 +91,25 @@ pub enum EventBody<T> {
     ProjectCaptainChanged {
         project: ProjectId,
         captain: Option<Actor>,
+        expected: Expected,
+    },
+    CaptainMessageRouted {
+        message_event: EventId,
+        captain: Actor,
+    },
+    AssignmentOpened {
+        project: ProjectId,
+        assignment: EventId,
+        assignee: AgentId,
+        captain: Actor,
+        floor_event: EventId,
+        expected: Expected,
+    },
+    AssignmentTransitioned {
+        assignment: EventId,
+        action: crate::assignment::AssignmentTransition,
+        captain: Actor,
+        floor_event: EventId,
         expected: Expected,
     },
     ProjectRegistered {

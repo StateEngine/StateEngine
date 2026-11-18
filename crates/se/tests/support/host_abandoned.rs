@@ -16,7 +16,7 @@ pub async fn check(f: &Fixture, session: &SessionId, runtime: &se_host::HostedRu
                     input: se_host::HostedInput::Operation(se_core::ops::AnyOp::MessageSend(
                         se_core::ops::MessageSend {
                             quiet: false,
-                            to: to.into(),
+                            to: Some(to.into()),
                             body: format!("actual abandoned wait {request}"),
                             kind: Default::default(),
                             refs: vec![],
@@ -31,6 +31,8 @@ pub async fn check(f: &Fixture, session: &SessionId, runtime: &se_host::HostedRu
                         message: fixture::message()?,
                         agent: fixture::agent()?,
                         profile_event: fixture::event()?,
+                        notification_event: fixture::event()?,
+                        notification_message: fixture::message()?,
                         occurred_at_us: i64::try_from(
                             std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)?

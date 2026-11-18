@@ -30,6 +30,8 @@ pub async fn uncertain_write(
                     message: fixture::message()?,
                     agent: fixture::agent()?,
                     profile_event: fixture::event()?,
+                    notification_event: fixture::event()?,
+                    notification_message: fixture::message()?,
                     occurred_at_us: i64::try_from(
                         std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)?

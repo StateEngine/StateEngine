@@ -97,7 +97,7 @@ fn run(serial: bool) -> Check {
         let call = ipc::operation(
             se_core::ops::AnyOp::MessageSend(se_core::ops::MessageSend {
                 quiet: false,
-                to: f.b.as_str().into(),
+                to: Some(f.b.as_str().into()),
                 body: "committed while shutdown owns the reply".into(),
                 kind: Default::default(),
                 refs: vec![],
@@ -198,6 +198,8 @@ fn run(serial: bool) -> Check {
                             message: fixture::message()?,
                             agent: fixture::agent()?,
                             profile_event: fixture::event()?,
+                            notification_event: fixture::event()?,
+                            notification_message: fixture::message()?,
                             occurred_at_us: 1_700_000_000_000_000,
                             door: Door::Cli,
                         })?,
