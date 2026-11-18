@@ -75,6 +75,7 @@ pub use message_mark::{
     DispositionReceipt, MessageAck, MessageDismiss, MessageRead, MessageReadOutput,
 };
 pub mod message;
+pub mod rate_cap;
 pub use listing::{AgentList, AgentPage};
 pub mod mcp_identity;
 mod mcp_schema;

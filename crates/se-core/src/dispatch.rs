@@ -332,12 +332,12 @@ impl CoreOps for Kernel {
         let identity = self.request_identity("message.send", key.clone(), &intent)?;
         // Look the receipt up before validating, so an exact retry of a committed
         // send replays the original result instead of re-checking replacement.
-        let supersede_event = match (
-            cx.read
-                .resolve_request(&identity)
-                .map_err(|e| store_error(&e))?,
-            input.supersedes.as_ref(),
-        ) {
+        let receipt = cx
+            .read
+            .resolve_request(&identity)
+            .map_err(|e| store_error(&e))?;
+        let replay = matches!(receipt, Read::Present { .. });
+        let supersede_event = match (receipt, input.supersedes.as_ref()) {
             (Read::Present { .. }, _) => None,
             (Read::Absent { .. }, None) => None,
             (Read::Absent { .. }, Some(old)) => {
@@ -360,6 +360,9 @@ impl CoreOps for Kernel {
                 },
             )?,
         };
+        if !replay {
+            crate::ops::rate_cap::enforce(cx, recipient.as_ref(), self.facts()?.occurred_at_us)?;
+        }
         let kind = kind
             .as_str()
             .ok_or_else(|| SeError::invalid("message kind", "registered string"))?
