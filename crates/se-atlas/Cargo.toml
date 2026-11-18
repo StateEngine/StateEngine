@@ -36,6 +36,7 @@ undocumented_unsafe_blocks = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
 unreachable = "deny"
+ignore_without_reason = "deny"
 # The structural guardrails the rest of the workspace inherits from the
 # workspace lints, listed here because this crate keeps its own lint table for
 # the FFI override above.
