@@ -601,6 +601,13 @@ impl Kernel {
             AnyOp::AgentShow(input) => {
                 OpStep::Complete(crate::ops::agent_status::show(input, cx)?.into())
             }
+            AnyOp::CaptainShow(_) => OpStep::Complete(crate::ops::captain::show(cx)?.into()),
+            AnyOp::CaptainSet(input) => {
+                crate::ops::captain::step(self, Some(input.captain), input.idempotency_key, cx)?
+            }
+            AnyOp::CaptainClear(input) => {
+                crate::ops::captain::step(self, None, input.idempotency_key, cx)?
+            }
             AnyOp::ConfigGet(input) => {
                 OpStep::Complete(crate::ops::agent_config::get(input, cx)?.into())
             }
@@ -648,23 +655,27 @@ impl Kernel {
                     then: Then::AgentRename(then),
                 }
             }
-            AnyOp::MessageRead(input) => {
-                map_mark(crate::ops::message_mark::read(self, cx, input)?)?
+            AnyOp::MessageRead(input) => crate::ops::message_mark::map_mark(
+                crate::ops::message_mark::read(self, cx, input)?,
+            )?,
+            AnyOp::MessageAck(input) => {
+                crate::ops::message_mark::map_mark(crate::ops::message_mark::plan(
+                    self,
+                    cx,
+                    input.msg_id,
+                    crate::ops::message_mark::Mark::Read,
+                    None,
+                )?)?
             }
-            AnyOp::MessageAck(input) => map_mark(crate::ops::message_mark::plan(
-                self,
-                cx,
-                input.msg_id,
-                crate::ops::message_mark::Mark::Read,
-                None,
-            )?)?,
-            AnyOp::MessageDismiss(input) => map_mark(crate::ops::message_mark::plan(
-                self,
-                cx,
-                input.msg_id,
-                crate::ops::message_mark::Mark::Dismiss,
-                None,
-            )?)?,
+            AnyOp::MessageDismiss(input) => {
+                crate::ops::message_mark::map_mark(crate::ops::message_mark::plan(
+                    self,
+                    cx,
+                    input.msg_id,
+                    crate::ops::message_mark::Mark::Dismiss,
+                    None,
+                )?)?
+            }
             AnyOp::MessageSend(input) => match self.message_send(input, cx)? {
                 OpStep::Complete(raw) => {
                     OpStep::Complete(crate::ops::receipt::message(raw, cx)?.into())
@@ -758,6 +769,7 @@ impl Kernel {
         use crate::ports::Then;
         let maintenance_failed = receipt.maintenance_failed;
         let output: Result<crate::ops::AnyOutput> = match then {
+            Then::Captain(then) => crate::ops::captain::committed(then, receipt, cx),
             Then::AgentConfig(then) => {
                 Ok(crate::ops::agent_config_receipt::committed(then, receipt, cx)?.into())
             }
@@ -781,17 +793,4 @@ impl Kernel {
         };
         output.map(|value| value.with_maintenance_pending(maintenance_failed))
     }
-}
-
-fn map_mark(
-    step: OpStep<crate::ops::AnyOutput, crate::ops::message_mark::MarkThen>,
-) -> Result<OpStep<crate::ops::AnyOutput, crate::ports::Then, crate::ports::CustodyPlan>> {
-    Ok(match step {
-        OpStep::Complete(output) => OpStep::Complete(output),
-        OpStep::Commit { batch, then } => OpStep::Commit {
-            batch,
-            then: crate::ports::Then::MessageMark(then),
-        },
-        OpStep::Custody(never) => match never {},
-    })
 }

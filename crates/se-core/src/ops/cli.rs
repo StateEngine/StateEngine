@@ -318,6 +318,7 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("from_node").long("from-node").required(true).help("Copy of an earlier StateEngine data directory to import"))
             .arg(value("source_owner").long("source-owner").help("Source human ID explicitly adopted as the importing owner"))
             .arg(value("map_human").long("map-human").action(ArgAction::Append).help("Historical human ID=existing target human ID; repeat for each explicit correspondence")),
+        "captain.set" => c.arg(positional("captain", 1, true).help("Registered agent name or ID, or me")),
         "project.status" => c.arg(toggle("all").help("Also summarize every registered project, with its owner-mail counts")),
         "agent.launch" => c
             .arg(positional("agent", 1, true).help("Saved agent name or ID to start in a fresh conversation"))

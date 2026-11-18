@@ -133,6 +133,42 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::Status, AnyOutput::ProjectStatus(value)) => {
                 read::status(&value.value, out)?
             }
+            (HumanKind::Captain, AnyOutput::CaptainShow(value)) => {
+                if let Some(captain) = &value.value.captain {
+                    writeln!(out, "Captain: {} ({})", captain.name, captain.id)?;
+                } else {
+                    writeln!(out, "No captain is set.")?;
+                }
+            }
+            (HumanKind::Captain, AnyOutput::CaptainSet(value)) => {
+                writeln!(
+                    out,
+                    "Recorded captain: {} ({})",
+                    value.value.captain.name, value.value.captain.id
+                )?;
+                match &value.value.current_captain {
+                    Some(captain) => {
+                        writeln!(out, "Current captain: {} ({})", captain.name, captain.id)?
+                    }
+                    None => writeln!(out, "No current captain is set.")?,
+                }
+                match &value.value.one_agent_project {
+                    se_types::Read::Present { value: true } => {
+                        writeln!(out, "Warning: this project has one agent.")?
+                    }
+                    se_types::Read::Present { value: false } => {}
+                    other => writeln!(out, "Agent count not established: {other:?}")?,
+                }
+            }
+            (HumanKind::Captain, AnyOutput::CaptainClear(value)) => {
+                writeln!(out, "Recorded captain clear.")?;
+                match &value.value.current_captain {
+                    Some(captain) => {
+                        writeln!(out, "Current captain: {} ({})", captain.name, captain.id)?
+                    }
+                    None => writeln!(out, "No current captain is set.")?,
+                }
+            }
             (HumanKind::ConfigReceipt, AnyOutput::ConfigSet(value)) => {
                 administration::config(&value.value, out)?
             }

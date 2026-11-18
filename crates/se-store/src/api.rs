@@ -374,6 +374,7 @@ pub trait Snapshot {
         budget: ReadBudget,
     ) -> StoreResult<Page<ProjectionRecord>>;
     fn project(&mut self, id: ProjectId) -> StoreResult<Read<ProjectionRecord>>;
+    fn project_captain(&mut self) -> StoreResult<Read<ProjectionRecord>>;
     fn principals(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     fn principal(&mut self, id: Actor) -> StoreResult<Read<ProjectionRecord>>;
     fn profile(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>>;

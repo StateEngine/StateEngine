@@ -572,6 +572,7 @@ fn security<T>(b: &EventBody<T>) -> bool {
             }
             | RuntimeOwnerEstablished { .. }
             | RuntimeHandoverRecorded { .. }
+            | ProjectCaptainChanged { .. }
             | ProjectRegistered { .. }
             | ProjectUpdated { .. }
             | ProjectMoved { .. }

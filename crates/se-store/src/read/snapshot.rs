@@ -213,6 +213,13 @@ impl Snapshot for SqliteSnapshot {
         let p = key(&self.db, "project", id.as_str(), &[0], false)?;
         self.head("projects", "project_id=?", &[&p], Some("first_seq"))
     }
+    fn project_captain(&mut self) -> StoreResult<Read<ProjectionRecord>> {
+        if self.info.schema_version < 14 {
+            return Ok(Read::Unknown { what: "Captain settings need a store upgrade; run se up for this data home, then retry.".into() });
+        }
+        let p = self.project_bytes()?;
+        self.head("project_captain", "project_id=?", &[&p], None)
+    }
     fn principal(&mut self, id: Actor) -> StoreResult<Read<ProjectionRecord>> {
         if self.scope.admission.scope == Scope::Registry {
             if !matches!(self.scope.visibility, Visibility::Owner) || !matches!(id, Actor::Human(_))

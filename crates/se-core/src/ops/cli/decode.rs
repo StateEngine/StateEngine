@@ -154,6 +154,14 @@ pub fn from_matches_with_key(
             topic: text(m, "topic"),
         }),
         "meta.schema" => AnyOp::MetaSchema(MetaSchema { op: text(m, "op") }),
+        "captain.set" => AnyOp::CaptainSet(CaptainSet {
+            captain: required(m, "captain")?,
+            idempotency_key: key()?,
+        }),
+        "captain.clear" => AnyOp::CaptainClear(CaptainClear {
+            idempotency_key: key()?,
+        }),
+        "captain.show" => AnyOp::CaptainShow(CaptainShow {}),
         "project.status" => AnyOp::ProjectStatus(ProjectStatus {
             all: if path.is_empty() {
                 false
