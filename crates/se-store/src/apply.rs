@@ -645,7 +645,7 @@ pub(crate) fn apply(
             cursor::apply(c, header, b, seq, revision, facts)?
         }
         b @ (SharedScopeChanged { .. } | ThreadAttached { .. } | ThreadDetached { .. }) => {
-            shared::apply(c, header, &b, seq, revision, authority)?
+            shared::apply(c, header, &b, seq, authority)?
         }
         b @ (ImportStarted { .. }
         | ImportProgress { .. }

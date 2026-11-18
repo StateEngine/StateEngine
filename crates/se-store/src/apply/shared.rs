@@ -4,22 +4,16 @@
 //! agents are attached to it and how each attachment ended. A scope transition
 //! never invents a process state, and a thread end never claims the server
 //! stopped.
+//!
+//! Guards follow one rule: every event about an existing scope is guarded by the
+//! **stored scope revision** and writes that revision plus one, because a
+//! membership change is a change to the scope (it changes whether the server may
+//! stop). The membership row is guarded separately by its own open state, and its
+//! own revision is bumped with it.
 
 use super::*;
 use se_store_contract::{SharedScopePhase, ThreadEnd};
 use se_types::{LifecycleId, SessionId};
-
-/// Every write here is the owning host's: a shared scope is process custody, and
-/// an ordinary reader must never be able to claim a daemon is live or stopped.
-fn host(authority: &ApplyAuthority<'_>) -> StoreResult<()> {
-    if authority.lease.mode != LeaseMode::Host {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
-            "shared-scope facts require the owning host writer",
-        ));
-    }
-    Ok(())
-}
 
 fn phase(value: SharedScopePhase) -> &'static str {
     match value {
@@ -28,6 +22,16 @@ fn phase(value: SharedScopePhase) -> &'static str {
         SharedScopePhase::Stopped => "stopped",
         SharedScopePhase::Died => "died",
     }
+}
+
+fn parsed(value: &str) -> StoreResult<SharedScopePhase> {
+    Ok(match value {
+        "starting" => SharedScopePhase::Starting,
+        "live" => SharedScopePhase::Live,
+        "stopped" => SharedScopePhase::Stopped,
+        "died" => SharedScopePhase::Died,
+        _ => return Err(invalid("shared scope phase")),
+    })
 }
 
 fn end(value: ThreadEnd) -> &'static str {
@@ -41,16 +45,79 @@ fn legal(from: Option<SharedScopePhase>, to: SharedScopePhase) -> bool {
     use SharedScopePhase::*;
     matches!(
         (from, to),
-        // A scope is registered once, then either serves agents or ends.
+        // First registration, then either serving or ending.
         (None, Starting | Live | Stopped | Died)
             | (Some(Starting), Live | Stopped | Died)
             // A live scope that loses its server has died; it was not stopped,
-            // and this is the only state that must never read as a clean stop.
+            // and that distinction must never collapse.
             | (Some(Live), Stopped | Died)
     )
 }
 
+/// What the stored scope row says, read inside the write transaction.
+struct Stored {
+    revision: u64,
+    phase: SharedScopePhase,
+}
+
+fn stored(c: &Connection, p: &[u8], id: &[u8]) -> StoreResult<Option<Stored>> {
+    let row: Option<(i64, String)> = c
+        .query_row(
+            "SELECT revision, phase FROM shared_scope WHERE project_id=? AND scope_id=?",
+            rusqlite::params![p, id],
+            |r| Ok((crate::sql_value::value(r, 0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    match row {
+        None => Ok(None),
+        Some((revision, phase)) => Ok(Some(Stored {
+            revision: u64::try_from(revision).map_err(invalid)?,
+            phase: parsed(&phase)?,
+        })),
+    }
+}
+
+fn open_memberships(c: &Connection, p: &[u8], id: &[u8]) -> StoreResult<u64> {
+    let count: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM shared_scope_thread
+             WHERE project_id=? AND scope_id=? AND detached_seq IS NULL",
+            rusqlite::params![p, id],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    u64::try_from(count).map_err(invalid)
+}
+
+/// Confirm the caller's declared expected revision is the stored one.
+///
+/// `Absent` means "no scope yet" and is accepted only when the row truly is
+/// absent; every later event must name the exact stored revision.
+fn expected_revision(want: Expected, row: Option<&Stored>) -> StoreResult<u64> {
+    match (want, row) {
+        (Expected::Absent, None) => Ok(0),
+        (Expected::Absent, Some(_)) => Err(fail(
+            StoreErrorCode::RevisionConflict,
+            "a shared scope already exists for this login; name its exact revision",
+        )),
+        (Expected::Revision(want), Some(row)) if want.value.get() == row.revision => {
+            Ok(row.revision)
+        }
+        (Expected::Revision(_), Some(_)) => Err(fail(
+            StoreErrorCode::RevisionConflict,
+            "shared scope revision differs from the one read",
+        )),
+        (Expected::Revision(_), None) => Err(fail(
+            StoreErrorCode::RevisionConflict,
+            "shared scope is absent; a first registration uses Expected::Absent",
+        )),
+    }
+}
+
 pub(super) fn revision(c: &Connection, event: &NewEvent) -> StoreResult<u64> {
+    // The store's own revision dispatch asks this only for the row's next
+    // revision; the guards below decide whether the transition is legal.
     let (id, want) = match &event.body {
         EventBody::SharedScopeChanged {
             scope, expected, ..
@@ -79,12 +146,15 @@ pub(super) fn apply(
     h: &EventHeader,
     body: &EventBody<InputText>,
     seq: i64,
-    rev: u64,
     authority: &ApplyAuthority<'_>,
 ) -> StoreResult<()> {
-    host(authority)?;
+    if authority.lease.mode != LeaseMode::Host {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "shared-scope facts require the owning host writer",
+        ));
+    }
     let p = project_id(c, &h.scope, false)?;
-    let write = Write { c, p, seq, rev };
     match body {
         EventBody::SharedScopeChanged {
             scope,
@@ -93,58 +163,67 @@ pub(super) fn apply(
             phase: next,
             from,
             expected,
-            ..
-        } => scope_changed(&write, scope, login, server_process, *next, *from, expected),
+        } => changed(
+            c,
+            &p,
+            scope,
+            login,
+            server_process,
+            *next,
+            *from,
+            *expected,
+            seq,
+        ),
         EventBody::ThreadAttached {
             scope,
             session,
             thread,
             expected,
-            ..
-        } => attached(&write, scope, session, thread, expected),
+        } => attached(c, &p, scope, session, thread, *expected, seq),
         EventBody::ThreadDetached {
             scope,
             session,
             end: how,
             reason,
             expected,
-            ..
-        } => detached(&write, scope, session, *how, reason, expected),
+        } => detached(c, &p, scope, session, *how, reason, *expected, seq),
         _ => Err(invalid("shared scope apply dispatch")),
     }
 }
 
-/// What every branch needs: the connection, the project, and this event's place.
-struct Write<'a> {
-    c: &'a Connection,
-    p: Vec<u8>,
-    seq: i64,
-    rev: u64,
-}
-
-fn scope_changed(
-    write: &Write<'_>,
+#[allow(clippy::too_many_arguments)]
+fn changed(
+    c: &Connection,
+    p: &[u8],
     scope: &LifecycleId,
     login: &str,
     server_process: &LifecycleId,
     next: SharedScopePhase,
     from: Option<SharedScopePhase>,
-    expected_value: &Expected,
+    want: Expected,
+    seq: i64,
 ) -> StoreResult<()> {
-    let Write { c, p, seq, rev } = write;
-    let Expected::Revision(_) = expected_value else {
-        return Err(invalid("shared scope requires an exact revision"));
-    };
+    let id = key(c, "lifecycle", scope.as_str(), &[0], true)?;
+    let row = stored(c, p, &id)?;
+    let revision = expected_revision(want, row.as_ref())?;
+    // The claimed prior phase is never trusted: it must be the stored one.
+    let prior = row.as_ref().map(|row| row.phase);
+    if prior != from {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "shared scope prior phase differs from the stored phase",
+        ));
+    }
+    if !legal(prior, next) {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "shared scope phase change is not a legal transition",
+        ));
+    }
     if login.is_empty() || login.len() > 4096 {
         return Err(fail(
             StoreErrorCode::InvalidTransition,
             "shared scope must name the login it serves",
-        ));
-    }
-    if !legal(from, next) {
-        return Err(fail(
-            StoreErrorCode::InvalidTransition,
-            "shared scope phase change is not a legal transition",
         ));
     }
     let server = key(c, "lifecycle", server_process.as_str(), &[0], true)?;
@@ -161,30 +240,50 @@ fn scope_changed(
             "shared scope names a server process that is not recorded",
         ));
     }
-    let id = key(c, "lifecycle", scope.as_str(), &[0], true)?;
+    if let Some(row) = &row {
+        // Identity is immutable: a different login or server is a new scope.
+        let existing: (String, Vec<u8>) = c
+            .query_row(
+                "SELECT login, server_process FROM shared_scope WHERE project_id=? AND scope_id=?",
+                rusqlite::params![p, id],
+                |r| Ok((r.get(0)?, crate::sql_value::value(r, 1)?)),
+            )
+            .map_err(sql)?;
+        if existing.0 != login || existing.1 != server {
+            return Err(fail(
+                StoreErrorCode::InvalidTransition,
+                "shared scope login and server identity cannot change; register a new scope",
+            ));
+        }
+        let _ = row.revision;
+    }
+    // Stopping is the one transition that needs every agent gone first.
+    if next == SharedScopePhase::Stopped && open_memberships(c, p, &id)? > 0 {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "a shared scope stops only after its last agent detaches",
+        ));
+    }
     c.execute(
         "INSERT INTO shared_scope(project_id,scope_id,login,server_process,phase,revision,last_seq)
          VALUES(?,?,?,?,?,?,?)
          ON CONFLICT(project_id,scope_id) DO UPDATE SET
-           login=excluded.login, server_process=excluded.server_process,
            phase=excluded.phase, revision=excluded.revision, last_seq=excluded.last_seq",
-        crate::sql_value::sql_params![p, id, login, server, phase(next), rev, seq],
+        crate::sql_value::sql_params![p, id, login, server, phase(next), revision + 1, seq],
     )
     .map_err(sql)?;
     Ok(())
 }
 
 fn attached(
-    write: &Write<'_>,
+    c: &Connection,
+    p: &[u8],
     scope: &LifecycleId,
     session: &SessionId,
     thread: &str,
-    expected_value: &Expected,
+    want: Expected,
+    seq: i64,
 ) -> StoreResult<()> {
-    let Write { c, p, seq, rev } = write;
-    let Expected::Revision(_) = expected_value else {
-        return Err(invalid("thread attach requires an exact revision"));
-    };
     if thread.is_empty() || thread.len() > 512 {
         return Err(fail(
             StoreErrorCode::InvalidTransition,
@@ -192,17 +291,14 @@ fn attached(
         ));
     }
     let id = key(c, "lifecycle", scope.as_str(), &[0], true)?;
-    let scoped: Option<String> = c
-        .query_row(
-            "SELECT phase FROM shared_scope WHERE project_id=? AND scope_id=?",
-            rusqlite::params![p, id],
-            |r| r.get(0),
+    let row = stored(c, p, &id)?.ok_or_else(|| {
+        fail(
+            StoreErrorCode::InvalidTransition,
+            "an agent attaches only to a registered shared scope",
         )
-        .optional()
-        .map_err(sql)?;
-    // Only a live scope accepts an agent: attaching to a starting or ended scope
-    // would leave an agent waiting on a server that is not serving anyone.
-    if scoped.as_deref() != Some("live") {
+    })?;
+    let revision = expected_revision(want, Some(&row))?;
+    if row.phase != SharedScopePhase::Live {
         return Err(fail(
             StoreErrorCode::InvalidTransition,
             "an agent may attach only to a live shared scope",
@@ -211,8 +307,8 @@ fn attached(
     let target = key(c, "session", session.as_str(), &[0], true)?;
     c.execute(
         "INSERT INTO shared_scope_thread(project_id,scope_id,session_id,thread_id,attached_seq,revision)
-         VALUES(?,?,?,?,?,?)",
-        crate::sql_value::sql_params![p, id, target, thread, seq, rev],
+         VALUES(?,?,?,?,?,1)",
+        crate::sql_value::sql_params![p, id, target, thread, seq],
     )
     .map_err(|error| {
         fail(
@@ -220,21 +316,19 @@ fn attached(
             format!("a session attaches to one thread once: {error}"),
         )
     })?;
-    Ok(())
+    bump(c, p, &id, revision, seq)
 }
 
 fn detached(
-    write: &Write<'_>,
+    c: &Connection,
+    p: &[u8],
     scope: &LifecycleId,
     session: &SessionId,
     how: ThreadEnd,
     reason: &str,
-    expected_value: &Expected,
+    want: Expected,
+    seq: i64,
 ) -> StoreResult<()> {
-    let Write { c, p, seq, rev } = write;
-    let Expected::Revision(_) = expected_value else {
-        return Err(invalid("thread detach requires an exact revision"));
-    };
     if reason.is_empty() || reason.len() > 1024 {
         return Err(fail(
             StoreErrorCode::InvalidTransition,
@@ -242,21 +336,49 @@ fn detached(
         ));
     }
     let id = key(c, "lifecycle", scope.as_str(), &[0], true)?;
+    let row = stored(c, p, &id)?.ok_or_else(|| {
+        fail(
+            StoreErrorCode::InvalidTransition,
+            "a thread detaches only from a registered shared scope",
+        )
+    })?;
+    let revision = expected_revision(want, Some(&row))?;
     let target = key(c, "session", session.as_str(), &[0], true)?;
+    // The membership is guarded by its own open state: how a thread ended is
+    // recorded once, and a stale row cannot be closed twice.
     let changed = c
         .execute(
             "UPDATE shared_scope_thread
-             SET detached_seq=?, detached_reason=?, revision=?
+             SET detached_seq=?, detached_reason=?, revision=revision+1
              WHERE project_id=? AND scope_id=? AND session_id=? AND detached_seq IS NULL",
-            crate::sql_value::sql_params![seq, end(how), rev, p, id, target],
+            crate::sql_value::sql_params![seq, end(how), p, id, target],
         )
         .map_err(sql)?;
-    // A repeated detach is a contradiction, not an idempotent success: the first
-    // one already said how this thread ended.
     if changed != 1 {
         return Err(fail(
             StoreErrorCode::InvalidTransition,
             "thread detach requires one open membership for this session",
+        ));
+    }
+    bump(c, p, &id, revision, seq)
+}
+
+/// Store the scope's next revision for a membership event.
+///
+/// A membership change changes whether the server may stop, so it is a scope
+/// change and must move the scope revision; leaving it alone would let a stale
+/// membership event pass the next guard.
+fn bump(c: &Connection, p: &[u8], id: &[u8], revision: u64, seq: i64) -> StoreResult<()> {
+    let changed = c
+        .execute(
+            "UPDATE shared_scope SET revision=?, last_seq=? WHERE project_id=? AND scope_id=? AND revision=?",
+            crate::sql_value::sql_params![revision + 1, seq, p, id, revision],
+        )
+        .map_err(sql)?;
+    if changed != 1 {
+        return Err(fail(
+            StoreErrorCode::RevisionConflict,
+            "shared scope revision moved while this membership event was applied",
         ));
     }
     Ok(())
