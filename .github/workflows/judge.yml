@@ -211,8 +211,11 @@ jobs:
           report = json.load(open(sys.argv[1], encoding="utf-8"))
           print("External fixture availability (separate from passing tests; selections may be outside the requested filter):")
           for item in report["not_run"]:
-              print(f"- UNSUPPORTED {item['judge']}: missing external inputs "
-                    + ", ".join(item["missing_inputs"]))
+              if "missing_inputs" in item:
+                  print(f"- UNSUPPORTED {item['judge']}: missing external inputs "
+                        + ", ".join(item["missing_inputs"]))
+              else:
+                  print(f"- NOT RUN {item['judge']}: {item.get('reason', 'no reason recorded')}")
           PY
           fi
           if [[ -f target/nextest/custom-harnesses.json ]]; then
