@@ -322,7 +322,7 @@ jobs:
   # Nightly and manual only: every pull request already runs Windows-target Clippy.
   # The nightly run on main also warms the native Windows build cache.
   windows-archive:
-    name: Windows archive (informational)
+    name: Windows archive
     needs: [changes, linux-box, windows-clippy]
     if: ${{ always() && !cancelled() && github.event_name != 'push' && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && (needs.windows-clippy.result == 'success' || (needs.windows-clippy.result == 'skipped' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed')) }}
     runs-on: windows-2025
@@ -368,10 +368,10 @@ jobs:
           echo "Windows build cache exact hit = ${CACHE_HIT:-not reported}" >> "$GITHUB_STEP_SUMMARY"
           echo "Windows build cache restored key = ${CACHE_MATCH:-not reported}" >> "$GITHUB_STEP_SUMMARY"
 
-  # Windows tests run on every pull request but stay non-required until they prove stable;
+  # Windows tests run on every pull request and are required by check wherever they apply;
   # runtime/process/install changes still require native VM qualification before merge.
   windows-test:
-    name: Windows ${{ matrix.mode == 'full' && 'runtime' || 'smoke' }} (informational, shard ${{ matrix.shard }})
+    name: Windows ${{ matrix.mode == 'full' && 'runtime' || 'smoke' }} (shard ${{ matrix.shard }})
     needs: [changes, linux-box, windows-clippy, windows-archive]
     if: ${{ always() && !cancelled() && github.event_name != 'push' && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && (needs.windows-clippy.result == 'success' || (needs.windows-clippy.result == 'skipped' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed')) }}
     strategy:
@@ -379,7 +379,7 @@ jobs:
       matrix:
         shard: [1, 2]
         # Pull requests run the smoke set. The merge queue and the nightly run the whole
-        # Windows suite, informational until it is green; detachment is also qualified in the VM.
+        # Windows suite; detachment is also qualified in the VM.
         mode: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["smoke", "full"]' || (github.event_name == 'merge_group' || github.event_name == 'schedule') && '["full"]' || '["smoke"]') }}
     runs-on: windows-2025
     timeout-minutes: ${{ matrix.mode == 'full' && 40 || 6 }}
@@ -533,7 +533,7 @@ jobs:
   check:
     name: ${{ github.event_name == 'push' && 'main guard' || 'check' }}
     if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.job == 'macos') && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
-    needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test, macos-test, remote-test]
+    needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test, macos-test, remote-test, windows-archive, windows-test]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
