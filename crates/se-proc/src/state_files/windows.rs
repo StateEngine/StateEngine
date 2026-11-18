@@ -12,6 +12,7 @@ use std::{
 };
 use windows_sys::Win32::{Foundation::*, Security::*, Storage::FileSystem::*};
 
+mod metadata;
 pub(crate) mod security;
 use security::{Layout, descriptor};
 fn validate_component(value: &std::ffi::OsStr, path: &Path) -> Result<()> {
@@ -181,11 +182,20 @@ fn walk_for(
     private_from: Option<&Path>,
     layout: Layout,
 ) -> Result<File> {
+    walk_with_ancestry(path, create, private_from, layout).map(|(file, _)| file)
+}
+fn walk_with_ancestry(
+    path: &Path,
+    create: bool,
+    private_from: Option<&Path>,
+    layout: Layout,
+) -> Result<(File, bool)> {
     if !path.is_absolute() {
         return Err(unsafe_path("absolute state directory required", path));
     }
     let mut prefix = PathBuf::new();
     let mut last_file = None;
+    let mut ordinary_ancestry = true;
     for component in path.components() {
         match component {
             Component::Prefix(p) => {
@@ -255,6 +265,7 @@ fn walk_for(
                 return Err(last("read native ancestor", &prefix));
             }
             if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                ordinary_ancestry = false;
                 security::verify_system_ancestor(&file, &prefix)?;
                 // SAFETY: only this inspected trusted system ancestor may resolve a reparse point.
                 let raw = unsafe {
@@ -280,7 +291,9 @@ fn walk_for(
         };
         last_file = Some(file);
     }
-    last_file.ok_or_else(|| unsafe_path("state directory missing", path))
+    last_file
+        .map(|file| (file, ordinary_ancestry))
+        .ok_or_else(|| unsafe_path("state directory missing", path))
 }
 pub(super) fn create_directories(path: &Path) -> Result<()> {
     let file = walk(path, true, None)?;
@@ -354,15 +367,7 @@ impl Directory {
     }
     pub fn check_name(&self, path: &Path) -> Result<()> {
         let found = walk_for(path, false, None, self.layout)?;
-        if metadata_for(&found, path, true, self.layout)? != self.identity {
-            return Err(failure(
-                StateFileErrorCode::SourceChanged,
-                "held state directory was replaced",
-                path,
-            ));
-        }
-        metadata_for(&self.file, path, true, self.layout)?;
-        Ok(())
+        self.same_metadata_root(&found, path)
     }
     fn absolute(&self, path: &Path, root: &Path) -> Result<PathBuf> {
         let relative = path

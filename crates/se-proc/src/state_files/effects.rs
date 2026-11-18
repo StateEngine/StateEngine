@@ -155,7 +155,7 @@ pub fn remove_empty_directory(path: &Path) -> Result<DirectoryRemoval> {
     os::remove_empty_directory(path)
 }
 
-pub(super) fn changed(operation: &'static str, path: &Path) -> super::StateFileError {
+pub(crate) fn changed(operation: &'static str, path: &Path) -> super::StateFileError {
     failure(StateFileErrorCode::SourceChanged, operation, path)
 }
 pub(super) fn absent(error: &super::StateFileError) -> bool {

@@ -1,11 +1,11 @@
 //! Execution custody for an already-qualified native file. Transcript pins
 //! remain non-blocking; process creation takes its own short-lived custody.
-use super::{
+use crate::native_ipc::ExecutableStamp;
+use crate::state_files::{
     Result,
     effects::changed,
     source::{NativeSourcePin, SourceChunk},
 };
-use crate::native_ipc::ExecutableStamp;
 use std::{
     fs::File,
     path::{Path, PathBuf},
@@ -68,7 +68,7 @@ impl NativeExecutablePin {
         #[cfg(not(target_os = "linux"))]
         let executable = original.clone();
         let stamp = ExecutableStamp::observe(&original).map_err(|error| {
-            super::io_error(
+            crate::state_files::io_error(
                 "observe invocation image",
                 &original,
                 std::io::Error::other(error),
@@ -129,7 +129,7 @@ impl NativeExecutableInvocation {
         let named = NativeSourcePin::open(&self.original)?
             .ok_or_else(|| changed("invoked executable pathname is absent", &self.original))?;
         let stamp = ExecutableStamp::observe(&self.original).map_err(|error| {
-            super::io_error(
+            crate::state_files::io_error(
                 "reobserve invocation image",
                 &self.original,
                 std::io::Error::other(error),

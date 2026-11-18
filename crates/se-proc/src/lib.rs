@@ -65,6 +65,7 @@ pub use source_root::{
     NativeSourceWatch, NativeWatchAction, NativeWatchDirectory, NativeWatchEvent,
     NativeWatchEvents, NativeWatchRegistration,
 };
+mod executable;
 mod state_files;
 pub use source_root::{
     NativeFileRevision, NativeRootDirectory, NativeRootFile, NativeSourceEntry, NativeSourceKind,
@@ -130,13 +131,11 @@ pub use platform::process_attach_entry;
 mod creation_owner;
 pub use creation_owner::{FileOwnerError, FileOwnerInitialization, initialize_file_creation_owner};
 
+pub use executable::{NativeExecutableCreation, NativeExecutableInvocation, NativeExecutablePin};
 pub use state_files::NativeMetadataPin;
 pub use state_files::effects::{
     CreatedDirectoryCleanup, DirectoryRemoval, NativeDirectoryCreation, NativeInstallationClaim,
     OwnedFile, installation_claim_path, remove_empty_directory, scan_recovery, scan_temporary,
-};
-pub use state_files::executable::{
-    NativeExecutableCreation, NativeExecutableInvocation, NativeExecutablePin,
 };
 pub use state_files::source::{NativeSourcePin, SourceChunk};
 #[cfg(windows)]
