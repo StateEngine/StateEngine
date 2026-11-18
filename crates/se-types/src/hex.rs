@@ -9,6 +9,27 @@ pub fn hex_lower(bytes: &[u8]) -> String {
     output
 }
 
+/// Whether text contains only lowercase ASCII hexadecimal digits.
+pub fn is_lower_hex(text: &str) -> bool {
+    text.bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Decode complete ASCII hexadecimal byte pairs, accepting either letter case.
+pub fn decode_hex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    text.as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let hi = char::from(pair[0]).to_digit(16)?;
+            let lo = char::from(pair[1]).to_digit(16)?;
+            Some(((hi << 4) | lo) as u8)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::hex_lower;

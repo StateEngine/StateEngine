@@ -138,12 +138,6 @@ impl NativeRenewal {
             .as_ref()
             .map(|r| r.watch.as_fd())
     }
-    pub fn watch_diagnostic(&self, root: &RootId) -> Option<(u32, Option<u64>, Option<&str>)> {
-        self.roots
-            .iter()
-            .find(|r| &r.id == root)
-            .map(|r| (r.cap, r.observed, r.limit_error.as_deref()))
-    }
     #[expect(
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"

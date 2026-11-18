@@ -126,21 +126,8 @@ fn scope(m: &ArgMatches) -> Result<(Vec<RelativePath>, Vec<Language>)> {
     Ok((paths, languages))
 }
 fn hex(text: &str) -> Result<Vec<u8>> {
-    if !text.len().is_multiple_of(2) || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(SeError::invalid("object ID", "a complete hexadecimal ID"));
-    }
-    text.as_bytes()
-        .chunks(2)
-        .map(|pair| {
-            let hi = (pair[0] as char)
-                .to_digit(16)
-                .ok_or_else(|| SeError::invalid("ID", "hexadecimal"))?;
-            let lo = (pair[1] as char)
-                .to_digit(16)
-                .ok_or_else(|| SeError::invalid("ID", "hexadecimal"))?;
-            Ok(((hi << 4) | lo) as u8)
-        })
-        .collect()
+    se_types::decode_hex(text)
+        .ok_or_else(|| SeError::invalid("object ID", "a complete hexadecimal ID"))
 }
 fn oid(text: &str) -> Result<GitObjectId> {
     let bytes = hex(text)?;

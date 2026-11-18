@@ -109,12 +109,6 @@ pub trait LegacyIdRegistry {
         Ok(None)
     }
 }
-fn hex(value: &str, count: Option<usize>) -> bool {
-    count.is_none_or(|count| value.len() == count)
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
 fn serial(value: &str, prefix: &str) -> bool {
     let Some(suffix) = value.strip_prefix(prefix) else {
         return false;
@@ -181,18 +175,20 @@ fn legacy_matches(kind: IdKind, value: &str) -> bool {
         IdKind::SessionId => {
             value
                 .strip_prefix("se-session-sha256-")
-                .is_some_and(|s| hex(s, Some(64)))
+                .is_some_and(|s| s.len() == 64 && crate::is_lower_hex(s))
                 || value.strip_prefix("se-").is_some_and(uuid_v4)
                 || uuid_v4(value)
         }
         IdKind::MessageId => value
             .strip_prefix("msg-")
-            .is_some_and(|s| s.len() >= 8 && hex(s, None)),
-        IdKind::EventId => value.strip_prefix("evt-").is_some_and(|s| hex(s, Some(64))),
+            .is_some_and(|s| s.len() >= 8 && crate::is_lower_hex(s)),
+        IdKind::EventId => value
+            .strip_prefix("evt-")
+            .is_some_and(|s| s.len() == 64 && crate::is_lower_hex(s)),
         IdKind::DecisionId | IdKind::LaunchId | IdKind::LifecycleId => uuid_v4(value),
         IdKind::ObservationId => value
             .strip_prefix("semantic-observation:")
-            .is_some_and(|s| hex(s, Some(64))),
+            .is_some_and(|s| s.len() == 64 && crate::is_lower_hex(s)),
         IdKind::StoreId
         | IdKind::AtlasRootId
         | IdKind::IndexEpochId

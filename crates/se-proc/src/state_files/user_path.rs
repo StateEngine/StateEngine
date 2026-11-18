@@ -107,25 +107,6 @@ impl NativeUserPath {
             key: "Environment".encode_utf16().chain(Some(0)).collect(),
         }
     }
-    /// Integration judges use only a disposable child of this fixed test subtree.
-    /// No CLI/environment flag can select it, and the value name remains Path.
-    #[doc(hidden)]
-    pub fn open_test_key(key: &str) -> Result<Self> {
-        const PREFIX: &str = "Software\\StateEngine\\NativePathTests\\";
-        if !key.starts_with(PREFIX) || key.len() == PREFIX.len() || key.contains('\0') {
-            return Err(error(
-                "select disposable PATH test key",
-                PathUpdatePhase::NotCommitted,
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "a disposable NativePathTests child key is required",
-                ),
-            ));
-        }
-        Ok(Self {
-            key: key.encode_utf16().chain(Some(0)).collect(),
-        })
-    }
     fn key(&self, transaction: Option<&OwnedHandle>, write: bool) -> Result<Option<Key>> {
         let mut raw = ptr::null_mut();
         let access = KEY_QUERY_VALUE | if write { KEY_SET_VALUE } else { 0 };

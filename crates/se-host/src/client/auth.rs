@@ -81,12 +81,6 @@ pub fn encode_client_hello(hello: &crate::ClientHello) -> Result<super::wire::Wi
         MAX_ENDPOINT_BYTES,
     )
 }
-pub fn decode_client_hello(bytes: &[u8]) -> Result<crate::ClientHello> {
-    match super::hello::decode(bytes)? {
-        super::hello::DecodedHandshake::Call(hello) => Ok(hello),
-        _ => Err(refused("an operation hello, not stop control")),
-    }
-}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

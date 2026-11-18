@@ -32,17 +32,6 @@ impl Security {
         }
         Ok(())
     }
-    /// Native credential/host-identity rotation calls this before replacing its key.
-    /// This instance remains fenced even on failure/unknown; restart only after
-    /// resolving the original key and completing the native rotation.
-    pub async fn revoke_all(
-        &self,
-        owner: VerifiedLocalOwner,
-        key: IdempotencyKey,
-    ) -> Result<ControlReceipt<()>> {
-        self.owner(&owner)?;
-        self.revoke_all_before_listen(key).await
-    }
     /// Automatic invalidation by the owning host before exposing a changed
     /// protected credential/store binding. This grants no Owner capability.
     pub(crate) async fn revoke_all_before_listen(

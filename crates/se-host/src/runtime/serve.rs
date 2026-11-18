@@ -694,9 +694,6 @@ impl HostedRuntime {
     pub fn execution_context(&self) -> super::ExecutionContext {
         self.execution.clone()
     }
-    pub fn transcript_bindings(&self) -> super::TranscriptBindings {
-        self.sources.clone()
-    }
     pub fn configuration(&self) -> Option<&se_config::config_policy::ConfigFile> {
         self.configuration.as_ref()
     }

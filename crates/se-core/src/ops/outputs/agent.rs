@@ -83,18 +83,6 @@ pub struct ProviderActivityView {
 pub struct AgentStatusOutput {
     pub agent: Read<AgentRow>,
 }
-impl AgentStatusOutput {
-    pub fn into_envelope(self) -> super::super::Envelope<Self> {
-        super::super::Envelope::new(
-            crate::registry::Family {
-                name: "se.agent-status",
-                major: 1,
-            },
-            self,
-        )
-    }
-}
-
 /// Stable cause codes shared by launch receipts and saved-session readback.
 pub fn containment_cause_code(cause: &se_store::ContainmentCause) -> &'static str {
     match cause {
