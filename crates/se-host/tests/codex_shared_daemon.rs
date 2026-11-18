@@ -182,6 +182,62 @@ async fn daemon_death_is_a_named_state_with_a_relaunch_step() -> Check {
     Ok(())
 }
 
+/// Ownership is decided by the socket, and absent, refused and live are three
+/// different answers: only a live daemon makes the login someone else's.
+#[cfg(unix)]
+#[tokio::test]
+async fn ownership_separates_absent_refused_and_live() -> Check {
+    let directory = std::env::temp_dir().join(format!(
+        "se-daemon-owner-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory)?;
+    let socket = directory.join("control.sock");
+
+    // Absent: no path at all is not a served login, and may be claimed.
+    assert!(!se_host::socket_is_served(&socket, &cx()?).await?);
+    se_host::require_unserved(&socket, &cx()?).await?;
+
+    // Refused: a stale socket file left by a dead daemon is also not served.
+    std::fs::write(&socket, b"stale")?;
+    assert!(!se_host::socket_is_served(&socket, &cx()?).await?);
+    se_host::require_unserved(&socket, &cx()?).await?;
+    std::fs::remove_file(&socket)?;
+
+    // Live: a listening socket is a daemon we did not start, so it is refused
+    // with the step a person can take rather than attached to.
+    let listener = tokio::net::UnixListener::bind(&socket)?;
+    assert!(se_host::socket_is_served(&socket, &cx()?).await?);
+    let refused = se_host::require_unserved(&socket, &cx()?).await;
+    let error = match refused {
+        Ok(()) => return Err("a live daemon we did not start must be refused".into()),
+        Err(error) => error,
+    };
+    let se_types::Detail::ProviderIncompatible(failure) = error.body.detail() else {
+        return Err(format!("expected a named refusal, got {:?}", error.body.detail()).into());
+    };
+    assert!(
+        failure.reason.contains("did not start"),
+        "{}",
+        failure.reason
+    );
+    assert!(
+        failure.next_step.to_lowercase().contains("cod_home")
+            || failure
+                .next_step
+                .to_lowercase()
+                .contains("close that daemon"),
+        "{}",
+        failure.next_step
+    );
+    drop(listener);
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
 /// Two agents on one login are two threads in one process, and stopping one
 /// never stops the other or the daemon.
 #[tokio::test]

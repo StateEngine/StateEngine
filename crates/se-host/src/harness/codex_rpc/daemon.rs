@@ -36,6 +36,82 @@ fn ended(detail: &str) -> SeError {
     ))
 }
 
+/// Where one login's daemon keeps its control socket.
+///
+/// The provider derives this path from `CODEX_HOME`; StateEngine derives the same
+/// path from the same home so both name one socket, and it never guesses across
+/// logins. A caller that names no home has no login to serve and is refused.
+pub fn control_socket(codex_home: &Path) -> PathBuf {
+    codex_home
+        .join("app-server-control")
+        .join("app-server-control.sock")
+}
+
+/// Whether a control socket is already served.
+///
+/// The answer decides ownership, not convenience: a live socket means someone
+/// started this login's daemon, and a process we did not start is never attached
+/// to. `NotFound` and `ConnectionRefused` are absent, because a stale socket file
+/// is not a running daemon; every other error is a refusal that keeps its reason.
+pub async fn socket_is_served(socket: &Path, cx: &CallContext) -> Result<bool> {
+    match tokio::time::timeout(cx.timeout, probe(socket)).await {
+        Ok(Ok(true)) => Ok(true),
+        Ok(Ok(false)) => Ok(false),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(invalid("a control socket answer within the deadline")),
+    }
+}
+
+/// Whether a socket at `socket` accepts a connection, keeping the operating
+/// system's own distinction between absent and refused.
+///
+/// A missing path and a refused connection are both "not served": a stale file
+/// left by a dead daemon is exactly the refused case. A third error (permission,
+/// too many files) is returned as itself rather than read as absence.
+async fn probe(socket: &Path) -> Result<bool> {
+    if !socket.is_absolute() {
+        return Err(invalid("an absolute control socket path"));
+    }
+    match raw_open(socket).await {
+        Ok(stream) => {
+            drop(stream);
+            Ok(true)
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(se_core::scope::unreadable(
+            "Codex control socket",
+            &error.to_string(),
+        )),
+    }
+}
+
+/// Refuse to use a login whose daemon is already served by someone else.
+///
+/// StateEngine owns the daemons it starts so that it can account for their
+/// lifetime, and a user's own desktop daemon is not ours to stop or replace.
+pub async fn require_unserved(socket: &Path, cx: &CallContext) -> Result<()> {
+    if socket_is_served(socket, cx).await? {
+        return Err(SeError::new(se_types::Detail::ProviderIncompatible(
+            se_types::details::ProviderIncompatible {
+                subject: "Codex shared daemon".into(),
+                reason: format!(
+                    "this login already has a daemon that StateEngine did not start ({})",
+                    socket.display()
+                ),
+                next_step: "Close that daemon and relaunch the agent, or launch it with a different CODEX_HOME".into(),
+            },
+        )));
+    }
+    Ok(())
+}
+
 /// One retained connection to a login's daemon.
 ///
 /// The socket path is protected state; a failed connect is a named refusal
@@ -222,6 +298,11 @@ impl Daemon {
 }
 
 #[cfg(unix)]
+async fn raw_open(path: &Path) -> std::io::Result<Stream> {
+    tokio::net::UnixStream::connect(path).await
+}
+
+#[cfg(unix)]
 type Stream = tokio::net::UnixStream;
 
 #[cfg(unix)]
@@ -287,6 +368,11 @@ mod windows {
             .map_err(io::Error::other)??;
         async_io::Async::new(Registered::from(stream)).map(FuturesAsyncReadCompatExt::compat)
     }
+}
+
+#[cfg(windows)]
+async fn raw_open(path: &Path) -> std::io::Result<Stream> {
+    windows::connect(path).await
 }
 
 #[cfg(windows)]
