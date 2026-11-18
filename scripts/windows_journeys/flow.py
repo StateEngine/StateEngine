@@ -29,7 +29,8 @@ class Journeys(Smoke):
         self.credentials = Credentials(self.settings['credential_seed'], self.settings['provider'])
         self.commands.environment['CODEX_HOME'] = str(self.home / '.codex')
         self.commands.environment['GIT_OPTIONAL_LOCKS'] = '0'
-        self.commands.terminal_prefix = [sys.executable, '-B', str(Path(__file__).with_name('terminal.py'))]
+        if sys.platform == 'win32':
+            self.commands.terminal_prefix = [sys.executable, '-B', str(Path(__file__).with_name('terminal.py'))]
         self.record.update(qualification='five user journeys; performance and clean-image provenance are separate',
                            release=release, phases={key: dict(result='NOT RUN') for key in JOURNEYS},
                            credential_closure=None)

@@ -89,7 +89,10 @@ class Smoke:
         argv = [self.binary, *args, '--home', self.state, '--json', '--no-color']
         if project and self.project:
             argv += ['--project', self.project]
-        return json.loads(self.commands.run(argv, label, terminal=terminal))
+        return self.decode_reply(self.commands.run(argv, label, terminal=terminal), terminal)
+
+    def decode_reply(self, output, terminal):
+        return json.loads(output)
 
     def pages(self, args, label):
         rows, cursor, seen = [], None, set()
