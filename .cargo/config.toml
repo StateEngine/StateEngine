@@ -4,9 +4,8 @@ rustflags = [
     "-C", "link-arg=/Brepro",
     "-C", "link-arg=/DELAYLOAD:user32.dll",
     "-C", "link-arg=/DELAYLOAD:ktmw32.dll",
-    # Winsock, TLS, and account profile APIs are outside the local read path.
+    # Socket, certificate, and account profile APIs are outside local reads.
     "-C", "link-arg=/DELAYLOAD:crypt32.dll",
-    "-C", "link-arg=/DELAYLOAD:secur32.dll",
     "-C", "link-arg=/DELAYLOAD:userenv.dll",
     "-C", "link-arg=/DELAYLOAD:ws2_32.dll",
     "-C", "link-arg=delayimp.lib",
