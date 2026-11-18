@@ -41,6 +41,10 @@ pub struct RuntimeView {
     pub detachment: Option<HostDetachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detachment_notice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawner: Option<SpawnerView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawner_cleanup: Option<SpawnerCleanupView>,
     pub host: Option<String>,
     pub process: Option<ProcessView>,
     pub generation: Option<u64>,
@@ -51,6 +55,28 @@ pub struct RuntimeView {
     pub resources: Option<ResourceSample>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources_unavailable: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SpawnerView {
+    pub pid: u32,
+    pub birth: String,
+    pub state: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SpawnerCleanupView {
+    pub generation: u64,
+    pub complete: bool,
+    pub sessions: Vec<SpawnerCleanupSession>,
+    pub pending: Vec<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct SpawnerCleanupSession {
+    pub project: ProjectId,
+    pub agent: AgentId,
+    pub session: SessionId,
+    pub lifecycle: se_types::LifecycleId,
+    pub stopped: bool,
+    pub reason: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RemovalView {

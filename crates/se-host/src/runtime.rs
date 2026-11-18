@@ -16,6 +16,8 @@ mod memory;
 #[cfg(feature = "listener")]
 pub(crate) mod pool;
 #[cfg(feature = "listener")]
+pub(crate) mod spawner;
+#[cfg(feature = "listener")]
 pub use pool::*;
 #[cfg(feature = "listener")]
 mod call;

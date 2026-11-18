@@ -27,7 +27,7 @@ pub fn up(
     cx: &Bootstrap,
     files: &Files,
     caller: &Caller,
-    _input: RuntimeUp,
+    input: RuntimeUp,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<AnyOutput> {
     if caller.owner.is_none() {
@@ -35,8 +35,35 @@ pub fn up(
     }
     let mut options = execute::options();
     let bound = Deadline::from_options(&options)?;
+    let origin = match input.spawner.as_deref() {
+        Some(value) => {
+            crate::runtime::host::StartupOrigin::Spawner(crate::runtime::host::spawner::resolve(
+                super::identity::require_machine(files)?,
+                value,
+                bound.at(),
+            )?)
+        }
+        None => crate::runtime::host::StartupOrigin::Explicit,
+    };
     let (endpoint, endpoint_recovery, process) =
-        rendezvous(cx, files, &mut options, &bound, diagnostic)?;
+        rendezvous(cx, files, &mut options, &bound, diagnostic, &origin).map_err(|error| {
+            if matches!(&origin, crate::runtime::host::StartupOrigin::Spawner(_))
+                && error.code() == se_types::Code::JobBreakawayRefused
+            {
+                return SeError::new(se_types::Detail::StateConflict(
+                    se_types::details::StateConflict {
+                        subject: "spawner-bound runtime".into(),
+                        reason: "The enclosing Windows job does not permit detached startup."
+                            .into(),
+                        next_step:
+                            "Run the caller outside that job, or start this home without --spawner."
+                                .into(),
+                    },
+                ))
+                .with_cause(error);
+            }
+            error
+        })?;
     #[cfg(feature = "remote")]
     if let Some(notice) = se_host::remote::startup_notice(files, &cx.home)? {
         diagnostic(&notice).map_err(|error| {
@@ -86,6 +113,7 @@ impl Rendezvous {
         options: &mut se_host::client::ClientOptions,
         bound: &Deadline,
         diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+        origin: &crate::runtime::host::StartupOrigin,
     ) -> std::result::Result<(se_host::EndpointRecord, ProcessView), Phase> {
         let mut routed = None;
         let endpoint = super::autostart::endpoint_with_origin(
@@ -93,7 +121,7 @@ impl Rendezvous {
             files,
             bound,
             diagnostic,
-            crate::runtime::host::StartupOrigin::Explicit,
+            origin.clone(),
             &mut routed,
         );
         // Merged before the error is read: the failed attempt may be the one that
@@ -130,13 +158,14 @@ fn rendezvous(
     options: &mut se_host::client::ClientOptions,
     bound: &Deadline,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+    origin: &crate::runtime::host::StartupOrigin,
 ) -> Result<(
     se_host::EndpointRecord,
     Option<se_core::ops::EndpointRecovery>,
     ProcessView,
 )> {
     let mut rendezvous = Rendezvous::new();
-    let first = rendezvous.attempt(cx, files, options, bound, diagnostic);
+    let first = rendezvous.attempt(cx, files, options, bound, diagnostic, origin);
     let (endpoint, process) = match first {
         Ok(value) => value,
         // Every phase other than a refused authentication is final as it stands.
@@ -168,7 +197,7 @@ fn rendezvous(
                 Err(error) => return Err(rendezvous.refuse(cx, Phase::Startup(error))),
             }
             rendezvous
-                .attempt(cx, files, options, bound, diagnostic)
+                .attempt(cx, files, options, bound, diagnostic, origin)
                 .map_err(|phase| rendezvous.refuse(cx, phase))?
         }
         // An authentication call that failed for any other reason (credential

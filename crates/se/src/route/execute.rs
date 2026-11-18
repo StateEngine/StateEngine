@@ -142,20 +142,15 @@ pub(crate) fn stop_for_uninstall(
 
 /// One rule: remote work starts only when the merged answer would be used.
 ///
-/// A whole-machine read never merges a host observation, a home with no
-/// published endpoint has nothing to ask, and a removed project reports its
+/// A home with no published endpoint has nothing to ask, and a removed project reports its
 /// local removal view without consulting a host at all. Every exclusion here is
 /// knowable before the build, which is what lets the remaining request overlap
 /// it instead of running before it.
 fn uses_host_observation<S: Snapshot>(
-    cx: &Bootstrap,
     files: &Files,
     snapshot: &mut S,
     caller: &admit::Caller,
 ) -> bool {
-    if cx.selections.status_all {
-        return false;
-    }
     if let se_store::Scope::Project(project) = &caller.admission.scope
         && let Ok(Read::Present { value }) = snapshot.project(project.clone())
         && se_core::ops::project_remove::removed_view(&value)
@@ -256,10 +251,7 @@ impl DaemonObservation {
 /// The one rule for receiving the answer: it is collected only when the merged
 /// result would use it. These are the same conditions the merge applies, so a
 /// path that discards the answer never waits for it.
-fn daemon_answer_is_used(cx: &Bootstrap, output: &AnyOutput) -> bool {
-    if cx.selections.status_all {
-        return false;
-    }
+fn daemon_answer_is_used(output: &AnyOutput) -> bool {
     match output {
         AnyOutput::ProjectStatus(status) => {
             status.value.runtime.state == "running" && status.value.removal.is_none()
@@ -436,18 +428,20 @@ fn dispatch_with_cold_recovery(
         // build stays authoritative, so status is still honest when the daemon
         // is absent or stale; only the wall time changes, from the sum of the
         // two to the longer of them.
-        let ask_daemon = uses_host_observation(cx, &files, &mut snapshot, &caller);
+        let ask_daemon = uses_host_observation(&files, &mut snapshot, &caller);
         // The request owns everything it needs, so it runs on an unscoped thread
         // and this frame never waits for it unless the answer is used below. A
         // local error, a removed project or `--all` therefore returns at once
         // instead of joining a daemon that is slow, paused or gone; the thread
         // prints nothing and holds no lock this path needs.
         let pending = ask_daemon.then(|| {
+            let mut runtime_selections = selections.clone();
+            runtime_selections.status_all = false;
             daemon_observation_start(super::hosted::StatusRequest::prepare(
                 cx,
                 &files,
                 &caller,
-                &selections,
+                &runtime_selections,
             ))
         });
         #[cfg(any(windows, target_os = "macos"))]
@@ -487,7 +481,7 @@ fn dispatch_with_cold_recovery(
         let observed = finish_status_observation(pending, early, cx, &output)?;
         #[cfg(not(any(windows, target_os = "macos")))]
         let observed = pending
-            .map(|pending| pending.finish(daemon_answer_is_used(cx, &output)))
+            .map(|pending| pending.finish(daemon_answer_is_used(&output)))
             .transpose()?
             .flatten();
         let mut service_observation = None;

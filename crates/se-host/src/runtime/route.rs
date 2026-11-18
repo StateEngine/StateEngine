@@ -58,6 +58,7 @@ pub struct AdmittedExchange {
     pub(super) request_id: u64,
     call: Option<Result<RoutedCall>>,
     pub(super) channels: Option<crate::channels::ChannelRequest>,
+    spawner: Option<Result<OperationOutput>>,
     pub(super) adopted: Option<crate::adoption::NativeCall>,
     #[cfg(feature = "remote")]
     owner: Option<crate::remote::OwnerCall>,
@@ -73,6 +74,7 @@ pub struct HostedRouter {
     pub(crate) sources: TranscriptBindings,
     pub(crate) context: AdmissionContext,
     pub(crate) channels: std::sync::Arc<crate::channels::Channels>,
+    pub(super) spawner: Option<std::sync::Arc<super::spawner::Spawner>>,
     response_bytes: std::num::NonZeroU32,
     pub(crate) fenced: std::sync::Arc<std::sync::atomic::AtomicBool>,
     http_port: std::sync::Arc<std::sync::OnceLock<u16>>,
@@ -90,6 +92,7 @@ impl HostedRuntime {
             sources: self.sources.clone(),
             context: self.admission_context(),
             channels: self.channels()?,
+            spawner: self.spawner.clone(),
             response_bytes: self.response_bytes,
             fenced: std::sync::Arc::clone(&self.fenced),
             http_port: std::sync::Arc::clone(&self.http_port),
@@ -249,7 +252,9 @@ impl HostedRouter {
         let context = self.context.clone();
         let execution = self.execution.clone();
         let request_deadline = deadline.clone();
+        let claim_deadline = deadline.clone();
         let fenced = std::sync::Arc::clone(&self.fenced);
+        let spawner = self.spawner.clone();
         let (mut exchange, span) =
             timings::blocking(&self.execution.blocking, Mode::Owned, deadline, move || {
                 let call = if fenced.load(std::sync::atomic::Ordering::Acquire) {
@@ -270,6 +275,7 @@ impl HostedRouter {
                 #[cfg(feature = "remote")]
                 let mut owner = None;
                 let mut adopted = None;
+                let mut spawner_result = None;
                 let (call, channels) = match call {
                     Ok(RouteChoice::Adopt(call)) => {
                         adopted = Some(*call);
@@ -281,6 +287,29 @@ impl HostedRouter {
                         (None, None)
                     }
                     Ok(RouteChoice::Channels(input)) => (None, Some(*input)),
+                    Ok(RouteChoice::Spawner(identity)) => {
+                        spawner_result = Some(match spawner {
+                            Some(spawner)
+                                if spawner.reclaim((*identity).clone(), Instant::now()) =>
+                            {
+                                Ok(OperationOutput {
+                                    schema: "se.runtime-reclaim/1".into(),
+                                    value: serde_json::json!({"state":"claimed"}),
+                                    window: None,
+                                })
+                            }
+                            Some(_) => Err(SeError::invalid(
+                                "spawner reclaim",
+                                "the existing bound owner or a claim within its reclaim window",
+                            )),
+                            None => Err(super::spawner::unbound_refusal(
+                                &context,
+                                &execution,
+                                &claim_deadline,
+                            )),
+                        });
+                        (None, None)
+                    }
                     Ok(RouteChoice::Core(call)) => (Some(Ok(*call)), None),
                     Err(error) => (Some(Err(error)), None),
                 };
@@ -289,6 +318,7 @@ impl HostedRouter {
                     request_id,
                     call,
                     channels,
+                    spawner: spawner_result,
                     adopted,
                     #[cfg(feature = "remote")]
                     owner,
@@ -304,6 +334,9 @@ impl HostedRouter {
     }
 }
 impl AdmittedExchange {
+    pub(super) fn take_spawner(&mut self) -> Option<Result<OperationOutput>> {
+        self.spawner.take()
+    }
     pub(super) async fn wait_for_peer_close(&self) -> Result<()> {
         self.connection.connection.wait_for_peer_close().await
     }
@@ -312,7 +345,6 @@ impl AdmittedExchange {
     pub(crate) fn take_owner_call(&mut self) -> Option<crate::remote::OwnerCall> {
         self.owner.take()
     }
-    #[cfg(feature = "remote")]
     pub(crate) async fn reply_owner(
         mut self,
         result: Result<OperationOutput>,
@@ -453,6 +485,7 @@ impl AdmittedExchange {
 }
 enum RouteChoice {
     Adopt(Box<crate::adoption::NativeCall>),
+    Spawner(Box<se_proc::ProcessIdentity>),
     #[cfg(feature = "remote")]
     Owner(Box<crate::remote::OwnerCall>),
     Core(Box<RoutedCall>),
@@ -542,6 +575,22 @@ fn route(
     };
     let (raw, hook) = match wire.request {
         IpcRequest::Adopt(input) => return scoped.adopt(input),
+        IpcRequest::Spawner(identity) => {
+            if scoped.cli_selections || scoped.presence.is_some() {
+                return Err(SeError::invalid(
+                    "spawner reclaim",
+                    "no unrelated selectors or presence claims",
+                ));
+            }
+            context.channel_owner(
+                connection.connection.peer(),
+                connection.connection.connection_authority(),
+                wire.authority.as_ref(),
+                &connection.grant,
+            )?;
+            super::spawner::verify_peer(&identity, connection.connection.peer(), deadline.at())?;
+            return Ok(RouteChoice::Spawner(Box::new(identity)));
+        }
         #[cfg(feature = "remote")]
         IpcRequest::RemoteOwner(input) => return scoped.owner(*input),
         IpcRequest::Channels(input) => return scoped.channels(input),

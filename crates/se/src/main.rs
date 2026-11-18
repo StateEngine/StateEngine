@@ -188,7 +188,8 @@ pub fn run(
         return foreground::run(&context, common.json, common.quiet);
     }
     #[cfg(windows)]
-    let foreground_fallback = matches!(&operation, AnyOp::RuntimeUp(_));
+    let foreground_fallback =
+        matches!(&operation, AnyOp::RuntimeUp(input) if input.spawner.is_none());
     let atlas_presentation = operation.atlas_options().cloned();
     let result = {
         let mut diagnostic = |message: &str| {

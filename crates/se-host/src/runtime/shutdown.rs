@@ -242,7 +242,7 @@ impl HostServeExit {
                 ));
             }
         }
-        let close_request = match self.stop.as_ref().map(|stop| stop.request()).transpose() {
+        let mut close_request = match self.stop.as_ref().map(|stop| stop.request()).transpose() {
             Ok(request) => request.map(|request| {
                 (
                     request.expected_epoch.clone(),
@@ -258,6 +258,23 @@ impl HostServeExit {
                 None
             }
         };
+        if self.runtime.spawner_expired {
+            match se_types::IdempotencyKey::new(format!(
+                "spawner-expired-{}",
+                self.runtime.generation().get()
+            )) {
+                Ok(key) => {
+                    close_request =
+                        Some((self.runtime.epoch.clone(), self.runtime.generation(), key))
+                }
+                Err(error) => {
+                    pending.push(format!(
+                        "Spawner cleanup receipt identity unavailable: {error}"
+                    ));
+                    errors.push(error);
+                }
+            }
+        }
         if let Some(stop) = self.stop.take()
             && let Some((epoch, generation, key)) = &close_request
         {
@@ -333,9 +350,18 @@ impl HostServeExit {
                 pending: pending.clone(),
             };
             let lease = self.runtime.lease.clone();
+            let spawner_expired = self.runtime.spawner_expired;
             let result = pool
                 .run_owned(&drain_deadline, move || {
-                    crate::client::closure::publish(&lease.files, lease.files.0.root(), &record)
+                    if spawner_expired {
+                        crate::client::closure::publish_spawner(
+                            &lease.files,
+                            lease.files.0.root(),
+                            &record,
+                        )
+                    } else {
+                        crate::client::closure::publish(&lease.files, lease.files.0.root(), &record)
+                    }
                 })
                 .await;
             if let Err(error) = result {

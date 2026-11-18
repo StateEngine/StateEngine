@@ -8,7 +8,8 @@ import sys
 import time
 import uuid
 
-from .io import Commands, digest, prepare_provider_home, provider_home_environment, require, save
+from .io import (Commands, digest, prepare_provider_home, provider_home_environment,
+                 require, save, spawner_argument)
 from .inputs import home_path
 
 PHASES = ('Launch', 'Work', 'Mail', 'Resume')
@@ -244,7 +245,7 @@ class Smoke:
                                 'init', terminal=True, project=False)
         self.project, self.agent, self.owner = (initialized['profile'][name]
                                                for name in ('project', 'agent_id', 'human_id'))
-        self.call(['up'], 'up', project=False)
+        self.call(['up', *spawner_argument()], 'up', project=False)
         status = self.call(['status'], 'status')
         self.commands.observer.observe(status['runtime']['process']['pid'])
 
