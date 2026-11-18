@@ -45,7 +45,7 @@ def save(path, value):
     temporary.replace(path)
 
 
-def census():
+def raw_census():
     if sys.platform == 'linux':
         rows = []
         for path in Path('/proc').iterdir():
@@ -77,10 +77,25 @@ def census():
     text = subprocess.check_output(['powershell.exe', '-NoProfile', '-NonInteractive', '-File', str(script)],
                                    text=True, encoding='utf-8', timeout=30)
     values = json.loads(text)
-    require(isinstance(values, list), 'Native process inventory is not a list')
-    require(not any(row.get('owner_state') in ('current-user', 'unreadable') for row in values),
-            'A current-user or unattributed native process has unreadable command identity')
+    require(isinstance(values, list) and values and all(
+        isinstance(row, dict) and type(row.get('pid')) is int and row['pid'] >= 0
+        and type(row.get('parent')) is int and row['parent'] >= 0
+        and isinstance(row.get('state'), str) and bool(row['state'])
+        and row.get('owner_state') in ('not-required', 'foreign', 'current-user', 'unreadable', 'exited')
+        and (row.get('birth') is None or isinstance(row['birth'], str))
+        and (row.get('command') is None or isinstance(row['command'], str)) for row in values)
+        and len({row['pid'] for row in values}) == len(values), 'Native process inventory is incomplete')
     return values
+
+
+def census(baseline=frozenset()):
+    rows = raw_census()
+    if sys.platform == 'win32':
+        require(not any(row.get('owner_state') in ('current-user', 'unreadable')
+                        and (not row.get('birth') or (row.get('pid'), row['birth']) not in baseline)
+                        for row in rows),
+                'A current-user or unattributed native process has unreadable command identity')
+    return rows
 
 
 def birth_order(value):
@@ -92,12 +107,25 @@ def birth_order(value):
 
 
 class Observer:
-    def __init__(self, home):
+    def __init__(self, home, output, baseline_rows=None):
         self.home = str(home)
         self.known = set()
+        self.baseline = frozenset()
+        self.baseline_evidence = None
+        if sys.platform == 'win32':
+            rows = raw_census() if baseline_rows is None else baseline_rows
+            require(rows and all(type(row.get('pid')) is int and row['pid'] >= 0
+                                 and row.get('state') and row.get('owner_state')
+                                 and (row.get('birth') is None or isinstance(row['birth'], str)) for row in rows),
+                    'Native process baseline is incomplete')
+            self.baseline = frozenset((row['pid'], row['birth']) for row in rows if row.get('birth'))
+            self.baseline_evidence = dict(
+                complete=True, processes=[{key: row.get(key) for key in ('pid', 'birth', 'state', 'owner_state')}
+                                          for row in rows])
+            save(output / 'process-baseline.json', self.baseline_evidence)
 
     def observe(self, pid=None):
-        rows = census()
+        rows = census(self.baseline)
         if pid is not None:
             row = next((row for row in rows if row['pid'] == pid), None)
             require(row and row['birth'] and row['command'], 'Owned process identity is unreadable')
@@ -122,12 +150,12 @@ class Observer:
 
 
 class Commands:
-    def __init__(self, output, home, repository, environment, terminal_prefix=()):
+    def __init__(self, output, home, repository, environment, terminal_prefix=(), baseline_rows=None):
         self.output, self.home, self.repository = output, home, repository
         self.environment = environment
         self.terminal_prefix = terminal_prefix
         self.sequence = 0
-        self.observer = Observer(home)
+        self.observer = Observer(home, output, baseline_rows=baseline_rows)
 
     def run(self, argv, label, terminal=False, timeout=180):
         argv = list(map(str, argv))
@@ -149,7 +177,7 @@ class Commands:
                                      stdin=subprocess.DEVNULL, stdout=out, stderr=err)
             identity = None
             if child.poll() is None:
-                identity = next((row for row in census() if row['pid'] == child.pid), None)
+                identity = next((row for row in census(self.observer.baseline) if row['pid'] == child.pid), None)
                 if identity and identity['birth'] and identity['command']:
                     self.observer.known.add((child.pid, identity['birth']))
             interrupted = None
@@ -175,7 +203,7 @@ class Commands:
                 for action in (child.terminate, child.kill):
                     if child.poll() is not None:
                         break
-                    current = next((row for row in census() if row['pid'] == child.pid), None)
+                    current = next((row for row in census(self.observer.baseline) if row['pid'] == child.pid), None)
                     require(identity and identity['command'] and current
                             and (current['birth'], current['command']) ==
                             (identity['birth'], identity['command']), 'Timed-out command identity changed')

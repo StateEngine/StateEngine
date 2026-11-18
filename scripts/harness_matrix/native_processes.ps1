@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$rows = @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
+$rows = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ProcessId -ne $PID } | ForEach-Object {
     $attribution = 'not-required'
     $state = 'live'
     $command = $_.CommandLine

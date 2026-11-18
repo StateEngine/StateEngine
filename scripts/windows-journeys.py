@@ -15,13 +15,14 @@ import signal
 import sys
 
 from harness_matrix.inputs import Unavailable, name, preflight
-from harness_matrix.io import InterruptedRun, digest, require, runner_files, save
+from harness_matrix.io import InterruptedRun, digest, raw_census, require, runner_files, save
 from windows_journeys.credentials import Credentials, Prerequisite, protect, provision
 from windows_journeys.flow import JOURNEYS, Journeys
 
 
 def execute(args):
     require(sys.platform == 'win32', 'The five Windows journeys require native Windows')
+    baseline_rows = raw_census()
     require(re.fullmatch(r'[A-Za-z0-9_.:+-]{1,128}', args.cycle), 'A bounded cycle identity is required')
     require(args.manifest.stat().st_size <= 1024**2, 'Private manifest exceeds one MiB')
     source = json.loads(args.manifest.read_text(encoding='utf-8'))
@@ -68,7 +69,8 @@ def execute(args):
         release = source['windows_journeys']['release']
         require(re.fullmatch(r'[a-f0-9]{40}', release.get('source_commit', '')),
                 'Release source requires one full commit identity')
-        runner = Journeys(args.out, args.out / 'release', entry, settings, os.environ, release=release)
+        runner = Journeys(args.out, args.out / 'release', entry, settings, os.environ,
+                          release=release, baseline_rows=baseline_rows)
         runner.record.update(inputs=observation, manifest_sha256=record['manifest_sha256'],
                              runner_sha256=runners, cycle=args.cycle)
         record.update(runner.run())

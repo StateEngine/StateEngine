@@ -17,7 +17,7 @@ import sys
 
 from harness_matrix.flow import PHASES, Smoke
 from harness_matrix.inputs import Unavailable, name, preflight
-from harness_matrix.io import InterruptedRun, digest, require, runner_files, save
+from harness_matrix.io import InterruptedRun, digest, raw_census, require, runner_files, save
 
 PLATFORMS = {'linux': 'unknown-linux', 'darwin': 'apple-darwin', 'win32': 'pc-windows'}
 
@@ -25,6 +25,7 @@ PLATFORMS = {'linux': 'unknown-linux', 'darwin': 'apple-darwin', 'win32': 'pc-wi
 def execute(args):
     require(re.fullmatch(r'[A-Za-z0-9_.:+-]{1,128}', args.cycle), 'An explicit bounded cycle identity is required')
     require(sys.platform in PLATFORMS, 'This platform has no native observer')
+    baseline_rows = raw_census() if sys.platform == 'win32' else None
     require(re.fullmatch(r'[a-f0-9]{40}', args.source_commit), 'An exact source commit is required')
     forbidden = [key for key in os.environ if key == 'SE_SESSION' or key.startswith(('STATEENGINE_', 'SECODE_'))]
     require(not forbidden, 'Start from an OS scheduler outside managed agent trees; runtime authority is present')
@@ -62,7 +63,7 @@ def execute(args):
         else:
             smoke = None
             try:
-                smoke = Smoke(output, args.package, entry, settings, os.environ)
+                smoke = Smoke(output, args.package, entry, settings, os.environ, baseline_rows=baseline_rows)
                 smoke.record.update(inputs=observation, source_commit=args.source_commit,
                                     manifest_sha256=record['manifest_sha256'],
                                     build_sha256=record['build_sha256'], runner_sha256=record['runner_sha256'],

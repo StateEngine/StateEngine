@@ -94,6 +94,7 @@ def main():
     parser.add_argument('--archive', type=Path, required=True)
     parser.add_argument('--archive-sha256', required=True)
     parser.add_argument('--release-run-id', required=True)
+    parser.add_argument('--provider', choices=tuple(PROVIDERS), required=True)
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     require(sys.platform == 'win32' and os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted',
@@ -122,31 +123,25 @@ def main():
     subprocess.run([sys.executable, '-B', str(ROOT / 'scripts/ci/installation_account.py'), 'provision'],
                    check=True, stdin=subprocess.DEVNULL, timeout=60, env=clean_environment())
     rows = []
-    for provider in PROVIDERS:
-        key_name = PROVIDERS[provider][2]
-        seed = provision(provider, key_name, seed_root)
-        manifest, _ = prepared(provider, root, archive, args.archive_sha256, commit, seed)
-        output = root / (provider + '-journey')
-        result = subprocess.run([sys.executable, '-B', str(ROOT / 'scripts/windows-journeys.py'), 'run',
-                                 '--manifest', str(manifest), '--harness', provider,
-                                 '--cycle', os.environ['GITHUB_RUN_ID'], '--out', str(output)],
-                                env=clean_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, timeout=7200)
-        receipt_path = output / 'results.json'
-        receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
-        phases = receipt.get('phases', {})
-        rows.append({'provider': provider, 'exit': result.returncode, 'result': receipt.get('result'),
-                     'receipt_sha256': digest(receipt_path),
-                     'phases': {key: phases.get(key, {}).get('result', 'NOT RUN') for key in ('J1','J2','J3','J4','J5')},
-                     'release': receipt.get('release'), 'credential_closure': receipt.get('credential_closure'),
-                     'process_closure': receipt.get('process_closure')})
-        # A second installation cannot begin while the previous guest processes
-        # or credential custody are unknown, even on a disposable VM.
-        closure = receipt.get('credential_closure')
-        if (receipt.get('process_closure') != [] or not isinstance(closure, dict)
-                or closure.get('delivery') != ('environment' if provider == 'claude' else 'private-file')
-                or closure.get('private_copy_absent') is not True or closure.get('refresh_tokens_copied') is not False):
-            break
+    provider = args.provider
+    key_name = PROVIDERS[provider][2]
+    seed = provision(provider, key_name, seed_root)
+    manifest, _ = prepared(provider, root, archive, args.archive_sha256, commit, seed)
+    output = root / (provider + '-journey')
+    result = subprocess.run([sys.executable, '-B', str(ROOT / 'scripts/windows-journeys.py'), 'run',
+                             '--manifest', str(manifest), '--harness', provider,
+                             '--cycle', os.environ['GITHUB_RUN_ID'], '--out', str(output)],
+                            env=clean_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, timeout=7200)
+    receipt_path = output / 'results.json'
+    receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+    phases = receipt.get('phases', {})
+    rows.append({'provider': provider, 'exit': result.returncode, 'result': receipt.get('result'),
+                 'receipt_sha256': digest(receipt_path),
+                 'phases': {key: phases.get(key, {}).get('result', 'NOT RUN') for key in ('J1','J2','J3','J4','J5')},
+                 'release': receipt.get('release'), 'credential_closure': receipt.get('credential_closure'),
+                 'process_closure': receipt.get('process_closure')})
+
     summary = {'schema': 'se.windows-nightly-providers/v1', 'source_commit': commit,
                'workflow_run_id': os.environ['GITHUB_RUN_ID'], 'release_run_id': args.release_run_id,
                'archive_sha256': args.archive_sha256, 'providers': rows}
@@ -161,7 +156,7 @@ def main():
         destination = publish / (provider + '-journey')
         destination.mkdir()
         (destination / 'results.json').write_bytes(data)
-    return 0 if (len(rows) == 2 and all(row['exit'] == 0 and row['result'] == 'PASS'
+    return 0 if (len(rows) == 1 and all(row['exit'] == 0 and row['result'] == 'PASS'
                and row['process_closure'] == [] and isinstance(row['credential_closure'], dict)
                and row['credential_closure'].get('delivery') == ('environment' if row['provider'] == 'claude' else 'private-file')
                and row['credential_closure'].get('private_copy_absent') is True

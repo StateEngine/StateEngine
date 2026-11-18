@@ -40,7 +40,7 @@ def stop_closed(row):
 
 
 class Smoke:
-    def __init__(self, output, package, entry, settings, inherited):
+    def __init__(self, output, package, entry, settings, inherited, baseline_rows=None):
         self.output, self.package, self.entry, self.settings = output, package, entry, settings
         self.home = output / 'home'
         self.home.mkdir(mode=0o700)
@@ -73,11 +73,13 @@ class Smoke:
         for name, relative in settings.get('home_environment', {}).items():
             environment[name] = str(self.home / home_path(relative))
         self.commands = Commands(output, self.home, self.repository, environment,
-                                 settings.get('terminal_prefix', []))
+                                 settings.get('terminal_prefix', []), baseline_rows=baseline_rows)
         self.record = dict(harness=entry['id'], driver=entry['driver'], platform=sys.platform, state='running', result='NOT RUN',
                            qualification='smoke-only; clean-machine and performance qualification unassessed',
                            home=str(self.home), phases={name: dict(result='NOT RUN') for name in PHASES},
                            cleanup=None, process_closure=None, steps=[])
+        if self.commands.observer.baseline_evidence is not None:
+            self.record['process_baseline'] = self.commands.observer.baseline_evidence
         self.save()
 
     def save(self):
