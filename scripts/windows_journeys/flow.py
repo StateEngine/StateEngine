@@ -49,6 +49,8 @@ class Journeys(Smoke):
     def start_runtime(self, phase):
         if self.foreground:
             self.foreground.start(phase)
+        else:
+            super().start_runtime()
 
     def observe_runtime_exit(self):
         if self.foreground:
@@ -165,7 +167,7 @@ class Journeys(Smoke):
         require(digest(config) == self.settings['configuration']['sha256'], 'Native configuration changed')
         self.state.mkdir(exist_ok=True)
         (self.state / 'config.toml').write_bytes(config.read_bytes())
-        # Supply only the provisioned token to the private fixture.
+        # Supply only the provisioned credential for this private home.
         self.commands.environment.update(self.credentials.environment())
         version = self.commands.run(self.settings['version_command'], 'native-provider-version')
         require(version.strip() == self.settings['version_stdout'], 'Native provider version differs')

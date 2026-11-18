@@ -244,6 +244,9 @@ class Smoke:
                                 'init', terminal=True, project=False)
         self.project, self.agent, self.owner = (initialized['profile'][name]
                                                for name in ('project', 'agent_id', 'human_id'))
+        self.start_runtime()
+
+    def start_runtime(self):
         self.call(['up', *spawner_argument()], 'up', project=False)
         status = self.call(['status'], 'status')
         self.commands.observer.observe(status['runtime']['process']['pid'])
