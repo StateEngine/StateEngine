@@ -42,3 +42,23 @@ fn captain_history_kind_is_available() -> Result<(), Box<dyn std::error::Error>>
     operation.validate()?;
     Ok(())
 }
+
+#[test]
+fn owner_changes_are_not_mcp_tools() {
+    use se_core::registry::McpExposure;
+    assert!(matches!(
+        ops::CaptainSet::META.mcp,
+        McpExposure::None { .. }
+    ));
+    assert!(matches!(
+        ops::CaptainClear::META.mcp,
+        McpExposure::None { .. }
+    ));
+    assert!(matches!(
+        ops::CaptainShow::META.mcp,
+        McpExposure::Tool {
+            name: "stateengine_captain_show",
+            ..
+        }
+    ));
+}
