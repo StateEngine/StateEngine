@@ -118,21 +118,67 @@ fn protected_read(files: &dyn StateFiles, path: &Path) -> io::Result<Option<Vec<
 /// A commit object's ancestry is immutable, except when Git interprets it
 /// through shallow boundaries, grafts or replacement refs. Unsupported or
 /// unreadable metadata simply retains the original bounded Git walk.
+/// Variables that change how Git evaluates a count are refused, because the
+/// cached answer would not describe this evaluation.
+///
+/// Purely cosmetic and paging variables are not in that set: `GIT_PAGER`,
+/// `GIT_EDITOR`, `GIT_TERMINAL_PROMPT` and the like never reach `rev-list`
+/// output, and refusing on them made an ordinary terminal environment — which
+/// sets `GIT_PAGER` by default — re-walk the whole history on every status.
+fn affects_count(name: &str) -> bool {
+    if !name.starts_with("GIT_") {
+        return false;
+    }
+    // `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` are not here: they select
+    // which repository and index Git reads, so a count cached for this checkout
+    // does not describe that evaluation.
+    !matches!(
+        name,
+        "GIT_OPTIONAL_LOCKS"
+            | "GIT_CONFIG_NOSYSTEM"
+            | "GIT_CONFIG_GLOBAL"
+            | "GIT_CONFIG_SYSTEM"
+            | "GIT_PAGER"
+            | "GIT_EDITOR"
+            | "GIT_SEQUENCE_EDITOR"
+            | "GIT_TERMINAL_PROMPT"
+            | "GIT_ASKPASS"
+            | "GIT_SSH"
+            | "GIT_SSH_COMMAND"
+            | "GIT_SSL_CAINFO"
+            | "GIT_SSL_NO_VERIFY"
+            | "GIT_HTTP_LOW_SPEED_LIMIT"
+            | "GIT_HTTP_LOW_SPEED_TIME"
+            | "GIT_TRACE"
+            | "GIT_TRACE_PERFORMANCE"
+            | "GIT_TRACE_SETUP"
+            | "GIT_TRACE_PACKET"
+            | "GIT_TRACE_CURL"
+            | "GIT_TRACE2"
+            | "GIT_TRACE2_EVENT"
+            | "GIT_TRACE2_PERF"
+            | "GIT_ADVICE"
+            | "GIT_FLUSH"
+            | "GIT_MERGE_AUTOEDIT"
+            | "GIT_PAGER_IN_USE"
+            | "GIT_LITERAL_PATHSPECS"
+            | "GIT_GLOB_PATHSPECS"
+            | "GIT_NOGLOB_PATHSPECS"
+            | "GIT_ICASE_PATHSPECS"
+    )
+}
+
+/// True when the environment could change what a commit count means, so the
+/// cache must not be used.
+fn count_interpretation_is_fixed(
+    mut environment: impl Iterator<Item = (impl AsRef<std::ffi::OsStr>, impl Sized)>,
+) -> bool {
+    !environment
+        .any(|(name, _)| affects_count(&name.as_ref().to_string_lossy().to_ascii_uppercase()))
+}
+
 fn identity(repository: &Path) -> io::Result<[u8; 32]> {
-    if std::env::vars_os().any(|(name, _)| {
-        let name = name.to_string_lossy().to_ascii_uppercase();
-        name.starts_with("GIT_")
-            && !matches!(
-                name.as_str(),
-                "GIT_DIR"
-                    | "GIT_WORK_TREE"
-                    | "GIT_INDEX_FILE"
-                    | "GIT_OPTIONAL_LOCKS"
-                    | "GIT_CONFIG_NOSYSTEM"
-                    | "GIT_CONFIG_GLOBAL"
-                    | "GIT_CONFIG_SYSTEM"
-            )
-    }) {
+    if !count_interpretation_is_fixed(std::env::vars_os()) {
         return Err(unsupported());
     }
     let repository = repository.canonicalize()?;
@@ -206,4 +252,62 @@ fn small(root: &NativeSourceRoot, path: &str, maximum: u64) -> io::Result<Option
 
 fn unsupported() -> io::Error {
     io::Error::other("Git history is not eligible for exact count caching")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{affects_count, count_interpretation_is_fixed};
+
+    fn environment(names: &[&str]) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+        names
+            .iter()
+            .map(|name| (std::ffi::OsString::from(*name), std::ffi::OsString::new()))
+            .collect()
+    }
+
+    /// An ordinary terminal sets a pager, and that was enough to make every
+    /// status re-walk the whole history. A cosmetic variable must not do that.
+    #[test]
+    fn cosmetic_git_variables_keep_the_exact_count_cache() {
+        for name in [
+            "GIT_PAGER",
+            "GIT_EDITOR",
+            "GIT_TERMINAL_PROMPT",
+            "GIT_TRACE",
+            "GIT_ASKPASS",
+        ] {
+            assert!(!affects_count(name), "{name} cannot change a commit count");
+            assert!(
+                count_interpretation_is_fixed(environment(&[name]).into_iter()),
+                "{name} must not disable the exact count cache"
+            );
+        }
+    }
+
+    /// The variables that do change what a count means must still disable it,
+    /// because a cached answer would then describe a different evaluation.
+    #[test]
+    fn history_interpreting_git_variables_disable_the_cache() {
+        for name in [
+            "GIT_DIR",
+            "GIT_REPLACE_REF_BASE",
+            "GIT_GRAFT_FILE",
+            "GIT_NO_REPLACE_OBJECTS",
+        ] {
+            assert!(affects_count(name), "{name} can change a commit count");
+            assert!(
+                !count_interpretation_is_fixed(environment(&[name]).into_iter()),
+                "{name} must disable the exact count cache"
+            );
+        }
+    }
+
+    /// A non-Git variable is never the observer's business.
+    #[test]
+    fn unrelated_variables_are_ignored() {
+        assert!(!affects_count("HOME"));
+        assert!(count_interpretation_is_fixed(
+            environment(&["HOME", "PATH"]).into_iter()
+        ));
+    }
 }
