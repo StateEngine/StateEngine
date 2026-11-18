@@ -253,5 +253,16 @@ pub fn unknown(subject: &str, next_step: &str) -> SeError {
     }))
 }
 pub fn unreadable(subject: &str, reason: &str) -> SeError {
-    SeError::new(Detail::SourceUnreadable(details::SourceUnreadable {subject:subject.into(),reason:reason.into(),next_step:"Restore access and retry the original request identity; unreadable state is not absent.".into()}))
+    unreadable_with(
+        subject,
+        reason,
+        "Restore access and retry the original request identity; unreadable state is not absent.",
+    )
+}
+pub fn unreadable_with(subject: &str, reason: &str, next_step: &str) -> SeError {
+    SeError::new(Detail::SourceUnreadable(details::SourceUnreadable {
+        subject: subject.into(),
+        reason: reason.into(),
+        next_step: next_step.into(),
+    }))
 }

@@ -249,9 +249,10 @@ fn supersede_target<R: Snapshot>(
             return Err(scope::unreadable("supersession target", &what));
         }
         Err(error) if error.code == StoreErrorCode::ScopeMismatch => {
-            return Err(SeError::invalid(
-                "supersedes",
-                "a message you sent; the target is not readable from this seat — list your sent mail with se msg list --box sent",
+            return Err(scope::unreadable_with(
+                "supersession target",
+                "it is not readable from this seat, and only its sender can supersede it",
+                "ask the original sender to send the replacement, or send the recipient a new direct message that references the target ID and states the replacement",
             ));
         }
         Err(error) => return Err(store_error(&error)),
