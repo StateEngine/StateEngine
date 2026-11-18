@@ -71,8 +71,8 @@ pub(super) fn direct(
     let from = actor_ref_key(c, sender, scope)?;
     let to = actor_ref_key(c, recipient, scope)?;
     // Homes older than schema 15 lack the stamp column, so their count joins
-    // the event stamp; the cap bounds their newest rows, so the bound stays
-    // small until a host open migrates the home.
+    // the event stamp; it stays exact by time, not by sequence, until a host
+    // open migrates the home.
     let count: i64 = if crate::connection::info(c)?.schema_version >= 15 {
         c.query_row(
             "SELECT COUNT(*) FROM messages
@@ -85,12 +85,11 @@ pub(super) fn direct(
     } else {
         c.query_row(
             "SELECT COUNT(*)
-             FROM (SELECT m.sent_seq FROM messages m
-                   WHERE m.project_id = ? AND m.sender_id = ? AND m.recipient_id = ?
-                   ORDER BY m.sent_seq DESC LIMIT ?)
-             JOIN events e ON e.seq = sent_seq
-             WHERE e.recorded_at_us >= ?",
-            crate::sql_value::sql_params![project, from, to, LIMIT + 1, since_us],
+             FROM messages m
+             JOIN events e ON e.seq = m.sent_seq
+             WHERE m.project_id = ? AND m.sender_id = ? AND m.recipient_id = ?
+               AND e.recorded_at_us >= ?",
+            crate::sql_value::sql_params![project, from, to, since_us],
             |r| r.get(0),
         )
         .map_err(sql)?

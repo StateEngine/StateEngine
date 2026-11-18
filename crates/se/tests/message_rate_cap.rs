@@ -315,3 +315,49 @@ fn clock_step_cannot_hide_in_window_rows() -> Check {
     }
     Ok(())
 }
+/// Protects: #473 — a home that a direct client opens before the schema-15 migration counts through the event stamp, and that count is bounded by the window time as well: a backwards clock step must not let an in-window send slip under the cap on the older home.
+#[test]
+fn clock_step_cannot_hide_rows_on_a_pre_migration_home() -> Check {
+    let f = Fixture::new()?;
+    let (mut direct, lease) = f.direct()?;
+    let actor = Actor::Agent(f.a.clone());
+    let session = Some(SessionId::from_parts(
+        1_700_000_000_000 + serial(),
+        [9; 10],
+    )?);
+    let now = now_us()?;
+    let to = f.b.as_str().to_owned();
+    {
+        let mut s = make_sender(&f, &mut direct, &lease, actor.clone(), session.clone(), now);
+        for index in 0..10 {
+            s.send(to.clone(), &format!("pre-fill-{index}"), None)?;
+        }
+    }
+    direct.close()?;
+    // Recreate the pre-migration home: the stamp column and its pair index
+    // are the migration's, so direct writes count through the event stamp.
+    let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
+    db.execute_batch(
+        "DROP INDEX messages_pair_time;
+         ALTER TABLE messages DROP COLUMN recorded_at_us;
+         PRAGMA user_version=14",
+    )?;
+    drop(db);
+    // The clock steps back past the window: the nine newest fills now carry
+    // out-of-window stamps while the oldest fill stays inside it.
+    backdate_newest_stamps(&f, now - 15 * 60 * 1_000_000, 9)?;
+    let mut direct = present(SqliteFactory::open_direct(&f.options, &*lease)?)?;
+    {
+        let mut s = make_sender(&f, &mut direct, &lease, actor, session, now);
+        for index in 0..9 {
+            s.send(to.clone(), &format!("pre-after-{index}"), None)
+                .map_err(|error| format!("post-step send {index} refused: {error}"))?;
+        }
+        let refused = s
+            .send(to.clone(), "pre-eleventh", None)
+            .err()
+            .ok_or("an in-window send slipped under the cap on a pre-migration home")?;
+        assert_cap_refusal(&refused, f.a.as_str(), f.b.as_str())?;
+    }
+    Ok(())
+}
