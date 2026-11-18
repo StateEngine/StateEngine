@@ -39,6 +39,7 @@ impl LifecycleMetadata {
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 pub(super) struct Work {
+    pub startup_timing: Option<crate::startup_timing::Timing>,
     pub takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
     pub plan: Option<Arc<LaunchPlan>>,
     pub recover_provider: bool,
@@ -103,6 +104,7 @@ impl Work {
         cleanup_admission.session = None;
         Self {
             takeover: None,
+            startup_timing: None,
             cleanup_admission,
             meta,
             plan: None,

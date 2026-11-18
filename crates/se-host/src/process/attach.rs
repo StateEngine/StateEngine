@@ -59,19 +59,22 @@ impl LaunchCoordinator {
         } else {
             let wake = work.wake.clone();
             let relaunch = self.window_command(work, true);
-            let attach = self.harness_for(plan.profile.provider)?.attach(
-                HarnessAttach {
-                    request,
-                    process: attach_owner,
-                    record: record.clone(),
-                    transport,
-                    transcript: Read::Absent {
-                        checked: "transcript pin is published after session activation".into(),
-                    },
+            let input = HarnessAttach {
+                request,
+                process: attach_owner,
+                record: record.clone(),
+                transport,
+                transcript: Read::Absent {
+                    checked: "transcript pin is published after session activation".into(),
                 },
-                &mut work.binding,
-                call(self.store.generation, deadline)?,
-            );
+            };
+            let cx = call(self.store.generation, deadline)?;
+            let attach = if let Some(timing) = &mut work.startup_timing {
+                self.codex.attach_timed(input, cx, timing)
+            } else {
+                self.harness_for(plan.profile.provider)?
+                    .attach(input, &mut work.binding, cx)
+            };
             if let Some(activation_deadline) = work.attended_setup_deadline {
                 wake.awaiting_window
                     .store(true, std::sync::atomic::Ordering::Release);

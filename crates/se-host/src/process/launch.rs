@@ -17,6 +17,8 @@ impl LaunchCoordinator {
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
     pub(super) async fn start(&self, work: &mut Work, deadline: &Deadline) -> Result<LaunchResult> {
+        work.startup_timing = (work.meta.provider == se_store::Provider::Codex)
+            .then(|| crate::startup_timing::Timing::new(&work.meta.conversation));
         let plan = work.plan.clone().ok_or_else(|| {
             se_core::scope::unreadable(
                 "launch execution",

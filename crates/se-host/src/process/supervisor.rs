@@ -222,6 +222,7 @@ impl LaunchCoordinator {
                 let mut state = owned.state.lock().await;
                 let started = crate::runtime::tasks::caught(coordinator.start(&mut state, &deadline), false).await
                     .unwrap_or_else(|()| Err(error("launch session task", "panicked with its original key and partial custody retained; reconcile before retry")));
+                let mut timing = state.startup_timing.take();
                 match started {
                     Ok(output) => {
                         owned.ready.send_replace(Some(Ok(output)));
@@ -229,6 +230,9 @@ impl LaunchCoordinator {
                         coordinator.monitor_protected(owned.clone()).await;
                     }
                     Err(original) => {
+                        if let Some(timing) = &mut timing {
+                            timing.freeze();
+                        }
                         match coordinator.retain_expired_window(&mut state).await {
                             Ok(true) => {
                                 owned.ready.send_replace(Some(Err(coordinator.expired_window_error(&state).body)));
@@ -253,6 +257,10 @@ impl LaunchCoordinator {
                                     se_core::scope::unreadable("launch failed with retained cleanup", &format!("launch={original}; cleanup={cleanup}; retry the original request identity to inspect its retained custody")).body
                                 }
                             }
+                        };
+                        let failure = match timing {
+                            Some(timing) => timing.report(failure, &owned.target.1),
+                            None => failure,
                         };
                         owned.ready.send_replace(Some(Err(failure)));
                         if !owned.settled.load(Ordering::Acquire) {

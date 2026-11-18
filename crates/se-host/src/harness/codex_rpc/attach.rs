@@ -1,15 +1,37 @@
 //! One real initialize/thread handshake, before or after console exec. Native
 //! readiness and C3 stay with the coordinator; this never invents a ProcessRecord.
 use super::*;
+use crate::startup_timing::{Phase, Timing};
+
 impl CodexHarness {
+    pub(crate) fn attach_timed<'a>(
+        &'a self,
+        request: HarnessAttach,
+        cx: CallContext,
+        timing: &'a mut Timing,
+    ) -> HostFuture<'a, LaunchOutcome> {
+        Box::pin(async move {
+            self.attach_transport(
+                &request.request,
+                request.transport,
+                request.record.lifecycle,
+                cx,
+                timing,
+            )
+            .await
+        })
+    }
+
     pub(crate) async fn attach_transport(
         &self,
         request: &HarnessRequest,
         transport: ProviderTransport,
         lifecycle: se_types::LifecycleId,
         cx: CallContext,
+        timing: &mut Timing,
     ) -> Result<LaunchOutcome> {
         let until = std::time::Instant::now() + cx.timeout;
+        timing.advance(Phase::Transport);
         let provider = self
             .probed
             .lock()
@@ -47,6 +69,7 @@ impl CodexHarness {
             cx.generation,
             until.saturating_duration_since(std::time::Instant::now()),
         );
+        timing.advance(Phase::Initialize);
         let handshake = tokio::time::timeout(cx.timeout, async {
             binding
                 .request("initialize", input::initialize(), &cx)
@@ -56,23 +79,9 @@ impl CodexHarness {
             let named = windows_sandbox::selection(request)?;
             #[cfg(windows)]
             self.confirm_windows_sandbox(&binding, named, &cx).await?;
-            let resolved = self.resolved(request)?;
-            let plan = self.plan(request, &resolved, socket.as_deref());
-            let (method, params) = self.thread(&plan)?;
-            let response = binding.request(method, params, &cx).await?;
-            let conversation = input::verify_thread(&plan, &response)?;
-            binding.state.lock().map_err(|_| poisoned())?.conversation = Some(conversation.clone());
-            if let Some(path) = response.pointer("/thread/path").and_then(Value::as_str) {
-                *binding.rollout.lock().map_err(|_| poisoned())? =
-                    Some(NativePath::from_local(PathBuf::from(path))?);
-            }
-            let mut initial = input::turn(&plan, &conversation, &request.initial_input)?;
-            initial["clientUserMessageId"] = json!(format!(
-                "se-{}",
-                se_types::hex_lower(&Sha256::digest(request.key.as_str().as_bytes()))
-            ));
-            *binding.initial.lock().await = Some(initial);
-            Ok::<_, SeError>(conversation)
+            timing.advance(Phase::Thread);
+            self.prepare_thread(request, &binding, socket.as_deref(), &cx)
+                .await
         })
         .await
         .unwrap_or_else(|_| {
@@ -84,10 +93,13 @@ impl CodexHarness {
         let conversation = match handshake {
             Ok(conversation) => conversation,
             Err(error) => {
+                // Exclude connection teardown from the failed readiness phase.
+                timing.freeze();
                 let _ = close(&binding, &cx).await;
                 return Err(error);
             }
         };
+        timing.advance(Phase::Publication);
         Ok(LaunchOutcome {
             witness: BindingWitness {
                 identity: request.identity.clone(),
@@ -97,5 +109,31 @@ impl CodexHarness {
             },
             binding: HarnessBinding::new(binding),
         })
+    }
+
+    async fn prepare_thread(
+        &self,
+        request: &HarnessRequest,
+        binding: &Binding,
+        socket: Option<&Path>,
+        cx: &CallContext,
+    ) -> Result<ProviderSessionId> {
+        let resolved = self.resolved(request)?;
+        let plan = self.plan(request, &resolved, socket);
+        let (method, params) = self.thread(&plan)?;
+        let response = binding.request(method, params, cx).await?;
+        let conversation = input::verify_thread(&plan, &response)?;
+        binding.state.lock().map_err(|_| poisoned())?.conversation = Some(conversation.clone());
+        if let Some(path) = response.pointer("/thread/path").and_then(Value::as_str) {
+            *binding.rollout.lock().map_err(|_| poisoned())? =
+                Some(NativePath::from_local(PathBuf::from(path))?);
+        }
+        let mut initial = input::turn(&plan, &conversation, &request.initial_input)?;
+        initial["clientUserMessageId"] = json!(format!(
+            "se-{}",
+            se_types::hex_lower(&Sha256::digest(request.key.as_str().as_bytes()))
+        ));
+        *binding.initial.lock().await = Some(initial);
+        Ok(conversation)
     }
 }
