@@ -160,6 +160,12 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
         );
         session.state = "unknown".into();
     }
+    let recorded_exit = match &facts.process {
+        Read::Present { value } => {
+            crate::agent_observation::RecordedExit::from_event(&value.current.body)
+        }
+        _ => crate::agent_observation::RecordedExit::Other,
+    };
     let process = match facts.process {
         Read::Present { value: head } => match session.session_id.clone() {
             Some(id) => {
@@ -239,6 +245,7 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
         facts.target.project.clone(),
         row.clone(),
         process,
+        recorded_exit,
         recorded_session,
     );
     crate::observe_agent(plan, deadline)?.apply(&mut row)?;
