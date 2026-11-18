@@ -10,11 +10,11 @@ const GROWTH_WAKE_BYTES: u64 = 4 * 1024 * 1024;
 pub(crate) struct Schedule {
     pending: bool,
     pub gate: Gate,
-    background: Option<crate::checkpoint_task::Status>,
+    background: Option<crate::checkpoint_wake::Wake>,
     last_growth_wake: u64,
 }
 impl Schedule {
-    pub(crate) fn attach_background(&mut self, status: crate::checkpoint_task::Status) {
+    pub(crate) fn attach_background(&mut self, status: crate::checkpoint_wake::Wake) {
         self.background = Some(status);
         self.last_growth_wake = 0;
     }
@@ -27,7 +27,7 @@ impl Schedule {
             && let Some(status) = &self.background
         {
             self.last_growth_wake = wal.bytes;
-            status.wake_growth();
+            status.growth();
         }
     }
 }

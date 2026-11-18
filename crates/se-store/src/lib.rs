@@ -8,6 +8,7 @@ mod backup;
 mod backup_context;
 pub mod channel;
 mod checkpoint_task;
+mod checkpoint_wake;
 mod codec;
 mod completion;
 mod connection;

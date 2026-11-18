@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::{
     path::PathBuf,
     sync::{
-        Arc, Condvar, Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
@@ -70,10 +70,7 @@ impl State {
 pub(crate) struct Status {
     state: Arc<State>,
     idle: Arc<AtomicBool>,
-    growth: Arc<AtomicBool>,
-    /// Latest idle edge, coalesced until the writer has stayed quiet for TICK.
-    /// Shutdown also signals this condition so no timer delays joining.
-    notify: Arc<(Mutex<Option<Instant>>, Condvar)>,
+    wake: crate::checkpoint_wake::Wake,
 }
 impl Default for Status {
     fn default() -> Self {
@@ -82,8 +79,7 @@ impl Default for Status {
         Self {
             state: Arc::default(),
             idle: Arc::new(AtomicBool::new(false)),
-            growth: Arc::new(AtomicBool::new(false)),
-            notify: Arc::new((Mutex::new(None), Condvar::new())),
+            wake: crate::checkpoint_wake::Wake::default(),
         }
     }
 }
@@ -117,66 +113,14 @@ impl Status {
     fn idle(&self) -> bool {
         self.idle.load(Ordering::Acquire)
     }
-    /// Signal the maintenance task: the writer has gone idle, or the task must
-    /// stop. Cheap enough for the writer's idle edge, and lost notifications
-    /// never matter because the task re-reads the real flags after waking.
     pub(crate) fn wake(&self) {
-        let (lock, condvar) = &*self.notify;
-        let mut seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        *seen = Some(Instant::now());
-        condvar.notify_all();
+        self.wake.idle();
     }
-    /// Growth is an immediate maintenance edge, independent of quiet time.
-    /// The mutex prevents a lost notification as the task enters its wait;
-    /// it never covers SQLite work.
-    pub(crate) fn wake_growth(&self) {
-        let (lock, condvar) = &*self.notify;
-        let _seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.growth.store(true, Ordering::Release);
-        condvar.notify_all();
+    pub(crate) fn wake_handle(&self) -> crate::checkpoint_wake::Wake {
+        self.wake.clone()
     }
-    /// Coalesce idle edges until a quiet interval, or wake immediately on shutdown.
-    ///
-    /// `cap` is the backstop for work already owed: a checkpoint that could
-    /// not finish (a pinned reader) retries on the next tick, so it is passed
-    /// `Some(TICK)`. With nothing owed the caller passes `None` and the task
-    /// sleeps here until the writer writes and goes idle again, which is why
-    /// an idle host makes no maintenance wakes at all.
-    ///
-    /// Returns true when shutdown was requested and the task must exit.
     fn wait(&self, closed: &AtomicBool, cap: Option<Duration>) -> bool {
-        let deadline = cap.map(|cap| Instant::now() + cap);
-        let (lock, condvar) = &*self.notify;
-        let mut seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        while !closed.load(Ordering::Acquire) {
-            if self.growth.load(Ordering::Acquire) {
-                break;
-            }
-            // An idle edge during the wait restarts the quiet interval. Only
-            // retained maintenance debt uses the retry deadline without an edge.
-            let ready = seen.map(|edge| edge + TICK).or(deadline);
-            match ready {
-                None => {
-                    seen = condvar
-                        .wait(seen)
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                }
-                Some(deadline) => {
-                    let left = deadline.saturating_duration_since(Instant::now());
-                    if left.is_zero() {
-                        break;
-                    }
-                    seen = condvar
-                        .wait_timeout(seen, left)
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .0;
-                }
-            }
-        }
-        // Consume the edge: after a successful checkpoint, a settled host
-        // waits indefinitely instead of repeating maintenance on an old edge.
-        *seen = None;
-        closed.load(Ordering::Acquire)
+        self.wake.wait(closed, cap, TICK)
     }
     fn set(&self, maint: Maint) {
         *self.state.lock() = maint;
@@ -305,7 +249,7 @@ fn run(
         if closed.load(Ordering::Acquire) {
             return;
         }
-        let growth = status.growth.swap(false, Ordering::AcqRel);
+        let growth = status.wake.take_growth();
         // Reopen until the first success so a transient lock at startup costs
         // one tick, not the whole maintenance lifetime.
         let db = match crate::connection::connect(&path, true, timeout) {
