@@ -54,7 +54,7 @@ pub fn setup_lock(files: &Files) -> StoreResult<Option<File>> {
 
 /// Ordinary transactions share the OS lock; setup holds it exclusively before
 /// credential mutation through registration and close. Existence is no lease.
-/// Status borrows its existing protected root; writers retain owned custody.
+/// Callers may borrow an existing protected root for the lifetime of the lease.
 pub struct DirectLease<F = Files> {
     pub files: F,
     pub identity: LeaseIdentity,
