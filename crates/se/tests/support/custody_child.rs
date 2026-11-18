@@ -49,7 +49,8 @@ pub fn identity(
     session: &SessionId,
     child: &Child,
 ) -> Result<(ProcessIdentityRecord, p::ProcessRecord), Box<dyn std::error::Error>> {
-    let machine = se_types::MachineId::new("public-custody-cli")?;
+    let files = se_host::state_files::Files::open(&f.options.state_directory)?;
+    let machine = se_host::state_files::machine_identity(&files)?;
     let observed = p::read_process(machine.clone(), p::ProcessId(child.0.id()))
         .map_err(|e| format!("native child: {e:?}"))?;
     let p::ProcessRead::Present(observed) = observed else {
