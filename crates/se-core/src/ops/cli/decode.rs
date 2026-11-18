@@ -295,6 +295,7 @@ pub fn from_matches_with_key(
                 })
                 .transpose()?,
             cursor: text(m, "cursor").map(Cursor::new).transpose()?,
+            newest: flag(m, "newest"),
             owner_to: text(m, "to"),
         }),
         "working_state.get" => AnyOp::WorkingStateGet(WorkingStateGet { owner_agent: None }),

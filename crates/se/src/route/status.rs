@@ -3,7 +3,8 @@ use super::{execute, files::Files};
 use crate::bootstrap::Bootstrap;
 use se_core::{admission::read_scope, ops::*, scope, store_error::store_error};
 use se_store::{
-    Actor, Admission, EventBody, MessageQuery, ReadStore, RuntimeOwnerHead, Scope, Snapshot,
+    Actor, Admission, EventBody, MailDirection, MessageQuery, ReadStore, RuntimeOwnerHead, Scope,
+    Snapshot,
 };
 use se_types::{Read, Result};
 #[path = "status/projects.rs"]
@@ -184,6 +185,7 @@ pub fn observe_snapshot<S: Snapshot>(
                 kind: None,
                 unread_only: true,
                 full_body: false,
+                direction: MailDirection::OldestFirst,
             };
             let unread = snap.message_count(query).map_err(|e| store_error(&e))?;
             output.agents = Some(agent_status::page(

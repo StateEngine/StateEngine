@@ -1,6 +1,6 @@
 //! Pure status rows are collected on the admission/planning snapshot.
 use se_core::{commit::Cx, ops::*, scope, store_error::store_error};
-use se_store::{Actor, EventBody, MessageQuery, Snapshot};
+use se_store::{Actor, EventBody, MailDirection, MessageQuery, Snapshot};
 use se_types::{Read, Result};
 
 pub(crate) fn prepare<S: Snapshot>(
@@ -82,6 +82,7 @@ fn project<S: Snapshot>(output: &mut StatusOutput, cx: &mut Cx<'_, S>) -> Result
             kind: None,
             unread_only: true,
             full_body: false,
+            direction: MailDirection::OldestFirst,
         })
         .map_err(|e| store_error(&e))?;
     match &cx.admission.actor {

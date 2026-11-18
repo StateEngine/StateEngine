@@ -392,6 +392,7 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("limit").default_value("20").help("Maximum messages in this page"))
             .arg(value("preview_chars").long("preview-chars").help("Maximum body preview characters when the full body is not requested"))
             .arg(value("cursor").help("Cursor from a previous page of this same read"))
+            .arg(toggle("newest").help("Read the page newest-first; the cursor continues toward the oldest message"))
             .arg(
                 value("box")
                     .value_parser(["inbox", "sent"])

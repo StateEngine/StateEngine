@@ -20,19 +20,26 @@ pub(super) fn sql(
     } else {
         "messages_project_seq"
     };
+    // A newest-first cursor carries the page frontier (its oldest returned
+    // delivery); the next page resumes strictly below it from the floor.
+    let (lower, upper_op, upper) = if query.direction == MailDirection::NewestFirst && after > 0 {
+        (0, "<", after)
+    } else {
+        (after, "<=", h)
+    };
     let mut statement = if unread {
         format!(
-            "SELECT {projection} FROM marks m INDEXED BY marks_unread JOIN messages d ON d.sent_seq=m.message_seq WHERE m.project_id=? AND m.read_seq IS NULL AND m.dismissed_seq IS NULL AND m.message_seq>? AND m.message_seq<=?"
+            "SELECT {projection} FROM marks m INDEXED BY marks_unread JOIN messages d ON d.sent_seq=m.message_seq WHERE m.project_id=? AND m.read_seq IS NULL AND m.dismissed_seq IS NULL AND m.message_seq>? AND m.message_seq{upper_op}?"
         )
     } else {
         format!(
-            "SELECT {projection} FROM messages d INDEXED BY {index} JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.sent_seq>? AND d.sent_seq<=?"
+            "SELECT {projection} FROM messages d INDEXED BY {index} JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.sent_seq>? AND d.sent_seq{upper_op}?"
         )
     };
     let mut args = vec![
         Value::Blob(p.into()),
-        Value::Integer(after as i64),
-        Value::Integer(h as i64),
+        Value::Integer(lower as i64),
+        Value::Integer(upper as i64),
     ];
     if let Some(to) = to {
         statement.push_str(if unread {

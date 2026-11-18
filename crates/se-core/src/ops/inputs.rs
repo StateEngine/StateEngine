@@ -133,6 +133,9 @@ pub struct MessageList {
     pub limit: u16,
     pub preview_chars: Option<u16>,
     pub cursor: Option<Cursor>,
+    /// Read the page newest-first; the cursor continues toward the oldest message.
+    #[serde(default)]
+    pub newest: bool,
     #[serde(skip)]
     #[schemars(skip)]
     pub owner_to: Option<String>,
