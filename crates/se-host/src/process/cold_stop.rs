@@ -84,10 +84,7 @@ impl LaunchCoordinator {
         {
             self.restore_secode_work(&mut work, deadline).await?;
         }
-        let source = super::recovery::recovery_source(checkpoint, &row)?;
-        let outcome = self
-            .observe_recovery(source, &row.identity, deadline)
-            .await?;
+        let outcome = self.observe_recovery(checkpoint, &row, deadline).await?;
         match outcome {
             se_proc::RecoveryOutcome::Exited(witness) => {
                 work.native_already_reconciled = true;

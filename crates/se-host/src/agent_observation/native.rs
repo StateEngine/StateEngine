@@ -14,14 +14,6 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
         .ok_or_else(|| invalid("a launched session target"))?;
     plan.row.session.process = None;
     plan.row.session.observed_at = None;
-    if plan.row.session.end_reason.as_deref() == Some(se_core::ops::process_commit::ENDED_BY_REBOOT)
-    {
-        plan.row.session.state = "stopped".into();
-        plan.row.session.liveness = Read::Present {
-            value: "exited".into(),
-        };
-        return Ok(());
-    }
     plan.row.session.state = if plan.row.session.recorded_state.as_deref() == Some("prepared") {
         "starting"
     } else {
@@ -47,6 +39,16 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
             return Err(invalid(
                 "matching native and recorded lifecycle/project/agent/session",
             ));
+        }
+        if plan.row.session.end_reason.as_deref()
+            == Some(se_core::ops::process_commit::ENDED_BY_REBOOT)
+        {
+            if !matches!(&checkpoint.checkpoint, CheckpointKind::Exit { witness, .. }
+                if witness.ended_by_reboot())
+            {
+                return Err(invalid("a retained reboot exit witness for this lifecycle"));
+            }
+            return Ok(None);
         }
         let record = match checkpoint.checkpoint {
             CheckpointKind::Process(record) => record,
@@ -106,10 +108,17 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
         bound(deadline)?;
         let observation = se_proc::read_process(record.root.machine.clone(), record.root.pid)
             .map_err(|e| invalid(&format!("readable native process identity: {e:?}")))?;
-        Ok((record, observation))
+        Ok(Some((record, observation)))
     })();
     let (record, observation) = match checked {
-        Ok(value) => value,
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            plan.row.session.state = "stopped".into();
+            plan.row.session.liveness = Read::Present {
+                value: "exited".into(),
+            };
+            return Ok(());
+        }
         Err(error) => {
             plan.row.session.state = "unknown".into();
             plan.row.session.liveness = unreadable("native process identity", error);
