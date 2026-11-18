@@ -21,6 +21,16 @@ fn payload(f: &Fixture) -> Result<String, Box<dyn std::error::Error>> {
 /// Protects: restart following an actual abrupt host process exit reconciles its protected stale endpoint under the exclusive lease and publishes a different live native owner.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub fn restart_after_crash() -> Check {
+    // Every step after the crash needs a detached runtime of its own, which a
+    // hosted Windows runner cannot create. Report the case by name instead of
+    // failing on a venue that cannot supply its precondition.
+    if crate::detachment_venue::hosted_runner_without_breakaway() {
+        println!(
+            "NOT RUN host_e3::restart_after_crash: {}",
+            crate::detachment_venue::HOSTED_REASON
+        );
+        return Ok(());
+    }
     let f = std::mem::ManuallyDrop::new(Fixture::new()?);
     let (direct, lease) = f.direct()?;
     drop(direct);

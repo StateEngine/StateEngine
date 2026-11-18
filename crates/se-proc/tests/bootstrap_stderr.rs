@@ -139,6 +139,17 @@ mod judge {
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
     fn trial(mode: &str) -> Result {
+        // Every trial launches a detached native child, so a venue that forbids
+        // breakaway cannot run any of them. Name the exact case instead of
+        // failing on its precondition; the caller counts what actually ran.
+        #[cfg(windows)]
+        if crate::detachment_venue::hosted_runner_without_breakaway() {
+            println!(
+                "NOT RUN bootstrap_stderr::{mode}: {}",
+                crate::detachment_venue::HOSTED_REASON
+            );
+            return Ok(());
+        }
         let root = std::env::temp_dir().join(format!(
             "se-retained-bootstrap-{}-{}",
             std::process::id(),
@@ -462,10 +473,14 @@ mod judge {
         #[cfg(windows)]
         {
             trial("inheritance")?;
-            // These seven run on every Windows venue. The strict-job broker case
-            // is a separate trial with its own line above, so it is not counted
-            // here whether it ran or was reported not run.
-            println!("bootstrap_stderr: 7 passed, 0 failed");
+            // Count only what this venue executed. Every trial in this file
+            // launches a detached child, so a hosted runner runs none of the
+            // seven and reports each by name above.
+            if crate::detachment_venue::hosted_runner_without_breakaway() {
+                println!("bootstrap_stderr: 0 passed, 0 failed, 7 not run on this venue");
+            } else {
+                println!("bootstrap_stderr: 7 passed, 0 failed");
+            }
         }
         #[cfg(not(windows))]
         println!("bootstrap_stderr: 6 passed, 0 failed");

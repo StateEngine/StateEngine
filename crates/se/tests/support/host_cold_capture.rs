@@ -15,6 +15,15 @@ pub struct Capture<'a> {
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
+    // The case is built on a detached native host. Say so by name where the
+    // venue cannot create one, rather than failing on its own precondition.
+    if crate::detachment_venue::hosted_runner_without_breakaway() {
+        println!(
+            "NOT RUN host_e3::listener_message_working_and_hook: {}",
+            crate::detachment_venue::HOSTED_REASON
+        );
+        return Ok(());
+    }
     let machine =
         route::identity::require_machine(&route::files::Files::open(&f.options.state_directory)?)?;
     let ready = host::start(

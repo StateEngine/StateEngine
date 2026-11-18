@@ -389,10 +389,12 @@ fn main() -> Check {
     shutdown_write_judge::check()?;
     recovery_judge::restart_after_crash()?;
     eight_clients_judge::check()?;
-    // Name only what this venue executed; a skipped case is not a pass.
+    // Name only what this venue executed; a skipped case is not a pass. Three
+    // cases in this harness need a detached runtime of their own: the private
+    // startup case above, the listener/hook case, and restart after a crash.
     if skipped_detached_startup {
         println!(
-            "host_e3: 11 passed, 1 not run on this venue; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
+            "host_e3: 9 passed, 3 not run on this venue; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
         );
     } else {
         println!(
