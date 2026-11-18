@@ -65,13 +65,17 @@ def detachment_venue(root: Path):
             "inheritance",
         )
     ] + [
-        # Cases inside se::host_e3 that start a detached native host.
+        # Cases inside se::host_e3 that start a detached native host, plus the
+        # one subcase of a case that otherwise runs: the listener/hook case keeps
+        # its embedded coverage and names only its detached cold-capture part.
         {"judge": f"se::host_e3::{case}", "status": "not_run", "reason": reason}
         for case in (
             "private_startup_serves_and_retires",
-            "listener_message_working_and_hook",
             "restart_after_crash",
         )
+    ] + [
+        {"judge": "se::host_e3::listener_message_working_and_hook::cold_capture",
+         "status": "not_run", "reason": reason}
     ]
     excluded, records = [], []
     for package, binary, test, label in selections:

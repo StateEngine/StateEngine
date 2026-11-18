@@ -138,7 +138,10 @@ mod judge {
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
     )]
-    fn trial(mode: &str) -> Result {
+    /// Returns true only when the trial actually ran. A venue that cannot
+    /// launch the detached child returns false, so no caller can report a pass
+    /// that did not happen.
+    fn trial(mode: &str) -> Result<bool> {
         // Every trial launches a detached native child, so a venue that forbids
         // breakaway cannot run any of them. Name the exact case instead of
         // failing on its precondition; the caller counts what actually ran.
@@ -148,7 +151,7 @@ mod judge {
                 "NOT RUN bootstrap_stderr::{mode}: {}",
                 crate::detachment_venue::HOSTED_REASON
             );
-            return Ok(());
+            return Ok(false);
         }
         let root = std::env::temp_dir().join(format!(
             "se-retained-bootstrap-{}-{}",
@@ -355,7 +358,7 @@ mod judge {
             std::fs::remove_dir(root).map_err(error)?;
         }
         println!("PASS {mode}: exact exited child, bounded EOF stderr and public refusal");
-        Ok(())
+        Ok(true)
     }
     #[cfg(windows)]
     fn strict_job() -> Result {
@@ -409,8 +412,7 @@ mod judge {
             );
             false
         } else {
-            trial("broker")?;
-            true
+            trial("broker")?
         };
         // SAFETY: same retained caller/job after the detached child has exited.
         require(
@@ -456,10 +458,15 @@ mod judge {
             print!("{}", String::from_utf8_lossy(&output.stdout));
         }
         if std::env::args_os().any(|arg| arg == "--retained-only") {
-            trial("retained-await")?;
-            println!("bootstrap_stderr retained: 1 passed, 0 failed");
+            let ran = trial("retained-await")?;
+            if ran {
+                println!("bootstrap_stderr retained: 1 passed, 0 failed");
+            } else {
+                println!("bootstrap_stderr retained: 0 passed, 0 failed, 1 not run on this venue");
+            }
             return Ok(());
         }
+        let mut ordinary = 0;
         for mode in [
             "refuse",
             "flood",
@@ -468,22 +475,38 @@ mod judge {
             "live-read",
             "refuse",
         ] {
-            trial(mode)?;
+            if trial(mode)? {
+                ordinary += 1;
+            }
         }
         #[cfg(windows)]
         {
-            trial("inheritance")?;
-            // Count only what this venue executed. Every trial in this file
-            // launches a detached child, so a hosted runner runs none of the
-            // seven and reports each by name above.
-            if crate::detachment_venue::hosted_runner_without_breakaway() {
-                println!("bootstrap_stderr: 0 passed, 0 failed, 7 not run on this venue");
-            } else {
+            let inheritance = trial("inheritance")?;
+            let ran = ordinary + usize::from(inheritance);
+            // Count only what this venue executed; a skipped trial is not a pass.
+            if ran == 7 {
                 println!("bootstrap_stderr: 7 passed, 0 failed");
+            } else {
+                println!(
+                    "bootstrap_stderr: {ran} passed, 0 failed, {} not run on this venue",
+                    7 - ran
+                );
             }
         }
         #[cfg(not(windows))]
-        println!("bootstrap_stderr: 6 passed, 0 failed");
+        {
+            // Six ordinary trials on this platform; a venue that skips one says
+            // so rather than reporting a pass it did not achieve.
+            let expected = 6;
+            if ordinary == expected {
+                println!("bootstrap_stderr: {ordinary} passed, 0 failed");
+            } else {
+                println!(
+                    "bootstrap_stderr: {ordinary} passed, 0 failed, {} not run on this venue",
+                    expected - ordinary
+                );
+            }
+        }
         Ok(())
     }
 }
