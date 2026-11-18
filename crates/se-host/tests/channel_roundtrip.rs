@@ -6,6 +6,10 @@ mod fault;
 #[path = "support/wave2_host_fixture.rs"]
 mod support;
 #[path = "support/channel_transport.rs"]
+#[allow(
+    dead_code,
+    reason = "This consumer keeps the fixture's default long-poll timeout."
+)]
 mod transport;
 use fault::{FaultTransport, Mode};
 use se_host::{channels::*, *};

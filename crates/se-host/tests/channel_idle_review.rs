@@ -13,10 +13,7 @@ use se_store::*;
 use se_types::{IdempotencyKey, Secret};
 use std::{
     collections::HashSet,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use support::*;
@@ -25,7 +22,7 @@ use support::*;
 struct Provider {
     wire: transport::Transport,
     polled: Mutex<HashSet<Vec<u8>>>,
-    polls: AtomicU64,
+    emptied: Mutex<HashSet<Vec<u8>>>,
 }
 impl ChannelTransport for Provider {
     fn descriptor(&self) -> ConnectorDescriptor {
@@ -157,7 +154,7 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
             wire: transport::Transport::default()
                 .with_empty_poll_timeout(Duration::from_millis(150)),
             polled: Default::default(),
-            polls: AtomicU64::new(0),
+            emptied: Default::default(),
         });
         host.install_channel_transport(provider.clone())?;
         host.set_receiver_intervals(Duration::from_millis(200), Duration::from_millis(100))?;
@@ -221,13 +218,23 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
                         ).await?;
                         provider.wire.push(2, "Message at the first refill".into())?;
                         until(&channels, &id, |p| p.receipts.len() == 1).await?;
-                        // Observe a completed empty poll cycle before the next
-                        // delivery: two further poll starts mean the one in
-                        // between returned empty during this quiet window.
-                        let quiet_polls = provider.polls.load(Ordering::Relaxed);
+                        // Observe a successful empty completion for this
+                        // connection before the next delivery; drop any
+                        // earlier observation so the gate only passes on a
+                        // poll that returned empty after the last delivery.
+                        provider
+                            .emptied
+                            .lock()
+                            .map_err(|_| "quiet observations poisoned")?
+                            .remove(token.as_bytes());
                         let quiet_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
                         loop {
-                            if provider.polls.load(Ordering::Relaxed) >= quiet_polls + 2 {
+                            if provider
+                                .emptied
+                                .lock()
+                                .map_err(|_| "quiet observations poisoned")?
+                                .contains(token.as_bytes())
+                            {
                                 break;
                             }
                             if tokio::time::Instant::now() >= quiet_deadline {
@@ -272,12 +279,18 @@ impl transport::FixturePoll for Provider {
         offset: Option<i64>,
     ) -> TransportFuture<'a, Vec<Incoming>> {
         Box::pin(async move {
-            self.polls.fetch_add(1, Ordering::Relaxed);
             self.polled
                 .lock()
                 .map_err(|_| ChannelError::ReceiverNotRunning)?
                 .insert(token.expose().to_vec());
-            transport::FixturePoll::poll(&self.wire, token, offset).await
+            let rows = transport::FixturePoll::poll(&self.wire, token, offset).await?;
+            if rows.is_empty() {
+                self.emptied
+                    .lock()
+                    .map_err(|_| ChannelError::ReceiverNotRunning)?
+                    .insert(token.expose().to_vec());
+            }
+            Ok(rows)
         })
     }
 }
