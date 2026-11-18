@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -142,6 +143,49 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def windows_package_image(provider, launcher):
+    packages = launcher.parent / 'node_modules'
+    package = packages / {'claude': '@anthropic-ai/claude-code', 'codex': '@openai/codex'}[provider]
+    name = package.relative_to(packages).as_posix()
+    metadata = json.loads(read_evidence(package / 'package.json', 65536))
+    require(isinstance(metadata, dict) and metadata.get('name') == name, 'Installed provider package name differs')
+    if provider == 'claude':
+        bins = metadata.get('bin')
+        entry = bins.get('claude') if isinstance(bins, dict) else bins
+        require(isinstance(entry, str) and entry, 'Installed Claude package has no command entry')
+        relative = Path(entry)
+        require(not relative.anchor and '..' not in relative.parts, 'Installed Claude command must be package-relative')
+        resolved_package = package.resolve(strict=True)
+        image = (resolved_package / relative).resolve(strict=True)
+        require(image.is_relative_to(resolved_package), 'Installed Claude command escapes its package')
+        return image
+    layouts = {'win-amd64': ('codex-win32-x64', 'x86_64-pc-windows-msvc'),
+               'win-arm64': ('codex-win32-arm64', 'aarch64-pc-windows-msvc')}
+    layout = layouts.get(sysconfig.get_platform())
+    require(layout is not None, 'Windows Codex package architecture is unsupported')
+    optional, target = layout
+    for root in (package / 'node_modules/@openai' / optional, packages / '@openai' / optional, package):
+        candidate = root / 'vendor' / target / 'bin/codex.exe'
+        if candidate.is_file():
+            return candidate.resolve(strict=True)
+    raise RuntimeError('Installed Codex package has no native image')
+
+
+def windows_provider_image(provider, launcher):
+    adjacent = launcher.with_name(provider + '.exe')
+    if adjacent.is_file():
+        image = adjacent.resolve(strict=True)
+    elif launcher.suffix.lower() == '.exe':
+        image = launcher
+    else:
+        image = windows_package_image(provider, launcher)
+    require(image.suffix.lower() == '.exe' and image.is_file(),
+            'Installed provider command is not a native Windows executable')
+    with image.open('rb') as stream:
+        require(stream.read(2) == b'MZ', 'Installed provider command has no Windows image header')
+    return image
+
+
 def prepared(provider, root, archive, archive_sha, commit, seed, platform='win32'):
     command, driver, key_name, model_name = PROVIDERS[provider]
     model = os.environ.get(model_name)
@@ -153,22 +197,27 @@ def prepared(provider, root, archive, archive_sha, commit, seed, platform='win32
             'Provider model variable contains credential material')
     executable = shutil.which(command)
     require(executable is not None, 'Native provider executable is absent')
-    image = Path(executable).resolve()
+    launcher = Path(executable).resolve()
+    image = windows_provider_image(provider, launcher) if platform == 'win32' else launcher
     version = subprocess.run([str(image), '--version'], env=clean_environment(), stdin=subprocess.DEVNULL,
                              capture_output=True, text=True, timeout=60, check=True).stdout.strip()
     require(bool(version) and len(version) <= 1024, 'Provider version is unavailable')
     config = root / (provider + '.toml')
-    config.write_text('version = 1\n\n[providers.' + provider + ']\ncommand = ' + json.dumps(str(image))
-                      + '\nmodel = ' + json.dumps(model) + '\nprofile = "nightly"\n'
+    config.write_text('version = 1\n\n[providers.' + provider + ']\nmodel = ' + json.dumps(model)
+                      + '\nprofile = "nightly"\n'
                       + '[profiles.nightly]\nsandbox = "workspace-write"\n'
                       + 'approval = "never"\nnetwork = true\nbypass = false\n', encoding='utf-8')
     profile = dict(name='nightly', sandbox='workspace-write', approval='never', network=True, bypass=False)
+    settings = {
+        'credential_seed': seed, 'configuration': {'path': str(config), 'sha256': digest(config)},
+        'permission_profile': profile, 'images': [
+            {'path': str(path), 'sha256': digest(path)} for path in dict.fromkeys((launcher, image))],
+        'version_command': [str(image), '--version'], 'version_stdout': version,
+    }
     manifest = {'schema': 'se.harness-matrix-input/v1', 'harnesses': [
-        {'id': provider, 'driver': driver, 'platforms': {platform: {
-            'credential_seed': seed, 'configuration': {'path': str(config), 'sha256': digest(config)},
-            'permission_profile': profile, 'images': [{'path': str(image), 'sha256': digest(image)}],
-            'version_command': [str(image), '--version'], 'version_stdout': version}}}]}
+        {'id': provider, 'driver': driver, 'platforms': {platform: settings}}]}
     if platform == 'win32':
+        settings['launch_image'] = str(image)
         manifest['windows_journeys'] = {
             'release': {'path': str(archive), 'sha256': archive_sha, 'source_commit': commit}}
     path = root / (provider + '-manifest.json')

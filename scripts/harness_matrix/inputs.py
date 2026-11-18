@@ -140,6 +140,12 @@ def preflight(entry):
             and all(isinstance(arg, str) and '\0' not in arg for arg in version), 'Invalid version command')
     require(str(Path(version[0]).resolve()) in pinned and isinstance(settings.get('version_stdout'), str),
             'Native version probe is not bound to the selected image')
+    if 'launch_image' in settings:
+        launch_image = settings['launch_image']
+        require(isinstance(launch_image, str), 'Expected provider launch image must be a path')
+        launch_path = plain_file(launch_image, 'Expected provider launch image')
+        require(launch_path.suffix.lower() == '.exe' and launch_path.resolve() == Path(version[0]).resolve(),
+                'Expected provider launch image must match the pinned native version probe')
     if sys.platform == 'win32' and not settings.get('terminal_prefix'):
         raise Unavailable('ABSENT', 'Native Windows terminal driver is absent')
     return settings, dict(configuration_sha256=configuration['sha256'], images=pinned,
