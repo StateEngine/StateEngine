@@ -56,22 +56,46 @@ impl Scope {
         // times out. A retry joins the original helper instead of creating one.
         if self.interrupt_helper.is_none() {
             self.interrupt_helper = Some(super::spawn::interrupt_helper(
-                helper, root, &child.pin, &self.job,
+                helper,
+                root,
+                &child.pin,
+                &self.job,
+                child
+                    .console
+                    .as_ref()
+                    .ok_or_else(|| {
+                        input(
+                            "native console cancellation",
+                            "retained root pseudoconsole required",
+                        )
+                    })?
+                    .handle(),
             )?);
         }
         let helper = self
             .interrupt_helper
-            .as_ref()
+            .as_mut()
             .ok_or_else(|| input("native console cancellation", "retained helper custody"))?;
         loop {
+            if let Some(diagnostics) = &mut helper.diagnostics {
+                diagnostics.drain();
+            }
             match exit_status(&helper.pin)? {
                 Some(ExitStatus::Code(0)) => return Ok(StopDispatch::Requested),
                 Some(ExitStatus::Code(2)) => return Ok(StopDispatch::NotNeeded),
                 Some(status) => {
+                    let detail = helper
+                        .diagnostics
+                        .as_mut()
+                        .map(|d| {
+                            d.drain();
+                            d.describe()
+                        })
+                        .unwrap_or_else(|| "helper stderr unavailable".into());
                     return Err(input(
                         "native console cancellation",
                         &format!(
-                            "the isolated helper refused or failed ({status:?}); retain custody and use witnessed forced stop if cancellation remains unproved"
+                            "the isolated helper refused or failed ({status:?}): {detail}; retain custody and use witnessed forced stop if cancellation remains unproved"
                         ),
                     ));
                 }
@@ -152,13 +176,14 @@ pub fn console_interrupt_entry(request: &OsStr) -> ProcResult<StopDispatch> {
         return Ok(StopDispatch::NotNeeded);
     }
     security::verify_job(&job)?;
-    // The helper was created without a console. Never detach the runtime's or
-    // an inherited console to make this work.
-    // SAFETY: original live process object remains pinned against PID reuse.
-    if unsafe { AttachConsole(request.root.pid.0) } == 0 {
+    // The native creator joins this helper to the retained root pseudoconsole
+    // with its startup attribute. Never change the runtime console or attach by PID.
+    // The complete membership/job checks below must still prove that association.
+    // SAFETY: query affects only this isolated helper's current console.
+    if unsafe { GetConsoleCP() } == 0 {
         return Err(last(
             ProcErrorCode::StopDispatchFailed,
-            "attach original private console",
+            "inspect inherited private console",
         ));
     }
     let _attached = Attached;

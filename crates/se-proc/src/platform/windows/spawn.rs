@@ -38,7 +38,8 @@ pub(super) struct Child {
     pub identity: Option<ProcessIdentity>,
     pub pid: ProcessId,
     // Retained until witnessed scope release, including after root exit.
-    _console: Option<super::pseudoconsole::PseudoConsole>,
+    pub console: Option<super::pseudoconsole::PseudoConsole>,
+    pub diagnostics: Option<super::helper_diagnostics::Diagnostics>,
 }
 pub(super) fn create(spec: LaunchSpec, job: &Handle) -> ProcResult<Child> {
     // Keep exclusion through CreateProcess, then permit ordinary package updates.
@@ -70,6 +71,7 @@ pub(super) fn create(spec: LaunchSpec, job: &Handle) -> ProcResult<Child> {
             capabilities: Vec::new(),
         },
         job,
+        None,
     );
     drop(creation);
     drop(custody);
@@ -89,6 +91,7 @@ pub(super) fn interrupt_helper(
     root: &ProcessIdentity,
     root_pin: &Handle,
     job: &Handle,
+    console: &windows_sys::Win32::System::Console::HPCON,
 ) -> ProcResult<Child> {
     let cwd = helper
         .parent()
@@ -110,7 +113,8 @@ pub(super) fn interrupt_helper(
     if request.len() > 8192 {
         return Err(capacity("console helper identity bytes", 8192));
     }
-    create_command(
+    let (diagnostics, stderr) = super::helper_diagnostics::Diagnostics::new()?;
+    let mut child = create_command(
         Command {
             executable: helper.to_owned(),
             arguments: vec![super::CONSOLE_INTERRUPT_ENTRY.into(), request.into()],
@@ -120,14 +124,17 @@ pub(super) fn interrupt_helper(
             stdio: StandardIo {
                 stdin: None,
                 stdout: None,
-                stderr: None,
+                stderr: Some(stderr),
             },
             mode: LaunchMode::Headless,
             cwd: cwd.to_owned(),
             capabilities: vec![root_pin, job_pin],
         },
         job,
-    )
+        Some(console),
+    )?;
+    child.diagnostics = Some(diagnostics);
+    Ok(child)
 }
 fn capability(source: &Handle, rights: u32) -> ProcResult<Handle> {
     let mut copy = ptr::null_mut();
@@ -156,7 +163,11 @@ fn capability(source: &Handle, rights: u32) -> ProcResult<Handle> {
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
+fn create_command(
+    spec: Command,
+    job: &Handle,
+    attached_console: Option<&windows_sys::Win32::System::Console::HPCON>,
+) -> ProcResult<Child> {
     let mut line = quoted(spec.executable.as_os_str());
     for arg in &spec.arguments {
         line.push(b' ' as u16);
@@ -249,10 +260,11 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
     } else {
         None
     };
+    let console_handle = attached_console.or_else(|| console.as_ref().map(|c| c.handle()));
     let jobs = [job.0];
     let handles: Vec<_> = inherited.iter().map(|h| h.0).collect();
     let mut attributes = crate::windows_native::attributes::Attributes::new(
-        1 + u32::from(!inherited.is_empty()) + u32::from(console.is_some()),
+        1 + u32::from(!inherited.is_empty()) + u32::from(console_handle.is_some()),
         "size process attributes",
         "initialize process attributes",
     )
@@ -273,16 +285,20 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
             )
             .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
     }
-    if let Some(console) = &console {
+    if let Some(console) = console_handle {
         attributes
-            .pseudoconsole(console.handle())
+            .pseudoconsole(console)
             .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
     }
     startup.lpAttributeList = attributes.pointer();
     // SAFETY: native process output is POD; ownership is taken only on success.
     let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
-    let flags =
-        CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | spec.mode.creation_flags();
+    let console_flags = if attached_console.is_some() {
+        0 // The helper joins the exact retained pseudoconsole at creation.
+    } else {
+        spec.mode.creation_flags()
+    };
+    let flags = CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | console_flags;
     let application = wide(spec.executable.as_os_str());
     let cwd = wide(spec.cwd.as_os_str());
     let create = |flags, info: &mut PROCESS_INFORMATION| {
@@ -339,6 +355,7 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
         pin: Handle(info.hProcess),
         identity: None,
         pid: ProcessId(info.dwProcessId),
-        _console: console,
+        console,
+        diagnostics: None,
     })
 }

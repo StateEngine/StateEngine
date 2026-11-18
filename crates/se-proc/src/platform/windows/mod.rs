@@ -1,4 +1,5 @@
 mod console;
+mod helper_diagnostics;
 mod identity;
 mod interrupt;
 pub use interrupt::{CONSOLE_INTERRUPT_ENTRY, console_interrupt_entry};
