@@ -39,6 +39,7 @@ impl crate::HostedRuntime {
             credentials,
             self.admission_context().machine_key()?,
             self.fenced.clone(),
+            self.receiver_intervals,
         )?);
         if self.channels.set(service.clone()).is_ok() {
             return Ok(service);
@@ -98,7 +99,7 @@ impl Channels {
         }
         let _running = Running(self.clone());
         let mut workers: HashMap<ChannelId, Receiver> = HashMap::new();
-        let rescan_period = Duration::from_secs(5);
+        let rescan_period = self.receiver.rescan;
         let mut timer = Some(tokio::time::interval(rescan_period));
         let changed = self.changed.notified();
         tokio::pin!(changed);
@@ -189,7 +190,7 @@ impl Channels {
                 let task = tokio::spawn(async move {
                     let mut backoff = Duration::from_secs(1);
                     let mut receiver = None;
-                    let mut output_timer = tokio::time::interval(Duration::from_secs(1));
+                    let mut output_timer = tokio::time::interval(service.receiver.poll);
                     output_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     loop {
                         let deadline = super::service::deadline(Duration::from_secs(30))?;
@@ -211,7 +212,7 @@ impl Channels {
                             service.maintain(id.clone()).await?;
                             backoff = Duration::from_secs(1);
                             if !received {
-                                tokio::select! {_=tokio::time::sleep(Duration::from_secs(1))=>{},_=signal.changed()=>break};
+                                tokio::select! {_=tokio::time::sleep(service.receiver.poll)=>{},_=signal.changed()=>break};
                             }
                             continue;
                         }

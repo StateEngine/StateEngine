@@ -149,6 +149,7 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
         configure_private_listener(&mut host)?;
         let provider = Arc::new(Provider::default());
         host.install_channel_transport(provider.clone())?;
+        host.set_receiver_intervals(Duration::from_millis(200), Duration::from_millis(100))?;
         let listener = host.listen(rt.handle().clone(), &bound()?).await?;
         let channels = host.channels()?;
         let stop = host.local_stop();
@@ -157,11 +158,12 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
         )?;
         let client = async {
             let outcome = async {
-                // Cross two former periodic scans with no connections before the first refill.
-                tokio::time::sleep(Duration::from_secs(11)).await;
+                // Cross several injected rescan cycles with no connections
+                // before the first refill.
+                tokio::time::sleep(Duration::from_millis(800)).await;
                 for round in 0..64 {
                     if round > 0 && round % 16 == 0 {
-                        tokio::time::sleep(Duration::from_secs(6)).await;
+                        tokio::time::sleep(Duration::from_millis(800)).await;
                     }
                     tokio::time::sleep(Duration::from_micros((round % 8) * 175)).await;
                     let token = format!("123456:obviously_fake_receiver_control_{round:032}");
@@ -208,9 +210,10 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
                         ).await?;
                         provider.wire.push(2, "Message at the first refill".into())?;
                         until(&channels, &id, |p| p.receipts.len() == 1).await?;
-                        // Six seconds of quiet crosses six one-second poll
-                        // cycles; the idle path has no five-second period.
-                        tokio::time::sleep(Duration::from_secs(6)).await;
+                        // Eight hundred milliseconds of quiet crosses eight
+                        // injected poll cycles; the idle path has no rescan
+                        // period.
+                        tokio::time::sleep(Duration::from_millis(800)).await;
                         provider.wire.push(3, "Message after the channel was quiet".into())?;
                         let delivered = until(&channels, &id, |p| p.receipts.len() == 2).await?;
                         assert_ne!(delivered.receipts[0].message, delivered.receipts[1].message);

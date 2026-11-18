@@ -4,14 +4,6 @@ fail-fast = true
 test-threads = 2
 slow-timeout = { period = "30s", terminate-after = 4 }
 
-# The channel idle test sleeps across the receiver's five-second rescan
-# periods by design (about 35 s floor); the global 30 s period flagged it on
-# every CI run, and under the parallel full-run load of a first attempt its
-# four-second delivery window expired at 54 s; the same-head retry passed.
-[[profile.ci.overrides]]
-filter = 'binary(=channel_idle_review)'
-slow-timeout = { period = "60s", terminate-after = 3 }
-
 [profile.ci.junit]
 path = "junit.xml"
 [test-groups.installation-custody]

@@ -60,6 +60,9 @@ pub struct HostedRuntime {
     pub(super) atlas_owner: Option<Arc<super::atlas_owner::Service>>,
     pub(crate) channels: Arc<std::sync::OnceLock<Arc<crate::channels::Channels>>>,
     pub(crate) channel_transport: Option<Arc<dyn crate::channels::ChannelTransport>>,
+    /// Set only by the in-process test hook before Channels construction.
+    #[cfg(feature = "listener")]
+    pub(crate) receiver_intervals: crate::channels::ReceiverIntervals,
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     pub(super) memory_reclaim: Option<super::memory::MemoryReclaim>,
     #[cfg(unix)]
@@ -366,6 +369,8 @@ fn prepare(
         atlas_owner: None,
         channels: Arc::default(),
         channel_transport: None,
+        #[cfg(feature = "listener")]
+        receiver_intervals: Default::default(),
         #[cfg(unix)]
         socket_paths: Default::default(),
         execution,
