@@ -47,20 +47,34 @@ def require_safe_output(outputs, values):
             'Result contains credential material and cannot be published')
 
 
+def evidence_identity(info):
+    # Windows Python can expose birth time for lstat().st_ctime_ns and
+    # change time for fstat().st_ctime_ns on the very same file.
+    created = getattr(info, 'st_birthtime_ns', info.st_ctime_ns) if os.name == 'nt' else info.st_ctime_ns
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, created)
+
+
 def read_evidence(path, limit):
+    def plain(info):
+        return (stat.S_ISREG(info.st_mode) and not getattr(info, 'st_file_attributes', 0) & 0x400
+                and info.st_nlink == 1 and info.st_ino != 0 and info.st_size <= limit)
+
     info = path.lstat()
-    require(stat.S_ISREG(info.st_mode) and not getattr(info, 'st_file_attributes', 0) & 0x400
-            and info.st_nlink == 1 and info.st_size <= limit, 'Failure evidence is not a bounded plain file')
-    with path.open('rb') as stream:
-        opened = os.fstat(stream.fileno())
-        identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-        require(stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1
-                and (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) == identity,
-                'Failure evidence identity changed')
-        data = stream.read(limit + 1)
-        after = os.fstat(stream.fileno())
-        require(len(data) == info.st_size and (after.st_dev, after.st_ino, after.st_size,
-                after.st_mtime_ns, after.st_ctime_ns) == identity, 'Failure evidence changed during read')
+    require(plain(info), 'Failure evidence is not a bounded plain file')
+    identity = evidence_identity(info)
+    try:
+        with path.open('rb') as stream:
+            opened = os.fstat(stream.fileno())
+            require(plain(opened) and evidence_identity(opened) == identity,
+                    'Failure evidence identity changed')
+            data = stream.read(limit + 1)
+            after = os.fstat(stream.fileno())
+            named = path.lstat()
+            require(len(data) == info.st_size and plain(after) and plain(named)
+                    and evidence_identity(after) == evidence_identity(named) == identity
+                    and after.st_ctime_ns == opened.st_ctime_ns, 'Failure evidence changed during read')
+    except FileNotFoundError as error:
+        raise RuntimeError('Failure evidence disappeared during read') from error
     return data
 
 
