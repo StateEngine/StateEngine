@@ -59,6 +59,11 @@ class Judge:
         self.env.update(HOME=str(self.root / "owner"), USERPROFILE=str(self.root / "owner"),
                         CODEX_HOME=str(self.root / "codex"), XDG_RUNTIME_DIR=str(self.root / "runtime"),
                         TMPDIR=str(self.root / "tmp"))
+        if self.args.scenario == "slow":
+            # Shorten the real provider-control restore window at spawn; the
+            # engine still runs the same recovery path against the injected
+            # threshold, and the production default is unchanged.
+            self.env["SE_PROVIDER_RESTORE_DEADLINE_MS"] = "5000"
         self.calls = 0
         self.stopped = []
         self.identities = []
@@ -163,11 +168,28 @@ class Judge:
         if up.returncode:
             raise AssertionError(("se up failed", up.stdout.decode(), up.stderr.decode()))
         # Recovery supervision is asynchronous after endpoint readiness.
-        end = time.monotonic() + (48 if self.args.scenario == "slow" else 55)
+        # The slow control waits for the engine's committed conclusion under
+        # a failure ceiling; the crash control keeps waiting on its reconnect
+        # event.
+        slow = self.args.scenario == "slow"
+        end = time.monotonic() + (30 if slow else 55)
+        self.result["slow_conclusion"] = None
         while time.monotonic() < end:
             if not live(provider):
                 break
-            if self.args.scenario == "crash" and (self.root / "repo/provider-reconnect.json").exists():
+            if slow:
+                session = (self.ok("--project", self.project, "status")
+                           ["agents"]["items"][0]["session"])
+                if (session["state"] == "recovery-pending"
+                        and session["process_state"]["value"] == "stop-unproved"):
+                    self.result["slow_conclusion"] = {
+                        "state": session["state"],
+                        "process_state": session["process_state"]["value"],
+                        "liveness": session["liveness"]["value"],
+                        "waited_seconds": round(time.monotonic() - started, 2),
+                    }
+                    break
+            elif (self.root / "repo/provider-reconnect.json").exists():
                 break
             time.sleep(0.25)
         self.result["original_provider_alive_after_recovery"] = live(provider)
@@ -175,6 +197,10 @@ class Judge:
         if self.args.scenario == "slow":
             if not live(provider):
                 raise AssertionError("recovery reaped a slow but still-live provider")
+            if self.result["slow_conclusion"] is None:
+                raise AssertionError(
+                    "the engine did not commit the provider-recovery conclusion "
+                    "while the slow provider stayed live")
             for process in self.stopped:
                 self.signal(process, signal.SIGCONT)
             self.stopped = []

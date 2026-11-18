@@ -100,6 +100,7 @@ fn native_admission_host() -> Check {
                 helper_executable: NativePath::from_local(helper)?,
                 linux_delegation: se_proc::LinuxDelegation::CurrentScope,
                 maximum_sessions: 4,
+                restore_deadline_ms: ProcessOptions::DEFAULT_RESTORE_DEADLINE_MS,
             },
             &bound()?,
         )

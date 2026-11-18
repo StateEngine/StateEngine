@@ -63,10 +63,18 @@ pub struct ProcessOptions {
     /// Active native custody slots, including unresolved cleanup. Larger
     /// deployments must explicitly budget their additional per-slot memory.
     pub maximum_sessions: u32,
+    /// Window in which a restarted host restores control of the original
+    /// live provider after a native crash. Independent judges shorten it at
+    /// spawn; the production default stays 20 s.
+    pub restore_deadline_ms: u64,
 }
 impl ProcessOptions {
     /// Section 30's default native custody budget, independent of stored sessions.
     pub const DEFAULT_MAXIMUM_SESSIONS: u32 = 16;
+    /// Default provider-control restore window.
+    pub const DEFAULT_RESTORE_DEADLINE_MS: u64 = 20_000;
+    /// Upper bound for an explicitly injected restore window.
+    pub const MAX_RESTORE_DEADLINE_MS: u64 = 3_600_000;
 }
 pub struct ProcessConfiguration {
     pub home: PathBuf,
@@ -76,6 +84,7 @@ pub struct ProcessConfiguration {
     pub http_port: u16,
     pub linux_delegation: se_proc::LinuxDelegation,
     pub maximum_sessions: u32,
+    pub restore_deadline_ms: u64,
 }
 pub struct LaunchCoordinator {
     kind: crate::HostKind,
@@ -157,6 +166,7 @@ impl LaunchCoordinator {
             })?,
             linux_delegation: requested.linux_delegation,
             maximum_sessions: requested.maximum_sessions,
+            restore_deadline_ms: requested.restore_deadline_ms,
         };
         let pool = context.blocking.clone();
         #[cfg(unix)]

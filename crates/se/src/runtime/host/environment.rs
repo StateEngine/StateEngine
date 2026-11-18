@@ -16,6 +16,13 @@ pub(super) fn prepare(
     if super::startup_log::StartupLog::success_enabled() {
         entries.push(("SE_STARTUP_LOG".into(), "1".into()));
     }
+    // The restore-window override crosses this boundary as an explicit name;
+    // it is a tuning value, never fleet or session authority.
+    if let Ok(value) = std::env::var(PROVIDER_RESTORE_DEADLINE_ENV)
+        && !value.trim().is_empty()
+    {
+        entries.push((PROVIDER_RESTORE_DEADLINE_ENV.into(), value.into()));
+    }
     // The host launches configured providers. Each child is filtered again through
     // its own provider allowlist, so Codex login/config does not reach Claude.
     for (name, value) in se_host::codex_input::provider_environment() {

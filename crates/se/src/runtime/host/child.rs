@@ -265,6 +265,7 @@ fn serve(
                 helper_executable,
                 linux_delegation: se_proc::LinuxDelegation::CurrentScope,
                 maximum_sessions: se_host::ProcessOptions::DEFAULT_MAXIMUM_SESSIONS,
+                restore_deadline_ms: provider_restore_deadline_ms()?,
             },
             &bound,
         )
@@ -335,6 +336,23 @@ fn serve(
 }
 fn positive(value: u32) -> Result<NonZeroU32> {
     NonZeroU32::new(value).ok_or_else(|| invalid("a positive native limit"))
+}
+/// The independent judges spawn the host with a shortened real provider-
+/// control restore window. An invalid explicit value fails startup, so a
+/// misconfigured judge cannot pass silently on the production timing.
+fn provider_restore_deadline_ms() -> Result<u64> {
+    let Some(raw) = std::env::var_os(PROVIDER_RESTORE_DEADLINE_ENV) else {
+        return Ok(se_host::ProcessOptions::DEFAULT_RESTORE_DEADLINE_MS);
+    };
+    let value: u64 = raw.to_string_lossy().trim().parse().map_err(|_| {
+        invalid("a whole number of milliseconds for SE_PROVIDER_RESTORE_DEADLINE_MS")
+    })?;
+    if value == 0 || value > se_host::ProcessOptions::MAX_RESTORE_DEADLINE_MS {
+        return Err(invalid(
+            "SE_PROVIDER_RESTORE_DEADLINE_MS between 1 and 3600000 milliseconds",
+        ));
+    }
+    Ok(value)
 }
 fn argv_digest() -> Sha256 {
     let mut digest = Hasher::new();

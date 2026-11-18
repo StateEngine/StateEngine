@@ -8,7 +8,8 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> bool {
         work.recover_provider = false;
-        let recovered = match deadline.stage(std::time::Duration::from_secs(20)) {
+        let restore_window = std::time::Duration::from_millis(self.options.restore_deadline_ms);
+        let recovered = match deadline.stage(restore_window) {
             Ok(bound) => self.restore_provider(work, &bound).await,
             Err(error) => Err(error),
         };

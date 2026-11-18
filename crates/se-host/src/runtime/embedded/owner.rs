@@ -308,6 +308,7 @@ async fn take_ownership(
                 helper_executable: core::NativePath::from_local(inputs.helper_executable)?,
                 linux_delegation,
                 maximum_sessions: crate::ProcessOptions::DEFAULT_MAXIMUM_SESSIONS,
+                restore_deadline_ms: crate::ProcessOptions::DEFAULT_RESTORE_DEADLINE_MS,
             },
             &deadline,
         )
