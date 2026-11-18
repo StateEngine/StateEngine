@@ -87,11 +87,12 @@ pub fn show<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<CaptainShowOutput> {
             }
         },
         other => {
-            scope::require_present(
-                other,
-                "captain",
-                "Restore access to the project store, then retry se captain show.",
-            )?;
+            let remedy = if matches!(other, Read::Unknown { .. }) {
+                "Run se up for this data home, then retry se captain show."
+            } else {
+                "Restore access to the project store, then retry se captain show."
+            };
+            scope::require_present(other, "captain", remedy)?;
             return Err(scope::unreadable(
                 "captain read",
                 "unexpected present value",
