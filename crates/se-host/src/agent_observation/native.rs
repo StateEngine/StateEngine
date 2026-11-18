@@ -1,5 +1,6 @@
 //! Outside, exact-birth native readback. A stored activation is never liveness.
 use super::*;
+use se_core::ops::process_commit::ENDED_BY_REBOOT;
 use se_proc::{CheckpointKind, CheckpointPrincipal, CheckpointSource, NativeState, ProcessRead};
 use se_store::{Actor, RecordedIdentity};
 
@@ -13,6 +14,7 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
         .as_ref()
         .ok_or_else(|| invalid("a launched session target"))?;
     plan.row.session.process = None;
+    plan.row.session.end_reason = None;
     plan.row.session.observed_at = None;
     plan.row.session.state = if plan.row.session.recorded_state.as_deref() == Some("prepared") {
         "starting"
@@ -40,9 +42,7 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
                 "matching native and recorded lifecycle/project/agent/session",
             ));
         }
-        if plan.row.session.end_reason.as_deref()
-            == Some(se_core::ops::process_commit::ENDED_BY_REBOOT)
-        {
+        if matches!(plan.recorded_exit, RecordedExit::Reboot) {
             if !matches!(&checkpoint.checkpoint, CheckpointKind::Exit { witness, .. }
                 if witness.ended_by_reboot())
             {
@@ -114,6 +114,7 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
         Ok(Some(value)) => value,
         Ok(None) => {
             plan.row.session.state = "stopped".into();
+            plan.row.session.end_reason = Some(ENDED_BY_REBOOT.into());
             plan.row.session.liveness = Read::Present {
                 value: "exited".into(),
             };
