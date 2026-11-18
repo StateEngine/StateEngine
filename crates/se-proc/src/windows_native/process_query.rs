@@ -1,5 +1,5 @@
 //! Shared runtime binding for read-only retained-process queries.
-use std::{ffi::c_void, sync::OnceLock};
+use std::{ffi::c_void, fs::File, os::windows::io::AsRawHandle, sync::OnceLock};
 use windows_sys::Win32::{Foundation::*, System::LibraryLoader::*};
 type Query = unsafe extern "system" fn(HANDLE, i32, *mut c_void, u32, *mut u32) -> NTSTATUS;
 pub(super) fn query() -> Option<Query> {
@@ -18,4 +18,23 @@ pub(super) fn query() -> Option<Query> {
         // winternl.h; runtime resolution preserves the legacy fallback if absent.
         Some(unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, Query>(export) })
     })
+}
+
+/// Positive kernel comparison with the file section used to start this process.
+/// A pathname reopened after a rename does not establish this relationship.
+pub(crate) fn maps_executable(process: HANDLE, file: &File) -> bool {
+    const PROCESS_IMAGE_FILE_MAPPING: i32 = 44;
+    let Some(query) = query() else { return false };
+    let mut handle = file.as_raw_handle();
+    // SAFETY: process and executable handles remain open for the query. This
+    // information class takes a pointer to one initialized HANDLE as input.
+    unsafe {
+        query(
+            process,
+            PROCESS_IMAGE_FILE_MAPPING,
+            (&mut handle as *mut HANDLE).cast(),
+            std::mem::size_of::<HANDLE>() as u32,
+            std::ptr::null_mut(),
+        ) == 0
+    }
 }

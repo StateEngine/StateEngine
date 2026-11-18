@@ -7,7 +7,10 @@ use se_core::{
     registry::RuntimeNeed,
     scope,
 };
-use se_host::client::{ClientOptions, lease::Deadline};
+use se_host::client::{
+    ClientOptions,
+    lease::{ClientCredential, Deadline},
+};
 use se_types::{Read, Result, SeError};
 use std::sync::Arc;
 
@@ -65,10 +68,15 @@ fn forward_once<R: se_store::ReadStore>(
     } else {
         bound
     };
-    se_proc::native_ipc::restore_image_cache(&cx.home, target.image_sha256, &bound.native_bound())
-        .map_err(|error| {
-            scope::unreadable("protected executable cache", &error.to_string()).with_cause(error)
-        })?;
+    execute::restore_forward_image(
+        &cx.home,
+        &target,
+        cx.session.is_none(),
+        &bound.native_bound(),
+    )
+    .map_err(|error| {
+        scope::unreadable("protected executable cache", &error.to_string()).with_cause(error)
+    })?;
     let remove_all = matches!(&operation, AnyOp::ProjectRemove(input) if input.all);
     let output = crate::ipc::forward(
         &target,
@@ -109,7 +117,7 @@ fn forward_once<R: se_store::ReadStore>(
 pub(super) struct StatusRequest {
     home: std::path::PathBuf,
     endpoint: se_host::EndpointRecord,
-    credential: se_host::client::lease::ClientCredential,
+    credential: ClientCredential,
     selections: CliSelections,
     presence: Option<se_host::client::presence::OwnerPresence>,
     options: ClientOptions,
@@ -163,9 +171,10 @@ impl StatusRequest {
     /// so the worker holds no shared state the local path needs.
     pub(super) fn run(self) -> Result<AnyOutput> {
         let bound = Deadline::from_options(&self.options)?;
-        se_proc::native_ipc::restore_image_cache(
+        execute::restore_forward_image(
             &self.home,
-            self.endpoint.image_sha256,
+            &self.endpoint,
+            matches!(&self.credential, ClientCredential::Machine(_)),
             &bound.native_bound(),
         )
         .map_err(|error| {

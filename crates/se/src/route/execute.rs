@@ -56,17 +56,37 @@ pub fn options() -> ClientOptions {
         cancelled: Arc::new(AtomicBool::new(false)),
     }
 }
-fn forwarding_options(
-    home: &std::path::Path,
-    endpoint: &se_host::EndpointRecord,
-) -> Result<ClientOptions> {
+fn forwarding_options(cx: &Bootstrap, endpoint: &se_host::EndpointRecord) -> Result<ClientOptions> {
     let mut options = options();
     let started = std::time::Instant::now();
     let bound = se_host::client::lease::Deadline::from_options(&options)?;
-    se_proc::native_ipc::restore_image_cache(home, endpoint.image_sha256, &bound.native_bound())
-        .map_err(|error| scope::unreadable("protected executable cache", &error.to_string()))?;
+    restore_forward_image(
+        &cx.home,
+        endpoint,
+        cx.session.is_none(),
+        &bound.native_bound(),
+    )
+    .map_err(|error| scope::unreadable("protected executable cache", &error.to_string()))?;
     options.timeout = options.timeout.saturating_sub(started.elapsed());
     Ok(options)
+}
+
+pub(super) fn restore_forward_image(
+    home: &std::path::Path,
+    endpoint: &se_host::EndpointRecord,
+    owner: bool,
+    bound: &se_proc::native_ipc::IpcIoBound,
+) -> se_proc::native_ipc::IpcNativeResult<se_proc::native_ipc::ImageCacheRead> {
+    if owner {
+        se_proc::native_ipc::restore_cli_image_cache(
+            home,
+            endpoint.image_sha256,
+            &endpoint.epoch.owner,
+            bound,
+        )
+    } else {
+        se_proc::native_ipc::restore_image_cache(home, endpoint.image_sha256, bound)
+    }
 }
 pub fn endpoint(files: &Files) -> Result<Read<se_host::EndpointRecord>> {
     let path = files.0.root().join("endpoint.json");
@@ -521,7 +541,7 @@ fn dispatch_with_cold_recovery(
             "live runtime endpoint while the writer lease is busy",
             "Wait for the current runtime to publish its endpoint, then retry with the original --key; do not remove runtime.lock or bypass its holder.",
         )?;
-        let forwarding = forwarding_options(&cx.home, &target)?;
+        let forwarding = forwarding_options(cx, &target)?;
         return crate::ipc::forward(
             &target,
             credential(cx, &files)?,

@@ -1,17 +1,18 @@
 //! Native Windows peer process observations and upgrade-safe stop identity.
 use super::{windows::owned, windows_security as security, *};
 use std::{
-    fs::File,
+    fs::{File, OpenOptions},
     num::NonZeroU64,
     os::windows::{
         ffi::OsStringExt,
+        fs::OpenOptionsExt,
         io::{AsRawHandle, OwnedHandle},
     },
     path::PathBuf,
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Storage::FileSystem::SYNCHRONIZE,
+    Storage::FileSystem::{FILE_EXECUTE, FILE_SHARE_DELETE, FILE_SHARE_READ, SYNCHRONIZE},
     System::{Pipes::*, Threading::*},
 };
 pub(super) fn peer(
@@ -38,6 +39,39 @@ pub(super) fn peer(
 pub(super) fn self_peer(bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     observe(std::process::id(), bound)
 }
+
+/// Keep a writer-excluding pin only when both live processes map this exact
+/// file object. Any missing native fact leaves the ordinary full proof in use.
+pub(super) fn shared_mapped_image(expected: &ProcessInstance) -> Option<File> {
+    let fields = expected.fields();
+    let StartIdentity::Windows { creation_filetime } = fields.started else {
+        return None;
+    };
+    // SAFETY: read-only native process query and lifetime witness rights.
+    let process =
+        unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, 0, fields.pid.get()) };
+    let process = owned(process, "pin expected IPC image process").ok()?;
+    let raw = process.as_raw_handle();
+    if crate::windows_native::process_start(raw).ok()? != creation_filetime.get()
+        || security::process_sid(raw).ok()? != security::current_sid().ok()?
+    {
+        return None;
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .access_mode(GENERIC_READ | FILE_EXECUTE | SYNCHRONIZE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+        .open(std::env::current_exe().ok()?)
+        .ok()?;
+    // SAFETY: this pseudo-handle refers to the current process throughout the query.
+    let current = unsafe { GetCurrentProcess() };
+    let matching = crate::windows_native::maps_executable(current, &file)
+        && crate::windows_native::maps_executable(raw, &file);
+    // SAFETY: the original process handle remains pinned and the wait is nonblocking.
+    let live = unsafe { WaitForSingleObject(raw, 0) } == WAIT_TIMEOUT;
+    (matching && live).then_some(file)
+}
+
 pub(super) fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     let (process, sid, creation_filetime) = process_identity(pid)?;
     let mut image = vec![0; 32768];

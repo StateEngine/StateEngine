@@ -7,6 +7,7 @@ pub(crate) mod console;
 mod parent;
 mod process_query;
 pub(crate) use parent::parent;
+pub(crate) use process_query::maps_executable;
 use std::{
     collections::BTreeMap,
     fs::File,

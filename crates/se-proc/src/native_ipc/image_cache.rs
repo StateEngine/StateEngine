@@ -180,7 +180,17 @@ pub fn restore_image_cache(
     expected: Sha256,
     bound: &IpcIoBound,
 ) -> IpcNativeResult<ImageCacheRead> {
-    restore(root, NAME, expected, bound)
+    restore(root, NAME, expected, None, bound)
+}
+/// A local CLI can also reuse the published host digest when both live
+/// processes map the same writer-excluded executable file object.
+pub fn restore_cli_image_cache(
+    root: &Path,
+    expected: Sha256,
+    peer: &ProcessInstance,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<ImageCacheRead> {
+    restore(root, NAME, expected, Some(peer), bound)
 }
 /// Restore only the separate uploaded-image hint. A changed native file key
 /// misses exactly as for the host hint; callers must still authenticate IPC.
@@ -189,12 +199,13 @@ pub fn restore_remote_image_cache(
     expected: Sha256,
     bound: &IpcIoBound,
 ) -> IpcNativeResult<ImageCacheRead> {
-    restore(root, REMOTE_NAME, expected, bound)
+    restore(root, REMOTE_NAME, expected, None, bound)
 }
 fn restore(
     root: &Path,
     name: &str,
     expected: Sha256,
+    peer: Option<&ProcessInstance>,
     bound: &IpcIoBound,
 ) -> IpcNativeResult<ImageCacheRead> {
     bound
@@ -223,6 +234,24 @@ fn restore(
     if entry.digest != expected {
         return Ok(ImageCacheRead::Stale);
     };
+    // The kernel binds both running images to this held file. Running image
+    // sections exclude in-place content writes since the host published its
+    // digest. The stored native key must still match the held volume/file ID,
+    // size, write time and any journal revision; a pathname is never a key.
+    #[cfg(windows)]
+    if !entry.image.reusable()
+        && let Some(file) = peer.and_then(super::windows_peer::shared_mapped_image)
+        && let Ok(metadata) = file.metadata()
+        && key(&file, &metadata).ok().as_ref() == Some(&entry.image)
+    {
+        bound
+            .remaining()
+            .map_err(|e| error("finish executable cache restore", e))?;
+        super::image::remember_held(entry.image, entry.digest, Some(file))?;
+        return Ok(ImageCacheRead::Current);
+    }
+    #[cfg(not(windows))]
+    let _ = peer;
     remember(entry.image, entry.digest)?;
     Ok(ImageCacheRead::Current)
 }
