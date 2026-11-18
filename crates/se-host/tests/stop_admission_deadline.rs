@@ -47,6 +47,7 @@ fn native_admission_host() -> Check {
     let peer = se_proc::native_ipc::observe_ipc_self()?;
     let start = HostStart {
         state_directory: home.clone(),
+        channel_delay_us: se_store::CHANNEL_DELAY_US,
         epoch: HostEpoch {
             owner: ProcessInstance::from_observation(ProcessFields {
                 machine,

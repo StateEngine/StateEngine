@@ -23,6 +23,7 @@ use serde_json::Value;
 pub(crate) struct ApplyAuthority<'a> {
     pub lease: &'a LeaseIdentity,
     pub remote_launch: Option<&'a crate::remote::LaunchAuthority>,
+    pub channel_delay_us: i64,
 }
 pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> {
     let scope = scope_key(c, &e.header.scope, false)?;
@@ -182,7 +183,15 @@ pub(crate) fn apply(
         )
     };
     match body {
-        ChannelRecorded { change } => channel::apply(c, header, change, seq, revision, facts)?,
+        ChannelRecorded { change } => channel::apply(
+            c,
+            header,
+            change,
+            seq,
+            revision,
+            facts,
+            authority.channel_delay_us,
+        )?,
         RemoteSecurity { transition } => {
             crate::remote::apply(c, header, transition, seq, revision)?;
             codec::aux(c, seq, facts)?;

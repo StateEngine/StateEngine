@@ -12,6 +12,7 @@ pub(super) fn apply(
     state: &ChannelConnection,
     change: &Change,
     seq: i64,
+    channel_delay_us: i64,
 ) -> StoreResult<()> {
     match change {
         Change::CursorAdvanced {
@@ -112,7 +113,7 @@ pub(super) fn apply(
                 )
                 .map_err(sql)?;
             let due = if pending {
-                Some(at.saturating_add(60000000))
+                Some(at.saturating_add(channel_delay_us))
             } else {
                 None
             };
@@ -149,7 +150,7 @@ pub(super) fn apply(
             }
             let scope = scope_key(c, &h.scope, false)?;
             let m = key(c, "message", message.as_str(), &scope, false)?;
-            let due:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM channel_updates u JOIN events e ON e.seq=u.handled_seq JOIN events current ON current.seq=? WHERE u.connection_id=? AND u.message_id=? AND u.receipt_id IS NOT NULL AND e.recorded_at_us<=current.recorded_at_us-60000000 AND NOT EXISTS(SELECT 1 FROM channel_outbox o WHERE o.connection_id=u.connection_id AND o.original_id=u.message_id AND o.kind='reply'))",crate::sql_value::sql_params![seq,state.id.as_str(),m],|r|crate::sql_value::value(r,0)).map_err(sql)?;
+            let due:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM channel_updates u JOIN events e ON e.seq=u.handled_seq JOIN events current ON current.seq=? WHERE u.connection_id=? AND u.message_id=? AND u.receipt_id IS NOT NULL AND e.recorded_at_us<=current.recorded_at_us-? AND NOT EXISTS(SELECT 1 FROM channel_outbox o WHERE o.connection_id=u.connection_id AND o.original_id=u.message_id AND o.kind='reply'))",crate::sql_value::sql_params![seq,state.id.as_str(),m,channel_delay_us],|r|crate::sql_value::value(r,0)).map_err(sql)?;
             if !due {
                 return Err(invalid(
                     "delayed status is not due or a linked reply already exists",

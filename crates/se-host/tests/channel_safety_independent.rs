@@ -225,7 +225,14 @@ fn run_case(reply_case: bool, delayed_read: Option<bool>) -> Check {
         .build()?;
     let result = rt.block_on(async {
         let initialized = initialize_host_process()?;
-        let mut host = HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
+        // The delayed cases shorten the store's real sixty-second threshold
+        // on the host writer; the store-level judge still pins the
+        // production value.
+        let host_start = match delayed_read {
+            Some(_) => start_channel_delay(&f, 3_000_000)?,
+            None => start(&f)?,
+        };
+        let mut host = HostedRuntime::prepare(initialized, host_start, rt.handle().clone(), &bound()?).await?;
         configure_private_listener(&mut host)?;
         let provider = Arc::new(Provider::default());
         provider.blocked.store(reply_case, Ordering::Release);

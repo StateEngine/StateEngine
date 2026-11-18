@@ -112,6 +112,7 @@ impl SqliteFactory {
                     maintenance: None,
                     backup: None,
                     checkpoints: Default::default(),
+                    channel_delay_us: crate::CHANNEL_DELAY_US,
                 },
             ))
         })();

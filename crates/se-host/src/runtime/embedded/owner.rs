@@ -264,6 +264,7 @@ async fn take_ownership(
         crate::initialize_host_process()?,
         crate::HostStart {
             state_directory: inputs.home,
+            channel_delay_us: se_store::CHANNEL_DELAY_US,
             epoch: current,
             kind: crate::HostKind::EmbeddedSecode,
             writer: support::writer_options()?,
