@@ -112,11 +112,8 @@ impl LaunchCoordinator {
                 &retained.identity.custody.record,
             )
             .map_err(|e| error("startup native checkpoint", e));
-            let outcome = match decoded.and_then(|value| recovery_source(value, &retained)) {
-                Ok(source) => {
-                    self.observe_recovery(source, &retained.identity, deadline)
-                        .await
-                }
+            let outcome = match decoded {
+                Ok(checkpoint) => self.observe_recovery(checkpoint, &retained, deadline).await,
                 Err(error) => Err(error),
             };
             // A committed exit is terminal. A failed or contradictory new probe
@@ -343,12 +340,17 @@ impl LaunchCoordinator {
     }
     pub(super) async fn observe_recovery(
         &self,
-        source: RecoverySource,
-        identity: &se_store::ProcessIdentityRecord,
+        checkpoint: se_proc::Checkpoint,
+        retained: &OwnerGuardProcess,
         deadline: &Deadline,
     ) -> Result<RecoveryOutcome> {
+        let recorded_exit = match (retained.state, &checkpoint.checkpoint) {
+            (ProcessState::Exited, CheckpointKind::Exit { witness, .. }) => Some(witness.clone()),
+            _ => None,
+        };
+        let source = recovery_source(checkpoint, retained)?;
         let current = &self.options.epoch.owner.fields().boot;
-        let previous = match &identity.instance {
+        let previous = match &retained.identity.instance {
             se_store::RecordedIdentity::Present(instance)
                 if cfg!(target_os = "macos") || &instance.fields().boot != current =>
             {
@@ -381,7 +383,11 @@ impl LaunchCoordinator {
                             .witness_reboot(&source, &fields.boot)
                             .map_err(|e| error("native reboot witness", e))?
                         {
-                            return Ok(RecoveryOutcome::Exited(Box::new(witness)));
+                            // Reboot proves the old scope is empty today. Keep a
+                            // terminal witness that already established its exit.
+                            return Ok(RecoveryOutcome::Exited(Box::new(
+                                recorded_exit.unwrap_or(witness),
+                            )));
                         }
                     }
                 }
@@ -493,7 +499,7 @@ pub(super) fn recovery_method(witness: &se_proc::StopWitness) -> &'static str {
         "native-reconciliation"
     }
 }
-pub(super) fn recovery_source(
+fn recovery_source(
     checkpoint: se_proc::Checkpoint,
     retained: &OwnerGuardProcess,
 ) -> Result<RecoverySource> {
