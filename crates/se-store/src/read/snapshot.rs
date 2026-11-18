@@ -221,6 +221,7 @@ impl Snapshot for SqliteSnapshot {
         self.head("project_captain", "project_id=?", &[&p], None)
     }
     fn assignment(&mut self, id: EventId) -> StoreResult<Read<ProjectionRecord>> {
+        self.require_local_port()?;
         if self.info.schema_version < 15 {
             return Ok(Read::Unknown {
                 what: "Assignments need a store upgrade; run se up for this data home, then retry."
@@ -238,6 +239,7 @@ impl Snapshot for SqliteSnapshot {
         )
     }
     fn open_assignments(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.require_local_port()?;
         if self.info.schema_version < 15 {
             return Err(fail(
                 StoreErrorCode::MigrationFailed,
