@@ -29,6 +29,9 @@ impl Actor {
             Self::Human(x) => x.as_str(),
             Self::Agent(x) => x.as_str(),
             Self::Remote(x) => x.as_str(),
+            // The host is one principal in every store, so its wire name is
+            // constant; it never borrows a person's or an agent's identity.
+            Self::Host => "host",
         }
     }
     #[doc(hidden)]
@@ -37,6 +40,7 @@ impl Actor {
             Self::Human(_) => "human",
             Self::Agent(_) => "agent",
             Self::Remote(_) => "remote",
+            Self::Host => "host",
         }
     }
 }

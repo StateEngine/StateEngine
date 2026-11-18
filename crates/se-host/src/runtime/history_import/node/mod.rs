@@ -248,6 +248,8 @@ fn actor_id(actor: &Actor) -> &str {
         Actor::Human(id) => id.as_str(),
         Actor::Agent(id) => id.as_str(),
         Actor::Remote(id) => id.as_str(),
+        // The host is not an imported identity; its facts carry no actor string.
+        Actor::Host => "host",
     }
 }
 

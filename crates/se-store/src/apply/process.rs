@@ -207,6 +207,11 @@ pub(super) fn apply(
         )
     })?;
     let permitted = match (&h.actor, &identity.principal) {
+        // The host records only its own processes: a scope it owns for itself.
+        // It may never write a process that belongs to a person or an agent.
+        (Actor::Host, Actor::Host) => true,
+        (Actor::Host, _) => false,
+        (_, Actor::Host) => false,
         (Actor::Remote(_), Actor::Agent(_)) => authority.remote_launch.is_some(),
         (Actor::Remote(_), _) | (_, Actor::Remote(_)) => false,
         (Actor::Human(human), _) => key(c, "human", human.as_str(), &[0], false)? == owner,

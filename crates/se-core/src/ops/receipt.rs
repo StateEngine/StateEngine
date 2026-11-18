@@ -77,6 +77,7 @@ pub fn actor_ref<R: Snapshot>(read: &mut R, actor: &Actor) -> Result<ActorRef> {
             Actor::Human(_) => "owner",
             Actor::Agent(_) => "agent",
             Actor::Remote(_) => "remote",
+            Actor::Host => "host",
         }
         .into(),
         id: scope::actor_id(actor),

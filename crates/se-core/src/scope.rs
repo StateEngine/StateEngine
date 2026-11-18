@@ -20,7 +20,7 @@ pub fn working_agent(
     op: &str,
 ) -> Result<AgentId> {
     match (&admission.actor, owner_agent) {
-        (Actor::Remote(_), _) => Err(SeError::invalid(
+        (Actor::Remote(_) | Actor::Host, _) => Err(SeError::invalid(
             "local operation",
             "local human or agent authority",
         )),
@@ -215,6 +215,8 @@ pub fn actor_id(actor: &Actor) -> String {
         Actor::Human(id) => id.to_string(),
         Actor::Agent(id) => id.to_string(),
         Actor::Remote(id) => id.to_string(),
+        // The host is one principal and has no addressable id of its own.
+        Actor::Host => "host".into(),
     }
 }
 /// The reader supplies recovery for its own source. This helper can run after

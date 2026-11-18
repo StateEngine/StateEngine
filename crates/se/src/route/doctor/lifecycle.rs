@@ -33,6 +33,8 @@ pub(super) fn checks<R: ReadStore>(
             Actor::Agent(agent) => format!("agent {agent}"),
             Actor::Human(human) => format!("owner {human}"),
             Actor::Remote(principal) => format!("remote device {principal}"),
+            // A host-owned scope is the machine's own process, not a person's.
+            Actor::Host => "the host's own process".into(),
         };
         let mut row = check(
             &format!("runtime.launch.{}", entry.identity.record),

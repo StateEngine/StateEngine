@@ -119,6 +119,8 @@ pub(super) fn apply(
             let owner = owner
                 .ok_or_else(|| fail(StoreErrorCode::ReferenceMissing, "session agent absent"))?;
             let permitted = match &h.actor {
+                // A host-owned scope owns processes, never another agent's session.
+                Actor::Host => false,
                 Actor::Remote(_) => authority.remote_launch.is_some(),
                 Actor::Agent(actor) if *actor == agent => true,
                 Actor::Agent(creator) => {
