@@ -58,17 +58,17 @@ impl SqliteFactory {
             connection::configure(&c, &staged, true, o.busy_timeout)?;
             c.execute_batch("PRAGMA synchronous=FULL; BEGIN EXCLUSIVE")
                 .map_err(sql)?;
-            c.execute_batch(include_str!("../../migrations/001.sql"))
+            c.execute_batch(include_str!(concat!(env!("OUT_DIR"), "/fresh-schema.sql")))
                 .map_err(sql)?;
-            for step in crate::migration::fresh() {
-                c.execute_batch(step).map_err(sql)?;
-            }
             c.execute("INSERT INTO store_info(singleton,store_id,incarnation,created_at_us,state) VALUES(1,?,1,?,'ready')",crate::sql_value::sql_params![crate::identity::canonical(id.as_str()).ok_or_else(||invalid("canonical store identity required"))?,created_at]).map_err(sql)?;
             c.execute_batch("COMMIT; PRAGMA wal_checkpoint(TRUNCATE)")
                 .map_err(sql)?;
             let info = connection::info(&c)?;
             if info.id != id {
                 return Err(invalid("created StoreId readback differs"));
+            }
+            if info.schema_version != connection::SCHEMA {
+                return Err(invalid("created schema version readback differs"));
             }
             c.close().map_err(|(_, e)| sql(e))?;
             match lease.files().readback(&staged)? {

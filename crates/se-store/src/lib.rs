@@ -20,6 +20,7 @@ pub mod import;
 mod inventory;
 pub mod mail;
 mod migration;
+mod migration_plan;
 mod model;
 mod open;
 mod owner_guard;

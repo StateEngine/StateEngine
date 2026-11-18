@@ -1,92 +1,15 @@
 //! Automatic migration under the sole host's exclusive custody,
 //! after a verified backup of the old schema. Readers never migrate.
-use crate::{connection, error::*, *};
+use crate::{
+    connection,
+    error::*,
+    migration_plan::{STEPS, Step},
+    *,
+};
 use rusqlite::Connection;
 use std::time::Duration;
-/// Ordered steps; each runs only above the store's current version.
-struct Step {
-    version: u32,
-    sql: &'static str,
-    table_rebuild: bool,
-}
-const STEPS: [Step; 14] = [
-    Step {
-        version: 2,
-        sql: include_str!("../migrations/002.sql"),
-        table_rebuild: false,
-    },
-    Step {
-        version: 3,
-        sql: include_str!("../migrations/003.sql"),
-        table_rebuild: false,
-    },
-    Step {
-        version: 4,
-        sql: include_str!("../migrations/004.sql"),
-        table_rebuild: false,
-    },
-    Step {
-        version: 5,
-        sql: include_str!("../migrations/005.sql"),
-        table_rebuild: false,
-    },
-    Step {
-        version: 6,
-        sql: include_str!("../migrations/006.sql"),
-        table_rebuild: false,
-    },
-    Step {
-        version: 7,
-        sql: include_str!("../migrations/007.sql"),
-        table_rebuild: false,
-    },
-    Step {
-        version: 8,
-        sql: include_str!("../migrations/008.sql"),
-        table_rebuild: true,
-    },
-    Step {
-        version: 9,
-        sql: include_str!("../migrations/009.sql"),
-        table_rebuild: true,
-    },
-    Step {
-        version: 10,
-        sql: include_str!("../migrations/010.sql"),
-        table_rebuild: false,
-    },
-    Step {
-        version: 11,
-        sql: include_str!("../migrations/011.sql"),
-        table_rebuild: false,
-    },
-    Step {
-        version: 12,
-        sql: include_str!("../migrations/012.sql"),
-        table_rebuild: false,
-    },
-    Step {
-        version: 13,
-        sql: include_str!("../migrations/013.sql"),
-        table_rebuild: true,
-    },
-    Step {
-        version: 14,
-        sql: include_str!("../migrations/014.sql"),
-        table_rebuild: false,
-    },
-    Step {
-        version: 15,
-        sql: include_str!("../migrations/015.sql"),
-        table_rebuild: false,
-    },
-];
 /// Bound on the pre-migration backup; expiry refuses and leaves schema 1.
 const BACKUP_BOUND: Duration = Duration::from_secs(300);
-/// The DDL a freshly created store applies after 001.
-pub(crate) fn fresh() -> impl Iterator<Item = &'static str> {
-    STEPS.iter().map(|step| step.sql)
-}
 /// Upgrade an older supported schema, or do nothing at the current one.
 pub(crate) fn upgrade(
     db: &Connection,

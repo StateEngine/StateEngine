@@ -16,6 +16,9 @@ serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
 
+[build-dependencies]
+rusqlite = { version = "0.41", features = ["bundled"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
