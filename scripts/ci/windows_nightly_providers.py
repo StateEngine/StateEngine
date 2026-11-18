@@ -234,7 +234,8 @@ def main():
     output = root / (provider + '-journey')
     result = subprocess.run([sys.executable, '-B', str(ROOT / 'scripts/windows-journeys.py'), 'run',
                              '--manifest', str(manifest), '--harness', provider,
-                             '--cycle', os.environ['GITHUB_RUN_ID'], '--out', str(output)],
+                             '--cycle', os.environ['GITHUB_RUN_ID'], '--out', str(output),
+                             '--foreground-runtime'],
                             env=clean_environment(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, timeout=7200)
     receipt_path = output / 'results.json'
@@ -244,7 +245,9 @@ def main():
                  'receipt_sha256': digest(receipt_path),
                  'phases': {key: phases.get(key, {}).get('result', 'NOT RUN') for key in ('J1','J2','J3','J4','J5')},
                  'release': receipt.get('release'), 'credential_closure': receipt.get('credential_closure'),
-                 'process_closure': receipt.get('process_closure')})
+                 'process_closure': receipt.get('process_closure'),
+                 'detached_host_start': receipt.get('detached_host_start'),
+                 'foreground_hosts': receipt.get('foreground_hosts')})
     secrets = [os.environ[name] for name in KEYS if os.environ.get(name)]
     failure_state = 'not-applicable' if receipt.get('result') == 'PASS' else 'unavailable'
     failure = None
@@ -277,6 +280,8 @@ def main():
         if evidence_bytes is not None:
             (destination / 'failure.json').write_bytes(evidence_bytes)
     return 0 if (len(rows) == 1 and all(row['exit'] == 0 and row['result'] == 'PASS'
+               and isinstance(row['detached_host_start'], dict)
+               and row['detached_host_start'].get('hosted') == 'NOT RUN'
                and row['process_closure'] == [] and isinstance(row['credential_closure'], dict)
                and row['credential_closure'].get('delivery') == ('environment' if row['provider'] == 'claude' else 'private-file')
                and row['credential_closure'].get('private_copy_absent') is True

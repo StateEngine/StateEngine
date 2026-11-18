@@ -18,6 +18,7 @@ from harness_matrix.inputs import Unavailable, name, preflight
 from harness_matrix.io import InterruptedRun, digest, raw_census, require, runner_files, save
 from windows_journeys.credentials import Credentials, Prerequisite, protect, provision
 from windows_journeys.flow import JOURNEYS, Journeys
+from windows_journeys.foreground import DETACHED_HOST_COVERAGE
 
 
 def execute(args):
@@ -47,6 +48,8 @@ def execute(args):
                   harness=args.harness, manifest_sha256=digest(args.manifest), runner_sha256=runners,
                   registry=[dict(id=entry['id'], driver=entry.get('driver')) for entry in entries],
                   result='NOT RUN', phases={key: dict(result='NOT RUN') for key in JOURNEYS})
+    if args.foreground_runtime:
+        record['detached_host_start'] = DETACHED_HOST_COVERAGE
     save(args.out / 'results.json', record)
     runner = None
     try:
@@ -70,7 +73,7 @@ def execute(args):
         require(re.fullmatch(r'[a-f0-9]{40}', release.get('source_commit', '')),
                 'Release source requires one full commit identity')
         runner = Journeys(args.out, args.out / 'release', entry, settings, os.environ,
-                          release=release, baseline_rows=baseline_rows)
+                          release=release, baseline_rows=baseline_rows, foreground_runtime=args.foreground_runtime)
         runner.record.update(inputs=observation, manifest_sha256=record['manifest_sha256'],
                              runner_sha256=runners, cycle=args.cycle)
         record.update(runner.run())
@@ -101,6 +104,8 @@ def main():
     run.add_argument('--harness', required=True)
     run.add_argument('--cycle', required=True)
     run.add_argument('--out', required=True, type=Path)
+    run.add_argument('--foreground-runtime', action='store_true',
+                     help='Use the public foreground host for a hosted Windows job that forbids breakaway')
     seed = commands.add_parser('provision', help='accept freshly minted native JSON on stdin')
     seed.add_argument('--provider', choices=['claude', 'codex'], required=True)
     seed.add_argument('--out', required=True, type=Path)
