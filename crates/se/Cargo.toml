@@ -43,5 +43,3 @@ harness = false
 [dev-dependencies]
 se-atlas = { path = "../se-atlas" }
 rusqlite = { version = "0.41", features = ["bundled"] }
-proc-macro2 = { version = "1", features = ["span-locations"] }
-syn = { version = "2", features = ["full", "visit"] }
