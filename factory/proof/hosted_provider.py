@@ -62,6 +62,21 @@ def verify_runner(receipt, run):
             raise ValueError('provider runner source digest differs from the product pin')
 
 
+def valid_failure_stream(failure, stream):
+    state_key = stream + '_state'
+    fields = (stream, stream + '_truncated', stream + '_bytes', stream + '_decode_replacement')
+    # Older receipts carried only stderr and had no stream state.
+    if stream == 'stdout' and all(field not in failure for field in (*fields, state_key)):
+        return True
+    state = failure.get(state_key, 'present')
+    if state in ('absent', 'unreadable'):
+        return all(field in failure and failure[field] is None for field in fields)
+    text, truncated, size, replacement = (failure.get(field) for field in fields)
+    return (state == 'present' and isinstance(text, str)
+            and (state_key not in failure or len(text.encode('utf-8')) <= 65536)
+            and type(truncated) is bool and type(size) is int and size >= 0 and type(replacement) is bool)
+
+
 def observation(inv, directory, run):
     """Re-read one provider's original GitHub artifact and receipt."""
     if (inv.get('platform') != 'win32' or inv.get('surface') not in ('claude', 'codex')
@@ -116,10 +131,7 @@ def observation(inv, directory, run):
                     or not isinstance(failure.get('actual_argv'), list)
                     or not all(isinstance(arg, str) for arg in failure['actual_argv'])
                     or (failure.get('exit') is not None and type(failure['exit']) is not int)
-                    or not isinstance(failure.get('stderr'), str)
-                    or type(failure.get('stderr_truncated')) is not bool
-                    or type(failure.get('stderr_bytes')) is not int or failure['stderr_bytes'] < 0
-                    or type(failure.get('stderr_decode_replacement')) is not bool):
+                    or not all(valid_failure_stream(failure, stream) for stream in ('stdout', 'stderr'))):
                 raise ValueError('hosted provider failure evidence is malformed')
         elif (failure_state not in ('unavailable', 'unreadable', 'not-applicable') or failure_name in names
               or 'failure_evidence_sha256' in selected):

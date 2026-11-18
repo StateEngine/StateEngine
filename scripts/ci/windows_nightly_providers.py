@@ -13,11 +13,15 @@ import sys
 from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'scripts'))
+from harness_matrix.io import ANSI
+
 PROVIDERS = {
     'claude': ('claude', 'claude-stream-json', 'CI_ANTHROPIC_API_KEY', 'CI_CLAUDE_MODEL'),
     'codex': ('codex', 'codex-app-server', 'CI_OPENAI_API_KEY', 'CI_CODEX_MODEL'),
 }
 KEYS = ('CI_ANTHROPIC_API_KEY', 'CI_OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY')
+FAILURE_STREAM_LIMIT = 65536
 
 
 def clean_environment():
@@ -60,6 +64,24 @@ def read_evidence(path, limit):
     return data
 
 
+def failure_stream(path, redact):
+    try:
+        raw = read_evidence(path, 8 * 1024**2)
+    except FileNotFoundError:
+        return 'absent', None, None, None, None
+    except (OSError, RuntimeError):
+        return 'unreadable', None, None, None, None
+    try:
+        decoded, replacement = raw.decode('utf-8'), False
+    except UnicodeDecodeError:
+        decoded, replacement = raw.decode('utf-8', errors='replace'), True
+    # ConPTY merges the child's streams into stdout and may insert formatting
+    # inside a credential. Remove terminal formatting before redaction.
+    text = redact(ANSI.sub('', decoded).replace('\r', '')).encode('utf-8')
+    return ('present', text[:FAILURE_STREAM_LIMIT].decode('utf-8', errors='ignore'),
+            len(text) > FAILURE_STREAM_LIMIT, len(raw), replacement)
+
+
 def failure_evidence(output, values):
     metadata = output / 'first-failed-command.json'
     try:
@@ -76,23 +98,29 @@ def failure_evidence(output, values):
             and (command.get('exit') is None or type(command['exit']) is int)
             and (command.get('failure') is None or isinstance(command['failure'], str)),
             'Failure command evidence is malformed')
-    stderr = output / name
-    raw = read_evidence(stderr, 8 * 1024**2)
-    text = raw.decode('utf-8', errors='replace')
-    variants = secret_variants(values)
+    variants = sorted(secret_variants(values), key=len, reverse=True)
+
     def redact(value):
         if value is None:
             return None
-        for secret in sorted(variants, key=len, reverse=True):
-            if secret:
-                value = value.replace(secret, '[REDACTED]')
+        for secret in variants:
+            value = value.replace(secret, '[REDACTED]')
+        # A terminal line break can divide an otherwise recognizable secret.
+        joined = ''.join(value.split())
+        if any(secret in joined for secret in variants):
+            return '[REDACTED]'
         return value
-    text = redact(text)
-    return dict(label=redact(command['label']), argv=[redact(arg) for arg in command['argv']],
-                actual_argv=[redact(arg) for arg in command['actual_argv']],
-                exit=command['exit'], failure=redact(command['failure']), stderr=text[:65536],
-                stderr_truncated=len(text) > 65536, stderr_bytes=len(raw),
-                stderr_decode_replacement='\ufffd' in text)
+
+    evidence = dict(label=redact(command['label']), argv=[redact(arg) for arg in command['argv']],
+                    actual_argv=[redact(arg) for arg in command['actual_argv']],
+                    exit=command['exit'], failure=redact(command['failure']))
+    for stream in ('stdout', 'stderr'):
+        path = (output / name).with_suffix('.' + stream)
+        state, text, truncated, size, replacement = failure_stream(path, redact)
+        evidence.update({stream: text, stream + '_state': state,
+                         stream + '_truncated': truncated, stream + '_bytes': size,
+                         stream + '_decode_replacement': replacement})
+    return evidence
 
 
 def digest(path):
