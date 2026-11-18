@@ -253,6 +253,9 @@ pub(crate) fn start(
         lease.clone(),
         host.engine.checkpoints.gate.clone(),
     )?;
+    host.engine
+        .checkpoints
+        .attach_background(checkpoint.status().clone());
     let thread = std::thread::Builder::new()
         .name("se-store-writer".into())
         .spawn(move || run(host, options, lease, receiver, shared, checkpoint))

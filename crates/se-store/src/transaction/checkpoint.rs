@@ -4,11 +4,32 @@ use super::*;
 use std::sync::{Arc, Condvar, Mutex};
 
 const SOFT_FRAMES: i64 = 256;
+const GROWTH_WAKE_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Default)]
 pub(crate) struct Schedule {
     pending: bool,
     pub gate: Gate,
+    background: Option<crate::checkpoint_task::Status>,
+    last_growth_wake: u64,
+}
+impl Schedule {
+    pub(crate) fn attach_background(&mut self, status: crate::checkpoint_task::Status) {
+        self.background = Some(status);
+        self.last_growth_wake = 0;
+    }
+    fn observe_growth(&mut self, wal: &Wal) {
+        if wal.bytes < self.last_growth_wake {
+            self.last_growth_wake = 0;
+        }
+        if wal.log > wal.done
+            && wal.bytes.saturating_sub(self.last_growth_wake) >= GROWTH_WAKE_BYTES
+            && let Some(status) = &self.background
+        {
+            self.last_growth_wake = wal.bytes;
+            status.wake_growth();
+        }
+    }
 }
 /// SQLite does not invoke the busy handler when another checkpoint owns its
 /// checkpoint lock. Coordinate our two connections before entering SQLite;
@@ -170,6 +191,7 @@ impl Engine {
         if wal.bytes >= crate::backup_context::MAX_WAL_BYTES {
             return self.run_checkpoint(&wal);
         }
+        self.checkpoints.observe_growth(&wal);
         if wal.log >= SOFT_FRAMES && wal.log > wal.done {
             // Name the debt on this receipt. Direct/bootstrap connections have
             // no idle worker, so their close path or hard-pressure check

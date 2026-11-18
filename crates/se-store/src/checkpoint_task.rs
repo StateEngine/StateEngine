@@ -1,9 +1,8 @@
-//! Background WAL maintenance: idle checkpoints run on a dedicated connection
+//! Background WAL maintenance: checkpoints run on a dedicated connection
 //! in a dedicated thread, so checkpoint I/O never shares the writer task.
 //! PASSIVE in WAL mode does not block the writer, and a slow checkpoint must
-//! not stall appends either. The task runs when the writer goes idle after a
-//! write, which keeps the WAL far below the 64 MiB capacity cutoff instead of
-//! accumulating toward it, and does nothing at all while the host is idle.
+//! not stall appends either. WAL growth can request PASSIVE copying during
+//! traffic; the quiet interval still owns background resets and idle cleanup.
 use crate::backup_context::MAX_WAL_BYTES;
 use crate::transaction::checkpoint::probe;
 use crate::{error::*, *};
@@ -64,17 +63,14 @@ impl State {
     }
 }
 /// Receipt-visible maintenance state shared between the task and the writer.
-/// The idle flag is set by the writer around its blocking receive: the task
-/// performs checkpoint I/O only while the writer has no command in flight, so
-/// a newly arriving write can still overlap a checkpoint's native I/O. The condition
-/// pairs with that edge: the task waits on it instead of polling, and the
-/// writer notifies whenever it goes idle or the task must exit. Brief gaps
-/// between requests coalesce into one quiet interval; a settled host has no
-/// periodic maintenance wakes.
+/// Idle edges coalesce into a quiet interval for cleanup; growth edges allow
+/// PASSIVE copying while traffic continues. Neither condition holds its lock
+/// over SQLite work, and a settled host has no periodic maintenance wakes.
 #[derive(Clone)]
 pub(crate) struct Status {
     state: Arc<State>,
     idle: Arc<AtomicBool>,
+    growth: Arc<AtomicBool>,
     /// Latest idle edge, coalesced until the writer has stayed quiet for TICK.
     /// Shutdown also signals this condition so no timer delays joining.
     notify: Arc<(Mutex<Option<Instant>>, Condvar)>,
@@ -86,6 +82,7 @@ impl Default for Status {
         Self {
             state: Arc::default(),
             idle: Arc::new(AtomicBool::new(false)),
+            growth: Arc::new(AtomicBool::new(false)),
             notify: Arc::new((Mutex::new(None), Condvar::new())),
         }
     }
@@ -129,6 +126,15 @@ impl Status {
         *seen = Some(Instant::now());
         condvar.notify_all();
     }
+    /// Growth is an immediate maintenance edge, independent of quiet time.
+    /// The mutex prevents a lost notification as the task enters its wait;
+    /// it never covers SQLite work.
+    pub(crate) fn wake_growth(&self) {
+        let (lock, condvar) = &*self.notify;
+        let _seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.growth.store(true, Ordering::Release);
+        condvar.notify_all();
+    }
     /// Coalesce idle edges until a quiet interval, or wake immediately on shutdown.
     ///
     /// `cap` is the backstop for work already owed: a checkpoint that could
@@ -143,6 +149,9 @@ impl Status {
         let (lock, condvar) = &*self.notify;
         let mut seen = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         while !closed.load(Ordering::Acquire) {
+            if self.growth.load(Ordering::Acquire) {
+                break;
+            }
             // An idle edge during the wait restarts the quiet interval. Only
             // retained maintenance debt uses the retry deadline without an edge.
             let ready = seen.map(|edge| edge + TICK).or(deadline);
@@ -296,6 +305,7 @@ fn run(
         if closed.load(Ordering::Acquire) {
             return;
         }
+        let growth = status.growth.swap(false, Ordering::AcqRel);
         // Reopen until the first success so a transient lock at startup costs
         // one tick, not the whole maintenance lifetime.
         let db = match crate::connection::connect(&path, true, timeout) {
@@ -316,7 +326,7 @@ fn run(
             continue;
         }
         match gate.acquire(BACKOFF) {
-            Ok(_permit) => tick(&db, &context, &lease, &status),
+            Ok(_permit) => tick(&db, &context, &lease, &status, growth),
             Err(_) => {
                 // Contention leaves debt, but cannot clear a retained failure
                 // without a successful maintenance tick.
@@ -334,10 +344,14 @@ fn run(
         }
     }
 }
-fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>, status: &Status) {
-    if !status.idle() {
-        // The writer has traffic: checkpoint I/O now would fight its commits
-        // for the WAL write lock and push them past the busy timeout.
+fn tick(
+    db: &Connection,
+    context: &BackupContext,
+    lease: &Arc<dyn RuntimeLease>,
+    status: &Status,
+    growth: bool,
+) {
+    if !growth && !status.idle() {
         return;
     }
     // The writer validates its lease before every operation; the task mirrors
@@ -379,6 +393,12 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
         return;
     }
     if wal.log == wal.done && wal.log >= RESET_MIN_FRAMES {
+        if growth {
+            // Even a zero-copy reset takes the writer lock. Preserve it as
+            // idle debt instead of doing it on a traffic-driven wake.
+            status.set(Maint::Pending);
+            return;
+        }
         // Every frame is already in the main database: the only remaining
         // work is resetting the file, and a reset that copies no frames is
         // fast. PASSIVE never resets a WAL it copies no frames from, so
@@ -410,13 +430,24 @@ fn tick(db: &Connection, context: &BackupContext, lease: &Arc<dyn RuntimeLease>,
         status.set(Maint::Clear);
         return;
     }
-    if !status.idle() {
+    if !growth && !status.idle() {
         return;
     }
     // New frames to copy: PASSIVE is the mode that never waits on a reader in
     // the WAL, reporting busy instead.
     match checkpoint(db, "PASSIVE") {
         Ok((busy, log, done)) if busy == 0 && done == log => {
+            if growth {
+                // A traffic-driven pass never escalates to TRUNCATE. SQLite
+                // may reuse a fully backfilled log on the next write; idle
+                // maintenance owns a reset that requires writer exclusion.
+                status.set(if log >= RESET_MIN_FRAMES {
+                    Maint::Pending
+                } else {
+                    Maint::Clear
+                });
+                return;
+            }
             // The copy completed fully, so reset the file to zero now instead
             // of leaving it at its high-water size until an idle gap.
             match checkpoint(db, "TRUNCATE") {
