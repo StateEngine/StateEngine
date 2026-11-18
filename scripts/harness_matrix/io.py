@@ -155,6 +155,7 @@ class Commands:
         self.environment = environment
         self.terminal_prefix = terminal_prefix
         self.sequence = 0
+        self.first_failure = None
         self.observer = Observer(home, output, baseline_rows=baseline_rows)
 
     def run(self, argv, label, terminal=False, timeout=180):
@@ -215,9 +216,13 @@ class Commands:
             code = child.poll()
         save(prefix.with_suffix('.json'), dict(argv=argv, exit=code, failure=failure,
                                                elapsed_seconds=time.monotonic() - started))
+        sizes = [prefix.with_suffix(suffix).stat().st_size for suffix in ('.stdout', '.stderr')]
+        if self.first_failure is None and (code != 0 or failure is not None or sum(sizes) > 8 * 1024**2):
+            self.first_failure = prefix.name
+            save(self.output / 'first-failed-command.json', dict(
+                label=label, argv=argv, exit=code, failure=failure, stderr_file=prefix.name + '.stderr'))
         if interrupted is not None:
             raise interrupted
-        sizes = [prefix.with_suffix(suffix).stat().st_size for suffix in ('.stdout', '.stderr')]
         require(sum(sizes) <= 8 * 1024**2, label + ' exceeded the output bound')
         require(code == 0 and failure is None, label + ' failed; see retained command evidence')
         stdout = prefix.with_suffix('.stdout').read_bytes()

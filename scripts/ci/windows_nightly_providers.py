@@ -1,5 +1,6 @@
 """Run the five native journeys serially in a disposable hosted Windows VM."""
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -8,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[2]
 PROVIDERS = {
@@ -28,11 +30,50 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def secret_variants(values):
+    return {variant for value in values for variant in
+            (value, json.dumps(value, ensure_ascii=True)[1:-1], quote(value, safe=''),
+             base64.b64encode(value.encode('utf-8')).decode('ascii')) if variant}
+
+
 def require_safe_output(outputs, values):
-    secrets = [encoded for value in values for encoded in
-               (value.encode('utf-8'), json.dumps(value, ensure_ascii=True)[1:-1].encode('utf-8'))]
+    secrets = [variant.encode('utf-8') for variant in secret_variants(values)]
     require(all(secret not in data for secret in secrets for data in outputs),
             'Result contains credential material and cannot be published')
+
+
+def failure_evidence(output, values):
+    metadata = output / 'first-failed-command.json'
+    if not metadata.exists():
+        return None
+    require(not metadata.is_symlink() and metadata.is_file() and metadata.stat().st_size <= 1024**2,
+            'Failure command evidence is unreadable')
+    command = json.loads(metadata.read_text(encoding='utf-8'))
+    name = command.get('stderr_file')
+    require(isinstance(name, str) and re.fullmatch(r'[0-9]{4}-[A-Za-z0-9_-]+\.stderr', name)
+            and isinstance(command.get('argv'), list) and all(isinstance(arg, str) for arg in command['argv'])
+            and isinstance(command.get('label'), str)
+            and (command.get('exit') is None or type(command['exit']) is int)
+            and (command.get('failure') is None or isinstance(command['failure'], str)),
+            'Failure command evidence is malformed')
+    stderr = output / name
+    require(not stderr.is_symlink() and stderr.is_file() and stderr.stat().st_size <= 8 * 1024**2,
+            'Failure stderr evidence is unreadable or too large')
+    raw = stderr.read_bytes()
+    text = raw.decode('utf-8', errors='replace')
+    variants = secret_variants(values)
+    def redact(value):
+        if value is None:
+            return None
+        for secret in sorted(variants, key=len, reverse=True):
+            if secret:
+                value = value.replace(secret, '[REDACTED]')
+        return value
+    text = redact(text)
+    return dict(label=redact(command['label']), argv=[redact(arg) for arg in command['argv']],
+                exit=command['exit'], failure=redact(command['failure']), stderr=text[:65536],
+                stderr_truncated=len(text) > 65536, stderr_bytes=len(raw),
+                stderr_decode_replacement='\ufffd' in text)
 
 
 def digest(path):
@@ -141,6 +182,13 @@ def main():
                  'phases': {key: phases.get(key, {}).get('result', 'NOT RUN') for key in ('J1','J2','J3','J4','J5')},
                  'release': receipt.get('release'), 'credential_closure': receipt.get('credential_closure'),
                  'process_closure': receipt.get('process_closure')})
+    secrets = [os.environ[name] for name in KEYS if os.environ.get(name)]
+    failure = failure_evidence(output, secrets) if receipt.get('result') != 'PASS' else None
+    evidence_bytes = (json.dumps(failure, indent=2) + '\n').encode('utf-8') if failure is not None else None
+    rows[0]['failure_evidence'] = ('available' if evidence_bytes is not None else
+                                   'unavailable' if receipt.get('result') != 'PASS' else 'not-applicable')
+    if evidence_bytes is not None:
+        rows[0]['failure_evidence_sha256'] = hashlib.sha256(evidence_bytes).hexdigest()
 
     summary = {'schema': 'se.windows-nightly-providers/v1', 'source_commit': commit,
                'workflow_run_id': os.environ['GITHUB_RUN_ID'], 'release_run_id': args.release_run_id,
@@ -148,7 +196,7 @@ def main():
     summary_bytes = (json.dumps(summary, indent=2) + '\n').encode('utf-8')
     receipts = {row['provider']: (root / (row['provider'] + '-journey') / 'results.json').read_bytes()
                 for row in rows}
-    require_safe_output([summary_bytes, *receipts.values()], [os.environ[name] for name in KEYS if os.environ.get(name)])
+    require_safe_output([summary_bytes, *receipts.values(), *([evidence_bytes] if evidence_bytes else [])], secrets)
     publish = root / 'publish'
     publish.mkdir()
     (publish / 'summary.json').write_bytes(summary_bytes)
@@ -156,6 +204,8 @@ def main():
         destination = publish / (provider + '-journey')
         destination.mkdir()
         (destination / 'results.json').write_bytes(data)
+        if evidence_bytes is not None:
+            (destination / 'failure.json').write_bytes(evidence_bytes)
     return 0 if (len(rows) == 1 and all(row['exit'] == 0 and row['result'] == 'PASS'
                and row['process_closure'] == [] and isinstance(row['credential_closure'], dict)
                and row['credential_closure'].get('delivery') == ('environment' if row['provider'] == 'claude' else 'private-file')

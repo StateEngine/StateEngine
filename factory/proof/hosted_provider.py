@@ -78,7 +78,7 @@ def observation(inv, directory, run):
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         infos = archive.infolist()
         names = [entry.filename for entry in infos]
-        allowed = {'summary.json', inv['surface'] + '-journey/results.json'}
+        allowed = {'summary.json', inv['surface'] + '-journey/results.json', inv['surface'] + '-journey/failure.json'}
         if len(names) != len(set(names)) or not set(names).issubset(allowed) or 'summary.json' not in names:
             raise ValueError('hosted provider artifact inventory differs')
         if any(entry.file_size > MAX_ARTIFACT for entry in infos) or sum(entry.file_size for entry in infos) > MAX_ARTIFACT:
@@ -100,6 +100,30 @@ def observation(inv, directory, run):
                 or len(matching) != 1):
             raise ValueError('hosted provider evidence has a different source, release or scope')
         selected = matching[0]
+        failure_name = provider + '-journey/failure.json'
+        failure_state = selected.get('failure_evidence')
+        if failure_state is None:
+            if failure_name in names or 'failure_evidence_sha256' in selected:
+                raise ValueError('hosted provider failure evidence state differs')
+        elif failure_state == 'available':
+            if (failure_name not in names or hashlib.sha256(archive.read(failure_name)).hexdigest()
+                    != selected.get('failure_evidence_sha256')):
+                raise ValueError('hosted provider failure evidence digest differs')
+            failure = json.loads(archive.read(failure_name))
+            if (not isinstance(failure, dict) or not isinstance(failure.get('label'), str)
+                    or not isinstance(failure.get('argv'), list)
+                    or not all(isinstance(arg, str) for arg in failure['argv'])
+                    or (failure.get('exit') is not None and type(failure['exit']) is not int)
+                    or not isinstance(failure.get('stderr'), str)
+                    or type(failure.get('stderr_truncated')) is not bool
+                    or type(failure.get('stderr_bytes')) is not int or failure['stderr_bytes'] < 0
+                    or type(failure.get('stderr_decode_replacement')) is not bool):
+                raise ValueError('hosted provider failure evidence is malformed')
+        elif (failure_state not in ('unavailable', 'not-applicable') or failure_name in names
+              or 'failure_evidence_sha256' in selected):
+            raise ValueError('hosted provider failure evidence state differs')
+        if failure_state is not None and (failure_state == 'not-applicable') != (selected.get('result') == 'PASS'):
+            raise ValueError('hosted provider failure evidence contradicts its result')
         receipt_name = provider + '-journey/results.json'
         if receipt_name not in names:
             raise ValueError('hosted provider receipt is absent')
