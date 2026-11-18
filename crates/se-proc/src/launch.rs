@@ -45,10 +45,11 @@ impl LaunchMode {
     #[cfg(windows)]
     pub(crate) fn creation_flags(self) -> u32 {
         use windows_sys::Win32::System::Threading::{CREATE_NEW_CONSOLE, CREATE_NO_WINDOW};
-        if self.is_headless() {
-            CREATE_NO_WINDOW
-        } else {
-            CREATE_NEW_CONSOLE
+        match self {
+            Self::Headless => CREATE_NO_WINDOW,
+            // The native creator supplies an independent pseudoconsole.
+            Self::HeadlessConsole => 0,
+            Self::Window => CREATE_NEW_CONSOLE,
         }
     }
 }

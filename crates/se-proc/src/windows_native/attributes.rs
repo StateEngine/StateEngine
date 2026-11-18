@@ -61,6 +61,30 @@ impl<'a> Attributes<'a> {
         }
         Ok(())
     }
+    /// Unlike handle-list attributes, this API takes the pseudoconsole value
+    /// itself as lpValue, not the address of a handle array.
+    pub fn pseudoconsole(
+        &mut self,
+        console: &'a windows_sys::Win32::System::Console::HPCON,
+    ) -> Result<()> {
+        // SAFETY: the caller retains the live pseudoconsole through list deletion;
+        // lpValue is the documented opaque value, with its native handle size.
+        if unsafe {
+            UpdateProcThreadAttribute(
+                self.pointer(),
+                0,
+                PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE as usize,
+                *console as *mut std::ffi::c_void,
+                size_of_val(console),
+                ptr::null_mut(),
+                ptr::null(),
+            )
+        } == 0
+        {
+            return Err(last("set independent pseudoconsole"));
+        }
+        Ok(())
+    }
     pub fn pointer(&self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
         self.storage.as_ptr().cast_mut().cast()
     }

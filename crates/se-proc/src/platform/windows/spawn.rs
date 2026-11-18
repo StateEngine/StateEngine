@@ -37,6 +37,8 @@ pub(super) struct Child {
     pub pin: Handle,
     pub identity: Option<ProcessIdentity>,
     pub pid: ProcessId,
+    // Retained until witnessed scope release, including after root exit.
+    _console: Option<super::pseudoconsole::PseudoConsole>,
 }
 pub(super) fn create(spec: LaunchSpec, job: &Handle) -> ProcResult<Child> {
     // Keep exclusion through CreateProcess, then permit ordinary package updates.
@@ -242,10 +244,15 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
         startup.StartupInfo.hStdError = inherited[2].0;
     }
     inherited.extend(spec.capabilities);
+    let mut console = if spec.mode == LaunchMode::HeadlessConsole {
+        Some(super::pseudoconsole::PseudoConsole::new()?)
+    } else {
+        None
+    };
     let jobs = [job.0];
     let handles: Vec<_> = inherited.iter().map(|h| h.0).collect();
     let mut attributes = crate::windows_native::attributes::Attributes::new(
-        if inherited.is_empty() { 1 } else { 2 },
+        1 + u32::from(!inherited.is_empty()) + u32::from(console.is_some()),
         "size process attributes",
         "initialize process attributes",
     )
@@ -264,6 +271,11 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
                 &handles,
                 "UpdateProcThreadAttribute",
             )
+            .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
+    }
+    if let Some(console) = &console {
+        attributes
+            .pseudoconsole(console.handle())
             .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
     }
     startup.lpAttributeList = attributes.pointer();
@@ -315,6 +327,11 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
             cause,
         )
     })?;
+    // Attribute references and creator-side channel copies are no longer needed.
+    drop(attributes);
+    if let Some(console) = &mut console {
+        console.connected();
+    }
     // Ownership immediately leaves raw PROCESS_INFORMATION. No fallible query
     // occurs before the caller stores this Child in its retained arena slot.
     let _thread = Handle(info.hThread);
@@ -322,5 +339,6 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
         pin: Handle(info.hProcess),
         identity: None,
         pid: ProcessId(info.dwProcessId),
+        _console: console,
     })
 }
