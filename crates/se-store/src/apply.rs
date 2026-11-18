@@ -16,6 +16,7 @@ mod principal;
 pub(crate) mod process;
 pub(crate) mod project;
 pub(crate) mod session;
+pub(crate) mod shared;
 use crate::{codec, connection::*, error::*, identity::*, *};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
@@ -642,6 +643,9 @@ pub(crate) fn apply(
         b @ ProjectRemoved { .. } => project::apply(c, header, b, seq, revision, facts)?,
         b @ (CursorRecorded { .. } | CursorAcknowledged { .. }) => {
             cursor::apply(c, header, b, seq, revision, facts)?
+        }
+        b @ (SharedScopeChanged { .. } | ThreadAttached { .. } | ThreadDetached { .. }) => {
+            shared::apply(c, header, &b, seq, revision, authority)?
         }
         b @ (ImportStarted { .. }
         | ImportProgress { .. }

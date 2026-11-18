@@ -15,6 +15,7 @@ pub use error::{StoreDetail, StoreError, StoreErrorCode, StoreIoStage, StoreResu
 pub use event::*;
 pub use model::*;
 pub use query::*;
+pub use shared::*;
 pub use timings::*;
 
 /// Value types re-exported by the store without exposing implementation modules.

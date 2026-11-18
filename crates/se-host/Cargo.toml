@@ -54,8 +54,8 @@ chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["
 # `tokio` has no Windows implementation of one, so the Windows client uses
 # the same crates the provider's own client does. Unix needs neither.
 [target.'cfg(windows)'.dependencies]
-async-io = "2.6"
-tokio-util = { version = "0.7", features = ["compat"] }
+# The connected handle is left open by `uds_windows`; the runtime
+# registration lives in se-proc, which alone may write the unsafe owner.
 uds_windows = "1.1"
 
 [lints]

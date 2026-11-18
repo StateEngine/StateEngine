@@ -28,6 +28,8 @@ mod canonical_path;
 pub use allocator::{reclaim_unused_allocator_pages, release_read_only_mapped_pages};
 mod checkpoint;
 pub use canonical_path::canonicalize_path;
+/// A Windows AF_UNIX socket an asynchronous runtime can own; safe to call.
+pub mod uds;
 pub use checkpoint::{
     Checkpoint, CheckpointError, CheckpointKind, CheckpointPrincipal, CheckpointSource,
     HistoricalCheckpoint, RootPublication, decode_checkpoint, encode_checkpoint,

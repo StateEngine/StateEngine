@@ -9,7 +9,8 @@ CREATE TABLE shared_scope(
   phase TEXT NOT NULL CHECK(phase IN ('starting','live','stopped','died')),
   revision INTEGER NOT NULL CHECK(revision>0),
   last_seq INTEGER NOT NULL REFERENCES events(seq),
-  PRIMARY KEY(project_id,scope_id)
+  PRIMARY KEY(project_id,scope_id),
+  FOREIGN KEY(project_id,server_process) REFERENCES processes(project_id,process_id)
 ) STRICT;
 
 -- Membership answers "is another agent still on this daemon" from the store
@@ -24,7 +25,9 @@ CREATE TABLE shared_scope_thread(
   detached_reason TEXT CHECK(detached_reason IS NULL OR length(detached_reason)<=1024),
   attached_seq INTEGER NOT NULL REFERENCES events(seq),
   revision INTEGER NOT NULL CHECK(revision>0),
-  PRIMARY KEY(project_id,scope_id,session_id)
+  PRIMARY KEY(project_id,scope_id,session_id),
+  FOREIGN KEY(project_id,scope_id) REFERENCES shared_scope(project_id,scope_id),
+  FOREIGN KEY(project_id,session_id) REFERENCES sessions(project_id,session_id)
 ) STRICT;
 
 CREATE INDEX shared_scope_thread_open ON shared_scope_thread(project_id,scope_id,detached_seq);

@@ -9,7 +9,8 @@ use se_types::{LifecycleId, SessionId};
 
 /// Where a shared scope stands. `Live` is the only phase that accepts another
 /// agent; `Stopped` and `Died` are different facts and never collapse.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SharedScopePhase {
     Starting,
     Live,
@@ -20,7 +21,8 @@ pub enum SharedScopePhase {
 }
 
 /// How one agent's thread ended.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ThreadEnd {
     /// The agent was stopped: its turn was interrupted and its thread archived.
     Stopped,

@@ -1704,7 +1704,6 @@ dependencies = [
 name = "se-host"
 version = "0.0.1-alpha.1"
 dependencies = [
- "async-io",
  "base64",
  "chacha20poly1305",
  "futures-util",
@@ -1732,7 +1731,6 @@ dependencies = [
  "subtle",
  "tokio",
  "tokio-tungstenite",
- "tokio-util",
  "toml",
  "toml_edit",
  "uds_windows",
@@ -1748,12 +1746,15 @@ version = "0.0.1-alpha.1"
 name = "se-proc"
 version = "0.0.1-alpha.1"
 dependencies = [
+ "async-io",
  "libc",
  "rusqlite",
  "se-types",
  "serde",
  "serde_json",
  "sha2",
+ "tokio-util",
+ "uds_windows",
  "windows-sys 0.61.2",
  "zeroize",
 ]

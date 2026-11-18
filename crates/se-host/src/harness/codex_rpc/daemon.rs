@@ -314,76 +314,27 @@ async fn connect(path: &Path, cx: &CallContext) -> Result<Stream> {
 }
 
 #[cfg(windows)]
-mod windows {
-    //! The provider's own client registers a Windows AF_UNIX socket with
-    //! `async-io`, which needs `AsSocket` and an `IoSafe` assertion that the
-    //! provider's crate does not implement. This is the same thin owner of the
-    //! same handle: no buffering of its own, so moving it between tasks is sound.
-    use std::io;
-    use std::os::windows::io::{AsRawSocket, AsSocket, BorrowedSocket};
-    use std::path::Path;
+type Stream = se_proc::uds::Socket;
 
-    struct Registered(uds_windows::UnixStream);
-
-    impl From<uds_windows::UnixStream> for Registered {
-        fn from(stream: uds_windows::UnixStream) -> Self {
-            Self(stream)
-        }
-    }
-
-    impl AsSocket for Registered {
-        fn as_socket(&self) -> BorrowedSocket<'_> {
-            // The wrapped stream outlives this borrow; it owns the handle.
-            unsafe { BorrowedSocket::borrow_raw(self.0.as_raw_socket()) }
-        }
-    }
-
-    impl io::Read for Registered {
-        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-            io::Read::read(&mut self.0, buffer)
-        }
-    }
-
-    impl io::Write for Registered {
-        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-            io::Write::write(&mut self.0, buffer)
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            io::Write::flush(&mut self.0)
-        }
-    }
-
-    // Every read and write is passed straight through to the socket, so the
-    // registration cannot outlive or observe a reordered buffer.
-    unsafe impl async_io::IoSafe for Registered {}
-
-    pub(super) type Stream = tokio_util::compat::Compat<async_io::Async<Registered>>;
-
-    pub(super) async fn connect(path: &Path) -> io::Result<Stream> {
-        use tokio_util::compat::FuturesAsyncReadCompatExt;
-        let path = path.to_owned();
-        let stream = tokio::task::spawn_blocking(move || uds_windows::UnixStream::connect(path))
-            .await
-            .map_err(io::Error::other)??;
-        async_io::Async::new(Registered::from(stream)).map(FuturesAsyncReadCompatExt::compat)
-    }
-}
-
+/// The provider's own client registers a Windows AF_UNIX socket with
+/// `async-io`; that registration needs an `IoSafe` assertion, which this crate
+/// may not write (the workspace forbids unsafe). `se_proc::uds` owns the handle
+/// and exposes the safe registration, so the transport needs no unsafe here.
 #[cfg(windows)]
 async fn raw_open(path: &Path) -> std::io::Result<Stream> {
-    windows::connect(path).await
+    let path = path.to_owned();
+    let stream = tokio::task::spawn_blocking(move || uds_windows::UnixStream::connect(path))
+        .await
+        .map_err(std::io::Error::other)??;
+    se_proc::uds::registered(stream)
 }
-
-#[cfg(windows)]
-type Stream = windows::Stream;
 
 /// Windows has no unix-domain socket in `tokio`; the provider's own client uses
 /// `uds_windows` (AF_UNIX on Windows 10+) registered with `async-io`, and this
 /// matches it rather than inventing a transport the daemon does not speak.
 #[cfg(windows)]
 async fn connect(path: &Path, cx: &CallContext) -> Result<Stream> {
-    tokio::time::timeout(cx.timeout, windows::connect(path))
+    tokio::time::timeout(cx.timeout, raw_open(path))
         .await
         .map_err(|_| invalid("the control socket did not accept a connection in time"))?
         .map_err(|error| invalid(&format!("connect refused: {error}")))

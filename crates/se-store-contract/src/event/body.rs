@@ -66,6 +66,9 @@ pub enum EventKind {
     ErasureRequested,
     ErasureCompleted,
     RecoveryRecorded,
+    SharedScopeChanged,
+    ThreadAttached,
+    ThreadDetached,
 }
 
 #[derive(Clone)]
@@ -462,6 +465,31 @@ pub enum EventBody<T> {
         manifest_sha256: [u8; 32],
         incarnation: u64,
         witnesses: Vec<EventId>,
+    },
+    /// One shared scope's lifetime. `server_process` is the ordinary process
+    /// record; this fact never describes that process's native state.
+    SharedScopeChanged {
+        scope: LifecycleId,
+        login: String,
+        server_process: LifecycleId,
+        phase: crate::SharedScopePhase,
+        from: Option<crate::SharedScopePhase>,
+        expected: Expected,
+    },
+    /// One agent's thread is attached to a live shared scope.
+    ThreadAttached {
+        scope: LifecycleId,
+        session: SessionId,
+        thread: String,
+        expected: Expected,
+    },
+    /// One agent's thread ended, with the reason that ended it.
+    ThreadDetached {
+        scope: LifecycleId,
+        session: SessionId,
+        end: crate::ThreadEnd,
+        reason: String,
+        expected: Expected,
     },
     RecoveryRecorded {
         recovery: RecordId,
