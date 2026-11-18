@@ -61,9 +61,9 @@ pub(super) fn resolve_package(
     if native_image(path)? {
         return Ok(Some((path.to_path_buf(), None)));
     }
-    let (command, package_name) = match provider {
-        Some(Provider::Codex) => ("codex", "@openai/codex"),
-        Some(Provider::Claude) => ("claude", "@anthropic-ai/claude-code"),
+    let (command, package_name, title) = match provider {
+        Some(Provider::Codex) => ("codex", "@openai/codex", "Codex"),
+        Some(Provider::Claude) => ("claude", "@anthropic-ai/claude-code", "Claude"),
         _ => return Ok(None),
     };
     if !path
@@ -84,7 +84,7 @@ pub(super) fn resolve_package(
     let Some(prefix) = path.parent() else {
         return Ok(None);
     };
-    let package = prefix.join("node_modules").join(package_name);
+    let package = prefix.join(format!("node_modules/{package_name}"));
     let manifest = package.join("package.json");
     if !file(&manifest)? {
         return Ok(None);
@@ -95,7 +95,7 @@ pub(super) fn resolve_package(
     if metadata.get("name").and_then(serde_json::Value::as_str) != Some(package_name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "installed provider package identity differs",
+            format!("{title} package identity differs"),
         ));
     }
     let image = if provider == Some(Provider::Codex) {
