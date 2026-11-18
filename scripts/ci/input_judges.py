@@ -48,9 +48,34 @@ def detachment_venue(root: Path):
          "private_startup_serves_and_retires",
          "se::host_e3::private_startup_serves_and_retires"),
     ]
+    # Every trial in that harness launches a detached native child, so the
+    # whole ordinary set is skipped too, not only the broker case.
     harness_records = [
-        {"judge": "se-proc::bootstrap_stderr::broker",
-         "status": "not_run", "reason": reason},
+        {"judge": f"se-proc::bootstrap_stderr::{case}",
+         "status": "not_run", "reason": reason}
+        # The names are the harness's own modes; `refuse` runs twice, which is
+        # why the ordinary set is seven trials and not six.
+        for case in (
+            "broker",
+            "refuse",
+            "flood",
+            "await-commit",
+            "retained-await",
+            "live-read",
+            "inheritance",
+        )
+    ] + [
+        # Cases inside se::host_e3 that start a detached native host, plus the
+        # one subcase of a case that otherwise runs: the listener/hook case keeps
+        # its embedded coverage and names only its detached cold-capture part.
+        {"judge": f"se::host_e3::{case}", "status": "not_run", "reason": reason}
+        for case in (
+            "private_startup_serves_and_retires",
+            "restart_after_crash",
+        )
+    ] + [
+        {"judge": "se::host_e3::listener_message_working_and_hook::cold_capture",
+         "status": "not_run", "reason": reason}
     ]
     excluded, records = [], []
     for package, binary, test, label in selections:

@@ -276,7 +276,9 @@ fn listener_message_working_and_hook() -> Check {
         LeaseMode::Host,
         Some(f.store.clone()),
     )?);
-    cold_capture::check(
+    // The detached cold-capture subcase is venue-dependent; everything above it
+    // already ran on this host and is reported as such either way.
+    let cold_capture_ran = cold_capture::check(
         &f,
         cold_capture::Capture {
             machine_key: &machine_key,
@@ -290,6 +292,11 @@ fn listener_message_working_and_hook() -> Check {
     println!(
         "PASS listener_message_working_and_hook: authenticated commits, replay, outside turn/cursor/state, storage join, endpoint retirement and lease reacquisition"
     );
+    if !cold_capture_ran {
+        println!(
+            "listener_message_working_and_hook: cold_capture subcase not run on this venue; the rest of this case passed"
+        );
+    }
     drop(std::mem::ManuallyDrop::into_inner(f));
     Ok(())
 }
@@ -389,10 +396,13 @@ fn main() -> Check {
     shutdown_write_judge::check()?;
     recovery_judge::restart_after_crash()?;
     eight_clients_judge::check()?;
-    // Name only what this venue executed; a skipped case is not a pass.
+    // Name only what this venue executed; a skipped case is not a pass. Two
+    // cases here need a detached runtime of their own — private startup and
+    // restart after a crash — and the listener/hook case runs with one detached
+    // subcase skipped, which it reported separately above.
     if skipped_detached_startup {
         println!(
-            "host_e3: 11 passed, 1 not run on this venue; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
+            "host_e3: 10 passed, 2 not run on this venue, 1 subcase not run; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
         );
     } else {
         println!(

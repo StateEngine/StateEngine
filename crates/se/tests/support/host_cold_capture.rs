@@ -14,7 +14,18 @@ pub struct Capture<'a> {
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
+/// Returns true only when the detached subcase actually ran. Its caller keeps
+/// the coverage that needs no detached host and must not claim this part.
+pub fn check(f: &Fixture, case: Capture<'_>) -> Result<bool, Box<dyn std::error::Error>> {
+    // This subcase is built on a detached native host. Name it where the venue
+    // cannot create one, and let the caller report only what it executed.
+    if crate::detachment_venue::hosted_runner_without_breakaway() {
+        println!(
+            "NOT RUN host_e3::listener_message_working_and_hook::cold_capture: {}",
+            crate::detachment_venue::HOSTED_REASON
+        );
+        return Ok(false);
+    }
     let machine =
         route::identity::require_machine(&route::files::Files::open(&f.options.state_directory)?)?;
     let ready = host::start(
@@ -198,7 +209,7 @@ pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
     println!(
         "PASS cold_capture: trusted prior pin, native restart, replay/append, every committed timing, exact durable cursor, keyed partial capture, changed-range refusal and independent message"
     );
-    Ok(())
+    Ok(true)
 }
 
 fn turn_events(

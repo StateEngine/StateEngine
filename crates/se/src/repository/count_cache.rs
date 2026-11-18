@@ -168,8 +168,9 @@ fn affects_count(name: &str) -> bool {
     )
 }
 
-/// True when the environment could change what a commit count means, so the
-/// cache must not be used.
+/// True when nothing in the environment could change what a commit count
+/// means, so the cached answer still describes this evaluation. Variables that
+/// do select a different evaluation make it false, and the bounded walk runs.
 fn count_interpretation_is_fixed(
     mut environment: impl Iterator<Item = (impl AsRef<std::ffi::OsStr>, impl Sized)>,
 ) -> bool {
