@@ -18,8 +18,12 @@ fn cx() -> Result<CallContext, Box<dyn Error>> {
     ))
 }
 
+/// An unset variable and an empty one both mean no daemon was named: a runner
+/// that clears the variable to say "none" must not be graded as a bad path.
 fn socket() -> Option<PathBuf> {
-    std::env::var_os("SE_CODEX_DAEMON_SOCKET").map(PathBuf::from)
+    std::env::var_os("SE_CODEX_DAEMON_SOCKET")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 fn thread_id(value: &serde_json::Value) -> Result<String, Box<dyn Error>> {

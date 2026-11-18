@@ -50,6 +50,14 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 toml = "0.9.11"
 chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["std"], optional = true }
 
+# The stock daemon's control socket is an AF_UNIX socket on every platform;
+# `tokio` has no Windows implementation of one, so the Windows client uses
+# the same crates the provider's own client does. Unix needs neither.
+[target.'cfg(windows)'.dependencies]
+async-io = "2.6"
+tokio-util = { version = "0.7", features = ["compat"] }
+uds_windows = "1.1"
+
 [lints]
 workspace = true
 
