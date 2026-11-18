@@ -48,6 +48,8 @@ class Journeys(Smoke):
     def start_runtime(self, phase):
         if self.foreground:
             self.foreground.start(phase)
+        else:
+            super().start_runtime()
 
     def observe_runtime_exit(self):
         if self.foreground:
