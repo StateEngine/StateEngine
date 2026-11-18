@@ -8,10 +8,6 @@ use se_store::{
 use se_types::{Read, Result};
 use std::sync::atomic::Ordering;
 impl LaunchCoordinator {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-    )]
     pub(super) async fn cold_stop_job(
         self: &Arc<Self>,
         control: &ControlTarget,
