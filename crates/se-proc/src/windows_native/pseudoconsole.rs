@@ -1,45 +1,47 @@
-//! A private console for Ctrl+C and console-using descendants. Protocol stdio
-//! remains on its explicit pipes; terminal rendering is drained to a sink.
-use super::identity::{Handle, last};
-use crate::{ProcErrorCode, ProcResult, support::native};
-use std::{fs::File, io, os::windows::io::FromRawHandle, ptr, thread};
+//! Owned windowless console and drained terminal transport. Standard-stream
+//! redirection and process policy remain the caller's responsibility.
+use super::{Error, Result, handle, last};
+use std::{
+    fs::File,
+    io,
+    os::windows::io::{AsRawHandle, OwnedHandle},
+    ptr, thread,
+};
 use windows_sys::Win32::{
     Foundation::HANDLE,
     System::{Console::*, Pipes::CreatePipe},
 };
 
-pub(super) struct PseudoConsole {
+pub(crate) struct PseudoConsole {
     console: HPCON,
     // Keep input open without injecting terminal bytes into the protocol.
-    _input: Handle,
-    creator_channels: Option<(Handle, Handle)>,
+    _input: OwnedHandle,
+    creator_channels: Option<(OwnedHandle, OwnedHandle)>,
     drain: Option<thread::JoinHandle<io::Result<u64>>>,
 }
 
 impl PseudoConsole {
-    pub fn new() -> ProcResult<Self> {
+    pub fn new() -> Result<Self> {
         let (input_read, input_write) = pipe()?;
         let (output_read, output_write) = pipe()?;
-        // Transfer the reader to File before spawning: failed thread creation
-        // also closes it. No channel is inheritable by arbitrary child processes.
-        let mut output_read = output_read;
-        let raw = std::mem::replace(&mut output_read.0, ptr::null_mut());
-        // SAFETY: ownership of this valid synchronous pipe handle leaves Handle
-        // and transfers exactly once to File, which is moved into the worker.
-        let mut output = unsafe { File::from_raw_handle(raw) };
+        // File takes the owned reader; failed thread creation closes it too.
+        let mut output = File::from(output_read);
         let drain = thread::Builder::new()
             .name("console-output-drain".into())
             .stack_size(64 * 1024)
             .spawn(move || io::copy(&mut output, &mut io::sink()))
-            .map_err(|e| native(ProcErrorCode::LaunchFailed, "start console output drain", e))?;
+            .map_err(|source| Error {
+                operation: "start console output drain",
+                source,
+            })?;
         let mut console = 0;
         // SAFETY: live synchronous pipe ends, valid dimensions and writable
         // output. No cursor inheritance or default-terminal window is requested.
         let result = unsafe {
             CreatePseudoConsole(
                 COORD { X: 80, Y: 25 },
-                input_read.0,
-                output_write.0,
+                input_read.as_raw_handle(),
+                output_write.as_raw_handle(),
                 0,
                 &mut console,
             )
@@ -48,11 +50,10 @@ impl PseudoConsole {
             // Dropping the writer releases the reader even on creation failure.
             drop(output_write);
             let _ = drain.join();
-            return Err(native(
-                ProcErrorCode::LaunchFailed,
-                "CreatePseudoConsole",
-                io::Error::other(format!("HRESULT 0x{:08x}", result as u32)),
-            ));
+            return Err(Error {
+                operation: "CreatePseudoConsole",
+                source: io::Error::other(format!("HRESULT 0x{:08x}", result as u32)),
+            });
         }
         Ok(Self {
             console,
@@ -75,8 +76,7 @@ impl PseudoConsole {
 
 impl Drop for PseudoConsole {
     fn drop(&mut self) {
-        // On failed creation there is no client; on normal release the job has
-        // already been witnessed empty. The independent reader stays active
+        // The caller retains this owner through client retirement. The reader stays active
         // throughout closing so terminal output cannot fill a pipe and deadlock.
         // SAFETY: this object uniquely owns this successful creation's HPCON.
         unsafe { ClosePseudoConsole(self.console) };
@@ -89,13 +89,16 @@ impl Drop for PseudoConsole {
     }
 }
 
-fn pipe() -> ProcResult<(Handle, Handle)> {
+fn pipe() -> Result<(OwnedHandle, OwnedHandle)> {
     let mut read: HANDLE = ptr::null_mut();
     let mut write: HANDLE = ptr::null_mut();
     // SAFETY: writable outputs, null attributes request noninheritable handles;
     // outputs immediately transfer to separate RAII owners on success.
     if unsafe { CreatePipe(&mut read, &mut write, ptr::null(), 0) } == 0 {
-        return Err(last(ProcErrorCode::LaunchFailed, "create console channel"));
+        return Err(last("create console channel"));
     }
-    Ok((Handle(read), Handle(write)))
+    Ok((
+        handle(read, "own console pipe reader")?,
+        handle(write, "own console pipe writer")?,
+    ))
 }

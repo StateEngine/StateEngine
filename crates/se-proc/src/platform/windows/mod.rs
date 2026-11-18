@@ -1,10 +1,8 @@
 mod console;
-mod helper_diagnostics;
 mod identity;
 mod interrupt;
 pub use interrupt::{CONSOLE_INTERRUPT_ENTRY, console_interrupt_entry};
 mod notify;
-mod pseudoconsole;
 mod recovery;
 pub use recovery::observe_prepared_scope_exit;
 pub(crate) use recovery::uncreated_scope;

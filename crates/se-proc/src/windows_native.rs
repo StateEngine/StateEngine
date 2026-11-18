@@ -1,11 +1,13 @@
-//! Shared Windows query primitives. Callers retain their handles/token buffers;
-//! typed adapters add their own operation context without copying native walks.
+//! Windows resource and process primitives own native handles and API errors.
+//! Typed adapters retain admission, custody and lifecycle policy.
 pub(crate) mod acl;
 pub(crate) mod allocation;
 pub(crate) mod attributes;
 pub(crate) mod console;
 mod parent;
+pub(crate) mod pipe_capture;
 mod process_query;
+pub(crate) mod pseudoconsole;
 pub(crate) use parent::parent;
 use std::{
     collections::BTreeMap,

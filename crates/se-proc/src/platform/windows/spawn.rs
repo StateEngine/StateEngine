@@ -38,8 +38,8 @@ pub(super) struct Child {
     pub identity: Option<ProcessIdentity>,
     pub pid: ProcessId,
     // Retained until witnessed scope release, including after root exit.
-    pub console: Option<super::pseudoconsole::PseudoConsole>,
-    pub diagnostics: Option<super::helper_diagnostics::Diagnostics>,
+    pub console: Option<crate::windows_native::pseudoconsole::PseudoConsole>,
+    pub diagnostics: Option<crate::windows_native::pipe_capture::PipeCapture>,
 }
 pub(super) fn create(spec: LaunchSpec, job: &Handle) -> ProcResult<Child> {
     // Keep exclusion through CreateProcess, then permit ordinary package updates.
@@ -113,7 +113,8 @@ pub(super) fn interrupt_helper(
     if request.len() > 8192 {
         return Err(capacity("console helper identity bytes", 8192));
     }
-    let (diagnostics, stderr) = super::helper_diagnostics::Diagnostics::new()?;
+    let (diagnostics, stderr) = crate::windows_native::pipe_capture::PipeCapture::new()
+        .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
     let mut child = create_command(
         Command {
             executable: helper.to_owned(),
@@ -256,7 +257,10 @@ fn create_command(
     }
     inherited.extend(spec.capabilities);
     let mut console = if spec.mode == LaunchMode::HeadlessConsole {
-        Some(super::pseudoconsole::PseudoConsole::new()?)
+        Some(
+            crate::windows_native::pseudoconsole::PseudoConsole::new()
+                .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?,
+        )
     } else {
         None
     };

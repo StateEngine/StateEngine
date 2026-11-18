@@ -1,7 +1,10 @@
-//! Bounded, nonblocking stderr collection for the isolated interrupt helper.
-use super::identity::{Handle, last};
-use crate::{ProcErrorCode, ProcResult};
-use std::{fs::File, os::windows::io::FromRawHandle, ptr};
+//! Bounded, nonblocking capture of a child process stderr pipe.
+use super::{Result, handle, last};
+use std::{
+    fs::File,
+    os::windows::io::{AsRawHandle, OwnedHandle},
+    ptr,
+};
 use windows_sys::Win32::{
     Foundation::*,
     Storage::FileSystem::ReadFile,
@@ -9,26 +12,26 @@ use windows_sys::Win32::{
 };
 
 const LIMIT: usize = 16 * 1024;
-pub(super) struct Diagnostics {
-    read: Handle,
+pub(crate) struct PipeCapture {
+    read: OwnedHandle,
     bytes: Vec<u8>,
     omitted: usize,
     error: Option<u32>,
 }
-impl Diagnostics {
-    pub fn new() -> ProcResult<(Self, File)> {
+impl PipeCapture {
+    pub fn new() -> Result<(Self, File)> {
         let mut read = ptr::null_mut();
         let mut write = ptr::null_mut();
         // SAFETY: writable outputs; noninheritable handles. The native creator
         // separately duplicates only the writer into its explicit handle list.
         if unsafe { CreatePipe(&mut read, &mut write, ptr::null(), LIMIT as u32) } == 0 {
-            return Err(last(ProcErrorCode::LaunchFailed, "create helper stderr"));
+            return Err(last("create process stderr"));
         }
-        // SAFETY: successful creation transfers unique ownership of the writer.
-        let write = unsafe { File::from_raw_handle(write) };
+        let read = handle(read, "own stderr reader")?;
+        let write = File::from(handle(write, "own stderr writer")?);
         Ok((
             Self {
-                read: Handle(read),
+                read,
                 bytes: Vec::new(),
                 omitted: 0,
                 error: None,
@@ -44,7 +47,7 @@ impl Diagnostics {
             // SAFETY: retained synchronous pipe reader, writable count output.
             if unsafe {
                 PeekNamedPipe(
-                    self.read.0,
+                    self.read.as_raw_handle(),
                     ptr::null_mut(),
                     0,
                     ptr::null_mut(),
@@ -70,7 +73,7 @@ impl Diagnostics {
             // and the initialized buffer has at least count writable bytes.
             if unsafe {
                 ReadFile(
-                    self.read.0,
+                    self.read.as_raw_handle(),
                     buffer.as_mut_ptr(),
                     count,
                     &mut read,
@@ -92,7 +95,7 @@ impl Diagnostics {
         // SAFETY: retained reader and writable count; no bytes are consumed.
         let pending = if unsafe {
             PeekNamedPipe(
-                self.read.0,
+                self.read.as_raw_handle(),
                 ptr::null_mut(),
                 0,
                 ptr::null_mut(),
@@ -107,8 +110,8 @@ impl Diagnostics {
             Err(unsafe { GetLastError() })
         };
         let text = match std::str::from_utf8(&self.bytes) {
-            Ok(text) => format!("helper stderr: {text}"),
-            Err(_) => format!("helper stderr non-UTF-8 bytes: {:?}", self.bytes),
+            Ok(text) => format!("stderr: {text}"),
+            Err(_) => format!("stderr non-UTF-8 bytes: {:?}", self.bytes),
         };
         format!(
             "{text}; discarded bytes: {}; pending bytes or pipe error: {pending:?}; read error: {:?}",
