@@ -7,7 +7,8 @@ impl LaunchCoordinator {
         plan: &LaunchPlan,
         deadline: &Deadline,
     ) -> Result<bool> {
-        let records = if plan.control.processes.is_empty() && !plan.control.sessions.is_empty() {
+        let pending = !plan.control.processes.is_empty() || !plan.control.sessions.is_empty();
+        let records = if plan.control.processes.is_empty() {
             match &plan.control.latest_process {
                 se_types::Read::Present { value } => std::slice::from_ref(value),
                 _ => &[],
@@ -20,7 +21,9 @@ impl LaunchCoordinator {
             let identity = process_identity(record)?;
             let Some(job) = self
                 .find_lifecycle_job(&plan.project.id, &plan.agent.id, &identity.record)?
-                .filter(|job| job.ended_by_reboot)
+                .filter(|job| {
+                    job.ended_by_reboot && (pending || !job.settled.load(Ordering::Acquire))
+                })
             else {
                 continue;
             };
