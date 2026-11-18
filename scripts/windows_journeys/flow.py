@@ -49,7 +49,7 @@ class Journeys(Smoke):
     def start_runtime(self, phase):
         if self.foreground:
             self.foreground.start(phase)
-        else:
+        elif phase == 'J2':
             super().start_runtime()
 
     def observe_runtime_exit(self):
