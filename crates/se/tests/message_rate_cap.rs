@@ -1,7 +1,9 @@
 //! Agent-door send rate cap: one sender may not bury one recipient in
-//! messages. Ten messages per pair inside ten minutes is refused by name with
-//! the legal alternatives; the owner door, self-notes, floor work mail and an
-//! exact retry of a committed send stay exempt.
+//! messages. Ten messages from one sender to one recipient inside ten
+//! minutes is refused by name with the legal alternatives; the owner door,
+//! self-notes and an exact retry of a committed send stay exempt. Floor
+//! work mail is its own (sender, floor) pair, and its fan-out is never
+//! counted against a recipient's direct pair.
 use se_core::commit::{CoreOps, Cx, OpStep};
 use se_core::dispatch::{CallFacts, Kernel};
 use se_core::ops::MessageSend;
@@ -121,7 +123,7 @@ fn eleven_ok(sender: &mut Sender, prefix: &str, to: String) -> Boxed<()> {
     }
     Ok(())
 }
-fn assert_cap_refusal(error: &SeError, f: &Fixture) -> Check {
+fn assert_cap_refusal(error: &SeError, from: &str, to: &str) -> Check {
     assert_eq!(error.class(), Class::Refused);
     assert!(
         format!("{error}").contains("has sent 10 messages"),
@@ -129,8 +131,8 @@ fn assert_cap_refusal(error: &SeError, f: &Fixture) -> Check {
     );
     match error.body.detail() {
         Detail::MessageRateOverCap(detail) => {
-            assert_eq!(detail.from, f.a.as_str());
-            assert_eq!(detail.to, f.b.as_str());
+            assert_eq!(detail.from, from);
+            assert_eq!(detail.to, to);
             assert_eq!(detail.count, 10);
             assert_eq!(detail.limit, 10);
             assert_eq!(detail.window_minutes, 10);
@@ -139,7 +141,7 @@ fn assert_cap_refusal(error: &SeError, f: &Fixture) -> Check {
     }
     Ok(())
 }
-/// Protects: #473 — an agent pair over ten messages in ten minutes is refused by name; the owner door, self-notes, floor work mail and an exact retry stay exempt.
+/// Protects: #473 — an agent pair over ten messages in ten minutes is refused by name; floor work mail is its own (sender, floor) pair and its fan-out never counts against a direct pair; the owner door, self-notes and an exact retry stay exempt.
 #[test]
 fn capped_pair_refused_by_name_and_exemptions_hold() -> Check {
     let f = Fixture::new()?;
@@ -160,7 +162,7 @@ fn capped_pair_refused_by_name_and_exemptions_hold() -> Check {
             .send(to.clone(), "cap-eleventh", None)
             .err()
             .ok_or("the eleventh send was accepted; the cap never tripped")?;
-        assert_cap_refusal(&refused, &f)?;
+        assert_cap_refusal(&refused, f.a.as_str(), f.b.as_str())?;
     }
     // The owner door is never capped, even against the same recipient.
     {
@@ -179,10 +181,11 @@ fn capped_pair_refused_by_name_and_exemptions_hold() -> Check {
         let mut s = make_sender(&f, &mut direct, &lease, actor.clone(), session.clone(), now);
         eleven_ok(&mut s, "self", f.a.as_str().to_owned())?;
     }
-    // Floor work mail is one fan-out act; the pair cap does not count it.
+    // Floor work mail is its own (sender, floor) pair: the eleventh
+    // broadcast inside the window is refused by name.
     {
         let mut s = make_sender(&f, &mut direct, &lease, actor.clone(), session.clone(), now);
-        for index in 0..11 {
+        for index in 0..10 {
             s.send(
                 "floor".into(),
                 &format!("floor-{index}"),
@@ -190,6 +193,22 @@ fn capped_pair_refused_by_name_and_exemptions_hold() -> Check {
             )
             .map_err(|error| format!("floor work mail {index} refused: {error}"))?;
         }
+        let refused = s
+            .send("floor".into(), "floor-eleventh", Some(floor_work(&f)))
+            .err()
+            .ok_or("the eleventh floor broadcast was accepted; the cap never tripped")?;
+        assert_cap_refusal(&refused, f.a.as_str(), "floor")?;
+    }
+    // Fan-out rows never count against the direct pair: the capped (a, b)
+    // pair is still refused on exactly its ten direct sends, not the
+    // floor deliveries toward b.
+    {
+        let mut s = make_sender(&f, &mut direct, &lease, actor.clone(), session.clone(), now);
+        let refused = s
+            .send(to.clone(), "cap-twelfth", None)
+            .err()
+            .ok_or("a send to the capped pair was accepted; the cap never tripped")?;
+        assert_cap_refusal(&refused, f.a.as_str(), f.b.as_str())?;
     }
     // Once the window rolls past the ten filled sends, the pair may write again.
     {

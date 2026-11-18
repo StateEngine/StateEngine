@@ -140,6 +140,26 @@ pub fn store_error(error: &StoreError) -> SeError {
                 next_step,
             }),
         },
+        C::MessageRateOverCap => match &error.detail {
+            se_store::StoreDetail::MessageRateOverCap {
+                from,
+                to,
+                count,
+                limit,
+                window_minutes,
+            } => Detail::MessageRateOverCap(details::MessageRateOverCap {
+                from: from.clone(),
+                to: to.clone(),
+                count: *count,
+                limit: *limit,
+                window_minutes: *window_minutes,
+            }),
+            _ => Detail::StateConflict(details::StateConflict {
+                subject,
+                reason,
+                next_step,
+            }),
+        },
         C::ScopeMismatch | C::CreatorControlRefused => {
             Detail::CapabilityInvalid(details::CapabilityInvalid {
                 subject,

@@ -78,7 +78,9 @@ fn payload(
             Ok(EventBody::MessageSent {
                 quiet: false,
                 message: message()?,
-                recipient: Actor::Agent(f.b.clone()),
+                // Self-note: the load payload is a note to the sender, the
+                // one mail shape the per-recipient rate cap exempts.
+                recipient: Actor::Agent(f.a.clone()),
                 kind: "finding".into(),
                 body: InputText::Inline(body),
                 refs: vec![],

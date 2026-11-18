@@ -185,7 +185,10 @@ fn every_receipt_keeps_timings_past_the_former_sample_capacity() -> Check {
             direct.append(
                 f.send(
                     Actor::Agent(f.a.clone()),
-                    Actor::Agent(f.b.clone()),
+                    // Self-note seed: 1026 messages in one window would
+                    // exceed the per-recipient rate cap toward any one
+                    // recipient, and a note to the sender is exempt.
+                    Actor::Agent(f.a.clone()),
                     id.clone(),
                     "timing seed",
                     &format!("timed-{n}"),
@@ -202,11 +205,11 @@ fn every_receipt_keeps_timings_past_the_former_sample_capacity() -> Check {
     let client = owner.client();
     for id in messages {
         let receipt = wait(client.submit(f.batch(
-            f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.b.clone())),
+            f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone())),
             None,
             vec![EventBody::MessageRead {
                 message: id,
-                recipient: Actor::Agent(f.b.clone()),
+                recipient: Actor::Agent(f.a.clone()),
             }],
         )?)?)??;
         assert_eq!(receipt.state, CommitState::Committed);

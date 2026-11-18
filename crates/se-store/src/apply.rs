@@ -6,6 +6,7 @@ pub(crate) mod credential;
 pub(crate) mod cursor;
 pub(crate) mod effect;
 mod mail;
+mod mail_rate;
 mod message;
 mod notification;
 mod revision;
@@ -430,6 +431,7 @@ pub(crate) fn apply(
                     "encoded remote reply exceeds its delivery frame; send a shorter reply",
                 ));
             }
+            mail_rate::direct(c, header, project()?, &s, &header.actor, &recipient)?;
             let recipient = actor_key(&recipient)?;
             let sender = actor_key(&header.actor)?;
             let exists: bool = c
