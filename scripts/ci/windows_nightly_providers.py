@@ -100,7 +100,7 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def prepared(provider, root, archive, archive_sha, commit, seed):
+def prepared(provider, root, archive, archive_sha, commit, seed, platform='win32'):
     command, driver, key_name, model_name = PROVIDERS[provider]
     model = os.environ.get(model_name)
     require(isinstance(model, str) and re.fullmatch(r'[A-Za-z0-9._:/+-]{1,128}', model),
@@ -122,11 +122,13 @@ def prepared(provider, root, archive, archive_sha, commit, seed):
                       + 'approval = "never"\nnetwork = true\nbypass = false\n', encoding='utf-8')
     profile = dict(name='nightly', sandbox='workspace-write', approval='never', network=True, bypass=False)
     manifest = {'schema': 'se.harness-matrix-input/v1', 'harnesses': [
-        {'id': provider, 'driver': driver, 'platforms': {'win32': {
+        {'id': provider, 'driver': driver, 'platforms': {platform: {
             'credential_seed': seed, 'configuration': {'path': str(config), 'sha256': digest(config)},
             'permission_profile': profile, 'images': [{'path': str(image), 'sha256': digest(image)}],
-            'version_command': [str(image), '--version'], 'version_stdout': version}}}],
-        'windows_journeys': {'release': {'path': str(archive), 'sha256': archive_sha, 'source_commit': commit}}}
+            'version_command': [str(image), '--version'], 'version_stdout': version}}}]}
+    if platform == 'win32':
+        manifest['windows_journeys'] = {
+            'release': {'path': str(archive), 'sha256': archive_sha, 'source_commit': commit}}
     path = root / (provider + '-manifest.json')
     path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     return path, key_name

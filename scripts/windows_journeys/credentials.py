@@ -36,11 +36,28 @@ def plain(path):
     info = path.stat()
     require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= 65536,
             'Credential seed must be one bounded private file')
+    if os.name == 'posix':
+        require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o600,
+                'Credential file must be owner-only')
     return info
 
 
 def protect(directory, establish=True):
-    require(os.name == 'nt', 'Private Windows seed provisioning requires native Windows')
+    if os.name == 'posix':
+        directory = Path(directory)
+        descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(descriptor)
+            require(info.st_uid == os.getuid(), 'Private credential directory has a different owner')
+            if establish:
+                os.fchmod(descriptor, 0o700)
+            current = directory.lstat()
+            require((current.st_dev, current.st_ino) == (info.st_dev, info.st_ino)
+                    and stat.S_IMODE(current.st_mode) == 0o700, 'Private directory mode readback failed')
+        finally:
+            os.close(descriptor)
+        return
+    require(os.name == 'nt', 'Private seed protection requires Windows or a Unix filesystem')
     path = str(directory).replace("'", "''")
     code = ("$ErrorActionPreference='Stop';$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;"
             "$a=New-Object Security.AccessControl.DirectorySecurity;"
