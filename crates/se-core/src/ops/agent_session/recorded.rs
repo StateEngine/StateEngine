@@ -118,6 +118,15 @@ pub fn process_from_record(
         _ => "unknown",
     }
     .into();
+    if let EventBody::ProcessTransition {
+        outcome,
+        to: ProcessState::Exited,
+        ..
+    } = &record.current.body
+        && outcome == super::super::process_commit::ENDED_BY_REBOOT
+    {
+        session.end_reason = Some(outcome.clone());
+    }
     session.liveness = match &identity.instance {
         RecordedIdentity::Unreadable { cause } => Read::Unreadable {
             source: "recorded session process identity".into(),

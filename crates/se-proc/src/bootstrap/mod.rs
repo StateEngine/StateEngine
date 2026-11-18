@@ -45,8 +45,11 @@ pub struct NativeRuntimeIdentity {
 }
 pub fn current_runtime_identity(machine: MachineId) -> ProcResult<NativeRuntimeIdentity> {
     let process = current_process_identity(machine)?;
-    let boot_id = os::boot_id()?;
+    let boot_id = runtime_boot_identity()?;
     Ok(NativeRuntimeIdentity { process, boot_id })
+}
+pub(crate) fn runtime_boot_identity() -> ProcResult<se_types::BootId> {
+    os::boot_id()
 }
 fn check(deadline: Instant) -> ProcResult<()> {
     if Instant::now() >= deadline {

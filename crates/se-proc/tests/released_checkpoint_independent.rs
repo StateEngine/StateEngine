@@ -99,6 +99,7 @@ fn fixture(mac: bool, stage: u8) -> Check<Checkpoint> {
         ),
         2 => (
             CheckpointSource::Root(RootCheckpoint {
+                macos_boot_session: None,
                 scope: prepared,
                 pre_exec: child,
                 intended_executable: std::env::current_exe()?,
@@ -108,6 +109,7 @@ fn fixture(mac: bool, stage: u8) -> Check<Checkpoint> {
         ),
         3 => (
             CheckpointSource::Process(ProcessRecord {
+                macos_boot_session: None,
                 format_version: 1,
                 lifecycle: lifecycle.clone(),
                 host,
