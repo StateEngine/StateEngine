@@ -211,22 +211,31 @@ fn dispatch_with_cold_recovery(
         // two to the longer of them.
         let reader_for_daemon = reader.clone();
         let selections_for_daemon = selections.clone();
+        // Only start work the result can actually be used for. A whole-machine
+        // read never merges a host observation, and a home with no published
+        // endpoint has nothing to ask, so neither may wait on a daemon it will
+        // discard. Everything needed here is knowable before the build, which is
+        // why the request can still overlap it.
+        let ask_daemon =
+            !cx.selections.status_all && matches!(endpoint(&files), Ok(Read::Present { .. }));
         // The observation thread and the build borrow disjoint things: the
         // thread takes a clone of the reader, this frame keeps its own snapshot.
         let (mut output, observed) = std::thread::scope(|scope| {
-            let pending = scope.spawn(|| {
-                // ProjectStatus neither autostarts a host nor prompts, so this
-                // request has no diagnostic of its own to report.
-                let mut quiet = |_: &str| Ok(());
-                super::hosted::forward(
-                    cx,
-                    &files,
-                    &reader_for_daemon,
-                    &caller,
-                    AnyOp::ProjectStatus(se_core::ops::ProjectStatus { all: false }),
-                    &selections_for_daemon,
-                    &mut quiet,
-                )
+            let pending = ask_daemon.then(|| {
+                scope.spawn(|| {
+                    // ProjectStatus neither autostarts a host nor prompts, so this
+                    // request has no diagnostic of its own to report.
+                    let mut quiet = |_: &str| Ok(());
+                    super::hosted::forward(
+                        cx,
+                        &files,
+                        &reader_for_daemon,
+                        &caller,
+                        AnyOp::ProjectStatus(se_core::ops::ProjectStatus { all: false }),
+                        &selections_for_daemon,
+                        &mut quiet,
+                    )
+                })
             });
             let result = super::status::observe_snapshot(
                 cx,
@@ -245,16 +254,22 @@ fn dispatch_with_cold_recovery(
             });
             let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
             let output = super::session_observation::finish(prepared, &cx.home)?;
-            let observed = pending.join().unwrap_or_else(|_| {
-                Err(scope::unreadable(
-                    "status daemon observation",
-                    "the observation thread panicked",
-                ))
+            // None means nothing was asked, so there is nothing to merge and no
+            // invented error: a read that never needs the host behaves exactly
+            // as it did before this overlap existed.
+            let observed = pending.map(|pending| {
+                pending.join().unwrap_or_else(|_| {
+                    Err(scope::unreadable(
+                        "status daemon observation",
+                        "the observation thread panicked",
+                    ))
+                })
             });
             Ok::<_, se_types::SeError>((output, observed))
         })?;
         let mut service_observation = None;
-        if let AnyOutput::ProjectStatus(status) = &mut output
+        if let Some(observed) = observed
+            && let AnyOutput::ProjectStatus(status) = &mut output
             && status.value.runtime.state == "running"
             && !cx.selections.status_all
             && status.value.removal.is_none()
