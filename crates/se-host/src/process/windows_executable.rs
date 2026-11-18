@@ -7,6 +7,11 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+enum PackageImage {
+    Vendor,
+    DeclaredBin,
+}
+
 fn file(path: &Path) -> io::Result<bool> {
     match fs::metadata(path) {
         Ok(metadata) => Ok(metadata.is_file()),
@@ -61,9 +66,14 @@ pub(super) fn resolve_package(
     if native_image(path)? {
         return Ok(Some((path.to_path_buf(), None)));
     }
-    let (command, package_name, title) = match provider {
-        Some(Provider::Codex) => ("codex", "@openai/codex", "Codex"),
-        Some(Provider::Claude) => ("claude", "@anthropic-ai/claude-code", "Claude"),
+    let (command, package_name, title, layout) = match provider {
+        Some(Provider::Codex) => ("codex", "@openai/codex", "Codex", PackageImage::Vendor),
+        Some(Provider::Claude) => (
+            "claude",
+            "@anthropic-ai/claude-code",
+            "Claude",
+            PackageImage::DeclaredBin,
+        ),
         _ => return Ok(None),
     };
     if !path
@@ -98,10 +108,9 @@ pub(super) fn resolve_package(
             format!("{title} package identity differs"),
         ));
     }
-    let image = if provider == Some(Provider::Codex) {
-        codex_image(prefix, &package)?
-    } else {
-        declared_image(&package, command, &metadata)?
+    let image = match layout {
+        PackageImage::Vendor => codex_image(prefix, &package)?,
+        PackageImage::DeclaredBin => declared_image(&package, command, &metadata)?,
     };
     Ok(image.map(|image| (image, Some(package))))
 }
