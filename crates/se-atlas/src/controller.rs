@@ -78,6 +78,16 @@ impl<R: Runtime> Controller<R> {
             in_flight: None,
         }
     }
+    /// Construct with an explicit publication window instead of the
+    /// production default, for consumers that must not wait it out.
+    pub fn with_publication_delay(runtime: R, delay: Duration) -> Self {
+        Self {
+            runtime,
+            roots: Vec::new(),
+            scheduler: Scheduler::default().with_publication_delay(delay),
+            in_flight: None,
+        }
+    }
     pub fn runtime(&self) -> &R {
         &self.runtime
     }
