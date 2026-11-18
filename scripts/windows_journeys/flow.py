@@ -11,6 +11,7 @@ from .credentials import Credentials, Prerequisite, protect
 from .usage import snapshot, difference
 from .release import download
 from .files import plain_files
+from .foreground import DETACHED_HOST_COVERAGE, ForegroundRuntime
 
 JOURNEYS = ('J1', 'J2', 'J3', 'J4', 'J5')
 
@@ -23,7 +24,7 @@ def repository_bytes(root):
 
 
 class Journeys(Smoke):
-    def __init__(self, *args, release, **kwargs):
+    def __init__(self, *args, release, foreground_runtime=False, **kwargs):
         super().__init__(*args, **kwargs)
         protect(self.home)
         self.credentials = Credentials(self.settings['credential_seed'], self.settings['provider'])
@@ -34,12 +35,24 @@ class Journeys(Smoke):
         self.record.update(qualification='five user journeys; performance and clean-image provenance are separate',
                            release=release, phases={key: dict(result='NOT RUN') for key in JOURNEYS},
                            credential_closure=None)
+        self.foreground = ForegroundRuntime(self.commands, self.binary, self.state) if foreground_runtime else None
+        if self.foreground:
+            self.record.update(detached_host_start=DETACHED_HOST_COVERAGE,
+                               foreground_hosts=self.foreground.receipts)
         self.record['credential_expiry'] = dict(state='unknown' if self.credentials.expires is None
                                                else 'token-declared', value=self.credentials.expires)
         self.saved_events, self.user_work = {}, {}
         self.initial = None
         self.removed = False
         self.save()
+
+    def start_runtime(self, phase):
+        if self.foreground:
+            self.foreground.start(phase)
+
+    def observe_runtime_exit(self):
+        if self.foreground:
+            self.foreground.observe_exit()
 
     def phase(self, name, operation):
         before, usage_error = None, None
@@ -127,8 +140,7 @@ class Journeys(Smoke):
         require(digest(config) == self.settings['configuration']['sha256'], 'Native configuration changed')
         self.state.mkdir(exist_ok=True)
         (self.state / 'config.toml').write_bytes(config.read_bytes())
-        # Init starts the private host. Supply only the provisioned token;
-        # normal-account credential variables are never inherited.
+        # Supply only the provisioned token to the private fixture.
         self.commands.environment.update(self.credentials.environment())
         version = self.commands.run(self.settings['version_command'], 'native-provider-version')
         require(version.strip() == self.settings['version_stdout'], 'Native provider version differs')
@@ -139,6 +151,7 @@ class Journeys(Smoke):
                                                for key in ('project', 'agent_id', 'human_id'))
         self.preserve_work()
         self.credentials.install(self.home)
+        self.start_runtime('J2')
         self.secret, work = str(uuid.uuid4()), str(uuid.uuid4())
         task = f'Remember {self.secret}. Write {work} plus newline to work.txt. Reply {work}.'
         launched = self.call(['launch', self.agent, '--detach', '--task', task], 'real-work', terminal=True)
@@ -158,6 +171,7 @@ class Journeys(Smoke):
         down = self.call(['down'], 'close-runtime', project=False)
         require(down.get('complete') is True and down.get('witness', {}).get('state') == 'witnessed',
                 'Runtime closure is not independently witnessed')
+        self.observe_runtime_exit()
         require(self.commands.observer.observe() == [], 'Owned processes remain after closing everything')
         return dict(stop=stopped, down=down)
 
@@ -169,6 +183,7 @@ class Journeys(Smoke):
         reply = str(uuid.uuid4())
         prompt = f'Write our remembered phrase plus newline to recalled.txt. Reply {reply}.'
         require(self.secret not in prompt, 'Recall prompt disclosed its expected answer')
+        self.start_runtime('J3')
         self.commands.run([*shown['resume']['argv'], '--task', prompt], 'public-reopen', terminal=True)
         value = self.file_turn(reply, 'recalled.txt', (self.secret + '\n').encode(), self.initial)
         self.remember(value, 'recalled.txt')
@@ -212,11 +227,14 @@ class Journeys(Smoke):
 
     def remove(self):
         self.stop_everything()
+        # Removing active registrations needs a host even after all sessions stop.
+        self.start_runtime('J5')
         removed = self.call(['remove', '--all'], 'remove-project', terminal=True, project=False)
         require(removed.get('outcome') == 'removed' and removed.get('projects')
                 and all(row.get('outcome') == 'removed' and row.get('remaining') == []
                         and row.get('processes_may_remain') == [] for row in removed['projects']),
                 'Project removal is incomplete')
+        self.observe_runtime_exit()
         self.preserve_work()
         for event, payload in self.saved_events.items():
             value = self.call(['history', '--event', event], 'retained-history')
@@ -253,6 +271,7 @@ class Journeys(Smoke):
             try:
                 if not self.removed:
                     self.cleanup(retain_home=True)
+                    self.observe_runtime_exit()
                 if self.record.get('process_closure') == [] or self.removed:
                     self.record['credential_closure'] = self.credentials.close()
                     self.commands.environment.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
@@ -261,6 +280,7 @@ class Journeys(Smoke):
                 self.record['cleanup_error'] = str(error)
             passed = all(row['result'] == 'PASS' and row.get('tokens', {}).get('state') != 'unavailable'
                          for row in self.record['phases'].values()) and not self.record.get('cleanup_error')
+            passed = passed and (self.foreground is None or self.foreground.complete())
             missing_usage = any(row.get('tokens', {}).get('state') == 'unavailable'
                                 for row in self.record['phases'].values())
             self.record.update(state='finished', result='PASS' if passed and self.removed else

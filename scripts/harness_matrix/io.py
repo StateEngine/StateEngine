@@ -158,6 +158,17 @@ class Commands:
         self.first_failure = None
         self.observer = Observer(home, output, baseline_rows=baseline_rows)
 
+    def evidence_prefix(self, label):
+        self.sequence += 1
+        return self.output / f'{self.sequence:04d}-{label}'
+
+    def record_failure(self, prefix, label, argv, actual, code, failure):
+        if self.first_failure is None:
+            self.first_failure = prefix.name
+            save(self.output / 'first-failed-command.json', dict(
+                label=label, argv=argv, actual_argv=actual, exit=code, failure=failure,
+                stderr_file=prefix.name + '.stderr'))
+
     def run(self, argv, label, terminal=False, timeout=180):
         argv = list(map(str, argv))
         actual = argv
@@ -169,8 +180,7 @@ class Commands:
             else:
                 require(self.terminal_prefix, 'A native terminal driver is required on Windows')
                 actual = [*self.terminal_prefix, *argv]
-        self.sequence += 1
-        prefix = self.output / f'{self.sequence:04d}-{label}'
+        prefix = self.evidence_prefix(label)
         started = time.monotonic()
         code, failure = None, None
         with prefix.with_suffix('.stdout').open('xb') as out, prefix.with_suffix('.stderr').open('xb') as err:
@@ -217,11 +227,8 @@ class Commands:
         save(prefix.with_suffix('.json'), dict(argv=argv, exit=code, failure=failure,
                                                elapsed_seconds=time.monotonic() - started))
         sizes = [prefix.with_suffix(suffix).stat().st_size for suffix in ('.stdout', '.stderr')]
-        if self.first_failure is None and (code != 0 or failure is not None or sum(sizes) > 8 * 1024**2):
-            self.first_failure = prefix.name
-            save(self.output / 'first-failed-command.json', dict(
-                label=label, argv=argv, actual_argv=actual, exit=code, failure=failure,
-                stderr_file=prefix.name + '.stderr'))
+        if code != 0 or failure is not None or sum(sizes) > 8 * 1024**2:
+            self.record_failure(prefix, label, argv, actual, code, failure)
         if interrupted is not None:
             raise interrupted
         require(sum(sizes) <= 8 * 1024**2, label + ' exceeded the output bound')
