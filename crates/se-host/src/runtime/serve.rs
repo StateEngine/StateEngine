@@ -125,7 +125,7 @@ impl HostedRuntime {
                 &runtime,
             );
         }
-        let channel_task = runtime.spawn(channels.run(cancelled.clone()));
+        let channel_task = runtime.spawn(channels.run(cancelled.clone(), self.receiver_intervals));
         let mut timers = super::live::Timers::new(
             idle,
             activity.clone(),

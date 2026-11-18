@@ -42,7 +42,6 @@ pub struct Channels {
     pub(super) pairing_key: Arc<Secret>,
     pub(crate) transports: Vec<Arc<dyn ChannelTransport>>,
     pub(super) fenced: Arc<AtomicBool>,
-    pub(super) receiver: ReceiverIntervals,
     pub(super) changed: tokio::sync::Notify,
     pub(super) output_gates: std::sync::Mutex<
         std::collections::HashMap<ChannelId, std::sync::Weak<tokio::sync::Mutex<()>>>,
@@ -52,10 +51,6 @@ pub struct Channels {
     pub(super) health: std::sync::Mutex<std::collections::HashMap<ChannelId, ReceiverObservation>>,
 }
 impl Channels {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "One receiver service binds its context, transports, owner, credentials, fencing and cycles together."
-    )]
     pub(crate) fn new(
         context: ExecutionContext,
         transports: Vec<Arc<dyn ChannelTransport>>,
@@ -64,7 +59,6 @@ impl Channels {
         credentials: Arc<NativeChannelCredentials>,
         pairing_key: Secret,
         fenced: Arc<AtomicBool>,
-        receiver: ReceiverIntervals,
     ) -> Result<Self> {
         let store_id = context
             .reader
@@ -92,7 +86,6 @@ impl Channels {
             pairing_key: Arc::new(pairing_key),
             transports,
             fenced,
-            receiver,
             changed: tokio::sync::Notify::new(),
             output_gates: std::sync::Mutex::default(),
             health: std::sync::Mutex::default(),

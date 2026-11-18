@@ -13,7 +13,10 @@ use se_store::*;
 use se_types::{IdempotencyKey, Secret};
 use std::{
     collections::HashSet,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 use support::*;
@@ -22,6 +25,7 @@ use support::*;
 struct Provider {
     wire: transport::Transport,
     polled: Mutex<HashSet<Vec<u8>>>,
+    polls: AtomicU64,
 }
 impl ChannelTransport for Provider {
     fn descriptor(&self) -> ConnectorDescriptor {
@@ -147,7 +151,14 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
             initialize_host_process()?, start(&f)?, rt.handle().clone(), &bound()?,
         ).await?;
         configure_private_listener(&mut host)?;
-        let provider = Arc::new(Provider::default());
+        // Answer empty on a short long-poll so a completed empty poll
+        // cycle is observable inside the test's real-time windows.
+        let provider = Arc::new(Provider {
+            wire: transport::Transport::default()
+                .with_empty_poll_timeout(Duration::from_millis(150)),
+            polled: Default::default(),
+            polls: AtomicU64::new(0),
+        });
         host.install_channel_transport(provider.clone())?;
         host.set_receiver_intervals(Duration::from_millis(200), Duration::from_millis(100))?;
         let listener = host.listen(rt.handle().clone(), &bound()?).await?;
@@ -210,10 +221,20 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
                         ).await?;
                         provider.wire.push(2, "Message at the first refill".into())?;
                         until(&channels, &id, |p| p.receipts.len() == 1).await?;
-                        // Eight hundred milliseconds of quiet crosses eight
-                        // injected poll cycles; the idle path has no rescan
-                        // period.
-                        tokio::time::sleep(Duration::from_millis(800)).await;
+                        // Observe a completed empty poll cycle before the next
+                        // delivery: two further poll starts mean the one in
+                        // between returned empty during this quiet window.
+                        let quiet_polls = provider.polls.load(Ordering::Relaxed);
+                        let quiet_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+                        loop {
+                            if provider.polls.load(Ordering::Relaxed) >= quiet_polls + 2 {
+                                break;
+                            }
+                            if tokio::time::Instant::now() >= quiet_deadline {
+                                return Err("No empty poll cycle completed during the quiet window".into());
+                            }
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
                         provider.wire.push(3, "Message after the channel was quiet".into())?;
                         let delivered = until(&channels, &id, |p| p.receipts.len() == 2).await?;
                         assert_ne!(delivered.receipts[0].message, delivered.receipts[1].message);
@@ -251,6 +272,7 @@ impl transport::FixturePoll for Provider {
         offset: Option<i64>,
     ) -> TransportFuture<'a, Vec<Incoming>> {
         Box::pin(async move {
+            self.polls.fetch_add(1, Ordering::Relaxed);
             self.polled
                 .lock()
                 .map_err(|_| ChannelError::ReceiverNotRunning)?
