@@ -114,6 +114,34 @@ pub(crate) fn stop_for_uninstall(
     dispatch_with_cold_recovery(cx, AnyOp::RuntimeDown(input), diagnostic, false)
 }
 
+/// One rule: remote work starts only when the merged answer would be used.
+///
+/// A whole-machine read never merges a host observation, a home with no
+/// published endpoint has nothing to ask, and a removed project reports its
+/// local removal view without consulting a host at all. Every exclusion here is
+/// knowable before the build, which is what lets the remaining request overlap
+/// it instead of running before it.
+fn uses_host_observation<S: Snapshot>(
+    cx: &Bootstrap,
+    files: &Files,
+    snapshot: &mut S,
+    caller: &admit::Caller,
+) -> bool {
+    if cx.selections.status_all {
+        return false;
+    }
+    if let se_store::Scope::Project(project) = &caller.admission.scope
+        && let Ok(Read::Present { value }) = snapshot.project(project.clone())
+        && se_core::ops::project_remove::removed_view(&value)
+            .ok()
+            .flatten()
+            .is_some()
+    {
+        return false;
+    }
+    matches!(endpoint(files), Ok(Read::Present { .. }))
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
@@ -211,13 +239,7 @@ fn dispatch_with_cold_recovery(
         // two to the longer of them.
         let reader_for_daemon = reader.clone();
         let selections_for_daemon = selections.clone();
-        // Only start work the result can actually be used for. A whole-machine
-        // read never merges a host observation, and a home with no published
-        // endpoint has nothing to ask, so neither may wait on a daemon it will
-        // discard. Everything needed here is knowable before the build, which is
-        // why the request can still overlap it.
-        let ask_daemon =
-            !cx.selections.status_all && matches!(endpoint(&files), Ok(Read::Present { .. }));
+        let ask_daemon = uses_host_observation(cx, &files, &mut snapshot, &caller);
         // The observation thread and the build borrow disjoint things: the
         // thread takes a clone of the reader, this frame keeps its own snapshot.
         let (mut output, observed) = std::thread::scope(|scope| {
