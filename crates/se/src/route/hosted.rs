@@ -99,6 +99,93 @@ fn forward_once<R: se_store::ReadStore>(
     }
 }
 
+/// The status observation as a request that a thread can own.
+///
+/// A status read may start this before its own local build and collect the
+/// answer only on the path that merges it, so every other path can return
+/// without waiting for a daemon that is slow, paused or gone. `ProjectStatus`
+/// neither autostarts a host nor prompts, so nothing here writes or asks: the
+/// request is one bounded read and its answer is advisory to the local build.
+pub(super) struct StatusRequest {
+    home: std::path::PathBuf,
+    endpoint: se_host::EndpointRecord,
+    credential: se_host::client::lease::ClientCredential,
+    selections: CliSelections,
+    presence: Option<se_host::client::presence::OwnerPresence>,
+    options: ClientOptions,
+}
+
+impl StatusRequest {
+    /// Read the endpoint, credential and native presence now, then hand the
+    /// owned request to a thread. Fails exactly where the ordinary forwarded
+    /// path fails, before any work is started.
+    pub(super) fn prepare(
+        cx: &Bootstrap,
+        files: &Files,
+        caller: &Caller,
+        selections: &CliSelections,
+    ) -> Result<Self> {
+        let endpoint = match execute::endpoint(files)? {
+            Read::Present { value } => value,
+            Read::Absent { .. } => {
+                return Err(SeError::new(se_types::Detail::RuntimeNotRunning(
+                    se_types::details::RuntimeNotRunning {
+                        op: AnyOp::ProjectStatus(se_core::ops::ProjectStatus { all: false })
+                            .meta()
+                            .name
+                            .into(),
+                        reason:
+                            "no live authenticated host endpoint is published in this data home"
+                                .into(),
+                    },
+                )));
+            }
+            Read::Unreadable { source, reason, .. } => {
+                return Err(scope::unreadable(&source, &reason));
+            }
+            Read::Unknown { what } => return Err(scope::unreadable("runtime endpoint", &what)),
+        };
+        let credential = execute::credential(cx, files)?;
+        let presence = caller.owner.as_ref().map(|owner| {
+            se_host::client::presence::OwnerPresence::from_observation(owner.native_observation())
+        });
+        Ok(Self {
+            home: cx.home.clone(),
+            endpoint,
+            credential,
+            selections: selections.clone(),
+            presence,
+            options: execute::options(),
+        })
+    }
+
+    /// The one bounded call. The image cache is restored here, on this thread,
+    /// so the worker holds no shared state the local path needs.
+    pub(super) fn run(self) -> Result<AnyOutput> {
+        let bound = Deadline::from_options(&self.options)?;
+        se_proc::native_ipc::restore_image_cache(
+            &self.home,
+            self.endpoint.image_sha256,
+            &bound.native_bound(),
+        )
+        .map_err(|error| {
+            scope::unreadable("protected executable cache", &error.to_string()).with_cause(error)
+        })?;
+        crate::ipc::forward_owned(
+            &self.endpoint,
+            self.credential,
+            AnyOp::ProjectStatus(se_core::ops::ProjectStatus { all: false }),
+            &self.selections,
+            self.presence,
+            &ClientOptions {
+                expected_generation: Some(self.endpoint.generation),
+                timeout: bound.remaining()?,
+                cancelled: Arc::clone(&bound.native_bound().cancelled),
+            },
+        )
+    }
+}
+
 /// Human confirmation changes only explicit takeover consent and binds the
 /// second request to the inventory that was shown before the answer.
 pub fn forward<R: se_store::ReadStore>(
