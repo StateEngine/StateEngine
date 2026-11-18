@@ -83,14 +83,16 @@ async fn until(
     id: &ChannelId,
     matches: impl Fn(&ChannelPage) -> bool,
 ) -> Result<ChannelPage, Box<dyn std::error::Error>> {
-    let limit = tokio::time::Instant::now() + Duration::from_secs(4);
+    // Outlast the receiver's five-second scan deadline: under CI load a
+    // legitimate scan can finish just past a shorter window.
+    let limit = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         let current = page(channels, id).await?;
         if matches(&current) {
             return Ok(current);
         }
         if tokio::time::Instant::now() >= limit {
-            return Err("Receiver did not deliver within four seconds".into());
+            return Err("Receiver did not deliver within fifteen seconds".into());
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -176,7 +178,8 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
                         &bound()?,
                     ).await?;
                     let id = connected.connection.id.clone();
-                    let discovery = tokio::time::Instant::now() + Duration::from_secs(4);
+                    // Same deadline rationale as the delivery window above.
+                    let discovery = tokio::time::Instant::now() + Duration::from_secs(15);
                     loop {
                         if provider.polled.lock().map_err(|_| "poll observations poisoned")?
                             .contains(token.as_bytes()) {
@@ -205,7 +208,9 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
                         ).await?;
                         provider.wire.push(2, "Message at the first refill".into())?;
                         until(&channels, &id, |p| p.receipts.len() == 1).await?;
-                        tokio::time::sleep(Duration::from_secs(11)).await;
+                        // Six seconds of quiet crosses six one-second poll
+                        // cycles; the idle path has no five-second period.
+                        tokio::time::sleep(Duration::from_secs(6)).await;
                         provider.wire.push(3, "Message after the channel was quiet".into())?;
                         let delivered = until(&channels, &id, |p| p.receipts.len() == 2).await?;
                         assert_ne!(delivered.receipts[0].message, delivered.receipts[1].message);
