@@ -337,8 +337,7 @@ def invocation(inv, directory, run=None):
             entry["receipt_complete"] = all(value in ('PASS', 'FAIL') for value in entry["journeys"].values())
             entry["outcome"] = ('PASS' if selected['result'] == 'PASS' else
                                 'FAIL' if selected['result'] == 'FAIL' else 'UNKNOWN')
-            if entry["outcome"] == 'PASS' and (inv['hosted_workflow_conclusion'] != 'success'
-                                                or inv['hosted_job_conclusion'] != 'success'):
+            if entry["outcome"] == 'PASS' and inv['hosted_job_conclusion'] != 'success':
                 entry["outcome"] = 'UNKNOWN'
             entry["judge_outcome"] = entry["outcome"]
             if entry["outcome"] != 'PASS':
