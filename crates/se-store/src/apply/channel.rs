@@ -61,6 +61,7 @@ pub(crate) fn apply(
     seq: i64,
     rev: u64,
     facts: Value,
+    channel_delay_us: i64,
 ) -> StoreResult<()> {
     if h.door != Door::Host || h.session.is_some() || !matches!(h.actor, Actor::Human(_)) {
         return Err(fail(
@@ -105,7 +106,7 @@ pub(crate) fn apply(
     | Change::OutputStarted { .. }
     | Change::OutputFinished { .. } = &change
     {
-        update::apply(c, h, &state, &change, seq)?;
+        update::apply(c, h, &state, &change, seq, channel_delay_us)?;
         return codec::aux(c, seq, facts);
     }
     let now: i64 = c

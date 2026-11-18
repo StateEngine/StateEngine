@@ -2,16 +2,6 @@
 use super::*;
 use crate::channel::{Disposition, OutputOutcome};
 
-/// The store's own delayed-status threshold; the schema default is the
-/// production sixty seconds and only trusted test homes shorten it.
-fn channel_delay_us(c: &Connection) -> StoreResult<i64> {
-    c.query_row(
-        "SELECT channel_delay_us FROM store_info WHERE singleton=1",
-        [],
-        |r| crate::sql_value::value(r, 0),
-    )
-    .map_err(sql)
-}
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
@@ -22,6 +12,7 @@ pub(super) fn apply(
     state: &ChannelConnection,
     change: &Change,
     seq: i64,
+    channel_delay_us: i64,
 ) -> StoreResult<()> {
     match change {
         Change::CursorAdvanced {
@@ -122,7 +113,7 @@ pub(super) fn apply(
                 )
                 .map_err(sql)?;
             let due = if pending {
-                Some(at.saturating_add(channel_delay_us(c)?))
+                Some(at.saturating_add(channel_delay_us))
             } else {
                 None
             };
@@ -159,8 +150,7 @@ pub(super) fn apply(
             }
             let scope = scope_key(c, &h.scope, false)?;
             let m = key(c, "message", message.as_str(), &scope, false)?;
-            let delay = channel_delay_us(c)?;
-            let due:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM channel_updates u JOIN events e ON e.seq=u.handled_seq JOIN events current ON current.seq=? WHERE u.connection_id=? AND u.message_id=? AND u.receipt_id IS NOT NULL AND e.recorded_at_us<=current.recorded_at_us-? AND NOT EXISTS(SELECT 1 FROM channel_outbox o WHERE o.connection_id=u.connection_id AND o.original_id=u.message_id AND o.kind='reply'))",crate::sql_value::sql_params![seq,state.id.as_str(),m,delay],|r|crate::sql_value::value(r,0)).map_err(sql)?;
+            let due:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM channel_updates u JOIN events e ON e.seq=u.handled_seq JOIN events current ON current.seq=? WHERE u.connection_id=? AND u.message_id=? AND u.receipt_id IS NOT NULL AND e.recorded_at_us<=current.recorded_at_us-? AND NOT EXISTS(SELECT 1 FROM channel_outbox o WHERE o.connection_id=u.connection_id AND o.original_id=u.message_id AND o.kind='reply'))",crate::sql_value::sql_params![seq,state.id.as_str(),m,channel_delay_us],|r|crate::sql_value::value(r,0)).map_err(sql)?;
             if !due {
                 return Err(invalid(
                     "delayed status is not due or a linked reply already exists",

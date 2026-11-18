@@ -220,6 +220,7 @@ pub(super) fn start_options(
 ) -> Result<se_host::HostStart, Box<dyn std::error::Error>> {
     Ok(se_host::HostStart {
         state_directory: f.options.state_directory.clone(),
+        channel_delay_us: se_store::CHANNEL_DELAY_US,
         epoch,
         kind: se_host::HostKind::Standalone,
         writer: WriterOptions {

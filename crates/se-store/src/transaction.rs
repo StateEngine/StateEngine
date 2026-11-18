@@ -28,6 +28,9 @@ pub(crate) struct Engine {
     pub maintenance: Option<Box<StoreError>>,
     pub backup: Option<BackupContext>,
     pub(crate) checkpoints: checkpoint::Schedule,
+    /// The channel delayed-status threshold applied by this writer's commits;
+    /// the production constant except in trusted in-process test homes.
+    pub(crate) channel_delay_us: i64,
 }
 #[derive(Default, Clone, Debug)]
 pub(crate) struct Phases {
@@ -539,6 +542,7 @@ impl Engine {
                     &apply::ApplyAuthority {
                         lease: &self.identity,
                         remote_launch: remote_launch.as_ref(),
+                        channel_delay_us: self.channel_delay_us,
                     },
                 )?;
                 seq

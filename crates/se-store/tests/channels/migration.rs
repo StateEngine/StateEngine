@@ -31,9 +31,6 @@ fn restore_schema_six(db: &rusqlite::Connection) -> Check {
     // The append-stamp column postdates schema six and re-derives from the
     // events table, so the downgrade discards it with the later objects.
     db.execute_batch("ALTER TABLE messages DROP COLUMN recorded_at_us")?;
-    // The delayed-status threshold column postdates schema six, so the
-    // downgrade discards it with the later objects.
-    db.execute_batch("ALTER TABLE store_info DROP COLUMN channel_delay_us")?;
     // Schema eight widened these constraints. Preserve the rows while restoring
     // the actual pre-upgrade tables, indices and immutable-history triggers.
     for table in [

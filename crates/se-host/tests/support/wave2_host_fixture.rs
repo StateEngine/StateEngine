@@ -85,6 +85,14 @@ pub fn credential(
     })
 }
 pub fn start(f: &Fixture) -> Result<HostStart, Box<dyn std::error::Error>> {
+    start_channel_delay(f, se_store::CHANNEL_DELAY_US)
+}
+/// The wave2 host start on a shortened channel delayed-status threshold,
+/// for the in-process judges that would otherwise wait out real time.
+pub fn start_channel_delay(
+    f: &Fixture,
+    channel_delay_us: i64,
+) -> Result<HostStart, Box<dyn std::error::Error>> {
     let machine = MachineId::new("read-phase-native-consumer")?;
     #[cfg(any(target_os = "linux", windows))]
     let boot = se_proc::current_runtime_identity(machine.clone())
@@ -95,6 +103,7 @@ pub fn start(f: &Fixture) -> Result<HostStart, Box<dyn std::error::Error>> {
     let peer = se_proc::native_ipc::observe_ipc_self()?;
     Ok(HostStart {
         state_directory: f.options.state_directory.clone(),
+        channel_delay_us,
         epoch: HostEpoch {
             owner: ProcessInstance::from_observation(ProcessFields {
                 machine,

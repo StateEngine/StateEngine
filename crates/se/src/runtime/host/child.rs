@@ -217,6 +217,7 @@ fn serve(
             initialized,
             se_host::HostStart {
                 state_directory: home,
+                channel_delay_us: se_store::CHANNEL_DELAY_US,
                 epoch,
                 kind: se_host::HostKind::Standalone,
                 writer: se_store::WriterOptions {

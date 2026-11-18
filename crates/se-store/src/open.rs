@@ -139,6 +139,64 @@ impl SqliteFactory {
     ) -> StoreResult<Read<SqliteReader>> {
         Self::existing_with_slots(options, crate::read_slots::ReadSlots::new(capacity)?)
     }
+    /// Trusted in-process test hook opening the host writer on a shortened
+    /// channel delayed-status threshold. Production keeps the sixty-second
+    /// constant and no user configuration surface grows.
+    #[doc(hidden)]
+    pub fn open_host_with_channel_delay(
+        o: &StoreOptions,
+        lease: &dyn RuntimeLease,
+        channel_delay_us: i64,
+    ) -> StoreResult<Read<SqliteHost>> {
+        if channel_delay_us <= 0 {
+            return Err(invalid("channel delay threshold must be positive"));
+        }
+        match Self::existing_protected(o, lease)? {
+            Read::Present { value: reader } => {
+                let db = connection::connect_checked(&reader.path, true, o.busy_timeout, |db| {
+                    reader.validate_connection(db)
+                })?;
+                let info = connection::info_at(&db, &reader.path)?;
+                let identity = connection::validate_lease(&info, lease, LeaseMode::Host)?;
+                let context = BackupContext::bound(
+                    &info,
+                    identity.generation,
+                    reader.path.clone(),
+                    reader.slots.clone(),
+                );
+                crate::migration::upgrade(&db, o, lease, context)?;
+                let reader_path = reader.path.clone();
+                Ok(Read::Present {
+                    value: SqliteHost::maintenance(
+                        reader,
+                        Engine {
+                            db,
+                            path: reader_path,
+                            timeout: o.busy_timeout,
+                            identity,
+                            poisoned: false,
+                            pending: Vec::new(),
+                            maintenance: None,
+                            backup: None,
+                            checkpoints: Default::default(),
+                            channel_delay_us,
+                        },
+                    )?,
+                })
+            }
+            Read::Absent { checked } => Ok(Read::Absent { checked }),
+            Read::Unreadable {
+                source,
+                reason,
+                error,
+            } => Ok(Read::Unreadable {
+                source,
+                reason,
+                error,
+            }),
+            Read::Unknown { what } => Ok(Read::Unknown { what }),
+        }
+    }
 }
 impl StoreFactory for SqliteFactory {
     type Reader = SqliteReader;
@@ -169,6 +227,7 @@ impl StoreFactory for SqliteFactory {
                             maintenance: None,
                             backup: None,
                             checkpoints: Default::default(),
+                            channel_delay_us: crate::CHANNEL_DELAY_US,
                         },
                     },
                 })
@@ -187,50 +246,7 @@ impl StoreFactory for SqliteFactory {
         }
     }
     fn open_host(o: &StoreOptions, lease: &dyn RuntimeLease) -> StoreResult<Read<Self::Host>> {
-        match Self::existing_protected(o, lease)? {
-            Read::Present { value: reader } => {
-                let db = connection::connect_checked(&reader.path, true, o.busy_timeout, |db| {
-                    reader.validate_connection(db)
-                })?;
-                let info = connection::info_at(&db, &reader.path)?;
-                let identity = connection::validate_lease(&info, lease, LeaseMode::Host)?;
-                let context = BackupContext::bound(
-                    &info,
-                    identity.generation,
-                    reader.path.clone(),
-                    reader.slots.clone(),
-                );
-                crate::migration::upgrade(&db, o, lease, context)?;
-                let reader_path = reader.path.clone();
-                Ok(Read::Present {
-                    value: SqliteHost::maintenance(
-                        reader,
-                        Engine {
-                            db,
-                            path: reader_path,
-                            timeout: o.busy_timeout,
-                            identity,
-                            poisoned: false,
-                            pending: Vec::new(),
-                            maintenance: None,
-                            backup: None,
-                            checkpoints: Default::default(),
-                        },
-                    )?,
-                })
-            }
-            Read::Absent { checked } => Ok(Read::Absent { checked }),
-            Read::Unreadable {
-                source,
-                reason,
-                error,
-            } => Ok(Read::Unreadable {
-                source,
-                reason,
-                error,
-            }),
-            Read::Unknown { what } => Ok(Read::Unknown { what }),
-        }
+        Self::open_host_with_channel_delay(o, lease, crate::CHANNEL_DELAY_US)
     }
     fn create_direct(
         o: &StoreOptions,
@@ -376,41 +392,6 @@ macro_rules! staging {
 }
 staging!(SqliteDirect);
 staging!(SqliteHost);
-impl SqliteDirect {
-    /// Trusted in-process test hook shortening the channel delayed-status
-    /// threshold for this store. Call it before the first writer commit;
-    /// production keeps the schema default and no user configuration
-    /// surface grows.
-    #[doc(hidden)]
-    pub fn set_channel_delay_us(
-        &mut self,
-        delay_us: i64,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<()> {
-        if delay_us <= 0 {
-            return Err(invalid("channel delay threshold must be positive"));
-        }
-        self.engine
-            .reopen(&self.reader.path, self.reader.timeout, lease)?;
-        connection::validate_lease(
-            &connection::info(&self.engine.db)?,
-            lease,
-            LeaseMode::DirectClient,
-        )?;
-        let changed = self
-            .engine
-            .db
-            .execute(
-                "UPDATE store_info SET channel_delay_us=? WHERE singleton=1",
-                [delay_us],
-            )
-            .map_err(sql)?;
-        if changed != 1 {
-            return Err(invalid("store_info singleton row missing"));
-        }
-        Ok(())
-    }
-}
 impl DirectStore for SqliteDirect {
     fn append(
         &mut self,

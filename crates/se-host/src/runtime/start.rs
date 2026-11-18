@@ -4,7 +4,7 @@ use super::*;
 use crate::client::lease::Deadline;
 use crate::state_files::{FilePolicy, Files};
 use se_core::store_error::store_error;
-use se_store::{HostStore, ReadStore, RuntimeLease, StateFiles, StoreFactory, WriterOwner};
+use se_store::{HostStore, ReadStore, RuntimeLease, StateFiles, WriterOwner};
 use se_types::{Generation, HostEpoch, Read, Result, SeError};
 use std::{fs::File, num::NonZeroU32, path::PathBuf, sync::Arc, time::Duration};
 use tokio::runtime::Handle;
@@ -34,6 +34,10 @@ pub fn initialize_host_process() -> Result<HostProcessInitialization> {
 }
 pub struct HostStart {
     pub state_directory: PathBuf,
+    /// The store's channel delayed-status threshold in microseconds for
+    /// this runtime's writer. Production callers pass
+    /// `se_store::CHANNEL_DELAY_US`; the in-process judges shorten it.
+    pub channel_delay_us: i64,
     /// Allocated from the caller's native current-process observation, never IPC.
     pub epoch: HostEpoch,
     pub kind: crate::HostKind,
@@ -284,8 +288,12 @@ fn prepare(
     peer.verify_instance(&options.epoch.owner, peer.image_sha256())
         .map_err(crate::client::lease::native_error)?;
     let mut host = present(
-        se_store::SqliteFactory::open_host(&store_options, lease.as_ref())
-            .map_err(|e| store_error(&e))?,
+        se_store::SqliteFactory::open_host_with_channel_delay(
+            &store_options,
+            lease.as_ref(),
+            options.channel_delay_us,
+        )
+        .map_err(|e| store_error(&e))?,
         "host store",
     )?;
     let facts = allocate_facts()?;

@@ -39,6 +39,10 @@ mod trusted_path;
 #[cfg(all(test, any(target_os = "linux", windows)))]
 mod write_tests;
 mod writer;
+/// The channel delayed-phone-status threshold in microseconds after the
+/// Saved commit at which the status becomes due. Production keeps this
+/// constant; only the in-process test hook opens a writer on a shorter one.
+pub const CHANNEL_DELAY_US: i64 = 60_000_000;
 pub use api::*;
 pub use event::*;
 pub use model::*;

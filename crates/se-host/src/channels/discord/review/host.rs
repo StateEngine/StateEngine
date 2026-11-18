@@ -40,6 +40,7 @@ fn start(f: &data::Fixture) -> Check<HostStart> {
     let peer = se_proc::native_ipc::observe_ipc_self()?;
     Ok(HostStart {
         state_directory: f.options.state_directory.clone(),
+        channel_delay_us: se_store::CHANNEL_DELAY_US,
         epoch: HostEpoch {
             owner: ProcessInstance::from_observation(ProcessFields {
                 machine,
