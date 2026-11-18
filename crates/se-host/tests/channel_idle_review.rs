@@ -22,6 +22,7 @@ use support::*;
 struct Provider {
     wire: transport::Transport,
     polled: Mutex<HashSet<Vec<u8>>>,
+    emptied: Mutex<HashSet<Vec<u8>>>,
 }
 impl ChannelTransport for Provider {
     fn descriptor(&self) -> ConnectorDescriptor {
@@ -147,8 +148,16 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
             initialize_host_process()?, start(&f)?, rt.handle().clone(), &bound()?,
         ).await?;
         configure_private_listener(&mut host)?;
-        let provider = Arc::new(Provider::default());
+        // Answer empty on a short long-poll so a completed empty poll
+        // cycle is observable inside the test's real-time windows.
+        let provider = Arc::new(Provider {
+            wire: transport::Transport::default()
+                .with_empty_poll_timeout(Duration::from_millis(150)),
+            polled: Default::default(),
+            emptied: Default::default(),
+        });
         host.install_channel_transport(provider.clone())?;
+        host.set_receiver_intervals(Duration::from_millis(200), Duration::from_millis(100))?;
         let listener = host.listen(rt.handle().clone(), &bound()?).await?;
         let channels = host.channels()?;
         let stop = host.local_stop();
@@ -157,11 +166,12 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
         )?;
         let client = async {
             let outcome = async {
-                // Cross two former periodic scans with no connections before the first refill.
-                tokio::time::sleep(Duration::from_secs(11)).await;
+                // Cross several injected rescan cycles with no connections
+                // before the first refill.
+                tokio::time::sleep(Duration::from_millis(800)).await;
                 for round in 0..64 {
                     if round > 0 && round % 16 == 0 {
-                        tokio::time::sleep(Duration::from_secs(6)).await;
+                        tokio::time::sleep(Duration::from_millis(800)).await;
                     }
                     tokio::time::sleep(Duration::from_micros((round % 8) * 175)).await;
                     let token = format!("123456:obviously_fake_receiver_control_{round:032}");
@@ -208,9 +218,30 @@ fn empty_receiver_transitions_and_long_idle_do_not_strand_connections_or_mail() 
                         ).await?;
                         provider.wire.push(2, "Message at the first refill".into())?;
                         until(&channels, &id, |p| p.receipts.len() == 1).await?;
-                        // Six seconds of quiet crosses six one-second poll
-                        // cycles; the idle path has no five-second period.
-                        tokio::time::sleep(Duration::from_secs(6)).await;
+                        // Observe a successful empty completion for this
+                        // connection before the next delivery; drop any
+                        // earlier observation so the gate only passes on a
+                        // poll that returned empty after the last delivery.
+                        provider
+                            .emptied
+                            .lock()
+                            .map_err(|_| "quiet observations poisoned")?
+                            .remove(token.as_bytes());
+                        let quiet_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+                        loop {
+                            if provider
+                                .emptied
+                                .lock()
+                                .map_err(|_| "quiet observations poisoned")?
+                                .contains(token.as_bytes())
+                            {
+                                break;
+                            }
+                            if tokio::time::Instant::now() >= quiet_deadline {
+                                return Err("No empty poll cycle completed during the quiet window".into());
+                            }
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                        }
                         provider.wire.push(3, "Message after the channel was quiet".into())?;
                         let delivered = until(&channels, &id, |p| p.receipts.len() == 2).await?;
                         assert_ne!(delivered.receipts[0].message, delivered.receipts[1].message);
@@ -252,7 +283,14 @@ impl transport::FixturePoll for Provider {
                 .lock()
                 .map_err(|_| ChannelError::ReceiverNotRunning)?
                 .insert(token.expose().to_vec());
-            transport::FixturePoll::poll(&self.wire, token, offset).await
+            let rows = transport::FixturePoll::poll(&self.wire, token, offset).await?;
+            if rows.is_empty() {
+                self.emptied
+                    .lock()
+                    .map_err(|_| ChannelError::ReceiverNotRunning)?
+                    .insert(token.expose().to_vec());
+            }
+            Ok(rows)
         })
     }
 }

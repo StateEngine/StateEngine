@@ -10,7 +10,6 @@ pub struct Sent {
     pub text: String,
     pub keyboard: Option<serde_json::Value>,
 }
-#[derive(Default)]
 pub struct Transport {
     rows: Mutex<Vec<Incoming>>,
     pub sent: Mutex<Vec<Sent>>,
@@ -18,8 +17,30 @@ pub struct Transport {
     pub lose_reply: AtomicBool,
     fail_poll: AtomicBool,
     next: AtomicI64,
+    empty_poll_timeout: std::time::Duration,
+}
+impl Default for Transport {
+    fn default() -> Self {
+        Self {
+            rows: Default::default(),
+            sent: Default::default(),
+            changed: Default::default(),
+            lose_reply: AtomicBool::new(false),
+            fail_poll: AtomicBool::new(false),
+            next: AtomicI64::new(0),
+            // A real phone long-poll holds for seconds before answering
+            // empty; the fixture keeps that behavior by default.
+            empty_poll_timeout: std::time::Duration::from_secs(25),
+        }
+    }
 }
 impl Transport {
+    /// Shorten the long-poll's empty answer for tests that must observe
+    /// completed empty poll cycles inside a short real-time window.
+    pub fn with_empty_poll_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.empty_poll_timeout = timeout;
+        self
+    }
     pub fn push(&self, update: i64, text: String) -> Result<(), ChannelError> {
         self.rows
             .lock()
@@ -175,7 +196,7 @@ impl FixturePoll for Transport {
                         return Ok(rows.iter().take(10).cloned().collect());
                     }
                 }
-                tokio::select! {_=&mut changed=>{},_=tokio::time::sleep(std::time::Duration::from_secs(25))=>return Ok(vec![])}
+                tokio::select! {_=&mut changed=>{},_=tokio::time::sleep(self.empty_poll_timeout)=>return Ok(vec![])}
             }
         })
     }

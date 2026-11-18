@@ -30,6 +30,8 @@ mod validation;
 pub use control::{Connected, Disconnected, PairingTicket};
 #[cfg(feature = "listener")]
 pub use service::Channels;
+#[cfg(feature = "listener")]
+pub(crate) use service::ReceiverIntervals;
 pub use validation::CHANNEL_CONSENT;
 mod coverage;
 pub use coverage::{ReceiveCoverage, ReceiveGap, ReceiveGapReason};

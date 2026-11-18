@@ -84,6 +84,7 @@ impl Channels {
     pub(crate) async fn run(
         self: Arc<Self>,
         mut stopped: watch::Receiver<Option<Deadline>>,
+        intervals: ReceiverIntervals,
     ) -> Result<()> {
         self.receiver_running
             .store(true, std::sync::atomic::Ordering::Release);
@@ -98,7 +99,7 @@ impl Channels {
         }
         let _running = Running(self.clone());
         let mut workers: HashMap<ChannelId, Receiver> = HashMap::new();
-        let rescan_period = Duration::from_secs(5);
+        let rescan_period = intervals.rescan;
         let mut timer = Some(tokio::time::interval(rescan_period));
         let changed = self.changed.notified();
         tokio::pin!(changed);
@@ -189,7 +190,7 @@ impl Channels {
                 let task = tokio::spawn(async move {
                     let mut backoff = Duration::from_secs(1);
                     let mut receiver = None;
-                    let mut output_timer = tokio::time::interval(Duration::from_secs(1));
+                    let mut output_timer = tokio::time::interval(intervals.poll);
                     output_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     loop {
                         let deadline = super::service::deadline(Duration::from_secs(30))?;
@@ -211,7 +212,7 @@ impl Channels {
                             service.maintain(id.clone()).await?;
                             backoff = Duration::from_secs(1);
                             if !received {
-                                tokio::select! {_=tokio::time::sleep(Duration::from_secs(1))=>{},_=signal.changed()=>break};
+                                tokio::select! {_=tokio::time::sleep(intervals.poll)=>{},_=signal.changed()=>break};
                             }
                             continue;
                         }

@@ -15,6 +15,23 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+/// The channel receiver's periodic cycles: how often the loop rescans for
+/// committed connections, and how often a worker polls its transport. The
+/// production defaults live here; the in-process test hook shortens them
+/// without adding a user-visible configuration surface.
+#[derive(Clone, Copy)]
+pub(crate) struct ReceiverIntervals {
+    pub rescan: std::time::Duration,
+    pub poll: std::time::Duration,
+}
+impl Default for ReceiverIntervals {
+    fn default() -> Self {
+        Self {
+            rescan: std::time::Duration::from_secs(5),
+            poll: std::time::Duration::from_secs(1),
+        }
+    }
+}
 pub struct Channels {
     pub(super) context: ExecutionContext,
     pub(super) configuration: Option<se_config::config_policy::ConfigFile>,

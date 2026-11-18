@@ -72,4 +72,23 @@ impl crate::HostedRuntime {
         self.channel_transport = Some(transport);
         Ok(())
     }
+    /// Trusted in-process test hook shortening the channel receiver's rescan
+    /// and poll cycles. Call it before `listen`; production keeps the
+    /// ReceiverIntervals defaults and no user configuration surface grows.
+    #[cfg(feature = "listener")]
+    #[doc(hidden)]
+    pub fn set_receiver_intervals(
+        &mut self,
+        rescan: std::time::Duration,
+        poll: std::time::Duration,
+    ) -> se_types::Result<()> {
+        if self.phase != crate::HostPhase::Prepared || self.channels.get().is_some() {
+            return Err(se_types::SeError::invalid(
+                "channel receiver intervals",
+                "set before Channels construction and listener publication",
+            ));
+        }
+        self.receiver_intervals = crate::channels::ReceiverIntervals { rescan, poll };
+        Ok(())
+    }
 }
