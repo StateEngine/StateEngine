@@ -239,7 +239,11 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
 pub(super) fn remember(stamp: ImageKey, digest: Sha256) -> IpcNativeResult<()> {
     remember_held(stamp, digest, None)
 }
-fn remember_held(stamp: ImageKey, digest: Sha256, held: Option<File>) -> IpcNativeResult<()> {
+pub(super) fn remember_held(
+    stamp: ImageKey,
+    digest: Sha256,
+    held: Option<File>,
+) -> IpcNativeResult<()> {
     if !stamp.reusable() && held.is_none() {
         return Ok(());
     }
