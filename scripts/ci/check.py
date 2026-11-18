@@ -7,7 +7,10 @@ import sys
 def accepted(jobs, guard=False):
     """Guard mode is a main push: the merge queue already ran the suite on this tree."""
     expected = {"changes", "linux-route", "linux-box", "fmt", "clippy", "windows-clippy", "archive", "test", "macos-test"}
-    if not expected <= set(jobs) <= expected | {"remote-test"} or jobs["changes"]["result"] != "success":
+    native = {"windows-archive", "windows-test"}
+    if not expected <= set(jobs) <= expected | native | {"remote-test"} or jobs["changes"]["result"] != "success":
+        return False
+    if native & set(jobs) and not native <= set(jobs):
         return False
     outputs = jobs["changes"].get("outputs", {})
     if outputs.get("rust") == "false":
@@ -32,6 +35,10 @@ def accepted(jobs, guard=False):
         if windows != "skipped":
             return False
     elif windows != "success" and not (windows == "skipped" and box_windows):
+        return False
+    # The native Windows suite is required wherever it applies; a main push relies on the queue run.
+    native_result = "skipped" if guard or outputs.get("windows") == "false" else "success"
+    if any(jobs[n].get("result") != native_result for n in native & set(jobs)):
         return False
     linux = [jobs[n]["result"] for n in ("fmt", "clippy", "archive") + (() if guard else ("test",))]
     if route == "box" and routing["result"] == "success":
