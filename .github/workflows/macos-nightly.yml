@@ -1,4 +1,4 @@
-name: Native macOS nightly account-free smoke
+name: Native macOS nightly journeys
 'on':
   workflow_dispatch:
     inputs:
@@ -84,7 +84,7 @@ jobs:
         \ 'a') as out:\n    out.write('sha256=' + hashlib.sha256(path.read_bytes()).hexdigest() + '\\n')\nwith open(os.environ['GITHUB_STEP_SUMMARY'],\
         \ 'a') as out:\n    out.write('Native-only macOS sibling source: `' + value['nightly']['product_commit'] + '`\\n\\\
         n')\n    out.write('Linux archive binding: `' + value['nightly']['linux_archive_sha256'] + '`\\n\\n')\n    out.write('Native\
-        \ archive: `' + value['archive_sha256'] + '`\\n\\nRemote bootstrap images and providers are unmeasured.\\n')\nPY\n"
+        \ archive: `' + value['archive_sha256'] + '`\\n\\nRemote bootstrap images are unmeasured.\\n')\nPY\n"
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
         name: native-nightly-package
@@ -137,7 +137,7 @@ jobs:
         \ / 'observer-source.json')\npath = evidence / 'results.json'\nvalue = json.loads(path.read_text()) if path.exists()\
         \ else {'account_free_result': 'FAIL', 'reason': 'No smoke receipt'}\nwith open(os.environ['GITHUB_STEP_SUMMARY'],\
         \ 'a') as out:\n    out.write('Account-free macOS smoke: **' + value.get('account_free_result', 'FAIL') + '**\\n\\\
-        n')\n    out.write('Real Claude and Codex journeys: **NOT RUN**. Desktop windows and remote bootstrap images: **NOT\
+        n')\n    out.write('Real provider results are published by the separate matrix. Desktop windows and remote bootstrap images: **NOT\
         \ RUN**.\\n')\nPY\npython3 -B \"$GITHUB_WORKSPACE/controller/journeys/hosted_macos/collect.py\" --source \"$RUNNER_TEMP/evidence\"\
         \ --out \"$RUNNER_TEMP/upload\"\n"
     - name: Retain finite account-free-macos-receipts
@@ -148,73 +148,100 @@ jobs:
         path: ${{ runner.temp }}/upload/*
         if-no-files-found: error
         retention-days: 7
-  unmeasured:
-    name: Publish NOT RUN provider receipts
-    if: ${{ always() }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
+  providers:
+    name: Real macOS provider journeys (${{ matrix.provider }})
+    needs: package
+    if: ${{ github.ref == 'refs/heads/main' }}
+    environment: nightly-providers
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [claude, codex]
     steps:
     - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
       with:
         python-version: '3.12'
     - *id001
     - *id002
-    - name: Write provider matrices as NOT RUN without accessing credentials
-      run: "for surface in codex claude; do\n  python3 -B \"$GITHUB_WORKSPACE/controller/journeys/hosted_macos/five_journeys.py\"\
-        \ --mode provider-not-run --surface \"$surface\" --binding \"$RUNNER_TEMP/nightly-binding.json\" --out \"$RUNNER_TEMP/reports/$surface\"\
-        \ndone\npython3 -B - <<'PY'\nimport json, os\nfrom pathlib import Path\nroot = Path(os.environ['RUNNER_TEMP'])\nwith\
-        \ open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:\n    out.write('| Provider | Journey | Result |\\n|---|---|---|\\\
-        n')\n    for surface in ('codex', 'claude'):\n        value = json.loads((root / 'reports' / surface / 'results.json').read_text())\n\
-        \        if value['result'] != 'NOT RUN' or len(value['rows']) != 5 or any(row['result'] != 'NOT RUN' for row in value['rows']):\n\
-        \            raise RuntimeError('Unexecuted provider coverage must not turn green')\n        for row in value['rows']:\n\
-        \            out.write('| ' + surface + ' | ' + row['name'] + ' | NOT RUN |\\n')\n    out.write('\\nReceipt production\
-        \ can succeed; provider qualification remains unmeasured. Credentials and spending cap await approval.\\n')\nPY\n"
-    - name: Retain finite provider-not-run-receipts
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: StateEngine/StateEngine
+        ref: ${{ steps.binding.outputs.product_commit }}
+        path: product
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: native-nightly-package
+        path: ${{ runner.temp }}/package-transfer
+    - name: Register the disposable native installation account
+      run: |
+        identity="$(id -u)"
+        profile="$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')"
+        sudo python3 product/scripts/ci/installation_account.py provision --identity "$identity" --profile "$profile"
+        python3 product/scripts/ci/installation_account.py check
+    - name: Install the pinned provider client
+      env:
+        SURFACE: ${{ matrix.provider }}
+      run: |
+        case "$SURFACE" in
+          claude) package='@anthropic-ai/claude-code@2.1.326' ;;
+          codex) package='@openai/codex@0.169.0' ;;
+        esac
+        npm install --prefix "$RUNNER_TEMP/native-provider" "$package"
+        printf '%s\n' "$RUNNER_TEMP/native-provider/node_modules/.bin" >> "$GITHUB_PATH"
+    - name: Run five real provider journeys
+      env:
+        SURFACE: ${{ matrix.provider }}
+        PACKAGE_SHA256: ${{ needs.package.outputs.sha256 }}
+        CI_ANTHROPIC_API_KEY: ${{ matrix.provider == 'claude' && secrets.CI_ANTHROPIC_API_KEY || '' }}
+        CI_OPENAI_API_KEY: ${{ matrix.provider == 'codex' && secrets.CI_OPENAI_API_KEY || '' }}
+        CI_CLAUDE_MODEL: ${{ vars.CI_CLAUDE_MODEL }}
+        CI_CODEX_MODEL: ${{ vars.CI_CODEX_MODEL }}
+      run: |
+        python3 -B controller/journeys/hosted_macos/providers.py --surface "$SURFACE" \
+          --binding "$RUNNER_TEMP/nightly-binding.json" --package "$RUNNER_TEMP/package-transfer" \
+          --package-sha256 "$PACKAGE_SHA256" --account-registration "$GITHUB_WORKSPACE/product/scripts/ci/installation_account.py" \
+          --out "$RUNNER_TEMP/provider-evidence"
+    - name: Delete the disposable provider seed
+      if: ${{ always() }}
+      run: |
+        python3 -B - <<'PY'
+        import os, shutil
+        from pathlib import Path
+        seed = Path(os.environ['RUNNER_TEMP']).resolve() / 'provider-evidence/seed'
+        try:
+            shutil.rmtree(seed)
+        except FileNotFoundError:
+            pass
+        if seed.exists() or seed.is_symlink():
+            raise RuntimeError('Private seed cleanup failed')
+        PY
+    - name: Publish the bounded native provider receipt
       if: ${{ always() }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
-        name: provider-not-run-receipts
-        path: ${{ runner.temp }}/reports/*/results.json
+        name: macos-nightly-proof-${{ matrix.provider }}
+        path: ${{ runner.temp }}/provider-evidence/publish/results.json
         if-no-files-found: error
         retention-days: 7
-  codex:
-    name: "Codex real-provider journeys \u2014 NOT RUN (credential decision pending)"
-    if: ${{ false }}
-    runs-on: macos-15
-    timeout-minutes: 1
-    steps:
-    - run: 'echo "NOT RUN: provider execution awaits approval and a real provider adapter"
-
-        exit 78
-
-        '
-  claude:
-    name: "Claude real-provider journeys \u2014 NOT RUN (credential decision pending)"
-    if: ${{ false }}
-    runs-on: macos-15
-    timeout-minutes: 1
-    steps:
-    - run: 'echo "NOT RUN: provider execution awaits approval and a real provider adapter"
-
-        exit 78
-
-        '
   gate:
-    name: Require successful account-free macOS smoke
+    name: Require successful native macOS smoke and both providers
     if: ${{ always() }}
-    needs:
-    - package
-    - smoke
-    - unmeasured
+    needs: [package, smoke, providers]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
-    - name: Reject failed, canceled or skipped smoke and receipts
+    - name: Require witnessed package, smoke and provider success
       env:
-        SMOKE_RESULT: ${{ needs.smoke.result }}
         PACKAGE_RESULT: ${{ needs.package.result }}
-        RECEIPTS_RESULT: ${{ needs.unmeasured.result }}
-      run: "if [[ \"$SMOKE_RESULT\" != success ]]; then\n  printf 'Account-free macOS smoke did not pass: %s\n' \"$SMOKE_RESULT\"\
-        \ >&2\n  exit 1\nfi\nif [[ \"$PACKAGE_RESULT\" != success || \"$RECEIPTS_RESULT\" != success ]]; then\n  printf 'Package\
-        \ or NOT RUN receipts failed: package=%s receipts=%s\n' \"$PACKAGE_RESULT\" \"$RECEIPTS_RESULT\" >&2\n  exit 1\nfi\n\
-        printf 'Account-free macOS smoke gate: PASS. Real-provider journeys: NOT RUN.\n' >> \"$GITHUB_STEP_SUMMARY\"\n"
+        SMOKE_RESULT: ${{ needs.smoke.result }}
+        PROVIDERS_RESULT: ${{ needs.providers.result }}
+      run: |
+        if [[ "$PACKAGE_RESULT" != success || "$SMOKE_RESULT" != success || "$PROVIDERS_RESULT" != success ]]; then
+          printf 'macOS nightly incomplete: package=%s smoke=%s providers=%s\n' \
+            "$PACKAGE_RESULT" "$SMOKE_RESULT" "$PROVIDERS_RESULT" >&2
+          exit 1
+        fi
+        printf 'Native macOS nightly: account-free smoke and both real provider rows passed.\n' >> "$GITHUB_STEP_SUMMARY"
