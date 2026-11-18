@@ -1,46 +1,46 @@
-//! Protects: 2026-11-18 ruling — two mechanical test rules. Fixed sleeps in test code may only
-//! go down: the number of thread::sleep and time::sleep call sites under `crates/*/tests` may
-//! not grow past the checked-in ceiling, and a new wait must use a real signal instead of a
-//! fixed delay. Every `#[ignore]` in the workspace must carry its reason using Rust's built-in
-//! `#[ignore = "why"]` form; a bare `#[ignore]` refuses.
+//! Mechanical test-hygiene guards, enforced in CI.
 //!
-//! Both checks recognize Rust syntax: each file is lexed first, so line and block comments and
-//! string, raw string, and char literals are opaque — text inside them can neither hide a bare
-//! ignore nor inflate the sleep count. Spaced call forms such as `std :: thread :: sleep(..)`
-//! are counted, and a call made through an import (`use std::thread::sleep;` then `sleep(..)`)
-//! is counted while the import alone is not. Files are scanned per file; an import in one file
-//! never counts calls in another.
+//! Two 2026-11-18 rulings, made mechanical: the count of fixed-sleep call sites under
+//! `crates/*/tests` may not grow past the checked-in ceiling, and a new wait must use a
+//! real signal instead of a fixed delay. Every `#[ignore]` in the workspace must carry
+//! its reason using Rust's built-in `#[ignore = "why"]` form; a bare `#[ignore]` refuses.
+//!
+//! Both checks parse each file with `syn`, the maintained Rust parser, so comments and
+//! every string, raw string, C string, and char literal form are opaque to the rules, and
+//! `use` imports resolve within their module scope: grouped and aliased imports count
+//! their bare calls, an import inside one module never binds another, and a local item
+//! named `sleep` shadows any import. A macro body is a token stream the parser does not
+//! walk, so a sleep call in one, such as a `tokio::select!` arm, is matched by its token
+//! pattern on the lexer's own output. A file that does not parse is a failure, named.
 
+use proc_macro2::{Delimiter, TokenTree};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Checked-in ceiling for fixed-sleep call sites under `crates/*/tests`, counted 2026-11-18 on
-/// main bbec2cfa5 with the syntax-aware lexer. It may only go down: when you remove fixed
-/// sleeps, lower it to the new total.
+use syn::spanned::Spanned;
+use syn::visit::Visit;
+use syn::{Attribute, Expr, File, Item, Meta, UseTree, visit};
+
+/// Checked-in ceiling for fixed-sleep call sites under `crates/*/tests`, counted 2026-11-18
+/// on main bbec2cfa5 with the syn-based scanner. It may only go down: when you remove
+/// fixed sleeps, lower it to the new total.
 const MAX_FIXED_TEST_SLEEPS: usize = 109;
 
 fn workspace_root() -> PathBuf {
-    fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap_or_else(|error| {
-        panic!("test-hygiene-rules: cannot resolve workspace root: {error}")
-    })
+    match std::env::var("CARGO_MANIFEST_DIR") {
+        Ok(dir) => fs::canonicalize(Path::new(&dir).join("../..")).unwrap_or_else(|error| {
+            panic!("test-hygiene-rules: cannot resolve the workspace root from {dir}: {error}")
+        }),
+        Err(_) => panic!("test-hygiene-rules: CARGO_MANIFEST_DIR is not set; run through cargo"),
+    }
 }
 
 fn collect_rs(dir: &Path, found: &mut Vec<PathBuf>) {
-    let entries = fs::read_dir(dir).unwrap_or_else(|error| {
-        panic!(
-            "test-hygiene-rules: cannot read directory {}: {}",
-            dir.display(),
-            error
-        )
-    });
-    for entry in entries {
-        let entry = entry.unwrap_or_else(|error| {
-            panic!(
-                "test-hygiene-rules: cannot read entry in {}: {}",
-                dir.display(),
-                error
-            )
-        });
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
             collect_rs(&path, found);
@@ -50,28 +50,18 @@ fn collect_rs(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
+/// Every `.rs` file under `crates/*/src` and/or `crates/*/tests`, in a stable order.
 fn crate_trees(crates_dir: &Path, trees: &[&str]) -> Vec<PathBuf> {
-    let crate_entries = fs::read_dir(crates_dir).unwrap_or_else(|error| {
-        panic!(
-            "test-hygiene-rules: cannot read {}: {}",
-            crates_dir.display(),
-            error
-        )
-    });
     let mut files = Vec::new();
-    for crate_entry in crate_entries {
-        let crate_entry = crate_entry.unwrap_or_else(|error| {
-            panic!(
-                "test-hygiene-rules: cannot read entry in {}: {}",
-                crates_dir.display(),
-                error
-            )
-        });
+    let Ok(crate_dirs) = fs::read_dir(crates_dir) else {
+        return files;
+    };
+    for crate_dir in crate_dirs.flatten() {
+        if !crate_dir.path().is_dir() {
+            continue;
+        }
         for tree in trees {
-            let root = crate_entry.path().join(tree);
-            if root.is_dir() {
-                collect_rs(&root, &mut files);
-            }
+            collect_rs(&crate_dir.path().join(tree), &mut files);
         }
     }
     files.sort();
@@ -89,598 +79,405 @@ fn read_source(path: &Path) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn line_of(src: &str, byte_pos: usize) -> usize {
-    src[..byte_pos.min(src.len())]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count()
-        + 1
+/// A module's name bindings, as far as these guards care.
+#[derive(Clone, Default)]
+struct ModuleScope {
+    /// A name bound by an explicit `use` in this module; true when the imported path ends
+    /// in `thread::sleep` or `time::sleep`.
+    imports: HashMap<String, bool>,
+    /// Whether each glob `use` imports from a module named `thread` or `time`.
+    globs: Vec<bool>,
+    /// Names declared as items in this module; they shadow imports from outer modules.
+    locals: HashSet<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
-    Ident,
-    Colon,
-    ColonColon,
-    OpenParen,
-    OpenBracket,
-    CloseBracket,
-    Hash,
-    Eq,
-    Star,
-    Semi,
-    Literal,
-    Comment,
-    Other,
+fn is_sleep_binding(segments: &[String]) -> bool {
+    segments.len() >= 2
+        && matches!(
+            (
+                segments[segments.len() - 2].as_str(),
+                segments[segments.len() - 1].as_str()
+            ),
+            ("thread", "sleep") | ("time", "sleep")
+        )
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Tok {
-    kind: Kind,
-    start: usize,
-    len: usize,
-}
-
-impl Tok {
-    fn text<'a>(&self, src: &'a str) -> &'a str {
-        &src[self.start..self.start + self.len]
-    }
-
-    fn is_ident(&self, src: &str, name: &str) -> bool {
-        self.kind == Kind::Ident && self.text(src) == name
-    }
-}
-
-fn is_ident_start(c: char) -> bool {
-    c.is_ascii_alphabetic() || c == '_'
-}
-
-fn is_ident_part(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '_'
-}
-
-fn is_raw_string_start(bytes: &[u8], i: usize) -> bool {
-    if bytes.get(i) != Some(&b'r') {
-        return false;
-    }
-    let mut j = i + 1;
-    while bytes.get(j) == Some(&b'#') {
-        j += 1;
-    }
-    bytes.get(j) == Some(&b'"')
-}
-
-fn char_literal_end(bytes: &[u8], src: &str, i: usize) -> Option<usize> {
-    // i points at the opening quote. Returns the index just past the closing quote.
-    let mut j = i + 1;
-    if j >= bytes.len() {
-        return None;
-    }
-    if bytes[j] == b'\\' {
-        j += 1;
-        if j >= bytes.len() {
-            return None;
+fn collect_use(tree: &UseTree, prefix: &mut Vec<String>, scope: &mut ModuleScope) {
+    match tree {
+        UseTree::Path(use_path) => {
+            prefix.push(use_path.ident.to_string());
+            collect_use(&use_path.tree, prefix, scope);
         }
-        match bytes[j] {
-            b'u' if bytes.get(j + 1) == Some(&b'{') => {
-                j += 2;
-                while j < bytes.len() && bytes[j] != b'}' {
-                    j += 1;
-                }
-                if j >= bytes.len() {
-                    return None;
-                }
-                j += 1;
+        UseTree::Name(use_name) => {
+            let mut full = prefix.clone();
+            full.push(use_name.ident.to_string());
+            scope
+                .imports
+                .insert(use_name.ident.to_string(), is_sleep_binding(&full));
+        }
+        UseTree::Rename(use_rename) => {
+            let mut full = prefix.clone();
+            full.push(use_rename.ident.to_string());
+            scope
+                .imports
+                .insert(use_rename.rename.to_string(), is_sleep_binding(&full));
+        }
+        UseTree::Glob(_) => {
+            scope.globs.push(matches!(
+                prefix.last().map(String::as_str),
+                Some("thread") | Some("time")
+            ));
+        }
+        UseTree::Group(use_group) => {
+            for tree in &use_group.items {
+                collect_use(tree, prefix, scope);
             }
-            b'x' => {
-                j += 3;
-                if j + 1 > bytes.len() {
-                    return None;
-                }
-                j -= 1;
-            }
-            _ => j += 1,
         }
-    } else {
-        let c = src[j..].chars().next()?;
-        if c == '\'' {
-            return None; // not a literal: a lifetime
-        }
-        j += c.len_utf8();
-    }
-    if bytes.get(j) == Some(&b'\'') {
-        Some(j + 1)
-    } else {
-        None
     }
 }
 
-fn line_comment_end(bytes: &[u8], start: usize) -> usize {
-    let mut j = start + 2;
-    while j < bytes.len() && bytes[j] != b'\n' {
-        j += 1;
+fn item_name(item: &Item) -> Option<String> {
+    match item {
+        Item::Fn(fn_item) => Some(fn_item.sig.ident.to_string()),
+        Item::Struct(struct_item) => Some(struct_item.ident.to_string()),
+        Item::Enum(enum_item) => Some(enum_item.ident.to_string()),
+        Item::Trait(trait_item) => Some(trait_item.ident.to_string()),
+        Item::Type(type_item) => Some(type_item.ident.to_string()),
+        Item::Const(const_item) => Some(const_item.ident.to_string()),
+        Item::Static(static_item) => Some(static_item.ident.to_string()),
+        Item::Union(union_item) => Some(union_item.ident.to_string()),
+        Item::Mod(mod_item) => Some(mod_item.ident.to_string()),
+        _ => None,
     }
-    j
 }
 
-fn block_comment_end(bytes: &[u8], start: usize) -> Option<usize> {
-    let mut j = start + 2;
-    let mut depth = 1usize;
-    while depth > 0 {
-        if j >= bytes.len() {
-            return None;
-        }
-        if bytes[j] == b'/' && bytes.get(j + 1) == Some(&b'*') {
-            depth += 1;
-            j += 2;
-        } else if bytes[j] == b'*' && bytes.get(j + 1) == Some(&b'/') {
-            depth -= 1;
-            j += 2;
-        } else {
-            j += 1;
-        }
+fn item_attrs(item: &Item) -> &[Attribute] {
+    match item {
+        Item::Fn(fn_item) => &fn_item.attrs,
+        Item::Const(const_item) => &const_item.attrs,
+        Item::Static(static_item) => &static_item.attrs,
+        Item::Struct(struct_item) => &struct_item.attrs,
+        Item::Enum(enum_item) => &enum_item.attrs,
+        Item::Union(union_item) => &union_item.attrs,
+        Item::Trait(trait_item) => &trait_item.attrs,
+        Item::TraitAlias(trait_alias_item) => &trait_alias_item.attrs,
+        Item::Type(type_item) => &type_item.attrs,
+        Item::Mod(mod_item) => &mod_item.attrs,
+        Item::ForeignMod(foreign_mod) => &foreign_mod.attrs,
+        Item::Impl(impl_item) => &impl_item.attrs,
+        Item::Use(use_item) => &use_item.attrs,
+        Item::Macro(macro_item) => &macro_item.attrs,
+        // syn::Item is non-exhaustive; an unknown item form carries no checkable attrs.
+        _ => &[],
     }
-    Some(j)
 }
 
-/// Given the start of a string-literal token (a bare `"` or the `r`, `b`, `br`, or `c`
-/// prefix), returns the index just past the literal's end. Returns None when the literal is
-/// unterminated.
-fn string_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
-    let is_byte_raw = bytes.get(start) == Some(&b'b') && bytes.get(start + 1) == Some(&b'r');
-    let raw = is_byte_raw || bytes.get(start) == Some(&b'r');
-    let mut q = start + if is_byte_raw { 2 } else { 1 };
-    if raw {
-        let mut hashes = 0usize;
-        while bytes.get(q) == Some(&b'#') {
-            hashes += 1;
-            q += 1;
-        }
-        if bytes.get(q) != Some(&b'"') {
-            return None;
-        }
-        let mut k = q + 1;
-        while k < bytes.len() {
-            if bytes[k] == b'"' {
-                let mut h = 0usize;
-                let mut n = k + 1;
-                while n < bytes.len() && bytes[n] == b'#' && h < hashes {
-                    h += 1;
-                    n += 1;
-                }
-                if h == hashes {
-                    return Some(n);
-                }
-            }
-            k += 1;
-        }
-        return None;
-    }
-    if bytes.get(start) != Some(&b'"') {
-        // Called through a `b"..."` or `c"..."` prefix: q is on the opening quote.
-        q += 1;
-    }
-    while q < bytes.len() && bytes[q] != b'"' {
-        q += if bytes[q] == b'\\' { 2 } else { 1 };
-    }
-    (q < bytes.len()).then_some(q + 1)
+/// Every call site in an item, as (callee path segment names, line).
+struct CallFinder {
+    sites: Vec<(Vec<String>, usize)>,
+    /// The module scope chain in effect where the visited item sits, used to resolve
+    /// bare `sleep` calls inside macro bodies.
+    chain: Vec<ModuleScope>,
 }
 
-fn ident_end(src: &str, i: usize) -> usize {
-    let mut j = i + 1;
-    while j < src.len() {
-        let Some(next) = src[j..].chars().next() else {
-            break;
-        };
-        if !is_ident_part(next) {
-            break;
+impl<'ast> Visit<'ast> for CallFinder {
+    fn visit_expr(&mut self, expr: &'ast Expr) {
+        if let Expr::Call(call) = expr
+            && let Expr::Path(path) = &*call.func
+        {
+            let segments: Vec<String> = path
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect();
+            let line = path.path.span().start().line;
+            self.sites.push((segments, line));
         }
-        j += next.len_utf8();
+        visit::visit_expr(self, expr);
     }
-    j
-}
 
-/// Lexes Rust source into tokens. Comments and literals become opaque tokens whose text the
-/// checks never inspect. String, byte string, C string, and their raw forms are all consumed
-/// as single opaque literals. Panics with the file and line when the source is not even
-/// tokenizable (an unterminated string, raw string, char literal, or block comment).
-fn tokenize(src: &str, path: &Path) -> Vec<Tok> {
-    let bytes = src.as_bytes();
-    let mut toks = Vec::new();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let Some(c) = src[i..].chars().next() else {
-            break;
-        };
-        // String-literal prefix: r" / r# (and hashes), b" (byte), br# (byte raw), c" (C).
-        let prefix = match c {
-            'r' if is_raw_string_start(bytes, i) => 1,
-            'b' if bytes.get(i + 1) == Some(&b'"') => 1,
-            'b' if is_raw_string_start(bytes, i + 1) => 2,
-            'c' if bytes.get(i + 1) == Some(&b'"') => 1,
-            _ => 0,
-        };
-        if prefix > 0 {
-            let Some(end) = string_literal_end(bytes, i) else {
-                panic!(
-                    "test-hygiene-rules: unterminated string literal at {}:{}",
-                    path.display(),
-                    line_of(src, i)
-                );
-            };
-            toks.push(Tok {
-                kind: Kind::Literal,
-                start: i,
-                len: end - i,
-            });
-            i = end;
-            continue;
-        }
-        let start = i;
-        let kind = match c {
-            ' ' | '\t' | '\n' | '\r' => {
-                i += 1;
-                continue;
-            }
-            '/' if bytes.get(i + 1) == Some(&b'/') => {
-                i = line_comment_end(bytes, i);
-                Kind::Comment
-            }
-            '/' if bytes.get(i + 1) == Some(&b'*') => {
-                let Some(end) = block_comment_end(bytes, i) else {
-                    panic!(
-                        "test-hygiene-rules: unterminated block comment at {}:{}",
-                        path.display(),
-                        line_of(src, i)
-                    );
-                };
-                i = end;
-                Kind::Comment
-            }
-            '"' => {
-                let Some(end) = string_literal_end(bytes, i) else {
-                    panic!(
-                        "test-hygiene-rules: unterminated string at {}:{}",
-                        path.display(),
-                        line_of(src, i)
-                    );
-                };
-                i = end;
-                Kind::Literal
-            }
-            '\'' => match char_literal_end(bytes, src, i) {
-                Some(end) => {
-                    i = end;
-                    Kind::Literal
-                }
-                None => {
-                    i += 1;
-                    Kind::Other // a lifetime
-                }
-            },
-            _ => {
-                let (next_kind, end) = simple_token(c, src, bytes, i);
-                i = end;
-                next_kind
-            }
-        };
-        toks.push(Tok {
-            kind,
-            start,
-            len: i - start,
-        });
-    }
-    toks
-}
-
-/// Kind and end position of a token that neither opens a literal nor a comment: punctuation,
-/// a lifetime quote, or an identifier.
-fn simple_token(c: char, src: &str, bytes: &[u8], i: usize) -> (Kind, usize) {
-    match c {
-        ':' if bytes.get(i + 1) == Some(&b':') => (Kind::ColonColon, i + 2),
-        ':' => (Kind::Colon, i + 1),
-        '(' => (Kind::OpenParen, i + 1),
-        '[' => (Kind::OpenBracket, i + 1),
-        ']' => (Kind::CloseBracket, i + 1),
-        '#' => (Kind::Hash, i + 1),
-        '=' => (Kind::Eq, i + 1),
-        '*' => (Kind::Star, i + 1),
-        ';' => (Kind::Semi, i + 1),
-        _ if is_ident_start(c) => (Kind::Ident, ident_end(src, i)),
-        _ => (Kind::Other, i + c.len_utf8()),
+    fn visit_token_stream(&mut self, tokens: &'ast proc_macro2::TokenStream) {
+        count_macro_body(tokens, &self.chain, &mut self.sites);
     }
 }
 
 #[derive(Debug)]
-struct ImportItem<'a> {
-    path: Vec<&'a str>,
-    alias: Option<&'a str>,
-    glob: bool,
+/// A significant token of a macro body, in order.
+enum SigTok {
+    /// An identifier, with the line it starts on.
+    Ident(String, usize),
+    /// A `::` pair, spaced or not.
+    ColonColon,
+    /// A parenthesized group; the only group kind a call can follow.
+    ParenGroup,
+    /// Anything else: punct, literals, brace and bracket groups.
+    Other,
 }
 
-fn binding_for<'a>(item: ImportItem<'a>) -> Option<&'a str> {
-    if item.glob {
-        return item
-            .path
-            .last()
-            .is_some_and(|seg| *seg == "thread" || *seg == "time")
-            .then_some("sleep");
-    }
-    let n = item.path.len();
-    let is_sleep =
-        n >= 2 && item.path[n - 1] == "sleep" && matches!(item.path[n - 2], "thread" | "time");
-    is_sleep.then(|| item.alias.unwrap_or("sleep"))
-}
-
-fn parse_brace_items<'a>(
-    toks: &'a [Tok],
-    src: &'a str,
-    start: usize,
-    prefix: &[&'a str],
-) -> Option<(usize, Vec<ImportItem<'a>>)> {
-    // start is just past the '['. Returns the index past ']' (and its ';') with the items.
-    let mut items = Vec::new();
-    let mut i = start;
-    loop {
-        if i >= toks.len() {
-            return None;
-        }
-        match toks[i].kind {
-            Kind::CloseBracket => {
-                i += 1;
-                break;
-            }
-            Kind::Ident => {
-                let mut chain = vec![toks[i].text(src)];
-                i += 1;
-                while i + 1 < toks.len()
-                    && toks[i].kind == Kind::ColonColon
-                    && toks[i + 1].kind == Kind::Ident
-                {
-                    chain.push(toks[i + 1].text(src));
-                    i += 2;
+fn sig_tokens(stream: &proc_macro2::TokenStream, out: &mut Vec<SigTok>) {
+    let mut maybe_colon = false;
+    for token in stream.clone() {
+        if maybe_colon {
+            match token {
+                TokenTree::Punct(punct) if punct.as_char() == ':' => {
+                    out.push(SigTok::ColonColon);
+                    maybe_colon = false;
+                    continue;
                 }
-                let alias = if i + 1 < toks.len()
-                    && toks[i].is_ident(src, "as")
-                    && toks[i + 1].kind == Kind::Ident
-                {
-                    let aliased = toks[i + 1].text(src);
-                    i += 2;
-                    Some(aliased)
+                _ => {
+                    out.push(SigTok::Other);
+                    maybe_colon = false;
+                    continue;
+                }
+            }
+        }
+        match token {
+            TokenTree::Punct(punct) if punct.as_char() == ':' => {
+                maybe_colon = true;
+            }
+            TokenTree::Punct(_) => out.push(SigTok::Other),
+            TokenTree::Ident(ident) => {
+                out.push(SigTok::Ident(ident.to_string(), ident.span().start().line))
+            }
+            TokenTree::Literal(_) => out.push(SigTok::Other),
+            TokenTree::Group(group) => {
+                if group.delimiter() == Delimiter::Parenthesis {
+                    out.push(SigTok::ParenGroup);
+                } else if group.delimiter() == Delimiter::None {
+                    sig_tokens(&group.stream(), out);
                 } else {
-                    None
-                };
-                let mut path = prefix.to_vec();
-                path.extend(chain);
-                items.push(ImportItem {
-                    path,
-                    alias,
-                    glob: false,
-                });
+                    out.push(SigTok::Other);
+                }
             }
-            _ => i += 1, // commas and separators
         }
     }
-    if i < toks.len() && toks[i].kind == Kind::Semi {
-        i += 1;
+    if maybe_colon {
+        out.push(SigTok::Other);
     }
-    Some((i, items))
 }
 
-fn parse_use_items<'a>(
-    toks: &'a [Tok],
-    src: &'a str,
-    start: usize,
-) -> (usize, Vec<ImportItem<'a>>) {
-    let mut i = start;
-    let mut prefix: Vec<&'a str> = Vec::new();
-    if i >= toks.len() || toks[i].kind != Kind::Ident {
-        return (start, Vec::new());
-    }
-    loop {
-        if i >= toks.len() || toks[i].kind != Kind::Ident {
-            return (start, Vec::new());
+fn sleep_in_macro(sig: &[SigTok], chain: &[ModuleScope], sites: &mut Vec<(Vec<String>, usize)>) {
+    for (i, tok) in sig.iter().enumerate() {
+        if !matches!(tok, SigTok::ParenGroup) || i == 0 {
+            continue;
         }
-        prefix.push(toks[i].text(src));
-        i += 1;
-        if i < toks.len() && toks[i].kind == Kind::ColonColon {
-            i += 1;
-            match toks.get(i).map(|t| t.kind) {
-                Some(Kind::Ident) => {
-                    if i + 1 < toks.len() && toks[i + 1].kind == Kind::ColonColon {
-                        continue; // a mid-path segment, pushed at the top of the loop
-                    }
-                    let name = toks[i].text(src);
-                    i += 1;
-                    let alias = if i + 1 < toks.len()
-                        && toks[i].is_ident(src, "as")
-                        && toks[i + 1].kind == Kind::Ident
-                    {
-                        let aliased = toks[i + 1].text(src);
-                        i += 2;
-                        Some(aliased)
-                    } else {
-                        None
-                    };
-                    let mut path = prefix;
-                    path.push(name);
-                    if i < toks.len() && toks[i].kind == Kind::Semi {
-                        i += 1;
-                    }
-                    return (
-                        i,
-                        vec![ImportItem {
-                            path,
-                            alias,
-                            glob: false,
-                        }],
-                    );
-                }
-                Some(Kind::Star) => {
-                    i += 1;
-                    if i < toks.len() && toks[i].kind == Kind::Semi {
-                        i += 1;
-                    }
-                    return (
-                        i,
-                        vec![ImportItem {
-                            path: prefix,
-                            alias: None,
-                            glob: true,
-                        }],
-                    );
-                }
-                Some(Kind::OpenBracket) => match parse_brace_items(toks, src, i + 1, &prefix) {
-                    Some((end, items)) => return (end, items),
-                    None => return (start, Vec::new()),
-                },
-                _ => return (start, Vec::new()),
+        let Some(SigTok::Ident(name, line)) = sig.get(i - 1) else {
+            continue;
+        };
+        if name != "sleep" {
+            continue;
+        }
+        let path_form = i >= 2 && matches!(sig.get(i - 2), Some(SigTok::ColonColon));
+        if !path_form {
+            // A bare `sleep(` resolves only through this module's scope chain.
+            if resolves_to_sleep(&["sleep".to_string()], chain) {
+                sites.push((vec!["sleep".to_string()], *line));
             }
-        } else {
-            let alias = if i + 1 < toks.len()
-                && toks[i].is_ident(src, "as")
-                && toks[i + 1].kind == Kind::Ident
-            {
-                let aliased = toks[i + 1].text(src);
-                i += 2;
-                Some(aliased)
-            } else {
-                None
+            continue;
+        }
+        // `::sleep(`: a path form. Only `...::thread::sleep(` or `...::time::sleep(`
+        // is a fixed wait; anything else, like `foo::sleep(`, is not.
+        if i < 3 {
+            continue;
+        }
+        let Some(SigTok::Ident(mid, _)) = sig.get(i - 3) else {
+            continue;
+        };
+        if mid != "thread" && mid != "time" {
+            continue;
+        }
+        // Walk outward from `mid`; prefixes come back innermost-first, so reverse
+        // into source order before appending `sleep`.
+        let mut segments = vec![mid.clone()];
+        let mut pos = i - 3;
+        while pos >= 2
+            && matches!(sig.get(pos - 1), Some(SigTok::ColonColon))
+            && matches!(sig.get(pos - 2), Some(SigTok::Ident(_, _)))
+        {
+            if let Some(SigTok::Ident(prefix, _)) = sig.get(pos - 2) {
+                segments.push(prefix.clone());
+            }
+            pos -= 2;
+        }
+        segments.reverse();
+        segments.push("sleep".to_string());
+        sites.push((segments, *line));
+    }
+}
+
+fn count_macro_body(
+    tokens: &proc_macro2::TokenStream,
+    chain: &[ModuleScope],
+    sites: &mut Vec<(Vec<String>, usize)>,
+) {
+    let mut sig = Vec::new();
+    sig_tokens(tokens, &mut sig);
+    sleep_in_macro(&sig, chain, sites);
+    for token in tokens.clone() {
+        if let TokenTree::Group(group) = token
+            && group.delimiter() != Delimiter::None
+        {
+            count_macro_body(&group.stream(), chain, sites);
+        }
+    }
+}
+
+fn resolves_to_sleep(segments: &[String], chain: &[ModuleScope]) -> bool {
+    if segments.len() >= 2 {
+        return is_sleep_binding(segments);
+    }
+    let name = &segments[0];
+    for scope in chain.iter().rev() {
+        if scope.locals.contains(name) {
+            return false; // a local item shadows any import; a local `sleep` is not std's
+        }
+        if let Some(is_sleep) = scope.imports.get(name) {
+            return *is_sleep;
+        }
+    }
+    chain
+        .iter()
+        .rev()
+        .any(|scope| name == "sleep" && scope.globs.iter().any(|and_provides| *and_provides))
+}
+
+#[derive(Default)]
+struct FileReport {
+    sleeps: Vec<(String, usize)>,
+    bare_ignores: Vec<usize>,
+}
+
+fn check_attributes(attrs: &[Attribute], report: &mut FileReport) {
+    for attr in attrs {
+        if attr.path().is_ident("ignore") && matches!(attr.meta, Meta::Path(_)) {
+            report.bare_ignores.push(attr.span().start().line);
+        }
+    }
+}
+
+fn scan_items(items: &[Item], chain: Vec<ModuleScope>, report: &mut FileReport) {
+    let mut scope = ModuleScope::default();
+    for item in items {
+        if let Item::Use(use_item) = item {
+            collect_use(&use_item.tree, &mut Vec::new(), &mut scope);
+        }
+        if let Some(name) = item_name(item) {
+            scope.locals.insert(name);
+        }
+    }
+    for item in items {
+        check_attributes(item_attrs(item), report);
+        let item_chain = {
+            let mut extended = chain.clone();
+            extended.push(scope.clone());
+            extended
+        };
+        match item {
+            Item::Mod(mod_item) => {
+                if let Some((_, inner)) = &mod_item.content {
+                    scan_items(inner, item_chain.clone(), report);
+                }
+            }
+            Item::Impl(impl_item) => {
+                for impl_item in &impl_item.items {
+                    if let syn::ImplItem::Fn(fn_item) = impl_item {
+                        check_attributes(&fn_item.attrs, report);
+                    }
+                }
+            }
+            _ => {}
+        }
+        // A braced mod was already scanned in its own scope above; everything else,
+        // including a bare `mod x;` with no body, is visited here.
+        if !matches!(item, Item::Mod(mod_item) if mod_item.content.is_some()) {
+            let mut finder = CallFinder {
+                sites: Vec::new(),
+                chain: item_chain.clone(),
             };
-            if i < toks.len() && toks[i].kind == Kind::Semi {
-                i += 1;
-            }
-            return (
-                i,
-                vec![ImportItem {
-                    path: prefix,
-                    alias,
-                    glob: false,
-                }],
-            );
-        }
-    }
-}
-
-/// Names that a `use` tree in this file binds, where the bound name stands for a sleep:
-/// `use std::thread::sleep;` (or `time::sleep`), an `as` alias of either, or a glob of the
-/// `thread` or `time` module.
-fn import_bindings<'a>(toks: &'a [Tok], src: &'a str) -> Vec<&'a str> {
-    let mut bindings: Vec<&'a str> = Vec::new();
-    let mut i = 0usize;
-    while i < toks.len() {
-        if toks[i].is_ident(src, "use") {
-            let (end, items) = parse_use_items(toks, src, i + 1);
-            for item in items {
-                if let Some(name) = binding_for(item) {
-                    bindings.push(name);
+            visit::visit_item(&mut finder, item);
+            for (segments, line) in finder.sites {
+                if resolves_to_sleep(&segments, &item_chain) {
+                    report.sleeps.push((segments.join("::"), line));
                 }
             }
-            i = end.max(i + 1);
-        } else {
-            i += 1;
         }
     }
-    bindings
 }
 
-/// Fixed-sleep call sites: a call whose path ends in `thread::sleep` or `time::sleep` in any
-/// prefix and spacing, plus any bare call through a sleep import of this file.
-fn count_sleep_calls(toks: &[Tok], src: &str, bindings: &[&str]) -> usize {
-    let mut count = 0usize;
-    let mut i = 0usize;
-    while i + 1 < toks.len() {
-        if toks[i].is_ident(src, "sleep") && toks[i + 1].kind == Kind::OpenParen {
-            let direct = i >= 2
-                && toks[i - 1].kind == Kind::ColonColon
-                && matches!(toks[i - 2].text(src), "thread" | "time");
-            if direct || bindings.contains(&"sleep") {
-                count += 1;
-            }
-        }
-        i += 1;
-    }
-    count
+fn report_of(source: &str) -> FileReport {
+    let file: File = syn::parse_str(source)
+        .unwrap_or_else(|error| panic!("test-hygiene-rules: cannot parse the source: {error}"));
+    let mut report = FileReport::default();
+    scan_items(&file.items, Vec::new(), &mut report);
+    report
 }
 
-/// Lines carrying a bare `#[ignore]` (whitespace and line breaks between the tokens are free);
-/// `#[ignore = "why"]` and any other attribute pass.
-fn bare_ignore_lines(toks: &[Tok], src: &str) -> Vec<usize> {
-    let mut lines = Vec::new();
-    if toks.len() >= 4 {
-        for i in 0..=(toks.len() - 4) {
-            if toks[i].kind == Kind::Hash
-                && toks[i + 1].kind == Kind::OpenBracket
-                && toks[i + 2].is_ident(src, "ignore")
-                && toks[i + 3].kind == Kind::CloseBracket
-            {
-                lines.push(line_of(src, toks[i].start));
-            }
-        }
-    }
-    lines
-}
-
-fn fixed_sleep_sites() -> Vec<(PathBuf, usize)> {
-    let crates_dir = workspace_root().join("crates");
-    let mut sites = Vec::new();
-    for path in crate_trees(&crates_dir, &["tests"]) {
-        let src = read_source(&path);
-        let toks = tokenize(&src, &path);
-        let count = count_sleep_calls(&toks, &src, &import_bindings(&toks, &src));
-        if count > 0 {
-            sites.push((path, count));
-        }
-    }
-    sites
-}
-
-fn bare_ignores() -> Vec<(PathBuf, usize)> {
-    let crates_dir = workspace_root().join("crates");
-    let mut bare = Vec::new();
-    for path in crate_trees(&crates_dir, &["src", "tests"]) {
-        let src = read_source(&path);
-        let toks = tokenize(&src, &path);
-        for line in bare_ignore_lines(&toks, &src) {
-            bare.push((path.clone(), line));
-        }
-    }
-    bare
+fn report_of_path(path: &Path) -> FileReport {
+    let source = read_source(path);
+    let file: File = syn::parse_str(&source).unwrap_or_else(|error| {
+        panic!(
+            "test-hygiene-rules: cannot parse {}: {error}",
+            path.display()
+        )
+    });
+    let mut report = FileReport::default();
+    scan_items(&file.items, Vec::new(), &mut report);
+    report
 }
 
 #[test]
 fn fixed_test_sleeps_may_only_go_down() {
-    let sites = fixed_sleep_sites();
-    let total: usize = sites.iter().map(|(_, count)| *count).sum();
+    let crates_dir = workspace_root().join("crates");
+    let mut total = 0usize;
+    let mut offenders: Vec<(PathBuf, Vec<(String, usize)>)> = Vec::new();
+    for path in crate_trees(&crates_dir, &["tests"]) {
+        let report = report_of_path(&path);
+        if !report.sleeps.is_empty() {
+            total += report.sleeps.len();
+            offenders.push((path, report.sleeps));
+        }
+    }
     if total > MAX_FIXED_TEST_SLEEPS {
-        let named = sites
-            .iter()
-            .map(|(path, count)| format!("{}: {count}", path.display()))
-            .collect::<Vec<_>>()
-            .join("; ");
-        panic!(
-            "fixed test sleeps at {total}, above the checked-in ceiling of {MAX_FIXED_TEST_SLEEPS} \
-             ({named}). Wait on a real signal instead of a fixed delay: a channel, an event, or a \
-             polled condition that the test is actually waiting for. If you removed fixed sleeps \
-             and the total dropped, lower MAX_FIXED_TEST_SLEEPS to the new total."
+        let mut message = format!(
+            "test-hygiene-rules: fixed test sleeps at {total}, above the checked-in ceiling of {}.\n",
+            MAX_FIXED_TEST_SLEEPS
         );
+        for (path, sites) in &offenders {
+            message.push_str(&format!("{}\n", path.display()));
+            for (callee, line) in sites {
+                message.push_str(&format!("  {line}: {callee}(...)\n"));
+            }
+        }
+        message.push_str(
+            "A new fixed wait must use a real signal instead of a delay; lower the ceiling \
+             only after removing sleeps, and recount it.\n",
+        );
+        panic!("{message}");
     }
 }
 
 #[test]
 fn every_ignored_test_carries_a_reason() {
-    let bare = bare_ignores();
-    if !bare.is_empty() {
-        let named = bare
-            .iter()
-            .map(|(path, line)| format!("{}:{}: #[ignore]", path.display(), line))
-            .collect::<Vec<_>>()
-            .join("; ");
-        panic!(
-            "bare #[ignore] attributes found ({named}). Every ignored test must carry its reason: \
-             use Rust's built-in #[ignore = \"why\"] form, naming the condition that makes the \
-             test unrunnable on ordinary CI."
-        );
+    let crates_dir = workspace_root().join("crates");
+    let mut offenders: Vec<(PathBuf, Vec<usize>)> = Vec::new();
+    for path in crate_trees(&crates_dir, &["src", "tests"]) {
+        let report = report_of_path(&path);
+        if !report.bare_ignores.is_empty() {
+            offenders.push((path, report.bare_ignores));
+        }
+    }
+    if !offenders.is_empty() {
+        let mut message =
+            String::from("test-hygiene-rules: a bare #[ignore] without a reason refuses.\n");
+        for (path, lines) in &offenders {
+            message.push_str(&format!("{}\n", path.display()));
+            for line in lines {
+                message.push_str(&format!("  {line}: #[ignore]\n"));
+            }
+        }
+        message.push_str("Give it its reason: #[ignore = \"why\"].\n");
+        panic!("{message}");
     }
 }
 
@@ -695,13 +492,11 @@ mod scanner_controls {
     }
 
     fn sleep_count(src: &str) -> usize {
-        let toks = tokenize(src, Path::new("<control>"));
-        count_sleep_calls(&toks, src, &import_bindings(&toks, src))
+        report_of(src).sleeps.len()
     }
 
     fn ignore_lines(src: &str) -> Vec<usize> {
-        let toks = tokenize(src, Path::new("<control>"));
-        bare_ignore_lines(&toks, src)
+        report_of(src).bare_ignores
     }
 
     #[test]
@@ -776,6 +571,48 @@ mod scanner_controls {
     }
 
     #[test]
+    fn control_grouped_import_is_counted() {
+        let src = fixture(
+            &(CALL.repeat(MAX_FIXED_TEST_SLEEPS)
+                + "    sleep(std::time::Duration::ZERO);\n    yield_now();\n"),
+            "use std::thread::{sleep, yield_now};\n",
+        );
+        assert_eq!(sleep_count(&src), MAX_FIXED_TEST_SLEEPS + 1);
+    }
+
+    #[test]
+    fn control_aliased_import_is_counted() {
+        let src = fixture(
+            &(CALL.repeat(MAX_FIXED_TEST_SLEEPS) + "    delay(std::time::Duration::ZERO);\n"),
+            "use std::thread::sleep as delay;\n",
+        );
+        assert_eq!(sleep_count(&src), MAX_FIXED_TEST_SLEEPS + 1);
+    }
+
+    #[test]
+    fn control_comment_between_call_tokens_is_counted() {
+        let src = fixture(
+            &(CALL.repeat(MAX_FIXED_TEST_SLEEPS)
+                + "    std::thread::sleep /* a comment */ (std::time::Duration::ZERO);\n"),
+            "",
+        );
+        assert_eq!(sleep_count(&src), MAX_FIXED_TEST_SLEEPS + 1);
+    }
+
+    #[test]
+    fn control_import_in_unrelated_module_does_not_count() {
+        let prefix = "mod a { #[allow(unused_imports)] use std::thread::sleep; }\nmod b { #[allow(dead_code)] fn sleep() {} }\n";
+        let src = fixture(&CALL.repeat(MAX_FIXED_TEST_SLEEPS), prefix);
+        assert_eq!(sleep_count(&src), MAX_FIXED_TEST_SLEEPS);
+    }
+
+    #[test]
+    fn control_local_sleep_declaration_is_not_counted() {
+        let src = "mod m { #[allow(dead_code)] fn sleep() {}\n    #[test]\n    fn fixture() { sleep(); }\n}\n";
+        assert_eq!(sleep_count(src), 0);
+    }
+
+    #[test]
     fn control_reasoned_ignore_passes() {
         let src = "#[test]\n#[ignore = \"requires a dedicated runner\"]\nfn sample() {}\n";
         assert!(ignore_lines(src).is_empty());
@@ -800,19 +637,56 @@ mod scanner_controls {
     }
 
     #[test]
+    fn control_comment_between_ignore_tokens_is_found() {
+        let src = "#[test]\n#[ignore /* a Rust comment is whitespace */]\nfn sample() {}\n";
+        assert_eq!(ignore_lines(src), vec![2]);
+    }
+
+    #[test]
     fn control_ignore_in_raw_string_is_not_found() {
         let src = "#[test]\nfn sample() { let _ = r#\"\n#[ignore]\n\"#; }\n";
         assert!(ignore_lines(src).is_empty());
     }
 
     #[test]
+    fn control_raw_c_string_is_opaque_to_sleep_scan() {
+        let src = format!(
+            "fn f() {{\n{}    let _ = cr#\"embedded quote \" and std::thread::sleep(...)\"#;\n}}\n",
+            CALL.repeat(MAX_FIXED_TEST_SLEEPS)
+        );
+        assert_eq!(sleep_count(&src), MAX_FIXED_TEST_SLEEPS);
+    }
+
+    #[test]
+    fn control_raw_c_string_cannot_break_ignore_scan() {
+        let src = "#[test]\n#[ignore = \"isolated runner needed\"]\nfn fixture() {\n    let _ = cr#\"embedded quote \" and #[ignore]\"#;\n}\n";
+        assert!(ignore_lines(src).is_empty());
+    }
+
+    #[test]
     fn control_lexer_edges_stay_opaque() {
-        let src = "/* thread::sleep( /* nested */ still a comment) */\n\
+        let src = "fn f() {\n/* thread::sleep( /* nested */ still a comment) */\n\
                    let a = \"/* not a comment \\\" quoted\";\n\
-                   let b = '(';\nlet c = 'x';\nfn f<'a>(_: &'a u8) {}\n";
-        let toks = tokenize(src, Path::new("<control>"));
-        assert_eq!(toks.iter().filter(|t| t.kind == Kind::OpenParen).count(), 1);
-        assert!(!toks.iter().any(|t| t.is_ident(src, "thread")));
+                   let b = '(';\nlet c = 'x';\n}\nfn g<'a>(_: &'a u8) {}\n";
+        assert_eq!(sleep_count(src), 0);
+        assert!(ignore_lines(src).is_empty());
+    }
+
+    #[test]
+    fn control_sleep_in_macro_body_is_counted() {
+        let src = "fn f() {\n    wait! { _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {} }\n}\n";
+        assert_eq!(sleep_count(src), 1);
+    }
+
+    #[test]
+    fn control_bare_sleep_in_macro_body_uses_scope() {
+        let src = "use std::thread::sleep;\nfn f() {\n    wait! { _ = sleep(std::time::Duration::from_secs(1)) => {} }\n}\n";
+        assert_eq!(sleep_count(src), 1);
+    }
+
+    #[test]
+    fn control_local_shadow_in_macro_body_is_not_counted() {
+        let src = "mod m { #[allow(dead_code)] fn sleep() {}\n    #[allow(unused)] fn f() { wait! { _ = sleep(1) => {} } }\n}\n";
         assert_eq!(sleep_count(src), 0);
     }
 }

@@ -1517,6 +1517,7 @@ name = "se"
 version = "0.0.1-alpha.1"
 dependencies = [
  "clap",
+ "proc-macro2",
  "regex",
  "rusqlite",
  "se-atlas",
@@ -1531,6 +1532,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "syn 2.0.119",
  "tokio",
  "toml",
  "uuid",
