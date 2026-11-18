@@ -244,6 +244,8 @@ class Routing(unittest.TestCase):
 
 
 class FinalStatus(unittest.TestCase):
+    windows_jobs = ("windows-archive", "windows-test")
+
     def jobs(self):
         value = {key: {"result": "success", "outputs": {}}
                  for key in ["changes", "linux-route", "linux-box", "fmt", "clippy", "windows-clippy", "archive", "test", "macos-test"]}
@@ -260,7 +262,7 @@ class FinalStatus(unittest.TestCase):
             jobs[key]["result"] = "skipped"
         self.assertTrue(check.accepted(jobs))
 
-    def macos_routes(self):
+    def gate_routes(self):
         hosted = self.jobs()
         box = self.jobs()
         box["linux-route"]["outputs"]["route"] = "box"
@@ -290,20 +292,20 @@ class FinalStatus(unittest.TestCase):
         self.assertIs(check.accepted(jobs), expected)
 
     def test_macos_test_success_passes_each_linux_route(self):
-        for route, jobs in self.macos_routes().items():
+        for route, jobs in self.gate_routes().items():
             with self.subTest(route=route):
                 jobs["macos-test"] = {"result": "success"}
                 self.assert_macos_gate(jobs, True)
 
     def test_macos_test_non_success_refuses_each_linux_route(self):
-        for route, jobs in self.macos_routes().items():
+        for route, jobs in self.gate_routes().items():
             for status in ("failure", "cancelled", "skipped"):
                 with self.subTest(route=route, status=status):
                     jobs["macos-test"] = {"result": status}
                     self.assert_macos_gate(jobs, False)
 
     def test_macos_test_absent_refuses_each_linux_route(self):
-        for route, jobs in self.macos_routes().items():
+        for route, jobs in self.gate_routes().items():
             with self.subTest(route=route):
                 del jobs["macos-test"]
                 self.assert_macos_gate(jobs, False)
@@ -327,14 +329,14 @@ class FinalStatus(unittest.TestCase):
                 self.assert_macos_gate(jobs, status == "skipped")
 
     def test_remote_test_is_optional_but_success_is_accepted_on_every_route(self):
-        for route, jobs in self.macos_routes().items():
+        for route, jobs in self.gate_routes().items():
             with self.subTest(route=route):
                 self.assert_macos_gate(jobs, True)
                 jobs["remote-test"] = {"result": "success"}
                 self.assert_macos_gate(jobs, True)
 
     def test_remote_test_non_success_refuses_on_every_route(self):
-        for route, jobs in self.macos_routes().items():
+        for route, jobs in self.gate_routes().items():
             for status in ("failure", "cancelled", "skipped", "", None, "unknown"):
                 with self.subTest(route=route, status=status):
                     jobs["remote-test"] = {"result": status}
@@ -431,6 +433,50 @@ class FinalStatus(unittest.TestCase):
         return subprocess.run([sys.executable, str(Path(check.__file__).resolve())],
                               env={**os.environ, "RESULTS": json.dumps(jobs), "CHECK_MODE": mode},
                               capture_output=True, text=True, timeout=10).returncode
+
+    def test_native_windows_accepts_a_successful_pair(self):
+        for route in ("hosted", "box"):
+            with self.subTest(route=route):
+                jobs = self.gate_routes()[route]
+                jobs.update({name: {"result": "success"} for name in self.windows_jobs})
+                self.assertEqual(self.run_gate(jobs, "full"), 0)
+
+    def test_native_windows_refuses_either_job_on_its_own(self):
+        for name in self.windows_jobs:
+            with self.subTest(name=name):
+                jobs = self.jobs()
+                jobs[name] = {"result": "success"}
+                self.assertEqual(self.run_gate(jobs, "full"), 1)
+
+    def test_native_windows_requires_success_from_each_job(self):
+        for name in self.windows_jobs:
+            for status in ("failure", "cancelled", "skipped"):
+                with self.subTest(name=name, status=status):
+                    jobs = self.jobs()
+                    jobs.update({job: {"result": "success"} for job in self.windows_jobs})
+                    jobs[name]["result"] = status
+                    self.assertEqual(self.run_gate(jobs, "full"), 1)
+
+    def test_native_windows_requires_both_skips_on_a_guard_push(self):
+        jobs = self.guard()
+        jobs.update({name: {"result": "skipped"} for name in self.windows_jobs})
+        self.assertEqual(self.run_gate(jobs, "guard"), 0)
+        for name in self.windows_jobs:
+            for status in ("success", "failure"):
+                with self.subTest(name=name, status=status):
+                    jobs[name]["result"] = status
+                    self.assertEqual(self.run_gate(jobs, "guard"), 1)
+                jobs[name]["result"] = "skipped"
+
+    def test_native_windows_requires_both_skips_when_windows_is_exempt(self):
+        jobs = self.gate_routes()["windows_exempt"]
+        jobs.update({name: {"result": "skipped"} for name in self.windows_jobs})
+        self.assertEqual(self.run_gate(jobs, "full"), 0)
+        for name in self.windows_jobs:
+            with self.subTest(name=name):
+                jobs[name]["result"] = "success"
+                self.assertEqual(self.run_gate(jobs, "full"), 1)
+                jobs[name]["result"] = "skipped"
 
     def test_main_guard_accepts_lint_and_cache_refresh_without_the_suite(self):
         jobs = self.guard()
