@@ -258,7 +258,7 @@ The CLI retains replacement hints only for commands with a supported replacement
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 51 operations (45 core, 6 Atlas), 25 MCP tools (20 core, 5 Atlas). Planned: 9 operations, 3 MCP tools.
+Registered: 54 operations (48 core, 6 Atlas), 26 MCP tools (21 core, 5 Atlas). Planned: 9 operations, 3 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -281,6 +281,9 @@ Registered: 51 operations (45 core, 6 Atlas), 25 MCP tools (20 core, 5 Atlas). P
 | `identity.whoami` | none — terminal actor is already known; session introspection is an agent tool | `stateengine_whoami` | session | read |
 | `store.import_node` | import | none | owner | custody |
 | `project.init` | init | none | owner | write |
+| `captain.set` | captain set | none | owner | write |
+| `captain.clear` | captain clear | none | owner | write |
+| `captain.show` | captain show | `stateengine_captain_show` | either | read |
 | `project.move` | project move | none | owner | write |
 | `diagnostic.bundle` | diagnostic-bundle | none | owner | read |
 | `doctor.inspect` | doctor | none | owner | read |
@@ -318,7 +321,7 @@ Planned operations (design tables, not yet registered): `credential.rotate`, `hi
 
 Planned MCP tools: `stateengine_agent_status`, `stateengine_search`, `stateengine_session_turn`
 
-Registered without a design-table row: `atlas.augment` (no CLI or MCP exposure), `remote.prepare_send` (no CLI or MCP exposure), `remote.launch` (CLI `remote launch`), `project.move` (CLI `project move`)
+Registered without a design-table row: `atlas.augment` (no CLI or MCP exposure), `remote.prepare_send` (no CLI or MCP exposure), `remote.launch` (CLI `remote launch`), `captain.set` (CLI `captain set`), `captain.clear` (CLI `captain clear`), `captain.show` (CLI `captain show`), `project.move` (CLI `project move`)
 
-Registered MCP tools not named in the design tables: `stateengine_remote_launch`, `stateengine_working_state_get`
+Registered MCP tools not named in the design tables: `stateengine_captain_show`, `stateengine_remote_launch`, `stateengine_working_state_get`
 <!-- END GENERATED: ops-inventory -->
