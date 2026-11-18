@@ -1,5 +1,5 @@
-//! The sole async store bridge. Synchronous planning, submission and continuation
-//! run on bounded blocking jobs; only the owned commit completion is awaited.
+//! The async bridge for hosted operations. Planning runs in the blocking pool.
+//! Message sends enqueue inline and read their receipts on the store writer.
 use super::failure::WriteIdentity;
 use super::timings::{self, Mode};
 use super::*;
@@ -158,16 +158,42 @@ pub(super) async fn finish(
                     Vec::new()
                 },
             };
+            if matches!(then, Then::MessageSend(_)) {
+                let readback_deadline = deadline.clone();
+                let (mut receipt, waited, readback) = super::submit::measured_message(
+                    &context,
+                    batch,
+                    &identity,
+                    &deadline,
+                    move |reader, receipt| {
+                        readback_deadline.remaining()?;
+                        let phase = reader.read_phase().map_err(|error| store_error(&error))?;
+                        let phase = generation_phase(phase, generation)?;
+                        finish_readback(phase, &admission, &kernel, then, receipt)
+                    },
+                )
+                .await?;
+                let committed = committed_write(&identity, &receipt);
+                host_phases.completion_wait_us = Some(waited);
+                let output = super::pool::within(&deadline, readback)
+                    .await
+                    .and_then(|output| output.map_err(|error| store_error(&error)))
+                    .and_then(|output| output)
+                    .map_err(|error| committed.response_error(error))?;
+                return Ok(ExecutedCall {
+                    host_phases,
+                    output,
+                    write_timings: receipt.write_timings.take(),
+                    committed: Some(committed),
+                    capture_commits: Vec::new(),
+                    capture_keys: Vec::new(),
+                });
+            }
             let (mut receipt, submission, completion_wait_us) =
                 super::submit::measured(&context, batch, &identity, &deadline).await?;
-            host_phases.submission = Some(submission);
+            host_phases.submission = submission;
             host_phases.completion_wait_us = Some(completion_wait_us);
-            let committed = CommittedWrite {
-                operation: identity.operation.into(),
-                key: identity.key.clone(),
-                natural_events: identity.natural_events.clone(),
-                committed_events: receipt.events.clone(),
-            };
+            let committed = committed_write(&identity, &receipt);
             let write_timings = receipt.write_timings.take();
             let finish_deadline = deadline.clone();
             let pool = context.blocking.clone();
@@ -175,18 +201,7 @@ pub(super) async fn finish(
                 timings::blocking(&pool, Mode::Finite, &deadline, move || {
                     finish_deadline.remaining()?;
                     let phase = checked_pooled_phase(&context.reads, generation)?;
-                    let mut read = phase
-                        .into_snapshot(read_scope(&admission))
-                        .map_err(|error| store_error(&error))?;
-                    let result = kernel.committed(
-                        then,
-                        receipt,
-                        &mut Cx {
-                            read: &mut read,
-                            admission: &admission,
-                        },
-                    );
-                    close_read(result, read.close())
+                    finish_readback(phase, &admission, &kernel, then, receipt)
                 })
                 .await
                 .map_err(|error| committed.response_error(error))?;
@@ -226,6 +241,37 @@ pub(super) async fn finish(
         },
     }
 }
+
+fn committed_write(identity: &WriteIdentity, receipt: &se_store::CommitReceipt) -> CommittedWrite {
+    CommittedWrite {
+        operation: identity.operation.into(),
+        key: identity.key.clone(),
+        natural_events: identity.natural_events.clone(),
+        committed_events: receipt.events.clone(),
+    }
+}
+
+fn finish_readback(
+    phase: se_store::ReadPhase,
+    admission: &Admission,
+    kernel: &Kernel,
+    then: Then,
+    receipt: se_store::CommitReceipt,
+) -> Result<AnyOutput> {
+    let mut read = phase
+        .into_snapshot(read_scope(admission))
+        .map_err(|error| store_error(&error))?;
+    let result = kernel.committed(
+        then,
+        receipt,
+        &mut Cx {
+            read: &mut read,
+            admission,
+        },
+    );
+    close_read(result, read.close())
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"

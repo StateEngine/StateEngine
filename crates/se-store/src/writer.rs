@@ -35,10 +35,28 @@ struct Shared {
 }
 struct Request {
     batch: AtomicBatch,
-    reply: Reply<CommitReceipt>,
+    reply: CommitReply,
     queued: Instant,
     bytes: usize,
     materialized: usize,
+}
+type Readback = Box<dyn FnOnce(&SqliteReader, CommitReceipt) + Send>;
+
+struct CommitReply {
+    receipt: Reply<CommitReceipt>,
+    readback: Option<Readback>,
+}
+impl CommitReply {
+    fn publish(
+        self,
+        result: StoreResult<CommitReceipt>,
+        readbacks: &mut Vec<(Readback, CommitReceipt)>,
+    ) {
+        if let (Some(readback), Ok(receipt)) = (self.readback, &result) {
+            readbacks.push((readback, receipt.clone()));
+        }
+        self.receipt.send(result);
+    }
 }
 #[allow(
     clippy::large_enum_variant,
@@ -123,6 +141,42 @@ impl Shared {
 impl WriterClient for SqliteClient {
     type Completion = Completion<CommitReceipt>;
     fn submit(&self, batch: AtomicBatch) -> StoreResult<Self::Completion> {
+        let (reply, wait) = completion::channel();
+        self.enqueue(
+            batch,
+            CommitReply {
+                receipt: reply,
+                readback: None,
+            },
+        )?;
+        Ok(wait)
+    }
+}
+impl SqliteClient {
+    /// Run a finite, read-only projection on the writer after publishing the
+    /// entire group's commit results. The writer's reader has its own slots.
+    /// Await the projection only after a successful commit receipt.
+    pub fn submit_with_readback<T: Send + 'static>(
+        &self,
+        batch: AtomicBatch,
+        readback: impl FnOnce(&SqliteReader, CommitReceipt) -> T + Send + 'static,
+    ) -> StoreResult<(Completion<CommitReceipt>, Completion<T>)> {
+        let (committed, commit_wait) = completion::channel();
+        let (projected, readback_wait) = completion::channel();
+        let finish = move |reader: &SqliteReader, receipt: CommitReceipt| {
+            projected.send(Ok(readback(reader, receipt)));
+        };
+        self.enqueue(
+            batch,
+            CommitReply {
+                receipt: committed,
+                readback: Some(Box::new(finish)),
+            },
+        )?;
+        Ok((commit_wait, readback_wait))
+    }
+
+    fn enqueue(&self, batch: AtomicBatch, reply: CommitReply) -> StoreResult<()> {
         let (bytes, materialized) = crate::transaction::batch_sizes(&batch)?;
         if materialized > self.shared.group_limit {
             return Err(fail(
@@ -162,7 +216,6 @@ impl WriterClient for SqliteClient {
                 "writer request/resident byte bound reached",
             ));
         }
-        let (reply, wait) = completion::channel();
         self.sender
             .try_send(Command::Append(Request {
                 batch,
@@ -182,7 +235,7 @@ impl WriterClient for SqliteClient {
             })?;
         s.bytes = next;
         s.requests += 1;
-        Ok(wait)
+        Ok(())
     }
 }
 pub(crate) fn start(
@@ -507,6 +560,7 @@ fn run(
                                 "writer group lost a result",
                             ));
                         }
+                        let mut readbacks = Vec::new();
                         for ((reply, queued, bytes, key), mut result) in
                             replies.into_iter().zip(results)
                         {
@@ -527,7 +581,10 @@ fn run(
                                 };
                                 receipt.write_timings = Some(timings);
                             }
-                            reply.send(result);
+                            reply.publish(result, &mut readbacks);
+                        }
+                        for (readback, receipt) in readbacks {
+                            readback(&host.reader, receipt);
                         }
                     }
                     Err(e) => {
@@ -535,7 +592,7 @@ fn run(
                         stamp_busy_wait(&mut e, host.reader.timeout);
                         for (reply, _, bytes, _) in replies {
                             shared.completed(bytes)?;
-                            reply.send(Err(e.clone()));
+                            reply.receipt.send(Err(e.clone()));
                         }
                     }
                 }
