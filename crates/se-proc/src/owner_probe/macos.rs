@@ -58,7 +58,10 @@ pub(crate) fn boot_session() -> Result<se_types::BootId> {
         .map_err(|_| refuse("read boot session UUID", "invalid UUID encoding"))?;
     let boot = se_types::BootId::new(format!("macos:{}", id.to_ascii_lowercase()))
         .map_err(|_| refuse("read boot session UUID", "invalid UUID encoding"))?;
-    if !crate::identity::macos_boot_session(&boot) {
+    if !matches!(
+        crate::RebootBoot::parse(&boot),
+        Some(crate::RebootBoot::MacOs(_))
+    ) {
         return Err(refuse("read boot session UUID", "invalid native UUID"));
     }
     Ok(boot)

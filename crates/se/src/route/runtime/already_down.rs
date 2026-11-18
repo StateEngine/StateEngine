@@ -45,7 +45,7 @@ pub(super) fn observe<R: ReadStore>(
         .runtime_owner()
         .map_err(|error| store_error(&error))?
     {
-        Read::Present { value } => process::witness_exit(&value.epoch.owner, &bound)?,
+        Read::Present { value } => process::witness_exit(files, &value.epoch.owner, &bound)?,
         Read::Absent { .. } => (),
         other => {
             scope::require_present(

@@ -207,7 +207,11 @@ pub(super) fn root(value: &RootCheckpoint, lifecycle: &LifecycleId) -> Result<()
 fn validate_macos_boot(root: &ProcessIdentity, boot: Option<&se_types::BootId>) -> Result<()> {
     require(
         boot.is_none_or(|boot| {
-            matches!(root.boot, BootIdentity::MacOs { .. }) && root.boot.matches_reboot_id(boot)
+            matches!(root.boot, BootIdentity::MacOs { .. })
+                && matches!(
+                    crate::RebootBoot::parse(boot),
+                    Some(crate::RebootBoot::MacOs(_))
+                )
         }),
         "invalid Darwin boot session for the checkpoint root",
     )
@@ -546,27 +550,8 @@ fn validate_reboot(
     previous: &se_types::BootId,
     observed: &se_types::BootId,
 ) -> Result<()> {
-    let saved_macos_boot = match retained {
-        CheckpointSource::Root(record) => record.macos_boot_session.as_ref(),
-        CheckpointSource::Process(record) => record.macos_boot_session.as_ref(),
-        _ => return Err(invalid("reboot exit requires its original identified root")),
-    };
-    let observed_matches = match expected.boot {
-        BootIdentity::Linux { .. } => observed.as_str().strip_prefix("linux:").is_some_and(|id| {
-            id.len() == 32
-                && id
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
-                && id.bytes().any(|b| b != b'0')
-        }),
-        _ => expected.boot.matches_reboot_id(observed),
-    };
     require(
-        expected.boot.matches_reboot_id(previous)
-            && observed_matches
-            && previous != observed
-            && (!matches!(expected.boot, BootIdentity::MacOs { .. })
-                || saved_macos_boot == Some(previous)),
+        crate::reboot_proof::valid_witness_boots(retained, expected, previous, observed),
         "boot change must identify two distinct boots of the recorded platform",
     )
 }

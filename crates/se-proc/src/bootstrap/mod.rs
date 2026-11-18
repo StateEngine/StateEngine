@@ -43,6 +43,44 @@ pub struct NativeRuntimeIdentity {
     pub process: ProcessIdentity,
     pub boot_id: se_types::BootId,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeBootRelation {
+    Same,
+    Different,
+    Unverifiable,
+}
+impl NativeRuntimeIdentity {
+    /// Legacy macOS leases recorded a mutable boot timestamp. A mismatch in
+    /// that older format cannot establish that the host has exited.
+    pub fn boot_relation(&self, recorded: &se_types::BootId) -> RuntimeBootRelation {
+        if &self.boot_id == recorded {
+            return RuntimeBootRelation::Same;
+        }
+        if let BootIdentity::MacOs {
+            seconds,
+            microseconds,
+        } = &self.process.boot
+            && recorded.as_str().starts_with("macos-")
+        {
+            return if recorded.as_str() == format!("macos-{seconds}-{microseconds}") {
+                RuntimeBootRelation::Same
+            } else {
+                RuntimeBootRelation::Unverifiable
+            };
+        }
+        match (
+            crate::RebootBoot::parse(&self.boot_id),
+            crate::RebootBoot::parse(recorded),
+        ) {
+            (Some(current), Some(previous))
+                if std::mem::discriminant(&current) == std::mem::discriminant(&previous) =>
+            {
+                RuntimeBootRelation::Different
+            }
+            _ => RuntimeBootRelation::Unverifiable,
+        }
+    }
+}
 pub fn current_runtime_identity(machine: MachineId) -> ProcResult<NativeRuntimeIdentity> {
     let process = current_process_identity(machine)?;
     let boot_id = runtime_boot_identity()?;
