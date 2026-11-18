@@ -53,6 +53,8 @@ mod process;
 #[cfg(feature = "listener")]
 mod process_io;
 mod runtime;
+#[cfg(feature = "listener")]
+mod startup_timing;
 #[cfg(all(
     feature = "listener",
     any(target_os = "linux", target_os = "macos", windows)

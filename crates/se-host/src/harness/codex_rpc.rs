@@ -391,13 +391,8 @@ impl Harness for CodexHarness {
         cx: CallContext,
     ) -> HostFuture<'a, LaunchOutcome> {
         Box::pin(async move {
-            self.attach_transport(
-                &request.request,
-                request.transport,
-                request.record.lifecycle,
-                cx,
-            )
-            .await
+            let mut timing = crate::startup_timing::Timing::new(&request.request.resume);
+            self.attach_timed(request, cx, &mut timing).await
         })
     }
     fn graceful_stop<'a>(

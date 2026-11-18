@@ -2,6 +2,7 @@
 //! root to exec its remote TUI. The same native scope owns every process.
 use super::launch_util::call;
 use super::*;
+use crate::startup_timing::Timing;
 use crate::{BindingWitness, HarnessRequest, ProviderTransport, client::lease::Deadline};
 use se_proc::CheckpointKind;
 use se_store::ProcessState;
@@ -14,14 +15,13 @@ impl LaunchCoordinator {
         transport: ProviderTransport,
         deadline: &Deadline,
     ) -> Result<BindingWitness> {
+        let cx = call(self.store.generation, deadline)?;
+        let timing = work
+            .startup_timing
+            .get_or_insert_with(|| Timing::new(&request.resume));
         let outcome = self
             .codex
-            .attach_transport(
-                request,
-                transport,
-                work.meta.lifecycle.clone(),
-                call(self.store.generation, deadline)?,
-            )
+            .attach_transport(request, transport, work.meta.lifecycle.clone(), cx, timing)
             .await?;
         // Retain the connection before any further fallible step, so ordinary
         // launch rollback can close it even when the second C2 cannot commit.
