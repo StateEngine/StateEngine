@@ -28,6 +28,9 @@ fn restore_schema_six(db: &rusqlite::Connection) -> Check {
     db.execute_batch("PRAGMA foreign_keys=OFF")?;
     let historical = historical_schema::through(6)?;
     historical_schema::remove_later_objects(db, &historical, &[])?;
+    // The append-stamp column postdates schema six and re-derives from the
+    // events table, so the downgrade discards it with the later objects.
+    db.execute_batch("ALTER TABLE messages DROP COLUMN recorded_at_us")?;
     // Schema eight widened these constraints. Preserve the rows while restoring
     // the actual pre-upgrade tables, indices and immutable-history triggers.
     for table in [

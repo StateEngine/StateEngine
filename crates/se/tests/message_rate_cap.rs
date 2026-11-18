@@ -225,3 +225,93 @@ fn capped_pair_refused_by_name_and_exemptions_hold() -> Check {
     }
     Ok(())
 }
+
+/// Backdate the fixture pair's newest direct sends, exactly as a
+/// backwards clock step would: the append stamps move while the send
+/// order holds. The history trigger exists to protect real history from
+/// the product, so the fixture lifts it for this simulated system step
+/// and restores it unchanged; on schema 15 the stamp also lives on the
+/// message row, so both rows move.
+fn backdate_newest_stamps(f: &Fixture, stamp_us: i64, newest: usize) -> Check {
+    let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
+    let project = f.project.canonical_bytes()?.ok_or("project bytes")?;
+    let actor = f.a.canonical_bytes()?.ok_or("agent bytes")?;
+    let mut rows = db.prepare(
+        "SELECT seq FROM events
+         WHERE project_id = ? AND actor_id = ? AND kind = 'message.sent'
+         ORDER BY seq DESC",
+    )?;
+    let seqs: Vec<i64> = rows
+        .query_map(rusqlite::params![&project, &actor], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .take(newest)
+        .collect();
+    assert_eq!(
+        seqs.len(),
+        newest,
+        "expected {newest} direct sends to backdate"
+    );
+    let list = seqs
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    db.execute_batch("BEGIN IMMEDIATE")?;
+    db.execute_batch("DROP TRIGGER events_no_update")?;
+    db.execute(
+        &format!("UPDATE events SET recorded_at_us = {stamp_us} WHERE seq IN ({list})"),
+        rusqlite::params![],
+    )?;
+    let stamp_column: bool = db
+        .prepare("SELECT EXISTS(SELECT 1 FROM pragma_table_info('messages') WHERE name='recorded_at_us')")?
+        .query_row([], |r| r.get(0))?;
+    if stamp_column {
+        db.execute(
+            &format!("UPDATE messages SET recorded_at_us = {stamp_us} WHERE sent_seq IN ({list})"),
+            rusqlite::params![],
+        )?;
+    }
+    db.execute_batch(
+        "CREATE TRIGGER events_no_update BEFORE UPDATE ON events
+         BEGIN SELECT RAISE(ABORT,'history-immutable'); END;",
+    )?;
+    db.execute_batch("COMMIT")?;
+    Ok(())
+}
+
+/// Protects: #473 — the pair count is bounded by the window time, not by a fixed number of newest rows: after a backwards clock step, an in-window send must not slip under a row whose stamp is newer than rows sent after it.
+#[test]
+fn clock_step_cannot_hide_in_window_rows() -> Check {
+    let f = Fixture::new()?;
+    let (mut direct, lease) = f.direct()?;
+    let actor = Actor::Agent(f.a.clone());
+    let session = Some(SessionId::from_parts(
+        1_700_000_000_000 + serial(),
+        [9; 10],
+    )?);
+    let now = now_us()?;
+    let to = f.b.as_str().to_owned();
+    {
+        let mut s = make_sender(&f, &mut direct, &lease, actor.clone(), session.clone(), now);
+        for index in 0..10 {
+            s.send(to.clone(), &format!("step-fill-{index}"), None)?;
+        }
+    }
+    // The clock steps back past the window: the nine newest fills now carry
+    // out-of-window stamps while the oldest fill stays inside it.
+    backdate_newest_stamps(&f, now - 15 * 60 * 1_000_000, 9)?;
+    {
+        let mut s = make_sender(&f, &mut direct, &lease, actor, session, now);
+        for index in 0..9 {
+            s.send(to.clone(), &format!("step-after-{index}"), None)
+                .map_err(|error| format!("post-step send {index} refused: {error}"))?;
+        }
+        let refused = s
+            .send(to.clone(), "step-eleventh", None)
+            .err()
+            .ok_or("an in-window send slipped under the cap after a clock step")?;
+        assert_cap_refusal(&refused, f.a.as_str(), f.b.as_str())?;
+    }
+    Ok(())
+}
