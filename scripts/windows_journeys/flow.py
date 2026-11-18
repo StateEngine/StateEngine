@@ -54,18 +54,30 @@ class Journeys(Smoke):
         if self.foreground:
             self.foreground.observe_exit()
 
-    def verify_launch_image(self, launch):
+    def launch(self, args, label, *, reopen=None):
         expected = self.settings.get('launch_image')
-        if expected is None:
-            return
-        process_image = Path(launch['process']['exe'])
-        require(process_image.is_absolute(), 'Launched provider image must have an absolute path')
-        observed = process_image.resolve(strict=True)
-        require(observed == Path(expected).resolve(strict=True),
-                'Provider launched a different native image than the pinned version probe')
-        observed_digest = digest(observed)
-        require(any(Path(row['path']).resolve() == observed and row['sha256'] == observed_digest
-                    for row in self.settings['images']), 'Launched provider image does not match its pin')
+        if reopen is None:
+            launched = self.call(args, label, terminal=True)
+        else:
+            argv = [*reopen, *args]
+            if expected is None:
+                self.commands.run(argv, label, terminal=True)
+                return
+            output = self.commands.run([*argv, '--json', '--no-color'], label, terminal=True)
+            launched = self.decode_reply(output, True)
+        process = launched['process']
+        if reopen is None:
+            self.commands.observer.observe(process['pid'])
+        if expected is not None:
+            process_image = Path(process['exe'])
+            require(process_image.is_absolute(), 'Launched provider image must have an absolute path')
+            observed = process_image.resolve(strict=True)
+            require(observed == Path(expected).resolve(strict=True),
+                    'Provider launched a different native image than the pinned version probe')
+            observed_digest = digest(observed)
+            require(any(Path(row['path']).resolve() == observed and row['sha256'] == observed_digest
+                        for row in self.settings['images']), 'Launched provider image does not match its pin')
+        return launched
 
     def phase(self, name, operation):
         before, usage_error = None, None
@@ -167,11 +179,9 @@ class Journeys(Smoke):
         self.start_runtime('J2')
         self.secret, work = str(uuid.uuid4()), str(uuid.uuid4())
         task = f'Remember {self.secret}. Write {work} plus newline to work.txt. Reply {work}.'
-        launched = self.call(['launch', self.agent, '--detach', '--task', task], 'real-work', terminal=True)
-        self.verify_launch_image(launched)
+        launched = self.launch(['launch', self.agent, '--detach', '--task', task], 'real-work')
         require(launched['permission_profile'] == self.settings['permission_profile'],
                 'Actual native permission profile differs')
-        self.commands.observer.observe(launched['process']['pid'])
         self.initial = dict(conversation=launched['conversation_id'], session=launched['session_id'])
         observed = self.file_turn(work, 'work.txt', (work + '\n').encode())
         self.remember(observed, 'work.txt')
@@ -198,7 +208,7 @@ class Journeys(Smoke):
         prompt = f'Write our remembered phrase plus newline to recalled.txt. Reply {reply}.'
         require(self.secret not in prompt, 'Recall prompt disclosed its expected answer')
         self.start_runtime('J3')
-        self.commands.run([*shown['resume']['argv'], '--task', prompt], 'public-reopen', terminal=True)
+        self.launch(['--task', prompt], 'public-reopen', reopen=shown['resume']['argv'])
         value = self.file_turn(reply, 'recalled.txt', (self.secret + '\n').encode(), self.initial)
         self.remember(value, 'recalled.txt')
         require(value['capture']['session'] != self.initial['session'], 'Reopen retained the old runtime session')
@@ -208,11 +218,9 @@ class Journeys(Smoke):
     def handoff(self):
         peer = self.call(['agent', 'add', 'relay', '--provider', self.settings['provider']], 'create-peer')['agent']['id']
         instruction = 'Read your next StateEngine mail; write its body plus newline to handoff.txt; reply with its body.'
-        launched = self.call(['launch', peer, '--detach', '--task', instruction], 'launch-peer', terminal=True)
-        self.verify_launch_image(launched)
+        launched = self.launch(['launch', peer, '--detach', '--task', instruction], 'launch-peer')
         require(launched['permission_profile'] == self.settings['permission_profile'],
                 'Peer launch used a different native permission profile')
-        self.commands.observer.observe(launched['process']['pid'])
         token, key = str(uuid.uuid4()), str(uuid.uuid4())
         request = f'Send StateEngine mail to {peer}: body exactly {token}, idempotency_key {key}. Reply SENT.'
         self.call(['msg', 'send', self.agent, request, '--kind', 'question'], 'request-real-handoff')
