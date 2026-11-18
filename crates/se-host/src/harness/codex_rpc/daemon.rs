@@ -73,6 +73,10 @@ impl Daemon {
         params: Value,
         cx: &CallContext,
     ) -> Result<Value> {
+        // One deadline governs the whole call. A shared daemon serves several
+        // agents, so a busy neighbour can keep notifications arriving; a refusal
+        // that re-armed its clock on every frame would never expire.
+        let end = tokio::time::Instant::now() + cx.timeout;
         let (id, bytes) = self.requests.request(method, params)?;
         self.send(bytes).await?;
         loop {
@@ -87,7 +91,18 @@ impl Daemon {
                     _ => Err(invalid("an answer that was a response")),
                 };
             }
-            if !self.next_frame(cx).await? {
+            let left = end.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                return Err(invalid("the daemon answered within the original deadline"));
+            }
+            if !self
+                .next_frame(&CallContext {
+                    generation: cx.generation,
+                    timeout: left,
+                    cancellation: std::sync::Arc::clone(&cx.cancellation),
+                })
+                .await?
+            {
                 return Err(invalid("the daemon closed before answering"));
             }
         }

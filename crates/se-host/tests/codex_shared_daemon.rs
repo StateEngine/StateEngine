@@ -33,6 +33,82 @@ fn thread_id(value: &serde_json::Value) -> Result<String, Box<dyn Error>> {
         .ok_or_else(|| "a thread id in the provider's answer".into())
 }
 
+/// A request must be refused at its own deadline even while the peer keeps
+/// sending frames; a shared daemon serves other agents, so their traffic must not
+/// refresh this caller's clock. The peer here is deliberately silent after the
+/// greeting: that is the one behaviour under test, and the real daemon cannot be
+/// made to hang on demand.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_silent_daemon_cannot_extend_one_callers_deadline() -> Check {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let directory = std::env::temp_dir().join(format!(
+        "se-daemon-deadline-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory)?;
+    let path = directory.join("control.sock");
+    let listener = tokio::net::UnixListener::bind(&path)?;
+    let peer = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = tokio_tungstenite::accept_async(stream).await?;
+        // Answer the greeting, then never answer the next request while keeping
+        // unrelated frames arriving for far longer than its deadline. This is the
+        // shape that used to re-arm the caller's clock on every frame.
+        while let Some(message) = socket.next().await {
+            let Ok(Message::Text(text)) = message else {
+                continue;
+            };
+            let value: serde_json::Value = serde_json::from_str(&text)?;
+            if value.get("method").and_then(|m| m.as_str()) == Some("initialize") {
+                let reply = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": value["id"].clone(),
+                    "result": { "userAgent": "silent-peer/1" },
+                });
+                socket.send(Message::text(reply.to_string())).await?;
+                continue;
+            }
+            // Any other request is never answered; only traffic keeps arriving.
+            if value.get("method").is_some() {
+                // An unanswered request: sustain traffic for about six seconds.
+                for index in 0..60 {
+                    let note = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "item/agentMessage/delta",
+                        "params": { "delta": index.to_string() },
+                    });
+                    socket.send(Message::text(note.to_string())).await?;
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                return Ok::<_, Box<dyn Error + Send + Sync>>(());
+            }
+        }
+        Ok(())
+    });
+
+    let mut daemon = Daemon::connect(&path, cx()?).await?;
+    let tight = CallContext::new(Generation::new(1)?, Duration::from_millis(400));
+    let started = std::time::Instant::now();
+    let outcome = daemon
+        .request("stateengine/never-answered", serde_json::json!({}), &tight)
+        .await;
+    let elapsed = started.elapsed();
+    assert!(outcome.is_err(), "an unanswered request must be refused");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "one call took {elapsed:?}; a busy peer must not extend its deadline"
+    );
+    peer.abort();
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
 /// Two agents on one login are two threads in one process, and stopping one
 /// never stops the other or the daemon.
 #[tokio::test]
