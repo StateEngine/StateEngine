@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -15,7 +16,8 @@ from smoke import terminal_receipt
 SCRIPTS = Path(__file__).resolve().parents[2] / 'scripts'
 sys.path[:0] = [str(SCRIPTS), str(SCRIPTS / 'ci')]
 from harness_matrix.inputs import preflight
-from windows_journeys.credentials import protect
+from harness_matrix.io import InterruptedRun
+from windows_journeys.credentials import present, protect
 from windows_journeys.flow import JOURNEYS, Journeys
 from windows_nightly_providers import (KEYS, PROVIDERS, clean_environment, failure_evidence,
                                        prepared, provision, require_safe_output)
@@ -91,7 +93,11 @@ def real_run(args, output, nightly):
     runner = MacJourneys(journey, package, entry, settings, environment, release)
     runner.record.update(nightly=nightly, package_metadata_sha256=args.package_sha256,
                          inputs=observed)
-    result = runner.run()
+    try:
+        result = runner.run()
+    except (InterruptedRun, KeyboardInterrupt):
+        result = runner.record
+        result.update(result='INCOMPLETE', interrupted=True)
     if result['result'] == 'PASS':
         closure = result.get('credential_closure')
         if not (isinstance(closure, dict) and closure.get('private_copy_absent') is True
@@ -100,6 +106,10 @@ def real_run(args, output, nightly):
                 and all(result['phases'][name]['tokens']['state'] == 'observed' for name in ('J2', 'J3', 'J4'))):
             result.update(result='FAIL', qualification_error='Native usage or closure proof is incomplete')
     return result
+
+
+def interrupt(signum, _frame):
+    raise InterruptedRun('Provider journey interrupted by signal ' + str(signum))
 
 
 def main():
@@ -118,17 +128,24 @@ def main():
     output = args.out.resolve()
     output.mkdir(mode=0o700)
     protect(output)
+    signal.signal(signal.SIGTERM, interrupt)
+    seed_root = output / 'seed'
     try:
         report = real_run(args, output, nightly)
-    except Exception as error:
+    except (InterruptedRun, KeyboardInterrupt, Exception) as error:
         report = dict(result='INCOMPLETE', reason=str(error), nightly=nightly, platform=sys.platform,
                       schema='se.macos-provider-journeys/v1',
                       phases={name: dict(result='NOT RUN') for name in JOURNEYS})
-    try:
-        shutil.rmtree(output / 'seed')
-    except FileNotFoundError:
-        pass
-    except OSError:
+        if isinstance(error, (InterruptedRun, KeyboardInterrupt)):
+            report['interrupted'] = True
+    finally:
+        try:
+            if present(seed_root):
+                shutil.rmtree(seed_root)
+            seed_cleanup_failed = present(seed_root)
+        except OSError:
+            seed_cleanup_failed = True
+    if seed_cleanup_failed:
         report.update(result='FAIL', seed_cleanup='Private seed cleanup is incomplete')
     report['provider'] = args.surface
     keys = [os.environ[name] for name in KEYS if os.environ.get(name)]

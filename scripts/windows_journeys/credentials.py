@@ -6,9 +6,11 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import time
 
 from harness_matrix.io import digest, require
+from .darwin_acl import require_private_acl
 
 
 class Prerequisite(RuntimeError):
@@ -39,6 +41,16 @@ def plain(path):
     if os.name == 'posix':
         require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o600,
                 'Credential file must be owner-only')
+    if sys.platform == 'darwin':
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            current = os.fstat(descriptor)
+            require((current.st_dev, current.st_ino, current.st_mode, current.st_uid, current.st_nlink)
+                    == (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink),
+                    'Credential file identity changed')
+            require_private_acl(descriptor)
+        finally:
+            os.close(descriptor)
     return info
 
 
@@ -51,6 +63,8 @@ def protect(directory, establish=True):
             require(info.st_uid == os.getuid(), 'Private credential directory has a different owner')
             if establish:
                 os.fchmod(descriptor, 0o700)
+            if sys.platform == 'darwin':
+                require_private_acl(descriptor, establish)
             current = directory.lstat()
             require((current.st_dev, current.st_ino) == (info.st_dev, info.st_ino)
                     and stat.S_IMODE(current.st_mode) == 0o700, 'Private directory mode readback failed')
@@ -152,6 +166,8 @@ def provision(provider, source, destination):
     seed = destination / 'seed.json'
     descriptor = os.open(seed, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+        if sys.platform == 'darwin':
+            require_private_acl(stream.fileno())
         json.dump(dict(schema='se.journey-access-seed/v1', provider=provider, created_at=time.time(),
                        expires_at=expires, credential=credential, native=native), stream)
     return dict(path=str(seed.resolve()), sha256=digest(seed), expires_at=expires)
@@ -204,6 +220,8 @@ class Credentials:
                 credential = {**credential, 'tokens': {**credential['tokens'], 'refresh_token': ''}}
             descriptor = os.open(self.target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+                if sys.platform == 'darwin':
+                    require_private_acl(stream.fileno())
                 json.dump(credential, stream)
             info = plain(self.target)
             require((info.st_dev, info.st_ino) != (self.identity.st_dev, self.identity.st_ino),
