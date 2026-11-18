@@ -1,4 +1,6 @@
 //! Cold real bootstrap consumers; no host, endpoint or public stdio substitute.
+#[path = "support/detachment_venue.rs"]
+mod detachment_venue;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod judge {
     use se_proc::*;
@@ -385,7 +387,20 @@ mod judge {
                 && member != 0,
             "strict fixture caller was not in its job",
         )?;
-        trial("broker")?;
+        // The caller's own job membership is checked either way; only the
+        // detached child is venue-dependent.
+        let ran_broker = if crate::detachment_venue::hosted_runner_without_breakaway() {
+            // Keep the check compiled and say plainly that this venue could not
+            // supply its precondition; never report a pass it did not achieve.
+            println!(
+                "bootstrap_stderr: NOT RUN broker detached-launch case: {}",
+                crate::detachment_venue::HOSTED_REASON
+            );
+            false
+        } else {
+            trial("broker")?;
+            true
+        };
         // SAFETY: same retained caller/job after the detached child has exited.
         require(
             // SAFETY: retained private job and current-process query with writable BOOL.
@@ -393,9 +408,16 @@ mod judge {
                 && member != 0,
             "launch changed the caller's job membership",
         )?;
-        println!(
-            "bootstrap broker: 1 passed, 0 failed; caller remains in strict job; child outside all jobs and exited"
-        );
+        // Only the executed subset is claimed; a skipped case is not a pass.
+        if ran_broker {
+            println!(
+                "bootstrap broker: 1 passed, 0 failed; caller remains in strict job; child outside all jobs and exited"
+            );
+        } else {
+            println!(
+                "bootstrap broker: 0 passed, 0 failed, 1 not run on this venue; caller remains in strict job"
+            );
+        }
         Ok(())
     }
     pub fn run() -> Result {
@@ -440,6 +462,9 @@ mod judge {
         #[cfg(windows)]
         {
             trial("inheritance")?;
+            // These seven run on every Windows venue. The strict-job broker case
+            // is a separate trial with its own line above, so it is not counted
+            // here whether it ran or was reported not run.
             println!("bootstrap_stderr: 7 passed, 0 failed");
         }
         #[cfg(not(windows))]
