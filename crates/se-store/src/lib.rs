@@ -3,6 +3,7 @@
 extern crate self as se_store;
 mod api;
 mod apply;
+mod assignment_batch;
 pub mod atlas_resume;
 mod backup;
 mod backup_context;
@@ -45,6 +46,7 @@ pub use open::{SqliteDirect, SqliteFactory, SqliteHost, SqliteReader};
 pub use read::SqliteSnapshot;
 pub use read_phase::ReadPhase;
 pub use read_phase_pool::{ReadConnectionIdentity, ReadPhasePool};
+pub use se_store_contract::assignment;
 pub use se_store_contract::values::*;
 pub use transcript::*;
 pub use writer::{SqliteClient, SqliteWriter};

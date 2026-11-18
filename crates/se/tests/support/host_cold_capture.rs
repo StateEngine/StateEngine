@@ -187,7 +187,7 @@ pub fn check(f: &Fixture, case: Capture<'_>) -> Result<bool, Box<dyn std::error:
             credential()?,
             se_core::ops::AnyOp::MessageSend(se_core::ops::MessageSend {
                 quiet: false,
-                to: f.b.as_str().into(),
+                to: Some(f.b.as_str().into()),
                 body: "capture refusal leaves message available".into(),
                 kind: Default::default(),
                 refs: vec![],

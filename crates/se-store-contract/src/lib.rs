@@ -1,4 +1,5 @@
 //! Shared store value contracts; database custody and execution remain in the store.
+pub mod assignment;
 pub mod channel;
 #[doc(hidden)]
 pub mod error;

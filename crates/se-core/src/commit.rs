@@ -43,7 +43,13 @@ pub enum MessageKind {
 #[serde(deny_unknown_fields)]
 pub struct MessageSend {
     /// A registered recipient, or floor with explicit work addressing.
-    pub to: String,
+    #[serde(
+        default,
+        deserialize_with = "explicit_recipient",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "String")]
+    pub to: Option<String>,
     pub body: String,
     /// Quiet mail remains unread and visible, but never enters notification debt.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -61,6 +67,11 @@ pub struct MessageSend {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<se_types::WorkAddressing>,
     pub idempotency_key: IdempotencyKey,
+}
+fn explicit_recipient<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<String>, D::Error> {
+    <String as serde::Deserialize>::deserialize(deserializer).map(Some)
 }
 fn is_false(value: &bool) -> bool {
     !*value

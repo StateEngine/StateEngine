@@ -94,8 +94,15 @@ impl SqliteSnapshot {
                 }
                 match &e.body {
                     EventBody::ProjectCaptainChanged { .. } => true,
+                    EventBody::AssignmentOpened { assignment, .. }
+                    | EventBody::AssignmentTransitioned { assignment, .. } => {
+                        self.assignment_visible(assignment, a)?
+                    }
                     EventBody::MessageSent { recipient, .. } => *recipient == who,
-                    EventBody::WorkMessageSent { work, .. } => work.addressees.contains(a),
+                    EventBody::WorkMessageSent { work, .. } => {
+                        work.addressees.contains(a)
+                            || self.assignment_floor_visible(&e.header.event, a)?
+                    }
                     EventBody::WorkingStateSet { agent, .. }
                     | EventBody::SessionTurn { agent, .. } => agent == a,
                     EventBody::CaptureSource { session, .. }

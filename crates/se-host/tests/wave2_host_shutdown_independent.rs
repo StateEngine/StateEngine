@@ -171,6 +171,8 @@ fn retained_router_and_capture_refuse_after_drain_without_retaining_the_lease() 
                         message: fixture::message()?,
                         agent: fixture::agent()?,
                         profile_event: fixture::event()?,
+                        notification_event: fixture::event()?,
+                        notification_message: fixture::message()?,
                         occurred_at_us: now()?,
                         door: Door::Cli,
                     })?,

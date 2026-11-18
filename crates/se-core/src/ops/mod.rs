@@ -5,6 +5,10 @@ pub mod atlas;
 pub mod atlas_hook;
 pub use atlas::*;
 pub use atlas_hook::{AtlasAugment, AtlasHookOutput, AtlasHookTarget};
+pub mod assignment;
+pub use assignment::{
+    AssignmentAction, AssignmentList, AssignmentPage, AssignmentWrite, AssignmentWriteOutput,
+};
 pub mod captain;
 pub use captain::{
     CaptainClear, CaptainClearOutput, CaptainSet, CaptainSetOutput, CaptainShow, CaptainShowOutput,
@@ -71,6 +75,7 @@ pub use store_import::{ImportNode, ImportReceipt};
 pub mod listing;
 pub mod mail;
 pub mod message_mark;
+pub(crate) mod message_send_plan;
 pub use message_mark::{
     DispositionReceipt, MessageAck, MessageDismiss, MessageRead, MessageReadOutput,
 };
@@ -227,6 +232,8 @@ ops! {
     ProjectInit => ProjectInit, InitOutput, ("project.init",leaf(&["init"]),no_mcp("Owner setup registers the managed workspace."),Owner,false,Never,Write,Home,None,"se.init",Init,&["J2"]);
     CaptainSet => CaptainSet, CaptainSetOutput, ("captain.set",leaf(&["captain","set"]),no_mcp("Only the owner can change the project captain; use se captain set from an owner terminal."),Owner,false,Never,Write,Project,HostForWrites,"se.captain-set",Captain,&["J3"]);
     CaptainClear => CaptainClear, CaptainClearOutput, ("captain.clear",leaf(&["captain","clear"]),no_mcp("Only the owner can clear the project captain; use se captain clear from an owner terminal."),Owner,false,Never,Write,Project,HostForWrites,"se.captain-clear",Captain,&["J3"]);
+    AssignmentWrite => AssignmentWrite, AssignmentWriteOutput, ("assignment.write",leaf(&["assignment","write"]),tool("stateengine_assignment_write","Change an assignment","Open or transition an assignment and record the floor message."),Either,false,Never,Write,Project,HostForWrites,"se.assignment-write",Assignment,&["J3"]);
+    AssignmentList => AssignmentList, AssignmentPage, ("assignment.list",leaf(&["assignment","list"]),tool("stateengine_assignment_list","List open assignments","List open project assignments."),Either,false,Never,Read,Project,None,"se.assignment-page",Assignment,&["J3"]);
     CaptainShow => CaptainShow, CaptainShowOutput, ("captain.show",leaf(&["captain","show"]),tool("stateengine_captain_show","Show project captain","Read the project's captain."),Either,false,Never,Read,Project,None,"se.captain-show",Captain,&["J3"]);
     ProjectMove => ProjectMove, MoveOutput, ("project.move",leaf(&["project","move"]),no_mcp("Owner terminal operation: re-attach the project to a moved repository folder after verifying its recorded git identity."),Owner,false,Never,Write,Project,None,"se.project-move",ProjectMove,&["J3"]);
     DiagnosticBundle => DiagnosticBundle, DiagnosticBundleOutput, ("diagnostic.bundle",leaf(&["diagnostic-bundle"]),no_mcp("Home-wide owner diagnostics must not leak into a project session; ask the user to run the installed CLI and share the file."),Owner,false,Never,Read,Home,None,"se.diagnostic-bundle",Bundle,&["J5"]);
@@ -235,7 +242,7 @@ ops! {
     ProjectStatus => ProjectStatus, StatusOutput, ("project.status",leaf(&["status"]),tool("stateengine_status","Project status","Read project setup, agents and runtime facts."),Either,false,Never,Read,ProjectOrAll,None,"se.status",Status,&["J1","J2"]);
     EventRead => EventRead, EventOutput, ("history.event_read",CliExposure::Leaf {path:&["history"],hidden:false,select:Selector::Flag("event")},tool("stateengine_event_read","Read a committed event","Read one committed project event and its provenance."),Either,false,Never,Read,Project,None,"se.event",Event,&["E3","J3","J4"]);
     HistoryList => HistoryList, HistoryPage, ("history.list",leaf(&["history"]),no_mcp("Sessions use event_read for exact public records; owner CLI history is read-only inspection."),Either,false,Never,Read,Project,None,"se.history-page",HistoryPage,&["J3"]);
-    MessageSend => MessageSend, MessageOutput, ("message.send",leaf(&["msg","send"]),tool("stateengine_msg_send","Send a message","Send direct or floor mail; floor requires work.action/addressees. quiet suppresses notification, not unread state."),Either,false,Never,Write,Project,HostForWrites,"se.message-receipt",MessageReceipt,&["J4"]);
+    MessageSend => MessageSend, MessageOutput, ("message.send",leaf(&["msg","send"]),tool("stateengine_msg_send","Send a message","Send direct or floor mail. Crew questions, blockers and done reports can omit to for the captain. Floor requires work.action/addressees. quiet suppresses notification, not unread state."),Either,false,Never,Write,Project,HostForWrites,"se.message-receipt",MessageReceipt,&["J4"]);
     MessageRead => MessageRead, MessageReadOutput, ("message.read",leaf(&["msg","read"]),tool("stateengine_msg_read","Read one complete message","Read a complete message and mark it read as recipient. msg_id aliases message_id. If a reply is needed, use stateengine_msg_send to the verified from.id with reply_to the original message ID; follow channel_reply or remote_reply when present. Final conversation text alone does not reach the sender."),Either,false,Never,Write,Project,HostForWrites,"se.message-read",MessagePage,&["J4"]);
     MessageAck => MessageAck, DispositionReceipt, ("message.ack",leaf(&["msg","ack"]),tool("stateengine_msg_ack","Acknowledge a message","Mark your message read without its body. msg_id aliases message_id."),Either,false,Never,Write,Project,HostForWrites,"se.disposition-receipt",MessageReceipt,&["J4"]);
     MessageDismiss => MessageDismiss, DispositionReceipt, ("message.dismiss",leaf(&["msg","dismiss"]),tool("stateengine_msg_dismiss","Dismiss a message","Dismiss your message without marking read. msg_id aliases message_id."),Either,false,Never,Write,Project,HostForWrites,"se.disposition-receipt",MessageReceipt,&["J4"]);
@@ -315,6 +322,7 @@ impl AnyOp {
             Self::AgentStop(v) => Some(&v.idempotency_key),
             Self::ProjectRemove(v) => Some(&v.idempotency_key),
             Self::ConfigSet(v) => Some(&v.idempotency_key),
+            Self::AssignmentWrite(v) => Some(&v.idempotency_key),
             Self::CaptainSet(v) => Some(&v.idempotency_key),
             Self::CaptainClear(v) => Some(&v.idempotency_key),
             _ => None,
@@ -333,6 +341,9 @@ impl AnyOp {
                 )?)?;
             }
             Self::MessageSend(v) => {
+                v.body = read(v.body.clone(), "body", se_types::MESSAGE_BODY_MAX_BYTES)?
+            }
+            Self::AssignmentWrite(v) => {
                 v.body = read(v.body.clone(), "body", se_types::MESSAGE_BODY_MAX_BYTES)?
             }
             Self::WorkingStateSet(v) => {
@@ -361,6 +372,7 @@ impl AnyOutput {
                 se_types::Receipt::Refused { .. } => 1,
                 se_types::Receipt::Pending { .. } => 2,
             },
+            Self::AssignmentList(v) => v.value.page.window().exit_code(false),
             Self::RemoteList(v) if !v.value.agents.window().complete() => 2,
             Self::RemoteWatch(v) if !v.value.complete || v.value.reset_required => 2,
             // Native Claude framing has its own availability exit. Explicit
@@ -428,23 +440,7 @@ impl AnyOutput {
                             .unwrap_or(0),
                     )
             }
-            Self::MessageList(v) => {
-                let page = &v.value.page;
-                let unread = page
-                    .items()
-                    .iter()
-                    .filter(|row| row.disposition.state == "unread")
-                    .count() as u64;
-                if page.items().iter().any(|row| {
-                    row.unreadable.is_some() || (v.value.view.full && !row.body.complete)
-                }) || (v.value.view.r#box == "inbox"
-                    && v.value.unread_total.is_none_or(|total| total > unread))
-                {
-                    2
-                } else {
-                    page.window().exit_code(false)
-                }
-            }
+            Self::MessageList(v) => message::exit_code(&v.value),
             _ => 0,
         }
     }

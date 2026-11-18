@@ -114,6 +114,7 @@ pub(super) fn apply(
             "only the project's owner removes it",
         ));
     }
+    super::assignment::require_closed(c, &p)?;
     if witnesses.is_empty() || witnesses.len() > 64 || preserved.len() > 64 {
         return Err(invalid(
             "project removal needs 1-64 witnesses and at most 64 preserved facts",

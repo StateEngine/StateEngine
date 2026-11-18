@@ -382,6 +382,8 @@ fn definite_direct_append_cannot_become_an_unreadable_or_unknown_write() -> Chec
         message: message()?,
         agent: fixture::agent()?,
         profile_event: fixture::event()?,
+        notification_event: fixture::event()?,
+        notification_message: fixture::message()?,
         occurred_at_us: 1_700_000_000_000_000,
         door: Door::Cli,
     })?;

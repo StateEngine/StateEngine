@@ -69,6 +69,8 @@ impl Capture {
             message: message()?,
             agent: agent()?,
             profile_event: event()?,
+            notification_event: event()?,
+            notification_message: message()?,
             occurred_at_us: 1_700_000_000_000_000,
             door: Door::Hook,
         })?)

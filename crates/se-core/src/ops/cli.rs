@@ -318,6 +318,8 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("from_node").long("from-node").required(true).help("Copy of an earlier StateEngine data directory to import"))
             .arg(value("source_owner").long("source-owner").help("Source human ID explicitly adopted as the importing owner"))
             .arg(value("map_human").long("map-human").action(ArgAction::Append).help("Historical human ID=existing target human ID; repeat for each explicit correspondence")),
+        "assignment.write" => c.arg(value("action").required(true)).arg(value("assignee")).arg(value("assignment")).arg(value("body").required(true)),
+        "assignment.list" => c.arg(value("limit").default_value("20")).arg(value("cursor")),
         "captain.set" => c.arg(positional("captain", 1, true).help("Registered agent name or ID, or me")),
         "project.status" => c.arg(toggle("all").help("Also summarize every registered project, with its owner-mail counts")),
         "agent.launch" => c
@@ -370,8 +372,8 @@ fn input_command(name: &str, c: Command) -> Command {
         "message.ack" | "message.dismiss" => c
             .arg(positional("msg_id", 1, true).help("Message ID from se msg list or inbox")),
         "message.send" => c
-            .arg(positional("to", 1, true).help("Registered recipient name or ID, the owner, or floor (shared project messages) with --work-action and --addressee"))
-            .arg(positional("body", 2, true).help("Message text; - reads it from stdin"))
+            .arg(positional("to", 1, false).help("Recipient, or omit for a crew question, blocker, or done report"))
+            .arg(positional("body", 2, false).help("Message text; - reads it from stdin"))
             .arg(toggle("no_wake").long("no-wake").help("Keep this note unread in the inbox without notifying recipients"))
             .arg(value("kind").default_value("note").value_parser([
                 "note", "task", "question", "answer", "blocker", "done", "handoff", "finding",

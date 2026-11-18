@@ -220,6 +220,48 @@ impl Snapshot for SqliteSnapshot {
         let p = self.project_bytes()?;
         self.head("project_captain", "project_id=?", &[&p], None)
     }
+    fn assignment(&mut self, id: EventId) -> StoreResult<Read<ProjectionRecord>> {
+        if self.info.schema_version < 15 {
+            return Ok(Read::Unknown {
+                what: "Assignments need a store upgrade; run se up for this data home, then retry."
+                    .into(),
+            });
+        }
+        let p = self.project_bytes()?;
+        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let id = key(&self.db, "event", id.as_str(), &scope, false)?;
+        self.head(
+            "assignments",
+            "project_id=? AND assignment_id=?",
+            &[&p, &id],
+            Some("opened_seq"),
+        )
+    }
+    fn open_assignments(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        if self.info.schema_version < 15 {
+            return Err(fail(
+                StoreErrorCode::MigrationFailed,
+                "Assignments need a store upgrade; run se up for this data home, then retry.",
+            ));
+        }
+        let p = self.project_bytes()?;
+        let mut filter = "project_id=? AND state IN ('open','working','blocked')".to_string();
+        let mut keys = vec![rusqlite::types::Value::Blob(p)];
+        if let Visibility::SelfOnly(agent) = &self.scope.visibility
+            && !self.is_assignment_captain(agent)?
+        {
+            let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
+            keys.push(rusqlite::types::Value::Blob(key(
+                &self.db,
+                "agent",
+                agent.as_str(),
+                &scope,
+                false,
+            )?));
+            filter.push_str(" AND assignee_id=?");
+        }
+        self.list_heads("assignments", "opened_seq", &filter, keys, budget)
+    }
     fn principal(&mut self, id: Actor) -> StoreResult<Read<ProjectionRecord>> {
         if self.scope.admission.scope == Scope::Registry {
             if !matches!(self.scope.visibility, Visibility::Owner) || !matches!(id, Actor::Human(_))

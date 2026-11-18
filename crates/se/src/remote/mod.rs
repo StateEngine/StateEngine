@@ -59,7 +59,14 @@ pub(crate) fn pending_native(
         "stateengine.send-status/v1",
         "local_pending",
         &binding,
-        format_args!("Pending send {} to {}", input.idempotency_key, input.to),
+        format_args!(
+            "Pending send {} to {}",
+            input.idempotency_key,
+            input
+                .to
+                .as_deref()
+                .unwrap_or("current captain (unresolved)")
+        ),
         json,
         out,
     )
