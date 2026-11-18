@@ -12,16 +12,27 @@ pub(super) fn console() -> Result<(bool, bool)> {
             return Ok(true);
         }
         let error = io::Error::last_os_error();
-        // A redirected or closed stream is an observed lack of a terminal.
-        if matches!(error.raw_os_error(), Some(libc::ENOTTY | libc::EBADF)) {
-            Ok(false)
-        } else {
-            Err(native("inspect console stream", error))
+        match error.raw_os_error() {
+            Some(libc::ENOTTY | libc::EBADF) => Ok(false),
+            // Darwin reports EOPNOTSUPP for terminal ioctls on sockets.
+            Some(libc::EOPNOTSUPP) if is_socket(fd) => Ok(false),
+            _ => Err(native("inspect console stream", error)),
         }
     };
     let stdin = console(libc::STDIN_FILENO)?;
     let stdout = console(libc::STDOUT_FILENO)?;
     Ok((stdin, stdout))
+}
+
+fn is_socket(fd: libc::c_int) -> bool {
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: fstat writes only to the provided buffer and initializes it on success.
+    if unsafe { libc::fstat(fd, metadata.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    // SAFETY: the successful fstat initialized metadata.
+    let mode = unsafe { metadata.assume_init() }.st_mode;
+    mode & libc::S_IFMT == libc::S_IFSOCK
 }
 
 #[expect(
