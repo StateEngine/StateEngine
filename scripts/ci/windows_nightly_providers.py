@@ -142,6 +142,30 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def windows_claude_image(launcher):
+    if launcher.suffix.lower() == '.cmd':
+        package_name = '@anthropic-ai/claude-code'
+        package = (launcher.parent / 'node_modules' / package_name).resolve(strict=True)
+        metadata = json.loads(read_evidence(package / 'package.json', 65536))
+        require(isinstance(metadata, dict) and metadata.get('name') == package_name,
+                'Installed Claude package name differs')
+        bins = metadata.get('bin')
+        entry = bins.get('claude') if isinstance(bins, dict) else bins
+        require(isinstance(entry, str) and entry, 'Installed Claude package has no command entry')
+        command = Path(entry)
+        require(not command.anchor and '..' not in command.parts,
+                'Installed Claude command must be relative to its package')
+        image = (package / command).resolve(strict=True)
+        require(image.is_relative_to(package), 'Installed Claude command escapes its package')
+    else:
+        image = launcher
+    require(image.suffix.lower() == '.exe' and image.is_file(),
+            'Installed Claude command is not a native Windows executable')
+    with image.open('rb') as stream:
+        require(stream.read(2) == b'MZ', 'Installed Claude command has no Windows image header')
+    return image
+
+
 def prepared(provider, root, archive, archive_sha, commit, seed, platform='win32'):
     command, driver, key_name, model_name = PROVIDERS[provider]
     model = os.environ.get(model_name)
@@ -154,6 +178,8 @@ def prepared(provider, root, archive, archive_sha, commit, seed, platform='win32
     executable = shutil.which(command)
     require(executable is not None, 'Native provider executable is absent')
     image = Path(executable).resolve()
+    if platform == 'win32' and provider == 'claude':
+        image = windows_claude_image(image)
     version = subprocess.run([str(image), '--version'], env=clean_environment(), stdin=subprocess.DEVNULL,
                              capture_output=True, text=True, timeout=60, check=True).stdout.strip()
     require(bool(version) and len(version) <= 1024, 'Provider version is unavailable')
