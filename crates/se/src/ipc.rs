@@ -22,12 +22,29 @@ pub fn forward(
     observation: Option<&se_proc::OwnerObservation>,
     options: &ClientOptions,
 ) -> Result<AnyOutput> {
+    let presence = observation.map(OwnerPresence::from_observation);
+    forward_owned(endpoint, credential, op, selections, presence, options)
+}
+
+/// The same request from values a thread can own.
+///
+/// The native observation is read once by the parent and reduced to its
+/// `OwnerPresence` before it crosses a thread boundary, so a worker never
+/// borrows the caller's process inventory. Everything else here is already
+/// owned. Only the owner-authenticated route can carry presence; session and
+/// launch credentials never gain human presence from metadata.
+pub fn forward_owned(
+    endpoint: &EndpointRecord,
+    credential: ClientCredential,
+    op: AnyOp,
+    selections: &CliSelections,
+    presence: Option<OwnerPresence>,
+    options: &ClientOptions,
+) -> Result<AnyOutput> {
     let expected = op.meta().family.schema();
     let mut call = operation(op, selections, endpoint.generation)?;
-    // Only the owner-authenticated route can carry the native self-observation.
-    // Session and launch credentials never gain human presence from metadata.
     if matches!(&credential, ClientCredential::Machine(_)) {
-        call.presence = observation.map(OwnerPresence::from_observation);
+        call.presence = presence;
     }
     exchange(endpoint, credential, call, &expected, options)
 }

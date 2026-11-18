@@ -114,6 +114,127 @@ pub(crate) fn stop_for_uninstall(
     dispatch_with_cold_recovery(cx, AnyOp::RuntimeDown(input), diagnostic, false)
 }
 
+/// One rule: remote work starts only when the merged answer would be used.
+///
+/// A whole-machine read never merges a host observation, a home with no
+/// published endpoint has nothing to ask, and a removed project reports its
+/// local removal view without consulting a host at all. Every exclusion here is
+/// knowable before the build, which is what lets the remaining request overlap
+/// it instead of running before it.
+fn uses_host_observation<S: Snapshot>(
+    cx: &Bootstrap,
+    files: &Files,
+    snapshot: &mut S,
+    caller: &admit::Caller,
+) -> bool {
+    if cx.selections.status_all {
+        return false;
+    }
+    if let se_store::Scope::Project(project) = &caller.admission.scope
+        && let Ok(Read::Present { value }) = snapshot.project(project.clone())
+        && se_core::ops::project_remove::removed_view(&value)
+            .ok()
+            .flatten()
+            .is_some()
+    {
+        return false;
+    }
+    matches!(endpoint(files), Ok(Read::Present { .. }))
+}
+
+/// A daemon answer in flight, owned by the frame that started it.
+struct DaemonObservation {
+    answer: std::sync::mpsc::Receiver<Result<AnyOutput>>,
+    /// A failure to start the read at all, which no answer can carry.
+    start_failure: Option<SeError>,
+}
+
+/// Start the one bounded status read off this thread. It owns the request's
+/// endpoint, credential, presence and options, so it neither borrows the
+/// caller's snapshot nor holds a lock this path needs.
+///
+/// A request that could not be prepared keeps its error instead of failing the
+/// command: the answer only ever reaches the merge, so a home whose endpoint is
+/// unreadable or absent reports exactly what it reported before this overlap.
+fn daemon_observation_start(request: Result<super::hosted::StatusRequest>) -> DaemonObservation {
+    let (answer, receiver) = std::sync::mpsc::channel();
+    let request = match request {
+        Ok(request) => request,
+        Err(error) => {
+            let _ = answer.send(Err(error));
+            return DaemonObservation {
+                answer: receiver,
+                start_failure: None,
+            };
+        }
+    };
+    let sender = answer.clone();
+    let spawned = std::thread::Builder::new()
+        .name("status-observation".into())
+        .spawn(move || {
+            // The receiver may already be gone; the answer is then dropped unread.
+            let _ = sender.send(request.run());
+        });
+    // A thread that could not start leaves that fact behind. It is reported even
+    // when the answer would have been discarded: the caller asked for an
+    // observation, and "it never ran" is not the same as "it said nothing".
+    let start_failure = match spawned {
+        Ok(_) => None,
+        Err(error) => Some(
+            scope::unreadable("status daemon observation", &error.to_string()).with_cause(error),
+        ),
+    };
+    // The extra sender is dropped here, so a thread that ended without sending
+    // reads as disconnected rather than as a wait that never returns.
+    drop(answer);
+    DaemonObservation {
+        answer: receiver,
+        start_failure,
+    }
+}
+
+impl DaemonObservation {
+    /// Receive the answer only when `used`, which is the one decision this frame
+    /// makes about it.
+    ///
+    /// A read that never started is reported through the same channel as a read
+    /// that failed, so the merge still publishes the project status it observed
+    /// locally and marks only the daemon facts unreadable. When the answer is
+    /// unused there is no merge to carry it, so the failure is returned: the
+    /// caller asked for an observation, and "it never ran" is not "it said
+    /// nothing". An unused started read is dropped unread and ends on its own
+    /// deadline, so nothing waits and nothing leaks.
+    fn finish(self, used: bool) -> Result<Option<Result<AnyOutput>>> {
+        match (used, self.start_failure) {
+            (false, Some(error)) => Err(error),
+            (_, failure) => Ok(used.then(|| match failure {
+                Some(error) => Err(error),
+                None => self.answer.recv().unwrap_or_else(|_| {
+                    Err(scope::unreadable(
+                        "status daemon observation",
+                        "the observation thread ended without an answer",
+                    ))
+                }),
+            })),
+        }
+    }
+}
+
+/// The one rule for receiving the answer: it is collected only when the merged
+/// result would use it. These are the same conditions the merge applies, so a
+/// path that discards the answer never waits for it.
+fn daemon_answer_is_used(cx: &Bootstrap, output: &AnyOutput) -> bool {
+    if cx.selections.status_all {
+        return false;
+    }
+    match output {
+        AnyOutput::ProjectStatus(status) => {
+            status.value.runtime.state == "running" && status.value.removal.is_none()
+        }
+        _ => false,
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
@@ -205,6 +326,24 @@ fn dispatch_with_cold_recovery(
         selections.project = Some(project.clone());
     }
     if matches!(op, AnyOp::ProjectStatus(_)) {
+        // Ask the daemon concurrently with this process's own build. The local
+        // build stays authoritative, so status is still honest when the daemon
+        // is absent or stale; only the wall time changes, from the sum of the
+        // two to the longer of them.
+        let ask_daemon = uses_host_observation(cx, &files, &mut snapshot, &caller);
+        // The request owns everything it needs, so it runs on an unscoped thread
+        // and this frame never waits for it unless the answer is used below. A
+        // local error, a removed project or `--all` therefore returns at once
+        // instead of joining a daemon that is slow, paused or gone; the thread
+        // prints nothing and holds no lock this path needs.
+        let pending = ask_daemon.then(|| {
+            daemon_observation_start(super::hosted::StatusRequest::prepare(
+                cx,
+                &files,
+                &caller,
+                &selections,
+            ))
+        });
         let result =
             super::status::observe_snapshot(cx, &mut snapshot, owner, &files, &caller.admission)
                 .and_then(|output| {
@@ -217,25 +356,21 @@ fn dispatch_with_cold_recovery(
                 });
         let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
         let mut output = super::session_observation::finish(prepared, &cx.home)?;
+        // None means nothing was asked, so there is nothing to merge and no
+        // invented error: a read that never needs the host behaves exactly as it
+        // did before this overlap existed.
+        let observed = pending
+            .map(|pending| pending.finish(daemon_answer_is_used(cx, &output)))
+            .transpose()?
+            .flatten();
         let mut service_observation = None;
-        if let AnyOutput::ProjectStatus(status) = &mut output
-            && status.value.runtime.state == "running"
-            && !cx.selections.status_all
-            && status.value.removal.is_none()
+        if let Some(observed) = observed
+            && let AnyOutput::ProjectStatus(status) = &mut output
         {
             // The direct native/store witness stays authoritative for status.
-            // After closing its read pin, ask the existing authenticated host
-            // for its Atlas metadata and retained session faults; never bootstrap
-            // a host here.
-            let observed = super::hosted::forward(
-                cx,
-                &files,
-                &reader,
-                &caller,
-                AnyOp::ProjectStatus(se_core::ops::ProjectStatus { all: false }),
-                &selections,
-                diagnostic,
-            );
+            // The host's Atlas metadata and retained session faults come from the
+            // request that was already in flight during the build; the host is
+            // never bootstrapped here.
             super::status::merge_resources(&mut status.value.runtime, &observed);
             status.value.atlas = match &observed {
                 Ok(AnyOutput::ProjectStatus(live)) => {
