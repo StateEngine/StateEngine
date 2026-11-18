@@ -67,6 +67,7 @@ pub mod codex_input;
 pub mod codex_rpc;
 #[cfg(feature = "listener")]
 pub use codex_rpc::CodexHarness;
+pub use codex_rpc::daemon::Daemon;
 
 #[cfg(feature = "listener")]
 pub mod acp;
