@@ -113,13 +113,15 @@ def observation(inv, directory, run):
             if (not isinstance(failure, dict) or not isinstance(failure.get('label'), str)
                     or not isinstance(failure.get('argv'), list)
                     or not all(isinstance(arg, str) for arg in failure['argv'])
+                    or not isinstance(failure.get('actual_argv'), list)
+                    or not all(isinstance(arg, str) for arg in failure['actual_argv'])
                     or (failure.get('exit') is not None and type(failure['exit']) is not int)
                     or not isinstance(failure.get('stderr'), str)
                     or type(failure.get('stderr_truncated')) is not bool
                     or type(failure.get('stderr_bytes')) is not int or failure['stderr_bytes'] < 0
                     or type(failure.get('stderr_decode_replacement')) is not bool):
                 raise ValueError('hosted provider failure evidence is malformed')
-        elif (failure_state not in ('unavailable', 'not-applicable') or failure_name in names
+        elif (failure_state not in ('unavailable', 'unreadable', 'not-applicable') or failure_name in names
               or 'failure_evidence_sha256' in selected):
             raise ValueError('hosted provider failure evidence state differs')
         if failure_state is not None and (failure_state == 'not-applicable') != (selected.get('result') == 'PASS'):

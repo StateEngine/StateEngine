@@ -220,7 +220,8 @@ class Commands:
         if self.first_failure is None and (code != 0 or failure is not None or sum(sizes) > 8 * 1024**2):
             self.first_failure = prefix.name
             save(self.output / 'first-failed-command.json', dict(
-                label=label, argv=argv, exit=code, failure=failure, stderr_file=prefix.name + '.stderr'))
+                label=label, argv=argv, actual_argv=actual, exit=code, failure=failure,
+                stderr_file=prefix.name + '.stderr'))
         if interrupted is not None:
             raise interrupted
         require(sum(sizes) <= 8 * 1024**2, label + ' exceeded the output bound')
