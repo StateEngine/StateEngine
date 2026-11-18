@@ -376,6 +376,41 @@ macro_rules! staging {
 }
 staging!(SqliteDirect);
 staging!(SqliteHost);
+impl SqliteDirect {
+    /// Trusted in-process test hook shortening the channel delayed-status
+    /// threshold for this store. Call it before the first writer commit;
+    /// production keeps the schema default and no user configuration
+    /// surface grows.
+    #[doc(hidden)]
+    pub fn set_channel_delay_us(
+        &mut self,
+        delay_us: i64,
+        lease: &dyn RuntimeLease,
+    ) -> StoreResult<()> {
+        if delay_us <= 0 {
+            return Err(invalid("channel delay threshold must be positive"));
+        }
+        self.engine
+            .reopen(&self.reader.path, self.reader.timeout, lease)?;
+        connection::validate_lease(
+            &connection::info(&self.engine.db)?,
+            lease,
+            LeaseMode::DirectClient,
+        )?;
+        let changed = self
+            .engine
+            .db
+            .execute(
+                "UPDATE store_info SET channel_delay_us=? WHERE singleton=1",
+                [delay_us],
+            )
+            .map_err(sql)?;
+        if changed != 1 {
+            return Err(invalid("store_info singleton row missing"));
+        }
+        Ok(())
+    }
+}
 impl DirectStore for SqliteDirect {
     fn append(
         &mut self,

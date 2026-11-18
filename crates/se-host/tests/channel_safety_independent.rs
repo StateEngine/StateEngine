@@ -107,9 +107,14 @@ impl ChannelTransport for Provider {
 fn key(text: &str) -> Result<IdempotencyKey, Box<dyn std::error::Error>> {
     Ok(IdempotencyKey::new(text)?)
 }
-fn setup(f: &Fixture, agent_session: bool) -> Check {
+fn setup(f: &Fixture, agent_session: bool, delay_us: Option<i64>) -> Check {
     seed(f)?;
     let (mut writer, lease) = direct(f)?;
+    // The delayed cases shorten the store's real sixty-second threshold;
+    // the store-level judge still pins the production value.
+    if let Some(delay) = delay_us {
+        writer.set_channel_delay_us(delay, &*lease)?;
+    }
     let mut events = vec![
         EventBody::PrincipalRegistered {
             principal: Actor::Human(f.owner.clone()),
@@ -219,7 +224,11 @@ fn duration_visible(text: &str) -> bool {
 )]
 fn run_case(reply_case: bool, delayed_read: Option<bool>) -> Check {
     let f = Fixture::new()?;
-    setup(&f, reply_case || delayed_read == Some(true))?;
+    setup(
+        &f,
+        reply_case || delayed_read == Some(true),
+        delayed_read.map(|_| 3_000_000),
+    )?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
