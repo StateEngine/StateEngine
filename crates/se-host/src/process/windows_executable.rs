@@ -4,7 +4,7 @@ use se_types::Provider;
 use std::{
     fs, io,
     io::Read,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 fn file(path: &Path) -> io::Result<bool> {
@@ -61,10 +61,14 @@ pub(super) fn resolve_package(
     if native_image(path)? {
         return Ok(Some((path.to_path_buf(), None)));
     }
-    if provider != Some(Provider::Codex)
-        || !path
-            .file_stem()
-            .is_some_and(|name| name.eq_ignore_ascii_case("codex"))
+    let (command, package_name) = match provider {
+        Some(Provider::Codex) => ("codex", "@openai/codex"),
+        Some(Provider::Claude) => ("claude", "@anthropic-ai/claude-code"),
+        _ => return Ok(None),
+    };
+    if !path
+        .file_stem()
+        .is_some_and(|name| name.eq_ignore_ascii_case(command))
     {
         return Ok(None);
     }
@@ -80,7 +84,7 @@ pub(super) fn resolve_package(
     let Some(prefix) = path.parent() else {
         return Ok(None);
     };
-    let package = prefix.join("node_modules/@openai/codex");
+    let package = prefix.join("node_modules").join(package_name);
     let manifest = package.join("package.json");
     if !file(&manifest)? {
         return Ok(None);
@@ -88,12 +92,68 @@ pub(super) fn resolve_package(
     let bytes = se_proc::file_access::read_bounded_regular_file(&manifest, 65536)?;
     let metadata: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    if metadata.get("name").and_then(serde_json::Value::as_str) != Some("@openai/codex") {
+    if metadata.get("name").and_then(serde_json::Value::as_str) != Some(package_name) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "Codex package identity differs",
+            "installed provider package identity differs",
         ));
     }
+    let image = if provider == Some(Provider::Codex) {
+        codex_image(prefix, &package)?
+    } else {
+        declared_image(&package, command, &metadata)?
+    };
+    Ok(image.map(|image| (image, Some(package))))
+}
+
+fn declared_image(
+    package: &Path,
+    command: &str,
+    metadata: &serde_json::Value,
+) -> io::Result<Option<PathBuf>> {
+    let Some(entry) = metadata
+        .get("bin")
+        .and_then(|bin| bin.as_str().or_else(|| bin.get(command)?.as_str()))
+    else {
+        return Ok(None);
+    };
+    let entry = Path::new(entry);
+    if entry.components().any(|component| {
+        matches!(
+            component,
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir
+        )
+    }) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "installed provider command must be relative to its package",
+        ));
+    }
+    if !entry
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    {
+        return Ok(None);
+    }
+    let root = fs::canonicalize(package)?;
+    let image = match fs::canonicalize(root.join(entry)) {
+        Ok(path) => path,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !image.starts_with(&root) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "installed provider command escapes its package",
+        ));
+    }
+    if native_image(&image)? {
+        return se_proc::canonicalize_path(image).map(Some);
+    }
+    Ok(None)
+}
+
+fn codex_image(prefix: &Path, package: &Path) -> io::Result<Option<PathBuf>> {
     let (platform, target) = if cfg!(target_arch = "x86_64") {
         ("codex-win32-x64", "x86_64-pc-windows-msvc")
     } else if cfg!(target_arch = "aarch64") {
@@ -116,7 +176,7 @@ pub(super) fn resolve_package(
         if native_image(&candidate)? {
             #[cfg(windows)]
             let candidate = se_proc::canonicalize_path(&candidate)?;
-            return Ok(Some((candidate, Some(package))));
+            return Ok(Some(candidate));
         }
     }
     Ok(None)

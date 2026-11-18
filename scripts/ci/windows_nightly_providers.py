@@ -158,8 +158,8 @@ def prepared(provider, root, archive, archive_sha, commit, seed, platform='win32
                              capture_output=True, text=True, timeout=60, check=True).stdout.strip()
     require(bool(version) and len(version) <= 1024, 'Provider version is unavailable')
     config = root / (provider + '.toml')
-    config.write_text('version = 1\n\n[providers.' + provider + ']\ncommand = ' + json.dumps(str(image))
-                      + '\nmodel = ' + json.dumps(model) + '\nprofile = "nightly"\n'
+    config.write_text('version = 1\n\n[providers.' + provider + ']\nmodel = ' + json.dumps(model)
+                      + '\nprofile = "nightly"\n'
                       + '[profiles.nightly]\nsandbox = "workspace-write"\n'
                       + 'approval = "never"\nnetwork = true\nbypass = false\n', encoding='utf-8')
     profile = dict(name='nightly', sandbox='workspace-write', approval='never', network=True, bypass=False)
