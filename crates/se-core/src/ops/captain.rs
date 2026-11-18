@@ -62,7 +62,7 @@ pub struct CaptainThen {
     pub clear: bool,
 }
 
-fn actor_ref<R: Snapshot>(read: &mut R, actor: &Actor) -> Result<ActorRef> {
+pub(crate) fn actor_ref<R: Snapshot>(read: &mut R, actor: &Actor) -> Result<ActorRef> {
     match actor {
         Actor::Human(id) => Ok(ActorRef {
             kind: "owner".into(),

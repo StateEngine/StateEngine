@@ -29,3 +29,16 @@ fn captain_commands_decode_and_advertise_the_same_operations()
     }
     Ok(())
 }
+
+#[test]
+fn captain_history_kind_is_available() -> Result<(), Box<dyn std::error::Error>> {
+    let matches = ops::cli_command().try_get_matches_from([
+        "se",
+        "history",
+        "--kind",
+        "project.captain_changed",
+    ])?;
+    let operation = ops::from_matches(&matches)?;
+    operation.validate()?;
+    Ok(())
+}

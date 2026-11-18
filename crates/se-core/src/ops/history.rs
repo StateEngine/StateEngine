@@ -164,6 +164,10 @@ pub fn list<R: Snapshot>(input: HistoryList, cx: &mut Cx<'_, R>) -> Result<Histo
     })
 }
 const PUBLIC_KINDS: &[(&str, se_store::EventKind)] = &[
+    (
+        "project.captain_changed",
+        se_store::EventKind::ProjectCaptainChanged,
+    ),
     ("legacy.retained", se_store::EventKind::LegacyRetained),
     ("alias.imported", se_store::EventKind::AliasImported),
     ("message.superseded", se_store::EventKind::MessageSuperseded),
