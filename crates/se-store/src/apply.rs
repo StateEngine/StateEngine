@@ -6,6 +6,7 @@ pub(crate) mod credential;
 pub(crate) mod cursor;
 pub(crate) mod effect;
 mod mail;
+mod mail_rate;
 mod message;
 mod notification;
 mod revision;
@@ -430,6 +431,7 @@ pub(crate) fn apply(
                     "encoded remote reply exceeds its delivery frame; send a shorter reply",
                 ));
             }
+            mail_rate::direct(c, header, project()?, &s, &header.actor, &recipient)?;
             let recipient = actor_key(&recipient)?;
             let sender = actor_key(&header.actor)?;
             let exists: bool = c
@@ -470,7 +472,8 @@ pub(crate) fn apply(
                     ));
                 }
             }
-            let message_insert = if connection::info(c)?.schema_version >= 4 {
+            let schema_version = connection::info(c)?.schema_version;
+            let message_insert = if schema_version >= 4 {
                 format!(
                     "INSERT INTO message_data(event_seq,message_id,recipient_id,message_kind,body_payload,refs,reply_to,quiet) VALUES(?,?,?,?,?,?,?,{})",
                     u8::from(quiet)
@@ -491,8 +494,23 @@ pub(crate) fn apply(
                 ],
             )
             .map_err(sql)?;
-            c.execute("INSERT INTO messages(project_id,message_id,sent_seq,sender_id,recipient_id,message_kind,revision)
-                    VALUES(?,?,?,?,?,?,?)",crate::sql_value::sql_params![project()?,m,seq,sender,recipient,kind,revision]).map_err(sql)?;
+            // Schema 15 added the append-stamp column; direct writes to older
+            // homes keep the pre-15 row shape and count through the events
+            // stamp until a host open migrates them.
+            if schema_version >= 15 {
+                let recorded: i64 = c
+                    .query_row(
+                        "SELECT recorded_at_us FROM events WHERE seq=?",
+                        [seq],
+                        |r| r.get(0),
+                    )
+                    .map_err(sql)?;
+                c.execute("INSERT INTO messages(project_id,message_id,sent_seq,sender_id,recipient_id,message_kind,recorded_at_us,revision)
+                        VALUES(?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![project()?,m,seq,sender,recipient,kind,recorded,revision]).map_err(sql)?;
+            } else {
+                c.execute("INSERT INTO messages(project_id,message_id,sent_seq,sender_id,recipient_id,message_kind,revision)
+                        VALUES(?,?,?,?,?,?,?)",crate::sql_value::sql_params![project()?,m,seq,sender,recipient,kind,revision]).map_err(sql)?;
+            }
             c.execute(
                 "INSERT INTO marks(message_seq,project_id,recipient_id) VALUES(?,?,?)",
                 crate::sql_value::sql_params![seq, project()?, recipient],

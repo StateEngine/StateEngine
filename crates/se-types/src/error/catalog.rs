@@ -1,5 +1,4 @@
-// Canonical typed error declarations for section 50.
-// Like-class failures share a code while preserving cause and legal remedy in detail.
+// Canonical typed error declarations for section 50; like-class failures share a code while preserving cause and legal remedy in detail.
 codes! {
     MessagingChannelRefused => ("messaging-channel-refused", Refused) {reason: MessagingChannelError, next_step:String} => "Messaging channel: {reason}", "{next_step}";
     AtlasSymbolAmbiguous => ("atlas-symbol-ambiguous", Usage) { symbol: String, candidates: Vec<String> } => "`{symbol}` names {candidates.len} symbols", "add `--path`";
@@ -44,6 +43,7 @@ codes! {
     LaunchConfirmationRequired => ("launch-confirmation-required", Conflict) { subject: String, reason: String, lifecycles: Vec<LifecycleId>, sessions: Vec<SessionId>, next_step: String } => "Launch {subject}: {reason}", "{next_step}";
     LaunchFailed => ("launch-failed", Refused) { subject: String, reason: String, next_step: String } => "Launch {subject}: {reason}", "{next_step}";
     ListenerUnavailable => ("listener-unavailable", Refused) { subject: String, reason: String, next_step: String } => "Listener {subject}: {reason}", "{next_step}";
+    MessageRateOverCap => ("message-rate-over-cap", Refused) { from: String, to: String, count: u64, limit: u64, window_minutes: u64 } => "{from} has sent {count} messages to {to} in the last {window_minutes} minutes (limit {limit})", "mark a message read with `se msg ack` instead of replying, or wait and send one consolidated message";
     ProjectRemoved => ("project-removed", Refused) { project: ProjectId, at: UnixMicros } => "project {project} was removed at {at}", "re-adopt: → `se init --repo {root}`";
     ProviderChangeBreaksResume => ("provider-change-breaks-resume", Refused) { agent: AgentId, saved: String, requested: String } => "{agent}'s conversation is a {saved} conversation", "Use `se launch {agent} --provider {requested}`";
     ProviderCliNotFound => ("provider-cli-not-found", Refused) { provider: String, searched: Vec<String> } => "can't find the {provider} CLI", "Install the {provider} CLI, add its native executable to PATH or set command under [providers.{provider}] in the runtime's selected configuration (SE_CONFIG, otherwise this home's config.toml), then restart with the same selection and retry the launch";

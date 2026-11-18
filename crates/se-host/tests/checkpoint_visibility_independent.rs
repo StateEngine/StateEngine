@@ -21,6 +21,9 @@ use native_host::{host, options, wait};
 )]
 mod session;
 
+// The seed is pure checkpoint volume: every event is an exempt note to
+// the sender's own inbox, so the per-recipient rate cap never applies to
+// it and its size may grow with the maintenance budget it must outgrow.
 fn seed(f: &Fixture) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
     f.batch(
         f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone())),
@@ -30,7 +33,7 @@ fn seed(f: &Fixture) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
                 Ok(EventBody::MessageSent {
                     quiet: false,
                     message: message()?,
-                    recipient: Actor::Agent(f.b.clone()),
+                    recipient: Actor::Agent(f.a.clone()),
                     kind: "finding".into(),
                     body: InputText::Inline("x".repeat(24500)),
                     refs: vec![],

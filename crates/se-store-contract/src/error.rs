@@ -19,6 +19,9 @@ pub fn fail(code: StoreErrorCode, cause: impl Into<String>) -> Box<StoreError> {
         StoreErrorCode::ProjectRemoved => {
             "The project was removed and its history retained; `se init --repo <root>` re-adopts the repository as a new project."
         }
+        StoreErrorCode::MessageRateOverCap => {
+            "The sender pair is at its per-recipient rate cap; mark a message read with `se msg ack` instead of replying, or wait for the window and send one consolidated message."
+        }
         StoreErrorCode::PragmaRefused => {
             "Restore the required SQLite/filesystem setting or use a compatible build before admitting writes."
         }
@@ -145,6 +148,14 @@ pub enum StoreDetail {
         project: ProjectId,
         at: UnixMicros,
     },
+    /// The sender pair hit the per-recipient send rate cap at append.
+    MessageRateOverCap {
+        from: String,
+        to: String,
+        count: u64,
+        limit: u64,
+        window_minutes: u64,
+    },
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreErrorCode {
@@ -175,6 +186,8 @@ pub enum StoreErrorCode {
     CreatorControlRefused,
     /// The project was tombstoned; its history stays readable, writes refuse.
     ProjectRemoved,
+    /// The sender pair hit the per-recipient send rate cap at append.
+    MessageRateOverCap,
     EventInvalid,
     BodyTooLarge,
     ProjectionInconsistent,
