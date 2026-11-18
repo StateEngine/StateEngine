@@ -321,6 +321,7 @@ def invocation(inv, directory, run=None):
         entry["outcome"] = "FAIL"
     if inv.get("hosted_provider") is True:
         entry["behavior_only"] = True
+        entry.pop("detached_host_start", None)
         if inv.get("state") != "finished" or run is None:
             entry["problems"].append(inv.get("error", "hosted provider receipt not witnessed"))
             return entry
@@ -329,6 +330,8 @@ def invocation(inv, directory, run=None):
             selected, phases = observation(inv, directory, run)
             if inv.get("exit") != selected['exit']:
                 raise ValueError("hosted provider exit differs from the retained receipt")
+            if selected.get("detached_host_start") is not None:
+                entry["detached_host_start"] = selected["detached_host_start"]
             entry["journeys"] = {str(number): (phases[key]['result'] if phases[key]['result'] in ('PASS', 'FAIL')
                                                 else 'UNKNOWN')
                                  for number, key in enumerate(('J1', 'J2', 'J3', 'J4', 'J5'), 1)}
@@ -624,6 +627,11 @@ def grid(report):
         for row in table["rows"]:
             lines.append("| " + row["name"] + " | " + " | ".join(row["platforms"][p]["state"] for p in PLATFORMS) + " |")
         lines.append("")
+    hosted = [entry["surface"] for entry in report.get("invocations", [])
+              if entry.get("hosted_provider") is True and entry.get("detached_host_start")]
+    if hosted:
+        lines += [f"Windows detached host startup was NOT RUN on hosted runners for {', '.join(hosted)}. "
+                  "A native Windows VM witness is required.", ""]
     lines += render_budget_context(report["budgets"])
     if report.get("remote_timings"):
         lines += ["Remote timings (milliseconds; clock estimates retain their qualification):", "",

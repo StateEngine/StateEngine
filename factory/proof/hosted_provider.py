@@ -11,6 +11,7 @@ import zipfile
 
 MAX_ARTIFACT = 16 * 1024**2
 PHASES = ('J1', 'J2', 'J3', 'J4', 'J5')
+FOREGROUND_PHASES = {'J2', 'J3', 'J5'}
 
 
 def plan(config):
@@ -75,6 +76,28 @@ def valid_failure_stream(failure, stream):
     return (state == 'present' and isinstance(text, str)
             and (state_key not in failure or len(text.encode('utf-8')) <= 65536)
             and type(truncated) is bool and type(size) is int and size >= 0 and type(replacement) is bool)
+
+
+def verify_host_start(receipt, selected):
+    for name in ('detached_host_start', 'foreground_hosts'):
+        if json.dumps(receipt.get(name), sort_keys=True) != json.dumps(selected.get(name), sort_keys=True):
+            raise ValueError('hosted provider ' + name + ' differs from its retained receipt')
+    coverage, hosts = receipt.get('detached_host_start'), receipt.get('foreground_hosts')
+    if (coverage is None and hosts is None
+            and 'windows_journeys/foreground.py' not in receipt['runner_sha256']):
+        return
+    if coverage != {'hosted': 'NOT RUN', 'witness_required_on': 'native-windows-vm'}:
+        raise ValueError('hosted provider detached startup coverage is invalid')
+    passed = receipt['result'] == 'PASS'
+    if hosts is None and not passed:
+        return  # Setup can fail before a foreground host is attempted.
+    if (not isinstance(hosts, dict) or not set(hosts).issubset(FOREGROUND_PHASES)
+            or any(not isinstance(host, dict) or host.get('readiness') not in ('starting', 'witnessed', 'failed')
+                   or ('exit' in host and type(host['exit']) is not int) for host in hosts.values())):
+        raise ValueError('hosted provider foreground host evidence is invalid')
+    if passed and (set(hosts) != FOREGROUND_PHASES or any(
+            host['readiness'] != 'witnessed' or host.get('exit') != 0 for host in hosts.values())):
+        raise ValueError('passing hosted provider evidence lacks foreground readiness or exit proof')
 
 
 def observation(inv, directory, run):
@@ -156,6 +179,7 @@ def observation(inv, directory, run):
                        or phases[key].get('result') not in ('PASS', 'FAIL', 'INCOMPLETE', 'NOT RUN') for key in PHASES)
                 or type(selected.get('exit')) is not int or selected['exit'] not in (0, 1)):
             raise ValueError('hosted provider phase or exit evidence differs')
+        verify_host_start(receipt, selected)
         release = receipt.get('release')
         passed = selected['result'] == 'PASS'
         baseline = receipt.get('process_baseline')
