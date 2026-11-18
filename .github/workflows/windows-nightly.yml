@@ -92,6 +92,7 @@ jobs:
           path: |
             ${{ runner.temp }}/nightly-evidence/publish/summary.json
             ${{ runner.temp }}/nightly-evidence/publish/*-journey/results.json
+            ${{ runner.temp }}/nightly-evidence/publish/*-journey/failure.json
           if-no-files-found: warn
           retention-days: 14
       - name: Verify provider seeds are absent
