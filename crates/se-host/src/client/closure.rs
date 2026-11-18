@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{io::Read as _, path::Path};
 
 const FILE: &str = "runtime-close.json";
+const SPAWNER_FILE: &str = "runtime-spawner-close.json";
 const MAX_BYTES: usize = 1_048_576;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -81,8 +82,31 @@ fn decode(bytes: &[u8]) -> Result<RuntimeClosure> {
 pub fn read(files: &dyn StateFiles, root: &Path) -> Result<Option<RuntimeClosure>> {
     bytes(files, root)?.map(|v| decode(&v)).transpose()
 }
+/// Last protected automatic spawner cleanup report, if one was published.
+pub fn read_spawner(files: &dyn StateFiles, root: &Path) -> Result<Option<RuntimeClosure>> {
+    read_bytes(files, &root.join(SPAWNER_FILE))?
+        .map(|v| decode(&v))
+        .transpose()
+}
 #[cfg(feature = "listener")]
 pub(crate) fn publish(files: &dyn StateFiles, root: &Path, record: &RuntimeClosure) -> Result<()> {
+    publish_at(files, root, record, FILE)
+}
+#[cfg(feature = "listener")]
+pub(crate) fn publish_spawner(
+    files: &dyn StateFiles,
+    root: &Path,
+    record: &RuntimeClosure,
+) -> Result<()> {
+    publish_at(files, root, record, SPAWNER_FILE)
+}
+#[cfg(feature = "listener")]
+fn publish_at(
+    files: &dyn StateFiles,
+    root: &Path,
+    record: &RuntimeClosure,
+    filename: &str,
+) -> Result<()> {
     let bytes = serde_json::to_vec(record)
         .map_err(|e| scope::unreadable("runtime close receipt codec", &e.to_string()))?;
     if bytes.len() > MAX_BYTES {
@@ -92,7 +116,7 @@ pub(crate) fn publish(files: &dyn StateFiles, root: &Path, record: &RuntimeClosu
             bytes.len(),
         ));
     }
-    let old = self::bytes(files, root)?;
+    let old = read_bytes(files, &root.join(filename))?;
     if let Some(old) = &old {
         let previous = match decode(old) {
             Ok(previous) => Some(previous),
@@ -123,9 +147,9 @@ pub(crate) fn publish(files: &dyn StateFiles, root: &Path, record: &RuntimeClosu
     }
     let expected = old.as_ref().map(|v| Sha256::digest(v).into());
     files
-        .replace_owned(&root.join(FILE), expected, &bytes)
+        .replace_owned(&root.join(filename), expected, &bytes)
         .map_err(|e| store_error(&e))?;
-    if self::bytes(files, root)?.as_deref() != Some(bytes.as_slice()) {
+    if read_bytes(files, &root.join(filename))?.as_deref() != Some(bytes.as_slice()) {
         return Err(scope::unreadable(
             "runtime close receipt",
             "protected publication readback differs from the completed stages",

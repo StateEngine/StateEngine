@@ -21,6 +21,31 @@ def require(condition, reason):
         raise RuntimeError(reason)
 
 
+def spawner_argument():
+    """Native identity of this journey driver, which directly launches se."""
+    pid = os.getpid()
+    if sys.platform == 'linux':
+        fields = Path('/proc/self/stat').read_text().rsplit(') ', 1)[1].split()
+        birth = int(fields[19])
+    elif sys.platform == 'win32':
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.GetProcessTimes.argtypes = [wintypes.HANDLE, *([ctypes.POINTER(wintypes.FILETIME)] * 4)]
+        kernel.GetProcessTimes.restype = wintypes.BOOL
+        creation, exit_time, kernel_time, user_time = (wintypes.FILETIME() for _ in range(4))
+        if not kernel.GetProcessTimes(kernel.GetCurrentProcess(), ctypes.byref(creation),
+                                      ctypes.byref(exit_time), ctypes.byref(kernel_time),
+                                      ctypes.byref(user_time)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        birth = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+    else:
+        return []
+    require(birth > 0, 'Native spawner birth is unavailable')
+    return ['--spawner', f'{pid}:{birth}']
+
+
 def digest(path):
     with Path(path).open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()

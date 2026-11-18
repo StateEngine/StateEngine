@@ -25,12 +25,12 @@ pub(crate) fn read_at(
         inventory_at(db, path, budget, deadline)
     })
 }
-fn with_source(
+pub(crate) fn with_source<T>(
     path: &std::path::Path,
     files: &dyn StateFiles,
     budget: ReadBudget,
-    read: impl FnOnce(&ReadBudget, Instant) -> StoreResult<OwnerGuardInventory>,
-) -> StoreResult<OwnerGuardInventory> {
+    read: impl FnOnce(&ReadBudget, Instant) -> StoreResult<T>,
+) -> StoreResult<T> {
     if budget.page.after.is_some()
         || budget.page.limit.get() > 1000
         || budget.page.max_bytes.get() > 2 * 1024 * 1024

@@ -139,6 +139,7 @@ pub struct OperationOutput {
 }
 pub enum IpcRequest {
     Adopt(crate::adoption::Input),
+    Spawner(se_proc::ProcessIdentity),
     Channels(crate::channels::ChannelRequest),
     #[cfg(feature = "remote")]
     RemoteOwner(Box<crate::remote::OwnerInput>),

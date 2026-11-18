@@ -236,6 +236,33 @@ pub(crate) fn read_process_until(
     }
 }
 
+pub(crate) fn read_parent(identity: &ProcessIdentity) -> ProcResult<Option<ProcessId>> {
+    let handle = lookup(identity.pid)?.ok_or_else(|| changed(identity, None))?;
+    if birth(&handle)? != identity.start || exit_status(&handle)?.is_some() {
+        return Err(changed(identity, None));
+    }
+    let map_error = |error: crate::windows_native::Error| {
+        native(
+            ProcErrorCode::IdentityUnreadable,
+            error.operation,
+            error.source,
+        )
+    };
+    let pid = identity.pid.0;
+    let parent = match crate::windows_native::parent(handle.0, pid).map_err(map_error)? {
+        Some(parent) => parent,
+        None => crate::windows_native::parents()
+            .map_err(map_error)?
+            .get(&pid)
+            .copied()
+            .ok_or_else(|| input("process parent", "live child missing from native snapshot"))?,
+    };
+    if exit_status(&handle)?.is_some() {
+        return Err(changed(identity, None));
+    }
+    Ok((parent != 0).then_some(ProcessId(parent)))
+}
+
 fn read_pinned_process(
     machine: MachineId,
     pid: ProcessId,

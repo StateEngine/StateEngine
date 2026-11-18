@@ -102,6 +102,8 @@ pub struct HostedRuntime {
     pub(crate) local_stop: Option<tokio::sync::watch::Receiver<bool>>,
     /// Started on demand rather than by an explicit `se up`.
     pub(crate) auto_start: bool,
+    pub(crate) spawner: Option<Arc<super::spawner::Spawner>>,
+    pub(super) spawner_expired: bool,
     /// The launch coordinator's activity count, attached before serve.
     pub(crate) activity: Option<tokio::sync::watch::Receiver<u32>>,
 }
@@ -398,6 +400,8 @@ fn prepare(
         retained_custody: Some(retained_custody),
         local_stop: None,
         auto_start: false,
+        spawner: None,
+        spawner_expired: false,
         activity: None,
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
         memory_reclaim: matches!(options.kind, crate::HostKind::Standalone)

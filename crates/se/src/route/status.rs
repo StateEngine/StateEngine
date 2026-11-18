@@ -56,6 +56,35 @@ pub fn observe_snapshot<S: Snapshot>(
     );
     output.setup.state = SetupState::Configured;
     output.setup.reason = None;
+    if matches!(&admission.actor, Actor::Human(_)) {
+        match se_host::client::closure::read_spawner(files, &cx.home) {
+            Ok(Some(record)) => {
+                output.runtime.spawner_cleanup = Some(SpawnerCleanupView {
+                    generation: record.generation.get(),
+                    complete: record.resources_closed,
+                    sessions: record
+                        .stops
+                        .into_iter()
+                        .map(|stop| SpawnerCleanupSession {
+                            project: stop.project,
+                            agent: stop.agent,
+                            session: stop.session,
+                            lifecycle: stop.lifecycle,
+                            stopped: stop.witness.is_some(),
+                            reason: stop.reason,
+                        })
+                        .collect(),
+                    pending: record.pending,
+                });
+            }
+            Ok(None) => (),
+            Err(error) => output.pending.push(PendingFact {
+                what: "spawner cleanup report".into(),
+                since: None,
+                detail: error.to_string(),
+            }),
+        }
+    }
     output.project = Read::Absent {
         checked: "no project selected; use --project or enter a registered repository".into(),
     };
@@ -349,6 +378,7 @@ pub(super) fn merge_resources(runtime: &mut RuntimeView, observed: &Result<AnyOu
     match hosted {
         Ok(live) => {
             runtime.resources = live.resources.clone();
+            runtime.spawner = live.spawner.clone();
             runtime.resources_unavailable = live.resources_unavailable.clone().or_else(|| {
                 live.resources
                     .is_none()

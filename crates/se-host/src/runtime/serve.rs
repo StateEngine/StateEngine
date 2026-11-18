@@ -46,6 +46,7 @@ enum Event {
     LocalStop,
     /// An automatically started host stayed at zero activity for the full window.
     IdleExpired,
+    SpawnerExpired,
     CatchUp,
     OwnershipFault,
     Joined(std::result::Result<Result<ConnectionEnd>, tokio::task::JoinError>),
@@ -130,6 +131,7 @@ impl HostedRuntime {
             idle,
             activity.clone(),
             self.execution.ownership_fault.clone(),
+            self.spawner.clone(),
         );
         let mut accept_backoff = std::time::Duration::from_millis(1);
         let mut accept_retry_at = tokio::time::Instant::now();
@@ -149,6 +151,11 @@ impl HostedRuntime {
             {
                 Event::LocalStop => break ended(self, listener, None),
                 Event::IdleExpired => break ended(self, listener, None),
+                Event::SpawnerExpired => {
+                    let mut exit = ended(self, listener, None);
+                    exit.runtime.spawner_expired = true;
+                    break exit;
+                }
                 Event::OwnershipFault => {
                     break ended(
                         self,
@@ -439,6 +446,7 @@ async fn event(
         if let Poll::Ready(tick) = timers.poll(cx) {
             return Poll::Ready(match tick {
                 super::live::Tick::Idle => Event::IdleExpired,
+                super::live::Tick::Spawner => Event::SpawnerExpired,
                 super::live::Tick::CatchUp => Event::CatchUp,
                 super::live::Tick::OwnershipFault => Event::OwnershipFault,
             });
@@ -508,6 +516,10 @@ async fn connection(
             connection = exchange
                 .reply_channels(output, draining.as_ref().unwrap_or(&deadline))
                 .await?;
+            continue;
+        }
+        if let Some(result) = exchange.take_spawner() {
+            connection = exchange.reply_owner(result, &deadline).await?;
             continue;
         }
         #[cfg(feature = "remote")]

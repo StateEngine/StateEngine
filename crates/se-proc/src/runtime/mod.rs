@@ -31,6 +31,64 @@ pub fn read_process_until(
     crate::platform::read_process_until(machine, pid, deadline)
 }
 
+/// Read the live child and its claimed direct parent within the original bound.
+/// A retained Windows creator PID can be reused, so its current birth must also
+/// precede the child's birth.
+pub fn read_direct_parent_until(
+    machine: MachineId,
+    child: ProcessId,
+    parent: ProcessId,
+    deadline: std::time::Instant,
+) -> ProcResult<(ProcessIdentity, ProcessIdentity)> {
+    let missing =
+        || crate::support::input("process parent", "expected the exact live direct parent");
+    let read_live = |pid| match read_process_until(machine.clone(), pid, deadline)? {
+        ProcessRead::Present(value)
+            if !matches!(
+                value.state,
+                NativeState::Exited | NativeState::ExitedAwaitingReap
+            ) =>
+        {
+            Ok(value)
+        }
+        _ => Err(missing()),
+    };
+    let read_edge = |child: &LiveObservation| {
+        #[cfg(windows)]
+        let edge = crate::platform::read_parent(&child.identity);
+        #[cfg(unix)]
+        let edge = Ok(child.parent);
+        edge
+    };
+    let before = read_live(child)?;
+    if child == parent || read_edge(&before)? != Some(parent) {
+        return Err(missing());
+    }
+    let parent = read_live(parent)?.identity;
+    let after = read_live(child)?;
+    let parent_again = read_live(parent.pid)?.identity;
+    if before.identity != after.identity
+        || parent != parent_again
+        || read_edge(&after)? != Some(parent.pid)
+        || parent.boot != after.identity.boot
+    {
+        return Err(missing());
+    }
+    if let (
+        StartIdentity::Windows {
+            creation_filetime: parent,
+        },
+        StartIdentity::Windows {
+            creation_filetime: child,
+        },
+    ) = (&parent.start, &after.identity.start)
+        && parent > child
+    {
+        return Err(missing());
+    }
+    Ok((after.identity, parent))
+}
+
 impl NativeProcessRuntime {
     /// Observe the retained process within the caller's original bound. An
     /// inaccessible image during native teardown is not proof of process exit.

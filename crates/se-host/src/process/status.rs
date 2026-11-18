@@ -99,6 +99,34 @@ impl LaunchCoordinator {
             .into(),
         );
         status.value.runtime.process = Some(launch_util::view(&self.owner, deadline.at())?);
+        if let Some(spawner) = &self.spawner {
+            let (identity, expiry) = spawner.snapshot().ok_or_else(|| {
+                error(
+                    "spawner status",
+                    "the bound spawner state is unavailable or stopping",
+                )
+            })?;
+            let birth = match identity.start {
+                se_proc::StartIdentity::Linux { start_ticks } => start_ticks.to_string(),
+                se_proc::StartIdentity::Windows { creation_filetime } => {
+                    creation_filetime.to_string()
+                }
+                se_proc::StartIdentity::MacOs {
+                    seconds,
+                    microseconds,
+                } => format!("{seconds}.{microseconds:06}"),
+            };
+            status.value.runtime.spawner = Some(SpawnerView {
+                pid: identity.pid.0,
+                birth,
+                state: if expiry.is_some() {
+                    "reclaim-window"
+                } else {
+                    "watching"
+                }
+                .into(),
+            });
+        }
         status.value.runtime.generation = Some(self.store.generation.get());
         status.value.runtime.version = Some(env!("CARGO_PKG_VERSION").into());
         status.value.runtime.observed_at = Some(receipt::timestamp(

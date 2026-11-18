@@ -54,6 +54,8 @@ pub fn missing(home: String, generated_at: String, checked: String) -> StatusOut
         },
         runtime: RuntimeView {
             detachment_notice: None,
+            spawner: None,
+            spawner_cleanup: None,
             state: "unknown".into(),
             detachment: None,
             host: None,

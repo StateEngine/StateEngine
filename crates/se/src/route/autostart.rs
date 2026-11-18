@@ -124,7 +124,12 @@ pub(super) fn endpoint_with_origin(
                     }
                 }
                 match settle(&mut failure, &mut abort_requested) {
-                    Ok(true) => return Ok(endpoint),
+                    Ok(true) => {
+                        if let StartupOrigin::Spawner(identity) = &origin {
+                            reclaim(cx, files, &endpoint, identity, bound)?;
+                        }
+                        return Ok(endpoint);
+                    }
                     Ok(false) => pause(bound),
                     Err(error) => return Err(retain(error, failure)),
                 }
@@ -143,17 +148,19 @@ pub(super) fn endpoint_with_origin(
                     return Err(retain(error, Some(failed)));
                 }
                 let machine = super::identity::require_machine(files)?;
-                let attempt = match origin {
+                let attempt = match &origin {
                     StartupOrigin::Explicit => {
                         crate::runtime::host::start(&cx.home, &configuration, machine, bound)
                     }
-                    StartupOrigin::Automatic => crate::runtime::host::start_with_origin(
-                        &cx.home,
-                        &configuration,
-                        machine,
-                        origin,
-                        bound,
-                    ),
+                    StartupOrigin::Automatic | StartupOrigin::Spawner(_) => {
+                        crate::runtime::host::start_with_origin(
+                            &cx.home,
+                            &configuration,
+                            machine,
+                            origin.clone(),
+                            bound,
+                        )
+                    }
                 };
                 match attempt {
                     Ok(started) => {
@@ -161,7 +168,7 @@ pub(super) fn endpoint_with_origin(
                             &started,
                             &cx.home,
                             endpoint_recovery.as_ref(),
-                            origin,
+                            &origin,
                             bound,
                             diagnostic,
                         )?;
@@ -173,11 +180,51 @@ pub(super) fn endpoint_with_origin(
         }
     }
 }
+fn reclaim(
+    cx: &Bootstrap,
+    files: &Files,
+    endpoint: &se_host::EndpointRecord,
+    identity: &se_proc::ProcessIdentity,
+    bound: &Deadline,
+) -> Result<()> {
+    se_proc::native_ipc::restore_image_cache(
+        &cx.home,
+        endpoint.image_sha256,
+        &bound.native_bound(),
+    )
+    .map_err(|error| se_core::scope::unreadable("spawner reclaim image", &error.to_string()))?;
+    let mut options = execute::options();
+    options.timeout = bound.remaining()?;
+    options.expected_generation = Some(endpoint.generation);
+    let output = crate::ipc::exchange_output(
+        endpoint,
+        execute::credential(cx, files)?,
+        se_host::IpcEnvelope {
+            version: se_types::API_VERSION,
+            request_id: 1,
+            generation: endpoint.generation,
+            authority: None,
+            presence: None,
+            cli_selections: None,
+            request: se_host::IpcRequest::Spawner(identity.clone()),
+        },
+        &options,
+    )?;
+    if output.schema != "se.runtime-reclaim/1"
+        || output.value != serde_json::json!({"state":"claimed"})
+    {
+        return Err(SeError::invalid(
+            "spawner reclaim",
+            "the authenticated claim receipt",
+        ));
+    }
+    Ok(())
+}
 fn report_started(
     started: &crate::runtime::host::StartedHost,
     home: &std::path::Path,
     recovery: Option<&se_core::ops::EndpointRecovery>,
-    origin: StartupOrigin,
+    origin: &StartupOrigin,
     bound: &Deadline,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<()> {
@@ -189,7 +236,7 @@ fn report_started(
                 .with_cause(error)
         })?;
     }
-    if matches!(origin, StartupOrigin::Explicit) {
+    if matches!(origin, StartupOrigin::Explicit | StartupOrigin::Spawner(_)) {
         super::process::from_identity(&started.ready.identity, bound)?;
     }
     if matches!(origin, StartupOrigin::Automatic)
@@ -204,7 +251,7 @@ fn report_started(
                 .with_cause(error)
         })?;
     }
-    if matches!(origin, StartupOrigin::Explicit)
+    if matches!(origin, StartupOrigin::Explicit | StartupOrigin::Spawner(_))
         && !matches!(started.detachment_record, Read::Present { .. })
     {
         diagnostic(&format!(

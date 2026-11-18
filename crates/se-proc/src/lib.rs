@@ -123,7 +123,7 @@ mod windows_native;
 #[cfg(windows)]
 pub use platform::observe_prepared_scope_exit;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-pub use runtime::{read_process, read_process_until};
+pub use runtime::{read_direct_parent_until, read_process, read_process_until};
 #[cfg(target_os = "macos")]
 mod macos_process;
 #[cfg(target_os = "macos")]
