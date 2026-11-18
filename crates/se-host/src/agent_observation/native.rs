@@ -1,7 +1,10 @@
 //! Outside, exact-birth native readback. A stored activation is never liveness.
 use super::*;
 use se_core::ops::process_commit::ENDED_BY_REBOOT;
-use se_proc::{CheckpointKind, CheckpointPrincipal, CheckpointSource, NativeState, ProcessRead};
+use se_proc::{
+    CheckpointKind, CheckpointPrincipal, CheckpointSource, ExitEvidence, NativeState, ProcessRead,
+    RootWitness,
+};
 use se_store::{Actor, RecordedIdentity};
 
 #[expect(
@@ -42,14 +45,27 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
                 "matching native and recorded lifecycle/project/agent/session",
             ));
         }
-        if matches!(plan.recorded_exit, RecordedExit::Reboot) {
-            if !matches!(&checkpoint.checkpoint, CheckpointKind::Exit { witness, .. }
-                if witness.ended_by_reboot())
-            {
-                return Err(invalid("a retained reboot exit witness for this lifecycle"));
-            }
-            return Ok(None);
-        }
+        let reboot_boot = if matches!(plan.recorded_exit, RecordedExit::Reboot) {
+            Some(
+                match &checkpoint.checkpoint {
+                    CheckpointKind::Exit { witness, .. } if witness.ended_by_reboot() => {
+                        match &witness.root {
+                            RootWitness::Identified { evidence, .. } => match evidence.as_ref() {
+                                ExitEvidence::BootChanged { previous, .. } => {
+                                    Some(previous.clone())
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                }
+                .ok_or_else(|| invalid("a retained reboot exit witness for this lifecycle"))?,
+            )
+        } else {
+            None
+        };
         let record = match checkpoint.checkpoint {
             CheckpointKind::Process(record) => record,
             CheckpointKind::Exit { source, .. } => match *source {
@@ -104,6 +120,12 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
             return Err(invalid(
                 "the checkpoint's exact machine, PID, birth, image and recorded argv digest",
             ));
+        }
+        if let Some(previous) = reboot_boot {
+            if previous != fields.boot {
+                return Err(invalid("the recorded boot matches the reboot exit witness"));
+            }
+            return Ok(None);
         }
         bound(deadline)?;
         let observation = se_proc::read_process(record.root.machine.clone(), record.root.pid)
