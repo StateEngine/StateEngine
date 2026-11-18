@@ -172,7 +172,13 @@ def windows_package_image(provider, launcher):
 
 
 def windows_provider_image(provider, launcher):
-    image = launcher if launcher.suffix.lower() == '.exe' else windows_package_image(provider, launcher)
+    adjacent = launcher.with_name(provider + '.exe')
+    if adjacent.is_file():
+        image = adjacent.resolve(strict=True)
+    elif launcher.suffix.lower() == '.exe':
+        image = launcher
+    else:
+        image = windows_package_image(provider, launcher)
     require(image.suffix.lower() == '.exe' and image.is_file(),
             'Installed provider command is not a native Windows executable')
     with image.open('rb') as stream:
@@ -202,13 +208,16 @@ def prepared(provider, root, archive, archive_sha, commit, seed, platform='win32
                       + '[profiles.nightly]\nsandbox = "workspace-write"\n'
                       + 'approval = "never"\nnetwork = true\nbypass = false\n', encoding='utf-8')
     profile = dict(name='nightly', sandbox='workspace-write', approval='never', network=True, bypass=False)
+    settings = {
+        'credential_seed': seed, 'configuration': {'path': str(config), 'sha256': digest(config)},
+        'permission_profile': profile, 'images': [
+            {'path': str(path), 'sha256': digest(path)} for path in dict.fromkeys((launcher, image))],
+        'version_command': [str(image), '--version'], 'version_stdout': version,
+    }
     manifest = {'schema': 'se.harness-matrix-input/v1', 'harnesses': [
-        {'id': provider, 'driver': driver, 'platforms': {platform: {
-            'credential_seed': seed, 'configuration': {'path': str(config), 'sha256': digest(config)},
-            'permission_profile': profile, 'images': [
-                {'path': str(path), 'sha256': digest(path)} for path in dict.fromkeys((launcher, image))],
-            'version_command': [str(image), '--version'], 'version_stdout': version}}}]}
+        {'id': provider, 'driver': driver, 'platforms': {platform: settings}}]}
     if platform == 'win32':
+        settings['launch_image'] = str(image)
         manifest['windows_journeys'] = {
             'release': {'path': str(archive), 'sha256': archive_sha, 'source_commit': commit}}
     path = root / (provider + '-manifest.json')

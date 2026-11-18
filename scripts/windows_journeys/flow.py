@@ -54,6 +54,19 @@ class Journeys(Smoke):
         if self.foreground:
             self.foreground.observe_exit()
 
+    def verify_launch_image(self, launch):
+        expected = self.settings.get('launch_image')
+        if expected is None:
+            return
+        process_image = Path(launch['process']['exe'])
+        require(process_image.is_absolute(), 'Launched provider image must have an absolute path')
+        observed = process_image.resolve(strict=True)
+        require(observed == Path(expected).resolve(strict=True),
+                'Provider launched a different native image than the pinned version probe')
+        observed_digest = digest(observed)
+        require(any(Path(row['path']).resolve() == observed and row['sha256'] == observed_digest
+                    for row in self.settings['images']), 'Launched provider image does not match its pin')
+
     def phase(self, name, operation):
         before, usage_error = None, None
         try:
@@ -155,6 +168,7 @@ class Journeys(Smoke):
         self.secret, work = str(uuid.uuid4()), str(uuid.uuid4())
         task = f'Remember {self.secret}. Write {work} plus newline to work.txt. Reply {work}.'
         launched = self.call(['launch', self.agent, '--detach', '--task', task], 'real-work', terminal=True)
+        self.verify_launch_image(launched)
         require(launched['permission_profile'] == self.settings['permission_profile'],
                 'Actual native permission profile differs')
         self.commands.observer.observe(launched['process']['pid'])
@@ -195,6 +209,7 @@ class Journeys(Smoke):
         peer = self.call(['agent', 'add', 'relay', '--provider', self.settings['provider']], 'create-peer')['agent']['id']
         instruction = 'Read your next StateEngine mail; write its body plus newline to handoff.txt; reply with its body.'
         launched = self.call(['launch', peer, '--detach', '--task', instruction], 'launch-peer', terminal=True)
+        self.verify_launch_image(launched)
         require(launched['permission_profile'] == self.settings['permission_profile'],
                 'Peer launch used a different native permission profile')
         self.commands.observer.observe(launched['process']['pid'])
