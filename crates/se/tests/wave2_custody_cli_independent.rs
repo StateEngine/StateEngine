@@ -101,6 +101,16 @@ impl Case {
         let child = native::Child::start()?;
         let session = capture::session()?;
         let (identity, record) = native::identity(&f, &session, &child)?;
+        let mut prior_host = native::Child::start()?;
+        let (prior_identity, _) = native::identity(&f, &session, &prior_host)?;
+        let RecordedIdentity::Present(prior_owner) = prior_identity.instance else {
+            return Err("prior host identity must be present".into());
+        };
+        prior_host.finish()?;
+        let prior_epoch = se_types::HostEpoch {
+            owner: prior_owner,
+            generation: se_types::HostGeneration::new(1)?,
+        };
         let lease = Lease::acquire(
             &f.options.state_directory,
             LeaseMode::Host,
@@ -115,7 +125,7 @@ impl Case {
                     serial()
                 ))?),
                 vec![EventBody::RuntimeOwnerEstablished {
-                    epoch: host::epoch()?,
+                    epoch: prior_epoch,
                     generation: se_types::Generation::new(1)?,
                     expected_owner_generation: None,
                     expected: Expected::Absent,
