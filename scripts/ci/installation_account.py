@@ -61,6 +61,90 @@ def account():
     return identity, Path(profile.value)
 
 
+def windows_registered_acl(path):
+    """Inspect owner and every allow ACE without starting another shell."""
+    from ctypes import wintypes
+
+    class AclSize(ctypes.Structure):
+        _fields_ = [("count", wintypes.DWORD), ("used", wintypes.DWORD), ("free", wintypes.DWORD)]
+
+    class AceHeader(ctypes.Structure):
+        _fields_ = [("kind", ctypes.c_ubyte), ("flags", ctypes.c_ubyte), ("size", wintypes.WORD)]
+
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    pointer = ctypes.c_void_p
+    advapi.GetNamedSecurityInfoW.argtypes = [wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD,
+                                            ctypes.POINTER(pointer), ctypes.POINTER(pointer),
+                                            ctypes.POINTER(pointer), ctypes.POINTER(pointer), ctypes.POINTER(pointer)]
+    advapi.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    advapi.GetAclInformation.argtypes = [pointer, pointer, wintypes.DWORD, ctypes.c_int]
+    advapi.GetAce.argtypes = [pointer, wintypes.DWORD, ctypes.POINTER(pointer)]
+    advapi.IsValidSid.argtypes = [pointer]
+    advapi.GetLengthSid.argtypes = [pointer]
+    advapi.GetLengthSid.restype = wintypes.DWORD
+    advapi.ConvertSidToStringSidW.argtypes = [pointer, ctypes.POINTER(pointer)]
+    kernel.LocalFree.argtypes = [pointer]
+    kernel.LocalFree.restype = pointer
+
+    def sid_text(sid):
+        if not sid or not advapi.IsValidSid(sid):
+            raise RuntimeError("registration has an invalid security identifier")
+        text = pointer()
+        if not advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return ctypes.wstring_at(text.value)
+        finally:
+            kernel.LocalFree(text)
+
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        raise RuntimeError("linked registration")
+    owner, acl, descriptor = pointer(), pointer(), pointer()
+    status = advapi.GetNamedSecurityInfoW(str(path), 1, 0x1 | 0x4, ctypes.byref(owner), None,
+                                          ctypes.byref(acl), None, ctypes.byref(descriptor))
+    if status:
+        raise OSError(status, "native registration security read failed")
+    try:
+        admins = {"S-1-5-18", "S-1-5-32-544"}
+        if sid_text(owner) not in admins:
+            raise RuntimeError("registration owner is not administrator")
+        if not acl:
+            raise RuntimeError("registration has an unrestricted access list")
+        size = AclSize()
+        if not advapi.GetAclInformation(acl, ctypes.byref(size), ctypes.sizeof(size), 2):
+            raise ctypes.WinError(ctypes.get_last_error())
+        for index in range(size.count):
+            ace = pointer()
+            if not advapi.GetAce(acl, index, ctypes.byref(ace)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            header = AceHeader.from_address(ace.value)
+            if header.kind in (1, 2, 6, 7, 10, 12, 13, 15):
+                continue
+            if header.kind not in (0, 5, 9, 11) or header.size < 16:
+                raise RuntimeError("registration contains an unsupported access rule")
+            mask = ctypes.c_uint32.from_address(ace.value + 4).value
+            offset = 8
+            if header.kind in (5, 11):
+                flags = ctypes.c_uint32.from_address(ace.value + 8).value
+                if flags & ~3:
+                    raise RuntimeError("registration contains an unsupported access rule")
+                offset = 12 + (16 if flags & 1 else 0) + (16 if flags & 2 else 0)
+            if offset + 8 > header.size:
+                raise RuntimeError("registration contains a malformed access rule")
+            sid = pointer(ace.value + offset)
+            subauthorities = ctypes.c_ubyte.from_address(sid.value + 1).value
+            if (offset + 8 + 4 * subauthorities > header.size or not advapi.IsValidSid(sid)
+                    or offset + advapi.GetLengthSid(sid) > header.size):
+                raise RuntimeError("registration contains a malformed security identifier")
+            if mask & 0x500D0156 and sid_text(sid) not in admins:
+                raise RuntimeError("registration permits non-administrator writes")
+    finally:
+        if descriptor:
+            kernel.LocalFree(descriptor)
+
+
 def registered(identity, profile):
     path = registration(identity)
     if os.name != "nt":
@@ -77,14 +161,8 @@ def registered(identity, profile):
             data = stream.read(4097)
     else:
         # Reject inherited user write access too; ownership alone is insufficient.
-        literal = str(path).replace("'", "''")
-        powershell("$ErrorActionPreference='Stop'; foreach($p in @('" + literal + "', '" + str(path.parent).replace("'", "''") + "')) { "
-                   "if ((Get-Item -LiteralPath $p).Attributes -band [IO.FileAttributes]::ReparsePoint) {throw 'linked registration'}; "
-                   "$a=Get-Acl -LiteralPath $p; $admins=@('S-1-5-18','S-1-5-32-544'); "
-                   "if ($a.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $admins) {throw 'registration owner is not administrator'}; "
-                   "foreach($r in $a.Access) {if($r.AccessControlType -eq 'Allow' -and "
-                   "$r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -notin $admins -and "
-                   "([int]$r.FileSystemRights -band 0x000D0156)) {throw 'registration permits non-administrator writes'}} }")
+        windows_registered_acl(path)
+        windows_registered_acl(path.parent)
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 4096:
             raise RuntimeError("account registration must be one bounded regular file")
@@ -101,6 +179,8 @@ def require():
     try:
         identity, profile = account()
         registered(identity, profile)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("Account registration check timed out; retry the test") from error
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         raise RuntimeError("REFUSED account-wide installation test: use an administrator-registered dedicated OS test account; "
                            "HOME and --home do not isolate the native installation lock. " + str(error)) from error
