@@ -269,9 +269,8 @@ fn create_command(spec: Command, job: &Handle) -> ProcResult<Child> {
     startup.lpAttributeList = attributes.pointer();
     // SAFETY: native process output is POD; ownership is taken only on success.
     let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
-    let flags = CREATE_UNICODE_ENVIRONMENT
-        | EXTENDED_STARTUPINFO_PRESENT
-        | spec.mode.configure_startup(&mut startup.StartupInfo);
+    let flags =
+        CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | spec.mode.creation_flags();
     let application = wide(spec.executable.as_os_str());
     let cwd = wide(spec.cwd.as_os_str());
     let create = |flags, info: &mut PROCESS_INFORMATION| {

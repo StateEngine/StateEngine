@@ -26,21 +26,14 @@ pub(crate) use diagnostics::Diagnostics;
 use diagnostics::read_errors;
 pub(crate) use transfer::upload;
 
-pub(crate) fn client(program: impl AsRef<std::ffi::OsStr>) -> Result<Command> {
-    let mut command = Command::from(se_proc::inherited_console_command(program).map_err(
-        |error| {
-            unavailable_with_next_step(
-                "cannot prepare the system SSH client's console inheritance",
-                &error.to_string(),
-            )
-        },
-    )?);
+pub(crate) fn client(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::from(se_proc::background_command(program));
     command.kill_on_drop(true);
     // Every caller replaces stdio. A Windows SSH login's inherited descriptor
     // table describes the login pipes, not this child's new handles.
     #[cfg(windows)]
     command.env_remove("c28fc6f98a2c44abbbd89d6a3037d0d9_POSIX_FD_STATE");
-    Ok(command)
+    command
 }
 
 /// The bound a bootstrap probe waits before its refusal names the evidence.
@@ -80,7 +73,7 @@ async fn run(
 ) -> Result<SshOutcome> {
     validate_destination(destination)?;
     let mut child = crate::child_io::spawn(
-        client(program)?
+        client(program)
             .args(["-T", "-o", "BatchMode=yes", destination, &command])
             .stdin(Stdio::null()),
         crate::child_io::Pipes {

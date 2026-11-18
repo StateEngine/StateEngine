@@ -45,24 +45,11 @@ impl LaunchMode {
     #[cfg(windows)]
     pub(crate) fn creation_flags(self) -> u32 {
         use windows_sys::Win32::System::Threading::{CREATE_NEW_CONSOLE, CREATE_NO_WINDOW};
-        if self == Self::Headless {
+        if self.is_headless() {
             CREATE_NO_WINDOW
         } else {
             CREATE_NEW_CONSOLE
         }
-    }
-
-    #[cfg(windows)]
-    pub(crate) fn configure_startup(
-        self,
-        startup: &mut windows_sys::Win32::System::Threading::STARTUPINFOW,
-    ) -> u32 {
-        use windows_sys::Win32::System::Threading::STARTF_USESHOWWINDOW;
-        if self == Self::HeadlessConsole {
-            startup.dwFlags |= STARTF_USESHOWWINDOW;
-            startup.wShowWindow = windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE as u16;
-        }
-        self.creation_flags()
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

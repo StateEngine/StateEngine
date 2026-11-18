@@ -190,8 +190,7 @@ fn create(
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    let console_flags =
-        crate::LaunchMode::HeadlessConsole.configure_startup(&mut startup.StartupInfo);
+    let console_flags = crate::LaunchMode::HeadlessConsole.creation_flags();
     startup.StartupInfo.hStdInput = inherited[2];
     startup.StartupInfo.hStdOutput = inherited[3];
     startup.StartupInfo.hStdError = inherited[4];

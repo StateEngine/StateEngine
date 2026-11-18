@@ -170,7 +170,7 @@ async fn probe_output(
     }
     let until = tokio::time::Instant::now() + timeout;
     let run_until = until - (timeout / 10).min(Duration::from_millis(500));
-    let mut process = tokio::process::Command::from(se_proc::probe_command(command));
+    let mut process = tokio::process::Command::from(se_proc::background_command(command));
     if let Some(environment) = environment {
         process.env_clear().envs(environment.iter().cloned());
     }

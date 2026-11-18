@@ -56,7 +56,7 @@ impl Forward {
         // Forwarding refusals are functional input, so ambient quiet logging
         // must not suppress the diagnostic read by this owned process.
         let mut child = crate::child_io::spawn(
-            crate::ssh_transport::client("ssh")?
+            crate::ssh_transport::client("ssh")
                 .args([
                     "-N",
                     "-T",

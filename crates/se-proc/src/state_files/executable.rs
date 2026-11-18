@@ -113,7 +113,7 @@ impl NativeExecutableInvocation {
     }
     pub fn command(&self) -> Result<(Command, NativeExecutableCreation)> {
         let guard = self.creation_guard()?;
-        let command = crate::probe_command(&self.executable);
+        let command = crate::background_command(&self.executable);
         #[cfg(unix)]
         let command = {
             use std::os::unix::process::CommandExt;

@@ -25,7 +25,7 @@ pub(super) fn run(root: &Path, args: &[&str]) -> Spawn {
 
 async fn observe(root: &Path, args: &[&str]) -> Spawn {
     let deadline = Instant::now() + OBSERVATION;
-    let mut command = Command::from(se_proc::probe_command("git"));
+    let mut command = Command::from(se_proc::background_command("git"));
     command
         .args(["-c", "core.fsmonitor=false", "-c", "core.askPass="])
         .args(["-c", "credential.interactive=false", "-C"])

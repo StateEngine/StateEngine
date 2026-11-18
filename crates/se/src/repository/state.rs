@@ -192,7 +192,7 @@ fn observe_blocking<T>(observation: impl std::future::Future<Output = Result<T>>
 /// output is bounded like every other metadata read.
 async fn observe_count(root: &Path, head: &str, deadline: Instant) -> Result<CountRead> {
     let deadline = tokio::time::Instant::from(deadline);
-    let mut command = tokio::process::Command::from(se_proc::probe_command("git"));
+    let mut command = tokio::process::Command::from(se_proc::background_command("git"));
     configured(root, &mut command)
         .args(["rev-list", "--count", head])
         .stdin(Stdio::null())
@@ -384,7 +384,7 @@ async fn observe_status(root: &Path, deadline: Instant) -> Result<StatusRead> {
 
 /// Spawn the one `status` call, or `None` when this machine has no Git binary.
 fn spawn_status(root: &Path) -> Result<Option<tokio::process::Child>> {
-    let mut command = tokio::process::Command::from(se_proc::probe_command("git"));
+    let mut command = tokio::process::Command::from(se_proc::background_command("git"));
     configured(root, &mut command)
         .args(["status", "--porcelain=v2", "--branch"])
         .stdin(Stdio::null())
