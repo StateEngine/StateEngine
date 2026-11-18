@@ -348,46 +348,33 @@ impl LaunchCoordinator {
             (ProcessState::Exited, CheckpointKind::Exit { witness, .. }) => Some(witness.clone()),
             _ => None,
         };
-        let source = recovery_source(checkpoint, retained)?;
-        let current = &self.options.epoch.owner.fields().boot;
-        let previous = match &retained.identity.instance {
-            se_store::RecordedIdentity::Present(instance)
-                if cfg!(target_os = "macos") || &instance.fields().boot != current =>
-            {
-                Some(instance.clone())
-            }
+        let source = recovery_source(&checkpoint, retained)?;
+        let instance = match &retained.identity.instance {
+            se_store::RecordedIdentity::Present(instance) => Some(instance.clone()),
             _ => None,
         };
+        let machine = self.owner.machine.clone();
         let native = self.native.clone();
         let generation = self.options.epoch.generation;
         self.store
             .pool
             .run_owned(deadline, move || {
-                if let Some(instance) = previous {
-                    let fields = instance.fields();
-                    let root = match &source {
-                        RecoverySource::Record(record) => Some((&record.root, record.argv_sha256)),
-                        RecoverySource::RootPrepared(prepared) => {
-                            Some((&prepared.pre_exec, *fields.argv_sha256.as_bytes()))
+                if let Some(instance) = instance {
+                    let current = se_proc::observe_reboot_boot(machine)
+                        .map_err(|e| error("native reboot identity", e))?;
+                    match se_proc::prove_reboot(&checkpoint, &instance, &current) {
+                        se_proc::RebootProof::Proven(proof) => {
+                            if let Some(witness) = recorded_exit {
+                                return Ok(RecoveryOutcome::Exited(Box::new(witness)));
+                            }
+                            let witness = native
+                                .witness_reboot(&proof)
+                                .map_err(|e| error("native reboot witness", e))?;
+                            return Ok(RecoveryOutcome::Exited(Box::new(witness)));
                         }
-                        _ => None,
-                    };
-                    if let Some((root, argv)) = root {
-                        if native_record::instance(root, argv, &fields.boot)? != instance {
-                            return Err(error(
-                                "reboot recovery",
-                                "native checkpoint differs from the recorded root",
-                            ));
-                        }
-                        if let Some(witness) = native
-                            .witness_reboot(&source, &fields.boot)
-                            .map_err(|e| error("native reboot witness", e))?
-                        {
-                            // Reboot proves the old scope is empty today. Keep a
-                            // terminal witness that already established its exit.
-                            return Ok(RecoveryOutcome::Exited(Box::new(
-                                recorded_exit.unwrap_or(witness),
-                            )));
+                        se_proc::RebootProof::NotProven => {}
+                        se_proc::RebootProof::Unreadable(reason) => {
+                            return Err(error("reboot proof", reason));
                         }
                     }
                 }
@@ -500,7 +487,7 @@ pub(super) fn recovery_method(witness: &se_proc::StopWitness) -> &'static str {
     }
 }
 fn recovery_source(
-    checkpoint: se_proc::Checkpoint,
+    checkpoint: &se_proc::Checkpoint,
     retained: &OwnerGuardProcess,
 ) -> Result<RecoverySource> {
     if checkpoint.lifecycle != retained.identity.record
@@ -512,16 +499,16 @@ fn recovery_source(
             "principal/session/lifecycle differs from protected index",
         ));
     }
-    Ok(match checkpoint.checkpoint {
-        CheckpointKind::Reservation(v) => RecoverySource::Reservation(Box::new(v)),
-        CheckpointKind::Scope(v) => RecoverySource::Prepared(Box::new(v)),
-        CheckpointKind::Root(v) => RecoverySource::RootPrepared(Box::new(v)),
-        CheckpointKind::Process(v) => RecoverySource::Record(Box::new(v)),
-        CheckpointKind::Exit { source, .. } => match *source {
-            CheckpointSource::Reservation(v) => RecoverySource::Reservation(Box::new(v)),
-            CheckpointSource::Scope(v) => RecoverySource::Prepared(Box::new(v)),
-            CheckpointSource::Root(v) => RecoverySource::RootPrepared(Box::new(v)),
-            CheckpointSource::Process(v) => RecoverySource::Record(Box::new(v)),
+    Ok(match &checkpoint.checkpoint {
+        CheckpointKind::Reservation(v) => RecoverySource::Reservation(Box::new(v.clone())),
+        CheckpointKind::Scope(v) => RecoverySource::Prepared(Box::new(v.clone())),
+        CheckpointKind::Root(v) => RecoverySource::RootPrepared(Box::new(v.clone())),
+        CheckpointKind::Process(v) => RecoverySource::Record(Box::new(v.clone())),
+        CheckpointKind::Exit { source, .. } => match source.as_ref() {
+            CheckpointSource::Reservation(v) => RecoverySource::Reservation(Box::new(v.clone())),
+            CheckpointSource::Scope(v) => RecoverySource::Prepared(Box::new(v.clone())),
+            CheckpointSource::Root(v) => RecoverySource::RootPrepared(Box::new(v.clone())),
+            CheckpointSource::Process(v) => RecoverySource::Record(Box::new(v.clone())),
         },
         _ => {
             return Err(error(

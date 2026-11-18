@@ -397,7 +397,7 @@ pub(super) fn finish<R: ReadStore>(
         value.atlas = se_core::ops::status::atlas_view(Ok(Read::Absent {
             checked: "Select one project with --project to observe its Atlas index.".into(),
         }));
-        value.projects = Some(projects::page(reader, admission)?);
+        value.projects = Some(projects::page(reader, admission, &cx.home)?);
     }
     if value.removal.is_none() {
         if let Some(row) = value.agents.as_ref().and_then(|page| page.items().first()) {

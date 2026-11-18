@@ -138,6 +138,9 @@ impl Checkpoint {
         }
     }
 }
+pub(crate) fn validate(value: &Checkpoint) -> Result<(), CheckpointError> {
+    validation::checkpoint(value)
+}
 pub fn decode_checkpoint(format_version: u16, bytes: &[u8]) -> Result<Checkpoint, CheckpointError> {
     if format_version != 1 || bytes.is_empty() || bytes.len() > LIMIT {
         return Err(invalid(

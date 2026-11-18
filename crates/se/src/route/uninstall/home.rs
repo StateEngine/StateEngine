@@ -189,7 +189,9 @@ fn retire(cx: &Bootstrap, effects: &mut Vec<FileEffect>, confirmed: bool) -> Res
         ));
     }
     match reader.runtime_owner().map_err(|e| store_error(&e))? {
-        Read::Present { value } => route::process::witness_exit(&value.epoch.owner, &bound)?,
+        Read::Present { value } => {
+            route::process::witness_exit(&files, &value.epoch.owner, &bound)?
+        }
         Read::Absent { .. } => (),
         other => {
             scope::require_present(
