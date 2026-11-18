@@ -2,7 +2,7 @@
 #![cfg(target_os = "linux")]
 #[path = "../../test-support/directory.rs"]
 mod directory;
-use std::{error::Error, path::Path, process::Command};
+use std::{error::Error, os::unix::fs::PermissionsExt, path::Path, process::Command};
 
 type Check = Result<(), Box<dyn Error>>;
 
@@ -37,6 +37,7 @@ fn captain_designation_survives_restart_and_can_be_cleared() -> Check {
     std::fs::create_dir(&repo)?;
     std::fs::create_dir(root.join("owner"))?;
     std::fs::create_dir(root.join("runtime"))?;
+    std::fs::set_permissions(root.join("runtime"), std::fs::Permissions::from_mode(0o700))?;
     let git = Command::new("git")
         .current_dir(&repo)
         .args(["init", "--quiet"])
