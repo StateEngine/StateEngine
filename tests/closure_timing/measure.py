@@ -33,7 +33,8 @@ def observe(home, finished, samples):
             stamp = index.stat().st_mtime_ns
         except FileNotFoundError:
             stamp = None
-        if stamp is not None and stamp != baseline and 'index_changed_ns' not in samples:
+        if ('pending_first_ns' in samples and stamp is not None and stamp != baseline
+                and 'index_changed_ns' not in samples):
             samples['index_changed_ns'] = now
         finished.wait(.01)
 
