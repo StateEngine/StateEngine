@@ -2,6 +2,8 @@
 #![cfg(windows)]
 #[path = "../../test-support/directory.rs"]
 mod cleanup_directory;
+#[path = "../../se-proc/tests/support/detachment_venue.rs"]
+mod detachment_venue;
 use std::{
     error::Error,
     fs,
@@ -83,6 +85,13 @@ impl Fixture {
         );
         Ok(serde_json::from_slice(&output.stdout)?)
     }
+    /// An absent endpoint file is a different fact from a published endpoint
+    /// whose recorded process is gone, reaped or exited.
+    ///
+    /// This observer reads the protected record directly instead of going
+    /// through the authenticated handshake `se up` uses, so it names what it
+    /// actually observed instead of one collapsed message. It never waits: a
+    /// sample that has to wait is not a runtime that outlived its caller.
     fn read_host(&self) -> Result<Option<se_proc::ProcessIdentity>> {
         let path = self.home.join("endpoint.json");
         if !path.try_exists()? {
@@ -90,13 +99,36 @@ impl Fixture {
         }
         let endpoint = se_host::client::endpoint::decode_endpoint(&fs::read(path)?)?;
         let fields = endpoint.epoch.owner.fields();
-        let observed = se_proc::NativeProcessRuntime::read_process(
-            fields.machine.clone(),
-            se_proc::ProcessId(fields.pid.get()),
-        )
-        .map_err(|e| format!("outside exact runtime read: {e:?}"))?;
-        let se_proc::ProcessRead::Present(live) = observed else {
-            return Err("published host is not live".into());
+        let pid = se_proc::ProcessId(fields.pid.get());
+        let observed = se_proc::NativeProcessRuntime::read_process(fields.machine.clone(), pid)
+            .map_err(|e| format!("outside exact runtime read: {e:?}"))?;
+        let live = match observed {
+            se_proc::ProcessRead::Present(live)
+                if live.state != se_proc::NativeState::ExitedAwaitingReap =>
+            {
+                live
+            }
+            se_proc::ProcessRead::Present(live) => {
+                return Err(format!(
+                    "published host pid {} was still awaiting reap in state {:?}",
+                    pid.0, live.state
+                )
+                .into());
+            }
+            se_proc::ProcessRead::Absent { .. } => {
+                return Err(format!(
+                    "published host pid {} was absent, not merely unobserved",
+                    pid.0
+                )
+                .into());
+            }
+            se_proc::ProcessRead::ExitedRecord { state, .. } => {
+                return Err(format!(
+                    "published host pid {} had already exited in state {:?}",
+                    pid.0, state
+                )
+                .into());
+            }
         };
         assert_eq!(
             fs::canonicalize(&live.identity.image)?,
@@ -240,6 +272,15 @@ impl Drop for Fixture {
 
 #[test]
 fn eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it() -> Result {
+    if crate::detachment_venue::hosted_runner_without_breakaway() {
+        // No same-user broker can exist here, so the premise cannot hold. Report
+        // the check as not run on this venue; keep it compiled and unignored.
+        println!(
+            "NOT RUN eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it: {}",
+            crate::detachment_venue::HOSTED_REASON
+        );
+        return Ok(());
+    }
     let mut f = Fixture::new("broker")?;
     f.run_strict(false)?;
     let identity = f

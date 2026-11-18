@@ -44,7 +44,7 @@ runs:
         if [[ "$RUNNER_OS" == Windows && "$CI_TEST_MODE" == smoke ]]; then
           smoke='kind(lib)'
           smoke="$smoke or (binary(=atlas_hook_native) and test(=missing_host_and_unclosed_provider_input_are_silent_and_finite))"
-          smoke="$smoke or (binary(=breakaway_refusal) and test(=no_eligible_broker_reports_named_refusal_and_current_legal_alternatives))"
+          smoke="$smoke or (binary(=breakaway_refusal) and test(=no_eligible_broker_uses_reported_foreground_until_public_down))"
           filter="($filter) and ($smoke)"
         fi
         cargo nextest run --archive-file tests.tar.zst --extract-to . --workspace-remap "$PWD" --profile ci --partition slice:${{ inputs.shard }}/2 -E "$filter" "${execution[@]}"

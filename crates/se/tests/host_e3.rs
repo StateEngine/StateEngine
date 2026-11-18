@@ -11,6 +11,8 @@ mod cold_capture;
 mod config;
 #[path = "support/host_continuation.rs"]
 mod continuation_judge;
+#[path = "../../se-proc/tests/support/detachment_venue.rs"]
+mod detachment_venue;
 #[path = "support/host_eight_clients.rs"]
 mod eight_clients_judge;
 #[path = "support/host_executor.rs"]
@@ -369,7 +371,17 @@ fn main() -> Check {
         return eight_clients_judge::check();
     }
     startup_judge::private_startup_refuses_missing_and_mismatched_machine()?;
-    startup_judge::private_startup_serves_and_retires()?;
+    let skipped_detached_startup = crate::detachment_venue::hosted_runner_without_breakaway();
+    if skipped_detached_startup {
+        // This case needs a detached broker of its own. Say so by name instead
+        // of failing on a venue that cannot supply one, and stay compiled.
+        println!(
+            "NOT RUN host_e3::private_startup_serves_and_retires: {}",
+            crate::detachment_venue::HOSTED_REASON
+        );
+    } else {
+        startup_judge::private_startup_serves_and_retires()?;
+    }
     listener_message_working_and_hook()?;
     shutdown_judge::disconnected_stop()?;
     shutdown_judge::pending_drain()?;
@@ -377,8 +389,15 @@ fn main() -> Check {
     shutdown_write_judge::check()?;
     recovery_judge::restart_after_crash()?;
     eight_clients_judge::check()?;
-    println!(
-        "host_e3: 12 passed; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
-    );
+    // Name only what this venue executed; a skipped case is not a pass.
+    if skipped_detached_startup {
+        println!(
+            "host_e3: 11 passed, 1 not run on this venue; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
+        );
+    } else {
+        println!(
+            "host_e3: 12 passed; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
+        );
+    }
     Ok(())
 }

@@ -24,6 +24,78 @@ def requirements():
     return groups
 
 
+def detachment_venue(root: Path):
+    """Selections whose precondition this venue cannot supply, named as not run.
+
+    A hosted Windows runner wraps the job in a job object that forbids
+    breakaway, so no same-user detached broker can exist there. Those checks
+    stay compiled and are reported by name here; any other venue excludes
+    nothing and runs them.
+    """
+    if not (sys.platform == "win32"
+            and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"):
+        return []
+    reason = ("the hosted runner wraps this job in a job object that forbids "
+              "breakaway, so no same-user detached broker can exist")
+    # The first two are nextest selections, excluded from the run. The third is
+    # a case inside a custom harness: the harness itself still runs and reports
+    # its other cases, so only the report records the skip.
+    selections = [
+        ("se", "breakaway_refusal",
+         "eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it",
+         "se::breakaway_refusal::eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it"),
+        ("se", "host_e3",
+         "private_startup_serves_and_retires",
+         "se::host_e3::private_startup_serves_and_retires"),
+    ]
+    harness_records = [
+        {"judge": "se-proc::bootstrap_stderr::broker",
+         "status": "not_run", "reason": reason},
+    ]
+    excluded, records = [], []
+    for package, binary, test, label in selections:
+        excluded.append(f"(package(={package}) & binary(={binary}) & test(={test}))")
+        records.append({"judge": label, "status": "not_run", "reason": reason})
+    records.extend(harness_records)
+    return [(excluded, records)]
+
+
+def venue_unavailable(root: Path):
+    """Venue selections to exclude, recorded in the same report.
+
+    Applied on every Windows full run, not only with all features: the venue
+    cannot supply these preconditions regardless of the feature set.
+    """
+    excluded, records = [], []
+    for selectors, rows in detachment_venue(root):
+        excluded.extend(selectors)
+        records.extend(rows)
+    if records:
+        _append_report(root, records)
+    return excluded
+
+
+def _append_report(root: Path, records):
+    report = root / "ci-reports/input-judges.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    existing = []
+    if report.is_file():
+        try:
+            existing = json.loads(report.read_text(encoding="utf-8")).get("not_run", [])
+        except (OSError, ValueError):
+            # A broken earlier report stays broken: rewrite from the known facts
+            # rather than inventing completion.
+            existing = []
+    merged = {item.get("judge"): item for item in existing}
+    for item in records:
+        merged[item.get("judge")] = item
+    report.write_text(
+        json.dumps({"schema": "ci-input-judges/v1", "not_run": list(merged.values())},
+                   indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def unavailable(root: Path):
     excluded = []
     records = []
@@ -39,12 +111,13 @@ def unavailable(root: Path):
         excluded.append(selector + ")")
         records.append({"judge": label, "status": "not_run", "missing_inputs": missing})
     # Archive extraction requires an absent target directory, even before tests run.
-    report = root / "ci-reports/input-judges.json"
-    report.parent.mkdir(parents=True, exist_ok=True)
-    report.write_text(json.dumps({"schema": "ci-input-judges/v1", "not_run": records}, indent=2) + "\n")
+    _append_report(root, records)
     for record in records:
-        print("NOT RUN " + record["judge"] + ": missing input "
-              + ", ".join(record["missing_inputs"]), file=sys.stderr, flush=True)
+        if "missing_inputs" in record:
+            detail = "missing input " + ", ".join(record["missing_inputs"])
+        else:
+            detail = record["reason"]
+        print("NOT RUN " + record["judge"] + ": " + detail, file=sys.stderr, flush=True)
     print(f"External-input judges: {len(records)} not-run selections; configured tests retain ordinary failure status",
           file=sys.stderr, flush=True)
     return excluded

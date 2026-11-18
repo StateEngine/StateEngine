@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import tomllib
-from input_judges import unavailable
+from input_judges import unavailable, venue_unavailable
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -23,6 +23,9 @@ def custom_targets():
 def filterset(all_features=False):
     terms = [f"(package(={key.split('::')[0]}) & binary(={key.split('::')[1]}))"
              for key in custom_targets()]
+    # A venue that cannot supply a precondition is excluded in every mode. The
+    # selection is recorded by name, so an exclusion is never a silent skip.
+    terms.extend(venue_unavailable(ROOT))
     if all_features:
         terms.extend(unavailable(ROOT))
     return "not (" + " or ".join(terms) + ")" if terms else "all()"
