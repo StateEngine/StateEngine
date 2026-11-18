@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 
 from night_status import SCHEDULE_ZONE, assess, configure, planned, read, scheduled_night
-from report import FIRST_HOUR, NAMES, summarize
+from report import FIRST_HOUR, NAMES, hosted_detached_note, summarize
 
 PROVIDERS = {"claude": "Claude Code", "codex": "Codex", "secode": "SE Code",
              "acp": "ACP", "qwen": "Qwen Code", "goose": "Goose"}
@@ -78,6 +78,14 @@ def cell(entry, directory, number):
     observed = entry["journeys"].get(str(number))
     if observed in {"PASS", "FAIL"}:
         return observed
+    if entry.get("hosted_provider") is True:
+        try:
+            (directory / ("windows-hosted-proof-" + entry["surface"] + ".zip")).lstat()
+        except FileNotFoundError:
+            return "MISSING"
+        except OSError:
+            pass
+        return "UNREADABLE"
     filename = "remote.json" if entry.get("remote_probe") else "results.json"
     _, error = read(directory / entry["output"] / filename)
     if error == "absent":
@@ -118,6 +126,8 @@ def render(config, now=None):
     except Exception:
         unsupported = True
     entries = evidence[1]["invocations"] if evidence else []
+    if note := hosted_detached_note(entries):
+        lines += ["", note]
     for selection, (scope, rows) in SCOPES.items():
         providers = list(PROVIDERS) if selection == "first-hour" else [provider for provider in PROVIDERS
             if any(key[0] == selection and key[1] == provider for key in expected)]

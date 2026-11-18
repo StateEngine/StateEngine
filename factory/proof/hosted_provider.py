@@ -78,6 +78,15 @@ def valid_failure_stream(failure, stream):
             and type(truncated) is bool and type(size) is int and size >= 0 and type(replacement) is bool)
 
 
+def valid_foreground_startup(startup):
+    if (not isinstance(startup, dict) or startup.get('schema') != 'se.runtime-start/v1'
+            or startup.get('state') != 'running' or type(startup.get('generation')) is not int
+            or startup['generation'] <= 0):
+        return False
+    process = startup.get('process')
+    return isinstance(process, dict) and type(process.get('pid')) is int and process['pid'] > 0
+
+
 def verify_host_start(receipt, selected):
     for name in ('detached_host_start', 'foreground_hosts'):
         if json.dumps(receipt.get(name), sort_keys=True) != json.dumps(selected.get(name), sort_keys=True):
@@ -95,6 +104,9 @@ def verify_host_start(receipt, selected):
             or any(not isinstance(host, dict) or host.get('readiness') not in ('starting', 'witnessed', 'failed')
                    or ('exit' in host and type(host['exit']) is not int) for host in hosts.values())):
         raise ValueError('hosted provider foreground host evidence is invalid')
+    if any(host['readiness'] == 'witnessed' and not valid_foreground_startup(host.get('startup'))
+           for host in hosts.values()):
+        raise ValueError('hosted provider foreground startup receipt is missing or invalid')
     if passed and (set(hosts) != FOREGROUND_PHASES or any(
             host['readiness'] != 'witnessed' or host.get('exit') != 0 for host in hosts.values())):
         raise ValueError('passing hosted provider evidence lacks foreground readiness or exit proof')

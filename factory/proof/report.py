@@ -612,6 +612,12 @@ def summarize(run, directory):
                                for entry in entries if entry.get("remote_probe")]}
 
 
+def hosted_detached_note(entries):
+    if any(entry.get("hosted_provider") is True and entry.get("detached_host_start") for entry in entries):
+        return "Windows detached host startup was NOT RUN on hosted runners. A native Windows VM witness is required."
+    return None
+
+
 def grid(report):
     status = report["status"]
     lines = [f"Rust nightly proof — {report['started_at']}", "",
@@ -627,11 +633,8 @@ def grid(report):
         for row in table["rows"]:
             lines.append("| " + row["name"] + " | " + " | ".join(row["platforms"][p]["state"] for p in PLATFORMS) + " |")
         lines.append("")
-    hosted = [entry["surface"] for entry in report.get("invocations", [])
-              if entry.get("hosted_provider") is True and entry.get("detached_host_start")]
-    if hosted:
-        lines += [f"Windows detached host startup was NOT RUN on hosted runners for {', '.join(hosted)}. "
-                  "A native Windows VM witness is required.", ""]
+    if note := hosted_detached_note(report.get("invocations", [])):
+        lines += [note, ""]
     lines += render_budget_context(report["budgets"])
     if report.get("remote_timings"):
         lines += ["Remote timings (milliseconds; clock estimates retain their qualification):", "",
