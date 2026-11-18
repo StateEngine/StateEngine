@@ -63,13 +63,13 @@ def verify_runner(receipt, run):
 
 
 def observation(inv, directory, run):
-    """Re-read the original GitHub artifact and its two original receipts."""
+    """Re-read one provider's original GitHub artifact and receipt."""
     if (inv.get('platform') != 'win32' or inv.get('surface') not in ('claude', 'codex')
             or inv.get('selection') != 'windows-journeys'
             or inv.get('hosted_workflow_conclusion') not in ('success', 'failure')
             or inv.get('hosted_job_conclusion') not in ('success', 'failure')):
         raise ValueError('hosted provider plan or workflow outcome differs')
-    path = Path(directory) / 'windows-hosted-proof.zip'
+    path = Path(directory) / ('windows-hosted-proof-' + inv['surface'] + '.zip')
     if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_ARTIFACT:
         raise ValueError('hosted provider artifact is absent or too large')
     raw = path.read_bytes()
@@ -78,7 +78,7 @@ def observation(inv, directory, run):
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         infos = archive.infolist()
         names = [entry.filename for entry in infos]
-        allowed = {'summary.json', 'claude-journey/results.json', 'codex-journey/results.json'}
+        allowed = {'summary.json', inv['surface'] + '-journey/results.json'}
         if len(names) != len(set(names)) or not set(names).issubset(allowed) or 'summary.json' not in names:
             raise ValueError('hosted provider artifact inventory differs')
         if any(entry.file_size > MAX_ARTIFACT for entry in infos) or sum(entry.file_size for entry in infos) > MAX_ARTIFACT:
@@ -87,8 +87,7 @@ def observation(inv, directory, run):
         provider = inv['surface']
         provider_rows = summary.get('providers')
         if (not isinstance(provider_rows, list) or not all(isinstance(row, dict) for row in provider_rows)
-                or any(row.get('provider') not in ('claude', 'codex') for row in provider_rows)
-                or len({row.get('provider') for row in provider_rows}) != len(provider_rows)):
+                or len(provider_rows) != 1 or provider_rows[0].get('provider') != provider):
             raise ValueError('hosted provider inventory is invalid')
         matching = [row for row in provider_rows if row.get('provider') == provider]
         expected_run = str(inv.get('hosted_workflow_run_id', ''))
@@ -121,7 +120,8 @@ def observation(inv, directory, run):
             raise ValueError('hosted provider phase or exit evidence differs')
         release = receipt.get('release')
         passed = selected['result'] == 'PASS'
-        if passed and (inv['hosted_workflow_conclusion'] != 'success' or inv['hosted_job_conclusion'] != 'success'
+        baseline = receipt.get('process_baseline')
+        if passed and (inv['hosted_job_conclusion'] != 'success'
                        or selected['exit'] != 0 or any(phases[key]['result'] != 'PASS' for key in PHASES)
                        or any(not isinstance(phases[key].get('tokens'), dict)
                               or phases[key]['tokens'].get('state') not in ('observed', 'observed-background', 'not-used')
@@ -130,6 +130,14 @@ def observation(inv, directory, run):
                        or not isinstance(release, dict) or release.get('source_commit') != summary['source_commit']
                        or release.get('archive_sha256') != summary['archive_sha256']
                        or receipt.get('process_closure') != []
+                       or not isinstance(baseline, dict) or baseline.get('complete') is not True
+                       or not isinstance(baseline.get('processes'), list) or not baseline['processes']
+                       or any(not isinstance(row, dict) or set(row) != {'pid', 'birth', 'state', 'owner_state'}
+                              or type(row.get('pid')) is not int or row['pid'] < 0
+                              or not isinstance(row.get('state'), str) or not row['state']
+                              or not isinstance(row.get('owner_state'), str) or not row['owner_state']
+                              or (row.get('birth') is not None and not isinstance(row['birth'], str))
+                              for row in baseline['processes'])
                        or not isinstance(receipt.get('credential_closure'), dict)
                        or receipt['credential_closure'].get('delivery') != ('environment' if provider == 'claude' else 'private-file')
                        or receipt['credential_closure'].get('private_copy_absent') is not True
@@ -182,10 +190,6 @@ def acquire(config, run, directory, deadline, checkpoint):
         if hashlib.sha256(workflow_source).hexdigest() != workflow_sha:
             raise ValueError('scheduled provider workflow differs from the reviewed workflow')
         jobs = json.loads(gh('api', url + '/jobs?per_page=100', env=env)).get('jobs', [])
-        providers = [job for job in jobs if job.get('name') == 'providers']
-        if (len(providers) != 1 or providers[0].get('status') != 'completed'
-                or providers[0].get('conclusion') not in ('success', 'failure')):
-            raise ValueError('protected provider job did not complete')
         release_rows = json.loads(gh('run', 'list', '--repo', repo, '--workflow', 'release.yml',
                                      '--event', 'workflow_dispatch', '--branch', 'main', '--limit', '100',
                                      '--json', 'databaseId,displayTitle,headSha,status,conclusion,createdAt', env=env))
@@ -205,28 +209,35 @@ def acquire(config, run, directory, deadline, checkpoint):
         run['windows_release'] = {'state':'available','run_id':str(release['databaseId']),
                                   'source_commit':source,'label':label}
         artifacts = json.loads(gh('api', url + '/artifacts', env=env)).get('artifacts', [])
-        matches = [item for item in artifacts if item.get('name') == 'windows-nightly-proof' and item.get('expired') is False]
-        if len(matches) != 1:
-            raise ValueError('provider workflow has no unique retained receipt')
-        artifact = matches[0]
-        if (type(artifact.get('id')) is not int or artifact['id'] <= 0 or type(artifact.get('size_in_bytes')) is not int
-                or not 0 < artifact['size_in_bytes'] <= MAX_ARTIFACT
-                or not re.fullmatch('sha256:[a-f0-9]{64}', str(artifact.get('digest', '')))):
-            raise ValueError('hosted provider artifact identity is unavailable')
-        raw = gh('api', f'repos/{repo}/actions/artifacts/{artifact["id"]}/zip', env=env)
-        if len(raw) != artifact['size_in_bytes'] or hashlib.sha256(raw).hexdigest() != artifact['digest'][7:]:
-            raise ValueError('downloaded provider artifact identity differs')
-        destination = Path(directory) / 'windows-hosted-proof.zip'
-        with destination.open('xb') as output:
-            output.write(raw)
         for row in rows:
-            row.update(hosted_workflow_run_id=str(workflow), hosted_artifact_sha256=artifact['digest'][7:],
-                       hosted_workflow_conclusion=metadata['conclusion'],
-                       hosted_job_conclusion=providers[0]['conclusion'])
             try:
+                provider = row['surface']
+                providers = [job for job in jobs if job.get('name') == 'providers (' + provider + ')']
+                if (len(providers) != 1 or providers[0].get('status') != 'completed'
+                        or providers[0].get('conclusion') not in ('success', 'failure')):
+                    raise ValueError('protected provider job did not complete')
+                matches = [item for item in artifacts if item.get('name') == 'windows-nightly-proof-' + provider
+                           and item.get('expired') is False]
+                if len(matches) != 1:
+                    raise ValueError('provider workflow has no unique retained receipt')
+                artifact = matches[0]
+                if (type(artifact.get('id')) is not int or artifact['id'] <= 0
+                        or type(artifact.get('size_in_bytes')) is not int
+                        or not 0 < artifact['size_in_bytes'] <= MAX_ARTIFACT
+                        or not re.fullmatch('sha256:[a-f0-9]{64}', str(artifact.get('digest', '')))):
+                    raise ValueError('hosted provider artifact identity is unavailable')
+                raw = gh('api', f'repos/{repo}/actions/artifacts/{artifact["id"]}/zip', env=env)
+                if len(raw) != artifact['size_in_bytes'] or hashlib.sha256(raw).hexdigest() != artifact['digest'][7:]:
+                    raise ValueError('downloaded provider artifact identity differs')
+                destination = Path(directory) / ('windows-hosted-proof-' + provider + '.zip')
+                with destination.open('xb') as output:
+                    output.write(raw)
+                row.update(hosted_workflow_run_id=str(workflow), hosted_artifact_sha256=artifact['digest'][7:],
+                           hosted_workflow_conclusion=metadata['conclusion'],
+                           hosted_job_conclusion=providers[0]['conclusion'])
                 selected, _ = observation(row, directory, run)
                 row.update(state='finished', exit=selected['exit'])
-            except (ValueError, KeyError, OSError, TypeError, zipfile.BadZipFile) as error:
+            except (ValueError, KeyError, OSError, TypeError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
                 row.update(state='unavailable', exit=None, error=str(error))
             checkpoint()
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
