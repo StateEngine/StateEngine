@@ -108,10 +108,6 @@ def real_run(args, output, nightly):
     return result
 
 
-def interrupt(signum, _frame):
-    raise InterruptedRun('Provider journey interrupted by signal ' + str(signum))
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--surface', choices=tuple(PROVIDERS), required=True)
@@ -128,10 +124,28 @@ def main():
     output = args.out.resolve()
     output.mkdir(mode=0o700)
     protect(output)
+    active = False
+    interruption = None
+
+    def interrupt(signum, _frame):
+        nonlocal interruption
+        if interruption is None:
+            interruption = signum
+            if active:
+                raise InterruptedRun('Provider journey interrupted by signal ' + str(signum))
+
+    signal.signal(signal.SIGINT, interrupt)
     signal.signal(signal.SIGTERM, interrupt)
     seed_root = output / 'seed'
     try:
-        report = real_run(args, output, nightly)
+        try:
+            active = True
+            if interruption is not None:
+                raise InterruptedRun('Provider journey interrupted by signal ' + str(interruption))
+            report = real_run(args, output, nightly)
+        finally:
+            # A first signal can interrupt the run; cleanup and evidence must finish.
+            active = False
     except (InterruptedRun, KeyboardInterrupt, Exception) as error:
         report = dict(result='INCOMPLETE', reason=str(error), nightly=nightly, platform=sys.platform,
                       schema='se.macos-provider-journeys/v1',
@@ -145,6 +159,10 @@ def main():
             seed_cleanup_failed = present(seed_root)
         except OSError:
             seed_cleanup_failed = True
+    if interruption is not None:
+        report.update(interrupted=True, interruption_signal=interruption)
+        if report['result'] == 'PASS':
+            report['result'] = 'INCOMPLETE'
     if seed_cleanup_failed:
         report.update(result='FAIL', seed_cleanup='Private seed cleanup is incomplete')
     report['provider'] = args.surface
