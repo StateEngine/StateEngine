@@ -37,18 +37,34 @@ fn metadata(file: &File, path: &Path, directory: bool) -> Result<std::fs::Metada
         .metadata()
         .map_err(|e| io_error("read pinned metadata", path, e))?;
     // SAFETY: geteuid has no pointers or process-wide mutation.
-    if meta.uid() != unsafe { libc::geteuid() }
-        || meta.mode() & 0o077 != 0
-        || (!directory && meta.nlink() != 1)
-        || if directory {
-            !meta.is_dir()
-        } else {
-            !meta.is_file()
-        }
-    {
-        return Err(unsafe_path(
+    let euid = unsafe { libc::geteuid() };
+    let mut observed = Vec::new();
+    if meta.uid() != euid {
+        observed.push(format!(
+            "owner uid {} differs from the effective uid {euid}",
+            meta.uid()
+        ));
+    }
+    if meta.mode() & 0o077 != 0 {
+        observed.push(format!(
+            "mode {:04o} grants group or other access",
+            meta.mode()
+        ));
+    }
+    if !directory && meta.nlink() != 1 {
+        observed.push(format!("{} hard links on one name", meta.nlink()));
+    }
+    if directory && !meta.is_dir() {
+        observed.push("not a directory".to_owned());
+    }
+    if !directory && !meta.is_file() {
+        observed.push("not a regular file".to_owned());
+    }
+    if !observed.is_empty() {
+        return Err(unsafe_path_observed(
             "require owner-only native regular file/directory",
             path,
+            observed.join("; "),
         ));
     }
     #[cfg(target_os = "macos")]

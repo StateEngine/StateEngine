@@ -110,6 +110,21 @@ pub(super) fn io_error(operation: &'static str, path: &Path, source: io::Error) 
 pub(super) fn unsafe_path(operation: &'static str, path: &Path) -> StateFileError {
     failure(StateFileErrorCode::LocationUnsafe, operation, path)
 }
+/// A refusal that names the observed facts behind the check, so the reader
+/// sees what was actually seen, not only that it failed.
+#[cfg(unix)]
+pub(super) fn unsafe_path_observed(
+    operation: &'static str,
+    path: &Path,
+    observed: String,
+) -> StateFileError {
+    StateFileError {
+        code: StateFileErrorCode::LocationUnsafe,
+        operation,
+        path: path.to_owned(),
+        source: Some(io::Error::other(observed)),
+    }
+}
 pub struct ProtectedStateStaging {
     pub path: PathBuf,
     pub file: File,
