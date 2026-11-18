@@ -1,9 +1,9 @@
 //! Agent-door send rate cap: one sender may not bury one recipient in
-//! messages. Ten messages from one sender to one recipient inside ten
-//! minutes is refused by name with the legal alternatives; the owner door,
-//! self-notes and an exact retry of a committed send stay exempt. Floor
-//! work mail is its own (sender, floor) pair, and its fan-out is never
-//! counted against a recipient's direct pair.
+//! messages. Ten direct messages from one sender to one recipient inside
+//! ten minutes is refused by name with the legal alternatives; the owner
+//! door, self-notes and an exact retry of a committed send stay exempt.
+//! Only direct messages count: floor work mail is not counted at all, and
+//! its fan-out never counts against a recipient's direct pair.
 use se_core::commit::{CoreOps, Cx, OpStep};
 use se_core::dispatch::{CallFacts, Kernel};
 use se_core::ops::MessageSend;
@@ -141,7 +141,7 @@ fn assert_cap_refusal(error: &SeError, from: &str, to: &str) -> Check {
     }
     Ok(())
 }
-/// Protects: #473 — an agent pair over ten messages in ten minutes is refused by name; floor work mail is its own (sender, floor) pair and its fan-out never counts against a direct pair; the owner door, self-notes and an exact retry stay exempt.
+/// Protects: #473 — an agent pair over ten direct messages in ten minutes is refused by name; floor work mail is not counted and its fan-out never counts against a direct pair; the owner door, self-notes and an exact retry stay exempt.
 #[test]
 fn capped_pair_refused_by_name_and_exemptions_hold() -> Check {
     let f = Fixture::new()?;
@@ -181,11 +181,11 @@ fn capped_pair_refused_by_name_and_exemptions_hold() -> Check {
         let mut s = make_sender(&f, &mut direct, &lease, actor.clone(), session.clone(), now);
         eleven_ok(&mut s, "self", f.a.as_str().to_owned())?;
     }
-    // Floor work mail is its own (sender, floor) pair: the eleventh
-    // broadcast inside the window is refused by name.
+    // Floor work mail is not direct mail to a recipient: it is not
+    // counted at all, so the eleventh broadcast inside the window passes.
     {
         let mut s = make_sender(&f, &mut direct, &lease, actor.clone(), session.clone(), now);
-        for index in 0..10 {
+        for index in 0..11 {
             s.send(
                 "floor".into(),
                 &format!("floor-{index}"),
@@ -193,11 +193,6 @@ fn capped_pair_refused_by_name_and_exemptions_hold() -> Check {
             )
             .map_err(|error| format!("floor work mail {index} refused: {error}"))?;
         }
-        let refused = s
-            .send("floor".into(), "floor-eleventh", Some(floor_work(&f)))
-            .err()
-            .ok_or("the eleventh floor broadcast was accepted; the cap never tripped")?;
-        assert_cap_refusal(&refused, f.a.as_str(), "floor")?;
     }
     // Fan-out rows never count against the direct pair: the capped (a, b)
     // pair is still refused on exactly its ten direct sends, not the

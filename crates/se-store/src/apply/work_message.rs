@@ -75,7 +75,6 @@ pub(super) fn send(
         "body",
         &codec::text(body.as_materialized()?, se_types::MESSAGE_BODY_MAX_BYTES)?,
     )?;
-    mail_rate::floor(c, header, &project, &scope, &header.actor)?;
     for agent in &work.addressees {
         let recipient = key(c, "agent", agent.as_str(), &scope, false)?;
         let exists: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM principals WHERE project_id=? AND principal_id=? AND principal_kind='agent')",crate::sql_value::sql_params![project,recipient],|r|r.get(0)).map_err(sql)?;
