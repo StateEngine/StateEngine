@@ -1,18 +1,18 @@
 //! One parse attempt uses the existing native Atlas process and exact custody.
 mod child;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod collect;
 mod protocol;
 use crate::atlas_cold::failure;
 use se_atlas::{
     errors::AtlasResult, lifecycle::*, model::*, parse::ParserProfile, source::RegisteredSource,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use se_proc::atlas_worker::AtlasWorker;
 use se_proc::atlas_worker::WorkerChannel;
 use se_types::{Detail, SeError, details};
 use std::time::Duration;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::{
     path::{Path, PathBuf},
     time::Instant,
@@ -20,7 +20,7 @@ use std::{
 type Source = RegisteredSource<crate::atlas_source::NativeAtlasSource>;
 pub(crate) use child::run as run_child;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub(crate) struct Parser {
     profiles: Vec<ParserProfile>,
     image: Option<PathBuf>,
@@ -28,7 +28,7 @@ pub(crate) struct Parser {
     worker: Option<AtlasWorker>,
     attempt: Option<Attempt>,
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 struct Attempt {
     file: se_types::code::FileId,
     identity: FileIdentity,
@@ -38,7 +38,7 @@ struct Attempt {
     spent: Duration,
     wall: Duration,
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 impl Parser {
     pub fn new(profiles: Vec<ParserProfile>) -> Self {
         Self {
@@ -231,7 +231,7 @@ impl Parser {
         }
     }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn finish_worker(worker: &mut AtlasWorker, deadline: Instant) -> AtlasResult<()> {
     worker.observe_memory().map_err(failure)?;
     worker
@@ -250,11 +250,11 @@ fn finish_worker(worker: &mut AtlasWorker, deadline: Instant) -> AtlasResult<()>
         worker.wait_ready(deadline).map_err(failure)?;
     }
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn start_error(error: std::io::Error, deadline: Instant) -> SeError {
     cleanup_error(error, deadline.saturating_duration_since(Instant::now()))
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub(crate) fn expired() -> SeError {
     SeError::new(Detail::DeadlineExceeded(details::DeadlineExceeded {
         op: "Atlas parse attempt".into(),
@@ -284,7 +284,7 @@ pub(crate) fn stall(limit: Duration) -> SeError {
     }))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 // A completed cancellation is a finite file refusal, not an endless retry of
 // the same unparseable revision. No late child row survives into this result.
 fn outcome(

@@ -36,10 +36,18 @@ impl NativeRenewal {
                 head_change,
             )
         })?;
-        let reconcile =
+        let full_reconcile =
             matches!(work.hint, SourceHint::Reconcile(_)) || self.roots[index].requires_reconcile;
+        let subtree = match &work.hint {
+            SourceHint::DirectoryChanged(path) if !full_reconcile => Some(path.clone()),
+            _ => None,
+        };
+        let reconcile = full_reconcile || subtree.is_some();
         if self.cycle.as_ref().is_none_or(|c| {
-            c.root != work.root || c.serial != work.serial || c.reconcile != reconcile
+            c.root != work.root
+                || c.serial != work.serial
+                || c.reconcile != reconcile
+                || c.subtree != subtree
         }) {
             let retained_last = connection.read(deadline, |sql| {
                 sql.prepare("SELECT coalesce(max(id),0) FROM files")?
@@ -51,22 +59,22 @@ impl NativeRenewal {
                     .execute([])
                     .map_err(sql_error)?;
                 if reconcile {
-                    sql.prepare("INSERT INTO renewal_directories(path_key,serial) VALUES('',?1)")?
-                        .execute([serial])
+                    sql.prepare("INSERT INTO renewal_directories(path_key,serial) VALUES(?1,?2)")?
+                        .execute((subtree.as_ref().map_or("", |path| path.as_str()), serial))
                         .map_err(sql_error)?;
                 }
                 Ok(())
             })?;
-            if reconcile {
+            if full_reconcile {
                 let root = &mut self.roots[index];
                 root.unwatched = 0;
                 root.discovery_complete = false;
                 root.reasons.clear();
             }
-            if reconcile {
+            if full_reconcile {
                 self.refresh_metadata(index, source, deadline)?;
             }
-            if reconcile {
+            if full_reconcile {
                 let identity = self.roots[index]
                     .native
                     .as_ref()
@@ -80,6 +88,7 @@ impl NativeRenewal {
                 root: work.root.clone(),
                 serial: work.serial,
                 reconcile,
+                subtree,
                 cursor: None,
                 rules: None,
                 pending_entry: None,
@@ -133,7 +142,7 @@ impl NativeRenewal {
                             return Ok(false);
                         }
                     }
-                    SourceHint::Reconcile(_) => (),
+                    SourceHint::DirectoryChanged(_) | SourceHint::Reconcile(_) => (),
                 }
                 cycle.part = 2;
                 cycle.phase = Phase::Repairs;
@@ -177,9 +186,15 @@ impl NativeRenewal {
                                 remove_pending(connection, &path, work_deadline)?;
                                 continue;
                             }
-                            let Some(cursor) = NativeWatchDirectory::open(&native.root, &path)
-                                .map_err(|e| source_error(&path, e))?
-                            else {
+                            let opened = NativeWatchDirectory::open(&native.root, &path);
+                            #[cfg(windows)]
+                            let opened = match opened {
+                                Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => {
+                                    Ok(None)
+                                }
+                                result => result,
+                            };
+                            let Some(cursor) = opened.map_err(|e| source_error(&path, e))? else {
                                 remove_pending(connection, &path, work_deadline)?;
                                 continue;
                             };
@@ -293,9 +308,10 @@ impl NativeRenewal {
                     Phase::Retained | Phase::Files => {
                         let next = next_path(
                             connection,
-                            "SELECT id,path FROM files WHERE id>?1 AND id<=?2 ORDER BY id LIMIT 1",
+                            "SELECT id,path FROM files WHERE id>?1 AND id<=?2 AND atlas_scope(path,NULL,?3,x'') ORDER BY id LIMIT 1",
                             cycle.after,
                             cycle.retained_last,
+                            cycle.subtree.as_ref(),
                             work_deadline,
                         )?;
                         let Some((id, path)) = next else {
@@ -346,9 +362,10 @@ impl NativeRenewal {
                     Phase::Watches => {
                         let next = next_path(
                             connection,
-                            "SELECT id,path FROM watch_directories WHERE id>?1 AND id<=?2 ORDER BY id LIMIT 1",
+                            "SELECT id,path FROM watch_directories WHERE id>?1 AND id<=?2 AND atlas_scope(path,NULL,?3,x'') ORDER BY id LIMIT 1",
                             cycle.after,
                             i64::MAX,
+                            cycle.subtree.as_ref(),
                             work_deadline,
                         )?;
                         let Some((id, path)) = next else {
@@ -363,11 +380,7 @@ impl NativeRenewal {
                             .ok_or_else(|| source_error(&path, "root closed"))?;
                         if (!path.is_empty()
                             && !rules.eligible(&path, true, policy, work_deadline)?)
-                            || native
-                                .root
-                                .open_directory(&path)
-                                .map_err(|e| source_error(&path, e))?
-                                .is_none()
+                            || !directory_present(&native.root, &path)?
                         {
                             if let Some(mapping) = self
                                 .mappings
@@ -465,7 +478,7 @@ impl NativeRenewal {
                 return Err(error);
             }
         };
-        if complete && reconcile {
+        if complete && full_reconcile {
             self.roots[index].requires_reconcile = false;
         }
         let report = WorkReport {
@@ -507,11 +520,13 @@ fn next_path(
     query: &str,
     after: i64,
     last: i64,
+    subtree: Option<&RelativePath>,
     deadline: Instant,
 ) -> AtlasResult<Option<(i64, String)>> {
     connection.read(deadline, |sql| {
         let mut statement = sql.prepare(query)?;
-        let mut rows = statement.query((after, last)).map_err(sql_error)?;
+        let scope = subtree.map_or(&[][..], |path| path.as_str().as_bytes());
+        let mut rows = statement.query((after, last, scope)).map_err(sql_error)?;
         rows.next()
             .map_err(sql_error)?
             .map(|row| {
@@ -522,4 +537,13 @@ fn next_path(
             })
             .transpose()
     })
+}
+
+fn directory_present(root: &NativeSourceRoot, path: &str) -> AtlasResult<bool> {
+    match root.open_directory(path) {
+        Ok(directory) => Ok(directory.is_some()),
+        #[cfg(windows)]
+        Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => Ok(false),
+        Err(error) => Err(source_error(path, error)),
+    }
 }

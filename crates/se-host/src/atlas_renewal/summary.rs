@@ -18,7 +18,18 @@ pub(super) fn get(
         if let Some(counts) = counts {
             counts.apply(&mut coverage)?;
         }
-        coverage.watched_directories = watched as u64;
+        #[cfg(not(windows))]
+        { coverage.watched_directories = watched as u64; }
+        #[cfg(windows)]
+        {
+            let _ = watched;
+            let directories: i64 = sql.prepare("SELECT count(*) FROM watch_directories")?
+                .query_row([], |row| row.get(0)).map_err(sql_error)?;
+            let metadata = root.native.as_ref().and_then(|native| native.metadata.as_ref())
+                .map_or(0, metadata::Watches::len);
+            coverage.watched_directories = u64::try_from(directories).map_err(sql_error)?
+                .saturating_add(metadata as u64);
+        }
         coverage.unwatched_directories = root.unwatched;
         coverage.watch_discovery_complete = root.discovery_complete && root.native.as_ref()
             .and_then(|n| n.metadata.as_ref()).is_none_or(|m| m.discovery_complete);

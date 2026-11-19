@@ -17,7 +17,7 @@ use std::{
 };
 mod close;
 mod connections;
-#[cfg(all(feature = "runtime", target_os = "linux"))]
+#[cfg(all(feature = "runtime", any(target_os = "linux", windows)))]
 pub(crate) mod project_work;
 pub mod read_port;
 pub mod record_fence;

@@ -31,6 +31,7 @@ impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
     ) -> AtlasResult<()> {
         NativeRenewal::close(self, root, connection, deadline)
     }
+    #[cfg(target_os = "linux")]
     fn event_fd(&self, root: &RootId) -> Option<BorrowedFd<'_>> {
         NativeRenewal::event_fd(self, root)
     }
