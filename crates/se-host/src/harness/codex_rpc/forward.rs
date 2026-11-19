@@ -1,41 +1,38 @@
 //! One agent's forwarder to its login's shared Codex app-server.
 //!
-//! The agent's native process is this forwarder, not a Codex process. It holds
-//! one upstream connection to the login's control socket for its whole life and
-//! offers the host the same newline-delimited JSON transport a private Codex
-//! app-server used to, on the same private socket. A host that dies or restarts
-//! therefore only drops its downstream connection: the upstream connection, and
-//! any turn running on it, continue, and the next host reconnects to the same
-//! socket and resumes the thread.
+//! The agent's native process is this forwarder, not a Codex process, so the
+//! login keeps one app-server and one token owner however many agents run.
 //!
-//! The forwarder carries whole messages and never reads them. It translates
-//! WebSocket text frames to lines and back so that every downstream connection
-//! starts on a message boundary. While no host is connected it keeps a bounded
-//! backlog and drops the oldest messages past it; a reconnecting host rereads
-//! the thread rather than trusting what it missed.
+//! On a private socket it is a byte pipe: every connection the host (or an
+//! attended terminal) opens gets its own fresh connection to the login's control
+//! socket, and the client's own protocol runs end to end. The stock server keeps
+//! a running turn when a client connection closes, so a host that dies or
+//! restarts loses only its connection; the next host connects again and resumes
+//! the thread. The forwarder ends only when the server ends a connection first,
+//! because that means the server is gone.
+//!
+//! Where the host can only offer stdio (Windows), the forwarder bridges the
+//! host's newline-delimited JSON to the server's WebSocket text frames, without
+//! reading the messages. Stdio cannot be reopened, so its end is the agent's.
 use std::{
-    collections::VecDeque,
     ffi::OsString,
-    io::{self, BufRead, BufReader, Read, Write},
+    io::{self, BufRead, Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
 };
 
 pub const ENTRY: &str = "--stateengine-private-codex-forward";
-/// The stock server's advertised largest unfragmented message.
-const MAX_MESSAGE: usize = 16 * 1024 * 1024;
-/// Server messages kept while no host is connected.
-const BACKLOG_BYTES: usize = 8 * 1024 * 1024;
 /// Downstream given as this value is the forwarder's own stdio.
 pub const STDIO: &str = "-";
+/// The stock server's advertised largest unfragmented message.
+const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 
 #[cfg(unix)]
 type Upstream = std::os::unix::net::UnixStream;
 #[cfg(windows)]
 type Upstream = uds_windows::UnixStream;
 
-/// `se ENTRY <downstream socket or -> <control socket>`. Returns when the
-/// upstream connection ends; that is the agent's provider ending.
+/// `se ENTRY <private socket | -> <control socket>`. Returns when the agent's
+/// provider has ended.
 pub fn private_entry(args: &[OsString]) -> io::Result<()> {
     let [_, _, downstream, control] = args else {
         return Err(io::Error::other(
@@ -46,166 +43,114 @@ pub fn private_entry(args: &[OsString]) -> io::Result<()> {
     if !control.is_absolute() {
         return Err(io::Error::other("the control socket path must be absolute"));
     }
-    let (reader, writer) = connect(&control)?;
-    let writer = Arc::new(Mutex::new(writer));
-    let hosts = Arc::new(Mutex::new(Hosts::default()));
-    {
-        let hosts = Arc::clone(&hosts);
-        let writer = Arc::clone(&writer);
-        let downstream = downstream.clone();
-        std::thread::Builder::new()
-            .name("se-codex-forward-host".into())
-            .spawn(move || accept(&downstream, &hosts, &writer))?;
-    }
-    let ended = pump_upstream(reader, &writer, &hosts);
-    if let Ok(mut hosts) = hosts.lock() {
-        hosts.current = None;
-    }
-    ended
-}
-
-/// The connected host, if any, and what arrived while none was.
-#[derive(Default)]
-struct Hosts {
-    current: Option<(u64, Box<dyn Write + Send>)>,
-    connections: u64,
-    backlog: VecDeque<Vec<u8>>,
-    backlog_bytes: usize,
-    dropped: u64,
-}
-
-impl Hosts {
-    /// Deliver one complete line. A host that can no longer be written is
-    /// detached and the line waits for the next host, which starts at it.
-    fn deliver(&mut self, line: Vec<u8>) {
-        if let Some((_, host)) = self.current.as_mut() {
-            if host.write_all(&line).and_then(|()| host.flush()).is_ok() {
-                return;
-            }
-            self.current = None;
-        }
-        self.backlog_bytes = self.backlog_bytes.saturating_add(line.len());
-        self.backlog.push_back(line);
-        while self.backlog_bytes > BACKLOG_BYTES {
-            let Some(oldest) = self.backlog.pop_front() else {
-                break;
-            };
-            self.backlog_bytes = self.backlog_bytes.saturating_sub(oldest.len());
-            self.dropped = self.dropped.saturating_add(1);
-        }
-    }
-
-    /// Forget a host whose input ended, unless a newer one replaced it.
-    fn detach(&mut self, connection: u64) {
-        if self.current.as_ref().is_some_and(|(id, _)| *id == connection) {
-            self.current = None;
-        }
-    }
-
-    /// Install a new host and hand it the backlog in order.
-    fn attach(&mut self, mut host: Box<dyn Write + Send>) -> u64 {
-        self.connections = self.connections.wrapping_add(1);
-        let connection = self.connections;
-        if self.dropped > 0 {
-            eprintln!(
-                "codex forwarder: {} server messages were dropped while no host was connected",
-                self.dropped
-            );
-            self.dropped = 0;
-        }
-        self.current = None;
-        while let Some(line) = self.backlog.front() {
-            if host.write_all(line).is_err() {
-                return connection;
-            }
-            self.backlog_bytes = self.backlog_bytes.saturating_sub(line.len());
-            self.backlog.pop_front();
-        }
-        if host.flush().is_ok() {
-            self.current = Some((connection, host));
-        }
-        connection
-    }
-}
-
-/// Accept hosts one at a time; a new connection replaces the previous one.
-fn accept(downstream: &OsString, hosts: &Arc<Mutex<Hosts>>, writer: &Arc<Mutex<Upstream>>) {
+    // Refuse at once, rather than at the first host connection, when the
+    // login's server is not there to forward to.
+    drop(Upstream::connect(&control)?);
     if downstream == STDIO {
-        let output: Box<dyn Write + Send> = Box::new(io::stdout());
-        if let Ok(mut hosts) = hosts.lock() {
-            let _ = hosts.attach(output);
-        }
-        // Stdio cannot be reopened by another host, so its end is the agent's.
-        let _ = pump_host(io::stdin().lock(), writer);
-        std::process::exit(0);
+        return bridge_stdio(&control);
     }
     #[cfg(unix)]
     {
-        let path = Path::new(downstream);
-        let listener = match std::os::unix::net::UnixListener::bind(path) {
-            Ok(listener) => listener,
-            Err(error) => {
-                eprintln!("codex forwarder: cannot listen on {}: {error}", path.display());
-                std::process::exit(1);
-            }
-        };
-        for stream in listener.incoming() {
-            let Ok(stream) = stream else { continue };
-            let Ok(output) = stream.try_clone() else {
-                continue;
-            };
-            let Ok(connection) = hosts.lock().map(|mut hosts| hosts.attach(Box::new(output)))
-            else {
-                continue;
-            };
-            let writer = Arc::clone(writer);
-            let hosts = Arc::clone(hosts);
-            let _ = std::thread::Builder::new()
-                .name("se-codex-forward-input".into())
-                .spawn(move || {
-                    let _ = pump_host(BufReader::new(stream), &writer);
-                    if let Ok(mut hosts) = hosts.lock() {
-                        hosts.detach(connection);
-                    }
-                });
-        }
+        pipe_socket(Path::new(downstream), control)
     }
     #[cfg(windows)]
     {
-        eprintln!("codex forwarder: this platform offers the host only stdio");
-        std::process::exit(1);
+        Err(io::Error::other("this platform offers the host only stdio"))
     }
 }
 
-/// Host lines become upstream text frames. A partial line left by a host that
-/// went away is discarded, so the server never sees a broken message.
-fn pump_host(input: impl BufRead, writer: &Arc<Mutex<Upstream>>) -> io::Result<()> {
-    let mut input = input.take(u64::MAX);
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        let read = (&mut input)
-            .take(MAX_MESSAGE as u64 + 1)
-            .read_until(b'\n', &mut line)?;
-        if read == 0 || line.last() != Some(&b'\n') {
-            return Ok(());
-        }
-        line.pop();
-        let mut upstream = writer.lock().map_err(|_| io::Error::other("poisoned"))?;
-        write_frame(&mut *upstream, 0x1, &line)?;
-    }
+/// Serve the private socket until the server closes a connection first.
+#[cfg(unix)]
+fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixListener;
+    let listener = UnixListener::bind(path)?;
+    let (ended, server_gone) = std::sync::mpsc::channel::<io::Error>();
+    std::thread::Builder::new()
+        .name("se-codex-forward-accept".into())
+        .spawn(move || {
+            for client in listener.incoming() {
+                let Ok(client) = client else { continue };
+                let control = control.clone();
+                let ended = ended.clone();
+                let _ = std::thread::Builder::new()
+                    .name("se-codex-forward-connection".into())
+                    .spawn(move || {
+                        let Ok(server) = Upstream::connect(&control) else {
+                            let _ = ended.send(io::Error::other(
+                                "the login's app-server no longer accepts connections",
+                            ));
+                            return;
+                        };
+                        let (Ok(mut client_in), Ok(mut server_out)) =
+                            (client.try_clone(), server.try_clone())
+                        else {
+                            return;
+                        };
+                        // Host to server on its own thread; server to host here.
+                        let to_server = std::thread::spawn(move || {
+                            let _ = io::copy(&mut client_in, &mut server_out);
+                            // The client finished first: end this connection only.
+                            let _ = server_out.shutdown(Shutdown::Both);
+                        });
+                        let (mut server_in, mut client_out) = (server, client);
+                        let copied = io::copy(&mut server_in, &mut client_out);
+                        let client_finished = to_server.is_finished();
+                        let _ = client_out.shutdown(Shutdown::Both);
+                        let _ = to_server.join();
+                        if !client_finished {
+                            // The server closed while its client was still there.
+                            let _ = ended.send(copied.err().unwrap_or_else(|| {
+                                io::Error::other("the login's app-server closed a connection")
+                            }));
+                        }
+                    });
+            }
+        })?;
+    let reason = server_gone
+        .recv()
+        .unwrap_or_else(|_| io::Error::other("the private socket stopped accepting"));
+    let _ = std::fs::remove_file(path);
+    Err(reason)
 }
 
-/// Upstream text messages become host lines until the server closes.
-fn pump_upstream(
-    mut reader: Upstream,
-    writer: &Arc<Mutex<Upstream>>,
-    hosts: &Arc<Mutex<Hosts>>,
-) -> io::Result<()> {
+/// Bridge stdio lines to WebSocket text frames for the life of the agent.
+fn bridge_stdio(control: &Path) -> io::Result<()> {
+    let (mut reader, writer) = connect(control)?;
+    let writer = std::sync::Arc::new(std::sync::Mutex::new(writer));
+    let pong = std::sync::Arc::clone(&writer);
+    std::thread::Builder::new()
+        .name("se-codex-forward-input".into())
+        .spawn(move || {
+            let mut input = io::stdin().lock();
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                let read = (&mut input)
+                    .take(MAX_MESSAGE as u64 + 1)
+                    .read_until(b'\n', &mut line);
+                // The host's end is the agent's end; a partial last line is
+                // never sent as a message.
+                if !matches!(read, Ok(n) if n > 0) || line.last() != Some(&b'\n') {
+                    std::process::exit(0);
+                }
+                line.pop();
+                let sent = writer
+                    .lock()
+                    .map_err(|_| io::Error::other("poisoned"))
+                    .and_then(|mut upstream| write_frame(&mut *upstream, 0x1, &line));
+                if sent.is_err() {
+                    std::process::exit(1);
+                }
+            }
+        })?;
+    let mut output = io::stdout().lock();
     let mut message = Vec::new();
     loop {
         let Some((fin, opcode, payload)) = read_frame(&mut reader)? else {
-            return Ok(());
+            return Err(io::Error::other(
+                "the login's app-server closed the connection",
+            ));
         };
         match opcode {
             0x1 | 0x0 => {
@@ -219,17 +164,19 @@ fn pump_upstream(
                             "server message contains a line break and cannot be framed as a line",
                         ));
                     }
-                    let mut line = std::mem::take(&mut message);
-                    line.push(b'\n');
-                    hosts
-                        .lock()
-                        .map_err(|_| io::Error::other("poisoned"))?
-                        .deliver(line);
+                    message.push(b'\n');
+                    output.write_all(&message)?;
+                    output.flush()?;
+                    message.clear();
                 }
             }
-            0x8 => return Ok(()),
+            0x8 => {
+                return Err(io::Error::other(
+                    "the login's app-server closed the connection",
+                ));
+            }
             0x9 => {
-                let mut upstream = writer.lock().map_err(|_| io::Error::other("poisoned"))?;
+                let mut upstream = pong.lock().map_err(|_| io::Error::other("poisoned"))?;
                 write_frame(&mut *upstream, 0xA, &payload)?;
             }
             0xA => {}
@@ -243,11 +190,11 @@ fn connect(control: &Path) -> io::Result<(Upstream, Upstream)> {
     let mut stream = Upstream::connect(control)?;
     let mut key = [0_u8; 16];
     se_proc::fill_entropy(&mut key).map_err(|e| io::Error::other(format!("{e:?}")))?;
-    let key = base64(&key);
     write!(
         stream,
         "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
-         Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+         Sec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        base64(&key)
     )?;
     stream.flush()?;
     let mut head = Vec::new();
@@ -277,8 +224,6 @@ fn read_frame(stream: &mut impl Read) -> io::Result<Option<(bool, u8, Vec<u8>)>>
         Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(error) => return Err(error),
     }
-    let fin = head[0] & 0x80 != 0;
-    let opcode = head[0] & 0x0F;
     if head[1] & 0x80 != 0 {
         return Err(io::Error::other("server frames must not be masked"));
     }
@@ -301,7 +246,7 @@ fn read_frame(stream: &mut impl Read) -> io::Result<Option<(bool, u8, Vec<u8>)>>
         .ok_or_else(|| io::Error::other("server frame exceeds its bound"))?;
     let mut payload = vec![0_u8; length];
     stream.read_exact(&mut payload)?;
-    Ok(Some((fin, opcode, payload)))
+    Ok(Some((head[0] & 0x80 != 0, head[0] & 0x0F, payload)))
 }
 
 /// Client frames are masked, as the protocol requires.
@@ -310,19 +255,18 @@ fn write_frame(stream: &mut impl Write, opcode: u8, payload: &[u8]) -> io::Resul
     se_proc::fill_entropy(&mut mask).map_err(|e| io::Error::other(format!("{e:?}")))?;
     let mut frame = Vec::with_capacity(payload.len() + 14);
     frame.push(0x80 | opcode);
-    match payload.len() {
-        n if n < 126 => frame.push(0x80 | n as u8),
-        n if n <= usize::from(u16::MAX) => {
-            frame.push(0x80 | 126);
-            frame.extend_from_slice(&(n as u16).to_be_bytes());
-        }
-        n => {
-            frame.push(0x80 | 127);
-            frame.extend_from_slice(&(n as u64).to_be_bytes());
-        }
+    let length = payload.len();
+    if let Ok(small @ 0..=125) = u8::try_from(length) {
+        frame.push(0x80 | small);
+    } else if let Ok(medium) = u16::try_from(length) {
+        frame.push(0x80 | 126);
+        frame.extend_from_slice(&medium.to_be_bytes());
+    } else {
+        frame.push(0x80 | 127);
+        frame.extend_from_slice(&(length as u64).to_be_bytes());
     }
     frame.extend_from_slice(&mask);
-    frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+    frame.extend(payload.iter().zip(mask.iter().cycle()).map(|(b, m)| b ^ m));
     stream.write_all(&frame)?;
     stream.flush()
 }
@@ -336,11 +280,11 @@ fn base64(bytes: &[u8]) -> String {
             .enumerate()
             .fold(0_u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
         for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(TABLE[(n >> (18 - 6 * i) & 63) as usize] as char);
+            out.push(if i <= chunk.len() {
+                char::from(TABLE[(n >> (18 - 6 * i) & 63) as usize])
             } else {
-                out.push('=');
-            }
+                '='
+            });
         }
     }
     out
