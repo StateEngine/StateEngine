@@ -141,6 +141,19 @@ mod native {
         })
     }
 
+    fn published_state(controller: &Native, root: &RootId) -> AtlasResult<IndexState> {
+        controller.with_reader(root.clone(), |connection, _| {
+            connection.read(Instant::now() + Duration::from_secs(3), |sql| {
+                let state: String = sql
+                    .prepare("SELECT state_json FROM meta WHERE singleton=1")?
+                    .query_row([], |row| row.get(0))
+                    .map_err(|error| SeError::invalid("cold watch state", &error.to_string()))?;
+                serde_json::from_str(&state)
+                    .map_err(|error| SeError::invalid("cold watch state", &error.to_string()))
+            })
+        })
+    }
+
     fn settle(controller: &mut Native, root: &RootId) -> Check<(IndexSummary, bool)> {
         #[cfg(windows)]
         let signal = controller.runtime_mut().driver_mut().signal();
@@ -162,13 +175,13 @@ mod native {
             drive_quantum(controller, Duration::from_millis(200))
                 .map_err(|error| format!("publication failed: {error:?}"))?;
             let summary = controller.summary(root)?;
-            if matches!(
-                summary.state,
-                IndexState::Current
-                    | IndexState::VerificationNeeded {
+            if matches!(summary.state, IndexState::Current)
+                || matches!(
+                    summary.state,
+                    IndexState::VerificationNeeded {
                         reason: CoverageReason::PartialWatch
                     }
-            ) && controller.next_work() == NextWork::Park
+                ) && controller.next_work() == NextWork::Park
             {
                 let walked = controller
                     .runtime_mut()
@@ -234,11 +247,18 @@ mod native {
         }
         release_cold(&mut controller, home)?;
         #[cfg(windows)]
-        eprintln!(
-            "cold watch adopted with pending={}, discovery_complete={}",
-            controller.watch_pending(&root),
-            controller.summary(&root)?.coverage.discovery_complete
-        );
+        {
+            if !controller.watch_pending(&root) {
+                return Err("adopted snapshot did not retain watch readiness".into());
+            }
+            eprintln!(
+                "cold watch adopted with pending=true, discovery_complete={}",
+                controller.summary(&root)?.coverage.discovery_complete
+            );
+        }
+        if matches!(published_state(&controller, &root)?, IndexState::Current) {
+            return Err("cold snapshot was marked Current before replaying source changes".into());
+        }
         if names(&controller, &root, MAIN)? != ["before_edit"]
             || names(&controller, &root, HIDDEN)? != ["hidden_before"]
             || !names(&controller, &root, VISIBLE)?.is_empty()
@@ -246,7 +266,9 @@ mod native {
             return Err("the cold snapshot did not retain the intended before-state".into());
         }
         let (summary, walked) = settle(&mut controller, &root)?;
-        if !matches!(summary.state, IndexState::Current) {
+        if !matches!(summary.state, IndexState::Current)
+            || !matches!(published_state(&controller, &root)?, IndexState::Current)
+        {
             return Err(format!("event case never reached current: {summary:?}").into());
         }
         #[cfg(windows)]
