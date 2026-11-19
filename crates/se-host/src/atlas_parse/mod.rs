@@ -251,9 +251,7 @@ impl Parser {
             if let Some(error) = error {
                 return Err(self.closed_error(deadline, error));
             }
-        } else if let Err(error) =
-            AtlasWorker::spawn_bounded(image, request_bytes, deadline)
-        {
+        } else if let Err(error) = AtlasWorker::spawn_bounded(image, request_bytes, deadline) {
             return Err(start_error(error, deadline));
         }
         let worker = match self.worker.as_mut() {
