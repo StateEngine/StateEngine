@@ -171,6 +171,14 @@ impl AtlasWorker {
         // SAFETY: retained process handle; GetProcessId reads its immutable PID.
         unsafe { GetProcessId(self.process.as_raw_handle()) }
     }
+    /// Borrow a later caller deadline so a retained worker can serve the
+    /// next file; an earlier bound never shrinks the existing one.
+    pub fn extend_deadline(&mut self, deadline: Instant) {
+        if deadline > self.deadline {
+            self.deadline = deadline;
+            self.cancellation_deadline = Some(deadline);
+        }
+    }
     pub fn peak_observed_bytes(&self) -> u64 {
         self.peak
     }
