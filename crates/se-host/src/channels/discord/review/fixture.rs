@@ -164,6 +164,22 @@ impl Fixture {
         }
         Ok(serde_json::from_slice(&fs::read(path)?)?)
     }
+    pub async fn wait_for_events(
+        &self,
+        description: &str,
+        ready: impl Fn(&[Value]) -> bool,
+    ) -> Check {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            if ready(&self.events()?) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!("provider did not record {description}").into());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
     /// Print every event the provider recorded, so a failed assertion names the
     /// step that refused instead of only the client-visible error.
     ///

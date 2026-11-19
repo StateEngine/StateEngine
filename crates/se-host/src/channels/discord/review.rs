@@ -197,13 +197,27 @@ fn discord_wire_review_cancellation_and_heartbeats() -> Check {
     let f = Fixture::new("cancel")?;
     f.finish(runtime()?.block_on(async {
         let mut receiver = ready(&f).await?;
-        require(
-            tokio::time::timeout(Duration::from_millis(100), receiver.next(&f.token))
-                .await
-                .is_err(),
-            "identity read did not remain pending",
-        )?;
-        let row = next(receiver.as_mut(), &f.token).await?;
+        let lookup = |event: &Value| event["kind"] == "get" && event["route"] == "/channels/2001";
+        // The provider holds the REST reply. Drop this receive only after the
+        // lookup and subsequent heartbeats reached the wire.
+        tokio::select! {
+            _ = receiver.next(&f.token) => return Err("identity read did not remain pending".into()),
+            result = f.wait_for_events("identity lookup with three subsequent heartbeats", |events| {
+                events
+                    .iter()
+                    .skip_while(|event| !lookup(event))
+                    .filter(|event| event["kind"] == "heartbeat")
+                    .count() >= 3
+            }) => result?,
+        }
+        let (row, ()) = tokio::try_join!(next(receiver.as_mut(), &f.token), async {
+            f.wait_for_events("a second lookup for the retained dispatch", |events| {
+                events.iter().filter(|event| lookup(event)).count() >= 2
+            })
+            .await?;
+            std::fs::write(f.root.join("release-channel-reads"), [])?;
+            Ok(())
+        })?;
         require(
             row.update.to_string() == "5002" && matches!(row.content, IncomingContent::Text { .. }),
             "cancelled dispatch was discarded",
@@ -213,18 +227,9 @@ fn discord_wire_review_cancellation_and_heartbeats() -> Check {
             "unacknowledged dispatch was bypassed",
         )?;
         receiver.ack(&row.cursor)?;
-        let events = f.events()?;
         require(
-            events.iter().filter(|e| e["kind"] == "heartbeat").count() >= 3,
-            "REST lookup blocked heartbeats",
-        )?;
-        require(
-            events
-                .iter()
-                .filter(|e| e["kind"] == "get" && e["route"] == "/channels/2001")
-                .count()
-                == 2,
-            "identity read was not retried for the retained dispatch",
+            f.events()?.iter().filter(|event| lookup(event)).count() == 2,
+            "identity read was not retried exactly once for the retained dispatch",
         )?;
         Ok(())
     }))
