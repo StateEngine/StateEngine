@@ -248,12 +248,12 @@ impl Worker {
             .map_err(|e| e.to_string())?;
         let source_descriptor = watch
             .subscribe_tree(&source)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("working-tree watch could not start: {e}"))?
             .ok_or("working-tree watch disappeared while arming")?
             .descriptor;
         let git_descriptor = watch
             .subscribe_tree(&git)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Git metadata watch could not start: {e}"))?
             .ok_or("Git metadata watch disappeared while arming")?
             .descriptor;
         let common_descriptor = common
@@ -261,7 +261,7 @@ impl Worker {
             .map(|root| {
                 watch
                     .subscribe_tree(root)
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| format!("Git common-directory watch could not start: {e}"))?
                     .ok_or_else(|| "Git common-directory watch disappeared while arming".to_owned())
                     .map(|registration| registration.descriptor)
             })

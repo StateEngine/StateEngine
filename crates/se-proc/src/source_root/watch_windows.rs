@@ -173,8 +173,13 @@ impl NativeSourceWatch {
             return Ok(None);
         };
         let identity = directory.identity.root_key();
-        let file = open_async(&directory.directory)?;
-        if !identity.eq(&os::revision(&file, true)?.root_key()) || !directory.validate_name()? {
+        let file = open_async(&directory.directory)
+            .map_err(|error| watch_error("open watched directory", error))?;
+        if !identity.eq(&os::revision(&file, true)
+            .map_err(|error| watch_error("inspect watched directory", error))?
+            .root_key())
+            || !directory.validate_name()?
+        {
             return Err(changed("watched directory changed during subscription"));
         }
         let mut ancestors = Vec::new();
@@ -187,15 +192,18 @@ impl NativeSourceWatch {
                 let name = name
                     .to_str()
                     .ok_or_else(|| invalid("source ancestry encoding"))?;
-                let parent_root = NativeSourceRoot::open(parent)?;
+                let parent_root = NativeSourceRoot::open(parent)
+                    .map_err(|error| watch_error("open watched ancestor", error))?;
                 let parent_pin = parent_root
                     .open_directory("")?
                     .ok_or_else(|| changed("source ancestor disappeared"))?;
-                let parent_file = open_async(&parent_pin.directory)?;
+                let parent_file = open_async(&parent_pin.directory)
+                    .map_err(|error| watch_error("open ancestor notification", error))?;
                 if !parent_pin.validate_name()?
-                    || !parent_pin
-                        .identity
-                        .same_object(&os::revision(&parent_file, true)?)
+                    || !parent_pin.identity.same_object(
+                        &os::revision(&parent_file, true)
+                            .map_err(|error| watch_error("inspect watched ancestor", error))?,
+                    )
                 {
                     return Err(changed("source ancestor changed during subscription"));
                 }
@@ -318,12 +326,16 @@ impl NativeSourceWatch {
         Ok(())
     }
 }
+fn watch_error(action: &str, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{action}: {error}"))
+}
+
 fn open_async(file: &File) -> io::Result<File> {
     // SAFETY: reopening a retained no-follow directory handle gives one independent async handle.
     let raw = unsafe {
         ReOpenFile(
             file.as_raw_handle(),
-            FILE_LIST_DIRECTORY,
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OVERLAPPED,
         )
