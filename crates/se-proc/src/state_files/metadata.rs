@@ -18,6 +18,37 @@ impl NativeMetadataPin {
     pub fn is_ordinary_local(&self) -> bool {
         self.direct_metadata
     }
+    /// Retain this exact ordinary local file without delete sharing.
+    #[cfg(windows)]
+    pub fn hold_no_delete(&self) -> Result<Option<File>> {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle};
+        use windows_sys::Win32::{
+            Foundation::INVALID_HANDLE_VALUE,
+            Storage::FileSystem::{
+                FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, ReOpenFile,
+            },
+        };
+        if !self.direct_metadata {
+            return Ok(None);
+        }
+        self.metadata()?;
+        // SAFETY: the retained handle is live and ReOpenFile returns a distinct handle.
+        let raw = unsafe {
+            ReOpenFile(
+                self.file.as_raw_handle(),
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                0,
+            )
+        };
+        if raw == INVALID_HANDLE_VALUE {
+            return Ok(None);
+        }
+        // SAFETY: the successful call transferred ownership of this new handle.
+        let guard = unsafe { File::from_raw_handle(raw) };
+        self.metadata()?;
+        Ok(Some(guard))
+    }
     pub(super) fn open(files: &NativeStateFiles, path: &Path) -> Result<Option<Self>> {
         files.check(path)?;
         #[cfg(target_os = "macos")]

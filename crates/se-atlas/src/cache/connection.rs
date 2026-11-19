@@ -169,6 +169,13 @@ pub struct CacheConnection<'a> {
     arena: Option<query_arena::Reservation>,
     _slot: Slot,
 }
+impl Drop for CacheConnection<'_> {
+    fn drop(&mut self) {
+        if self.role == ConnectionRole::ColdWriter {
+            self.files.release_cold_observations();
+        }
+    }
+}
 impl<'a> CacheConnection<'a> {
     pub fn open(
         files: &'a dyn CacheFiles,
@@ -370,7 +377,12 @@ impl<'a> CacheConnection<'a> {
         } else {
             None
         };
-        finite(&mut self.db, deadline, "transaction", |db, budget_ms| {
+        let before = if write && self.role == ConnectionRole::ColdWriter {
+            self.files.written_pages(&self.db)
+        } else {
+            None
+        };
+        let result = finite(&mut self.db, deadline, "transaction", |db, budget_ms| {
             let behavior = if write {
                 rusqlite::TransactionBehavior::Immediate
             } else {
@@ -403,7 +415,20 @@ impl<'a> CacheConnection<'a> {
                 transaction.rollback().map_err(cache_error)?;
             }
             result
-        })
+        });
+        if write && self.role == ConnectionRole::ColdWriter {
+            let pages = if result.is_ok() {
+                before.and_then(|before| {
+                    self.files
+                        .written_pages(&self.db)
+                        .and_then(|after| after.checked_sub(before))
+                })
+            } else {
+                None
+            };
+            self.files.record_written_pages(pages);
+        }
+        result
     }
     /// Event/commit/drain driven only. External pinned snapshots keep writes
     /// suspended; no timer or forced reader expiry is introduced.
