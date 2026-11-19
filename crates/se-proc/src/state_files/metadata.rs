@@ -13,6 +13,11 @@ pub struct NativeMetadataPin {
     original: Metadata,
 }
 impl NativeMetadataPin {
+    /// Whether held ancestry and this name are qualified for direct NTFS metadata.
+    #[cfg(windows)]
+    pub fn is_ordinary_local(&self) -> bool {
+        self.direct_metadata
+    }
     pub(super) fn open(files: &NativeStateFiles, path: &Path) -> Result<Option<Self>> {
         files.check(path)?;
         #[cfg(target_os = "macos")]

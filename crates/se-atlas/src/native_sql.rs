@@ -1,5 +1,6 @@
 //! Per-connection native SQLite allocation setup, confined to Atlas adapters.
 //! This changes no global SQLite settings or authoritative-store connection.
+#![allow(unsafe_code)] // SQLite's per-connection native controls are synchronous.
 pub fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
     // SAFETY: the borrowed Connection owns a live handle, is not shared across
     // threads, and SQLite itself returns BUSY if lookaside is currently in use.

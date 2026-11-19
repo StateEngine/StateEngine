@@ -1,11 +1,12 @@
 //! Rebuildable Atlas foundation. Native custody is supplied by host adapters.
 #![deny(unsafe_code)]
-// The trusted_path FFI module carries the crate's only scoped allowance.
+// Native SQLite and trusted-path FFI are isolated in scoped modules.
 
 pub mod coverage;
 pub mod errors;
 pub mod lifecycle;
 pub mod model;
+pub mod native_sql;
 pub mod queries;
 
 pub mod cache;

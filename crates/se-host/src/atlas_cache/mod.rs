@@ -1,6 +1,9 @@
 //! Protected cache files shared by hosted and hostless readers. Only activation
 //! creates directories or acquires the permanent kernel-owned writer lock.
 mod inventory;
+#[cfg(windows)]
+#[path = "../atlas_private_guard.rs"]
+mod private_guard;
 mod reopen;
 mod reservation;
 mod writer;
@@ -32,6 +35,8 @@ pub struct NativeAtlasCache {
     writer: Option<writer::WriterLease>,
     reserved: RefCell<Option<(CacheEpoch, DatabaseFileIdentity)>>,
     growth: Cell<u64>,
+    #[cfg(windows)]
+    private_guard: RefCell<Option<private_guard::PrivateGuard>>,
 }
 impl NativeAtlasCache {
     /// No creation, permissions repair, writer lock or schema action on reads.
@@ -54,6 +59,8 @@ impl NativeAtlasCache {
             writer: None,
             reserved: RefCell::new(None),
             growth: Cell::new(0),
+            #[cfg(windows)]
+            private_guard: RefCell::new(None),
         }))
     }
     /// Explicit after-ready activation only. All writers across this Atlas home,
@@ -108,6 +115,8 @@ impl NativeAtlasCache {
             writer: Some(writer),
             reserved: RefCell::new(None),
             growth: Cell::new(0),
+            #[cfg(windows)]
+            private_guard: RefCell::new(None),
         };
         if let Some(epoch) = candidate {
             cache.claim_reservation(epoch)?;
@@ -165,19 +174,31 @@ impl NativeAtlasCache {
     }
 }
 impl CacheFiles for NativeAtlasCache {
+    fn release_creation_guard(&self) {
+        #[cfg(windows)]
+        self.private_guard.borrow_mut().take();
+    }
+    fn finish_creation_guard(&self) {
+        #[cfg(windows)]
+        self.finish_private_creation();
+    }
     fn configure_connection_role(
         &self,
         connection: &mut se_atlas::cache::connection::NativeSqlConnection,
         role: se_atlas::cache::connection::ConnectionRole,
     ) -> AtlasResult<()> {
         self.configure_connection(connection)?;
+        #[cfg(windows)]
+        if role == se_atlas::cache::connection::ConnectionRole::ColdWriter {
+            self.guard_private_creation(connection)?;
+        }
         if matches!(
             role,
             se_atlas::cache::connection::ConnectionRole::MaintenanceWriter
                 | se_atlas::cache::connection::ConnectionRole::QueryReader
                 | se_atlas::cache::connection::ConnectionRole::HostReader
         ) {
-            se_proc::atlas_sql::retain_wal(connection)
+            se_atlas::native_sql::retain_wal(connection)
                 .map_err(|error| fail(error.to_string().as_str()))?;
         }
         Ok(())
@@ -186,7 +207,8 @@ impl CacheFiles for NativeAtlasCache {
         &self,
         connection: &mut se_atlas::cache::connection::NativeSqlConnection,
     ) -> AtlasResult<()> {
-        se_proc::atlas_sql::configure(connection).map_err(|error| fail(error.to_string().as_str()))
+        se_atlas::native_sql::configure(connection)
+            .map_err(|error| fail(error.to_string().as_str()))
     }
     fn read_pointer(&self) -> AtlasResult<Option<Vec<u8>>> {
         let Some(file) = self.root.readback(&self.pointer()).map_err(fail)? else {
@@ -377,6 +399,15 @@ impl CacheFiles for NativeAtlasCache {
         Ok(())
     }
     fn validate_database(&self, pin: &DatabasePin) -> AtlasResult<()> {
+        #[cfg(windows)]
+        if self
+            .private_guard
+            .borrow()
+            .as_ref()
+            .is_some_and(|guard| guard.active && guard.path == pin.path)
+        {
+            return Ok(());
+        }
         let epoch = self.epoch(pin)?;
         let named = self
             .pin_database(&epoch)?
