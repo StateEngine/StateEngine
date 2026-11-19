@@ -360,7 +360,11 @@ impl<'a> CacheConnection<'a> {
                 // One renewal quantum can commit several transactions on the
                 // same connection. Reclaim earlier commits before refusing the
                 // next one; pinned readers still have to pass the size check.
-                self.checkpoint(deadline)?;
+                if self.role == ConnectionRole::ColdWriter {
+                    self.checkpoint_inner(deadline, true)?;
+                } else {
+                    self.checkpoint(deadline)?;
+                }
                 wal = timing::measure(&timing::ADMISSION_WAL_US, || {
                     self.files.wal_bytes(&self.pin)
                 })?;
@@ -456,6 +460,9 @@ impl<'a> CacheConnection<'a> {
     /// Event/commit/drain driven only. External pinned snapshots keep writes
     /// suspended; no timer or forced reader expiry is introduced.
     pub fn checkpoint(&mut self, deadline: Instant) -> AtlasResult<bool> {
+        self.checkpoint_inner(deadline, false)
+    }
+    fn checkpoint_inner(&mut self, deadline: Instant, force: bool) -> AtlasResult<bool> {
         let started = Instant::now();
         if !self.role.writable() {
             return Err(cache_error("reader cannot checkpoint"));
@@ -464,7 +471,12 @@ impl<'a> CacheConnection<'a> {
         if self.role == ConnectionRole::ColdWriter {
             timing::MAX_WAL_BYTES.fetch_max(wal, Ordering::Relaxed);
         }
-        if wal < 4_000_000 {
+        let threshold = if self.role == ConnectionRole::ColdWriter {
+            6_000_000
+        } else {
+            4_000_000
+        };
+        if !force && wal < threshold {
             return Ok(true);
         }
         if self.role == ConnectionRole::ColdWriter {
