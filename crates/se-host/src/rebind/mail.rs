@@ -31,11 +31,17 @@ impl LaunchCoordinator {
             ));
         }
         let session_hash = restart.session_hash;
+        // A previous publication may have succeeded without a readback. Finish
+        // that exact write before trusting the in-memory settled marker.
+        service.persist_pending(self, deadline).await?;
         if service.journal.restart_settled {
             work.pin_hash = Some(session_hash);
             if let Some(restart) = service.restart.as_mut()
                 && !restart.mail_notified
             {
+                work.mail.flight = None;
+                work.mail.seen.clear();
+                work.mail.backlog = false;
                 work.mail.reoffer = true;
                 restart.mail_notified = true;
             }
