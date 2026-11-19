@@ -339,6 +339,12 @@ impl Directory {
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_with_layout(path, Layout::State)
     }
+    pub fn open_profile_ancestor(path: &Path) -> Result<Self> {
+        let mut directory = Self::open_with_layout(path, Layout::State)?;
+        directory.profile_ancestry = profile_ancestry::pin(path)?;
+        directory.check_name(path)?;
+        Ok(directory)
+    }
     pub fn open_profile(path: &Path) -> Result<Self> {
         Self::open_with_layout(path, Layout::UserPrivate)
     }

@@ -160,6 +160,15 @@ impl NativeStateFiles {
             directory,
         })
     }
+    /// Hold a protected state root and every profile-path ancestor before creating children.
+    #[cfg(windows)]
+    pub fn open_profile_ancestor(root: &Path) -> Result<Self> {
+        let directory = os::Directory::open_profile_ancestor(root)?;
+        Ok(Self {
+            root: root.to_owned(),
+            directory,
+        })
+    }
     /// Explicit init only: creates absent directory components with native
     /// owner-only protection, and refuses an existing unsafe final directory.
     /// Existing ancestor permissions are never changed.
