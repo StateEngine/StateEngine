@@ -1,6 +1,9 @@
-//! Independent Linux component measurements, kept separate from joined admission.
+//! Independent native component measurements, kept separate from joined admission.
 use super::*;
-#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"),
+    all(windows, target_arch = "x86_64")
+))]
 use se_atlas::parse::ParserPlacement;
 impl NativeAtlasQualification {
     /// Ordinary installation uses the independently measured Linux components.
@@ -16,7 +19,20 @@ impl NativeAtlasQualification {
         }
         Ok(self)
     }
-    #[cfg(not(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64")))]
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    pub(super) fn with_native_sql(mut self) -> Result<Self> {
+        if self.sql.is_none() {
+            if self.parsers.is_empty() {
+                return Self::measured_windows_components();
+            }
+            self.sql = Some(SqlProfile::from_qualified_joined(643_072)?);
+        }
+        Ok(self)
+    }
+    #[cfg(not(any(
+        all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"),
+        all(windows, target_arch = "x86_64")
+    )))]
     pub(super) fn with_native_sql(self) -> Result<Self> {
         Ok(self)
     }
@@ -47,6 +63,35 @@ impl NativeAtlasQualification {
         .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             sql: Some(SqlProfile::from_qualified_overhead(93_702)?),
+            parsers,
+        })
+    }
+    /// The measured Windows x64 component profile does not qualify the joined
+    /// owner, watcher and query peak or shared grammar pages.
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    pub fn measured_windows_components() -> Result<Self> {
+        let parsers = [
+            Language::JavaScript,
+            Language::Jsx,
+            Language::TypeScript,
+            Language::Tsx,
+            Language::Rust,
+            Language::Python,
+        ]
+        .into_iter()
+        .map(|language| {
+            ParserProfile::from_qualified_measurement(
+                language,
+                ParserPlacement::Incremental,
+                65_536,
+                8_192,
+                8_000_000,
+                3_000_000,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            sql: Some(SqlProfile::from_qualified_joined(643_072)?),
             parsers,
         })
     }
