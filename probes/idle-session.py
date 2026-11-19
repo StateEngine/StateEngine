@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import shutil
 import sys
 import time
 import uuid
@@ -22,8 +23,12 @@ def switches(process, status):
     return value.voluntary + value.involuntary
 
 
-binary = Path(sys.argv[1]).resolve()
+source_binary = Path(sys.argv[1]).resolve()
 root = Path(sys.argv[2]).resolve()
+image_dir = root.parent / (root.name + '-binary')
+image_dir.mkdir()
+binary = image_dir / source_binary.name
+shutil.copy2(source_binary, binary)
 f = Fixture(binary, root, provider_helper=repo / 'probes/idle-provider.py')
 listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 listener.bind(('127.0.0.1', 0))
