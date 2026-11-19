@@ -35,6 +35,7 @@ pub struct NativeAtlasCache {
     writer: Option<writer::WriterLease>,
     reserved: RefCell<Option<(CacheEpoch, DatabaseFileIdentity)>>,
     growth: Cell<u64>,
+    inventory: RefCell<Option<inventory::Inventory>>,
 }
 impl NativeAtlasCache {
     /// No creation, permissions repair, writer lock or schema action on reads.
@@ -65,6 +66,7 @@ impl NativeAtlasCache {
             writer: None,
             reserved: RefCell::new(None),
             growth: Cell::new(0),
+            inventory: RefCell::new(None),
         }))
     }
     /// Explicit after-ready activation only. All writers across this Atlas home,
@@ -122,6 +124,7 @@ impl NativeAtlasCache {
             writer: Some(writer),
             reserved: RefCell::new(None),
             growth: Cell::new(0),
+            inventory: RefCell::new(None),
         };
         if let Some(epoch) = candidate {
             cache.claim_reservation(epoch)?;
@@ -361,6 +364,8 @@ impl CacheFiles for NativeAtlasCache {
         Ok(pin)
     }
     fn discard_unpublished(&self, pin: &DatabasePin) -> AtlasResult<()> {
+        // Retained directory handles must not prevent removal of this epoch.
+        self.inventory.borrow_mut().take();
         let epoch = self.epoch(pin)?;
         self.check_unpublished(&epoch)?;
         let held = pin.file.identity().map_err(fail)?;
@@ -440,18 +445,46 @@ impl CacheFiles for NativeAtlasCache {
     fn wal_bytes(&self, pin: &DatabasePin) -> AtlasResult<u64> {
         self.validate_database(pin)?;
         let path = pin.path.with_file_name("atlas.db-wal");
-        let file = self.root.pin_metadata(&path).map_err(fail)?;
-        let bytes = file
-            .map(|f| f.metadata().map(|m| m.len()).map_err(fail))
-            .transpose()
-            .map(|n| n.unwrap_or(0))?;
+        let cached = self
+            .inventory
+            .borrow()
+            .as_ref()
+            .and_then(|inventory| inventory.file_size(&path));
+        let bytes = match cached {
+            Some(bytes) => bytes,
+            None => {
+                let file = self.root.pin_metadata(&path).map_err(fail)?;
+                file.map(|f| f.metadata().map(|m| m.len()).map_err(fail))
+                    .transpose()?
+                    .unwrap_or(0)
+            }
+        };
         self.validate_database(pin)?;
         Ok(bytes)
     }
 
     fn reserve_growth(&self, bytes: u64) -> AtlasResult<Box<dyn GrowthReservation + '_>> {
         self.require_writer()?;
-        let root = inventory::root(&self.root)?;
+        let cached = self
+            .inventory
+            .borrow()
+            .as_ref()
+            .map(inventory::Inventory::measure)
+            .transpose()?
+            .flatten();
+        // Recount near the disk cap before trusting the cached inventory.
+        let root = match cached {
+            Some(root)
+                if root.saturating_add(self.growth.get()).saturating_add(bytes) < 504_000_000 =>
+            {
+                root
+            }
+            _ => {
+                let (root, snapshot) = inventory::root(&self.root)?;
+                *self.inventory.borrow_mut() = Some(snapshot);
+                root
+            }
+        };
         let reserved = self.growth.get();
         let maximum = self.scope.registration.cache.directory.as_path();
         if maximum != self.root.root() {
