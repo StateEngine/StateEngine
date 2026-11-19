@@ -207,7 +207,9 @@ stream_max_retries = 0
         d = OUT / f'agent-{i}'; d.mkdir(); clients.append(Client(env, d))
         cwd = d / 'project'; cwd.mkdir()
         threads.append(clients[i].request('thread/start', {'cwd': str(cwd), 'model': 'gpt-5.5', 'modelProvider': 'synthetic',
-                       'sandbox': 'workspace-write', 'approvalPolicy': 'never', 'ephemeral': False,
+                       # Without a configured Windows sandbox, workspace-write refuses every
+                       # command; this probe only checks which session a shell sees.
+                       'sandbox': 'danger-full-access' if WIN else 'workspace-write', 'approvalPolicy': 'never', 'ephemeral': False,
                        'config': {'shell_environment_policy': {'set': {'SE_SESSION': name}}}})['thread']['id'])
     rec['first_turns'] = [turn(c, t, f'XPROBE[plain:{i}]') for i, (c, t) in enumerate(zip(clients, threads))]
     rec['shell_turns'] = [turn(c, t, f'XPROBE[shell:{i}]') for i, (c, t) in enumerate(zip(clients, threads))]
