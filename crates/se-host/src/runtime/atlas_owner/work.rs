@@ -67,6 +67,7 @@ impl State {
         }
         match wake {
             Wake::Core => (),
+            #[cfg(target_os = "linux")]
             Wake::Source(root) => {
                 if let Err(error) = drive_events(
                     &mut self.controller,
@@ -76,7 +77,21 @@ impl State {
                     eprintln!("Code index source reconciliation required: {error}");
                 }
             }
-            Wake::Child | Wake::Scheduled => (),
+            #[cfg(windows)]
+            Wake::Sources => {
+                for root in &self.roots {
+                    if let Err(error) = drive_events(
+                        &mut self.controller,
+                        &root.registration.root,
+                        Instant::now() + Duration::from_millis(100),
+                    ) {
+                        eprintln!("Code index source reconciliation required: {error}");
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Wake::Child => (),
+            Wake::Scheduled => (),
         }
         if let Some(scan) = &mut self.scan {
             match scan.page(context, owner, &self.home, &self.work) {
@@ -177,6 +192,7 @@ impl State {
             NextWork::AfterEventDebounce(wait) => (false, Some(wait)),
             NextWork::Park => (false, None),
         };
+        #[cfg(target_os = "linux")]
         let mut fds = Vec::with_capacity(3);
         if let Some(pid) = child {
             let end = match self.child_deadline {
@@ -194,11 +210,19 @@ impl State {
                 .map_or(end, |phase| end.min(phase));
             let wait = end.saturating_duration_since(Instant::now());
             delay = Some(delay.map_or(wait, |old| old.min(wait)));
+            #[cfg(target_os = "linux")]
             if let Some(fd) = self.controller.runtime().child_readiness_fd() {
                 fds.push((fd.try_clone_to_owned().map_err(fd_error)?, Wake::Child));
             }
+            #[cfg(windows)]
+            {
+                delay = Some(delay.map_or(Duration::from_millis(20), |old| {
+                    old.min(Duration::from_millis(20))
+                }));
+            }
         } else {
             self.child_deadline = None;
+            #[cfg(target_os = "linux")]
             for root in &self.roots {
                 if let Some(fd) = self.controller.runtime().event_fd(&root.registration.root) {
                     fds.push((
@@ -214,6 +238,9 @@ impl State {
         Ok(Plan {
             ready: again || ready || advance,
             delay,
+            #[cfg(windows)]
+            listen_sources: child.is_none(),
+            #[cfg(target_os = "linux")]
             fds,
         })
     }
@@ -221,15 +248,27 @@ impl State {
         let Some(end) = self.controller.runtime().child_parse_deadline() else {
             return Ok(None);
         };
+        #[cfg(target_os = "linux")]
         let mut fds = Vec::with_capacity(1);
+        #[cfg(target_os = "linux")]
         if let Some(fd) = self.controller.runtime().child_readiness_fd() {
             fds.push((fd.try_clone_to_owned().map_err(fd_error)?, Wake::Child));
         }
         Ok(Some(Plan {
             ready: false,
+            #[cfg(windows)]
+            listen_sources: false,
             // After a failed bounded reap, retain custody and wait for native
             // exit readiness rather than spinning on an already expired timer.
-            delay: end.checked_duration_since(Instant::now()),
+            delay: {
+                let remaining = end.checked_duration_since(Instant::now());
+                #[cfg(windows)]
+                let remaining = Some(remaining.map_or(Duration::from_millis(20), |value| {
+                    value.min(Duration::from_millis(20))
+                }));
+                remaining
+            },
+            #[cfg(target_os = "linux")]
             fds,
         }))
     }
@@ -543,6 +582,7 @@ impl State {
         Ok(())
     }
 }
+#[cfg(target_os = "linux")]
 fn fd_error(error: std::io::Error) -> SeError {
     se_core::scope::unreadable("Atlas native readiness descriptor", &error.to_string())
         .with_cause(error)

@@ -20,6 +20,8 @@ pub enum ReconcileReason {
 pub enum SourceHint {
     FileChanged(RelativePath),
     FileRemoved(RelativePath),
+    /// Discover and reconcile only this directory and its descendants.
+    DirectoryChanged(RelativePath),
     Rename {
         from: RelativePath,
         to: RelativePath,
