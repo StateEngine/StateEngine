@@ -1,13 +1,13 @@
 //! Independent Linux component measurements, kept separate from joined admission.
 use super::*;
-#[cfg(all(target_env = "gnu", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
 use se_atlas::parse::ParserPlacement;
 impl NativeAtlasQualification {
     /// Ordinary installation uses the independently measured Linux components.
     /// Explicit SQL/parser selections retain their bounds; unknown targets
     /// still carry None. Source beyond the measured 64 KiB stays deferred.
+    #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
     pub(super) fn with_native_sql(mut self) -> Result<Self> {
-        #[cfg(all(target_env = "gnu", target_arch = "x86_64"))]
         if self.sql.is_none() {
             if self.parsers.is_empty() {
                 return Self::measured_linux_components();
@@ -16,9 +16,13 @@ impl NativeAtlasQualification {
         }
         Ok(self)
     }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64")))]
+    pub(super) fn with_native_sql(self) -> Result<Self> {
+        Ok(self)
+    }
     /// The measured six-grammar Linux/glibc component profile is the default.
     /// This does not qualify the joined owner/watch/query peak or other targets.
-    #[cfg(all(target_env = "gnu", target_arch = "x86_64"))]
+    #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
     pub fn measured_linux_components() -> Result<Self> {
         let parsers = [
             Language::JavaScript,
