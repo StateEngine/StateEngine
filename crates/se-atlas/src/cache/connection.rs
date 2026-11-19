@@ -256,10 +256,24 @@ impl<'a> CacheConnection<'a> {
             db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
                 .map_err(cache_error)?;
             files.validate_database(&pin)?;
-            Ok(db)
+            #[cfg(windows)]
+            let retained = {
+                let retained = files
+                    .pin_database(&seed.identity.epoch)?
+                    .ok_or_else(|| cache_error("initialized database name absent"))?;
+                if pin.file.identity().map_err(cache_error)?
+                    != retained.file.identity().map_err(cache_error)?
+                {
+                    return Err(cache_error("initialized database identity changed"));
+                }
+                Some(retained)
+            };
+            #[cfg(not(windows))]
+            let retained = None;
+            Ok((db, retained))
         })();
-        let db = match initialized {
-            Ok(db) => db,
+        let (db, pin) = match initialized {
+            Ok((db, retained)) => (db, retained.unwrap_or(pin)),
             Err(original) => {
                 return match files.discard_unpublished(&pin) {
                     Ok(()) => Err(original),

@@ -8,7 +8,7 @@ pub mod schema;
 pub mod timing;
 pub mod write;
 use crate::{errors::AtlasResult, model::*, scope::Scope};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 /// The native adapter retains the directory/root and file pins while SQLite is
 /// open. SQLite's own NOFOLLOW flag also rejects a linked final database name.
 /// This trusted port is never constructed from CLI/MCP destination arguments.
@@ -56,6 +56,13 @@ pub type DatabaseFileIdentity = ([u8; 16], [u8; 16]);
 pub trait DatabaseFile {
     fn metadata(&self) -> std::io::Result<std::fs::Metadata>;
     fn identity(&self) -> std::io::Result<DatabaseFileIdentity>;
+    /// Verify that this retained identity still belongs to the specified name.
+    fn validate_path(&self, _path: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "database file does not validate its name",
+        ))
+    }
 }
 
 pub struct DatabasePin {

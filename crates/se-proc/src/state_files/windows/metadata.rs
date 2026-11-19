@@ -10,9 +10,14 @@ impl Directory {
         // On local NTFS, its nonempty ordinary ancestors cannot be renamed or
         // acquire a reparse point while the descendant directory remains open.
         // Existing reparse ancestry keeps the full traversal on every read.
-        let (found, ordinary) = walk_with_ancestry(root, false, None, self.layout)?;
+        let (found, ordinary) = walk_with_ancestry(root, false, None, self.layout, false)?;
         self.same_metadata_root(&found, root)?;
         Ok(ordinary)
+    }
+
+    pub fn check_trusted_ancestry(&self, root: &Path) -> Result<()> {
+        let (found, _) = walk_with_ancestry(root, false, None, self.layout, true)?;
+        self.same_metadata_root(&found, root)
     }
 
     pub fn check_metadata_name(&self, root: &Path) -> Result<()> {
@@ -20,7 +25,11 @@ impl Directory {
         self.same_metadata_root(&found, root)
     }
 
-    pub(super) fn same_metadata_root(&self, found: &File, root: &Path) -> Result<()> {
+    pub(in crate::state_files) fn same_metadata_root(
+        &self,
+        found: &File,
+        root: &Path,
+    ) -> Result<()> {
         if metadata_for(found, root, true, self.layout)? != self.identity {
             return Err(failure(
                 StateFileErrorCode::SourceChanged,

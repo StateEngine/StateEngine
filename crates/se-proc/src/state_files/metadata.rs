@@ -7,6 +7,8 @@ pub struct NativeMetadataPin {
     path: PathBuf,
     #[cfg(windows)]
     direct_metadata: bool,
+    #[cfg(windows)]
+    trusted_ancestry: bool,
     #[cfg(not(target_os = "macos"))]
     file: File,
     #[cfg(target_os = "macos")]
@@ -35,6 +37,8 @@ impl NativeMetadataPin {
             path: path.into(),
             #[cfg(windows)]
             direct_metadata,
+            #[cfg(windows)]
+            trusted_ancestry: false,
             #[cfg(not(target_os = "macos"))]
             file,
             #[cfg(target_os = "macos")]
@@ -43,9 +47,23 @@ impl NativeMetadataPin {
         pin.metadata()?;
         Ok(Some(pin))
     }
+    #[cfg(windows)]
+    pub(super) fn require_trusted_ancestry(mut self) -> Result<Self> {
+        self.files
+            .directory
+            .check_trusted_ancestry(&self.files.root)?;
+        self.trusted_ancestry = true;
+        self.metadata()?;
+        Ok(self)
+    }
     pub fn metadata(&self) -> Result<Metadata> {
         #[cfg(windows)]
         let (named, same) = {
+            if self.trusted_ancestry && !self.direct_metadata {
+                self.files
+                    .directory
+                    .check_trusted_ancestry(&self.files.root)?;
+            }
             let other = if self.direct_metadata {
                 self.files
                     .directory
@@ -76,6 +94,11 @@ impl NativeMetadataPin {
                 self.files.directory.check_metadata_name(&self.files.root)?;
             } else {
                 self.files.check(&self.path)?;
+            }
+            if self.trusted_ancestry && !self.direct_metadata {
+                self.files
+                    .directory
+                    .check_trusted_ancestry(&self.files.root)?;
             }
             (named, a.volume == b.volume && a.file == b.file)
         };

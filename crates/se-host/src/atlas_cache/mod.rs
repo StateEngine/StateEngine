@@ -23,6 +23,9 @@ impl DatabaseFile for Metadata {
     fn identity(&self) -> std::io::Result<DatabaseFileIdentity> {
         self.0.identity().map_err(std::io::Error::other)
     }
+    fn validate_path(&self, path: &Path) -> std::io::Result<()> {
+        self.0.validate_path(path).map_err(std::io::Error::other)
+    }
 }
 pub struct NativeAtlasCache {
     home: NativeStateFiles,
@@ -32,17 +35,26 @@ pub struct NativeAtlasCache {
     writer: Option<writer::WriterLease>,
     reserved: RefCell<Option<(CacheEpoch, DatabaseFileIdentity)>>,
     growth: Cell<u64>,
+    inventory: RefCell<Option<inventory::Inventory>>,
 }
 impl NativeAtlasCache {
     /// No creation, permissions repair, writer lock or schema action on reads.
     pub fn open(home: &Path, scope: Scope) -> AtlasResult<Option<Self>> {
-        let home = match NativeStateFiles::open(home) {
+        #[cfg(windows)]
+        let home_open = NativeStateFiles::open_trusted(home);
+        #[cfg(not(windows))]
+        let home_open = NativeStateFiles::open(home);
+        let home = match home_open {
             Ok(home) => home,
             Err(e) if missing(&e) => return Ok(None),
             Err(e) => return Err(fail(e)),
         };
         let path = cache_path(&home, &scope)?;
-        let root = match NativeStateFiles::open(&path) {
+        #[cfg(windows)]
+        let root_open = NativeStateFiles::open_trusted(&path);
+        #[cfg(not(windows))]
+        let root_open = NativeStateFiles::open(&path);
+        let root = match root_open {
             Ok(root) => root,
             Err(e) if missing(&e) => return Ok(None),
             Err(e) => return Err(fail(e)),
@@ -54,6 +66,7 @@ impl NativeAtlasCache {
             writer: None,
             reserved: RefCell::new(None),
             growth: Cell::new(0),
+            inventory: RefCell::new(None),
         }))
     }
     /// Explicit after-ready activation only. All writers across this Atlas home,
@@ -74,6 +87,9 @@ impl NativeAtlasCache {
         scope: Scope,
         candidate: Option<&CacheEpoch>,
     ) -> AtlasResult<Self> {
+        #[cfg(windows)]
+        let home = NativeStateFiles::create_trusted(home).map_err(fail)?;
+        #[cfg(not(windows))]
         let home = NativeStateFiles::create(home).map_err(fail)?;
         let lock = home.root().join("writer.lock");
         if home.readback(&lock).map_err(fail)?.is_none() {
@@ -108,6 +124,7 @@ impl NativeAtlasCache {
             writer: Some(writer),
             reserved: RefCell::new(None),
             growth: Cell::new(0),
+            inventory: RefCell::new(None),
         };
         if let Some(epoch) = candidate {
             cache.claim_reservation(epoch)?;
@@ -149,6 +166,17 @@ impl NativeAtlasCache {
             return Err(fail("database pin outside this cache"));
         }
         Ok(epoch)
+    }
+    fn pin_reservation(&self, epoch: &CacheEpoch) -> AtlasResult<Option<DatabasePin>> {
+        let path = self.path(epoch);
+        #[cfg(windows)]
+        let file = self.root.pin_trusted_metadata(&path).map_err(fail)?;
+        #[cfg(not(windows))]
+        let file = self.root.pin_metadata(&path).map_err(fail)?;
+        Ok(file.map(|file| DatabasePin {
+            file: Box::new(Metadata(file)),
+            path,
+        }))
     }
     fn pointer(&self) -> PathBuf {
         self.root.root().join("current.json")
@@ -265,15 +293,33 @@ impl CacheFiles for NativeAtlasCache {
         Ok(())
     }
     fn pin_database(&self, epoch: &CacheEpoch) -> AtlasResult<Option<DatabasePin>> {
+        let Some(original) = self.pin_reservation(epoch)? else {
+            return Ok(None);
+        };
+        #[cfg(windows)]
         let path = self.path(epoch);
-        Ok(self
-            .root
-            .pin_metadata(&path)
-            .map_err(fail)?
-            .map(|file| DatabasePin {
-                file: Box::new(Metadata(file)),
-                path,
-            }))
+        #[cfg(windows)]
+        let file = {
+            let parent = path.parent().ok_or_else(|| fail("epoch parent absent"))?;
+            let directory = NativeStateFiles::open_trusted(parent).map_err(fail)?;
+            let retained = directory
+                .pin_trusted_metadata(&path)
+                .map_err(fail)?
+                .ok_or_else(|| fail("retained database name absent"))?;
+            if original.file.identity().map_err(fail)? != retained.identity().map_err(fail)? {
+                return Err(fail("retained database identity changed"));
+            }
+            retained
+        };
+        #[cfg(not(windows))]
+        {
+            Ok(Some(original))
+        }
+        #[cfg(windows)]
+        Ok(Some(DatabasePin {
+            file: Box::new(Metadata(file)),
+            path,
+        }))
     }
     fn reserve_database(&self, epoch: &CacheEpoch) -> AtlasResult<DatabasePin> {
         self.require_writer()?;
@@ -310,7 +356,7 @@ impl CacheFiles for NativeAtlasCache {
             .publish_no_replace(&stage.path, &self.path(epoch))
             .map_err(fail)?;
         let pin = self
-            .pin_database(epoch)?
+            .pin_reservation(epoch)?
             .ok_or_else(|| fail("reserved database absent on readback"))?;
         let identity = pin.file.identity().map_err(fail)?;
         self.remember_reservation(epoch, &pin)?;
@@ -318,6 +364,8 @@ impl CacheFiles for NativeAtlasCache {
         Ok(pin)
     }
     fn discard_unpublished(&self, pin: &DatabasePin) -> AtlasResult<()> {
+        // Retained directory handles must not prevent removal of this epoch.
+        self.inventory.borrow_mut().take();
         let epoch = self.epoch(pin)?;
         self.check_unpublished(&epoch)?;
         let held = pin.file.identity().map_err(fail)?;
@@ -377,28 +425,66 @@ impl CacheFiles for NativeAtlasCache {
         Ok(())
     }
     fn validate_database(&self, pin: &DatabasePin) -> AtlasResult<()> {
-        let epoch = self.epoch(pin)?;
-        let named = self
-            .pin_database(&epoch)?
-            .ok_or_else(|| fail("retained database name absent"))?;
-        if pin.file.identity().map_err(fail)? != named.file.identity().map_err(fail)? {
-            return Err(fail("retained database identity changed"));
+        #[cfg(windows)]
+        {
+            self.epoch(pin)?;
+            pin.file.validate_path(&pin.path).map_err(fail)
         }
-        Ok(())
+        #[cfg(not(windows))]
+        {
+            let epoch = self.epoch(pin)?;
+            let named = self
+                .pin_database(&epoch)?
+                .ok_or_else(|| fail("retained database name absent"))?;
+            if pin.file.identity().map_err(fail)? != named.file.identity().map_err(fail)? {
+                return Err(fail("retained database identity changed"));
+            }
+            Ok(())
+        }
     }
     fn wal_bytes(&self, pin: &DatabasePin) -> AtlasResult<u64> {
         self.validate_database(pin)?;
         let path = pin.path.with_file_name("atlas.db-wal");
-        self.root
-            .pin_metadata(&path)
-            .map_err(fail)?
-            .map(|f| f.metadata().map(|m| m.len()).map_err(fail))
-            .transpose()
-            .map(|n| n.unwrap_or(0))
+        let cached = self
+            .inventory
+            .borrow()
+            .as_ref()
+            .and_then(|inventory| inventory.file_size(&path));
+        let bytes = match cached {
+            Some(bytes) => bytes,
+            None => {
+                let file = self.root.pin_metadata(&path).map_err(fail)?;
+                file.map(|f| f.metadata().map(|m| m.len()).map_err(fail))
+                    .transpose()?
+                    .unwrap_or(0)
+            }
+        };
+        self.validate_database(pin)?;
+        Ok(bytes)
     }
+
     fn reserve_growth(&self, bytes: u64) -> AtlasResult<Box<dyn GrowthReservation + '_>> {
         self.require_writer()?;
-        let root = inventory::root(&self.root)?;
+        let cached = self
+            .inventory
+            .borrow()
+            .as_ref()
+            .map(inventory::Inventory::measure)
+            .transpose()?
+            .flatten();
+        // Recount near the disk cap before trusting the cached inventory.
+        let root = match cached {
+            Some(root)
+                if root.saturating_add(self.growth.get()).saturating_add(bytes) < 504_000_000 =>
+            {
+                root
+            }
+            _ => {
+                let (root, snapshot) = inventory::root(&self.root)?;
+                *self.inventory.borrow_mut() = Some(snapshot);
+                root
+            }
+        };
         let reserved = self.growth.get();
         let maximum = self.scope.registration.cache.directory.as_path();
         if maximum != self.root.root() {
