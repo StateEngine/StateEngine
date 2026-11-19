@@ -28,7 +28,7 @@ impl SqliteSnapshot {
         query: MessageQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<MessageRecord>> {
-        self.read_messages_with_delivery(query, budget, false)
+        self.read_messages_with_delivery(query, budget, false, false)
     }
     #[expect(
         clippy::too_many_lines,
@@ -39,6 +39,7 @@ impl SqliteSnapshot {
         query: MessageQuery,
         budget: ReadBudget,
         pending: bool,
+        skip_count: bool,
     ) -> StoreResult<Page<MessageRecord>> {
         self.mail_source()?;
         let p = self.project_bytes()?;
@@ -229,6 +230,7 @@ impl SqliteSnapshot {
             items.push(message);
         }
         let remaining = if !pending
+            && !skip_count
             && after == 0
             && query.unread_only
             && query.kind.is_none()
@@ -306,13 +308,9 @@ impl SqliteSnapshot {
         );
         if pending {
             if self.info.schema_version >= 4 {
-                // Pending mail always has an explicit recipient and an unread
-                // predicate. Skip quiet rows in the index, before the limit.
-                statement = statement.replace(
-                    "INDEXED BY mail_unread",
-                    "INDEXED BY mail_notification_pending",
-                );
-                statement.push_str(" AND d.quiet=0");
+                // A prior committed notice can activate a quiet backlog. The
+                // unread index includes both that backlog and ordinary mail.
+                statement.push_str(" AND (d.quiet=0 OR d.wake_event_seq!=d.sent_seq)");
             }
             statement.push_str(if self.info.schema_version >= 3 {
                 " AND d.delivered_seq IS NULL"

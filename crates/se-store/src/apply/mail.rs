@@ -109,44 +109,67 @@ pub(super) fn validate(
     if notice.through.sequence > high {
         return Err(invalid("mail boundary is ahead of committed history"));
     }
-    let quiet = if connection::info(c)?.schema_version >= 4 {
-        " AND d.quiet=0"
-    } else {
-        ""
-    };
-    let source = if connection::info(c)?.schema_version >= 4 {
-        "message_deliveries d INDEXED BY mail_notification_pending"
-    } else {
-        "message_deliveries d"
-    };
-    let mut query=c.prepare(&format!("SELECT d.message_id FROM {source} WHERE d.project_id=? AND d.recipient_id=? AND d.read_seq IS NULL AND d.dismissed_seq IS NULL AND d.delivered_seq IS NULL AND d.superseded_by IS NULL{quiet} AND d.sent_seq<=? ORDER BY d.sent_seq LIMIT ?")).map_err(sql)?;
-    let wanted = query
-        .query_map(
-            crate::sql_value::sql_params![p, agent, notice.through.sequence, notice.ids.len()],
-            |r| r.get::<_, Vec<u8>>(0),
-        )
-        .map_err(sql)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(sql)?;
-    let actual = notice
-        .ids
-        .iter()
-        .map(|id| key(c, "message", id.as_str(), &s, false))
-        .collect::<StoreResult<Vec<_>>>()?;
-    if wanted != actual {
-        return Err(fail(
-            StoreErrorCode::RevisionConflict,
-            "notice must reserve the oldest unresolved recipient messages through its checked boundary",
-        ));
+    for id in &notice.ids {
+        let message = key(c, "message", id.as_str(), &s, false)?;
+        let eligible: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM message_deliveries WHERE project_id=? AND recipient_id=? AND message_id=? AND read_seq IS NULL AND dismissed_seq IS NULL AND superseded_by IS NULL AND sent_seq<=?)",
+            crate::sql_value::sql_params![p, agent, message, notice.through.sequence], |r| r.get(0),
+        ).map_err(sql)?;
+        if !eligible {
+            return Err(fail(
+                StoreErrorCode::RevisionConflict,
+                "notice contains a message that is no longer unread for this recipient at its checked boundary",
+            ));
+        }
     }
-    // The existing partial recipient index excludes terminal effects. An
-    // in-flight notice is reconciled/reused, never replaced by another queue.
-    let pending:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM effects f INDEXED BY effects_principal_pending JOIN aux_data a ON a.event_seq=f.requested_seq WHERE f.project_id=? AND f.principal_id=? AND f.state IN ('pending','offered') AND json_extract(a.facts,'$.intent.mail_notice.session')=? AND json_extract(a.facts,'$.intent.mail_notice.generation')=? AND json_extract(a.facts,'$.intent.mail_notice.fingerprint')=?)",crate::sql_value::sql_params![p,agent,notice.session.as_str(),notice.generation,crate::codec::encode(&notice.fingerprint)?],|r|r.get(0)).map_err(sql)?;
-    if pending {
-        return Err(fail(
-            StoreErrorCode::RevisionConflict,
-            "reuse or reconcile the original unresolved mail reservation",
-        ));
+    validate_unconsumed(c, &p, &s, &agent, notice, &info)
+}
+
+fn validate_unconsumed(
+    c: &Connection,
+    p: &[u8],
+    s: &[u8],
+    agent: &[u8],
+    notice: &MailNotice,
+    info: &crate::StoreInfo,
+) -> StoreResult<()> {
+    // A captured input may leave unread debt, but an unconsumed notice must
+    // be settled in this transaction before another notice can be reserved.
+    let pending: Vec<i64> = {
+        let mut q = c.prepare("SELECT requested_seq FROM effects f INDEXED BY effects_principal_pending JOIN aux_data a ON a.event_seq=f.requested_seq WHERE f.project_id=? AND f.principal_id=? AND f.state IN ('pending','offered') AND json_extract(a.facts,'$.intent.mail_notice.session')=? AND json_extract(a.facts,'$.intent.mail_notice.generation')=? AND json_extract(a.facts,'$.intent.mail_notice.fingerprint')=?").map_err(sql)?;
+        let rows = q
+            .query_map(
+                crate::sql_value::sql_params![
+                    p,
+                    agent,
+                    notice.session.as_str(),
+                    notice.generation,
+                    crate::codec::encode(&notice.fingerprint)?
+                ],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(sql)?
+    };
+    for seq in pending {
+        let original = crate::codec::event::load_event(c, seq, info)?;
+        let EventBody::EffectRequested {
+            intent: EffectIntent::MailNotice(old),
+            ..
+        } = original.body
+        else {
+            return Err(invalid("pending mail index is inconsistent"));
+        };
+        for id in &old.ids {
+            let message = key(c, "message", id.as_str(), s, false)?;
+            let unconsumed: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM message_deliveries WHERE project_id=? AND recipient_id=? AND message_id=? AND delivered_seq IS NULL AND read_seq IS NULL AND dismissed_seq IS NULL AND superseded_by IS NULL)", crate::sql_value::sql_params![p,agent,message], |r| r.get(0)).map_err(sql)?;
+            if unconsumed {
+                return Err(fail(
+                    StoreErrorCode::RevisionConflict,
+                    "reconcile the unconsumed notice before another reservation",
+                ));
+            }
+        }
     }
     Ok(())
 }

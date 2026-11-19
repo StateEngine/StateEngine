@@ -144,6 +144,7 @@ impl LaunchCoordinator {
             .collect();
         // The same offer pass msg send would arm: one flag, one nudge, per live job.
         for job in &jobs {
+            job.mail_reoffer.store(true, Ordering::Release);
             job.mail_pending.store(true, Ordering::Release);
             job.wake.event.notify_one();
         }

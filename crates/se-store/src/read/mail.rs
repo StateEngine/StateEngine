@@ -127,6 +127,35 @@ impl crate::mail::MailSnapshot for SqliteSnapshot {
             },
             budget,
             true,
+            false,
+        )
+    }
+
+    fn mail_unread(
+        &mut self,
+        recipient: AgentId,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<MessageRecord>> {
+        if !matches!((&self.scope.admission.actor, &self.scope.visibility),
+            (Actor::Agent(actor), Visibility::SelfOnly(visible)) if *actor == recipient && *visible == recipient)
+        {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "unread mail requires the verified recipient scope",
+            ));
+        }
+        self.read_messages_with_delivery(
+            MessageQuery {
+                recipient: Some(Actor::Agent(recipient)),
+                sender: None,
+                kind: None,
+                unread_only: true,
+                full_body: false,
+                direction: MailDirection::OldestFirst,
+            },
+            budget,
+            false,
+            true,
         )
     }
 
