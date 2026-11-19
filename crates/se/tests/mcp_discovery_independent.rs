@@ -194,6 +194,7 @@ fn discovery(config: se_config::config_policy::ConfigFile) -> Check {
                 helper_executable: se_types::NativePath::from_local(Path::new(env!("CARGO_BIN_EXE_se")).to_path_buf())?,
                 linux_delegation: se_proc::LinuxDelegation::CurrentScope,
                 maximum_sessions: 2,
+                restore_deadline_ms: ProcessOptions::DEFAULT_RESTORE_DEADLINE_MS,
             },
             &bound()?,
         ).await?;

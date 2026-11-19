@@ -47,6 +47,11 @@ impl StartupOrigin {
     }
 }
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+/// Explicit spawn-time override (milliseconds) of the provider-control
+/// restore window, used by the independent judges. It is a plain tuning
+/// value and carries no fleet or session authority.
+pub(crate) const PROVIDER_RESTORE_DEADLINE_ENV: &str = "SE_PROVIDER_RESTORE_DEADLINE_MS";
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,

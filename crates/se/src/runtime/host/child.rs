@@ -265,6 +265,7 @@ fn serve(
                 helper_executable,
                 linux_delegation: se_proc::LinuxDelegation::CurrentScope,
                 maximum_sessions: se_host::ProcessOptions::DEFAULT_MAXIMUM_SESSIONS,
+                restore_deadline_ms: provider_restore_deadline_ms()?,
             },
             &bound,
         )
@@ -335,6 +336,44 @@ fn serve(
 }
 fn positive(value: u32) -> Result<NonZeroU32> {
     NonZeroU32::new(value).ok_or_else(|| invalid("a positive native limit"))
+}
+/// An explicit spawn-time window override must parse and fit its named
+/// bound. Empty, whitespace-only and non-UTF-8 values each refuse with
+/// their own reason, so a misconfigured spawn fails startup instead of
+/// falling back to the production default.
+fn explicit_millis(name: &str, raw: &std::ffi::OsStr, maximum: u64) -> Result<u64> {
+    let text = raw
+        .to_str()
+        .ok_or_else(|| invalid(&format!("{name} must be valid Unicode text")))?;
+    if text.is_empty() {
+        return Err(invalid(&format!("{name} must not be empty")));
+    }
+    if text.trim().is_empty() {
+        return Err(invalid(&format!("{name} must not be whitespace-only")));
+    }
+    let value: u64 = text
+        .trim()
+        .parse()
+        .map_err(|_| invalid(&format!("a whole number of milliseconds for {name}")))?;
+    if value == 0 || value > maximum {
+        return Err(invalid(&format!(
+            "{name} between 1 and {maximum} milliseconds"
+        )));
+    }
+    Ok(value)
+}
+/// The independent judges spawn the host with a shortened real provider-
+/// control restore window. An invalid explicit value fails startup, so a
+/// misconfigured judge cannot pass silently on the production timing.
+fn provider_restore_deadline_ms() -> Result<u64> {
+    let Some(raw) = std::env::var_os(PROVIDER_RESTORE_DEADLINE_ENV) else {
+        return Ok(se_host::ProcessOptions::DEFAULT_RESTORE_DEADLINE_MS);
+    };
+    explicit_millis(
+        PROVIDER_RESTORE_DEADLINE_ENV,
+        &raw,
+        se_host::ProcessOptions::MAX_RESTORE_DEADLINE_MS,
+    )
 }
 fn argv_digest() -> Sha256 {
     let mut digest = Hasher::new();
