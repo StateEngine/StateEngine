@@ -248,6 +248,15 @@ impl<'a> CacheConnection<'a> {
             db.execute_batch("PRAGMA page_size=4096")
                 .map_err(cache_error)?;
             configure(&db, role, profile)?;
+            if role == ConnectionRole::ColdWriter {
+                let mode: String = db
+                    .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                    .map_err(cache_error)?;
+                let synchronous: i64 = db
+                    .query_row("PRAGMA synchronous", [], |row| row.get(0))
+                    .map_err(cache_error)?;
+                eprintln!("ATLAS_CHILD_PRAGMA journal_mode={mode} synchronous={synchronous}");
+            }
             finite(&mut db, deadline, |db, _| {
                 db.execute_batch("BEGIN EXCLUSIVE").map_err(cache_error)?;
                 let result = schema::initialize(db, seed);
