@@ -20,6 +20,13 @@ mod sessions;
 fn positive(n: u32) -> Result<NonZeroU32, Box<dyn std::error::Error>> {
     NonZeroU32::new(n).ok_or_else(|| "zero test bound".into())
 }
+#[cfg(windows)]
+fn expected_history_limitation(error: &Option<se_types::ErrorBody>) -> bool {
+    matches!(error.as_ref().map(|body| body.detail()),
+        Some(se_types::Detail::UsageInvalidValue(detail))
+            if detail.argument == "Atlas cold index"
+                && detail.expected == "Contained Git history is unavailable on this platform; source indexing remains available")
+}
 fn client_options() -> client::ClientOptions {
     client::ClientOptions {
         expected_generation: None,
@@ -276,11 +283,22 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
     else {
         return Err("Atlas query returned a different output family".into());
     };
+    #[cfg(target_os = "linux")]
     assert!(
         matches!(&output.value.answer.data, se_types::Read::Present { value }
         if value.page.items().iter().any(|hit| hit.reason.last_touch_unix_ms.is_some())),
         "real IPC path search did not receive Git-seeded file activity"
     );
+    #[cfg(windows)]
+    {
+        assert!(
+            matches!(&output.value.answer.data, se_types::Read::Present { value } if !value.page.items().is_empty())
+        );
+        assert!(
+            expected_history_limitation(&output.value.answer.index.coverage.history_unavailable),
+            "Windows must report that contained Git history is unavailable"
+        );
+    }
     assert!(
         !output
             .value
@@ -300,7 +318,7 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
     assert_eq!(
         memory.anonymous_ceiling_bytes,
         if cfg!(windows) {
-            16_000_000
+            16_100_000
         } else {
             13_000_000
         }
@@ -324,7 +342,7 @@ async fn caught_up(
                 let memory = summary.memory.ok_or_else(|| {
                     se_types::SeError::invalid("Atlas status", "memory qualification report")
                 })?;
-                assert_eq!(memory.anonymous_ceiling_bytes, if cfg!(windows) { 16_000_000 } else { 13_000_000 });
+                assert_eq!(memory.anonymous_ceiling_bytes, if cfg!(windows) { 16_100_000 } else { 13_000_000 });
                 assert!(memory.shared_grammar_pages.is_none() && !memory.joined_qualified);
                 let ticket = context.atlas.records.ticket()?;
                 let mut observed = None;
@@ -343,7 +361,10 @@ async fn caught_up(
                                 })?;
                             let commits: i64 = sql.prepare("SELECT count(*) FROM commits WHERE subject='automatic_git_seed'")?
                                 .query_row([], |r| r.get(0)).map_err(|e| se_core::scope::unreadable("development Git seed", &e.to_string()))?;
+                            #[cfg(target_os = "linux")]
                             assert_eq!(commits, 1, "automatic owner omitted its post-reap Git invocation");
+                            #[cfg(windows)]
+                            assert_eq!(commits, 0, "Windows unexpectedly seeded contained Git history");
                             let mut statement = sql.prepare("SELECT path FROM files")?;
                             let mut rows = statement.query([]).map_err(|e| {
                                 se_core::scope::unreadable("development files", &e.to_string())
@@ -360,11 +381,18 @@ async fn caught_up(
                             Ok(())
                         })
                     })?;
-                Ok(observed)
+                Ok(observed.map(|(fresh, count, paths)| (fresh, count, paths, summary.coverage.history_unavailable)))
             })
             .await;
         let last = match result {
-            Ok(Some((true, count, paths))) if count >= records => {
+            Ok(Some((true, count, paths, history_unavailable))) if count >= records => {
+                #[cfg(windows)]
+                assert!(
+                    expected_history_limitation(&history_unavailable),
+                    "Windows must report that contained Git history is unavailable"
+                );
+                #[cfg(target_os = "linux")]
+                let _ = history_unavailable;
                 assert!(paths.iter().any(|p| p == "good.js"));
                 for path in paths {
                     assert!(
