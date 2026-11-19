@@ -387,6 +387,11 @@ impl<'a> CacheConnection<'a> {
             let changed = self.files.validate_database(&self.pin);
             let expired = crate::clock::now() >= deadline;
             let result = match (result, changed, expired) {
+                (Err(error), _, true)
+                    if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(_)) =>
+                {
+                    Err(error)
+                }
                 (_, _, true) => Err(stage_timeout("transaction", budget_ms)),
                 (Ok(value), Ok(()), false) => Ok(value),
                 (Err(e), _, false) | (_, Err(e), false) => Err(e),
@@ -406,6 +411,9 @@ impl<'a> CacheConnection<'a> {
             return Err(cache_error("reader cannot checkpoint"));
         }
         let wal = self.files.wal_bytes(&self.pin)?;
+        if crate::clock::now() >= deadline {
+            return Err(stage_timeout("WAL checkpoint admission", 0));
+        }
         if wal < 4_000_000 {
             return Ok(true);
         }
@@ -647,10 +655,12 @@ fn finite<T>(
     let result = work(db, budget_ms);
     db.progress_handler(0, None::<fn() -> bool>)
         .map_err(cache_error)?;
-    if crate::clock::now() >= deadline {
-        Err(stage_timeout(stage, budget_ms))
-    } else {
-        result
+    match result {
+        Err(error) if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(_)) => {
+            Err(error)
+        }
+        _ if crate::clock::now() >= deadline => Err(stage_timeout(stage, budget_ms)),
+        result => result,
     }
 }
 pub(crate) fn timeout(budget_ms: u64) -> se_types::SeError {

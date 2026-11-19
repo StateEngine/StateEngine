@@ -75,6 +75,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
         deadline: Instant,
         event_budget: Option<std::time::Duration>,
     ) -> std::result::Result<Vec<SourceHint>, PollEventsFailure> {
+        let started = Instant::now();
         if self.active.is_some() {
             return Err(PollEventsFailure::Admission(atlas_cold::failure(
                 "cold child owns the home writer; preserve native readiness until reap",
@@ -100,6 +101,15 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             .ok_or_else(|| {
                 PollEventsFailure::Admission(atlas_cold::failure("native root disappeared"))
             })?;
+        if Instant::now() >= deadline {
+            return Err(PollEventsFailure::Admission(
+                se_atlas::cache::connection::timeout_phase(
+                    "event writer admission",
+                    deadline.saturating_duration_since(started),
+                    started.elapsed(),
+                ),
+            ));
+        }
         let deadline = event_budget.map_or(deadline, |budget| Instant::now() + budget);
         self.driver
             .poll_events(
