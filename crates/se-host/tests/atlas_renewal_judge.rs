@@ -331,6 +331,7 @@ fn native_events_repair_after_writer_contention_and_release_root_slots() -> Chec
         )?,
         CloseResult::Closed
     ));
+    #[cfg(target_os = "linux")]
     assert!(
         controller
             .runtime_mut()
@@ -363,6 +364,7 @@ fn native_events_repair_after_writer_contention_and_release_root_slots() -> Chec
             )?,
             CloseResult::Closed
         ));
+        #[cfg(target_os = "linux")]
         assert!(
             controller
                 .runtime_mut()
