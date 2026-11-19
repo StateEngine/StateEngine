@@ -256,16 +256,28 @@ impl LaunchCoordinator {
             service.live.invalidate()?;
             if let Some(owner) = service.process.clone() {
                 let native = self.native.clone();
-                self.store.pool.run_owned(deadline, move || {
-                    let observed = native.witness_exit(&owner).map_err(|cause| error("superseded SE Code scope", cause))?;
+                let observed_owner = owner.clone();
+                let witness = self.store.pool.run_owned(deadline, move || {
+                    let observed = native.witness_exit(&observed_owner).map_err(|cause| error("superseded SE Code scope", cause))?;
                     let se_proc::StopObservation::Complete(witness) = observed else {
                         return Err(error("superseded SE Code scope", "the original native scope is not yet empty; retain its custody and retry shutdown"));
                     };
                     if witness.scope_exit.exit_basis.is_none() {
                         return Err(error("superseded SE Code scope", "the original native scope has no empty-scope witness"));
                     }
-                    native.release(&owner, &witness).map_err(|cause| error("superseded SE Code scope", cause))
+                    Ok(witness)
                 }).await?;
+                self.drain_secode_auxiliary(service, Auxiliary::Service, deadline)
+                    .await?;
+                let native = self.native.clone();
+                self.store
+                    .pool
+                    .run_owned(deadline, move || {
+                        native
+                            .release(&owner, &witness)
+                            .map_err(|cause| error("superseded SE Code scope", cause))
+                    })
+                    .await?;
                 service.process = None;
             }
             service.journal.retired = true;

@@ -414,15 +414,8 @@ impl LaunchCoordinator {
         witness: &se_proc::StopWitness,
         deadline: &Deadline,
     ) -> Result<()> {
-        let output = service.output(auxiliary).clone();
-        if let Some(output) = output {
-            output.close(deadline).await?;
-            let save_deadline = deadline.clone();
-            self.store
-                .pool
-                .run_owned(deadline, move || output.save(&save_deadline))
-                .await?;
-        }
+        self.drain_secode_auxiliary(service, auxiliary, deadline)
+            .await?;
         let checkpoint = service
             .journal
             .auxiliary(auxiliary)
@@ -473,6 +466,23 @@ impl LaunchCoordinator {
             })
             .await?;
         *service.owner_mut(auxiliary) = None;
+        Ok(())
+    }
+    pub(super) async fn drain_secode_auxiliary(
+        &self,
+        service: &Service,
+        auxiliary: Auxiliary,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let output = service.output(auxiliary).clone();
+        if let Some(output) = output {
+            output.close(deadline).await?;
+            let save_deadline = deadline.clone();
+            self.store
+                .pool
+                .run_owned(deadline, move || output.save(&save_deadline))
+                .await?;
+        }
         Ok(())
     }
 }
