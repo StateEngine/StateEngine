@@ -19,6 +19,7 @@ use std::time::Instant;
 pub enum AcceptedPeer {
     Operation(Box<HostedConnection>),
     Stop(Box<AuthorizedStop>),
+    Rebound,
 }
 pub struct HostedConnection {
     pub(super) connection: IpcConnection,
@@ -31,7 +32,7 @@ impl AuthorizedStop {
     pub fn request(&self) -> Result<&RuntimeStopRequest> {
         match self.pending.input() {
             HandshakeInput::Stop(request) => Ok(request),
-            HandshakeInput::Call(_) => Err(SeError::invalid(
+            HandshakeInput::Call(_) | HandshakeInput::Rebind(_) => Err(SeError::invalid(
                 "runtime stop handshake",
                 "an authenticated stop request",
             )),
@@ -126,6 +127,57 @@ impl HostedRouter {
         deadline: &Deadline,
     ) -> Result<AcceptedPeer> {
         self.check_open()?;
+        if matches!(pending.input(), HandshakeInput::Rebind(_)) {
+            let result = async {
+                pending.validate_rebind()?;
+                let custody = self.execution.custody.get().ok_or_else(|| {
+                    SeError::invalid(
+                        "rebind",
+                        "an active coordinator with registered service custody",
+                    )
+                })?;
+                let HandshakeInput::Rebind(request) = pending.input() else {
+                    return Err(SeError::invalid("rebind", "a native restart request"));
+                };
+                custody
+                    .rebind(
+                        pending.peer(),
+                        &request.project_id,
+                        &request.agent_id,
+                        &request.control_endpoint,
+                        deadline,
+                    )
+                    .await
+            }
+            .await;
+            match result {
+                Ok(reply) => {
+                    self.check_open()?;
+                    let bound = deadline.clone();
+                    let (pending, checked) = self
+                        .execution
+                        .blocking
+                        .run_owned(deadline, move || {
+                            let checked = pending.recheck_rebind_peer(&bound);
+                            Ok((pending, checked))
+                        })
+                        .await?;
+                    if let Err(error) = checked {
+                        pending.refuse(envelope(&error)?).await?;
+                        return Err(error);
+                    }
+                    pending.finish_rebind(&reply, deadline).await?;
+                    if let Some(custody) = self.execution.custody.get() {
+                        custody.rebind_replied(&reply, deadline).await?;
+                    }
+                    return Ok(AcceptedPeer::Rebound);
+                }
+                Err(error) => {
+                    pending.refuse(envelope(&error)?).await?;
+                    return Err(error);
+                }
+            }
+        }
         let context = self.context.clone();
         let (pending, grant) = self
             .execution

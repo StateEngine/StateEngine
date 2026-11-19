@@ -134,6 +134,10 @@ impl AdmissionContext {
                     )),
                 },
                 HandshakeInput::Stop(_) => self.owner_handshake(&mut phase, pending),
+                HandshakeInput::Rebind(_) => Err(SeError::invalid(
+                    "rebind",
+                    "the dedicated native restart route",
+                )),
             }
         })();
         super::executor::close_read(result, phase.close())

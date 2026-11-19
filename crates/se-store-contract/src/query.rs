@@ -105,6 +105,12 @@ pub struct CredentialRecord {
     pub state: CredentialState,
     pub revision: Revision,
 }
+/// Owner-only head for a credential, including its last restart if rotated.
+#[derive(Clone, Debug)]
+pub struct CredentialHead {
+    pub record: CredentialRecord,
+    pub restart: Option<crate::CredentialRestart>,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CredentialState {
     Prepared,

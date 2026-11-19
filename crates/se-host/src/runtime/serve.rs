@@ -485,6 +485,7 @@ async fn connection(
     };
     let mut connection = match peer {
         AcceptedPeer::Stop(stop) => return Ok(ConnectionEnd::Stop(stop)),
+        AcceptedPeer::Rebound => return Ok(ConnectionEnd::Closed),
         AcceptedPeer::Operation(connection) => *connection,
     };
     loop {

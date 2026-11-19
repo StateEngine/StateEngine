@@ -4,7 +4,9 @@
 mod capture;
 mod embedded;
 pub use embedded::{embedded_session, retire_embedded};
+pub use rebind::{RebindGrant, rebind};
 mod launch;
+mod rebind;
 pub use capture::{capture_failure, capture_verified, final_capture_failure};
 pub use launch::{
     Activation, CaptureActivation, CredentialActivation, activate, reserve, transition,
@@ -92,6 +94,38 @@ pub(crate) fn batch<R: Snapshot>(
     batch.events.extend(events);
     Ok(batch)
 }
+fn credential_revision<R: Snapshot>(
+    cx: &Cx<'_, R>,
+    session: &se_types::SessionId,
+    purpose: &str,
+    active: bool,
+) -> Result<Expected> {
+    let id = session_credential_id(session, purpose)?;
+    let head = scope::require_present(
+        cx.read
+            .credential_head(id)
+            .map_err(|error| crate::store_error::store_error(&error))?,
+        "session credential head",
+        "Restore the original credential history and retry cleanup.",
+    )?;
+    let expected_state = if active {
+        se_store::CredentialState::Active
+    } else {
+        se_store::CredentialState::Prepared
+    };
+    if head.record.session != *session
+        || head.record.purpose != purpose
+        || (head.record.state != expected_state
+            && head.record.state != se_store::CredentialState::Revoked)
+    {
+        return Err(scope::unreadable(
+            "session credential head",
+            "credential owner, purpose or state differs; preserve the session and reconcile the original grant",
+        ));
+    }
+    Ok(Expected::Revision(head.record.revision))
+}
+
 /// Revocation is committed before the pin is removed or the session is terminal.
 /// Failed preparations use SessionRevoked, so they cannot accumulate as live.
 pub fn retire_session<R: Snapshot>(
@@ -114,7 +148,7 @@ pub fn retire_binding<R: Snapshot>(
     for purpose in ["session", "http"] {
         bodies.push(EventBody::CredentialRevoked {
             credential: session_credential_id(&session, purpose)?,
-            expected: revision(if active { 2 } else { 1 })?,
+            expected: credential_revision(cx, &session, purpose, active)?,
             reason: InputText::Inline(reason.clone()),
         });
     }
@@ -154,7 +188,7 @@ pub fn revoke_binding<R: Snapshot>(
     for purpose in ["session", "http"] {
         bodies.push(EventBody::CredentialRevoked {
             credential: session_credential_id(&session, purpose)?,
-            expected: revision(if active { 2 } else { 1 })?,
+            expected: credential_revision(cx, &session, purpose, active)?,
             reason: InputText::Inline("native lifecycle cleanup; external admission closed".into()),
         });
     }

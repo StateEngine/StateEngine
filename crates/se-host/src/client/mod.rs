@@ -21,6 +21,7 @@ pub mod endpoint;
 pub mod lease;
 pub mod operation;
 pub mod presence;
+pub mod rebind;
 pub mod wire;
 
 pub mod hello;

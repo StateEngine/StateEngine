@@ -274,6 +274,18 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             "credential.activated",
             json!({"credential":credential,"session":session,"expected":expected,"first_request":first_request}),
         ),
+        CredentialRotated {
+            credential,
+            session,
+            secret_sha256,
+            expires_at_us,
+            restart,
+            expected,
+        } => (
+            "credential.rotated",
+            json!({"credential":credential,"session":session,"secret_sha256":secret_sha256,
+                "expires_at_us":expires_at_us,"restart":restart,"expected":expected}),
+        ),
         CredentialRevoked {
             credential,
             expected,

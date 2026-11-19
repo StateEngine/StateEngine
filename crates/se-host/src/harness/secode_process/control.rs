@@ -37,8 +37,50 @@ pub struct Control {
     endpoint: Url,
     credential: Arc<Secret>,
     client: reqwest::Client,
+    restart: Option<super::control_rebind::RestartProof>,
 }
 impl Control {
+    pub(crate) async fn release_restart(
+        &self,
+        project: &se_types::ProjectId,
+        agent: &se_types::AgentId,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let proof = self
+            .restart
+            .as_ref()
+            .ok_or_else(|| unreadable("SE Code release", "restart proof is absent"))?;
+        let mut nonce = [0u8; 32];
+        se_proc::fill_entropy(&mut nonce)
+            .map_err(|_| unreadable("SE Code release", "nonce unavailable"))?;
+        let mac = super::control_proof::release_mac(
+            &proof.capability,
+            &proof.restart,
+            &nonce,
+            project.as_str(),
+            agent.as_str(),
+        )?;
+        let body = serde_json::json!({"project_id":project,"agent_id":agent,"restart_key":se_types::hex_lower(&proof.restart),"nonce":se_types::hex_lower(&nonce),"mac":mac});
+        let response = self
+            .request(
+                Method::POST,
+                &["api", "stateengine", "rebind", "release"],
+                Some(&body),
+                deadline,
+            )
+            .await?;
+        if response.get("released").and_then(Value::as_bool) != Some(true) {
+            return Err(unreadable(
+                "SE Code release",
+                "the seat release was not confirmed",
+            ));
+        }
+        let signature = response
+            .get("mac")
+            .and_then(Value::as_str)
+            .ok_or_else(|| unreadable("SE Code release", "release proof is absent"))?;
+        super::control_proof::verify_release(&proof.capability, &proof.restart, &nonce, signature)
+    }
     pub(crate) async fn require_unprovisioned_idle(&self, deadline: &Deadline) -> Result<()> {
         if self.read(&["api", "health"], deadline).await?.is_null() {
             return Err(shutdown_refusal(
@@ -169,8 +211,31 @@ impl Control {
             endpoint,
             credential: Arc::new(Secret::new(std::mem::take(&mut *credential))?),
             client,
+            restart: None,
         })
     }
+    pub(crate) fn for_restart(
+        profile: &Path,
+        endpoint: &str,
+        capability: Secret,
+        restart: [u8; 32],
+    ) -> Result<Self> {
+        let mut control = Self::open(profile, endpoint)?;
+        control.restart = Some(super::control_rebind::RestartProof {
+            capability: Arc::new(capability),
+            restart,
+        });
+        Ok(control)
+    }
+
+    pub(crate) async fn verify_restart(&self, deadline: &Deadline) -> Result<()> {
+        let proof = self
+            .restart
+            .as_ref()
+            .ok_or_else(|| unreadable("SE Code control proof", "restart proof is absent"))?;
+        super::control_rebind::check(&self.endpoint, proof, deadline).await
+    }
+
     pub async fn read(&self, segments: &[&str], deadline: &Deadline) -> Result<Value> {
         self.request(Method::GET, segments, None, deadline).await
     }
@@ -226,6 +291,18 @@ impl Control {
             .extend(segments);
         if !query.is_empty() {
             url.query_pairs_mut().extend_pairs(query.iter().copied());
+        }
+        if let Some(proof) = &self.restart {
+            return super::control_rebind::request(
+                &self.endpoint,
+                proof,
+                &self.credential,
+                method,
+                &url,
+                body,
+                deadline,
+            )
+            .await;
         }
         let credential = std::str::from_utf8(self.credential.expose())
             .map_err(|_| unreadable("SE Code credential", "invalid retained encoding"))?;

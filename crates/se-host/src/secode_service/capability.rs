@@ -19,6 +19,15 @@ impl LaunchCoordinator {
             .ok_or_else(|| repair_error("original service custody is absent"))?;
         let service = lock_service(&slot, deadline).await?;
         if service
+            .restart
+            .as_ref()
+            .is_some_and(|restart| !restart.adopted)
+        {
+            return Err(repair_error(
+                "the replacement control has not proved its restart capability; retry while mail remains unread",
+            ));
+        }
+        if service
             .journal
             .capability_repair
             .as_ref()
@@ -65,7 +74,11 @@ impl LaunchCoordinator {
                 return Ok(Some(scheduled));
             }
             service.capability_check_at = Some(next);
-            let result = self.repair_secode_capability(&mut service, &bound).await;
+            let result = if service.restart.is_some() {
+                self.adopt_restart(&mut service, &bound).await
+            } else {
+                self.repair_secode_capability(&mut service, &bound).await
+            };
             if result.is_ok()
                 && service
                     .journal

@@ -279,6 +279,90 @@ impl crate::mail::MailSnapshot for SqliteSnapshot {
             through.sequence,
         )
     }
+    fn mail_settled_cursor(&mut self, recipient: AgentId) -> StoreResult<Read<Cursor>> {
+        if !matches!((&self.scope.admission.actor, &self.scope.visibility),
+            (Actor::Agent(actor), Visibility::SelfOnly(visible)) if *actor == recipient && *visible == recipient)
+        {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "settled mail cursor requires the verified recipient",
+            ));
+        }
+        let unread = self.mail_unread(
+            recipient.clone(),
+            ReadBudget {
+                page: se_types::PageRequest {
+                    after: None,
+                    limit: std::num::NonZeroU32::MIN,
+                    max_bytes: std::num::NonZeroU32::MIN.saturating_add(262143),
+                },
+                deadline: std::time::Duration::from_secs(1),
+            },
+        )?;
+        if unread.items().is_empty() && !unread.window().complete() {
+            return Err(fail(
+                StoreErrorCode::ReadIncomplete,
+                "the oldest unresolved recipient mail could not be proved",
+            ));
+        }
+        let limit = unread
+            .items()
+            .first()
+            .map_or(i64::MAX, |message| message.sent.sequence() as i64);
+        let project = self.project_bytes()?;
+        let agent = self.agent_bytes(&recipient)?;
+        let until = Instant::now() + std::time::Duration::from_secs(1);
+        self.db
+            .progress_handler(1000, Some(move || Instant::now() >= until))
+            .map_err(|error| self.read_sql(error))?;
+        let row: StoreResult<Option<(i64, i64)>> = self.db.query_row(
+            "SELECT e.requested_seq,e.last_seq FROM effects e JOIN aux_data a ON a.event_seq=e.requested_seq WHERE e.project_id=? AND e.principal_id=? AND e.state='witnessed' AND json_type(a.facts,'$.intent.mail_notice')='object' AND json_extract(a.facts,'$.intent.mail_notice.through.sequence')<? ORDER BY CAST(json_extract(a.facts,'$.intent.mail_notice.through.sequence') AS INTEGER) DESC LIMIT 1",
+            rusqlite::params![project, agent, limit], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().map_err(|error| self.read_sql(error));
+        self.db
+            .progress_handler(0, None::<fn() -> bool>)
+            .map_err(|error| self.read_sql(error))?;
+        let row = row?;
+        if Instant::now() >= until {
+            return Err(fail(
+                StoreErrorCode::ReadIncomplete,
+                "settled mail scan exceeded its bounded deadline",
+            ));
+        }
+        let Some((requested, settled)) = row else {
+            return Ok(Read::Absent {
+                checked: "no settled recipient mail boundary precedes unresolved mail".into(),
+            });
+        };
+        let original = self.record(requested)?;
+        let terminal = self.record(settled)?;
+        let (effect, notice) = match original.body {
+            EventBody::EffectRequested {
+                effect,
+                principal: Some(Actor::Agent(agent)),
+                intent: EffectIntent::MailNotice(notice),
+                ..
+            } if agent == recipient => (effect, notice),
+            _ => {
+                return Err(fail(
+                    StoreErrorCode::ProjectionInconsistent,
+                    "settled mail intent differs from its recipient",
+                ));
+            }
+        };
+        notice.validate()?;
+        if !matches!(terminal.body, EventBody::EffectSettled { effect: id, outcome: EffectOutcome::Witnessed, .. } if id == effect)
+        {
+            return Err(fail(
+                StoreErrorCode::ProjectionInconsistent,
+                "settled mail effect lacks its witnessed terminal event",
+            ));
+        }
+        Ok(Read::Present {
+            value: self.mail_cursor(&notice.through)?,
+        })
+    }
+
     fn mail_notices(
         &mut self,
         recipient: AgentId,

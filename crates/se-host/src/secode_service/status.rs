@@ -132,7 +132,7 @@ impl LaunchCoordinator {
                 "retained service binding differs",
             ));
         }
-        if service.journal.lost {
+        if service.journal.lost && service.restart.is_none() {
             let next = se_core::ops::AgentCommand::launch_in_home(
                 &row.id,
                 &self.options.home,

@@ -242,9 +242,10 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         | CaptureFailed { .. }
         | CaptureVerified { .. }
         | CaptureSuppressed { .. } => capture::revision(c, e),
-        CredentialIssued { .. } | CredentialActivated { .. } | CredentialRevoked { .. } => {
-            credential::revision(c, e)
-        }
+        CredentialIssued { .. }
+        | CredentialActivated { .. }
+        | CredentialRevoked { .. }
+        | CredentialRotated { .. } => credential::revision(c, e),
         EffectRequested { .. }
         | EffectOffered { .. }
         | EffectSettled { .. }

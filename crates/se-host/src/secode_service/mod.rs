@@ -10,8 +10,10 @@ mod permission;
 mod prepare;
 mod provision;
 mod readiness;
+mod rebind;
 mod recovery;
 mod replacement;
+mod restart_mail;
 mod resume;
 mod retirement;
 mod status;
@@ -39,7 +41,17 @@ struct PendingSave {
     journal: Journal,
     expected: Option<[u8; 32]>,
 }
+pub(super) struct RestartControl {
+    control: Arc<crate::harness::secode_process::Control>,
+    reply_sent: bool,
+    mail_notified: bool,
+    identity: se_store::CredentialRestart,
+    adopted: bool,
+    session_hash: [u8; 32],
+    restart_key: String,
+}
 pub(super) struct Service {
+    restart: Option<RestartControl>,
     journal: Journal,
     path: PathBuf,
     digest: Option<[u8; 32]>,
@@ -91,9 +103,17 @@ async fn lock_service<'a>(
 impl Service {
     fn current(&self) -> Result<crate::harness::secode_process::QualifiedControl> {
         self.live.resolve(
-            self.control.clone().ok_or_else(|| {
-                error("SE Code current binding", "authenticated control is absent")
-            })?,
+            self.control
+                .clone()
+                .or_else(|| {
+                    self.restart
+                        .as_ref()
+                        .filter(|restart| restart.adopted)
+                        .map(|restart| restart.control.clone())
+                })
+                .ok_or_else(|| {
+                    error("SE Code current binding", "authenticated control is absent")
+                })?,
             self.journal
                 .identity
                 .clone()

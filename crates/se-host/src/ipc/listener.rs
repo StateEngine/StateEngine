@@ -344,7 +344,9 @@ impl PendingIpcHandshake {
     /// without echoing raw credential/JSON bytes into diagnostics.
     pub async fn refuse(self, error: se_types::ErrorEnvelope) -> Result<()> {
         let frame = match self.input {
-            HandshakeInput::Call(_) => auth::encode_hello_refusal(&error)?,
+            HandshakeInput::Call(_) | HandshakeInput::Rebind(_) => {
+                auth::encode_hello_refusal(&error)?
+            }
             HandshakeInput::Stop(request) => codec::encode_stop_reply(
                 &codec::RuntimeStopReply {
                     epoch: request.expected_epoch,
@@ -357,6 +359,58 @@ impl PendingIpcHandshake {
         };
         send_refusal(&self.stream, &frame, &self.deadline).await
     }
+    /// The claimed runtime is only a routing precondition; the peer is native.
+    pub(crate) fn validate_rebind(&self) -> Result<()> {
+        let HandshakeInput::Rebind(request) = &self.input else {
+            return Err(SeError::invalid("rebind", "a native restart request"));
+        };
+        if request.expected_epoch != self.record.epoch
+            || request.generation != self.record.generation
+        {
+            return Err(SeError::invalid(
+                "rebind",
+                "the currently verified runtime epoch and generation",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reobserve the same native connection after a potentially delayed commit.
+    pub(crate) fn recheck_rebind_peer(&self, deadline: &Deadline) -> Result<()> {
+        #[cfg(unix)]
+        let channel = {
+            use std::os::fd::AsFd;
+            self.stream.as_fd()
+        };
+        #[cfg(windows)]
+        let channel = {
+            use std::os::windows::io::AsHandle;
+            self.stream.as_handle()
+        };
+        let observed = NativeIpcPlatform.peer_bounded(channel, &deadline.native_bound())?;
+        if observed.native().binding() != self.proof.native().binding() {
+            return Err(SeError::invalid(
+                "rebind peer",
+                "the same live process that requested the restart grant",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn finish_rebind(
+        self,
+        reply: &crate::client::rebind::RebindReply,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        self.validate_rebind()?;
+        send(
+            &self.stream,
+            &crate::client::rebind::encode_reply(reply)?,
+            &deadline.stage(WRITE_TIMEOUT)?,
+        )
+        .await
+    }
+
     /// The unforgeable crate-local admission value comes from the runtime's
     /// current core authorization. No external caller can manufacture it.
     pub async fn finish(

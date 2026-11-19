@@ -3,6 +3,8 @@
 //! Image and bundle qualification live beside this module in `secode_image`.
 mod contract;
 mod control;
+mod control_proof;
+mod control_rebind;
 mod managed;
 mod stream;
 pub use crate::harness::secode_image::Images;

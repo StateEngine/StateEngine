@@ -268,6 +268,14 @@ pub(crate) fn body(
                     expected: field(&v, "expected")?,
                     first_request: field(&v, "first_request")?,
                 },
+                "credential.rotated" => CredentialRotated {
+                    credential: field(&v, "credential")?,
+                    session: field(&v, "session")?,
+                    secret_sha256: field(&v, "secret_sha256")?,
+                    expires_at_us: field(&v, "expires_at_us")?,
+                    restart: field(&v, "restart")?,
+                    expected: field(&v, "expected")?,
+                },
                 "credential.revoked" => CredentialRevoked {
                     credential: field(&v, "credential")?,
                     expected: field(&v, "expected")?,

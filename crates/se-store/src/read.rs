@@ -15,6 +15,7 @@ mod channel;
 mod continuity;
 mod control;
 mod conversation;
+mod credential_head;
 mod cursor;
 mod grant;
 mod history;

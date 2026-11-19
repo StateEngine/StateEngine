@@ -116,26 +116,22 @@ impl LaunchCoordinator {
                 "SE Code service inventory remains unproved: {failure}"
             )]);
         }
-        let services = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(deadline.at()),
-            self.secode_services.0.lock(),
-        )
-        .await
-        .map_err(|_| error("SE Code service shutdown", "a retained preparation is busy"))?;
-        let slots = services.values().cloned().collect::<Vec<_>>();
-        drop(services);
+        let slots = self.shutdown_slots(deadline).await?;
         let mut stopping = slots.iter().map(|slot| async {
                 let mut service = lock_service(slot, deadline).await?;
                 if self.find_job(&service.journal.project, &service.journal.agent)?.is_some_and(|job| !job.settled.load(std::sync::atomic::Ordering::Acquire)) {
                     return Err(error("SE Code service shutdown", "original client or capture cleanup remains pending; service retained"));
                 }
-                if service.journal.lost {
+                if service.journal.lost && service.restart.is_none() {
                     return self.retire_lost_secode_service(&mut service, deadline).await;
                 }
                 if service.journal.initial_offered
                     && !service.journal.client_closed.as_ref().is_some_and(|closed| closed.capture_complete)
                 {
                     return Err(error("SE Code service shutdown", "original input or final capture remains unresolved; its authenticated source service is retained"));
+                }
+                if service.restart.is_some() {
+                    return self.release_restarted_seat(&mut service, deadline).await;
                 }
                 for auxiliary in Auxiliary::ALL {
                     if service.owner(auxiliary).is_none()
@@ -210,5 +206,60 @@ impl LaunchCoordinator {
             }
         }
         Ok(pending)
+    }
+    async fn shutdown_slots(&self, deadline: &Deadline) -> Result<Vec<ServiceSlot>> {
+        let services = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline.at()),
+            self.secode_services.0.lock(),
+        )
+        .await
+        .map_err(|_| error("SE Code service shutdown", "a retained preparation is busy"))?;
+        let slots = services.values().cloned().collect::<Vec<_>>();
+        drop(services);
+        Ok(slots)
+    }
+    async fn release_restarted_seat(
+        &self,
+        service: &mut Service,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        if let Some(restart) = &service.restart {
+            if !restart.reply_sent {
+                return Err(error(
+                    "SE Code service shutdown",
+                    "stop incomplete: the restart reply has not been delivered",
+                ));
+            }
+            let control = restart.control.clone();
+            let project = service.journal.project.clone();
+            let agent = service.journal.agent.clone();
+            loop {
+                match control.release_restart(&project, &agent, deadline).await {
+                    Ok(()) => break,
+                    Err(_)
+                        if deadline
+                            .remaining()
+                            .is_ok_and(|left| left > std::time::Duration::from_millis(300)) =>
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
+                    Err(_) => {
+                        return Err(error(
+                            "SE Code service shutdown",
+                            format!(
+                                "stop incomplete: seat {agent} was not released; retry shutdown after its supervisor makes control available"
+                            ),
+                        ));
+                    }
+                }
+            }
+            service.live.invalidate()?;
+            service.journal.retired = true;
+            return service.persist(self, deadline).await;
+        }
+        Err(error(
+            "SE Code service shutdown",
+            "restart custody is absent",
+        ))
     }
 }

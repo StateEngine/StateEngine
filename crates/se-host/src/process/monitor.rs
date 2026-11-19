@@ -75,6 +75,16 @@ impl LaunchCoordinator {
                 {
                     return;
                 }
+                if state.recover_provider {
+                    let wake = state.wake.clone();
+                    drop(state);
+                    monitor_wake(
+                        &wake.event,
+                        Some(tokio::time::Instant::now() + Duration::from_secs(1)),
+                    )
+                    .await;
+                    continue;
+                }
                 capability_retry_at = self.maintain_secode_capability(&state, &deadline).await;
                 let mut capture_pending = job.capture_pending.swap(false, Ordering::AcqRel);
                 if let Some(binding) = &state.binding {

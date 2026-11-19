@@ -86,6 +86,18 @@ impl LiveBinding {
             repaired: Some(binding.clone()),
         })))
     }
+    pub(crate) fn publish_restart(
+        &self,
+        control: Arc<Control>,
+        binding: NoticeBinding,
+    ) -> Result<()> {
+        binding.require_bound()?;
+        self.replace(BindingState::Repaired(Box::new(QualifiedControl {
+            control,
+            service: binding.service.clone(),
+            repaired: Some(binding),
+        })))
+    }
     pub(crate) fn invalidate(&self) -> Result<()> {
         self.replace(BindingState::Unavailable)
     }

@@ -10,6 +10,63 @@ impl LaunchCoordinator {
         service: &Service,
         deadline: &Deadline,
     ) -> Result<u32> {
+        if let Some(restart) = &service.restart {
+            let expected = restart.identity.clone();
+            if expected.boot != self.options.epoch.owner.fields().boot {
+                return Err(error(
+                    "SE Code restarted service",
+                    "the replacement belongs to an earlier system boot",
+                ));
+            }
+            let machine = self.owner.machine.clone();
+            return self
+                .store
+                .pool
+                .run_owned(deadline, move || {
+                    let pid = se_proc::ProcessId(expected.pid.get());
+                    let observed = se_proc::read_process(machine, pid)
+                        .map_err(|failure| error("SE Code restarted service", failure))?;
+                    let se_proc::ProcessRead::Present(observed) = observed else {
+                        return Err(error(
+                            "SE Code restarted service",
+                            "the observed replacement process is no longer present",
+                        ));
+                    };
+                    let matches = match (&observed.identity.start, &expected.started) {
+                        (
+                            se_proc::StartIdentity::Linux { start_ticks: a },
+                            se_types::StartIdentity::Linux { start_ticks: b },
+                        ) => a == b,
+                        (
+                            se_proc::StartIdentity::Windows {
+                                creation_filetime: a,
+                            },
+                            se_types::StartIdentity::Windows {
+                                creation_filetime: b,
+                            },
+                        ) => *a == b.get(),
+                        (
+                            se_proc::StartIdentity::MacOs {
+                                seconds: a,
+                                microseconds: a_us,
+                            },
+                            se_types::StartIdentity::Macos {
+                                start_seconds: b,
+                                start_micros: b_us,
+                            },
+                        ) => a == b && a_us == b_us,
+                        _ => false,
+                    };
+                    if !matches || observed.state != se_proc::NativeState::Running {
+                        return Err(error(
+                            "SE Code restarted service",
+                            "the original replacement process is no longer running",
+                        ));
+                    }
+                    Ok(pid.0)
+                })
+                .await;
+        }
         let pid = match service
             .journal
             .service

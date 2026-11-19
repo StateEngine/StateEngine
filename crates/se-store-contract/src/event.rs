@@ -10,6 +10,17 @@ use se_types::{
 mod body;
 pub use body::{EventBody, EventKind};
 
+/// Kernel-observed incarnation which received a replacement session grant.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialRestart {
+    pub boot: se_types::BootId,
+    pub pid: std::num::NonZeroU32,
+    pub started: se_types::StartIdentity,
+    pub image_sha256: se_types::Sha256,
+    pub control_endpoint: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Door {
     Cli,

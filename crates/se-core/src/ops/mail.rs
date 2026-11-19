@@ -1,6 +1,7 @@
 //! Recipient-scoped durable notice planning. No callback or read lease crosses a commit wait.
 mod coalesce;
 mod observation;
+mod restart;
 mod settlement;
 use crate::{
     commit::{Cx, OpStep},
@@ -13,6 +14,7 @@ pub use observation::{
     InputAccepted, MailReceipt, ObservationThen, ObserveOffer, confirm_delivery,
     observation_committed, observe_offer,
 };
+pub use restart::{RestartNotice, finish_retirement, retire_uncertain};
 use se_store::{
     Actor, CommitReceipt, EffectIntent, EffectKind, EventBody, ProjectionRecord, ReadBudget,
     RecordId, RecordIdentity, Revision, WriterModeValue,

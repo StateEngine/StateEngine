@@ -51,6 +51,30 @@ pub struct ExecutionContext {
 /// (native effects plus their FULL commits) for one admitted caller. Installed
 /// through `HostedRuntime::install_custody`; absent, custody plans refuse.
 pub trait CustodyExecutor: Send + Sync {
+    /// The registered native process may recover its two session credentials.
+    fn rebind<'a>(
+        &'a self,
+        _peer: &'a crate::PeerProof,
+        _project: &'a se_types::ProjectId,
+        _agent: &'a se_types::AgentId,
+        _control_endpoint: &'a str,
+        _deadline: &'a Deadline,
+    ) -> crate::HostFuture<'a, crate::client::rebind::RebindReply> {
+        Box::pin(async {
+            Err(se_types::SeError::invalid(
+                "rebind",
+                "a coordinator with registered service custody",
+            ))
+        })
+    }
+    /// Permit the replacement control connection only after the reply was sent.
+    fn rebind_replied<'a>(
+        &'a self,
+        _reply: &'a crate::client::rebind::RebindReply,
+        _deadline: &'a Deadline,
+    ) -> crate::HostFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
     /// Opt into collecting status rows on the existing admission snapshot.
     /// Other adapters keep their ordinary ObserveStatus custody dispatch.
     fn prepares_status(&self) -> bool {

@@ -93,6 +93,11 @@ impl LaunchCoordinator {
                 resume_release: None,
                 input_free_resume: false,
                 notice: None,
+                restart_key: None,
+                restart_effect: None,
+                restart_settled: false,
+                restart_reply_sent: false,
+                superseded_by_restart: false,
                 bootstrap: None,
                 service: None,
                 retirement: None,
@@ -105,6 +110,7 @@ impl LaunchCoordinator {
             services.insert(
                 key.clone(),
                 Arc::new(tokio::sync::Mutex::new(Service {
+                    restart: None,
                     journal,
                     path,
                     digest: None,

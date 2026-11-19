@@ -647,9 +647,10 @@ pub(crate) fn apply(
         | CaptureFailed { .. }
         | CaptureVerified { .. }
         | CaptureSuppressed { .. }) => capture::apply(c, header, b, seq, revision, facts)?,
-        b @ (CredentialIssued { .. } | CredentialActivated { .. } | CredentialRevoked { .. }) => {
-            credential::apply(c, header, b, seq, revision, facts)?
-        }
+        b @ (CredentialIssued { .. }
+        | CredentialActivated { .. }
+        | CredentialRevoked { .. }
+        | CredentialRotated { .. }) => credential::apply(c, header, b, seq, revision, facts)?,
         b @ (EffectRequested { .. }
         | EffectOffered { .. }
         | EffectSettled { .. }

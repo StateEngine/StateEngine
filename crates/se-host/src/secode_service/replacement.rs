@@ -233,6 +233,12 @@ impl LaunchCoordinator {
         service.journal.previous_policy_sha256 = service.journal.policy_sha256.take();
         service.journal.client_closed = None;
         service.journal.notice = None;
+        service.journal.restart_key = None;
+        service.journal.restart_effect = None;
+        service.journal.restart_settled = false;
+        service.journal.restart_reply_sent = false;
+        service.journal.superseded_by_restart = false;
+        service.restart = None;
         service.journal.capability_repair = None;
         service.live.invalidate()?;
         service.live = Default::default();
