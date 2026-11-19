@@ -307,6 +307,41 @@ async fn register_fixture(
     Ok((slot, original))
 }
 
+async fn reject_wrong_image(f: &Fixture, executable: &Path) -> Check {
+    let wrong_image = f
+        .home
+        .join(format!("wrong-image{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(executable, &wrong_image)?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&wrong_image)?
+        .write_all(b"fixture image mismatch")?;
+    let mut wrong = std::process::Command::new(&wrong_image)
+        .args([
+            "--exact",
+            "process::secode::registered_rebind_test::fixture_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("SE_REBIND_REJECT_HOME", &f.options.state_directory)
+        .env("SE_REBIND_REJECT_PROJECT", f.project.to_string())
+        .env("SE_REBIND_REJECT_AGENT", f.a.to_string())
+        .spawn()?;
+    let until = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(status) = wrong.try_wait()? {
+            if !status.success() {
+                return Err("unregistered image refusal failed".into());
+            }
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= until {
+            return Err("unregistered image probe timed out".into());
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 #[test]
 fn registered_native_service_rebinds_and_releases_the_seat() -> Check {
     let initialized = crate::initialize_host_process()?;
@@ -352,23 +387,7 @@ fn registered_native_service_rebinds_and_releases_the_seat() -> Check {
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 };
                 let old_url = old["endpoint"].as_str().ok_or("old endpoint absent")?;
-                let wrong_image = f.home.join(format!("wrong-image{}", std::env::consts::EXE_SUFFIX));
-                std::fs::copy(&executable, &wrong_image)?;
-                std::fs::OpenOptions::new().append(true).open(&wrong_image)?.write_all(b"fixture image mismatch")?;
-                let mut wrong = std::process::Command::new(&wrong_image)
-                    .args(["--exact", "process::secode::registered_rebind_test::fixture_child", "--ignored", "--nocapture"])
-                    .env("SE_REBIND_REJECT_HOME", &f.options.state_directory)
-                    .env("SE_REBIND_REJECT_PROJECT", f.project.to_string())
-                    .env("SE_REBIND_REJECT_AGENT", f.a.to_string()).spawn()?;
-                let until = tokio::time::Instant::now() + Duration::from_secs(30);
-                loop {
-                    if let Some(status) = wrong.try_wait()? {
-                        if !status.success() { return Err("unregistered image refusal failed".into()); }
-                        break;
-                    }
-                    if tokio::time::Instant::now() >= until { return Err("unregistered image probe timed out".into()); }
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
+                reject_wrong_image(&f, &executable).await?;
                 server::post(old_url, "/fixture/restart", &serde_json::json!({"home":f.options.state_directory,"project_id":f.project,"agent_id":f.a}))?;
                 cleanup.replacement = Some(std::process::Command::new(&executable)
                     .args(["--exact", "process::secode::registered_rebind_test::fixture_child", "--ignored", "--nocapture"])
