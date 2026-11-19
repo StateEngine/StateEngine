@@ -80,14 +80,7 @@ impl AtlasFind {
             regex: self.regex,
             next: self.options.cursor.clone(),
             budget: {
-                let mut budget = self.options.budget()?;
-                if matches!(
-                    self.kind,
-                    SearchKind::All | SearchKind::Code | SearchKind::Symbol
-                ) {
-                    // These searches admit candidates from the symbol index.
-                    budget.work = std::time::Duration::from_millis(40);
-                }
+                let mut budget = self.kind.query_budget(self.options.budget()?);
                 if self.options.format == AtlasFormat::Compact
                     && matches!(
                         self.kind,

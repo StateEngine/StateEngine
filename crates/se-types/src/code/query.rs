@@ -109,6 +109,15 @@ pub enum SearchKind {
     Edit,
     Commit,
 }
+impl SearchKind {
+    /// Symbol plans may use the full bounded query work allowance.
+    pub fn query_budget(self, mut budget: QueryBudget) -> QueryBudget {
+        if matches!(self, Self::All | Self::Code | Self::Symbol) {
+            budget.work = Duration::from_millis(40);
+        }
+        budget
+    }
+}
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FindQuery {

@@ -273,32 +273,6 @@ impl QueryReader<'_, '_, '_> {
         )
     }
 }
-fn collect_phase(
-    env: &QueryEnv<'_>,
-    sql: &SqlView<'_>,
-    snapshot: &Snapshot,
-    query: &FindQuery,
-    mode: SearchMode,
-    window: (Instant, Instant),
-) -> AtlasResult<super::candidates::Candidates> {
-    let candidate_end = window.1 - (query.budget.work / 4).min(Duration::from_millis(3));
-    let started = crate::clock::now();
-    if candidate_end.saturating_duration_since(started) < minimum_phase(query.budget.work) {
-        return phase_timeout(
-            "metadata search before candidate admission",
-            window.0,
-            window.1,
-            Err(crate::cache::connection::timeout(0)),
-        );
-    }
-    phase_timeout(
-        "metadata candidates",
-        started,
-        candidate_end,
-        super::candidates::collect(env, sql, snapshot, query, mode, candidate_end),
-    )
-}
-
 pub(super) fn materialize(
     env: &QueryEnv<'_>,
     sql: &SqlView<'_>,

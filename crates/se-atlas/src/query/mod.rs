@@ -26,6 +26,8 @@ mod text_files;
 mod text_metadata;
 mod text_modes;
 mod text_rank;
+#[path = "../query_timing.rs"]
+mod timing;
 use crate::{
     cache::CacheIdentity,
     cache::connection::{CacheConnection, SqlView},
@@ -44,6 +46,7 @@ use std::{
     num::NonZeroU32,
     time::{Duration, Instant},
 };
+use timing::{collect_phase, minimum_phase, phase_timeout};
 
 /// Supplied by core for this verified viewer. Every record and derived count is
 /// rechecked against its authoritative event; cached audiences are only hints.
@@ -300,35 +303,6 @@ fn deadline(budget: QueryBudget) -> AtlasResult<Instant> {
         ));
     }
     Ok(crate::clock::now() + budget.work)
-}
-fn minimum_phase(work: Duration) -> Duration {
-    (work / 8).clamp(Duration::from_nanos(1), Duration::from_millis(5))
-}
-/// Add the actual phase allowance and elapsed time to a generic SQL timeout.
-fn phase_timeout<T>(
-    phase: &str,
-    started: Instant,
-    end: Instant,
-    result: AtlasResult<T>,
-) -> AtlasResult<T> {
-    result.map_err(|error| phase_error(phase, started, end, error))
-}
-fn phase_error(
-    phase: &str,
-    started: Instant,
-    end: Instant,
-    mut error: se_types::SeError,
-) -> se_types::SeError {
-    if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas SQL")
-    {
-        error.body = crate::cache::connection::timeout_phase(
-            phase,
-            end.saturating_duration_since(started),
-            crate::clock::now().saturating_duration_since(started),
-        )
-        .body;
-    }
-    error
 }
 fn size(value: &impl Serialize) -> AtlasResult<usize> {
     struct Counter(usize);
