@@ -283,6 +283,12 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                 Ok(None)
             }
             Ok(Some(summary)) => {
+                eprintln!(
+                    "ATLAS_COLD_ADOPT_UNIX_MS {}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis())
+                );
                 let root = self
                     .roots
                     .iter_mut()

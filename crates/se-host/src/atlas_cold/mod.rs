@@ -13,6 +13,7 @@ mod ingest;
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub mod job;
 pub mod protocol;
+mod timing;
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 mod walk;
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
@@ -195,9 +196,15 @@ pub(crate) fn run_child(
         &SqlProfile::contained_cold(),
         deadline,
     )?;
+    #[cfg(windows)]
+    if cache.probe_private_guard(&request.epoch)? {
+        se_atlas::cache::timing::PRIVATE_GUARD.store(1, std::sync::atomic::Ordering::Relaxed);
+    }
     let mut parser = SemanticParser::contained_cold(scope)?;
     parser.set_resource_guard(parser_memory_guard);
     let mut completed = 0u64;
+    let timing_started = Instant::now();
+    let mut timing_reported = timing_started;
     let mut coverage = seed.coverage.clone();
     notify(protocol::Reply::Working {
         job: request.job,
@@ -221,21 +228,31 @@ pub(crate) fn run_child(
             ));
         }
         coverage.discovered_files += 1;
-        ingest::file(
-            &source,
-            &mut db,
-            &mut parser,
-            &path,
-            request,
-            &mut |phase| {
-                notify(protocol::Reply::Working {
-                    job: request.job,
-                    path: Some(path.clone()),
-                    phase,
-                })
-            },
-        )?;
+        se_atlas::cache::timing::measure(&timing::FILE, || {
+            ingest::file(
+                &source,
+                &mut db,
+                &mut parser,
+                &path,
+                request,
+                &mut |phase| {
+                    notify(protocol::Reply::Working {
+                        job: request.job,
+                        path: Some(path.clone()),
+                        phase,
+                    })
+                },
+            )
+        })?;
         completed += 1;
+        if timing_reported.elapsed() >= Duration::from_secs(10) {
+            db.probe_page_writes()?;
+            notify(protocol::Reply::Timing {
+                job: request.job,
+                totals: timing::totals(timing_started.elapsed().as_millis(), completed),
+            })?;
+            timing_reported = Instant::now();
+        }
         if completed.is_multiple_of(16) {
             notify(protocol::Reply::Progress {
                 job: request.job,
@@ -252,10 +269,12 @@ pub(crate) fn run_child(
         // A disk checkpoint uses the existing whole-job wall allowance, not
         // the short SQL query allowance; fsync can finish after that allowance
         // without SQLite's VM progress handler being able to interrupt it.
-        if !db.checkpoint(deadline)? {
+        if !se_atlas::cache::timing::measure(&timing::CHECKPOINT, || db.checkpoint(deadline))? {
             return Err(failure("unpublished cold epoch checkpoint remains busy"));
         }
-        db.release_cold_memory(sql_deadline())?;
+        se_atlas::cache::timing::measure(&timing::RELEASE, || {
+            db.release_cold_memory(sql_deadline())
+        })?;
         se_proc::atlas_worker::release_allocator_pages();
         Ok(())
     })?;
@@ -285,22 +304,32 @@ pub(crate) fn run_child(
         })?;
         let Some((id, path)) = next else { break };
         after = id;
-        ingest::file(
-            &source,
-            &mut db,
-            &mut parser,
-            &RelativePath::new(&path)?,
-            request,
-            &mut |phase| {
-                notify(protocol::Reply::Working {
-                    job: request.job,
-                    path: Some(RelativePath::new(&path)?),
-                    phase,
-                })
-            },
-        )?;
+        se_atlas::cache::timing::measure(&timing::FILE, || {
+            ingest::file(
+                &source,
+                &mut db,
+                &mut parser,
+                &RelativePath::new(&path)?,
+                request,
+                &mut |phase| {
+                    notify(protocol::Reply::Working {
+                        job: request.job,
+                        path: Some(RelativePath::new(&path)?),
+                        phase,
+                    })
+                },
+            )
+        })?;
         se_proc::atlas_worker::release_allocator_pages();
         completed += 1;
+        if timing_reported.elapsed() >= Duration::from_secs(10) {
+            db.probe_page_writes()?;
+            notify(protocol::Reply::Timing {
+                job: request.job,
+                totals: timing::totals(timing_started.elapsed().as_millis(), completed),
+            })?;
+            timing_reported = Instant::now();
+        }
         if completed.is_multiple_of(16) {
             notify(protocol::Reply::Progress {
                 job: request.job,
@@ -313,7 +342,7 @@ pub(crate) fn run_child(
             path: Some(RelativePath::new(&path)?),
             phase: protocol::Phase::Checkpoint,
         })?;
-        if !db.checkpoint(deadline)? {
+        if !se_atlas::cache::timing::measure(&timing::CHECKPOINT, || db.checkpoint(deadline))? {
             return Err(failure("unpublished cold epoch checkpoint remains busy"));
         }
         db.release_cold_memory(sql_deadline())?;
@@ -325,10 +354,19 @@ pub(crate) fn run_child(
         path: None,
         phase: protocol::Phase::Finalize,
     })?;
-    db.prepare_cold_publication()?;
+    #[cfg(windows)]
+    cache.probe_finish_private();
+    se_atlas::cache::timing::measure(&timing::FINAL_SYNC, || db.prepare_cold_publication())?;
     let summary = finish::finish(&mut db, coverage, deadline)?;
-    db.finish_cold_publication(deadline)?;
-    // Exact parent reopen/integrity validation happens only after process reap.
+    se_atlas::cache::timing::measure(&timing::FINAL_FLUSH, || {
+        db.finish_cold_publication(deadline)
+    })?;
+    db.probe_page_writes()?;
+    notify(protocol::Reply::Timing {
+        job: request.job,
+        totals: timing::totals(timing_started.elapsed().as_millis(), completed),
+    })?;
+    // The parent verifies the independently reopened epoch after reap.
     drop(parser);
     drop(db);
     drop(cache);

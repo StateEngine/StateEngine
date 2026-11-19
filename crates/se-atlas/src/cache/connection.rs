@@ -320,6 +320,7 @@ impl<'a> CacheConnection<'a> {
         deadline: Instant,
         work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
     ) -> AtlasResult<T> {
+        let admission_start = Instant::now();
         let _arena = if self.arena.is_none()
             && matches!(
                 self.role,
@@ -338,15 +339,24 @@ impl<'a> CacheConnection<'a> {
         } else {
             None
         };
-        self.files.validate_database(&self.pin)?;
+        timing::measure(&timing::ADMISSION_VALIDATE_US, || {
+            self.files.validate_database(&self.pin)
+        })?;
         if write {
-            let mut wal = self.files.wal_bytes(&self.pin)?;
+            let mut wal = timing::measure(&timing::ADMISSION_WAL_US, || {
+                self.files.wal_bytes(&self.pin)
+            })?;
             if growth <= WAL_STOP && wal.saturating_add(growth) > WAL_STOP {
+                if self.role == ConnectionRole::ColdWriter {
+                    timing::CAPACITY_CHECKPOINTS.fetch_add(1, Ordering::Relaxed);
+                }
                 // One renewal quantum can commit several transactions on the
                 // same connection. Reclaim earlier commits before refusing the
                 // next one; pinned readers still have to pass the size check.
                 self.checkpoint(deadline)?;
-                wal = self.files.wal_bytes(&self.pin)?;
+                wal = timing::measure(&timing::ADMISSION_WAL_US, || {
+                    self.files.wal_bytes(&self.pin)
+                })?;
             }
             if growth > WAL_STOP || wal.checked_add(growth).is_none_or(|v| v > WAL_STOP) {
                 return Err(capacity(
@@ -357,10 +367,23 @@ impl<'a> CacheConnection<'a> {
             }
         }
         let _reservation = if write {
-            Some(self.files.reserve_growth(growth)?)
+            Some(timing::measure(&timing::ADMISSION_RESERVE_US, || {
+                self.files.reserve_growth(growth)
+            })?)
         } else {
             None
         };
+        if self.role == ConnectionRole::ColdWriter {
+            if write {
+                timing::ADMISSION_WRITES.fetch_add(1, Ordering::Relaxed);
+            } else {
+                timing::ADMISSION_READS.fetch_add(1, Ordering::Relaxed);
+            }
+            timing::ADMISSION_US.fetch_add(
+                admission_start.elapsed().as_micros() as u64,
+                Ordering::Relaxed,
+            );
+        }
         finite(&mut self.db, deadline, |db, budget_ms| {
             let behavior = if write {
                 rusqlite::TransactionBehavior::Immediate
@@ -369,6 +392,7 @@ impl<'a> CacheConnection<'a> {
             };
             let transaction =
                 rusqlite::Transaction::new_unchecked(db, behavior).map_err(cache_error)?;
+            let sql_start = Instant::now();
             let result = work(&SqlView {
                 db,
                 count: Cell::new(0),
@@ -376,6 +400,14 @@ impl<'a> CacheConnection<'a> {
                 readonly: !write,
                 deadline,
             });
+            if self.role == ConnectionRole::ColdWriter {
+                let counter = if write {
+                    &timing::SQL_WRITE_US
+                } else {
+                    &timing::SQL_READ_US
+                };
+                counter.fetch_add(sql_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+            }
             let changed = self.files.validate_database(&self.pin);
             let expired = crate::clock::now() >= deadline;
             let result = match (result, changed, expired) {
@@ -384,7 +416,12 @@ impl<'a> CacheConnection<'a> {
                 (Err(e), _, false) | (_, Err(e), false) => Err(e),
             };
             if result.is_ok() && write {
-                transaction.commit().map_err(cache_error)?;
+                if self.role == ConnectionRole::ColdWriter {
+                    timing::measure(&timing::COMMIT_US, || transaction.commit())
+                        .map_err(cache_error)?;
+                } else {
+                    transaction.commit().map_err(cache_error)?;
+                }
             } else {
                 transaction.rollback().map_err(cache_error)?;
             }
@@ -394,21 +431,52 @@ impl<'a> CacheConnection<'a> {
     /// Event/commit/drain driven only. External pinned snapshots keep writes
     /// suspended; no timer or forced reader expiry is introduced.
     pub fn checkpoint(&mut self, deadline: Instant) -> AtlasResult<bool> {
+        let started = Instant::now();
         if !self.role.writable() {
             return Err(cache_error("reader cannot checkpoint"));
         }
         let wal = self.files.wal_bytes(&self.pin)?;
+        if self.role == ConnectionRole::ColdWriter {
+            timing::MAX_WAL_BYTES.fetch_max(wal, Ordering::Relaxed);
+        }
         if wal < 4_000_000 {
             return Ok(true);
         }
-        finite(&mut self.db, deadline, |db, _| {
+        if self.role == ConnectionRole::ColdWriter {
+            timing::CHECKPOINTS.fetch_add(1, Ordering::Relaxed);
+        }
+        let query_started = Instant::now();
+        let result = finite(&mut self.db, deadline, |db, _| {
             let (busy, _, _): (i64, i64, i64) = db
                 .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?))
                 })
                 .map_err(cache_error)?;
             Ok(busy == 0)
-        })
+        });
+        if self.role == ConnectionRole::ColdWriter {
+            let micros = query_started
+                .elapsed()
+                .as_micros()
+                .min(u128::from(u64::MAX)) as u64;
+            timing::CHECKPOINT_MAX_US.fetch_max(micros, Ordering::Relaxed);
+            let bucket = if micros < 10_000 {
+                &timing::CHECKPOINT_FAST
+            } else if micros < 100_000 {
+                &timing::CHECKPOINT_MEDIUM
+            } else {
+                &timing::CHECKPOINT_SLOW
+            };
+            bucket.fetch_add(1, Ordering::Relaxed);
+            timing::CHECKPOINT_US
+                .fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+        result
+    }
+    pub fn probe_page_writes(&self) -> AtlasResult<()> {
+        let current = self.files.probe_page_writes(&self.db)?;
+        timing::PAGE_WRITES.store(current, Ordering::Relaxed);
+        Ok(())
     }
     /// Restore durability before writing the final cold-epoch metadata.
     pub fn prepare_cold_publication(&mut self) -> AtlasResult<()> {

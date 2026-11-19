@@ -1,5 +1,25 @@
 //! Per-connection native SQLite allocation setup, confined to Atlas adapters.
 //! This changes no global SQLite settings or authoritative-store connection.
+pub fn cache_writes(connection: &rusqlite::Connection) -> rusqlite::Result<i32> {
+    let (mut current, mut highwater) = (0, 0);
+    // SAFETY: the connection and both output pointers remain live for this call.
+    let code = unsafe {
+        rusqlite::ffi::sqlite3_db_status(
+            connection.handle(),
+            rusqlite::ffi::SQLITE_DBSTATUS_CACHE_WRITE,
+            &mut current,
+            &mut highwater,
+            0,
+        )
+    };
+    if code != rusqlite::ffi::SQLITE_OK {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ));
+    }
+    Ok(current)
+}
 pub fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
     // SAFETY: the borrowed Connection owns a live handle, is not shared across
     // threads, and SQLite itself returns BUSY if lookaside is currently in use.

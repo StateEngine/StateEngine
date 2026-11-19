@@ -16,6 +16,12 @@ use std::{
 };
 
 struct Metadata(se_proc::NativeMetadataPin);
+#[cfg(windows)]
+struct PrivateGuard {
+    path: PathBuf,
+    _directory_pin: se_proc::NativeMetadataPin,
+    _file: File,
+}
 impl DatabaseFile for Metadata {
     fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
         self.0.metadata().map_err(std::io::Error::other)
@@ -32,6 +38,11 @@ pub struct NativeAtlasCache {
     writer: Option<writer::WriterLease>,
     reserved: RefCell<Option<(CacheEpoch, DatabaseFileIdentity)>>,
     growth: Cell<u64>,
+    inventory: RefCell<Option<inventory::Inventory>>,
+    #[cfg(windows)]
+    private_guard: RefCell<Option<PrivateGuard>>,
+    #[cfg(windows)]
+    private_fast: Cell<bool>,
 }
 impl NativeAtlasCache {
     /// No creation, permissions repair, writer lock or schema action on reads.
@@ -54,6 +65,11 @@ impl NativeAtlasCache {
             writer: None,
             reserved: RefCell::new(None),
             growth: Cell::new(0),
+            inventory: RefCell::new(None),
+            #[cfg(windows)]
+            private_guard: RefCell::new(None),
+            #[cfg(windows)]
+            private_fast: Cell::new(false),
         }))
     }
     /// Explicit after-ready activation only. All writers across this Atlas home,
@@ -108,6 +124,11 @@ impl NativeAtlasCache {
             writer: Some(writer),
             reserved: RefCell::new(None),
             growth: Cell::new(0),
+            inventory: RefCell::new(None),
+            #[cfg(windows)]
+            private_guard: RefCell::new(None),
+            #[cfg(windows)]
+            private_fast: Cell::new(false),
         };
         if let Some(epoch) = candidate {
             cache.claim_reservation(epoch)?;
@@ -115,6 +136,53 @@ impl NativeAtlasCache {
             cache.recover_reservation()?;
         }
         Ok(cache)
+    }
+    #[cfg(windows)]
+    pub(super) fn probe_private_guard(&self, epoch: &CacheEpoch) -> AtlasResult<bool> {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let Some(pin) = self.pin_database(epoch)? else {
+            return Ok(false);
+        };
+        let Some(parent) = pin.path.parent() else {
+            return Ok(false);
+        };
+        let directory = NativeStateFiles::open(parent).map_err(fail)?;
+        let Some(directory_pin) = directory.pin_metadata(&pin.path).map_err(fail)? else {
+            return Ok(false);
+        };
+        if !directory_pin.is_ordinary_local() {
+            return Ok(false);
+        }
+        // Deny delete sharing while allowing SQLite's ordinary reads and writes.
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x0000_0001 | 0x0000_0002)
+            .custom_flags(0x0020_0000)
+            .open(&pin.path)
+        {
+            Ok(file) => file,
+            Err(_) => return Ok(false),
+        };
+        let revision = observe_file_revision(&file).map_err(fail)?;
+        let identity = (revision.volume, revision.file);
+        if directory_pin.identity().map_err(fail)? != identity
+            || pin.file.identity().map_err(fail)? != identity
+        {
+            return Err(fail("private database guard identity differs"));
+        }
+        self.validate_database(&pin)?;
+        *self.private_guard.borrow_mut() = Some(PrivateGuard {
+            path: pin.path,
+            _directory_pin: directory_pin,
+            _file: file,
+        });
+        self.private_fast.set(true);
+        Ok(true)
+    }
+    #[cfg(windows)]
+    pub(super) fn probe_finish_private(&self) {
+        self.private_fast.set(false);
     }
     fn require_writer(&self) -> AtlasResult<()> {
         let Some(writer) = &self.writer else {
@@ -165,6 +233,14 @@ impl NativeAtlasCache {
     }
 }
 impl CacheFiles for NativeAtlasCache {
+    fn probe_page_writes(
+        &self,
+        connection: &se_atlas::cache::connection::NativeSqlConnection,
+    ) -> AtlasResult<u64> {
+        let value = se_proc::atlas_sql::cache_writes(connection)
+            .map_err(|error| fail(error.to_string().as_str()))?;
+        u64::try_from(value).map_err(|error| fail(error.to_string().as_str()))
+    }
     fn configure_connection_role(
         &self,
         connection: &mut se_atlas::cache::connection::NativeSqlConnection,
@@ -318,6 +394,8 @@ impl CacheFiles for NativeAtlasCache {
         Ok(pin)
     }
     fn discard_unpublished(&self, pin: &DatabasePin) -> AtlasResult<()> {
+        // Retained directory handles must not prevent removal of this epoch.
+        self.inventory.borrow_mut().take();
         let epoch = self.epoch(pin)?;
         self.check_unpublished(&epoch)?;
         let held = pin.file.identity().map_err(fail)?;
@@ -377,6 +455,16 @@ impl CacheFiles for NativeAtlasCache {
         Ok(())
     }
     fn validate_database(&self, pin: &DatabasePin) -> AtlasResult<()> {
+        #[cfg(windows)]
+        if self.private_fast.get()
+            && self
+                .private_guard
+                .borrow()
+                .as_ref()
+                .is_some_and(|guard| guard.path == pin.path)
+        {
+            return Ok(());
+        }
         let epoch = self.epoch(pin)?;
         let named = self
             .pin_database(&epoch)?
@@ -389,16 +477,54 @@ impl CacheFiles for NativeAtlasCache {
     fn wal_bytes(&self, pin: &DatabasePin) -> AtlasResult<u64> {
         self.validate_database(pin)?;
         let path = pin.path.with_file_name("atlas.db-wal");
-        self.root
-            .pin_metadata(&path)
-            .map_err(fail)?
-            .map(|f| f.metadata().map(|m| m.len()).map_err(fail))
-            .transpose()
-            .map(|n| n.unwrap_or(0))
+        let cached = self
+            .inventory
+            .borrow()
+            .as_ref()
+            .and_then(|inventory| inventory.file_size(&path));
+        let bytes = match cached {
+            Some(bytes) => bytes,
+            None => {
+                let file = self.root.pin_metadata(&path).map_err(fail)?;
+                file.map(|f| f.metadata().map(|m| m.len()).map_err(fail))
+                    .transpose()?
+                    .unwrap_or(0)
+            }
+        };
+        self.validate_database(pin)?;
+        Ok(bytes)
     }
     fn reserve_growth(&self, bytes: u64) -> AtlasResult<Box<dyn GrowthReservation + '_>> {
         self.require_writer()?;
-        let root = inventory::root(&self.root)?;
+        let cached =
+            se_atlas::cache::timing::measure(&se_atlas::cache::timing::INVENTORY_CACHE_US, || {
+                self.inventory
+                    .borrow()
+                    .as_ref()
+                    .map(inventory::Inventory::measure)
+                    .transpose()
+                    .map(Option::flatten)
+            })?;
+        // Recount near the disk cap before trusting the cached inventory.
+        let root = match cached {
+            Some(root)
+                if root.saturating_add(self.growth.get()).saturating_add(bytes) < 504_000_000 =>
+            {
+                se_atlas::cache::timing::INVENTORY_HITS
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                root
+            }
+            _ => {
+                se_atlas::cache::timing::INVENTORY_WALKS
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let (root, snapshot) = se_atlas::cache::timing::measure(
+                    &se_atlas::cache::timing::INVENTORY_WALK_US,
+                    || inventory::root(&self.root),
+                )?;
+                *self.inventory.borrow_mut() = Some(snapshot);
+                root
+            }
+        };
         let reserved = self.growth.get();
         let maximum = self.scope.registration.cache.directory.as_path();
         if maximum != self.root.root() {

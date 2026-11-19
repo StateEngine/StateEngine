@@ -18,7 +18,9 @@ pub(super) fn file(
     let language = se_atlas::policy::language(path);
     phase(protocol::Phase::SourceRead)?;
     cpu::start()?;
-    let read = source.read_with_wall_timeout(path, parse_budget(), Duration::from_secs(5));
+    let read = se_atlas::cache::timing::measure(&timing::SOURCE, || {
+        source.read_with_wall_timeout(path, parse_budget(), Duration::from_secs(5))
+    });
     match read {
         Ok(SourceRead::Bytes(snapshot)) if language.is_some() => {
             let language = language.ok_or_else(|| failure("language disappeared"))?;
@@ -26,9 +28,9 @@ pub(super) fn file(
                 db.release_cold_memory(sql_deadline())?;
                 se_proc::atlas_worker::release_allocator_pages();
                 phase(protocol::Phase::Parse)?;
-                let mut parsed = match cpu::check()
-                    .and_then(|()| parser.parse(&snapshot, language, parse_budget()))
-                {
+                let mut parsed = match se_atlas::cache::timing::measure(&timing::PARSE, || {
+                    cpu::check().and_then(|()| parser.parse(&snapshot, language, parse_budget()))
+                }) {
                     Ok(parsed) => parsed,
                     Err(error) if cpu::is_limit(&error) => deferred(source, &snapshot, language),
                     Err(error) => return Err(error),
@@ -56,20 +58,24 @@ pub(super) fn file(
                     parsed.scopes.clear();
                 }
                 phase(protocol::Phase::Resolve)?;
-                db.read(sql_deadline(), |sql| {
-                    resolve::resolve(
-                        &mut parsed,
-                        path,
-                        &mut SqlCatalog {
-                            sql,
-                            deadline: sql_deadline(),
-                        },
-                        sql_deadline(),
-                    )
-                    .map(|_| ())
+                se_atlas::cache::timing::measure(&timing::RESOLVE, || {
+                    db.read(sql_deadline(), |sql| {
+                        resolve::resolve(
+                            &mut parsed,
+                            path,
+                            &mut SqlCatalog {
+                                sql,
+                                deadline: sql_deadline(),
+                            },
+                            sql_deadline(),
+                        )
+                        .map(|_| ())
+                    })
                 })?;
                 phase(protocol::Phase::Verify)?;
-                if source.verify(&snapshot)? != SourceVerification::Unchanged {
+                if se_atlas::cache::timing::measure(&timing::VERIFY, || source.verify(&snapshot))?
+                    != SourceVerification::Unchanged
+                {
                     return Err(failure(format!(
                         "source changed before cold commit: {}",
                         path.as_str()

@@ -49,6 +49,15 @@ impl NativeRenewal {
                 || c.reconcile != reconcile
                 || c.subtree != subtree
         }) {
+            if let Some(previous) = &self.cycle {
+                eprintln!(
+                    "ATLAS_RENEWAL_RESET elapsed_ms={} phase={:?} files={} directories={}",
+                    previous.diagnostic_start.elapsed().as_millis(),
+                    previous.phase,
+                    previous.files,
+                    previous.directories
+                );
+            }
             let retained_last = connection.read(deadline, |sql| {
                 sql.prepare("SELECT coalesce(max(id),0) FROM files")?
                     .query_row([], |r| r.get::<_, i64>(0))
@@ -85,6 +94,8 @@ impl NativeRenewal {
                 self.subscribe(index, connection, "", identity, deadline)?;
             }
             self.cycle = Some(Cycle {
+                diagnostic_start: Instant::now(),
+                diagnostic_report: Instant::now(),
                 root: work.root.clone(),
                 serial: work.serial,
                 reconcile,
@@ -451,6 +462,7 @@ impl NativeRenewal {
         let complete = match result {
             Ok(complete) => complete,
             Err(error) => {
+                diagnostic_cycle(&mut cycle, false);
                 self.cycle = Some(cycle);
                 return Err(error);
             }
@@ -477,6 +489,7 @@ impl NativeRenewal {
         let summary = match summary {
             Ok(summary) => summary,
             Err(error) => {
+                diagnostic_cycle(&mut cycle, false);
                 self.cycle = Some(cycle);
                 return Err(error);
             }
@@ -484,6 +497,7 @@ impl NativeRenewal {
         if complete && full_reconcile {
             self.roots[index].requires_reconcile = false;
         }
+        diagnostic_cycle(&mut cycle, complete);
         let report = WorkReport {
             root: work.root.clone(),
             phase: if reconcile {
@@ -504,6 +518,18 @@ impl NativeRenewal {
             summary,
             complete,
         })
+    }
+}
+fn diagnostic_cycle(cycle: &mut Cycle, complete: bool) {
+    if complete || cycle.diagnostic_report.elapsed() >= Duration::from_secs(10) {
+        eprintln!(
+            "ATLAS_RENEWAL elapsed_ms={} phase={:?} files={} directories={} complete={complete}",
+            cycle.diagnostic_start.elapsed().as_millis(),
+            cycle.phase,
+            cycle.files,
+            cycle.directories
+        );
+        cycle.diagnostic_report = Instant::now();
     }
 }
 fn entry_path(root: &mut Root, spelling: String) -> Option<RelativePath> {

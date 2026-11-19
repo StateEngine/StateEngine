@@ -79,6 +79,8 @@ struct PendingEvents {
     hints: Vec<SourceHint>,
 }
 struct Cycle {
+    diagnostic_start: Instant,
+    diagnostic_report: Instant,
     root: RootId,
     serial: u64,
     reconcile: bool,
@@ -94,7 +96,7 @@ struct Cycle {
     part: u8,
     coverage: se_atlas::coverage::CoverageScan,
 }
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Phase {
     Retained,
     Directories,

@@ -1,10 +1,121 @@
 //! Per-root disk inventory. Idle projects are never walked while another root
 //! grows; project count does not impose a whole-home ceiling or scan.
 use super::*;
-pub(super) fn root(files: &NativeStateFiles) -> AtlasResult<u64> {
+const MAX_RETAINED_FILES: usize = 32;
+
+pub(super) struct Inventory {
+    directories: Vec<(
+        NativeStateFiles,
+        Vec<(std::ffi::OsString, std::fs::FileType)>,
+    )>,
+    files: Vec<(PathBuf, se_proc::NativeMetadataPin)>,
+    complete: bool,
+}
+
+impl Inventory {
+    pub(super) fn file_size(&self, path: &Path) -> Option<u64> {
+        self.files
+            .iter()
+            .find(|(name, _)| name == path)
+            .and_then(|(_, pin)| pin.metadata().ok())
+            .map(|metadata| metadata.len())
+    }
+
+    pub(super) fn measure(&self) -> AtlasResult<Option<u64>> {
+        if !self.complete {
+            return Ok(None);
+        }
+        for (files, previous) in &self.directories {
+            if se_atlas::cache::timing::measure(
+                &se_atlas::cache::timing::INVENTORY_DIRECTORY_US,
+                || files.readback(&files.root().join(".atlas-inventory-check")),
+            )
+            .is_err()
+            {
+                return Ok(None);
+            }
+            if !se_atlas::cache::timing::measure(
+                &se_atlas::cache::timing::INVENTORY_ENUM_US,
+                || entries_match(files.root(), previous),
+            ) {
+                return Ok(None);
+            }
+        }
+        let mut bytes = 0u64;
+        for (_, pin) in &self.files {
+            let metadata = match se_atlas::cache::timing::measure(
+                &se_atlas::cache::timing::INVENTORY_METADATA_US,
+                || pin.metadata(),
+            ) {
+                Ok(value) => value,
+                Err(_) => return Ok(None),
+            };
+            bytes = bytes
+                .checked_add(metadata.len())
+                .ok_or_else(|| fail("Atlas inventory byte overflow"))?;
+        }
+        for (files, previous) in &self.directories {
+            if !se_atlas::cache::timing::measure(
+                &se_atlas::cache::timing::INVENTORY_ENUM_US,
+                || entries_match(files.root(), previous),
+            ) || se_atlas::cache::timing::measure(
+                &se_atlas::cache::timing::INVENTORY_DIRECTORY_US,
+                || files.readback(&files.root().join(".atlas-inventory-check")),
+            )
+            .is_err()
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(bytes))
+    }
+}
+
+fn entries_match(path: &Path, previous: &[(std::ffi::OsString, std::fs::FileType)]) -> bool {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+    let mut seen = 0usize;
+    for entry in entries {
+        let Ok(entry) = entry else { return false };
+        let Ok(kind) = entry.file_type() else {
+            return false;
+        };
+        if !previous
+            .iter()
+            .any(|(name, saved_kind)| *name == entry.file_name() && *saved_kind == kind)
+        {
+            return false;
+        }
+        seen += 1;
+        if seen > previous.len() {
+            return false;
+        }
+    }
+    seen == previous.len()
+}
+
+pub(super) fn root(files: &NativeStateFiles) -> AtlasResult<(u64, Inventory)> {
     let mut entries = 0;
     let mut bytes = 0;
-    walk(files, 2, files.root(), &mut bytes, &mut entries)
+    let mut snapshot = Inventory {
+        directories: Vec::new(),
+        files: Vec::new(),
+        complete: true,
+    };
+    let total = walk(
+        files,
+        2,
+        files.root(),
+        &mut bytes,
+        &mut entries,
+        &mut snapshot,
+    )?;
+    if !snapshot.complete {
+        snapshot.files.clear();
+        snapshot.directories.clear();
+    }
+    Ok((total, snapshot))
 }
 fn walk(
     files: &NativeStateFiles,
@@ -12,11 +123,14 @@ fn walk(
     wanted: &Path,
     root: &mut u64,
     entries: &mut u32,
+    snapshot: &mut Inventory,
 ) -> AtlasResult<u64> {
     let mut total = 0u64;
     let mut epoch_count = 0;
     // A missing sentinel is a native check of the original retained directory;
     // it is never created. Entry reads repeat that custody check themselves.
+    let mut names = Vec::new();
+    let mut names_complete = true;
     files
         .readback(&files.root().join(".atlas-inventory-check"))
         .map_err(fail)?;
@@ -31,6 +145,12 @@ fn walk(
             .into_string()
             .map_err(|_| fail("non-UTF-8 Atlas cache name preserved"))?;
         let kind = entry.file_type().map_err(fail)?;
+        if names.len() < MAX_RETAINED_FILES {
+            names.push((entry.file_name(), kind));
+        } else {
+            names_complete = false;
+            snapshot.complete = false;
+        }
         let path = entry.path();
         let size = if kind.is_dir() {
             if depth == 3 {
@@ -52,7 +172,7 @@ fn walk(
                 ));
             }
             let child = NativeStateFiles::open(&path).map_err(fail)?;
-            walk(&child, depth + 1, wanted, root, entries)?
+            walk(&child, depth + 1, wanted, root, entries, snapshot)?
         } else {
             let allowed = NativeStateFiles::is_recovery_artifact(&entry.file_name())
                 || match depth {
@@ -66,13 +186,17 @@ fn walk(
                     "unknown or linked Atlas cache entry preserved; inspect before growth",
                 ));
             }
-            files
+            let pin = files
                 .pin_metadata(&path)
                 .map_err(fail)?
-                .ok_or_else(|| fail("Atlas inventory file disappeared"))?
-                .metadata()
-                .map_err(fail)?
-                .len()
+                .ok_or_else(|| fail("Atlas inventory file disappeared"))?;
+            let len = pin.metadata().map_err(fail)?.len();
+            if snapshot.files.len() < MAX_RETAINED_FILES {
+                snapshot.files.push((path, pin));
+            } else {
+                snapshot.complete = false;
+            }
+            len
         };
         total = total
             .checked_add(size)
@@ -81,6 +205,12 @@ fn walk(
     files
         .readback(&files.root().join(".atlas-inventory-check"))
         .map_err(fail)?;
+    if names_complete && !entries_match(files.root(), &names) {
+        return Err(fail("Atlas inventory directory changed during measurement"));
+    }
+    snapshot
+        .directories
+        .push((NativeStateFiles::open(files.root()).map_err(fail)?, names));
     if files.root() == wanted {
         *root = total
     }

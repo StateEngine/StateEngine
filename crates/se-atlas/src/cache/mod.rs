@@ -5,6 +5,7 @@ pub mod pointer;
 pub mod prune;
 pub(crate) mod reference_counts;
 pub mod schema;
+pub mod timing;
 pub mod write;
 use crate::{errors::AtlasResult, model::*, scope::Scope};
 use std::path::PathBuf;
@@ -12,6 +13,11 @@ use std::path::PathBuf;
 /// open. SQLite's own NOFOLLOW flag also rejects a linked final database name.
 /// This trusted port is never constructed from CLI/MCP destination arguments.
 pub trait CacheFiles {
+    fn probe_page_writes(&self, _connection: &rusqlite::Connection) -> AtlasResult<u64> {
+        Err(crate::errors::cache_error(
+            "page-write observation unavailable",
+        ))
+    }
     /// Fresh-connection allocator setup before any SQL prepares. Native Atlas
     /// disables lookaside here; other adapters must include their actual SQLite
     /// defaults in their independent profile measurement. This hook supplies no
