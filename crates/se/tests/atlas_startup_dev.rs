@@ -523,7 +523,7 @@ async fn benchmark_caught_up(
     project: &se_types::ProjectId,
     records: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let end = Instant::now() + Duration::from_secs(600);
+    let end = Instant::now() + Duration::from_secs(180);
     let progress = Arc::new(std::sync::Mutex::new(String::from("starting")));
     let done = Arc::new(AtomicBool::new(false));
     let reporter_progress = Arc::clone(&progress);
@@ -591,7 +591,7 @@ async fn benchmark_caught_up(
         if Instant::now() >= end {
             done.store(true, std::sync::atomic::Ordering::Relaxed);
             return Err(
-                "full repository diagnostic did not finish indexing within 600 seconds".into(),
+                "full repository diagnostic did not finish indexing within 180 seconds".into(),
             );
         }
         tokio::time::sleep(Duration::from_millis(500)).await;

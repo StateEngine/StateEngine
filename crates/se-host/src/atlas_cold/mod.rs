@@ -199,7 +199,6 @@ pub(crate) fn run_child(
     parser.set_resource_guard(parser_memory_guard);
     let mut completed = 0u64;
     let mut coverage = seed.coverage.clone();
-    let mut batch_snapshots = Vec::new();
     notify(protocol::Reply::Working {
         job: request.job,
         path: None,
@@ -222,11 +221,8 @@ pub(crate) fn run_child(
             ));
         }
         coverage.discovered_files += 1;
-        if db.cold_batch_needs_flush() {
-            finish_cold_batch(&source, &mut db, &mut batch_snapshots, deadline)?;
-        }
-        db.prepare_cold_file(deadline)?;
-        if let Some(snapshot) = ingest::file(
+        let diagnostic_ingest = Instant::now();
+        ingest::file(
             &source,
             &mut db,
             &mut parser,
@@ -239,9 +235,12 @@ pub(crate) fn run_child(
                     phase,
                 })
             },
-        )? {
-            batch_snapshots.push(snapshot);
-        }
+        )?;
+        let (prepare_count, prepare_ns) = se_atlas::resolve::catalog::diagnostic_lookup_prepares();
+        eprintln!(
+            "ATLAS_CHILD_INGEST elapsed_ms={} prepare_count={prepare_count} prepare_ns={prepare_ns}",
+            diagnostic_ingest.elapsed().as_millis()
+        );
         completed += 1;
         if completed.is_multiple_of(16) {
             notify(protocol::Reply::Progress {
@@ -250,11 +249,28 @@ pub(crate) fn run_child(
                 completed,
             })?;
         }
+        notify(protocol::Reply::Working {
+            job: request.job,
+            path: Some(path.clone()),
+            phase: protocol::Phase::Checkpoint,
+        })?;
+        // This private, exclusively owned epoch has no foreground readers.
+        // A disk checkpoint uses the existing whole-job wall allowance, not
+        // the short SQL query allowance; fsync can finish after that allowance
+        // without SQLite's VM progress handler being able to interrupt it.
+        let diagnostic_checkpoint = Instant::now();
+        let checkpoint_done = db.checkpoint(deadline)?;
+        eprintln!(
+            "ATLAS_CHILD_CHECKPOINT elapsed_us={}",
+            diagnostic_checkpoint.elapsed().as_micros()
+        );
+        if !checkpoint_done {
+            return Err(failure("unpublished cold epoch checkpoint remains busy"));
+        }
         db.release_cold_memory(sql_deadline())?;
         se_proc::atlas_worker::release_allocator_pages();
         Ok(())
     })?;
-    finish_cold_batch(&source, &mut db, &mut batch_snapshots, deadline)?;
     // Resolve against the completed catalog. Walking SQL in small key windows
     // avoids retaining a source inventory or reparsing once per graph edge.
     let mut after = 0i64;
@@ -281,11 +297,7 @@ pub(crate) fn run_child(
         })?;
         let Some((id, path)) = next else { break };
         after = id;
-        if db.cold_batch_needs_flush() {
-            finish_cold_batch(&source, &mut db, &mut batch_snapshots, deadline)?;
-        }
-        db.prepare_cold_file(deadline)?;
-        if let Some(snapshot) = ingest::file(
+        ingest::file(
             &source,
             &mut db,
             &mut parser,
@@ -298,9 +310,7 @@ pub(crate) fn run_child(
                     phase,
                 })
             },
-        )? {
-            batch_snapshots.push(snapshot);
-        }
+        )?;
         se_proc::atlas_worker::release_allocator_pages();
         completed += 1;
         if completed.is_multiple_of(16) {
@@ -310,10 +320,17 @@ pub(crate) fn run_child(
                 completed,
             })?;
         }
+        notify(protocol::Reply::Working {
+            job: request.job,
+            path: Some(RelativePath::new(&path)?),
+            phase: protocol::Phase::Checkpoint,
+        })?;
+        if !db.checkpoint(deadline)? {
+            return Err(failure("unpublished cold epoch checkpoint remains busy"));
+        }
         db.release_cold_memory(sql_deadline())?;
         se_proc::atlas_worker::release_allocator_pages();
     }
-    finish_cold_batch(&source, &mut db, &mut batch_snapshots, deadline)?;
     coverage.discovery_complete = discovery_complete;
     notify(protocol::Reply::Working {
         job: request.job,
@@ -332,36 +349,4 @@ pub(crate) fn run_child(
         completed,
     })?;
     Ok(summary)
-}
-
-#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
-fn finish_cold_batch(
-    source: &RegisteredSource<NativeAtlasSource>,
-    db: &mut CacheConnection<'_>,
-    snapshots: &mut Vec<SourceSnapshot>,
-    deadline: Instant,
-) -> AtlasResult<()> {
-    for snapshot in snapshots.iter() {
-        let reason = match source.verify(snapshot) {
-            Ok(SourceVerification::Unchanged) => continue,
-            Ok(SourceVerification::Changed) => "source changed before cold batch commit".to_owned(),
-            Ok(SourceVerification::Removed) => {
-                "source disappeared before cold batch commit".to_owned()
-            }
-            Err(error) => format!("source verification failed before cold batch commit: {error}"),
-        };
-        let language = se_atlas::policy::language(&snapshot.path)
-            .ok_or_else(|| failure("verified source language disappeared"))?;
-        ingest::failed_file(
-            source,
-            db,
-            &snapshot.path,
-            language,
-            snapshot,
-            failure(reason),
-        )?;
-    }
-    db.finish_cold_batch(deadline)?;
-    snapshots.clear();
-    Ok(())
 }

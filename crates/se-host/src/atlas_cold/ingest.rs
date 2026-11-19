@@ -14,8 +14,7 @@ pub(super) fn file(
     path: &RelativePath,
     request: &protocol::Request,
     phase: &mut impl FnMut(protocol::Phase) -> AtlasResult<()>,
-) -> AtlasResult<Option<SourceSnapshot>> {
-    let mut committed_snapshot = None;
+) -> AtlasResult<()> {
     let language = se_atlas::policy::language(path);
     phase(protocol::Phase::SourceRead)?;
     cpu::start()?;
@@ -85,13 +84,6 @@ pub(super) fn file(
             if let Err(error) = attempt {
                 phase(protocol::Phase::Commit)?;
                 failed_file(source, db, path, language, &snapshot, error)?;
-            } else {
-                committed_snapshot = Some(SourceSnapshot {
-                    path: snapshot.path,
-                    identity: snapshot.identity,
-                    content_hash: snapshot.content_hash,
-                    bytes: Vec::new(),
-                });
             }
         }
         Ok(SourceRead::Bytes(snapshot)) => {
@@ -176,7 +168,7 @@ pub(super) fn file(
             })?;
         }
     }
-    Ok(committed_snapshot)
+    Ok(())
 }
 fn deferred(
     source: &RegisteredSource<NativeAtlasSource>,
@@ -198,7 +190,7 @@ fn deferred(
 }
 /// Preserve a named per-file failure after rollback; an index-wide native/SQL
 /// refusal still stops the job if this bounded metadata transaction cannot run.
-pub(super) fn failed_file(
+fn failed_file(
     source: &RegisteredSource<NativeAtlasSource>,
     db: &mut CacheConnection<'_>,
     path: &RelativePath,
