@@ -1,8 +1,11 @@
-"""Run the maintained idle check from the probe workflow."""
+"""Build and run the embedded-host budget measurement on native runners."""
 from pathlib import Path
-import runpy
+import subprocess
 import sys
 
-judges = Path(__file__).resolve().parent.parent / "crates/se/tests/judges"
-sys.path.insert(0, str(judges))
-runpy.run_path(str(judges / "idle_budget.py"), run_name="__main__")
+subprocess.run(["cargo", "build", "--release", "--locked", "--jobs", "4", "-p", "se-host",
+                "--features", "secode", "--example", "embedded_budget_probe"], check=True)
+root = Path(__file__).resolve().parent.parent
+suffix = ".exe" if sys.platform == "win32" else ""
+probe = root / "target" / "release" / "examples" / ("embedded_budget_probe" + suffix)
+subprocess.run([sys.executable, str(root / "probes/embedded-budget.py"), sys.argv[1], sys.argv[2], str(probe)], check=True)

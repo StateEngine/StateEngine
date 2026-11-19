@@ -410,10 +410,13 @@ impl Judge {
     }
     pub(super) fn activate(&self, opened: &api::OpenedHost) -> Result<api::Generation, String> {
         let generation = opened.negotiated.generation;
+        let phase = std::time::Instant::now();
         let epoch = build_epoch(generation.0, &self.home)?;
+        eprintln!("epoch_ms={}", phase.elapsed().as_secs_f64() * 1000.0);
         let host = opened.host.clone();
         let services = Arc::new(SilentServices);
         let options = call_options(generation, Duration::from_secs(30));
+        let phase = std::time::Instant::now();
         self.runtime.block_on(async move {
             let readiness = host
                 .activate(
@@ -434,6 +437,7 @@ impl Judge {
             }
             Ok(())
         })?;
+        eprintln!("activate_ms={}", phase.elapsed().as_secs_f64() * 1000.0);
         Ok(generation)
     }
     pub(super) fn bind(
