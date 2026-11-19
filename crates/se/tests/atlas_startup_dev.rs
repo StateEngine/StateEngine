@@ -80,55 +80,91 @@ fn start(f: &Fixture) -> Result<HostStart, Box<dyn std::error::Error>> {
 
 fn setup(f: &Fixture) -> Check {
     let source = f.home.join("source");
-    std::fs::create_dir(&source)?;
-    std::fs::write(source.join("good.js"), "export function good(){return 1;}")?;
-    for name in [
-        ".env",
-        "secrets.py",
-        "config.js",
-        "private.pem",
-        "credentials.json",
-    ] {
-        std::fs::write(
-            source.join(name),
-            "export function DO_NOT_INDEX(){return 'PRIVATE';}",
-        )?;
-    }
-    std::fs::write(
-        source.join(".gitignore"),
-        "!.env\n!secrets.py\n!config.js\n!private.pem\n!credentials.json\n",
-    )?;
-    // The automatic owner must discover this registration itself and seed
-    // history after the real installed parser image has been exactly reaped.
-    for args in [
-        vec!["init", "--initial-branch=main"],
-        vec!["add", "--", "."],
-        vec![
-            "-c",
-            "user.name=History Fixture",
-            "-c",
-            "user.email=atlas-fixture.invalid",
-            "commit",
-            "-m",
-            "automatic_git_seed",
-        ],
-    ] {
-        let output = std::process::Command::new("git")
-            .arg("-C")
+    if let Some(repository) = std::env::var_os("ATLAS_FULL_REPOSITORY") {
+        let result = std::process::Command::new("git")
+            .args(["clone", "--no-hardlinks", "--"])
+            .arg(repository)
             .arg(&source)
-            .args(args)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env(
-                "GIT_CONFIG_GLOBAL",
-                if cfg!(windows) { "NUL" } else { "/dev/null" },
-            )
             .output()?;
-        if !output.status.success() {
+        if !result.status.success() {
             return Err(format!(
-                "Git fixture failed: {}",
-                String::from_utf8_lossy(&output.stderr)
+                "full repository clone failed: {}",
+                String::from_utf8_lossy(&result.stderr)
             )
             .into());
+        }
+        let history = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args(["rev-parse", "--is-shallow-repository"])
+            .output()?;
+        if !history.status.success() || String::from_utf8_lossy(&history.stdout).trim() != "false" {
+            return Err("benchmark source is shallow or history inspection failed".into());
+        }
+        let count = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args(["rev-list", "--count", "HEAD"])
+            .output()?;
+        if !count.status.success() {
+            return Err("cannot count full repository history".into());
+        }
+        println!(
+            "ATLAS_BENCH_HISTORY {}",
+            String::from_utf8(count.stdout)?.trim()
+        );
+        std::fs::write(source.join("good.js"), "export function good(){return 1;}")?;
+    } else {
+        std::fs::create_dir(&source)?;
+        std::fs::write(source.join("good.js"), "export function good(){return 1;}")?;
+        for name in [
+            ".env",
+            "secrets.py",
+            "config.js",
+            "private.pem",
+            "credentials.json",
+        ] {
+            std::fs::write(
+                source.join(name),
+                "export function DO_NOT_INDEX(){return 'PRIVATE';}",
+            )?;
+        }
+        std::fs::write(
+            source.join(".gitignore"),
+            "!.env\n!secrets.py\n!config.js\n!private.pem\n!credentials.json\n",
+        )?;
+        // The automatic owner must discover this registration itself and seed
+        // history after the real installed parser image has been exactly reaped.
+        for args in [
+            vec!["init", "--initial-branch=main"],
+            vec!["add", "--", "."],
+            vec![
+                "-c",
+                "user.name=History Fixture",
+                "-c",
+                "user.email=atlas-fixture.invalid",
+                "commit",
+                "-m",
+                "automatic_git_seed",
+            ],
+        ] {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&source)
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env(
+                    "GIT_CONFIG_GLOBAL",
+                    if cfg!(windows) { "NUL" } else { "/dev/null" },
+                )
+                .output()?;
+            if !output.status.success() {
+                return Err(format!(
+                    "Git fixture failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )
+                .into());
+            }
         }
     }
     let (mut direct, lease) = f.direct()?;
@@ -325,6 +361,54 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
         }
     );
     assert!(!memory.joined_qualified && memory.shared_grammar_pages.is_none());
+    if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+        for (offset, (kind, query)) in [
+            ("path", "rs"),
+            ("symbol", "new"),
+            ("text", "fn"),
+            ("all", "state"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let answer = connection.exchange(IpcEnvelope {
+                version: connection.negotiated().version,
+                request_id: 100 + offset as u64,
+                generation: endpoint.generation,
+                authority: None,
+                presence: None,
+                cli_selections: None,
+                request: IpcRequest::Operation(RawOperation {
+                    name: "atlas.find".into(),
+                    arguments: serde_json::json!({"query": query, "kind": kind, "mode": "literal", "limit": 50, "byte_budget": 32768, "format": "json"}),
+                    key: None,
+                }),
+            }, &options).map_err(|error| error.to_string())?;
+            let bytes = serde_json::to_vec(&answer.value)
+                .map_err(|error| error.to_string())?
+                .len();
+            assert!(bytes <= 32768, "query exceeded the requested byte budget");
+            let mut wire = answer.value;
+            wire["schema"] = answer.schema.into();
+            let se_core::ops::AnyOutput::AtlasFind(output) =
+                serde_json::from_value(wire).map_err(|error| error.to_string())?
+            else {
+                return Err("benchmark query returned another output family".into());
+            };
+            let count = match output.value.answer.data {
+                se_types::Read::Present { value } => value.page.items().len(),
+                _ => {
+                    return Err(format!(
+                        "benchmark query {kind} did not return present data"
+                    ));
+                }
+            };
+            if kind == "path" && count == 0 {
+                return Err("benchmark path query returned no hits".into());
+            }
+            println!("ATLAS_BENCH_QUERY {kind} {bytes} {count}");
+        }
+    }
     Ok(())
 }
 async fn caught_up(
@@ -332,6 +416,9 @@ async fn caught_up(
     project: &se_types::ProjectId,
     records: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+        return benchmark_caught_up(context, project, records).await;
+    }
     let end = Instant::now() + Duration::from_secs(30);
     loop {
         let context = context.clone();
@@ -414,6 +501,51 @@ async fn caught_up(
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
+
+async fn benchmark_caught_up(
+    context: &ExecutionContext,
+    project: &se_types::ProjectId,
+    records: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let end = Instant::now() + Duration::from_secs(1200);
+    loop {
+        let context = context.clone();
+        let project = project.clone();
+        let pool = context.blocking.clone();
+        let observed = pool.run(BlockingClass::Foreground, &deadline()?, move || {
+            let summary = context.atlas.summary(&project, None)?;
+            if !summary.coverage.discovery_complete || !matches!(summary.state, se_types::code::IndexState::Current | se_types::code::IndexState::Partial { .. } | se_types::code::IndexState::VerificationNeeded { .. }) {
+                return Ok(None);
+            }
+            let ticket = context.atlas.records.ticket()?;
+            let mut counts = None;
+            context.atlas.with_reader(&project, None, ticket, &mut |cache, _, fresh| {
+                cache.read(Instant::now() + Duration::from_secs(2), |sql| {
+                    let (files, good, records): (i64, i64, i64) = sql.prepare(
+                        "SELECT (SELECT count(*) FROM files), (SELECT count(*) FROM files WHERE path='good.js'), (SELECT count(*) FROM records)"
+                    )?.query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                        .map_err(|error| se_core::scope::unreadable("benchmark index", &error.to_string()))?;
+                    counts = Some((fresh, files, good, records));
+                    Ok(())
+                })
+            })?;
+            Ok(counts)
+        }).await;
+        if let Ok(Some((true, files, 1, count))) = observed
+            && files >= 1000
+            && count >= records
+        {
+            if records == 1 {
+                println!("ATLAS_BENCH_INDEXED_FILES {files}");
+            }
+            return Ok(());
+        }
+        if Instant::now() >= end {
+            return Err("full repository owner did not finish indexing within 1200 seconds".into());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
 #[test]
 fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
     // Embedded hosts deliberately have no native Atlas owner; their refusal
@@ -426,13 +558,18 @@ fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
         .max_blocking_threads(3)
         .build()?;
     runtime.block_on(async {
+        let started = Instant::now();
+        if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+            let (bytes, basis) = se_proc::atlas_worker::memory_usage()?;
+            println!("ATLAS_BENCH_BASELINE {bytes} {basis}");
+        }
         let options = start(&f)?;
         let mut host =
             HostedRuntime::prepare(initialized, options, runtime.handle().clone(), &deadline()?)
                 .await?;
         host.configure(se_config::config_policy::ConfigFile::default())?;
         #[cfg(windows)]
-        let qualification = NativeAtlasQualification::default();
+        let qualification = NativeAtlasQualification::measured_windows_components()?;
         #[cfg(target_os = "linux")]
         let qualification = NativeAtlasQualification {
             sql: Some(SqlProfile::from_qualified_overhead(1)?),
@@ -449,8 +586,17 @@ fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
         let serving = tokio::spawn(host.serve(listener));
         let result = async {
             caught_up(&context, &f.project, 1).await?;
+            if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                println!(
+                    "ATLAS_BENCH_FIRST_INDEX_MS {}",
+                    started.elapsed().as_millis()
+                );
+            }
             tokio::task::spawn_blocking(move || write(&endpoint)).await??;
             caught_up(&context, &f.project, 2).await?;
+            if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
             Ok::<(), Box<dyn std::error::Error>>(())
         }
         .await;
