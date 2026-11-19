@@ -1,6 +1,7 @@
 //! Development consumer of automatic after-ready composition and record wakes.
 //! The synthetic SQL admission tests behavior, never native memory qualification.
 #![cfg(all(any(target_os = "linux", windows), not(debug_assertions)))]
+#[cfg(target_os = "linux")]
 use se_atlas::cache::connection::SqlProfile;
 use se_host::*;
 use se_store::*;
@@ -430,12 +431,16 @@ fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
             HostedRuntime::prepare(initialized, options, runtime.handle().clone(), &deadline()?)
                 .await?;
         host.configure(se_config::config_policy::ConfigFile::default())?;
+        #[cfg(windows)]
+        let qualification = NativeAtlasQualification::default();
+        #[cfg(target_os = "linux")]
+        let qualification = NativeAtlasQualification {
+            sql: Some(SqlProfile::from_qualified_overhead(1)?),
+            parsers: Vec::new(),
+        };
         host.install_native_atlas(
             std::path::PathBuf::from(env!("CARGO_BIN_EXE_se")).canonicalize()?,
-            NativeAtlasQualification {
-                sql: Some(SqlProfile::from_qualified_overhead(1)?),
-                parsers: Vec::new(),
-            },
+            qualification,
         )?;
         let context = host.execution_context();
         let stop = host.local_stop();
