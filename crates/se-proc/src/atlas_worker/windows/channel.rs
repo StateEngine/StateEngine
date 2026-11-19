@@ -98,6 +98,21 @@ impl WorkerChannel {
         let payload = serde_json::to_vec(&envelope.payload).map_err(io::Error::other)?;
         Ok((Self(stream), payload))
     }
+    /// Block for the next parse request; a closed parent channel ends the
+    /// run cleanly instead of reporting a protocol failure.
+    pub fn await_next_request(&mut self) -> io::Result<Option<Vec<u8>>> {
+        self.0
+            .set_bound(bound(Instant::now() + Duration::from_secs(900)));
+        match read_frame(&mut self.0) {
+            Ok(frame) => {
+                self.0
+                    .set_bound(bound(Instant::now() + Duration::from_secs(2)));
+                Ok(Some(frame))
+            }
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
     pub fn send(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.0
             .set_bound(bound(Instant::now() + Duration::from_secs(2)));

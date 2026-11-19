@@ -127,7 +127,15 @@ impl Parser {
         budget: ParseBudget,
         deadline: Instant,
     ) -> AtlasResult<ParsedFile> {
-        self.close(deadline)?;
+        // A resident worker survives between files; probe once so a dead
+        // worker releases its slot before the next request reuses or spawns.
+        let worker_died = self
+            .worker
+            .as_mut()
+            .is_some_and(|worker| worker.try_reap().is_ok_and(|status| status.is_some()));
+        if worker_died {
+            self.worker = None;
+        }
         let profile = self
             .profile(language)
             .ok_or_else(|| failure("qualified parse profile absent"))?;
@@ -149,7 +157,7 @@ impl Parser {
         }
         let image = self
             .image
-            .as_ref()
+            .clone()
             .ok_or_else(|| failure("installed Atlas worker image absent"))?;
         let request = protocol::Request {
             parse_only: true,
@@ -169,21 +177,12 @@ impl Parser {
             budget,
             profile,
         };
-        self.worker = Some(
-            AtlasWorker::spawn_bounded(
-                image,
-                &serde_json::to_vec(&request).map_err(failure)?,
-                deadline,
-            )
-            .map_err(|error| start_error(error, deadline))?,
-        );
-        let worker = self
-            .worker
-            .as_mut()
-            .ok_or_else(|| failure("parse custody absent"))?;
-        let mut consumed = Duration::ZERO;
-        let result = collect::read(
-            worker,
+        let request_bytes = serde_json::to_vec(&request).map_err(failure)?;
+        // Custody is decided inside run_file: on return, the worker is
+        // either retained or already closed and the slot released.
+        let (result, consumed) = self.run_file(
+            &image,
+            &request_bytes,
             collect::Context {
                 source,
                 snapshot,
@@ -192,14 +191,10 @@ impl Parser {
                 profile,
                 deadline: work_end,
             },
+            deadline,
+            work_end,
             budget.max_work.saturating_sub(spent),
-            &mut consumed,
-        );
-        let result = if result.is_ok() {
-            finish_worker(worker, deadline).and(result)
-        } else {
-            result
-        };
+        )?;
         // Neither a reply nor a timeout grants success before exact reap.
         let timed_out = matches!(&result, Err(error) if matches!(error.body.detail(),
             Detail::DeadlineExceeded(detail) if detail.op == "Atlas parse attempt" || detail.op == "Atlas parse CPU"));
@@ -208,8 +203,8 @@ impl Parser {
         } else {
             Ok(false)
         };
-        match (self.close(deadline), result, stalled) {
-            (Ok(()), result, Ok(stalled)) => {
+        match stalled {
+            Ok(stalled) => {
                 let retry_slice = if timed_out {
                     self.may_retry(budget)?
                 } else {
@@ -225,29 +220,90 @@ impl Parser {
                 }
                 result
             }
-            (Ok(()), _, Err(accounting)) => Err(accounting),
-            (Err(close), Err(error), _) => Err(close.with_cause(error)),
-            (Err(close), Ok(_), _) => Err(close),
+            Err(accounting) => Err(accounting),
         }
     }
-}
-#[cfg(any(target_os = "linux", windows))]
-fn finish_worker(worker: &mut AtlasWorker, deadline: Instant) -> AtlasResult<()> {
-    worker.observe_memory().map_err(failure)?;
-    worker
-        .send_control(b"reap", deadline)
-        .map_err(|error| collect::channel_error(error, deadline))?;
-    loop {
-        if let Some(status) = worker.try_reap().map_err(failure)? {
-            if !status.success() {
-                return Err(failure("parse child exited unsuccessfully"));
+    /// Reuse the resident worker or spawn it, read the bounded file result,
+    /// and leave custody consistent on every outcome: the single retain
+    /// decision below keeps the worker only for a complete file, otherwise
+    /// the exact child is closed and its slot released.
+    fn run_file(
+        &mut self,
+        image: &Path,
+        request_bytes: &[u8],
+        context: collect::Context<'_>,
+        deadline: Instant,
+        work_end: Instant,
+        remaining: Duration,
+    ) -> AtlasResult<(AtlasResult<ParsedFile>, Duration)> {
+        // Deliver the request. A failed send closes the exact child first,
+        // so no early return leaves a live process or a held slot behind;
+        // a failed spawn reaps its own child and holds no slot.
+        if self.worker.is_some() {
+            let error = self
+                .worker
+                .as_mut()
+                .and_then(|worker| {
+                    worker.extend_deadline(deadline);
+                    worker.send_control(request_bytes, work_end).err()
+                })
+                .map(|error| collect::channel_error(error, work_end));
+            if let Some(error) = error {
+                return Err(self.closed_error(deadline, error));
             }
-            return Ok(());
+        } else {
+            self.worker = Some(
+                AtlasWorker::spawn_bounded(image, request_bytes, deadline)
+                    .map_err(|error| start_error(error, deadline))?,
+            );
         }
-        if Instant::now() >= deadline {
-            return Err(expired());
+        let worker = match self.worker.as_mut() {
+            Some(worker) => worker,
+            // Neither branch left a child, so there is no custody to
+            // release; this is a plain invariant failure.
+            None => return Err(failure("parse custody absent")),
+        };
+        let mut consumed = Duration::ZERO;
+        let result = collect::read(worker, context, remaining, &mut consumed);
+        // One decision per outcome: only a complete file keeps its worker.
+        // A failed or desynchronized read leaves the child mid-custody, and
+        // a deferred ParseMemoryLimit file has driven the child to its
+        // memory peak, so the next file gets a fresh guard window. A failed
+        // peak observation fails the file, as a failed close did.
+        let (retain, custody) = match &result {
+            Ok(parsed)
+                if matches!(
+                    parsed.coverage,
+                    FileCoverage::Deferred {
+                        reason: CoverageReason::ParseMemoryLimit
+                    }
+                ) =>
+            {
+                (false, Ok(()))
+            }
+            Ok(_) => {
+                let guard = worker.observe_memory().map(|_| ()).map_err(failure);
+                (guard.is_ok(), guard)
+            }
+            Err(_) => (false, Ok(())),
+        };
+        if retain {
+            return Ok((result, consumed));
         }
-        worker.wait_ready(deadline).map_err(failure)?;
+        let close = self.close(deadline);
+        match (close, custody.and(result)) {
+            (Ok(()), result) => Ok((result, consumed)),
+            (Err(close), Err(error)) => Err(close.with_cause(error)),
+            (Err(close), Ok(_)) => Err(close),
+        }
+    }
+    /// Close the exact child; a failed close carries the delivery error as
+    /// its cause so both custody failures stay diagnosable.
+    fn closed_error(&mut self, deadline: Instant, error: SeError) -> SeError {
+        match self.close(deadline) {
+            Ok(()) => error,
+            Err(close) => close.with_cause(error),
+        }
     }
 }
 #[cfg(any(target_os = "linux", windows))]

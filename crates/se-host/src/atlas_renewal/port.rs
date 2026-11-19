@@ -4,6 +4,9 @@ impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
         self.parser.bind_image(image);
         Ok(())
     }
+    fn release_parser(&mut self, deadline: Instant) -> AtlasResult<()> {
+        self.parser.close(deadline)
+    }
     fn step(
         &mut self,
         source: &Source,
