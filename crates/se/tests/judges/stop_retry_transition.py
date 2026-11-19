@@ -50,6 +50,11 @@ else:
         arm, hit = f.root / "deny-signal", f.root / "signal-refused"
         f.env.update(XDG_RUNTIME_DIR=str(runtime), TMPDIR=str(runtime), LD_PRELOAD=str(library),
                      SE_STOP_REVIEW_ARM=str(arm), SE_STOP_REVIEW_HIT=str(hit))
+        # Shorten the provider graceful-stop window at spawn: the fixture
+        # provider dies only in the force phase, so both stops in each case
+        # would otherwise wait out the full 5 s default. The dispatch
+        # refusal and the retry's witnessed closure are unaffected.
+        f.env['SE_PROVIDER_STOP_GRACE_MS'] = '500'
         pins = []
         host_process = None
         record = {"case": mode}
