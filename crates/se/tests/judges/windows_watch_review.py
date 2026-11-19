@@ -1,6 +1,7 @@
 """Exercise the real Windows status and a foreground host in a private fixture."""
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -99,21 +100,30 @@ def main(image, output):
         assert first["git"]["commits"] == expected
         report["checks"]["initial_count"] = True
 
+        # Cross the human age threshold with no writes or status activity.
+        # A healthy idle watcher keeps its basis until relevant notifications.
+        time.sleep(5)
         with tracked.open("ab", buffering=0) as writer:
             changed = b"changed while the native writer stays open\n"
             assert writer.write(changed) == len(changed)
             # Invoke the public consumer before an oracle read can affect cache state.
             before_flush = await_status(watched, 4)
-            plain = run([image, "--home", home, "status"])
-            if "watched" not in plain.lower():
+            plain_until = time.monotonic() + 4
+            while True:
                 plain = run([image, "--home", home, "status"])
+                if "last reconciled" in plain.lower() or time.monotonic() >= plain_until:
+                    break
+                time.sleep(.1)
             keep("held_before_flush", {"status": before_flush, "plain": plain})
             assert tracked.read_bytes() == original + changed and not writer.closed
             observed = before_flush["git"]
-            if watched(before_flush):
-                basis = observed["observation"]
-                assert basis["reconciled_at"]
-                assert "watched" in plain.lower() and "last reconciled" in plain.lower(), plain
+            assert watched(before_flush), before_flush
+            basis = observed["observation"]
+            assert basis["reconciled_at"] == first["git"]["observation"]["reconciled_at"], basis
+            assert basis["age_seconds"] >= 4, basis
+            repo_lines = [line.lower() for line in plain.splitlines() if "last reconciled" in line.lower()]
+            assert len(repo_lines) == 1 and "watched" in repo_lines[0], plain
+            assert re.search(r"\(\d+s ago\)", repo_lines[0]) and "proven" not in repo_lines[0], plain
             forced = status("--fresh")
             keep("held_fresh", forced)
             assert not watched(forced) and forced["git"]["uncommitted"] is True, forced
@@ -171,13 +181,16 @@ def main(image, output):
         report["checks"]["new_head_count"] = True
 
         time.sleep(32)
-        idle = status()
+        idle = await_status(watched, 4)
         keep("idle", idle)
-        report["checks"]["idle_reconciled"] = (
-            watched(idle)
-            and idle["git"]["observation"]["reconciled_at"] != advanced["git"]["observation"]["reconciled_at"]
-        )
-        assert report["checks"]["idle_reconciled"], "an armed idle watcher never revised its last reconcile"
+        assert watched(idle), idle
+        prev, observed = (row["git"]["observation"] for row in (advanced, idle))
+        if prev.get("last_notification_at") == observed.get("last_notification_at"):
+            assert prev["reconciled_at"] == observed["reconciled_at"], observed
+            assert observed["age_seconds"] >= prev["age_seconds"] + 30, observed
+            report["checks"]["idle_kept_basis"] = True
+        else:
+            report["checks"]["idle_kept_basis"] = "another notification arrived"
     finally:
         if child is not None and child.poll() is None:
             try:
