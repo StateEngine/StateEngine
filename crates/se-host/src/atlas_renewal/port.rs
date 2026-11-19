@@ -1,3 +1,4 @@
+use super::schedule::sync_locks;
 use super::*;
 
 /// One source wake uses the same drain budget as the native owner loop.
@@ -105,7 +106,7 @@ pub fn drive_events(
         now + std::time::Duration::from_secs(5),
         Some(budget),
     ) {
-        Ok(hints) => hints,
+        Ok((hints, _)) => hints,
         Err(crate::atlas_runtime::PollEventsFailure::Admission(error)) => return Err(error),
         Err(crate::atlas_runtime::PollEventsFailure::Driver(error)) => {
             let watch_died = matches!(error.body.detail(), Detail::AtlasSourceUnreadable(detail)
@@ -183,32 +184,4 @@ fn retain_failure(primary: SeError, other: SeError) -> SeError {
         .map_or_else(String::new, ToString::to_string);
     let cause = std::io::Error::other(format!("{primary}; {native}; earlier failure: {other}"));
     primary.with_cause(cause)
-}
-
-/// Run source work and transfer newly observed checkout-lock state to the same
-/// scheduler before it can publish. Callers pair this with `drive_events`.
-pub fn drive_quantum(
-    controller: &mut crate::atlas_runtime::NativeController<NativeRenewal>,
-    duration: Duration,
-) -> AtlasResult<Option<WorkReport>> {
-    sync_locks(controller)?;
-    let result = controller.work_quantum(duration);
-    sync_locks(controller)?;
-    result
-}
-fn sync_locks(
-    controller: &mut crate::atlas_runtime::NativeController<NativeRenewal>,
-) -> AtlasResult<usize> {
-    let changes: Vec<_> = controller
-        .runtime_mut()
-        .driver_mut()
-        .roots
-        .iter_mut()
-        .filter_map(|root| root.pending_lock.take().map(|held| (root.id.clone(), held)))
-        .collect();
-    let count = changes.len();
-    for (root, held) in changes {
-        controller.git_lock(&root, held)?;
-    }
-    Ok(count)
 }

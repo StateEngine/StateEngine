@@ -5,7 +5,10 @@ mod ignore;
 mod metadata;
 mod observe;
 mod port;
-pub use port::{drive_events, drive_owner_events, drive_quantum};
+#[path = "../atlas_renewal_schedule.rs"]
+mod schedule;
+pub use port::{drive_events, drive_owner_events};
+pub use schedule::drive_quantum;
 mod scan;
 mod summary;
 mod watch;
