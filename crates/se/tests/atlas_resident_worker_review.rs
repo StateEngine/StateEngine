@@ -1,13 +1,13 @@
 #![cfg(any(target_os = "linux", windows))]
 
 use se_atlas::{
-    lifecycle::SourceRead,
+    lifecycle::{CaseMode, SourceRead},
     model::*,
     parse::{ParserPlacement, ParserProfile},
 };
 use se_host::atlas_source::NativeAtlasSource;
 use se_proc::atlas_worker::{AtlasWorker, MEMORY_BYTES};
-use se_types::{NativePath, ProjectId};
+use se_types::{NativePath, ProjectId, code::AtlasText};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -108,8 +108,7 @@ fn resident_worker_replies_to_each_file_and_bounds_many_parses() -> Check {
     let output = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/judge-diagnostics/atlas-resident-worker-review");
     fs::create_dir_all(&output)?;
-    let mut samples = Vec::new();
-    let report = output.join("review.jsonl");
+    let mut report = fs::File::create(output.join("review.jsonl"))?;
     let mut worker: Option<AtlasWorker> = None;
     let mut pid = 0;
     let end = Instant::now() + Duration::from_secs(105);
@@ -122,10 +121,11 @@ fn resident_worker_replies_to_each_file_and_bounds_many_parses() -> Check {
         let text = if dense || low {
             "v=1;".repeat(if dense { 90_000 } else { 14_000 })
         } else {
-            let declarations = (0..(i % 29))
+            let declarations = (0..(i % 89))
                 .map(|n| format!("export function value_{n}() {{ return {n}; }}\n"))
                 .collect::<String>();
-            format!("export function {marker}() {{ return {i}; }}\n{declarations}")
+            let padding = " ".repeat((i * 5_183) % 49_152);
+            format!("/* {padding} */\nexport function {marker}() {{ return {i}; }}\n{declarations}")
         };
         fs::write(root.join(path.as_str()), &text)?;
         let budget = ParseBudget {
@@ -198,13 +198,8 @@ fn resident_worker_replies_to_each_file_and_bounds_many_parses() -> Check {
             "before": start_commit,
             "after": if matches!(i, 0 | 100 | 200 | 300 | 400) { windows_commit(pid)? } else { Value::Null },
         });
-        samples.push(sample);
         use std::io::Write;
-        let mut out = fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&report)?;
-        writeln!(out, "{}", samples.last().unwrap())?;
+        writeln!(report, "{sample}")?;
         if low || dense {
             assert!(
                 start["row"]["coverage"]
