@@ -181,3 +181,7 @@ pub(super) async fn request(
     )
     .await
 }
+
+#[cfg(test)]
+#[path = "control_rebind_test.rs"]
+mod tests;
