@@ -43,3 +43,8 @@ harness = false
 [dev-dependencies]
 se-atlas = { path = "../se-atlas" }
 rusqlite = { version = "0.41", features = ["bundled"] }
+
+[[bin]]
+name = "secode-rebind-fixture"
+path = "tests/support/secode_rebind_fixture/main.rs"
+test = false

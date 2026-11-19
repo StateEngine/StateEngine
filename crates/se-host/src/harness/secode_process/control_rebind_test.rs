@@ -8,6 +8,10 @@ use std::{
     time::Duration,
 };
 #[path = "../../../../test-support/directory.rs"]
+#[allow(
+    clippy::duplicate_mod,
+    reason = "shared protected test directory helper"
+)]
 mod directory;
 type Check = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 const KEY: &[u8] = b"synthetic-capability-for-test-only";
