@@ -1,0 +1,23 @@
+name: Windows Atlas owner observation
+on:
+  push:
+    branches: [probe/windows-atlas-owner-20261119]
+permissions:
+  contents: read
+jobs:
+  observe:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '4'
+      CARGO_INCREMENTAL: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Observe automatic owner through the host
+        run: cargo test --release --locked -p se --test atlas_startup_dev -- --nocapture
