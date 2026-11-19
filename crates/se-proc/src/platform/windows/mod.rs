@@ -1,7 +1,9 @@
 mod console;
 mod identity;
 mod interrupt;
-pub use interrupt::{CONSOLE_INTERRUPT_ENTRY, console_interrupt_entry};
+pub use interrupt::{
+    CONSOLE_INTERRUPT_ENTRY, console_interrupt_entry, initialize_host_console_policy,
+};
 mod notify;
 mod recovery;
 pub use recovery::observe_prepared_scope_exit;

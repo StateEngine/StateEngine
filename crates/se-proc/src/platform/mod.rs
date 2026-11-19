@@ -18,7 +18,9 @@ pub use windows::observe_prepared_scope_exit;
 #[cfg(windows)]
 pub(crate) use windows::*;
 #[cfg(windows)]
-pub use windows::{CONSOLE_INTERRUPT_ENTRY, console_interrupt_entry};
+pub use windows::{
+    CONSOLE_INTERRUPT_ENTRY, console_interrupt_entry, initialize_host_console_policy,
+};
 
 use crate::{
     EnumerationExtent, Population, ProcessIdentity, ProcessObservation, RemainingScope,

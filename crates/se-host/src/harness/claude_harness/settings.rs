@@ -19,7 +19,7 @@ pub(super) async fn has_saved_mode(
     let until = tokio::time::Instant::now() + timeout;
     let query_until = until - (timeout / 10).min(Duration::from_millis(500));
     let mut child = crate::child_io::spawn(
-        tokio::process::Command::new(command)
+        tokio::process::Command::from(se_proc::background_command(command))
             .args([
                 "--safe-mode",
                 "-p",

@@ -56,7 +56,7 @@ pub async fn probe(command: &Path, budget: Duration) -> Result<ProviderVersion> 
     // Reserve part of the same five-second ceiling for killing and reaping.
     let run_end = end - (budget / 10).min(Duration::from_millis(500));
     let mut child = crate::child_io::spawn(
-        Command::new(command)
+        Command::from(se_proc::background_command(command))
             .arg("--version")
             .env_clear()
             .envs(provider_environment())
