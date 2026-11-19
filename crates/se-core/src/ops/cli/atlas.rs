@@ -27,6 +27,30 @@ fn targeted(c: Command) -> Command {
     c.arg(positional("target", 1, false))
         .arg(value("path"))
         .arg(value("container"))
+        .arg(
+            value("kind")
+                .help("Symbol kind, e.g. Struct or Namespace")
+                .value_parser([
+                    "Module",
+                    "Namespace",
+                    "Class",
+                    "Interface",
+                    "Trait",
+                    "Struct",
+                    "Enum",
+                    "TypeAlias",
+                    "Function",
+                    "Method",
+                    "Constant",
+                    "Static",
+                    "Variable",
+                    "Parameter",
+                    "Field",
+                    "EnumVariant",
+                    "Macro",
+                ])
+                .conflicts_with_all(["file", "record", "commit", "symbol_id", "line"]),
+        )
         .arg(value("line").requires("path"))
         .arg(value("column").requires("line").default_value("0"))
         .arg(toggle("file").conflicts_with_all(["record", "commit", "symbol_id", "line"]))
@@ -185,6 +209,8 @@ fn target(m: &ArgMatches) -> Result<AtlasTarget> {
         name: QueryText::new(value)?,
         path: text(m, "path").map(RelativePath::new).transpose()?,
         container: text(m, "container").map(QueryText::new).transpose()?,
+        kind: text(m, "kind").map(|s| parse("kind", &s)).transpose()?,
+        line: None,
     }))
 }
 pub(super) fn decode(name: &str, m: &ArgMatches, json: bool) -> Result<AnyOp> {

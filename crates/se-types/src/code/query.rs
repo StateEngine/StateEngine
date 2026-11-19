@@ -84,6 +84,13 @@ pub enum SymbolSelector {
         name: QueryText,
         path: Option<RelativePath>,
         container: Option<QueryText>,
+        /// Optional kind filter; a lone type declaration wins over
+        /// same-named non-declaration symbols when no kind or line is set.
+        #[serde(default)]
+        kind: Option<SymbolKind>,
+        /// Optional 1-based start line of the symbol definition.
+        #[serde(default)]
+        line: Option<u32>,
     },
 }
 #[derive(
