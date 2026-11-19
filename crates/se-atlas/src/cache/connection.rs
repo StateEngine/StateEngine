@@ -472,11 +472,42 @@ impl<'a> CacheConnection<'a> {
         }
         let query_started = Instant::now();
         let result = finite(&mut self.db, deadline, |db, _| {
+            if self.role == ConnectionRole::ColdWriter {
+                let start = Instant::now();
+                let (busy, log, copied): (i64, i64, i64) = db
+                    .query_row("PRAGMA wal_checkpoint(RESTART)", [], |r| {
+                        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                    })
+                    .map_err(cache_error)?;
+                let micros = start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+                timing::CHECKPOINT_RESTART_US.fetch_add(micros, Ordering::Relaxed);
+                timing::CHECKPOINT_RESTART_MAX_US.fetch_max(micros, Ordering::Relaxed);
+                if micros >= 100_000 {
+                    timing::CHECKPOINT_RESTART_SLOW.fetch_add(1, Ordering::Relaxed);
+                }
+                if log < 0 || copied < 0 {
+                    return Err(cache_error("checkpoint frame counts unavailable"));
+                }
+                timing::CHECKPOINT_FRAMES.fetch_add(log as u64, Ordering::Relaxed);
+                timing::CHECKPOINT_COPIED.fetch_add(copied as u64, Ordering::Relaxed);
+                if busy != 0 || copied != log {
+                    return Ok(false);
+                }
+            }
+            let start = Instant::now();
             let (busy, _, _): (i64, i64, i64) = db
                 .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?))
                 })
                 .map_err(cache_error)?;
+            if self.role == ConnectionRole::ColdWriter {
+                let micros = start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+                timing::CHECKPOINT_TRUNCATE_US.fetch_add(micros, Ordering::Relaxed);
+                timing::CHECKPOINT_TRUNCATE_MAX_US.fetch_max(micros, Ordering::Relaxed);
+                if micros >= 100_000 {
+                    timing::CHECKPOINT_TRUNCATE_SLOW.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             Ok(busy == 0)
         });
         if self.role == ConnectionRole::ColdWriter {

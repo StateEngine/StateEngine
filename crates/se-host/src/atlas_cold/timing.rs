@@ -15,7 +15,7 @@ pub(super) fn totals(elapsed_ms: u128, files: u64) -> String {
     use se_atlas::cache::timing as sql;
     let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
     format!(
-        "elapsed_ms={elapsed_ms} files={files} source_us={} parse_us={} resolve_us={} verify_us={} file_us={} checkpoint_us={} release_us={} admission_us={} sql_read_us={} sql_write_us={} commit_us={} sqlite_checkpoint_us={} checkpoints={} capacity_checkpoints={} max_wal_bytes={} final_sync_us={} final_flush_us={} admission_validate_us={} admission_wal_us={} admission_reserve_us={} inventory_cache_us={} inventory_walk_us={} inventory_hits={} inventory_walks={} admission_reads={} admission_writes={} private_guard={} inventory_directory_us={} inventory_enum_us={} inventory_metadata_us={} page_writes={} checkpoint_fast={} checkpoint_medium={} checkpoint_slow={} checkpoint_max_us={} accounting_estimates={} accounting_refreshes={} accounting_guards={} accounting_unguarded={} accounting_disabled={}",
+        "elapsed_ms={elapsed_ms} files={files} source_us={} parse_us={} resolve_us={} verify_us={} file_us={} checkpoint_us={} release_us={} admission_us={} sql_read_us={} sql_write_us={} commit_us={} sqlite_checkpoint_us={} checkpoints={} capacity_checkpoints={} max_wal_bytes={} final_sync_us={} final_flush_us={} admission_validate_us={} admission_wal_us={} admission_reserve_us={} inventory_cache_us={} inventory_walk_us={} inventory_hits={} inventory_walks={} admission_reads={} admission_writes={} private_guard={} inventory_directory_us={} inventory_enum_us={} inventory_metadata_us={} page_writes={} checkpoint_fast={} checkpoint_medium={} checkpoint_slow={} checkpoint_max_us={} accounting_estimates={} accounting_refreshes={} accounting_guards={} accounting_unguarded={} accounting_disabled={} restart_us={} truncate_us={} restart_max_us={} truncate_max_us={} restart_slow={} truncate_slow={} checkpoint_frames={} checkpoint_copied={}",
         read(&SOURCE),
         read(&PARSE),
         read(&RESOLVE),
@@ -55,6 +55,14 @@ pub(super) fn totals(elapsed_ms: u128, files: u64) -> String {
         read(&sql::ACCOUNTING_REFRESHES),
         read(&sql::ACCOUNTING_GUARDS),
         read(&sql::ACCOUNTING_UNGUARDED),
-        read(&sql::ACCOUNTING_DISABLED)
+        read(&sql::ACCOUNTING_DISABLED),
+        read(&sql::CHECKPOINT_RESTART_US),
+        read(&sql::CHECKPOINT_TRUNCATE_US),
+        read(&sql::CHECKPOINT_RESTART_MAX_US),
+        read(&sql::CHECKPOINT_TRUNCATE_MAX_US),
+        read(&sql::CHECKPOINT_RESTART_SLOW),
+        read(&sql::CHECKPOINT_TRUNCATE_SLOW),
+        read(&sql::CHECKPOINT_FRAMES),
+        read(&sql::CHECKPOINT_COPIED)
     )
 }
