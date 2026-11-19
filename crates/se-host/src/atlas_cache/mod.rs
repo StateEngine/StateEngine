@@ -221,7 +221,7 @@ impl CacheFiles for NativeAtlasCache {
     ) -> Option<u64> {
         #[cfg(windows)]
         if self.cold_accounting.get() {
-            return se_proc::atlas_sql::written_pages(connection).ok();
+            return se_atlas::native_sql::written_pages(connection).ok();
         }
         let _ = connection;
         None
