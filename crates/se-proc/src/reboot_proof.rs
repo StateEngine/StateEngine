@@ -30,11 +30,34 @@ impl RebootBoot {
             return Some(Self::MacOs(value.clone()));
         }
         if let Some(id) = text.strip_prefix("windows:")
-            && guid(id, 35, &[8, 13, 18])
+            && let Some((entry, sequence)) = id.split_once(':')
+            && guid(entry, 35, &[8, 13, 18])
+            && !sequence.is_empty()
+            && sequence.bytes().all(|b| b.is_ascii_digit())
+            && sequence.parse::<u32>().is_ok()
         {
             return Some(Self::Windows(value.clone()));
         }
         None
+    }
+    /// Windows records written before the boot sequence was added name only
+    /// the boot entry, which is identical on every boot of that install.
+    pub(crate) fn legacy_windows_entry(value: &BootId) -> Option<&str> {
+        value
+            .as_str()
+            .strip_prefix("windows:")
+            .filter(|id| guid(id, 35, &[8, 13, 18]))
+    }
+    /// The boot entry of a current Windows boot identity.
+    pub(crate) fn windows_entry(value: &BootId) -> Option<&str> {
+        match Self::parse(value) {
+            Some(Self::Windows(_)) => value
+                .as_str()
+                .strip_prefix("windows:")
+                .and_then(|id| id.split_once(':'))
+                .map(|(entry, _)| entry),
+            _ => None,
+        }
     }
     fn id(&self) -> &BootId {
         match self {
@@ -220,6 +243,8 @@ fn checked(
         }
         crate::BootIdentity::WindowsAbsoluteCreationClock => match RebootBoot::parse(indexed) {
             value @ Some(RebootBoot::Windows(_)) => value,
+            // A legacy record cannot tell its boot from this one.
+            _ if RebootBoot::legacy_windows_entry(indexed).is_some() => return Ok(None),
             _ => None,
         },
         crate::BootIdentity::MacOs {
