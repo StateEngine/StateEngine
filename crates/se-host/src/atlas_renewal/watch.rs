@@ -315,22 +315,11 @@ impl NativeRenewal {
                 .rsplit_once('/')
                 .map_or("", |(parent, _)| parent);
             let basename = path.as_str().rsplit('/').next().unwrap_or_default();
-            #[cfg(target_os = "linux")]
-            let directory_event = event.directory;
-            #[cfg(windows)]
-            let directory_event = windows_directory_event(
-                self.roots[index]
-                    .native
-                    .as_ref()
-                    .ok_or_else(|| source_error("watch", "closed"))?,
-                connection,
-                &path,
-                event.action,
-                deadline,
-            )?;
             // Rule inputs are always observed. Other ignored churn never enters
             // the shared scheduler, including excluded newly-created trees.
-            if basename == ".gitignore" {
+            if basename == ".gitignore"
+                || cfg!(windows) && basename.eq_ignore_ascii_case(".gitignore")
+            {
                 if !parent.is_empty() {
                     return Ok(vec![SourceHint::DirectoryChanged(RelativePath::new(
                         parent,
@@ -361,6 +350,25 @@ impl NativeRenewal {
                 )]);
             }
             let rules = ignore::Rules::load(source, policy, parent, deadline)?;
+            #[cfg(windows)]
+            if !rules.eligible(path.as_str(), false, policy, deadline)?
+                && !rules.eligible(path.as_str(), true, policy, deadline)?
+            {
+                continue;
+            }
+            #[cfg(target_os = "linux")]
+            let directory_event = event.directory;
+            #[cfg(windows)]
+            let directory_event = windows_directory_event(
+                self.roots[index]
+                    .native
+                    .as_ref()
+                    .ok_or_else(|| source_error("watch", "closed"))?,
+                connection,
+                &path,
+                event.action,
+                deadline,
+            )?;
             if !rules.eligible(path.as_str(), directory_event, policy, deadline)? {
                 continue;
             }
