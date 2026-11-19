@@ -114,9 +114,14 @@ def main(image, output):
                 report['observed']['fresh_open_writer'] = forced
                 assert not watched(forced) and forced['git']['uncommitted'] is True, forced
                 os.fsync(writer.fileno())
-                dirty = wait_for(lambda row: watched(row) and row['git'].get('uncommitted') is True)
-                report['observed']['watched_open_writer'] = dirty
-                assert watched(dirty) and dirty['git']['uncommitted'] and not writer.closed, dirty
+                # Darwin may post the content notification on close even after fsync.
+                held = status()
+                report['observed']['watched_open_writer'] = held
+                assert watched(held) and not writer.closed, held
+                assert held['git']['observation']['age_seconds'] >= 4, held
+            dirty = wait_for(lambda row: watched(row) and row['git'].get('uncommitted') is True)
+            report['observed']['watched_after_close'] = dirty
+            assert watched(dirty) and dirty['git']['uncommitted'] is True, dirty
             path.write_bytes(original)
             clean = wait_for(lambda row: watched(row) and row['git'].get('uncommitted') is False)
             assert watched(clean) and clean['git']['uncommitted'] is False, clean
