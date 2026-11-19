@@ -152,8 +152,15 @@ pub fn console_interrupt_entry(request: &OsStr) -> ProcResult<StopDispatch> {
         return Ok(StopDispatch::NotNeeded);
     }
     security::verify_job(&job)?;
-    // The helper was created without a console. Never detach the runtime's or
-    // an inherited console to make this work.
+    // Only this isolated helper detaches its own console. The runtime and its
+    // target retain their consoles, and the pinned root prevents PID reuse.
+    // SAFETY: FreeConsole affects only the calling helper process.
+    if unsafe { FreeConsole() } == 0 {
+        return Err(last(
+            ProcErrorCode::StopDispatchFailed,
+            "detach helper console",
+        ));
+    }
     // SAFETY: original live process object remains pinned against PID reuse.
     if unsafe { AttachConsole(request.root.pid.0) } == 0 {
         return Err(last(

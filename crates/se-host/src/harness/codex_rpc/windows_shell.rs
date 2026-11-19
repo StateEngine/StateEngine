@@ -87,7 +87,7 @@ pub(super) async fn probe(shell: &Path, pool: &BlockingPool, cx: &CallContext) -
     }
     let until = tokio::time::Instant::now() + budget;
     let query_until = until - (budget / 10).min(Duration::from_millis(500));
-    let mut child = tokio::process::Command::new(shell)
+    let mut child = tokio::process::Command::from(se_proc::background_command(shell))
         .args([
             "-NoLogo",
             "-NoProfile",
