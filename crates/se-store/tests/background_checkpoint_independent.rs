@@ -120,10 +120,7 @@ impl Drop for Quiesce {
         };
         // Best effort: the case already failed, so the close result only
         // matters to the fixture cleanup that follows.
-        let Ok(completion) = writer.drain(DRAIN_DEADLINE) else {
-            return;
-        };
-        let _ = wait_until(completion, Instant::now() + DRAIN_BUDGET);
+        let _ = wait_until(writer.drain(DRAIN_DEADLINE), Instant::now() + DRAIN_BUDGET);
     }
 }
 
@@ -168,7 +165,7 @@ fn background_task_resets_the_wal_after_the_reader_releases() -> Check {
         Instant::now() + DRAIN_BUDGET,
     )??);
     drop(wait_until(
-        writer.drain(DRAIN_DEADLINE)?,
+        writer.drain(DRAIN_DEADLINE),
         Instant::now() + DRAIN_BUDGET,
     )??);
     Ok(())
@@ -214,7 +211,7 @@ fn background_task_keeps_sustained_writes_below_the_cutoff() -> Check {
     )?;
     let writer = guard.take().ok_or("writer was already drained")?;
     drop(wait_until(
-        writer.drain(DRAIN_DEADLINE)?,
+        writer.drain(DRAIN_DEADLINE),
         Instant::now() + DRAIN_BUDGET,
     )??);
     eprintln!(
@@ -269,7 +266,7 @@ fn background_task_honors_backup_suppression() -> Check {
     )?;
     let writer = guard.take().ok_or("writer was already drained")?;
     drop(wait_until(
-        writer.drain(DRAIN_DEADLINE)?,
+        writer.drain(DRAIN_DEADLINE),
         Instant::now() + DRAIN_BUDGET,
     )??);
     Ok(())
