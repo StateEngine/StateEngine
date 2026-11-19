@@ -14,6 +14,23 @@ repo = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(repo / 'crates/se/tests/judges'))
 from mail_cli import Fixture
 
+def switches(process):
+    if sys.platform != 'linux':
+        value = process.num_ctx_switches()
+        return {'process': value.voluntary + value.involuntary}
+    result = {}
+    for thread in (Path('/proc') / str(process.pid) / 'task').iterdir():
+        fields = (thread / 'stat').read_text().rsplit(') ', 1)[1].split()
+        status = (thread / 'status').read_text().splitlines()
+        counters = {key: int(value.strip()) for line in status if ':' in line
+                    for key, value in [line.split(':', 1)]
+                    if key in ('voluntary_ctxt_switches', 'nonvoluntary_ctxt_switches')}
+        if len(counters) != 2:
+            raise RuntimeError('thread context switches unavailable')
+        result[(thread.name, fields[19])] = sum(counters.values())
+    return result
+
+
 binary = Path(sys.argv[1]).resolve()
 root = Path(sys.argv[2]).resolve()
 f = Fixture(binary, root, provider_helper=repo / 'probes/idle-provider.py')
@@ -48,18 +65,21 @@ try:
     time.sleep(10)
     start = time.monotonic()
     cpu_start = process.cpu_times()
-    switches_start = process.num_ctx_switches()
+    switches_start = switches(process)
     time.sleep(60)
-    switches_end = process.num_ctx_switches()
+    switches_end = switches(process)
     cpu_end = process.cpu_times()
     seconds = time.monotonic() - start
     if process.create_time() != birth:
         raise RuntimeError('host process identity changed')
     cpu = (cpu_end.user + cpu_end.system) - (cpu_start.user + cpu_start.system)
-    switches = ((switches_end.voluntary - switches_start.voluntary)
-                + (switches_end.involuntary - switches_start.involuntary))
+    if switches_start.keys() != switches_end.keys():
+        raise RuntimeError('host thread identities changed during measurement')
+    switch_count = sum(switches_end[key] - switches_start[key] for key in switches_start)
+    if switch_count < 0:
+        raise RuntimeError('context switch counter regressed')
     result.update(pid=pid, seconds=seconds, cpu_seconds=cpu, cpu_percent_one_core=100 * cpu / seconds,
-                  context_switches=switches, context_switches_per_second=switches / seconds,
+                  context_switches=switch_count, context_switches_per_second=switch_count / seconds,
                   accounting='native process context switches; proxy for wakeups, not a direct wakeup count')
     print(json.dumps(result, sort_keys=True), flush=True)
 finally:
