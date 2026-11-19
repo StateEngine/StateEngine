@@ -16,7 +16,7 @@ use std::{
 };
 use windows_sys::Win32::System::Threading::{
     BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, GetPriorityClass, NORMAL_PRIORITY_CLASS,
-    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, SetPriorityClass,
 };
 
 #[path = "../../test-support/directory.rs"]
@@ -154,6 +154,11 @@ fn observe(worker: &mut AtlasWorker, deadline: Instant) -> Check<Value> {
 
 #[test]
 fn windows_atlas_cold_priority_and_commit_phase() -> Check {
+    // SAFETY: this nextest process is a disposable fixture. Set only its own
+    // CPU class before it creates the real worker, and independently read it back.
+    if unsafe { SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS) } == 0 {
+        return Err(io::Error::last_os_error().into());
+    }
     let parent = parent_priority()?;
     assert_eq!(
         parent, NORMAL_PRIORITY_CLASS,
