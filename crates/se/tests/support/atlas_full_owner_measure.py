@@ -8,7 +8,6 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-import atlas_cold_wpr
 
 class ProcessMemory(c.Structure):
     _fields_ = [("size", w.DWORD), ("faults", w.DWORD),
@@ -34,7 +33,6 @@ kernel.CloseHandle.argtypes = [w.HANDLE]
 log = target / "atlas-full-owner.log"
 with log.open("wb") as out:
     child = subprocess.Popen([executables[0], "--exact", "automatic_owner_indexes_and_catches_committed_records_up", "--nocapture"], env=env, stdout=out, stderr=subprocess.STDOUT)
-    trace_thread = atlas_cold_wpr.start(child, log, target)
     handle = kernel.OpenProcess(0x1000, False, child.pid)
     if not handle:
         raise c.WinError(c.get_last_error())
@@ -61,7 +59,6 @@ with log.open("wb") as out:
         status = child.wait()
     finally:
         kernel.CloseHandle(handle)
-        trace_thread.join()
 text = log.read_text(encoding="utf-8", errors="replace")
 print(text, flush=True)
 lines = [line[line.index("ATLAS_BENCH_"):] for line in text.splitlines() if "ATLAS_BENCH_" in line]

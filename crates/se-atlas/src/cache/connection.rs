@@ -11,6 +11,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+mod diagnostic_pages;
 #[path = "query_arena.rs"]
 mod query_arena;
 #[path = "statement.rs"]
@@ -372,6 +373,12 @@ impl<'a> CacheConnection<'a> {
         let diagnostic_started = Instant::now();
         let diagnostic_caller = std::panic::Location::caller();
         let diagnostic_cold = self.role == ConnectionRole::ColdWriter && write;
+        let page_sample = diagnostic_cold && diagnostic_pages::should_sample();
+        let wal_before = if page_sample {
+            Some(self.files.wal_bytes(&self.pin)?)
+        } else {
+            None
+        };
         let result = finite(&mut self.db, deadline, |db, budget_ms| {
             let behavior = if write {
                 rusqlite::TransactionBehavior::Immediate
@@ -412,6 +419,14 @@ impl<'a> CacheConnection<'a> {
             }
             result
         });
+        if let Some(before) = wal_before
+            && result.is_ok()
+        {
+            match diagnostic_pages::sample(&self.db, &self.pin.path, before) {
+                Ok(report) => eprintln!("ATLAS_PAGE_SAMPLE {report}"),
+                Err(error) => eprintln!("ATLAS_PAGE_SAMPLE_ERROR {error}"),
+            }
+        }
         if let Err(error) = &result {
             eprintln!(
                 "ATLAS_SQL_TRACE transaction caller={diagnostic_caller} role={:?} write={write} elapsed_ms={} error={error:?}",
