@@ -112,18 +112,26 @@ class Fixture:
                                   'launch', self.agent, '--task', 'Inert profile admission fixture.',
                                   '--detach')
             end = time.monotonic() + 15
+            last_read_error = None
             try:
                 while not pending.done() and not release.exists():
                     marker = self.probe / 'bootstrap-pid'
                     if marker.is_file():
                         pid = int(marker.read_text())
                         for path in (self.home / 'secode').glob('*.json'):
-                            row = json.loads(path.read_text(encoding='utf-8')).get('bootstrap')
+                            try:
+                                row = json.loads(path.read_text(encoding='utf-8')).get('bootstrap')
+                            except (FileNotFoundError, PermissionError) as error:
+                                # Windows can briefly refuse the outside read during publication.
+                                last_read_error = error
+                                continue
                             checkpoint = row['checkpoint'] if row else None
                             if checkpoint and checkpoint['kind'] == 'process':
                                 assert checkpoint['value']['root']['pid'] == pid, checkpoint
                                 release.touch()
-                    assert time.monotonic() < end, 'launch never resolved bootstrap admission'
+                    assert time.monotonic() < end, (
+                        'launch never resolved bootstrap admission', last_read_error
+                    )
                     time.sleep(.025)
                 return pending.result()
             finally:
