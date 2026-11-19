@@ -1,5 +1,8 @@
 """Measure an isolated host after one provider turn has completed."""
 import hashlib
+import csv
+from collections import Counter
+import re
 import json
 import os
 from pathlib import Path
@@ -114,7 +117,7 @@ try:
                 result['trace_status'] = 'unavailable: ' + start_trace.stderr[-2000:]
             else:
                 try:
-                    time.sleep(60)
+                    time.sleep(62)
                 finally:
                     stopped = subprocess.run([str(xperf), '-d', str(trace)],
                                              capture_output=True, text=True, timeout=60)
@@ -127,24 +130,46 @@ try:
                     result['trace_report'] = report.stdout[-30000:]
                     result['trace_report_truncated'] = len(report.stdout) > 30000
                     result['trace_error'] = report.stderr[-2000:]
-                    threads = subprocess.run([str(xperf), '-i', str(trace), '-a', 'cswitch', '-thread'],
-                                             capture_output=True, text=True, timeout=60)
-                    result['thread_report'] = threads.stdout[-30000:]
-                    result['thread_report_truncated'] = len(threads.stdout) > 30000
                     dump_path = root / 'switches.txt'
                     dump = subprocess.run([str(xperf), '-i', str(trace), '-o', str(dump_path), '-a', 'dumper'],
                                           capture_output=True, text=True, timeout=180)
                     result['dump_status'] = dump.returncode
                     if dump.returncode == 0:
-                        header, switches_sample = [], []
-                        with dump_path.open(errors='replace') as rows:
+                        lost = reliable = trace_length = None
+                        incoming = 0
+                        wait_reasons = Counter()
+                        pattern = re.compile(r'\(\s*' + str(pid) + r'\s*\)$')
+                        with dump_path.open(errors='replace', newline='') as rows:
                             for line in rows:
-                                if len(header) < 35:
-                                    header.append(line.rstrip())
-                                if 'CSwitch' in line and len(switches_sample) < 5:
-                                    switches_sample.append(line.rstrip())
-                        result['dump_header'] = header
-                        result['dump_switch_sample'] = switches_sample
+                                if line.startswith('OS Version:'):
+                                    metadata = re.search(r'Events Lost: (\d+), Buffers lost: (\d+).*Trace Length: (\d+) sec', line)
+                                    if metadata:
+                                        lost = int(metadata[1]) + int(metadata[2])
+                                        trace_length = int(metadata[3])
+                                parts = next(csv.reader([line]))
+                                if len(parts) == 2 and parts[0].strip() == 'FirstReliableCSwitchEventTimeStamp':
+                                    value = parts[1].strip()
+                                    if value.isdigit():
+                                        reliable = int(value)
+                                if len(parts) < 14 or parts[0].strip() != 'CSwitch':
+                                    continue
+                                stamp = parts[1].strip()
+                                if not stamp.isdigit() or not 1_000_000 <= int(stamp) < 61_000_000:
+                                    continue
+                                if pattern.search(parts[2].strip()):
+                                    incoming += 1
+                                if pattern.search(parts[8].strip()):
+                                    wait_reasons[parts[13].strip()] += 1
+                        if lost == 0 and reliable is not None and reliable <= 1_000_000 and trace_length is not None and trace_length >= 61:
+                            after_trace = f.ok('--project', f.project, 'status')
+                            if process.create_time() != birth or after_trace['runtime']['process']['pid'] != pid:
+                                raise RuntimeError('host process changed during trace')
+                            result['trace_switch_ins'] = incoming
+                            result['trace_switch_ins_per_second'] = incoming / 60
+                            result['trace_wait_reasons'] = dict(wait_reasons)
+                            result['trace_window'] = '60 seconds after first second; all host switch-ins, including preemptions'
+                        else:
+                            result['trace_status'] = f'unavailable: lost={lost}, reliable={reliable}, length={trace_length}'
     print(json.dumps(result, sort_keys=True), flush=True)
 finally:
     try:
