@@ -1,18 +1,19 @@
 //! Event-driven Linux renewal. The runtime lends its one connection for each
 //! operation; this driver owns no SQLite executor, thread or timer.
-mod glob;
-mod ignore;
-mod metadata;
+use crate::atlas_git_watch as metadata;
+use crate::atlas_ignore as ignore;
 mod observe;
 mod port;
-#[path = "../atlas_renewal_schedule.rs"]
 mod schedule;
 pub use port::drive_events;
 pub use schedule::drive_quantum;
+#[cfg(windows)]
+mod cold_capture;
 mod scan;
 mod summary;
 mod watch;
 use crate::atlas_source::NativeAtlasSource;
+use crate::atlas_watch_error::{limit, source_error, timely};
 use se_atlas::{
     cache::connection::CacheConnection,
     controller::Step,
@@ -57,6 +58,12 @@ enum WatchState {
     Active,
     Retiring,
 }
+#[cfg(windows)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Catchup {
+    Pending,
+    Complete,
+}
 struct Root {
     id: RootId,
     epoch: CacheEpoch,
@@ -72,6 +79,8 @@ struct Root {
     discovery_complete: bool,
     requires_reconcile: bool,
     pending_events: Option<PendingEvents>,
+    #[cfg(windows)]
+    catching_up: Catchup,
     last_lock: Option<bool>,
     pending_lock: Option<bool>,
     reasons: Vec<CoverageReason>,
@@ -110,6 +119,8 @@ enum Phase {
 pub struct NativeRenewal {
     #[cfg(windows)]
     signal: std::sync::Arc<tokio::sync::Notify>,
+    #[cfg(windows)]
+    cold_capture: Option<cold_capture::Capture>,
     started: Option<se_types::UnixMicros>,
     parser: crate::atlas_parse::Parser,
     roots: Vec<Root>,
@@ -144,6 +155,8 @@ impl NativeRenewal {
         Ok(Self {
             #[cfg(windows)]
             signal: std::sync::Arc::new(tokio::sync::Notify::new()),
+            #[cfg(windows)]
+            cold_capture: None,
             started,
             parser: crate::atlas_parse::Parser::new(profiles),
             roots: Vec::with_capacity(2),
@@ -233,6 +246,8 @@ impl NativeRenewal {
                 discovery_complete: false,
                 requires_reconcile: true,
                 pending_events: None,
+                #[cfg(windows)]
+                catching_up: Catchup::Complete,
                 last_lock: None,
                 pending_lock: None,
                 reasons: Vec::new(),
@@ -264,6 +279,70 @@ impl NativeRenewal {
             {
                 self.cycle = None;
             }
+        }
+        #[cfg(windows)]
+        if self.roots[index].native.is_none()
+            && self
+                .cold_capture
+                .as_ref()
+                .is_some_and(|capture| capture.activated && capture.id == scope.registration.root)
+        {
+            let capture = self
+                .cold_capture
+                .as_ref()
+                .ok_or_else(|| source_error("cold source watch", "capture disappeared"))?;
+            if capture
+                .native
+                .root
+                .physical_identity()
+                .map_err(|error| source_error("cold source activation", error))?
+                != scope.physical_root
+            {
+                return Err(source_error(
+                    "cold source activation",
+                    "physical root changed; rebind",
+                ));
+            }
+            let registration = capture.registration;
+            let directory = connection.write(65536, deadline, |sql| {
+                sql.prepare("DELETE FROM watch_directories WHERE path=''")?
+                    .execute([])
+                    .map_err(sql_error)?;
+                sql.prepare(
+                    "INSERT INTO watch_directories(descriptor,path,identity) VALUES(?1,'',?2)",
+                )?
+                .execute((
+                    registration.descriptor,
+                    registration.physical_directory.as_slice(),
+                ))
+                .map_err(sql_error)?;
+                sql.prepare("SELECT id FROM watch_directories WHERE descriptor=?1")?
+                    .query_row([registration.descriptor], |row| row.get::<_, i64>(0))
+                    .map_err(sql_error)
+            })?;
+            let capture = self
+                .cold_capture
+                .take()
+                .ok_or_else(|| source_error("cold source watch", "capture disappeared"))?;
+            self.mappings.retain(|mapping| mapping.root != index as u32);
+            self.mappings.push(Mapping {
+                descriptor: registration.descriptor,
+                root: index as u32,
+                directory,
+            });
+            let root = &mut self.roots[index];
+            root.native = Some(capture.native);
+            root.cap = policy
+                .watch
+                .max_directories
+                .min((policy.watch.max_mapping_bytes / 16).min(MAX_MAP as u32));
+            root.attempts = root.attempts.saturating_add(1);
+            root.unwatched = 0;
+            root.limited_this_activation = false;
+            root.reasons.clear();
+            root.discovery_complete = true;
+            root.requires_reconcile = false;
+            root.catching_up = Catchup::Pending;
         }
         if self.roots[index].native.is_none() {
             self.mappings.retain(|m| m.root != index as u32);
@@ -328,6 +407,20 @@ impl NativeRenewal {
         connection: Option<&mut CacheConnection<'_>>,
         deadline: Instant,
     ) -> AtlasResult<()> {
+        #[cfg(windows)]
+        if let Some(capture) = self
+            .cold_capture
+            .as_mut()
+            .filter(|capture| &capture.id == root)
+        {
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            capture
+                .native
+                .watch
+                .shutdown(timeout)
+                .map_err(|error| crate::atlas_parse::cleanup_error(error, timeout))?;
+            self.cold_capture = None;
+        }
         if let Some(connection) = connection.as_ref()
             && &connection.identity().scope.registration.root != root
         {
@@ -417,28 +510,6 @@ fn sql_error(error: impl std::fmt::Display) -> SeError {
         path: "atlas.db".into(),
         reason: error.to_string(),
     }))
-}
-fn source_error(path: &str, error: impl std::fmt::Display) -> SeError {
-    SeError::new(Detail::AtlasSourceUnreadable(
-        details::AtlasSourceUnreadable {
-            path: path.into(),
-            reason: error.to_string(),
-        },
-    ))
-}
-fn limit(resource: &str, requested: u64, available: u64) -> SeError {
-    SeError::new(Detail::AtlasResourceBudget(details::AtlasResourceBudget {
-        resource: resource.into(),
-        requested,
-        available,
-    }))
-}
-fn timely(deadline: Instant) -> AtlasResult<()> {
-    if se_atlas::clock::now() >= deadline {
-        Err(limit("renewal work deadline", 1, 0))
-    } else {
-        Ok(())
-    }
 }
 fn reason(root: &mut Root, reason: CoverageReason) {
     if !root.reasons.contains(&reason) {

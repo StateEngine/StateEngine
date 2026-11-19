@@ -1,8 +1,14 @@
 //! Only registered Git metadata supplies subscriptions. One reference spelling
 //! and compact offsets cover its ancestor watches; objects/config are never read.
-use super::*;
-use se_proc::NativeWatchEvent;
-use std::io::Read;
+use crate::atlas_watch_error::{limit, source_error, timely};
+use se_atlas::{
+    errors::AtlasResult,
+    lifecycle::{ReconcileReason, SourceHint},
+    model::{GitMetadataRegistration, RelativePath},
+};
+use se_proc::{NativeSourceRoot, NativeSourceWatch, NativeWatchAction, NativeWatchEvent};
+use se_types::code::AtlasText;
+use std::{io::Read, time::Instant};
 const GIT: u8 = 1;
 const COMMON: u8 = 2;
 const EXCLUDE: u8 = 4;
@@ -11,7 +17,7 @@ struct Entry {
     flags: u8,
     component: Option<(u16, u16)>,
 }
-pub(super) struct Watches {
+pub(crate) struct Watches {
     git: NativeSourceRoot,
     common: NativeSourceRoot,
     reference: String,

@@ -69,7 +69,14 @@ impl NativeRenewal {
             .filter_map(|r| r.metadata.as_ref())
             .map(metadata::Watches::len)
             .sum();
-        if self.mappings.len() + metadata_watches >= self.roots[index].cap as usize {
+        #[cfg(windows)]
+        let cold_watches = self
+            .cold_capture
+            .as_ref()
+            .map_or(0, cold_capture::Capture::watch_count);
+        #[cfg(not(windows))]
+        let cold_watches = 0;
+        if self.mappings.len() + metadata_watches + cold_watches >= self.roots[index].cap as usize {
             let root = &mut self.roots[index];
             if !root.limited_this_activation {
                 root.limited_this_activation = true;
@@ -158,6 +165,12 @@ impl NativeRenewal {
                 .filter_map(|n| n.metadata.as_ref())
                 .map(metadata::Watches::len)
                 .sum::<usize>();
+        #[cfg(windows)]
+        let used = used
+            + self
+                .cold_capture
+                .as_ref()
+                .map_or(0, cold_capture::Capture::watch_count);
         let root = &mut self.roots[index];
         let native = root
             .native
@@ -388,20 +401,14 @@ impl NativeRenewal {
                     if basename == ".gitignore"
                         || cfg!(windows) && basename.eq_ignore_ascii_case(".gitignore")
                     {
-                        #[cfg(windows)]
-                        if !parent.is_empty() {
-                            return Ok(Some(vec![SourceHint::DirectoryChanged(
-                                RelativePath::new(parent)?,
-                            )]));
-                        }
                         return Ok(Some(vec![SourceHint::Reconcile(
                             ReconcileReason::IgnoreRulesChanged,
                         )]));
                     }
-                    let rules = ignore::Rules::load(source, policy, parent, deadline)?;
+                    let rules = ignore::Rules::load(source, &policy.ignore, parent, deadline)?;
                     #[cfg(windows)]
-                    if !rules.eligible(path.as_str(), false, policy, deadline)?
-                        && !rules.eligible(path.as_str(), true, policy, deadline)?
+                    if !rules.eligible(path.as_str(), false, &policy.ignore, deadline)?
+                        && !rules.eligible(path.as_str(), true, &policy.ignore, deadline)?
                     {
                         return Ok(None);
                     }
@@ -418,7 +425,7 @@ impl NativeRenewal {
                         event.action,
                         deadline,
                     )?;
-                    if !rules.eligible(path.as_str(), directory_event, policy, deadline)? {
+                    if !rules.eligible(path.as_str(), directory_event, &policy.ignore, deadline)? {
                         return Ok(None);
                     }
                     if directory_event {

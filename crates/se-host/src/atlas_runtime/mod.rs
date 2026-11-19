@@ -192,9 +192,17 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             return Ok(None);
         };
         let job = request.job;
-        let release = self
+        let mut release = self
             .driver
             .release_parser(Instant::now() + Duration::from_millis(200));
+        if release.is_ok()
+            && let Some(root) = self
+                .roots
+                .iter()
+                .find(|root| root.summary.root == request.root.root)
+        {
+            release = self.driver.begin_cold_capture(&root.source, &root.policy);
+        }
         let spawned: AtlasResult<_> = match release {
             Ok(()) => (|| {
                 let root = self.root(&request.root.root)?;
@@ -209,6 +217,8 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                     entropy,
                 )?;
                 let frame = protocol::Request {
+                    #[cfg(all(windows, feature = "listener"))]
+                    git_metadata: request.root.git_metadata.clone(),
                     history_unavailable: None,
                     job: request.job,
                     project: request.root.project,
@@ -385,6 +395,24 @@ pub fn drive_child<D: RenewalDriver>(controller: &mut NativeController<D>) -> At
 }
 
 pub trait RenewalDriver {
+    /// Best-effort capture started before a cold child reads the source.
+    /// Failure must leave the ordinary reconciliation path in place.
+    fn begin_cold_capture(
+        &mut self,
+        _source: &RegisteredSource<NativeAtlasSource>,
+        _policy: &AtlasPolicy,
+    ) -> AtlasResult<()> {
+        Ok(())
+    }
+    fn cold_capture_available(&self, _root: &RootId) -> bool {
+        false
+    }
+    fn activate_cold_capture(&mut self, _root: &RootId) -> AtlasResult<()> {
+        Ok(())
+    }
+    fn discard_cold_capture(&mut self, _root: &RootId) -> AtlasResult<()> {
+        Ok(())
+    }
     /// Use the same installed image already owned by the native runtime.
     fn bind_parser_image(&mut self, _image: &std::path::Path) -> AtlasResult<()> {
         Ok(())

@@ -9,28 +9,44 @@ struct Rule {
     directory: bool,
     anchored: bool,
 }
-pub(super) struct Rules {
+pub(crate) struct Rules {
     rules: Vec<Rule>,
     used: usize,
 }
 impl Rules {
-    pub(super) fn load(
+    #[cfg(windows)]
+    pub(crate) fn mark(&self) -> (usize, usize) {
+        (self.rules.len(), self.used)
+    }
+    #[cfg(windows)]
+    pub(crate) fn descend(
+        &mut self,
         source: &Source,
-        policy: &AtlasPolicy,
+        base: &str,
+        deadline: Instant,
+    ) -> AtlasResult<()> {
+        self.load_file(source, base, deadline)
+    }
+    #[cfg(windows)]
+    pub(crate) fn rewind(&mut self, mark: (usize, usize)) {
+        self.rules.truncate(mark.0);
+        self.used = mark.1;
+    }
+    pub(crate) fn load(
+        source: &Source,
+        policy: &IgnorePolicy,
         parent: &str,
         deadline: Instant,
     ) -> AtlasResult<Self> {
         let mut rules = Self {
             rules: Vec::new(),
             used: policy
-                .ignore
                 .generated_prefixes
                 .iter()
                 .map(|p| p.as_str().len())
                 .sum(),
         };
         rules.used += policy
-            .ignore
             .global_patterns
             .iter()
             .map(String::len)
@@ -149,11 +165,11 @@ impl Rules {
         self.used += cost;
         Ok(())
     }
-    pub(super) fn eligible(
+    pub(crate) fn eligible(
         &self,
         path: &str,
         directory: bool,
-        policy: &AtlasPolicy,
+        policy: &IgnorePolicy,
         deadline: Instant,
     ) -> AtlasResult<bool> {
         if !path.is_empty()
@@ -161,7 +177,7 @@ impl Rules {
         {
             return Ok(false);
         }
-        if policy.ignore.generated_prefixes.iter().any(|p| {
+        if policy.generated_prefixes.iter().any(|p| {
             path == p.as_str()
                 || path
                     .strip_prefix(p.as_str())
@@ -178,7 +194,6 @@ impl Rules {
             let dir = end < path.len() || directory;
             let mut ignored = false;
             for rule in policy
-                .ignore
                 .global_patterns
                 .iter()
                 .filter_map(|p| parse("", p))
