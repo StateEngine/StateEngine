@@ -95,7 +95,7 @@ impl LaunchCoordinator {
             &[
                 "status".into(),
                 "--service".into(),
-                service.journal.profile.to_local()?.into_os_string(),
+                service.checked_profile()?.into_os_string(),
                 "--jsonl".into(),
             ],
             deadline,

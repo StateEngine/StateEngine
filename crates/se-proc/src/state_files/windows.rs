@@ -306,7 +306,7 @@ pub(super) struct Directory {
     identity: Identity,
     resolved_root: PathBuf,
     layout: Layout,
-    _profile_ancestry: Vec<File>,
+    profile_ancestry: Vec<profile_ancestry::Pin>,
 }
 impl Directory {
     pub fn root_identity(&self) -> [u8; 24] {
@@ -376,7 +376,7 @@ impl Directory {
             identity,
             resolved_root,
             layout,
-            _profile_ancestry: ancestry,
+            profile_ancestry: ancestry,
         };
         if layout == Layout::UserPrivate {
             directory.check_name(path)?;
@@ -384,6 +384,7 @@ impl Directory {
         Ok(directory)
     }
     pub fn check_name(&self, path: &Path) -> Result<()> {
+        profile_ancestry::verify(&self.profile_ancestry)?;
         let found = walk_for(path, false, None, self.layout)?;
         self.same_metadata_root(&found, path)
     }

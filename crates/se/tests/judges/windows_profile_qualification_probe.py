@@ -29,7 +29,7 @@ def main():
     cli = images / 'secode.exe'
     server = images / 'secode-server.exe'
     subprocess.run(['rustc', '--edition=2024', str(args.source), '-o', str(cli)],
-                   stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=120)
+                   stdin=subprocess.DEVNULL, check=True, timeout=120)
     shutil.copy2(cli, server)
     capabilities = json.loads(args.capabilities.read_text())
     capabilities['service']['shutdown'] = ['Ctrl+C']

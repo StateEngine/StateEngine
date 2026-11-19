@@ -80,19 +80,19 @@ fn native_profile_acl_and_identity_are_pinned() -> Check {
         let link = root.join("junction");
         junction(&link, &target)?;
         let through = link.join("profile");
-        let guard = se_proc::NativeProfileFiles::open(&through)?;
+        assert!(
+            se_proc::NativeProfileFiles::open(&through).is_err(),
+            "user-controlled junction was admitted"
+        );
+        std::fs::remove_dir(&link)?;
+        let guard = se_proc::NativeProfileFiles::open(&target_profile)?;
         let held = guard.identity()?;
         assert!(
-            std::fs::remove_dir(&link).is_err(),
-            "held reparse ancestor was removed"
-        );
-        assert!(
             std::fs::rename(&target, root.join("target-moved")).is_err(),
-            "resolved target ancestor was renamed"
+            "profile ancestor was renamed"
         );
         assert_eq!(guard.identity()?, held);
         drop(guard);
-        std::fs::remove_dir(&link)?;
         junction(&link, &target_profile)?;
         assert!(
             se_proc::NativeProfileFiles::open(&link).is_err(),

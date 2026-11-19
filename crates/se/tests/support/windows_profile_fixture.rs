@@ -64,7 +64,7 @@ fn run() -> Check {
             let denied = fs::rename(profile, profile.with_extension("moved")).is_err();
             fs::write(
                 directory.join("rename-denied"),
-                if denied { b"yes" } else { b"no" },
+                if denied { "yes" } else { "no" },
             )?;
             fs::write(directory.join("service-attempted"), b"yes")?;
             let until = Instant::now() + Duration::from_secs(60);
