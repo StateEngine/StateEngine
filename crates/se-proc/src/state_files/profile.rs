@@ -20,6 +20,13 @@ impl NativeProfileFiles {
         }))
     }
 
+    /// Recheck the held profile name and its protected native directory identity.
+    #[cfg(windows)]
+    pub fn identity(&self) -> Result<[u8; 24]> {
+        self.0.check(&self.0.root)?;
+        Ok(self.0.directory.root_identity())
+    }
+
     /// Missing is distinct from unreadable, unsafe or replaced. The returned
     /// file is read-only, regular, single-linked and private to the current user.
     pub fn readback(&self, path: &Path) -> Result<Option<File>> {

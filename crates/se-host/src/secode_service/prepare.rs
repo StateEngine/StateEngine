@@ -79,6 +79,7 @@ impl LaunchCoordinator {
                 project: key.0.clone(),
                 agent: key.1.clone(),
                 profile: NativePath::from_local(profile)?,
+                profile_identity: None,
                 session: request.identity.session.clone(),
                 vendor_session: session,
                 initial_input: initial,
@@ -106,6 +107,8 @@ impl LaunchCoordinator {
                 key.clone(),
                 Arc::new(tokio::sync::Mutex::new(Service {
                     journal,
+                    #[cfg(windows)]
+                    profile_guard: None,
                     path,
                     digest: None,
                     pending_save: None,
@@ -251,6 +254,8 @@ impl LaunchCoordinator {
                 "the original initializer has no successful native exit; preserve its bounded diagnostics and private profile",
             ));
         }
+        #[cfg(windows)]
+        self.qualify_secode_profile(&mut service, deadline).await?;
         self.configure_secode(&mut service, request, deadline)
             .await?;
         if service.journal.service.is_none() {

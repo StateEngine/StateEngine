@@ -13,6 +13,7 @@ use std::{
 use windows_sys::Win32::{Foundation::*, Security::*, Storage::FileSystem::*};
 
 mod metadata;
+mod profile_ancestry;
 pub(crate) mod security;
 use security::{Layout, descriptor};
 fn validate_component(value: &std::ffi::OsStr, path: &Path) -> Result<()> {
@@ -305,8 +306,15 @@ pub(super) struct Directory {
     identity: Identity,
     resolved_root: PathBuf,
     layout: Layout,
+    _profile_ancestry: Vec<File>,
 }
 impl Directory {
+    pub fn root_identity(&self) -> [u8; 24] {
+        let mut bytes = [0u8; 24];
+        bytes[..8].copy_from_slice(&self.identity.volume.to_be_bytes());
+        bytes[8..].copy_from_slice(&self.identity.index);
+        bytes
+    }
     pub fn identity(&self, file: &File, path: &Path) -> Result<Identity> {
         metadata_for(file, path, false, self.layout)
     }
@@ -337,6 +345,11 @@ impl Directory {
     fn open_with_layout(path: &Path, layout: Layout) -> Result<Self> {
         let file = walk_for(path, false, None, layout)?;
         let identity = metadata_for(&file, path, true, layout)?;
+        let ancestry = if layout == Layout::UserPrivate {
+            profile_ancestry::pin(path)?
+        } else {
+            Vec::new()
+        };
         let mut buffer = vec![0u16; 32768];
         // SAFETY: retained directory handle, writable UTF-16 buffer and explicit
         // capacity. Resolve once from the pinned object, not a caller pathname.
@@ -358,12 +371,17 @@ impl Directory {
             ));
         }
         let resolved_root = std::ffi::OsString::from_wide(&buffer[..length as usize]).into();
-        Ok(Self {
+        let directory = Self {
             file,
             identity,
             resolved_root,
             layout,
-        })
+            _profile_ancestry: ancestry,
+        };
+        if layout == Layout::UserPrivate {
+            directory.check_name(path)?;
+        }
+        Ok(directory)
     }
     pub fn check_name(&self, path: &Path) -> Result<()> {
         let found = walk_for(path, false, None, self.layout)?;

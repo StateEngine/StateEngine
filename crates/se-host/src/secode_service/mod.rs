@@ -16,6 +16,8 @@ mod resume;
 mod retirement;
 mod status;
 mod stop;
+#[cfg(windows)]
+mod windows_profile;
 use super::*;
 use crate::client::lease::Deadline;
 use custody::Journal;
@@ -41,6 +43,8 @@ struct PendingSave {
 }
 pub(super) struct Service {
     journal: Journal,
+    #[cfg(windows)]
+    profile_guard: Option<Arc<se_proc::NativeProfileFiles>>,
     path: PathBuf,
     digest: Option<[u8; 32]>,
     pending_save: Option<PendingSave>,

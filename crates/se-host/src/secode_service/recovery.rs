@@ -37,6 +37,8 @@ impl LaunchCoordinator {
                 key.clone(),
                 Arc::new(tokio::sync::Mutex::new(Service {
                     journal,
+                    #[cfg(windows)]
+                    profile_guard: None,
                     path,
                     digest: Some(digest),
                     pending_save: None,
@@ -189,6 +191,12 @@ impl LaunchCoordinator {
         service: &mut Service,
         deadline: &Deadline,
     ) -> Result<()> {
+        #[cfg(windows)]
+        if !service.journal.retired
+            && (service.journal.profile_identity.is_some() || service.journal.service.is_some())
+        {
+            self.qualify_secode_profile(service, deadline).await?;
+        }
         for auxiliary in Auxiliary::ALL {
             self.recover_secode_auxiliary(service, auxiliary, deadline)
                 .await?;
