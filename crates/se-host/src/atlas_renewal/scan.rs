@@ -38,6 +38,10 @@ impl NativeRenewal {
         })?;
         let full_reconcile =
             matches!(work.hint, SourceHint::Reconcile(_)) || self.roots[index].requires_reconcile;
+        #[cfg(feature = "cold-watch-probe")]
+        if full_reconcile {
+            crate::atlas_watch_probe::record_full_reconcile();
+        }
         let subtree = match &work.hint {
             SourceHint::DirectoryChanged(path) if !full_reconcile => Some(path.clone()),
             _ => None,

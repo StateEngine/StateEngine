@@ -1,4 +1,11 @@
 use super::*;
+#[cfg(feature = "cold-watch-probe")]
+impl NativeRenewal {
+    pub fn probe_take_full_reconcile(&self) -> bool {
+        crate::atlas_watch_probe::take_full_reconcile()
+    }
+}
+
 #[cfg(all(windows, feature = "cold-watch-probe"))]
 impl NativeRenewal {
     pub fn probe_retained_event(&self, root: &RootId, path: Option<&str>) -> AtlasResult<()> {

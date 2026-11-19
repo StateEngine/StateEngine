@@ -438,6 +438,12 @@ impl NativeRenewal {
                     if !rules.eligible(path.as_str(), directory_event, &policy.ignore, deadline)? {
                         return Ok(None);
                     }
+                    #[cfg(all(windows, feature = "cold-watch-probe"))]
+                    if (path.as_str() == "src/main.js" || directory_event && path.as_str() == "src")
+                        && crate::atlas_watch_probe::event(source, "edit")?
+                    {
+                        return Ok(None);
+                    }
                     if directory_event {
                         #[cfg(target_os = "linux")]
                         return Ok(Some(vec![SourceHint::Reconcile(
@@ -445,12 +451,6 @@ impl NativeRenewal {
                         )]));
                         #[cfg(windows)]
                         return Ok(Some(vec![SourceHint::DirectoryChanged(path)]));
-                    }
-                    #[cfg(all(windows, feature = "cold-watch-probe"))]
-                    if path.as_str() == "src/main.js"
-                        && crate::atlas_watch_probe::event(source, "edit")?
-                    {
-                        return Ok(None);
                     }
                     Ok(Some(vec![if matches!(
                         event.action,

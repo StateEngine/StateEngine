@@ -145,7 +145,10 @@ mod native {
         #[cfg(windows)]
         let signal = controller.runtime_mut().driver_mut().signal();
         let end = Instant::now() + Duration::from_secs(60);
-        let mut walked = false;
+        controller
+            .runtime_mut()
+            .driver_mut()
+            .probe_take_full_reconcile();
         loop {
             #[cfg(windows)]
             if signal.notified().now_or_never().is_some() || controller.watch_pending(root) {
@@ -153,11 +156,11 @@ mod native {
                     controller,
                     root,
                     Instant::now() + Duration::from_millis(100),
-                )?;
+                )
+                .map_err(|error| format!("event drain failed: {error:?}"))?;
             }
-            if let Some(report) = drive_quantum(controller, Duration::from_millis(200))? {
-                walked |= report.phase == WorkPhase::Discover;
-            }
+            drive_quantum(controller, Duration::from_millis(200))
+                .map_err(|error| format!("publication failed: {error:?}"))?;
             let summary = controller.summary(root)?;
             if matches!(
                 summary.state,
@@ -167,6 +170,10 @@ mod native {
                     }
             ) && controller.next_work() == NextWork::Park
             {
+                let walked = controller
+                    .runtime_mut()
+                    .driver_mut()
+                    .probe_take_full_reconcile();
                 return Ok((summary, walked));
             }
             if Instant::now() >= end || matches!(summary.state, IndexState::Suspended { .. }) {
@@ -199,22 +206,20 @@ mod native {
         Ok(())
     }
 
-    fn run_case(base: &Path, case: Case, drop_event: bool) -> Check {
-        let home = base;
-        let source = base.join("source");
+    fn run_case(home: &Path, source: &Path, case: Case, drop_event: bool) -> Check {
         fs::create_dir_all(source.join("src"))?;
         fs::create_dir(source.join("generated"))?;
         fs::write(source.join(".gitignore"), "/src/visible.js\n")?;
-        write_symbol(&source, MAIN, "before_edit")?;
-        write_symbol(&source, HIDDEN, "hidden_before")?;
-        write_symbol(&source, VISIBLE, "visible_after")?;
+        write_symbol(source, MAIN, "before_edit")?;
+        write_symbol(source, HIDDEN, "hidden_before")?;
+        write_symbol(source, VISIBLE, "visible_after")?;
         fs::write(
             home.join("watch-probe"),
             if drop_event { case.name() } else { "" },
         )?;
         let mut controller = native_controller(home)?;
-        let root = pause_cold(&mut controller, home, &source, 5, policy())?;
-        case.modify(&source)?;
+        let root = pause_cold(&mut controller, home, source, 5, policy())?;
+        case.modify(source)?;
         #[cfg(windows)]
         {
             let event = match case {
@@ -323,7 +328,7 @@ mod native {
     }
 
     #[cfg(windows)]
-    fn capacity(home: &Path, drop_limit: bool) -> Check {
+    fn capacity(home: &Path, sources: &Path, drop_limit: bool) -> Check {
         fs::write(
             home.join("watch-probe"),
             if drop_limit { "capacity" } else { "" },
@@ -332,8 +337,8 @@ mod native {
         let mut constrained = policy();
         constrained.watch.max_directories = 1;
         constrained.watch.max_mapping_bytes = 16;
-        let first_source = home.join("first");
-        let second_source = home.join("second");
+        let first_source = sources.join("first");
+        let second_source = sources.join("second");
         for source in [&first_source, &second_source] {
             fs::create_dir_all(source.join("src"))?;
             write_symbol(source, MAIN, "capacity_witness")?;
@@ -433,8 +438,9 @@ mod native {
         };
         #[cfg(windows)]
         if selected.as_deref() == Some("capacity") {
-            let base = super::directory::private_case_directory()?;
-            return base.finish(capacity(&base, drop_event));
+            let home = super::directory::private_case_directory()?;
+            let sources = super::directory::private_case_directory()?;
+            return home.finish(sources.finish(capacity(&home, &sources, drop_event)));
         }
         let case = match selected.as_deref() {
             Some("edit") => Case::Edit,
@@ -447,8 +453,9 @@ mod native {
                 );
             }
         };
-        let base = super::directory::private_case_directory()?;
-        base.finish(run_case(&base, case, drop_event))
+        let home = super::directory::private_case_directory()?;
+        let source = super::directory::private_case_directory()?;
+        home.finish(source.finish(run_case(&home, &source, case, drop_event)))
     }
 }
 

@@ -1,10 +1,25 @@
 //! Hosted probe instrumentation. This module is absent from ordinary builds.
 use se_atlas::errors::AtlasResult;
+#[cfg(any(target_os = "linux", windows))]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     fs,
     path::Path,
     time::{Duration, Instant},
 };
+
+#[cfg(any(target_os = "linux", windows))]
+static FULL_RECONCILE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn record_full_reconcile() {
+    FULL_RECONCILE.store(true, Ordering::Relaxed);
+}
+
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn take_full_reconcile() -> bool {
+    FULL_RECONCILE.swap(false, Ordering::Relaxed)
+}
 
 pub(crate) fn hold_finalization(home: &Path) -> AtlasResult<()> {
     if !home
