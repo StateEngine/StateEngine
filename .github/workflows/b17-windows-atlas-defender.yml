@@ -1,0 +1,49 @@
+name: Windows Atlas Defender comparison
+on:
+  push:
+    branches: [probe/windows-atlas-defender-20261119]
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '4'
+      CARGO_INCREMENTAL: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Build release host consumer
+        run: cargo test --release --locked -p se --test atlas_startup_dev --no-run
+      - name: Exclude only the disposable fixture directory
+        shell: pwsh
+        run: |
+          $fixtureTemp = Join-Path $env:RUNNER_TEMP 'atlas-defender-fixture'
+          New-Item -ItemType Directory -Force -Path $fixtureTemp | Out-Null
+          Add-MpPreference -ExclusionPath $fixtureTemp -ErrorAction Stop
+          if (-not ((Get-MpPreference -ErrorAction Stop).ExclusionPath -contains $fixtureTemp)) { throw 'Fixture exclusion readback failed' }
+          "TEMP=$fixtureTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$fixtureTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Observe full-history indexing and bounded queries
+        run: python crates/se/tests/support/atlas_full_owner_measure.py "$GITHUB_WORKSPACE"
+      - name: Remove fixture exclusion
+        if: always()
+        shell: pwsh
+        run: |
+          $fixtureTemp = Join-Path $env:RUNNER_TEMP 'atlas-defender-fixture'
+          Remove-MpPreference -ExclusionPath $fixtureTemp -ErrorAction Stop
+          if ((Get-MpPreference -ErrorAction Stop).ExclusionPath -contains $fixtureTemp) { throw 'Fixture exclusion removal readback failed' }
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-atlas-defender-comparison
+          path: target/judge-diagnostics/atlas-full-owner.*
+          if-no-files-found: warn
