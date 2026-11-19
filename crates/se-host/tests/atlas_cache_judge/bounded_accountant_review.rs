@@ -201,3 +201,53 @@ fn bounded_accountant_releases_the_native_observation_before_cleanup() -> Check 
         )
     })
 }
+
+#[test]
+fn bounded_accountant_refuses_same_name_external_growth() -> Check {
+    with_cold(|f, cache, _db| {
+        let original = outside_file(f)?;
+        let original_name = original.path;
+        drop(original.file);
+        let separate = f.dir.join("outside-cache");
+        let files = NativeStateFiles::create(&separate)?;
+        let replacement = files.create_staging(&separate)?;
+        replacement.file.set_len(EXTERNAL_GROWTH)?;
+        drop(replacement.file);
+
+        let batch = cache.reserve_growth(LIVE_RESERVATION)?;
+        let parked = separate.join("original");
+        match fs::rename(&original_name, &parked) {
+            Ok(()) => (),
+            Err(error) if matches!(error.raw_os_error(), Some(5 | 32)) => {
+                assert!(original_name.exists() && !parked.exists());
+                return witness(
+                    "atlas-accountant-same-name",
+                    serde_json::json!({
+                        "replacement_blocked": true,
+                        "admission_refused_after_interval": null
+                    }),
+                );
+            }
+            Err(error) => return Err(error.into()),
+        }
+        fs::rename(&replacement.path, &original_name)?;
+        assert_eq!(fs::metadata(&original_name)?.len(), EXTERNAL_GROWTH);
+        assert_eq!(fs::metadata(&parked)?.len(), 0);
+
+        std::thread::sleep(REFRESH);
+        let refused = refuses_disk(cache)?;
+        witness(
+            "atlas-accountant-same-name",
+            serde_json::json!({
+                "replacement_blocked": false,
+                "admission_refused_after_interval": refused
+            }),
+        )?;
+        assert!(
+            refused,
+            "same-name external replacement escaped the completed refresh"
+        );
+        drop(batch);
+        Ok(())
+    })
+}
