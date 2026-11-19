@@ -70,6 +70,8 @@ struct Root {
     registration: RootRegistration,
     feed_pending: bool,
     feed_stalled: bool,
+    // Deadline, previous delay, and whether this is the final native drain.
+    event_retry: Option<(Instant, Duration, bool)>,
 }
 #[derive(Clone)]
 enum Wake {

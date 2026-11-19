@@ -1,4 +1,15 @@
 use super::*;
+pub(crate) enum PollEventsFailure {
+    Admission(se_types::SeError),
+    Driver(se_types::SeError),
+}
+impl PollEventsFailure {
+    fn into_error(self) -> se_types::SeError {
+        match self {
+            Self::Admission(error) | Self::Driver(error) => error,
+        }
+    }
+}
 impl<D: RenewalDriver> NativeRuntime<D> {
     /// Existing epochs receive their full integrity check once during explicit
     /// activation, outside the finite source-work quantum. New cold epochs are
@@ -55,30 +66,47 @@ impl<D: RenewalDriver> NativeRuntime<D> {
         Ok(())
     }
     pub fn poll_events(&mut self, id: &RootId, deadline: Instant) -> AtlasResult<Vec<SourceHint>> {
+        self.poll_events_classified(id, deadline)
+            .map_err(PollEventsFailure::into_error)
+    }
+    pub(crate) fn poll_events_classified(
+        &mut self,
+        id: &RootId,
+        deadline: Instant,
+    ) -> std::result::Result<Vec<SourceHint>, PollEventsFailure> {
         if self.active.is_some() {
-            return Err(atlas_cold::failure(
+            return Err(PollEventsFailure::Admission(atlas_cold::failure(
                 "cold child owns the home writer; preserve native readiness until reap",
-            ));
+            )));
         }
-        let root = self.root(id)?;
-        let profile = self
-            .profile
-            .as_ref()
-            .ok_or_else(|| atlas_cold::failure("native host SQL profile is unqualified"))?;
-        let cache = NativeAtlasCache::create(&self.home, root.source.scope.clone())?;
-        let mut current = writer(&cache, root, profile, deadline)?
-            .ok_or_else(|| atlas_cold::failure("watch event cache is absent"))?;
+        let root = self.root(id).map_err(PollEventsFailure::Admission)?;
+        let profile = self.profile.as_ref().ok_or_else(|| {
+            PollEventsFailure::Admission(atlas_cold::failure(
+                "native host SQL profile is unqualified",
+            ))
+        })?;
+        let cache = NativeAtlasCache::create(&self.home, root.source.scope.clone())
+            .map_err(PollEventsFailure::Admission)?;
+        let mut current = writer(&cache, root, profile, deadline)
+            .map_err(PollEventsFailure::Admission)?
+            .ok_or_else(|| {
+                PollEventsFailure::Admission(atlas_cold::failure("watch event cache is absent"))
+            })?;
         let root = self
             .roots
             .iter()
             .find(|r| &r.summary.root == id)
-            .ok_or_else(|| atlas_cold::failure("native root disappeared"))?;
-        self.driver.poll_events(
-            &root.source,
-            &mut current.connection,
-            &root.policy,
-            deadline,
-        )
+            .ok_or_else(|| {
+                PollEventsFailure::Admission(atlas_cold::failure("native root disappeared"))
+            })?;
+        self.driver
+            .poll_events(
+                &root.source,
+                &mut current.connection,
+                &root.policy,
+                deadline,
+            )
+            .map_err(PollEventsFailure::Driver)
     }
     #[cfg(unix)]
     pub fn event_fd(&self, id: &RootId) -> Option<std::os::fd::BorrowedFd<'_>> {

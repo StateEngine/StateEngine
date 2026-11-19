@@ -65,33 +65,87 @@ impl State {
             self.registry_dirty = false;
             self.reconcile_all = false;
         }
+        let now = Instant::now();
+        let mut sources: Vec<RootId> = self
+            .roots
+            .iter()
+            .filter(|root| root.event_retry.is_some_and(|(at, _, _)| at <= now))
+            .map(|root| root.registration.root.clone())
+            .collect();
         match wake {
-            Wake::Core => (),
             #[cfg(target_os = "linux")]
-            Wake::Source(root) => {
-                if let Err(error) = drive_events(
-                    &mut self.controller,
-                    &root,
-                    Instant::now() + Duration::from_millis(100),
-                ) {
-                    eprintln!("Code index source reconciliation required: {error}");
-                }
+            Wake::Source(root)
+                if self
+                    .roots
+                    .iter()
+                    .find(|item| item.registration.root == root)
+                    .is_some_and(|item| item.event_retry.is_none_or(|(at, _, _)| at <= now))
+                    && !sources.contains(&root) =>
+            {
+                sources.push(root);
             }
             #[cfg(windows)]
             Wake::Sources => {
                 for root in &self.roots {
-                    if let Err(error) = drive_events(
-                        &mut self.controller,
-                        &root.registration.root,
-                        Instant::now() + Duration::from_millis(100),
-                    ) {
-                        eprintln!("Code index source reconciliation required: {error}");
+                    if root.event_retry.is_none_or(|(at, _, _)| at <= now)
+                        && !sources.contains(&root.registration.root)
+                    {
+                        sources.push(root.registration.root.clone());
                     }
                 }
             }
-            #[cfg(target_os = "linux")]
-            Wake::Child => (),
-            Wake::Scheduled => (),
+            _ => (),
+        }
+        for id in sources {
+            let previous = self
+                .roots
+                .iter()
+                .find(|root| root.registration.root == id)
+                .and_then(|root| {
+                    root.event_retry
+                        .map(|(_, delay, draining)| (delay, draining))
+                });
+            let result = drive_events(
+                &mut self.controller,
+                &id,
+                Instant::now() + Duration::from_millis(100),
+            );
+            let pending = self.controller.watch_pending(&id);
+            let drain =
+                result.is_ok() && !pending && previous.is_some_and(|(_, draining)| !draining);
+            if drain {
+                self.controller.set_watch_pending(&id, true)?;
+            }
+            if let Some(root) = self
+                .roots
+                .iter_mut()
+                .find(|root| root.registration.root == id)
+            {
+                root.event_retry = match result {
+                    Ok(_) if pending => Some((
+                        Instant::now() + Duration::from_millis(1),
+                        Duration::from_millis(1),
+                        false,
+                    )),
+                    Ok(_) if drain => Some((
+                        Instant::now() + Duration::from_millis(1),
+                        Duration::from_millis(1),
+                        true,
+                    )),
+                    Ok(_) => None,
+                    Err(error) if pending => {
+                        eprintln!("Code index source event delayed: {error}");
+                        let delay = previous.map_or(Duration::from_millis(50), |(delay, _)| {
+                            (delay * 2).clamp(Duration::from_millis(50), Duration::from_secs(1))
+                        });
+                        Some((Instant::now() + delay, delay, false))
+                    }
+                    Err(error) => {
+                        eprintln!("Code index source reconciliation required: {error}");
+                        None
+                    }
+                };
+            }
         }
         if let Some(scan) = &mut self.scan {
             match scan.page(context, owner, &self.home, &self.work) {
@@ -192,6 +246,12 @@ impl State {
             NextWork::AfterEventDebounce(wait) => (false, Some(wait)),
             NextWork::Park => (false, None),
         };
+        for root in &self.roots {
+            if let Some((at, _, _)) = root.event_retry {
+                let wait = at.saturating_duration_since(Instant::now());
+                delay = Some(delay.map_or(wait, |old| old.min(wait)));
+            }
+        }
         #[cfg(target_os = "linux")]
         let mut fds = Vec::with_capacity(3);
         if let Some(pid) = child {
@@ -224,7 +284,9 @@ impl State {
             self.child_deadline = None;
             #[cfg(target_os = "linux")]
             for root in &self.roots {
-                if let Some(fd) = self.controller.runtime().event_fd(&root.registration.root) {
+                if root.event_retry.is_none()
+                    && let Some(fd) = self.controller.runtime().event_fd(&root.registration.root)
+                {
                     fds.push((
                         fd.try_clone_to_owned().map_err(fd_error)?,
                         Wake::Source(root.registration.root.clone()),
@@ -551,6 +613,7 @@ impl State {
                     registration,
                     feed_pending: true,
                     feed_stalled: true,
+                    event_retry: None,
                 });
                 continue;
             }
@@ -566,6 +629,7 @@ impl State {
                     registration,
                     feed_pending: true,
                     feed_stalled: true,
+                    event_retry: None,
                 });
                 continue;
             }
@@ -577,6 +641,7 @@ impl State {
                 registration,
                 feed_pending: true,
                 feed_stalled: false,
+                event_retry: None,
             });
         }
         Ok(())

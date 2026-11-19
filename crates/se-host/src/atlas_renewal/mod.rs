@@ -68,9 +68,15 @@ struct Root {
     unwatched: u64,
     discovery_complete: bool,
     requires_reconcile: bool,
+    pending_events: Option<PendingEvents>,
     last_lock: Option<bool>,
     pending_lock: Option<bool>,
     reasons: Vec<CoverageReason>,
+}
+struct PendingEvents {
+    bytes: Vec<u8>,
+    next: usize,
+    hints: Vec<SourceHint>,
 }
 struct Cycle {
     root: RootId,
@@ -223,6 +229,7 @@ impl NativeRenewal {
                 unwatched: 0,
                 discovery_complete: false,
                 requires_reconcile: true,
+                pending_events: None,
                 last_lock: None,
                 pending_lock: None,
                 reasons: Vec::new(),
@@ -397,6 +404,7 @@ impl NativeRenewal {
         #[cfg(not(windows))]
         let _ = deadline;
         self.roots[index].native = None;
+        self.roots[index].pending_events = None;
         self.mappings.retain(|mapping| mapping.root != index as u32);
         Ok(())
     }
