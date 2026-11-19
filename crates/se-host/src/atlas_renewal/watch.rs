@@ -320,6 +320,7 @@ impl NativeRenewal {
             if basename == ".gitignore"
                 || cfg!(windows) && basename.eq_ignore_ascii_case(".gitignore")
             {
+                #[cfg(windows)]
                 if !parent.is_empty() {
                     return Ok(vec![SourceHint::DirectoryChanged(RelativePath::new(
                         parent,
@@ -373,6 +374,11 @@ impl NativeRenewal {
                 continue;
             }
             if directory_event {
+                #[cfg(target_os = "linux")]
+                return Ok(vec![SourceHint::Reconcile(
+                    ReconcileReason::DirectoryChanged,
+                )]);
+                #[cfg(windows)]
                 return Ok(vec![SourceHint::DirectoryChanged(path)]);
             }
             hints.push(
