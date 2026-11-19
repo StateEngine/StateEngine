@@ -21,16 +21,16 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
     ) -> AtlasResult<Step> {
         let started = Instant::now();
         let budget = deadline.saturating_duration_since(started);
-        if budget.is_zero() {
-            return Err(se_atlas::cache::connection::timeout_phase(
-                "renewal work admission",
-                budget,
-                budget,
-            ));
-        }
         let setup_deadline = started + Duration::from_secs(5);
-        self.admit(registration, policy)?;
         let result = (|| {
+            self.admit(registration, policy)?;
+            if budget.is_zero() {
+                return Err(se_atlas::cache::connection::timeout_phase(
+                    "renewal work admission",
+                    budget,
+                    budget,
+                ));
+            }
             if Instant::now() >= setup_deadline {
                 return Err(se_atlas::cache::connection::timeout_phase(
                     "renewal setup",
