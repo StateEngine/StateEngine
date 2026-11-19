@@ -28,7 +28,10 @@ impl LaunchCoordinator {
                 None if expected.is_some() => Arc::new(se_proc::NativeProfileFiles::open(parent)
                     .map_err(|cause| error("SE Code profile parent", format!("{cause}; restore the original protected parent, then retry")))?),
                 None => {
-                    se_proc::NativeStateFiles::create(base).map_err(|cause| error("SE Code profile parent", cause))?;
+                    let home = base.parent().ok_or_else(|| error("SE Code profile parent", "state directory is absent"))?;
+                    let state = se_proc::NativeStateFiles::open_profile_ancestor(home)
+                        .map_err(|cause| error("SE Code profile parent", format!("{cause}; restore the original protected state directory and retry")))?;
+                    state.prepare_directory(base).map_err(|cause| error("SE Code profile parent", format!("{cause}; restore the protected profile parent and retry")))?;
                     Arc::new(se_proc::NativeProfileFiles::create(parent)
                         .map_err(|cause| error("SE Code profile parent", format!("{cause}; restore current-user ownership and a protected current-user-only DACL, then retry")))?)
                 }
