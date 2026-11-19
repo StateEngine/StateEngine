@@ -138,10 +138,13 @@ impl StatusRequest {
             Read::Absent { .. } => {
                 return Err(SeError::new(se_types::Detail::RuntimeNotRunning(
                     se_types::details::RuntimeNotRunning {
-                        op: AnyOp::ProjectStatus(se_core::ops::ProjectStatus { all: false })
-                            .meta()
-                            .name
-                            .into(),
+                        op: AnyOp::ProjectStatus(se_core::ops::ProjectStatus {
+                            all: false,
+                            ..Default::default()
+                        })
+                        .meta()
+                        .name
+                        .into(),
                         reason:
                             "no live authenticated host endpoint is published in this data home"
                                 .into(),
@@ -183,7 +186,11 @@ impl StatusRequest {
         crate::ipc::forward_owned(
             &self.endpoint,
             self.credential,
-            AnyOp::ProjectStatus(se_core::ops::ProjectStatus { all: false }),
+            AnyOp::ProjectStatus(se_core::ops::ProjectStatus {
+                all: false,
+                watch_only: cfg!(windows),
+                ..Default::default()
+            }),
             &self.selections,
             self.presence,
             &ClientOptions {

@@ -96,7 +96,10 @@ fn collected(value: &Value) -> bool {
 }
 fn status(cx: &Bootstrap) -> Result<AnyOutput> {
     // Reuse normal status configuration handling, separately from doctor's recovery mode.
-    let op = AnyOp::ProjectStatus(ProjectStatus { all: true });
+    let op = AnyOp::ProjectStatus(ProjectStatus {
+        all: true,
+        ..Default::default()
+    });
     let mut status = Bootstrap::resolve(Some(cx.home.clone()), None, true, true, &op)?;
     status.project = None;
     status.selections.status_all = true;

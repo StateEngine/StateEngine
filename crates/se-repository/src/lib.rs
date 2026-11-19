@@ -3,12 +3,24 @@
 //! the reservation until it finishes, including after its receiver times out.
 #[path = "git2.rs"]
 mod backend;
+#[cfg(windows)]
+mod watch_inventory;
+#[cfg(windows)]
+mod watch_windows;
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock, mpsc},
     time::Instant,
 };
+#[cfg(windows)]
+pub use watch_windows::{RepositoryWatch, WatchedFacts};
+
+/// Check whether the local caller shares the watch owner's Git environment.
+#[cfg(windows)]
+pub fn watch_environment() -> Result<(), String> {
+    backend::watch_environment().map(|_| ())
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Facts {

@@ -93,6 +93,12 @@ pub struct ProjectStatus {
     #[serde(skip)]
     #[schemars(skip)]
     pub all: bool,
+    /// Re-scan the working tree instead of using a watched observation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fresh: bool,
+    /// Return only a watched observation; the caller supplies any fresh fallback.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub watch_only: bool,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

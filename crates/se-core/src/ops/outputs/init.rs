@@ -26,6 +26,17 @@ pub struct GitView {
     pub commits: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uncommitted: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<GitObservation>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct GitObservation {
+    pub basis: String,
+    pub reconciled_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_notification_at: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RepositoryView {

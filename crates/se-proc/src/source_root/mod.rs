@@ -22,13 +22,23 @@ mod windows_entries;
 use unix_entries as entries;
 #[cfg(windows)]
 use windows_entries as entries;
+#[cfg(any(target_os = "linux", windows))]
+mod watch_shared;
+#[cfg(any(target_os = "linux", windows))]
+pub use watch_shared::{NativeWatchAction, NativeWatchEvent, NativeWatchRegistration};
+#[cfg(any(target_os = "linux", windows))]
+mod watch_directory;
+#[cfg(any(target_os = "linux", windows))]
+pub use watch_directory::NativeWatchDirectory;
 #[cfg(target_os = "linux")]
 mod watch_linux;
 #[cfg(target_os = "linux")]
-pub use watch_linux::{
-    NativeSourceWatch, NativeWatchAction, NativeWatchDirectory, NativeWatchEvent,
-    NativeWatchEvents, NativeWatchRegistration,
-};
+pub use watch_linux::{NativeSourceWatch, NativeWatchEvents};
+#[cfg(windows)]
+#[path = "../source_watch/windows.rs"]
+mod watch_windows;
+#[cfg(windows)]
+pub use watch_windows::{NativeSourceWatch, NativeWatchEvents};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeSourceKind {
