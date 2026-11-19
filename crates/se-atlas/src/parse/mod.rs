@@ -3,6 +3,8 @@ mod budget;
 mod extract;
 mod imports;
 mod javascript;
+#[allow(unsafe_code)]
+mod native_memory;
 mod python;
 mod rust;
 mod syntax;
@@ -150,6 +152,7 @@ impl AtlasParser for SemanticParser {
             ));
         }
         let _lease = budget::Lease::take()?;
+        let memory = native_memory::Reservation::start(profile.parser_reservation_bytes);
         if let Some(guard) = self.resource_guard {
             guard()?;
         }
@@ -158,7 +161,12 @@ impl AtlasParser for SemanticParser {
             .set_language(&grammar(language))
             .map_err(|e| failure(&snapshot.path, language, e.to_string()))?;
         let mut resource_error = None;
+        let mut memory_exceeded = false;
         let mut progress = |_: &tree_sitter::ParseState| {
+            if memory.exceeded() {
+                memory_exceeded = true;
+                return ControlFlow::Break(());
+            }
             if let Some(guard) = self.resource_guard
                 && let Err(error) = guard()
             {
@@ -172,6 +180,9 @@ impl AtlasParser for SemanticParser {
             None,
             Some(tree_sitter::ParseOptions::new().progress_callback(&mut progress)),
         );
+        if memory_exceeded || memory.exceeded() {
+            return Ok(defer(CoverageReason::ParseMemoryLimit));
+        }
         if let Some(error) = resource_error {
             return Err(error);
         }
