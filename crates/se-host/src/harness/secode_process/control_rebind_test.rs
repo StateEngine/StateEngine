@@ -73,6 +73,7 @@ fn fixture(
     listener: TcpListener,
     project: String,
     agent: String,
+    corrupt_reply: bool,
 ) -> std::result::Result<(), String> {
     let (stream, _) = listener.accept().map_err(|e| e.to_string())?;
     stream
@@ -110,7 +111,11 @@ fn fixture(
     if release["mac"] != expected {
         return Err("release signature differs".into());
     }
-    let reply = mac(&[b"stateengine.rebind.released/v1", &restart, &nonce])?;
+    let reply = if corrupt_reply {
+        "0".repeat(64)
+    } else {
+        mac(&[b"stateengine.rebind.released/v1", &restart, &nonce])?
+    };
     respond(
         &mut reader,
         serde_json::json!({"released":true,"mac":reply}),
@@ -119,6 +124,15 @@ fn fixture(
 
 #[tokio::test]
 async fn challenge_and_release_share_one_verified_connection() -> Check {
+    exercise_release(false).await
+}
+
+#[tokio::test]
+async fn forged_release_receipt_is_not_accepted() -> Check {
+    exercise_release(true).await
+}
+
+async fn exercise_release(corrupt_reply: bool) -> Check {
     let root = directory::private_directory().map_err(|error| error.to_string())?;
     let profile = root.join("profile");
     #[cfg(unix)]
@@ -137,7 +151,7 @@ async fn challenge_and_release_share_one_verified_connection() -> Check {
     let task = {
         let project = project.to_string();
         let agent = agent.to_string();
-        std::thread::spawn(move || fixture(listener, project, agent))
+        std::thread::spawn(move || fixture(listener, project, agent, corrupt_reply))
     };
     let control = super::super::control::Control::for_restart(
         &profile,
@@ -152,7 +166,11 @@ async fn challenge_and_release_share_one_verified_connection() -> Check {
     })?;
     let result = control.release_restart(&project, &agent, &deadline).await;
     task.join().map_err(|_| "fixture panicked")??;
-    result?;
+    if corrupt_reply {
+        assert!(result.is_err(), "forged release receipt was accepted");
+    } else {
+        result?;
+    }
     Ok(())
 }
 
