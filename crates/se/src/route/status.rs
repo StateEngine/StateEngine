@@ -60,7 +60,7 @@ pub fn observe_snapshot_watched<S: Snapshot>(
     watched: Option<&AnyOutput>,
     defer_git: bool,
 ) -> Result<AnyOutput> {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = watched;
     let generated = receipt::timestamp(execute::now_us()?)?;
     let mut output = status::missing(
@@ -303,7 +303,7 @@ fn git_observation(
     watched: Option<&AnyOutput>,
     pending: &mut Vec<PendingFact>,
 ) -> Option<GitView> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let watched_git = match watched {
         Some(AnyOutput::ProjectStatus(live)) => match &live.value.project {
             Read::Present { value } if &value.id == project && value.root == root => {
@@ -313,16 +313,16 @@ fn git_observation(
         },
         _ => None,
     };
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (project, watched);
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let observed = super::git_state::observe_cached_watched(
         std::path::Path::new(root),
         files,
         &cx.home,
         watched_git,
     );
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let observed = super::git_state::observe_cached(std::path::Path::new(root), files, &cx.home);
     match observed {
         Ok(observed) => {
@@ -353,7 +353,7 @@ fn git_observation(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(super) fn complete_deferred_git(
     cx: &Bootstrap,
     files: &Files,

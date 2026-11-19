@@ -2,6 +2,7 @@
 //! represents notifications as a synchronous proof of the working tree.
 use super::{Facts, Flight, backend::Prepared};
 use se_proc::{NativeSourceRoot, NativeSourceWatch, NativeWatchAction, NativeWatchEvents};
+#[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 use std::{
     collections::HashSet,
@@ -407,6 +408,10 @@ fn eligible_path(root: &Path, path: &str) -> Result<String, String> {
     if !path.is_ascii() {
         return Err("non-ASCII watch paths require reconciliation".into());
     }
+    #[cfg(target_os = "macos")]
+    if path.contains('\\') {
+        return Err("ambiguous watch path requires reconciliation".into());
+    }
     if path.split('/').any(|part| {
         part.eq_ignore_ascii_case(".git")
             || part.eq_ignore_ascii_case(".gitignore")
@@ -418,10 +423,7 @@ fn eligible_path(root: &Path, path: &str) -> Result<String, String> {
     let native_path = root.join(path);
     let metadata = std::fs::symlink_metadata(&native_path)
         .map_err(|_| "removed or inaccessible path requires reconciliation")?;
-    if !metadata.is_file()
-        || metadata.file_type().is_symlink()
-        || metadata.file_attributes() & 0x400 != 0
-    {
+    if !metadata.is_file() || metadata.file_type().is_symlink() || is_reparse(&metadata) {
         return Err("directory or linked-path change requires reconciliation".into());
     }
     let resolved = native_path
@@ -438,6 +440,15 @@ fn eligible_path(root: &Path, path: &str) -> Result<String, String> {
         return Err("aliased changed path requires reconciliation".into());
     }
     Ok(path.to_ascii_lowercase())
+}
+
+#[cfg(windows)]
+fn is_reparse(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_attributes() & 0x400 != 0
+}
+#[cfg(target_os = "macos")]
+fn is_reparse(_metadata: &std::fs::Metadata) -> bool {
+    false
 }
 
 fn now_us() -> Option<u64> {

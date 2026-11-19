@@ -1,6 +1,6 @@
 //! The host keeps a bounded watched repository observation between status calls.
 use super::*;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use std::time::Duration;
 use std::{path::Path, time::Instant};
 
@@ -12,7 +12,7 @@ impl LaunchCoordinator {
         watch_only: bool,
         deadline: &Deadline,
     ) -> Result<()> {
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         if !fresh {
             let _ = watch_only;
             return Ok(());
@@ -50,11 +50,11 @@ impl LaunchCoordinator {
             }
             return Ok(());
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             Ok(())
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             let watched = self.watched_repository(&root, deadline);
             match watched {
@@ -83,7 +83,7 @@ impl LaunchCoordinator {
             Ok(())
         }
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn watched_repository(
         &self,
         root: &Path,
@@ -114,7 +114,7 @@ impl LaunchCoordinator {
         watches[index].observe(bound)
     }
 }
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn watched_view(value: se_repository::WatchedFacts) -> Result<GitView> {
     let age_seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

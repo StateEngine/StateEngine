@@ -96,7 +96,7 @@ pub struct ProcessConfiguration {
     pub stop_grace_ms: Option<u32>,
 }
 pub struct LaunchCoordinator {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     repository_watches: std::sync::Mutex<Vec<se_repository::RepositoryWatch>>,
     kind: crate::HostKind,
     native: Arc<NativeProcessRuntime>,
@@ -272,7 +272,7 @@ impl LaunchCoordinator {
             options.http_port,
         ));
         Ok(Arc::new(Self {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             repository_watches: std::sync::Mutex::new(Vec::new()),
             kind: host_runtime.kind,
             native,
