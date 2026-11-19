@@ -80,7 +80,7 @@ struct Cycle {
     part: u8,
     coverage: se_atlas::coverage::CoverageScan,
 }
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Phase {
     Retained,
     Directories,

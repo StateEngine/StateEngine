@@ -48,6 +48,14 @@ pub fn drive_events(
         Ok(hints) => hints,
         Err(error) => {
             let driver = controller.runtime_mut().driver_mut();
+            if let Some(cycle) = &driver.cycle {
+                eprintln!(
+                    "ATLAS_SQL_TRACE event_error phase={:?} directories={} files={} after={} error={error:?}",
+                    cycle.phase, cycle.directories, cycle.files, cycle.after
+                );
+            } else {
+                eprintln!("ATLAS_SQL_TRACE event_error no_active_cycle error={error:?}");
+            }
             let writer_busy = matches!(error.body.detail(), se_types::Detail::AtlasResourceBudget(detail)
                 if detail.resource == "Atlas home writer lease");
             if let Some(index) = driver.roots.iter().position(|r| &r.id == root) {

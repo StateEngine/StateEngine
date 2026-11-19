@@ -193,13 +193,21 @@ impl<'a> CacheConnection<'a> {
         let mut db = open(&pin, role, deadline)?;
         files.configure_connection_role(&mut db, role)?;
         configure_limits(&db, role, profile)?;
-        finite(&mut db, deadline, |db, _| {
+        let diagnostic_started = Instant::now();
+        let validation = finite(&mut db, deadline, |db, _| {
             schema::validate(db, &id)?;
             if role.writable() && role != ConnectionRole::MaintenanceWriter {
                 schema::validate_integrity(db)?;
             }
             Ok(())
-        })?;
+        });
+        if let Err(error) = &validation {
+            eprintln!(
+                "ATLAS_SQL_TRACE connection_validate role={role:?} elapsed_ms={} error={error:?}",
+                diagnostic_started.elapsed().as_millis()
+            );
+        }
+        validation?;
         configure_access(&db, role)?;
         if role == ConnectionRole::CandidateReader {
             finite(&mut db, deadline, |db, _| schema::validate_integrity(db))?;
@@ -288,6 +296,7 @@ impl<'a> CacheConnection<'a> {
     }
     /// A finite snapshot ends at response completion, including error paths.
     /// Output allocations belong to the host's single 98304-byte query arena.
+    #[track_caller]
     pub fn read<T>(
         &mut self,
         deadline: Instant,
@@ -298,6 +307,7 @@ impl<'a> CacheConnection<'a> {
     /// The bounded update owner supplies its maximum WAL emission before SQL
     /// runs; native reservation holds DB/WAL/retired/staging/global disk capacity.
     /// Underestimating emission is an invariant violation, never a renewed budget.
+    #[track_caller]
     pub fn write<T>(
         &mut self,
         maximum_wal_bytes: u64,
@@ -309,6 +319,7 @@ impl<'a> CacheConnection<'a> {
         }
         self.transaction(true, maximum_wal_bytes, deadline, write)
     }
+    #[track_caller]
     fn transaction<T>(
         &mut self,
         write: bool,
@@ -357,7 +368,9 @@ impl<'a> CacheConnection<'a> {
         } else {
             None
         };
-        finite(&mut self.db, deadline, |db, budget_ms| {
+        let diagnostic_started = Instant::now();
+        let diagnostic_caller = std::panic::Location::caller();
+        let result = finite(&mut self.db, deadline, |db, budget_ms| {
             let behavior = if write {
                 rusqlite::TransactionBehavior::Immediate
             } else {
@@ -385,7 +398,15 @@ impl<'a> CacheConnection<'a> {
                 transaction.rollback().map_err(cache_error)?;
             }
             result
-        })
+        });
+        if let Err(error) = &result {
+            eprintln!(
+                "ATLAS_SQL_TRACE transaction caller={diagnostic_caller} role={:?} write={write} elapsed_ms={} error={error:?}",
+                self.role,
+                diagnostic_started.elapsed().as_millis()
+            );
+        }
+        result
     }
     /// Event/commit/drain driven only. External pinned snapshots keep writes
     /// suspended; no timer or forced reader expiry is introduced.

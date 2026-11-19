@@ -55,6 +55,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
         Ok(())
     }
     pub fn poll_events(&mut self, id: &RootId, deadline: Instant) -> AtlasResult<Vec<SourceHint>> {
+        let diagnostic_started = Instant::now();
         if self.active.is_some() {
             return Err(atlas_cold::failure(
                 "cold child owns the home writer; preserve native readiness until reap",
@@ -66,19 +67,34 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             .as_ref()
             .ok_or_else(|| atlas_cold::failure("native host SQL profile is unqualified"))?;
         let cache = NativeAtlasCache::create(&self.home, root.source.scope.clone())?;
-        let mut current = writer(&cache, root, profile, deadline)?
-            .ok_or_else(|| atlas_cold::failure("watch event cache is absent"))?;
+        let opened = writer(&cache, root, profile, deadline);
+        if let Err(error) = &opened {
+            eprintln!(
+                "ATLAS_SQL_TRACE poll_writer elapsed_ms={} checked_epoch={} error={error:?}",
+                diagnostic_started.elapsed().as_millis(),
+                root.checked_epoch.is_some()
+            );
+        }
+        let mut current =
+            opened?.ok_or_else(|| atlas_cold::failure("watch event cache is absent"))?;
         let root = self
             .roots
             .iter()
             .find(|r| &r.summary.root == id)
             .ok_or_else(|| atlas_cold::failure("native root disappeared"))?;
-        self.driver.poll_events(
+        let result = self.driver.poll_events(
             &root.source,
             &mut current.connection,
             &root.policy,
             deadline,
-        )
+        );
+        if let Err(error) = &result {
+            eprintln!(
+                "ATLAS_SQL_TRACE poll_driver elapsed_ms={} error={error:?}",
+                diagnostic_started.elapsed().as_millis()
+            );
+        }
+        result
     }
     #[cfg(unix)]
     pub fn event_fd(&self, id: &RootId) -> Option<std::os::fd::BorrowedFd<'_>> {
@@ -140,7 +156,8 @@ pub(super) fn writer<'a>(
     profile: &SqlProfile,
     deadline: Instant,
 ) -> AtlasResult<Option<pointer::DiscoveredEpoch<'a>>> {
-    let mut current = match &root.checked_epoch {
+    let diagnostic_started = Instant::now();
+    let opened = match &root.checked_epoch {
         Some(epoch) => {
             pointer::open_checked_writer(cache, &root.source.scope, profile, epoch, deadline)
         }
@@ -151,11 +168,25 @@ pub(super) fn writer<'a>(
             profile,
             deadline,
         ),
-    }?;
+    };
+    if let Err(error) = &opened {
+        eprintln!(
+            "ATLAS_SQL_TRACE writer_open elapsed_ms={} checked_epoch={} error={error:?}",
+            diagnostic_started.elapsed().as_millis(),
+            root.checked_epoch.is_some()
+        );
+    }
+    let mut current = opened?;
     if let Some(current) = &mut current {
         // Every native write path shares this admission point. Close retains
         // the WAL, so checkpoint bounded accumulated work before another write.
-        current.connection.checkpoint(deadline)?;
+        if let Err(error) = current.connection.checkpoint(deadline) {
+            eprintln!(
+                "ATLAS_SQL_TRACE writer_checkpoint elapsed_ms={} error={error:?}",
+                diagnostic_started.elapsed().as_millis()
+            );
+            return Err(error);
+        }
     }
     Ok(current)
 }

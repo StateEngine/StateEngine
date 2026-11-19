@@ -93,6 +93,22 @@ fn setup(f: &Fixture) -> Check {
             )
             .into());
         }
+        let checkout = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args([
+                "checkout",
+                "--detach",
+                "5e55728a8c1df057be179c655a7cebcb99522265",
+            ])
+            .output()?;
+        if !checkout.status.success() {
+            return Err(format!(
+                "diagnostic checkout failed: {}",
+                String::from_utf8_lossy(&checkout.stderr)
+            )
+            .into());
+        }
         let history = std::process::Command::new("git")
             .arg("-C")
             .arg(&source)
@@ -507,7 +523,7 @@ async fn benchmark_caught_up(
     project: &se_types::ProjectId,
     records: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let end = Instant::now() + Duration::from_secs(1200);
+    let end = Instant::now() + Duration::from_secs(180);
     loop {
         let context = context.clone();
         let project = project.clone();
@@ -541,7 +557,9 @@ async fn benchmark_caught_up(
             return Ok(());
         }
         if Instant::now() >= end {
-            return Err("full repository owner did not finish indexing within 1200 seconds".into());
+            return Err(
+                "full repository diagnostic did not finish indexing within 180 seconds".into(),
+            );
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
