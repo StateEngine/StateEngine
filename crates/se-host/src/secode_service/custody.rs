@@ -24,6 +24,8 @@ pub(super) struct Journal {
     pub agent: se_types::AgentId,
     pub profile: NativePath,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_parent_identity: Option<[u8; 24]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_identity: Option<[u8; 24]>,
     pub session: se_types::SessionId,
     pub vendor_session: String,

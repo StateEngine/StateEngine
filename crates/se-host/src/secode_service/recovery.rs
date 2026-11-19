@@ -39,6 +39,8 @@ impl LaunchCoordinator {
                     journal,
                     #[cfg(windows)]
                     profile_guard: None,
+                    #[cfg(windows)]
+                    profile_parent_guard: None,
                     path,
                     digest: Some(digest),
                     pending_save: None,
@@ -192,10 +194,15 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<()> {
         #[cfg(windows)]
+        if service.journal.profile_identity.is_none() && service.journal.bootstrap.is_some() {
+            self.qualify_secode_profile_parent(service, deadline)
+                .await?;
+        }
+        #[cfg(windows)]
         if service.journal.profile_identity.is_some()
             || (!service.journal.retired && service.journal.service.is_some())
         {
-            self.qualify_secode_profile(service, deadline).await?;
+            self.qualify_secode_profile(service, None, deadline).await?;
         }
         for auxiliary in Auxiliary::ALL {
             self.recover_secode_auxiliary(service, auxiliary, deadline)

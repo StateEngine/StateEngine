@@ -79,6 +79,7 @@ impl LaunchCoordinator {
                 project: key.0.clone(),
                 agent: key.1.clone(),
                 profile: NativePath::from_local(profile)?,
+                profile_parent_identity: None,
                 profile_identity: None,
                 session: request.identity.session.clone(),
                 vendor_session: session,
@@ -109,6 +110,8 @@ impl LaunchCoordinator {
                     journal,
                     #[cfg(windows)]
                     profile_guard: None,
+                    #[cfg(windows)]
+                    profile_parent_guard: None,
                     path,
                     digest: None,
                     pending_save: None,
@@ -144,27 +147,11 @@ impl LaunchCoordinator {
         }
         service.persist(self, deadline).await?;
         #[cfg(windows)]
-        let (profile, _profile_parent) = if service.journal.profile_identity.is_none() {
-            let requested = service.journal.profile.to_local()?;
-            let fresh = service.journal.bootstrap.is_none();
-            self.store.pool.run_owned(deadline, move || {
-                let parent = requested.parent().ok_or_else(|| error("SE Code profile parent", "profile parent is absent"))?;
-                let base = parent.parent().ok_or_else(|| error("SE Code profile parent", "profile ancestor is absent"))?;
-                se_proc::NativeStateFiles::create(base).map_err(|cause| error("SE Code profile parent", cause))?;
-                let guard = se_proc::NativeProfileFiles::create(parent).map_err(|cause| error("SE Code profile parent", format!("{cause}; restore current-user ownership and a protected current-user-only DACL, then retry")))?;
-                let name = requested.file_name().ok_or_else(|| error("SE Code profile", "profile name is absent"))?;
-                let resolved = guard.resolved_root().map_err(|cause| error("SE Code profile parent", cause))?.join(name);
-                if fresh {
-                    match std::fs::symlink_metadata(&resolved) {
-                        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => (),
-                        Err(cause) => return Err(error("SE Code profile", format!("{}: {cause}; repair access and retry", resolved.display()))),
-                        Ok(_) => return Err(error("SE Code profile", format!("{} already exists; move it aside to preserve it, then retry", resolved.display()))),
-                    }
-                }
-                Ok((resolved, Some(guard)))
-            }).await?
+        let profile = if service.journal.profile_identity.is_none() {
+            self.qualify_secode_profile_parent(&mut service, deadline)
+                .await?
         } else {
-            (service.checked_profile()?, None)
+            service.checked_profile()?
         };
         #[cfg(not(windows))]
         let profile = service.checked_profile()?;
@@ -280,7 +267,7 @@ impl LaunchCoordinator {
             ));
         }
         #[cfg(windows)]
-        if let Some(parent) = &_profile_parent {
+        if let Some(parent) = &service.profile_parent_guard {
             let resolved = parent
                 .resolved_root()
                 .map_err(|cause| error("SE Code profile parent", cause))?;
@@ -295,16 +282,11 @@ impl LaunchCoordinator {
             }
         }
         #[cfg(windows)]
-        self.qualify_secode_profile(&mut service, deadline).await?;
+        self.qualify_secode_profile(&mut service, Some(profile.clone()), deadline)
+            .await?;
         #[cfg(windows)]
-        if service.checked_profile()? != profile {
-            return Err(error(
-                "SE Code private profile",
-                format!(
-                    "{} does not identify the initialized profile; restore the original location and retry",
-                    profile.display()
-                ),
-            ));
+        {
+            service.profile_parent_guard = None;
         }
         self.configure_secode(&mut service, request, deadline)
             .await?;
