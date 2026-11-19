@@ -29,7 +29,7 @@ const BATCH_ALLOWANCE: Duration = Duration::from_secs(1);
 /// kept so a stuck writer fails its step instead of spending the whole
 /// load budget.
 const NO_PROGRESS: Duration = Duration::from_secs(5);
-/// A one-shot batch has no workload to amortize over, so it gets four batch
+/// A one-shot batch has no workload to amortize over, so it gets eight batch
 /// allowances of observation.
 const SINGLE_ALLOWANCE: Duration = Duration::from_secs(8);
 /// Close deadline for a case's own drain. The writer's drop seal is five
@@ -198,12 +198,15 @@ fn background_task_keeps_sustained_writes_below_the_cutoff() -> Check {
     let mut largest_log = 0;
     let mut batch_frames = 0;
     let load_deadline = Instant::now() + BATCH_ALLOWANCE * 64;
-    let mut last_progress = Instant::now();
+    let mut last_progress;
     for n in 0..64 {
         let key = format!("bg-sustained-{n}");
-        let step_deadline = (last_progress + NO_PROGRESS).min(load_deadline);
-        let receipt = wait_until(client.submit(payload(&f, &key)?)?, step_deadline)??;
+        let pending = client.submit(payload(&f, &key)?)?;
+        // Progress means the commit was handed to the writer; preparation
+        // and sampling stay outside the no-progress window.
         last_progress = Instant::now();
+        let step_deadline = (last_progress + NO_PROGRESS).min(load_deadline);
+        let receipt = wait_until(pending, step_deadline)??;
         assert_eq!(receipt.state, CommitState::Committed);
         let log = wal(&outside)?.0;
         if n == 0 {
