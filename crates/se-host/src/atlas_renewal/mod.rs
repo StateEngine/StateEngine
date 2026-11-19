@@ -45,6 +45,14 @@ struct Native {
     root: NativeSourceRoot,
     watch: NativeSourceWatch,
     metadata: Option<metadata::Watches>,
+    #[cfg(windows)]
+    state: WatchState,
+}
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+enum WatchState {
+    Active,
+    Retiring,
 }
 struct Root {
     id: RootId,
@@ -227,8 +235,16 @@ impl NativeRenewal {
             }
             slot
         };
+        #[cfg(windows)]
+        if self.roots[index]
+            .native
+            .as_ref()
+            .is_some_and(|native| matches!(native.state, WatchState::Retiring))
+        {
+            self.retire_native(index, deadline)?;
+        }
         if self.roots[index].epoch != connection.identity().epoch {
-            self.roots[index].native = None;
+            self.retire_native(index, deadline)?;
             self.roots[index].epoch = connection.identity().epoch.clone();
             self.mappings.retain(|m| m.root != index as u32);
             if self
@@ -290,6 +306,8 @@ impl NativeRenewal {
                 root: native,
                 watch,
                 metadata: None,
+                #[cfg(windows)]
+                state: WatchState::Active,
             });
         }
         Ok(index)
@@ -311,14 +329,7 @@ impl NativeRenewal {
         self.parser.close(deadline)?;
         // Native handles close even when an absent cache cannot lend SQL.
         if let Some(index) = self.roots.iter().position(|r| &r.id == root) {
-            #[cfg(windows)]
-            if let Some(native) = self.roots[index].native.as_mut() {
-                native
-                    .watch
-                    .shutdown(deadline.saturating_duration_since(Instant::now()))
-                    .map_err(|error| source_error("source watch shutdown", error))?;
-            }
-            self.roots[index].native = None;
+            self.retire_native(index, deadline)?;
             self.roots[index].discovery_complete = false;
             self.roots[index].last_lock = None;
             self.roots[index].pending_lock = None;
@@ -367,6 +378,26 @@ impl NativeRenewal {
                 Ok(())
             })?;
         }
+        Ok(())
+    }
+
+    fn retire_native(&mut self, index: usize, deadline: Instant) -> AtlasResult<()> {
+        #[cfg(windows)]
+        {
+            let root = &mut self.roots[index];
+            if let Some(native) = root.native.as_mut() {
+                native.state = WatchState::Retiring;
+                let timeout = deadline.saturating_duration_since(Instant::now());
+                native
+                    .watch
+                    .shutdown(timeout)
+                    .map_err(|error| crate::atlas_parse::cleanup_error(error, timeout))?;
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = deadline;
+        self.roots[index].native = None;
+        self.mappings.retain(|mapping| mapping.root != index as u32);
         Ok(())
     }
 }

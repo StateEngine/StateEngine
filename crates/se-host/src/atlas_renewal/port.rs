@@ -48,6 +48,7 @@ pub fn drive_events(
         Ok(hints) => hints,
         Err(error) => {
             let driver = controller.runtime_mut().driver_mut();
+            let mut retirement_error = None;
             let writer_busy = matches!(error.body.detail(), se_types::Detail::AtlasResourceBudget(detail)
                 if detail.resource == "Atlas home writer lease");
             if let Some(index) = driver.roots.iter().position(|r| &r.id == root) {
@@ -57,17 +58,22 @@ pub fn drive_events(
                     // full reconcile, so a later edit can wake us after unlock.
                     // Closing here lost that only event source; retaining an
                     // unread level-triggered wake would spin on the held lease.
-                    if let Some(native) = &driver.roots[index].native {
+                    let read_error = if let Some(native) = &driver.roots[index].native {
                         let mut bytes = [0; 16384];
-                        native
-                            .watch
-                            .read(&mut bytes)
-                            .map_err(|error| source_error("deferred watch read", error))?;
+                        native.watch.read(&mut bytes).err()
+                    } else {
+                        None
+                    };
+                    if let Some(read_error) = read_error {
+                        let read_error = source_error("deferred watch read", read_error);
+                        retirement_error = Some(match driver.retire_native(index, deadline) {
+                            Ok(()) => read_error,
+                            Err(retirement) => retain_failure(retirement, read_error),
+                        });
                     }
                     driver.roots[index].requires_reconcile = true;
                 } else {
-                    driver.roots[index].native = None;
-                    driver.mappings.retain(|m| m.root != index as u32);
+                    retirement_error = driver.retire_native(index, deadline).err();
                 }
             }
             if driver.cycle.as_ref().is_some_and(|c| &c.root == root) {
@@ -77,7 +83,10 @@ pub fn drive_events(
                 root.clone(),
                 SourceHint::Reconcile(ReconcileReason::WatchFailure),
             )?;
-            return Err(error);
+            return Err(match retirement_error {
+                Some(retirement) => retain_failure(retirement, error),
+                None => error,
+            });
         }
     };
     let locks = sync_locks(controller)?;
@@ -86,6 +95,15 @@ pub fn drive_events(
         controller.enqueue(root.clone(), hint)?;
     }
     Ok(count + locks)
+}
+
+fn retain_failure(primary: SeError, other: SeError) -> SeError {
+    let native = primary
+        .cause
+        .as_ref()
+        .map_or_else(String::new, ToString::to_string);
+    let cause = std::io::Error::other(format!("{primary}; {native}; earlier failure: {other}"));
+    primary.with_cause(cause)
 }
 
 /// Run source work and transfer newly observed checkout-lock state to the same
