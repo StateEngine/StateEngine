@@ -173,7 +173,7 @@ impl NativeSourceWatch {
             return Ok(None);
         };
         let identity = directory.identity.root_key();
-        let file = open_async(&directory.directory)
+        let file = open_async(&root.path.join(path))
             .map_err(|error| watch_error("open watched directory", error))?;
         if !identity.eq(&os::revision(&file, true)
             .map_err(|error| watch_error("inspect watched directory", error))?
@@ -197,7 +197,7 @@ impl NativeSourceWatch {
                 let parent_pin = parent_root
                     .open_directory("")?
                     .ok_or_else(|| changed("source ancestor disappeared"))?;
-                let parent_file = open_async(&parent_pin.directory)
+                let parent_file = open_async(parent)
                     .map_err(|error| watch_error("open ancestor notification", error))?;
                 if !parent_pin.validate_name()?
                     || !parent_pin.identity.same_object(
@@ -330,14 +330,20 @@ fn watch_error(action: &str, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{action}: {error}"))
 }
 
-fn open_async(file: &File) -> io::Result<File> {
-    // SAFETY: reopening a retained no-follow directory handle gives one independent async handle.
+fn open_async(path: &std::path::Path) -> io::Result<File> {
+    let name = crate::state_files::windows::wide(path)
+        .map_err(|_| invalid("normalized absolute watched directory required"))?;
+    // SAFETY: the terminated path is opened without following its final reparse point.
+    // The caller verifies the resulting identity against the retained directory pin.
     let raw = unsafe {
-        ReOpenFile(
-            file.as_raw_handle(),
+        CreateFileW(
+            name.as_ptr(),
             FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OVERLAPPED,
+            ptr::null_mut(),
         )
     };
     if raw == INVALID_HANDLE_VALUE || raw.is_null() {
