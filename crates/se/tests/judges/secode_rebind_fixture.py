@@ -56,6 +56,7 @@ def main():
     server.chmod(0o700)
     f = Fixture(args.se, args.root / 'case', cli, 'read-only', 'never')
     old_endpoint = new_endpoint = None
+    closed = False
     try:
         launched = launch(f, images)
         assert launched.returncode == 0, (launched.stdout, launched.stderr)
@@ -82,8 +83,20 @@ def main():
         assert new_notice['id'] != old_notice['id'], 'uncertain notice was replayed'
         assert new_notice['metadata']['messages'] == old_notice['metadata']['messages']
         f.close()
+        closed = True
         assert read_json(state_path)['released'] is True
     finally:
+        if not closed:
+            try:
+                f.call('down')
+            except Exception:
+                pass
+        profiles = list((f.home / 'secode-profiles').glob('*/profile'))
+        if profiles:
+            old = read_json(profiles[0] / 'fixture-registration.json') or {}
+            replacement = read_json(profiles[0] / 'fixture-replacement.json') or {}
+            old_endpoint = old_endpoint or old.get('endpoint')
+            new_endpoint = new_endpoint or replacement.get('endpoint')
         # The fixture owns itself and exits cooperatively; never signal by name.
         for endpoint in (new_endpoint, old_endpoint):
             if endpoint:

@@ -183,5 +183,5 @@ pub(super) async fn request(
 }
 
 #[cfg(test)]
-#[path = "control_rebind_test.rs"]
+#[path = "../../tests/support/rebind_control.rs"]
 mod tests;

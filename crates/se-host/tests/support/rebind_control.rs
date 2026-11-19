@@ -7,7 +7,7 @@ use std::{
     net::{TcpListener, TcpStream},
     time::Duration,
 };
-#[path = "../../../../test-support/directory.rs"]
+#[path = "../../../test-support/directory.rs"]
 #[allow(
     clippy::duplicate_mod,
     reason = "shared protected test directory helper"
