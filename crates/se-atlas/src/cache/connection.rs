@@ -118,14 +118,20 @@ impl Slot {
             _ => 0,
         };
         if bit == READER_SLOT {
+            let started = Instant::now();
             let deadline = crate::clock::wait_deadline(deadline);
+            let budget = deadline.saturating_duration_since(started);
             let mut guard = READER_WAIT
                 .lock()
                 .map_err(|_| cache_error("Atlas reader slot lock poisoned"))?;
             while SLOTS.load(Ordering::Acquire) & bit != 0 {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
-                    return Err(timeout(0));
+                    return Err(if role != ConnectionRole::QueryReader || budget.is_zero() {
+                        timeout(0)
+                    } else {
+                        timeout_phase("reader slot admission", budget, started.elapsed())
+                    });
                 }
                 guard = READER_READY
                     .wait_timeout(guard, remaining)
@@ -649,6 +655,23 @@ pub(crate) fn timeout(budget_ms: u64) -> se_types::SeError {
         se_types::details::DeadlineExceeded {
             op: "Atlas SQL".into(),
             deadline_ms: budget_ms,
+        },
+    ))
+}
+
+/// Report a bounded SQL phase using its actual allowance and elapsed time.
+pub fn timeout_phase(phase: &str, budget: Duration, elapsed: Duration) -> se_types::SeError {
+    let millis = |duration: Duration| {
+        u64::try_from(duration.as_millis())
+            .unwrap_or(u64::MAX)
+            .saturating_add(u64::from(
+                !duration.subsec_nanos().is_multiple_of(1_000_000),
+            ))
+    };
+    se_types::SeError::new(se_types::Detail::DeadlineExceeded(
+        se_types::details::DeadlineExceeded {
+            op: format!("Atlas SQL {phase} (elapsed {} ms)", millis(elapsed)),
+            deadline_ms: millis(budget),
         },
     ))
 }

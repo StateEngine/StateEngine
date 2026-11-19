@@ -321,21 +321,11 @@ fn phase_error(
 ) -> se_types::SeError {
     if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas SQL")
     {
-        let millis = |duration: Duration| {
-            u64::try_from(duration.as_millis())
-                .unwrap_or(u64::MAX)
-                .saturating_add(u64::from(
-                    !duration.subsec_nanos().is_multiple_of(1_000_000),
-                ))
-        };
-        let elapsed = millis(crate::clock::now().saturating_duration_since(started));
-        let budget = millis(end.saturating_duration_since(started));
-        error.body = se_types::SeError::new(se_types::Detail::DeadlineExceeded(
-            se_types::details::DeadlineExceeded {
-                op: format!("Atlas SQL {phase} (elapsed {elapsed} ms)"),
-                deadline_ms: budget,
-            },
-        ))
+        error.body = crate::cache::connection::timeout_phase(
+            phase,
+            end.saturating_duration_since(started),
+            crate::clock::now().saturating_duration_since(started),
+        )
         .body;
     }
     error

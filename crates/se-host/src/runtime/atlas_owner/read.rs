@@ -274,14 +274,21 @@ impl AtlasReadPort for Service {
         let cache = NativeAtlasCache::open(home, source.scope.clone())?.ok_or_else(|| {
             se_core::scope::unreadable("Atlas cache", "the published root cache is absent")
         })?;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(5);
         let mut current = pointer::open_current(
             &cache,
             &source.scope,
             ConnectionRole::QueryReader,
             profile,
             deadline,
-        )?
+        ).map_err(|error| {
+            if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas SQL") {
+                se_atlas::cache::connection::timeout_phase("reader connection admission", deadline - started, started.elapsed())
+            } else {
+                error
+            }
+        })?
         .ok_or_else(|| {
             se_core::scope::unreadable(
                 "Atlas pointer",
