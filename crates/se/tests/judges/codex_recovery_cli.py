@@ -11,7 +11,40 @@ import uuid
 from judge_records import wait_json
 
 
+def observe_windows(pid):
+    import ctypes
+    from ctypes import wintypes
+    native = ctypes.WinDLL("kernel32", use_last_error=True)
+    native.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    native.OpenProcess.restype = wintypes.HANDLE
+    native.GetProcessTimes.argtypes = [wintypes.HANDLE, *([ctypes.POINTER(wintypes.FILETIME)] * 4)]
+    native.GetProcessTimes.restype = wintypes.BOOL
+    native.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    native.WaitForSingleObject.restype = wintypes.DWORD
+    native.CloseHandle.argtypes = [wintypes.HANDLE]
+    native.CloseHandle.restype = wintypes.BOOL
+    handle = native.OpenProcess(0x00100000 | 0x1000, False, pid)
+    if not handle:
+        error = ctypes.get_last_error()
+        if error == 87:
+            return None
+        raise ctypes.WinError(error)
+    try:
+        stamps = [wintypes.FILETIME() for _ in range(4)]
+        if not native.GetProcessTimes(handle, *(ctypes.byref(stamp) for stamp in stamps)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        state = native.WaitForSingleObject(handle, 0)
+        if state not in (0, 258):
+            raise ctypes.WinError(ctypes.get_last_error())
+        birth = (stamps[0].dwHighDateTime << 32) | stamps[0].dwLowDateTime
+        return {"pid": pid, "birth": str(birth), "state": "Z" if state == 0 else "R"}
+    finally:
+        native.CloseHandle(handle)
+
+
 def observe(pid):
+    if os.name == "nt":
+        return observe_windows(pid)
     try:
         proc = Path(f"/proc/{pid}")
         argv = [v.decode(errors="replace") for v in (proc / "cmdline").read_bytes().split(b"\0") if v]
@@ -66,6 +99,12 @@ class Judge:
         if self.args.scenario == "slow":
             self.env["SE_PROVIDER_RESTORE_DEADLINE_MS"] = "1000"
         self.calls = 0
+        self.foreground = None
+        if os.name == "nt":
+            for key in ("APPDATA", "LOCALAPPDATA"):
+                private = self.root / "owner" / key.lower()
+                private.mkdir()
+                self.env[key] = str(private)
         self.stopped = []
         self.identities = []
         source = self.root / "provider.rs"
@@ -83,7 +122,7 @@ class Judge:
                           'std::fs::write(root.join("provider-exit.txt"),format!("{s}\n")).unwrap();'
                           'std::process::exit(s.code().unwrap_or(1));}'
                           .replace("PYTHON",json.dumps(os.sys.executable)).replace("HELPER",json.dumps(str(helper))))
-        args.codex = self.root / "provider"
+        args.codex = self.root / ("provider.exe" if os.name == "nt" else "provider")
         compiled = subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(args.codex)],
                                   capture_output=True, timeout=40)
         if compiled.returncode:
@@ -119,7 +158,7 @@ class Judge:
         self.result.setdefault("signals", []).append({"identity": current, "signal": int(sig)})
         os.kill(identity["pid"], sig)
 
-    def run(self):
+    def setup(self):
         # Record supported public flags before using them.
         for args in (("--help",), ("init", "--help"), ("launch", "--help"), ("up", "--help")):
             r = self.call(*args)
@@ -134,6 +173,151 @@ class Judge:
         text = text.replace(f'listen_port = {initialized["profile"]["native_server_port"]}', "", 1)
         text = text.replace("[providers.codex]", "[providers.codex]\ncommand = " + json.dumps(str(self.args.codex.resolve())), 1)
         config.write_text(text)
+
+    def start_host(self):
+        if os.name != "nt":
+            return self.ok("up")["process"]["pid"]
+        stdout = self.root / "foreground.stdout"
+        stderr = self.root / "foreground.stderr"
+        with stdout.open("wb") as output, stderr.open("wb") as errors:
+            self.foreground = subprocess.Popen(
+                [str(self.args.se), "--home", str(self.home), "--json", "up", "--foreground"],
+                env=self.env, cwd=self.root / "repo", stdin=subprocess.DEVNULL,
+                stdout=output, stderr=errors)
+        wait_json(self.home / "endpoint.json", seconds=45)
+        if self.foreground.poll() is not None:
+            raise AssertionError("the foreground runtime exited during startup")
+        return self.foreground.pid
+
+    def launch_shared(self, agent):
+        launch = self.ok("--project", self.project, "launch", agent, "--detach")
+        if launch["state"] != "running":
+            raise AssertionError("the shared-server agent did not start")
+        session = launch["session_id"]
+        ready = wait_json(self.root / "codex" / f"ready-{session}.json")
+        if ready["session"] != session:
+            raise AssertionError("the provider received a different session")
+        forwarder = observe(launch["process"]["pid"])
+        server = observe(ready["native_pid"])
+        helper = observe(ready["helper_pid"])
+        if not all(row and live(row) for row in (forwarder, server, helper)):
+            raise AssertionError("an exact shared-server process was not live")
+        self.identities.extend((forwarder, server, helper))
+        return ready, forwarder, server
+
+    def stop_shared_agent(self, agent, process):
+        receipt = self.ok("--project", self.project, "stop", agent)
+        if not receipt["complete"] or receipt["witness"]["state"] != "witnessed":
+            raise AssertionError("the stop did not witness this agent's exit")
+        self.expect_exit(process, "the stopped agent is still live")
+
+    @staticmethod
+    def expect_exit(process, reason):
+        limit = time.monotonic() + 12
+        while time.monotonic() < limit and live(process):
+            time.sleep(0.05)
+        if live(process):
+            raise AssertionError(reason)
+
+    def run_shared(self):
+        self.setup()
+        runtime = observe(self.start_host())
+        if runtime is None:
+            raise AssertionError("the runtime birth was unavailable")
+        self.identities.append(runtime)
+        second = self.ok("--project", self.project, "agent", "add", "Second",
+                         "--provider", "codex", "--model", "gpt-5.3-codex")["agent"]["id"]
+        first_ready, first_agent, server = self.launch_shared(self.agent)
+        second_ready, second_agent, second_server = self.launch_shared(second)
+        agents = ((self.agent, first_ready, first_agent), (second, second_ready, second_agent))
+        if ((server["pid"], server["birth"]) != (second_server["pid"], second_server["birth"])
+                or len({server["pid"], first_agent["pid"], second_agent["pid"]}) != 3
+                or first_ready["thread_id"] == second_ready["thread_id"]
+                or first_ready["session"] == second_ready["session"]):
+            raise AssertionError("the agents did not retain separate sessions on one server")
+
+        record, = (self.home / "codex-servers").glob("*.json")
+        if os.name != "nt":
+            self.signal(runtime, signal.SIGKILL)
+            self.expect_exit(runtime, "the test runtime did not exit")
+            if not all(live(row) for row in (server, first_agent, second_agent)):
+                raise AssertionError("the runtime exit ended a live agent or its shared server")
+            self.start_host()
+            for _, ready, process in agents:
+                after = wait_json(self.root / "codex" / f"reconnect-{ready['thread_id']}.json", seconds=50)
+                if (after["session"] != ready["session"] or after["native_pid"] != server["pid"]
+                        or not live(process) or not live(server)):
+                    raise AssertionError("the restarted runtime did not recover the same agent session")
+            self.result["runtime_recovered_both_agents"] = True
+
+        for agent, ready, _ in agents:
+            self.ok("--project", self.project, "msg", "send", agent, "Check the current session.")
+            turn = wait_json(self.root / "codex" / f"turn-{ready['thread_id']}.json", seconds=35)
+            if turn != {"thread_id": ready["thread_id"], "session": ready["session"]}:
+                raise AssertionError("a new turn reached a different session")
+        self.result["separate_sessions"] = True
+
+        self.stop_shared_agent(self.agent, first_agent)
+        if not live(second_agent) or not live(server) or not record.is_file():
+            raise AssertionError("stopping the first agent ended the shared server early")
+        self.result["server_kept_for_second_agent"] = True
+        self.stop_shared_agent(second, second_agent)
+        self.expect_exit(server, "the shared server remained after its last agent stopped")
+        limit = time.monotonic() + 5
+        while record.exists() and time.monotonic() < limit:
+            time.sleep(0.05)
+        if record.exists():
+            raise AssertionError("the stopped server still has an active custody record")
+        self.result["server_ended_after_last_agent"] = True
+        self.result["passed"] = True
+
+    def run_record(self, stale):
+        self.setup()
+        runtime = observe(self.start_host())
+        if runtime is None:
+            raise AssertionError("the runtime birth was unavailable")
+        earlier = None
+        if stale:
+            _, first_agent, first_server = self.launch_shared(self.agent)
+            record, = (self.home / "codex-servers").glob("*.json")
+            earlier = record.read_bytes()
+            self.stop_shared_agent(self.agent, first_agent)
+            self.expect_exit(first_server, "the previous shared server is still live")
+            limit = time.monotonic() + 5
+            while record.exists() and time.monotonic() < limit:
+                time.sleep(0.05)
+            if record.exists():
+                raise AssertionError("the previous record was not removed")
+        _, agent, server = self.launch_shared(self.agent)
+        record, = (self.home / "codex-servers").glob("*.json")
+        exact = record.read_bytes()
+        if earlier is not None and earlier == exact:
+            raise AssertionError("the previous and current server records are identical")
+        try:
+            if earlier is None:
+                record.unlink()
+            else:
+                record.write_bytes(earlier)
+            reply = self.call("down", timeout=40)
+            self.result["record_refusal_exit"] = reply.returncode
+            self.result["server_live_after_record_refusal"] = live(server)
+            self.result["agent_live_after_record_refusal"] = live(agent)
+            text = (reply.stdout + reply.stderr).decode("utf-8", "replace")
+            self.result["record_path_reported"] = record.name in text
+            self.result["record_remedy_reported"] = "relaunch" in text or "resolve the named custody" in text
+            if not self.result["server_live_after_record_refusal"]:
+                raise AssertionError("the shared server was stopped without its current record")
+            if not reply.returncode or not self.result["record_path_reported"] or not self.result["record_remedy_reported"]:
+                raise AssertionError("the stop refusal did not identify the record and a recovery step")
+            self.result["passed"] = True
+        finally:
+            if live(server):
+                record.write_bytes(exact)
+                if not live(runtime):
+                    self.start_host()
+
+    def run(self):
+        self.setup()
         launched = self.ok("--project", self.project, "launch", self.agent, "--detach", "--force")
         self.result["initial_launch"] = launched
         if launched["state"] != "running":
@@ -282,6 +466,18 @@ class Judge:
         except Exception as error:
             self.result["cleanup_down_error"] = str(error)
             self.result["passed"] = False
+        if os.name == "nt":
+            if self.foreground is not None:
+                try:
+                    self.foreground.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self.result["passed"] = False
+            remaining = [row for row in self.identities if live(row)]
+            self.result["cleanup_remaining"] = remaining
+            if remaining:
+                self.result["passed"] = False
+            self.save_result()
+            return
         remaining = owned_rows(self.root)
         self.result["cleanup_remaining"] = remaining
         if any(live(row) for row in remaining):
@@ -294,6 +490,9 @@ class Judge:
         while any(live(row) for row in remaining) and time.monotonic() < end:
             time.sleep(.05)
         self.result["cleanup_after_signals"] = owned_rows(self.root)
+        self.save_result()
+
+    def save_result(self):
         for name in ("provider-stderr.txt", "provider-error.txt", "provider-exit.txt"):
             path = self.root / name if name != "provider-error.txt" else self.root / "repo" / name
             if path.exists():
@@ -305,11 +504,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--scenario", choices=("crash", "slow"), required=True)
+    parser.add_argument("--scenario", choices=("crash", "slow", "shared", "missing-record", "stale-record"), required=True)
     args = parser.parse_args()
     judge = Judge(args)
     try:
-        judge.run()
+        if args.scenario == "shared":
+            judge.run_shared()
+        elif args.scenario in ("missing-record", "stale-record"):
+            judge.run_record(stale=args.scenario == "stale-record")
+        else:
+            judge.run()
     except Exception as error:
         judge.result["passed"] = False
         judge.result["failure"] = str(error)
