@@ -120,6 +120,13 @@ impl Arena {
                 self.left as u64,
             ));
         }
+        super::native_memory::charge_extraction(bytes).map_err(|available| {
+            capacity(
+                "Atlas combined parse/extraction reservation",
+                bytes as u64,
+                available as u64,
+            )
+        })?;
         self.left -= bytes;
         Ok(())
     }
