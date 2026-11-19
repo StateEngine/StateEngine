@@ -136,7 +136,8 @@ fn cold_guard_blocks_swap_and_delete_for_the_reserved_sqlite_file() -> Check {
     assert_ne!(NativeFileIdentity::observe_sqlite(&wrong)?, identity);
     let refused = cache
         .configure_connection_role(&mut wrong, ConnectionRole::ColdWriter)
-        .expect_err("SQLite open on a different fixture file was admitted");
+        .err()
+        .ok_or("SQLite open on a different fixture file was admitted")?;
     assert!(
         refused.to_string().contains("different cold database"),
         "{refused}"
@@ -151,8 +152,12 @@ fn cold_guard_blocks_swap_and_delete_for_the_reserved_sqlite_file() -> Check {
 
     // SQLite is closed. The native cache guard is the remaining delete barrier.
     let renamed = f.dir.join("renamed.db");
-    let rename = fs::rename(&path, &renamed).expect_err("guard admitted a swap");
-    let delete = fs::remove_file(&path).expect_err("guard admitted deletion");
+    let rename = fs::rename(&path, &renamed)
+        .err()
+        .ok_or("guard admitted a swap")?;
+    let delete = fs::remove_file(&path)
+        .err()
+        .ok_or("guard admitted deletion")?;
     assert_eq!(rename.raw_os_error(), Some(32), "{rename}");
     assert_eq!(delete.raw_os_error(), Some(32), "{delete}");
     assert_eq!(NativeFileIdentity::observe(&path)?, identity);
@@ -299,6 +304,11 @@ fn cold_guard_keeps_full_validation_below_a_junction() -> Check {
     let mut f = fixture()?;
     let real_entry = f.dir.join("real");
     fs::create_dir(&real_entry)?;
+    // Native creation flushes the parent of a new directory. Establish the
+    // protected home by its ordinary name before exercising alias traversal.
+    drop(se_proc::NativeStateFiles::create(
+        &real_entry.join("atlas"),
+    )?);
     let alias = f.dir.join("alias");
     local_junction(&alias, &real_entry)?;
     f.home = alias.join("atlas");
@@ -338,5 +348,33 @@ fn cold_guard_keeps_full_validation_below_a_junction() -> Check {
     drop(observed);
     drop(cache);
     fs::remove_dir(alias)?;
+    f._root_owner.finish(Ok(()))
+}
+
+#[test]
+fn cold_guard_keeps_full_validation_when_sqlite_identity_is_unavailable() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "fixture lock")?;
+    let f = fixture()?;
+    let cache = NativeAtlasCache::create(&f.home, f.scope.clone())?;
+    let key = epoch(4)?;
+    let reserved = cache.reserve_database(&key)?;
+    assert!(ordinary(&reserved.path)?);
+    let mut without_native_main = NativeSqlConnection::open_in_memory()?;
+    assert!(NativeFileIdentity::observe_sqlite(&without_native_main).is_err());
+    cache.configure_connection_role(&mut without_native_main, ConnectionRole::ColdWriter)?;
+    let observed = Witness::new(&cache, key);
+    let probe = observed.counted(reserved);
+    assert_eq!(observed.checks.get(), 0);
+    cache.validate_database(&probe)?;
+    assert!(
+        observed.checks.get() > 0,
+        "unavailable native ID skipped full validation"
+    );
+    drop(without_native_main);
+    cache.discard_unpublished(&probe)?;
+    assert!(!probe.path.exists());
+    drop(probe);
+    drop(observed);
+    drop(cache);
     f._root_owner.finish(Ok(()))
 }
