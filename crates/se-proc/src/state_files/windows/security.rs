@@ -264,11 +264,15 @@ pub(super) fn verify_system_ancestor(file: &File, path: &Path) -> Result<()> {
         "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
         path,
     )?;
-    if !equal(owner, user.sid())
-        && !equal(owner, system.0)
-        && !equal(owner, administrators.0)
-        && !equal(owner, installer.0)
-    {
+    if equal(owner, installer.0) {
+        verify_trusted_reparse(file, path)?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| unsafe_path("trusted reparse parent missing", path))?;
+        let held = super::profile_ancestry::open_follow(parent)?;
+        return verify_trusted_reparse(&held, parent);
+    }
+    if !equal(owner, user.sid()) && !equal(owner, system.0) && !equal(owner, administrators.0) {
         return Err(unsafe_path(
             "reparse ancestor owner must be user or system administrator",
             path,
