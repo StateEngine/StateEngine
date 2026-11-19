@@ -49,7 +49,7 @@ def config_section(text, section, lines):
 def build_codex(root, se, home):
     helper = Path(__file__).with_name("session_environment_provider.py").resolve(strict=True)
     source = root / "codex.rs"
-    image = root / ("codex.exe" if os.name == "nt" else "codex")
+    image = root / ("codex-fixture.exe" if os.name == "nt" else "codex-fixture")
     tokens = [sys.executable, str(helper), "codex", str(root), str(se), str(home)]
     literals = ", ".join(json.dumps(token, ensure_ascii=False) for token in tokens)
     source.write_text(
@@ -73,7 +73,9 @@ def build_codex(root, se, home):
         ["rustc", "--edition=2024", str(source), "-o", str(image)],
         capture_output=True, timeout=60,
     )
-    assert result.returncode == 0, "could not compile the native version/transport fixture"
+    assert result.returncode == 0, (
+        f"could not compile the native version/transport fixture: {result.stderr.decode(errors='replace')[:500]}"
+    )
     return image
 
 
