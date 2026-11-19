@@ -194,20 +194,52 @@ impl LaunchCoordinator {
             .invocation(&request, call(self.store.generation, deadline)?)
             .await?;
         super::launch_util::route_temporary_files(&mut invocation.environment, &policy);
-        if let Some(package) = package {
-            package
-                .apply(&mut invocation.environment)
-                .map_err(|cause| error("Codex package environment", cause))?;
-        }
-        #[cfg(unix)]
-        {
-            invocation = self
-                .store
-                .pool
-                .run_owned(deadline, move || {
-                    super::launch_util::stabilize_alias(invocation, alias_parent)
-                })
-                .await?;
+        // A Codex agent's own process is a forwarder; the Codex executable, its
+        // package environment and any alias supervisor belong to the login's
+        // shared server instead.
+        let codex_server = if provider == se_types::Provider::Codex {
+            let (entries, windows_sandbox) = self.codex.server_settings(&request)?;
+            let mut server = crate::ProviderInvocation {
+                executable: request.executable.clone(),
+                arguments: Vec::new(),
+                environment: se_proc::Environment { entries },
+            };
+            if let Some(package) = package {
+                package
+                    .apply(&mut server.environment)
+                    .map_err(|cause| error("Codex package environment", cause))?;
+            }
+            #[cfg(unix)]
+            {
+                server = self
+                    .store
+                    .pool
+                    .run_owned(deadline, move || {
+                        super::launch_util::stabilize_alias(server, alias_parent)
+                    })
+                    .await?;
+            }
+            Some(super::codex_server::ServerLaunch {
+                executable: server.executable.to_local()?,
+                prefix: server.arguments,
+                environment: server.environment.entries,
+                windows_sandbox,
+            })
+        } else {
+            #[cfg(unix)]
+            {
+                invocation = self
+                    .store
+                    .pool
+                    .run_owned(deadline, move || {
+                        super::launch_util::stabilize_alias(invocation, alias_parent)
+                    })
+                    .await?;
+            }
+            None
+        };
+        if let Some(server) = codex_server {
+            self.ensure_codex_server(server, deadline).await?;
         }
         if mode == se_proc::LaunchMode::Window && cfg!(target_os = "linux") {
             invocation

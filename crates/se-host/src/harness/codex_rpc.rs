@@ -49,6 +49,8 @@ pub struct CodexHarness {
     mcp_port: u16,
     configuration: ConfigFile,
     atlas_helper: Option<PathBuf>,
+    /// This host's own executable, which runs as each agent's forwarder.
+    forwarder: Option<PathBuf>,
     probed: Mutex<Option<qualification::Qualified>>,
     #[cfg(windows)]
     windows_shell: Mutex<Option<PathBuf>>,
@@ -89,10 +91,46 @@ impl CodexHarness {
             mcp_port,
             configuration,
             atlas_helper: None,
+            forwarder: None,
             probed: Mutex::new(None),
             #[cfg(windows)]
             windows_shell: Mutex::new(None),
         }
+    }
+    /// The environment and Windows sandbox selection the login's shared
+    /// app-server starts with: what a private Codex process used to receive.
+    pub(crate) fn server_settings(
+        &self,
+        request: &HarnessRequest,
+    ) -> Result<(Vec<(std::ffi::OsString, std::ffi::OsString)>, Option<&'static str>)> {
+        let environment = input::provider_environment();
+        #[cfg(windows)]
+        let environment = windows_shell::apply(
+            environment,
+            self.windows_shell
+                .lock()
+                .map_err(|_| poisoned())?
+                .as_ref()
+                .ok_or_else(|| {
+                    incompatible(
+                        "unpackaged shell has not been probed",
+                        "Probe the provider before launch.",
+                    )
+                })?,
+        )?;
+        #[cfg(windows)]
+        let named = windows_sandbox::selection(request)?.map(windows_sandbox::Implementation::key);
+        #[cfg(not(windows))]
+        let named = {
+            let _ = request;
+            None
+        };
+        Ok((environment, named))
+    }
+    /// Agents run as forwarders to their login's shared app-server.
+    pub fn with_forwarder(mut self, executable: PathBuf) -> Self {
+        self.forwarder = Some(executable);
+        self
     }
     pub fn with_atlas_helper(mut self, executable: PathBuf) -> Self {
         if self.configuration.atlas.enabled && self.configuration.atlas.hooks {
@@ -367,16 +405,19 @@ impl Harness for CodexHarness {
                         )
                     })?,
             )?;
-            #[cfg(windows)]
-            let named = windows_sandbox::selection(request)?;
-            #[cfg(not(windows))]
-            let named: Option<windows_sandbox::Implementation> = None;
-            let invocation = input::invocation_naming(
+            let forwarder = self.forwarder.as_deref().ok_or_else(|| {
+                incompatible(
+                    "this host has no forwarder image for Codex agents",
+                    "Restart StateEngine from its installed executable.",
+                )
+            })?;
+            let control = input::control_socket(&crate::codex_capture::existing_home()?);
+            input::forwarder_invocation(
                 &self.plan(request, &resolved, socket.as_deref()),
+                forwarder,
+                &control,
                 environment,
-                named.map(windows_sandbox::Implementation::key),
-            )?;
-            Ok(invocation)
+            )
         })
     }
     fn attach<'a>(

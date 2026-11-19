@@ -410,6 +410,7 @@ impl LaunchCoordinator {
             target: (work.meta.project.id.clone(), work.meta.agent.id.clone()),
             session: work.meta.session.clone(),
             lifecycle: work.meta.lifecycle.clone(),
+            provider: work.meta.provider,
             plan: None,
             takeover: None,
             state: AsyncMutex::new(work),
