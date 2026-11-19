@@ -335,9 +335,13 @@ impl<'a> CacheConnection<'a> {
         } else {
             None
         };
-        self.files.validate_database(&self.pin)?;
+        timing::measure(&timing::ADMISSION_VALIDATE_US, || {
+            self.files.validate_database(&self.pin)
+        })?;
         if write {
-            let mut wal = self.files.wal_bytes(&self.pin)?;
+            let mut wal = timing::measure(&timing::ADMISSION_WAL_US, || {
+                self.files.wal_bytes(&self.pin)
+            })?;
             if growth <= WAL_STOP && wal.saturating_add(growth) > WAL_STOP {
                 if self.role == ConnectionRole::ColdWriter {
                     timing::CAPACITY_CHECKPOINTS.fetch_add(1, Ordering::Relaxed);
@@ -346,7 +350,9 @@ impl<'a> CacheConnection<'a> {
                 // same connection. Reclaim earlier commits before refusing the
                 // next one; pinned readers still have to pass the size check.
                 self.checkpoint(deadline)?;
-                wal = self.files.wal_bytes(&self.pin)?;
+                wal = timing::measure(&timing::ADMISSION_WAL_US, || {
+                    self.files.wal_bytes(&self.pin)
+                })?;
             }
             if growth > WAL_STOP || wal.checked_add(growth).is_none_or(|v| v > WAL_STOP) {
                 return Err(capacity(
@@ -357,11 +363,18 @@ impl<'a> CacheConnection<'a> {
             }
         }
         let _reservation = if write {
-            Some(self.files.reserve_growth(growth)?)
+            Some(timing::measure(&timing::ADMISSION_RESERVE_US, || {
+                self.files.reserve_growth(growth)
+            })?)
         } else {
             None
         };
         if self.role == ConnectionRole::ColdWriter {
+            if write {
+                timing::ADMISSION_WRITES.fetch_add(1, Ordering::Relaxed);
+            } else {
+                timing::ADMISSION_READS.fetch_add(1, Ordering::Relaxed);
+            }
             timing::ADMISSION_US.fetch_add(
                 admission_start.elapsed().as_micros() as u64,
                 Ordering::Relaxed,

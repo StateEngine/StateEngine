@@ -413,22 +413,31 @@ impl CacheFiles for NativeAtlasCache {
     }
     fn reserve_growth(&self, bytes: u64) -> AtlasResult<Box<dyn GrowthReservation + '_>> {
         self.require_writer()?;
-        let cached = self
-            .inventory
-            .borrow()
-            .as_ref()
-            .map(inventory::Inventory::measure)
-            .transpose()?
-            .flatten();
+        let cached =
+            se_atlas::cache::timing::measure(&se_atlas::cache::timing::INVENTORY_CACHE_US, || {
+                self.inventory
+                    .borrow()
+                    .as_ref()
+                    .map(inventory::Inventory::measure)
+                    .transpose()
+                    .map(Option::flatten)
+            })?;
         // Recount near the disk cap before trusting the cached inventory.
         let root = match cached {
             Some(root)
                 if root.saturating_add(self.growth.get()).saturating_add(bytes) < 504_000_000 =>
             {
+                se_atlas::cache::timing::INVENTORY_HITS
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 root
             }
             _ => {
-                let (root, snapshot) = inventory::root(&self.root)?;
+                se_atlas::cache::timing::INVENTORY_WALKS
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let (root, snapshot) = se_atlas::cache::timing::measure(
+                    &se_atlas::cache::timing::INVENTORY_WALK_US,
+                    || inventory::root(&self.root),
+                )?;
                 *self.inventory.borrow_mut() = Some(snapshot);
                 root
             }

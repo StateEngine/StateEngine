@@ -3,6 +3,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 pub static ADMISSION_US: AtomicU64 = AtomicU64::new(0);
+pub static ADMISSION_VALIDATE_US: AtomicU64 = AtomicU64::new(0);
+pub static ADMISSION_WAL_US: AtomicU64 = AtomicU64::new(0);
+pub static ADMISSION_RESERVE_US: AtomicU64 = AtomicU64::new(0);
+pub static INVENTORY_CACHE_US: AtomicU64 = AtomicU64::new(0);
+pub static INVENTORY_WALK_US: AtomicU64 = AtomicU64::new(0);
+pub static INVENTORY_HITS: AtomicU64 = AtomicU64::new(0);
+pub static INVENTORY_WALKS: AtomicU64 = AtomicU64::new(0);
+pub static ADMISSION_READS: AtomicU64 = AtomicU64::new(0);
+pub static ADMISSION_WRITES: AtomicU64 = AtomicU64::new(0);
 pub static SQL_READ_US: AtomicU64 = AtomicU64::new(0);
 pub static SQL_WRITE_US: AtomicU64 = AtomicU64::new(0);
 pub static COMMIT_US: AtomicU64 = AtomicU64::new(0);
