@@ -45,6 +45,9 @@ impl Reservation {
     pub fn exceeded(&self) -> bool {
         EXCEEDED.load(Ordering::Acquire)
     }
+    pub fn used(&self) -> usize {
+        CURRENT.load(Ordering::Acquire)
+    }
 }
 impl Drop for Reservation {
     fn drop(&mut self) {
@@ -112,15 +115,19 @@ unsafe extern "C" fn resize(pointer: *mut c_void, size: usize) -> *mut c_void {
     let old = unsafe { raw.cast::<Header>().read() };
     let old_layout = layout(old.size);
     let new_layout = layout(size);
-    // Reallocation may temporarily hold both blocks, even when it eventually
-    // grows in place. Charge that possible overlap before entering the allocator.
-    charge(new_layout.size());
     // SAFETY: raw and old_layout identify the live allocation.
     let new_raw = unsafe { realloc(raw, old_layout, new_layout.size()) };
     if new_raw.is_null() {
         handle_alloc_error(new_layout);
     }
-    CURRENT.fetch_sub(old_layout.size(), Ordering::AcqRel);
+    if new_raw != raw {
+        // A moved allocation may have held both blocks before the old one was freed.
+        charge(new_layout.size());
+        CURRENT.fetch_sub(old_layout.size(), Ordering::AcqRel);
+    } else {
+        CURRENT.fetch_sub(old_layout.size(), Ordering::AcqRel);
+        charge(new_layout.size());
+    }
     // SAFETY: the resized allocation contains an aligned header.
     unsafe { new_raw.cast::<Header>().write(Header { size }) };
     // SAFETY: payload follows the header within the resized allocation.
