@@ -263,6 +263,7 @@ impl LaunchCoordinator {
             service.journal.server_sha256 = Some(server_sha256);
             service.journal.retired = false;
             service.persist(self, deadline).await?;
+            let profile = service.checked_profile()?;
             let arguments = vec![
                 "serve-service".into(),
                 "--service".into(),
