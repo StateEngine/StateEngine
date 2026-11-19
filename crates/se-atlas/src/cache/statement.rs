@@ -12,7 +12,7 @@ impl SqlView<'_> {
         // A previous statement or native operation may have consumed the
         // allowance. Do not start another query on an expired snapshot.
         if crate::clock::now() >= self.deadline {
-            return Err(timeout(0));
+            return Err(stage_timeout("statement prepare", 0));
         }
         let stmt = self.db.prepare(sql).map_err(cache_error)?;
         if self.readonly && !stmt.readonly() {

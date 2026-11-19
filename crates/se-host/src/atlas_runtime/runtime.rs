@@ -19,8 +19,25 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
         work: &Scheduled,
         deadline: Instant,
     ) -> AtlasResult<Step> {
-        self.admit(registration, policy)?;
+        let started = Instant::now();
+        let budget = deadline.saturating_duration_since(started);
+        let setup_deadline = started + Duration::from_secs(5);
         let result = (|| {
+            self.admit(registration, policy)?;
+            if budget.is_zero() {
+                return Err(se_atlas::cache::connection::timeout_phase(
+                    "renewal work admission",
+                    budget,
+                    budget,
+                ));
+            }
+            if Instant::now() >= setup_deadline {
+                return Err(se_atlas::cache::connection::timeout_phase(
+                    "renewal setup",
+                    Duration::from_secs(5),
+                    started.elapsed(),
+                ));
+            }
             let root = self.root(&registration.root)?;
             if (root.summary.epoch.is_none() || root.needs_rebuild) && self.active.is_none() {
                 let mut bytes = [0; 16];
@@ -89,11 +106,11 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
                 .find(|r| r.summary.root == registration.root)
                 .ok_or_else(|| atlas_cold::failure("native root disappeared"))?;
             let cache = NativeAtlasCache::create(&self.home, root.source.scope.clone())?;
-            let mut current = super::connections::writer(&cache, root, profile, deadline)?
+            let mut current = super::connections::writer(&cache, root, profile, setup_deadline)?
                 .ok_or_else(|| atlas_cold::failure("renewal index disappeared"))?;
             root.checked_epoch = Some(current.connection.identity().epoch.clone());
             if root.serial_domain.is_none() {
-                let base = current.connection.read(deadline, |sql| {
+                let base = current.connection.read(setup_deadline, |sql| {
                     let value: i64 = sql
                         .prepare("SELECT observed_serial FROM meta WHERE singleton=1")?
                         .query_row([], |r| r.get(0))
@@ -116,12 +133,19 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
                 serial: durable_serial(*base, work.serial)?,
                 hint: work.hint.clone(),
             };
+            if Instant::now() >= setup_deadline {
+                return Err(se_atlas::cache::connection::timeout_phase(
+                    "renewal setup",
+                    Duration::from_secs(5),
+                    started.elapsed(),
+                ));
+            }
             let step = self.driver.step(
                 &root.source,
                 &mut current.connection,
                 &root.policy,
                 &mapped,
-                deadline,
+                Instant::now() + budget,
             )?;
             root.summary = step.summary.clone();
             Ok(step)
@@ -170,6 +194,16 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
         serial: u64,
         deadline: Instant,
     ) -> AtlasResult<IndexSummary> {
+        let started = Instant::now();
+        let budget = deadline.saturating_duration_since(started);
+        if budget.is_zero() {
+            return Err(se_atlas::cache::connection::timeout_phase(
+                "publication admission",
+                budget,
+                budget,
+            ));
+        }
+        let setup_deadline = started + Duration::from_secs(5);
         if self.active.as_ref().is_some_and(|(_, root)| root == id) {
             return Ok(self.root(id)?.summary.clone());
         }
@@ -180,7 +214,13 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             )
         })?;
         let serial = durable_serial(base, serial)?;
-        let published=self.with_writer(id,deadline,|db,_| {
+        let published=self.with_writer(id,setup_deadline,|db,_| {
+            if Instant::now() >= setup_deadline {
+                return Err(se_atlas::cache::connection::timeout_phase(
+                    "publication setup", Duration::from_secs(5), started.elapsed(),
+                ));
+            }
+            let deadline = Instant::now() + budget;
             let db_epoch=db.identity().epoch.clone();
             db.write(2_000_000,deadline,|sql| {
             if db_epoch!=epoch {return Err(atlas_cold::failure("publication cache epoch differs from the reconciled serial domain"));}

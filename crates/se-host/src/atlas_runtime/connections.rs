@@ -66,14 +66,17 @@ impl<D: RenewalDriver> NativeRuntime<D> {
         Ok(())
     }
     pub fn poll_events(&mut self, id: &RootId, deadline: Instant) -> AtlasResult<Vec<SourceHint>> {
-        self.poll_events_classified(id, deadline)
+        self.poll_events_classified(id, deadline, None)
+            .map(|(hints, _)| hints)
             .map_err(PollEventsFailure::into_error)
     }
     pub(crate) fn poll_events_classified(
         &mut self,
         id: &RootId,
         deadline: Instant,
-    ) -> std::result::Result<Vec<SourceHint>, PollEventsFailure> {
+        event_budget: Option<std::time::Duration>,
+    ) -> std::result::Result<(Vec<SourceHint>, Instant), PollEventsFailure> {
+        let started = Instant::now();
         if self.active.is_some() {
             return Err(PollEventsFailure::Admission(atlas_cold::failure(
                 "cold child owns the home writer; preserve native readiness until reap",
@@ -99,6 +102,16 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             .ok_or_else(|| {
                 PollEventsFailure::Admission(atlas_cold::failure("native root disappeared"))
             })?;
+        if Instant::now() >= deadline {
+            return Err(PollEventsFailure::Admission(
+                se_atlas::cache::connection::timeout_phase(
+                    "event writer admission",
+                    deadline.saturating_duration_since(started),
+                    started.elapsed(),
+                ),
+            ));
+        }
+        let deadline = event_budget.map_or(deadline, |budget| Instant::now() + budget);
         self.driver
             .poll_events(
                 &root.source,
@@ -106,6 +119,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                 &root.policy,
                 deadline,
             )
+            .map(|hints| (hints, deadline))
             .map_err(PollEventsFailure::Driver)
     }
     #[cfg(unix)]

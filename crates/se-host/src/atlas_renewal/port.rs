@@ -1,3 +1,4 @@
+use super::schedule::sync_locks;
 use super::*;
 impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
     fn bind_parser_image(&mut self, image: &std::path::Path) -> AtlasResult<()> {
@@ -41,17 +42,29 @@ impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
 }
 
 /// Preserve native readiness and consumed event bytes until lookup succeeds.
+/// Writer admission has its own bound; the supplied deadline bounds event work
+/// after admission, so opening the cache cannot consume the event allowance.
 pub fn drive_events(
     controller: &mut crate::atlas_runtime::NativeController<NativeRenewal>,
     root: &RootId,
     deadline: Instant,
 ) -> AtlasResult<usize> {
     controller.set_watch_pending(root, true)?;
-    let hints = match controller
-        .runtime_mut()
-        .poll_events_classified(root, deadline)
-    {
-        Ok(hints) => hints,
+    let now = Instant::now();
+    let budget = deadline.saturating_duration_since(now);
+    if budget.is_zero() {
+        return Err(se_atlas::cache::connection::timeout_phase(
+            "event drain admission",
+            budget,
+            budget,
+        ));
+    }
+    let hints = match controller.runtime_mut().poll_events_classified(
+        root,
+        now + std::time::Duration::from_secs(5),
+        Some(budget),
+    ) {
+        Ok((hints, _)) => hints,
         Err(crate::atlas_runtime::PollEventsFailure::Admission(error)) => return Err(error),
         Err(crate::atlas_runtime::PollEventsFailure::Driver(error)) => {
             let watch_died = matches!(error.body.detail(), Detail::AtlasSourceUnreadable(detail)
@@ -72,7 +85,9 @@ pub fn drive_events(
             let driver = controller.runtime_mut().driver_mut();
             let mut retirement_error = None;
             if let Some(index) = driver.roots.iter().position(|r| &r.id == root) {
-                retirement_error = driver.retire_native(index, deadline).err();
+                retirement_error = driver
+                    .retire_native(index, Instant::now() + std::time::Duration::from_secs(5))
+                    .err();
             }
             controller.enqueue(
                 root.clone(),
@@ -127,32 +142,4 @@ fn retain_failure(primary: SeError, other: SeError) -> SeError {
         .map_or_else(String::new, ToString::to_string);
     let cause = std::io::Error::other(format!("{primary}; {native}; earlier failure: {other}"));
     primary.with_cause(cause)
-}
-
-/// Run source work and transfer newly observed checkout-lock state to the same
-/// scheduler before it can publish. Callers pair this with `drive_events`.
-pub fn drive_quantum(
-    controller: &mut crate::atlas_runtime::NativeController<NativeRenewal>,
-    duration: Duration,
-) -> AtlasResult<Option<WorkReport>> {
-    sync_locks(controller)?;
-    let result = controller.work_quantum(duration);
-    sync_locks(controller)?;
-    result
-}
-fn sync_locks(
-    controller: &mut crate::atlas_runtime::NativeController<NativeRenewal>,
-) -> AtlasResult<usize> {
-    let changes: Vec<_> = controller
-        .runtime_mut()
-        .driver_mut()
-        .roots
-        .iter_mut()
-        .filter_map(|root| root.pending_lock.take().map(|held| (root.id.clone(), held)))
-        .collect();
-    let count = changes.len();
-    for (root, held) in changes {
-        controller.git_lock(&root, held)?;
-    }
-    Ok(count)
 }
