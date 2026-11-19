@@ -86,6 +86,10 @@ fn native_profile_acl_and_identity_are_pinned() -> Check {
             std::fs::remove_dir(&link).is_err(),
             "held reparse ancestor was removed"
         );
+        assert!(
+            std::fs::rename(&target, root.join("target-moved")).is_err(),
+            "resolved target ancestor was renamed"
+        );
         assert_eq!(guard.identity()?, held);
         drop(guard);
         std::fs::remove_dir(&link)?;

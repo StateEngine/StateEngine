@@ -1,7 +1,15 @@
-//! Hold every reparse ancestor while a private profile name is in use.
+//! Hold the profile's named and resolved ancestors while it is in use.
 use super::*;
 
 pub(super) fn pin(root: &Path) -> Result<Vec<File>> {
+    let mut pins = pin_ancestors(root)?;
+    let resolved = std::fs::canonicalize(root)
+        .map_err(|cause| io_error("resolve private profile ancestry", root, cause))?;
+    pins.extend(pin_ancestors(&resolved)?);
+    Ok(pins)
+}
+
+fn pin_ancestors(root: &Path) -> Result<Vec<File>> {
     let parent = root
         .parent()
         .ok_or_else(|| unsafe_path("profile parent missing", root))?;
@@ -23,23 +31,28 @@ pub(super) fn pin(root: &Path) -> Result<Vec<File>> {
         )?;
         let info = crate::windows_native::file_information(&observed)
             .map_err(|cause| io_error("inspect profile ancestor", &prefix, cause))?;
-        if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
-            continue;
+        if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+            return Err(unsafe_path("profile ancestor is not a directory", &prefix));
         }
-        security::verify_system_ancestor(&observed, &prefix)?;
+        let reparse = info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+        if reparse {
+            security::verify_system_ancestor(&observed, &prefix)?;
+        }
         let before = crate::windows_native::file_id(&observed)
             .map_err(|cause| io_error("identify profile ancestor", &prefix, cause))?;
-        // Denying writes and deletion prevents changing or replacing the
-        // reparse point while any provider uses the profile by name.
-        let held = open_link(&prefix, FILE_SHARE_READ)?;
+        // Deny renaming each directory; a reparse point also denies writes.
+        let sharing = FILE_SHARE_READ | if reparse { 0 } else { FILE_SHARE_WRITE };
+        let held = open_link(&prefix, sharing)?;
         let info = crate::windows_native::file_information(&held)
             .map_err(|cause| io_error("inspect held profile ancestor", &prefix, cause))?;
-        if info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)
-            != FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY
+        if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+            || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0) != reparse
         {
             return Err(unsafe_path("profile reparse ancestor changed", &prefix));
         }
-        security::verify_system_ancestor(&held, &prefix)?;
+        if reparse {
+            security::verify_system_ancestor(&held, &prefix)?;
+        }
         let after = crate::windows_native::file_id(&held)
             .map_err(|cause| io_error("identify held profile ancestor", &prefix, cause))?;
         if before != after {
