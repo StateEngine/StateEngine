@@ -1,6 +1,5 @@
 //! Protected cache files shared by hosted and hostless readers. Only activation
 //! creates directories or acquires the permanent kernel-owned writer lock.
-#[path = "../atlas_cold_accounting.rs"]
 mod cold_accounting;
 mod inventory;
 #[cfg(windows)]

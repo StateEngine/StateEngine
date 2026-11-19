@@ -8,25 +8,16 @@ pub(super) struct Inventory {
         NativeStateFiles,
         Vec<(std::ffi::OsString, std::fs::FileType)>,
     )>,
-    files: Vec<InventoryFile>,
+    files: Vec<(PathBuf, se_proc::NativeMetadataPin)>,
     complete: bool,
-}
-struct InventoryFile {
-    path: PathBuf,
-    pin: se_proc::NativeMetadataPin,
-}
-impl InventoryFile {
-    fn metadata(&self) -> Option<std::fs::Metadata> {
-        self.pin.metadata().ok()
-    }
 }
 
 impl Inventory {
     pub(super) fn file_size(&self, path: &Path) -> Option<u64> {
         self.files
             .iter()
-            .find(|item| item.path == path)
-            .and_then(InventoryFile::metadata)
+            .find(|(name, _)| name == path)
+            .and_then(|(_, pin)| pin.metadata().ok())
             .map(|metadata| metadata.len())
     }
 
@@ -34,37 +25,32 @@ impl Inventory {
         if !self.complete {
             return Ok(None);
         }
-        for (files, previous) in &self.directories {
-            if files
-                .readback(&files.root().join(".atlas-inventory-check"))
-                .is_err()
-            {
-                return Ok(None);
-            }
-            if !entries_match(files.root(), previous) {
-                return Ok(None);
-            }
+        if !self.directories_valid() {
+            return Ok(None);
         }
         let mut bytes = 0u64;
-        for item in &self.files {
-            let metadata = match item.metadata() {
-                Some(value) => value,
-                None => return Ok(None),
+        for (_, pin) in &self.files {
+            let metadata = match pin.metadata() {
+                Ok(value) => value,
+                Err(_) => return Ok(None),
             };
             bytes = bytes
                 .checked_add(metadata.len())
                 .ok_or_else(|| fail("Atlas inventory byte overflow"))?;
         }
-        for (files, previous) in &self.directories {
-            if !entries_match(files.root(), previous)
-                || files
-                    .readback(&files.root().join(".atlas-inventory-check"))
-                    .is_err()
-            {
-                return Ok(None);
-            }
+        if !self.directories_valid() {
+            return Ok(None);
         }
         Ok(Some(bytes))
+    }
+
+    fn directories_valid(&self) -> bool {
+        self.directories.iter().all(|(files, previous)| {
+            let sentinel = files.root().join(".atlas-inventory-check");
+            files.readback(&sentinel).is_ok()
+                && entries_match(files.root(), previous)
+                && files.readback(&sentinel).is_ok()
+        })
     }
 }
 
@@ -189,7 +175,7 @@ fn walk(
                 .ok_or_else(|| fail("Atlas inventory file disappeared"))?;
             let len = pin.metadata().map_err(fail)?.len();
             if snapshot.files.len() < MAX_RETAINED_FILES {
-                snapshot.files.push(InventoryFile { path, pin });
+                snapshot.files.push((path, pin));
             } else {
                 snapshot.complete = false;
             }
