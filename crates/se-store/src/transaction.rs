@@ -387,7 +387,7 @@ impl Engine {
             ));
         }
         crate::mail::validate_offer_batch(&batch)?;
-        crate::assignment_batch::validate_batch(&self.db, &batch)?;
+        crate::assignment_batch::validate_batch(&batch)?;
         crate::import::validate_checkpoint(&batch)?;
         apply::capture::canonicalize(&self.db, &mut batch)?;
         let mut descriptors = Vec::new();

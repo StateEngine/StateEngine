@@ -255,7 +255,7 @@ The CLI retains replacement hints only for commands with a supported replacement
 
 ## Assignments
 
-A project captain or its owner can open work with `se assignment write --action open --assignee AGENT --body TEXT`. The assignee uses the same command with `--assignment EVENT_ID` and `--action accept`, `done`, `block`, or `hand-back`. Blocked work needs a reason; an assignee can accept it again after the blocker clears. Each change records a floor message. `se assignment list` shows open and blocked work; the assignment ID identifies the opening event for `se event read`. Use `--cursor` for the next page.
+A project captain or its owner can open work with `se assignment write --action open --assignee AGENT --body TEXT`. The assignee uses the same command with `--assignment EVENT_ID` and `--action accept`, `done`, `block`, or `hand-back`. Blocked work needs a reason; an assignee can accept it again after the blocker clears. Each change records a floor message. `se assignment list` shows open and blocked work; the assignment ID identifies the opening event for `se history --event EVENT_ID`. Use `--cursor` for the next page.
 
 Crew can omit the recipient for a `question`, `blocker`, or `done` message to send it to the current captain. Explicit recipients and verified reply routes continue to work. A missing or changed captain produces a refusal rather than guessing a destination.
 

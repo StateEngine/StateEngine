@@ -1,24 +1,6 @@
 //! Assignment transitions must be committed with their floor message.
 use crate::{error::*, *};
-use rusqlite::{Connection, OptionalExtension};
-
-fn current_captain(c: &Connection, scope: &Scope) -> StoreResult<Option<Actor>> {
-    let project = connection::project_id(c, scope, false)?;
-    let seq: Option<i64> = c
-        .query_row(
-            "SELECT last_seq FROM project_captain WHERE project_id=?",
-            [project],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(sql)?;
-    match seq {
-        None => Ok(None),
-        Some(seq) => codec::field(&codec::facts(c, seq)?, "captain"),
-    }
-}
-
-pub(crate) fn validate_batch(c: &Connection, batch: &AtomicBatch) -> StoreResult<()> {
+pub(crate) fn validate_batch(batch: &AtomicBatch) -> StoreResult<()> {
     validate_routes(batch)?;
     let has_assignment = batch.events.iter().any(|e| {
         matches!(
@@ -38,9 +20,8 @@ pub(crate) fn validate_batch(c: &Connection, batch: &AtomicBatch) -> StoreResult
             "change the captain and assignments in separate operations",
         ));
     }
-    let captain = current_captain(c, &batch.admission.scope)?;
     for (index, event) in batch.events.iter().enumerate() {
-        validate_assignment(batch, index, event, captain.as_ref())?;
+        validate_assignment(batch, index, event)?;
     }
     Ok(())
 }
@@ -66,12 +47,7 @@ fn validate_routes(batch: &AtomicBatch) -> StoreResult<()> {
     Ok(())
 }
 
-fn validate_assignment(
-    batch: &AtomicBatch,
-    index: usize,
-    event: &NewEvent,
-    captain: Option<&Actor>,
-) -> StoreResult<()> {
+fn validate_assignment(batch: &AtomicBatch, index: usize, event: &NewEvent) -> StoreResult<()> {
     let (floor_event, expected_action, expected_kind, assignee) = match &event.body {
         EventBody::AssignmentOpened {
             assignment,
@@ -137,6 +113,13 @@ fn validate_assignment(
             "assignment floor message does not match its transition",
         ));
     }
+    // The assignment projection checks this claimed captain against the current
+    // captain in the same transaction before any batch can commit.
+    let captain = match &event.body {
+        EventBody::AssignmentOpened { captain, .. }
+        | EventBody::AssignmentTransitioned { captain, .. } => Some(captain),
+        _ => None,
+    };
     validate_human_report(batch, event, captain, kind, body)?;
     if batch
         .events
