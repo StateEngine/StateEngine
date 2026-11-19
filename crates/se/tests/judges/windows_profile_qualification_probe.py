@@ -46,7 +46,7 @@ class WindowsFixture(Fixture):
 def read_json(path):
     try:
         return json.loads(path.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, PermissionError, json.JSONDecodeError):
         return None
 
 
