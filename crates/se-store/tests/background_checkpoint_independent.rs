@@ -11,6 +11,10 @@ use std::{
 mod fixture;
 use fixture::*;
 #[path = "support/host_fixture.rs"]
+#[allow(
+    dead_code,
+    reason = "Only the deadline-bound poller is needed by this suite."
+)]
 mod native_host;
 use native_host::{host, options, wait_until};
 const HARD_FRAMES: i64 = 16384;
@@ -209,7 +213,7 @@ fn background_task_keeps_sustained_writes_below_the_cutoff() -> Check {
         SETTLE_BUDGET,
         || matches!(wal(&outside), Ok((0, 0, _))),
     )?;
-    let mut writer = guard.take().ok_or("writer was already drained")?;
+    let writer = guard.take().ok_or("writer was already drained")?;
     drop(wait_until(
         writer.drain(DRAIN_DEADLINE),
         Instant::now() + DRAIN_BUDGET,
@@ -264,7 +268,7 @@ fn background_task_honors_backup_suppression() -> Check {
         SETTLE_BUDGET,
         || matches!(wal(&outside), Ok((0, 0, _))),
     )?;
-    let mut writer = guard.take().ok_or("writer was already drained")?;
+    let writer = guard.take().ok_or("writer was already drained")?;
     drop(wait_until(
         writer.drain(DRAIN_DEADLINE),
         Instant::now() + DRAIN_BUDGET,
