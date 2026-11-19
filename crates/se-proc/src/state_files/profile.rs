@@ -9,6 +9,22 @@ use std::{fs::File, io, path::Path};
 pub struct NativeProfileFiles(NativeStateFiles);
 
 impl NativeProfileFiles {
+    /// Create or open a current-user-only directory for private profile custody.
+    #[cfg(windows)]
+    pub fn create(root: &Path) -> Result<Self> {
+        let directory = os::Directory::create_profile(root)?;
+        Ok(Self(NativeStateFiles {
+            root: root.into(),
+            directory,
+        }))
+    }
+
+    /// Return the name of the held object after checking its identity and ancestry.
+    #[cfg(windows)]
+    pub fn resolved_root(&self) -> Result<std::path::PathBuf> {
+        self.identity()?;
+        Ok(self.0.directory.resolved_root().to_owned())
+    }
     pub fn open(root: &Path) -> Result<Self> {
         #[cfg(windows)]
         let directory = os::Directory::open_profile(root)?;

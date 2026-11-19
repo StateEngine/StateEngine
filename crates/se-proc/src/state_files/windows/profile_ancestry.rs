@@ -6,22 +6,27 @@ pub(super) struct Pin {
     file: File,
     identity: crate::windows_native::FileIdentity,
     reparse: bool,
+    parent: Option<PathBuf>,
 }
 
 pub(super) fn pin(root: &Path) -> Result<Vec<Pin>> {
-    let mut pins = pin_ancestors(root)?;
-    let resolved = std::fs::canonicalize(root)
-        .map_err(|cause| io_error("resolve private profile ancestry", root, cause))?;
-    pins.extend(pin_ancestors(&resolved)?);
+    let mut pins = Vec::new();
+    pin_ancestors(root, &mut pins, 0)?;
     Ok(pins)
 }
 
-fn pin_ancestors(root: &Path) -> Result<Vec<Pin>> {
+fn pin_ancestors(root: &Path, pins: &mut Vec<Pin>, depth: usize) -> Result<()> {
+    if depth >= 32 {
+        return Err(unsafe_path(
+            "profile reparse chain too deep; remove the redirect loop and retry",
+            root,
+        ));
+    }
     let parent = root
         .parent()
         .ok_or_else(|| unsafe_path("profile parent missing", root))?;
     let mut prefix = PathBuf::new();
-    let mut pins: Vec<Pin> = Vec::new();
+    let mut previous: Option<PathBuf> = None;
     for component in parent.components() {
         match component {
             Component::Prefix(value) => {
@@ -44,11 +49,20 @@ fn pin_ancestors(root: &Path) -> Result<Vec<Pin>> {
         let reparse = info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0;
         if reparse {
             security::verify_trusted_reparse(&observed, &prefix)?;
-            let prior = pins
-                .last()
+            let prior = previous
+                .as_ref()
                 .ok_or_else(|| unsafe_path("reparse parent missing", &prefix))?;
-            let parent = open_follow(&prior.path)?;
-            security::verify_trusted_reparse(&parent, &prior.path)?;
+            let parent = open_follow(prior)?;
+            security::verify_trusted_reparse(&parent, prior)?;
+            let target = std::fs::read_link(&prefix)
+                .map_err(|cause| io_error("read profile redirect", &prefix, cause))?;
+            let target = if target.is_absolute() {
+                target
+            } else {
+                prior.join(target)
+            };
+            let target = normalize(&target)?;
+            pin_ancestors(&target.join("profile-ancestry-probe"), pins, depth + 1)?;
         }
         let before = crate::windows_native::file_id(&observed)
             .map_err(|cause| io_error("identify profile ancestor", &prefix, cause))?;
@@ -72,13 +86,15 @@ fn pin_ancestors(root: &Path) -> Result<Vec<Pin>> {
             file: held,
             identity: after,
             reparse,
+            parent: previous.clone(),
         });
+        previous = Some(prefix.clone());
     }
-    Ok(pins)
+    Ok(())
 }
 
 pub(super) fn verify(pins: &[Pin]) -> Result<()> {
-    for (index, pin) in pins.iter().enumerate() {
+    for pin in pins {
         let current = open_link(
             &pin.path,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -102,15 +118,41 @@ pub(super) fn verify(pins: &[Pin]) -> Result<()> {
         }
         if pin.reparse {
             security::verify_trusted_reparse(&current, &pin.path)?;
-            let prior = index
-                .checked_sub(1)
-                .and_then(|i| pins.get(i))
+            let prior = pin
+                .parent
+                .as_ref()
                 .ok_or_else(|| unsafe_path("reparse parent missing", &pin.path))?;
-            let parent = open_follow(&prior.path)?;
-            security::verify_trusted_reparse(&parent, &prior.path)?;
+            let parent = open_follow(prior)?;
+            security::verify_trusted_reparse(&parent, prior)?;
         }
     }
     Ok(())
+}
+
+fn normalize(path: &Path) -> Result<PathBuf> {
+    let mut normalized = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(part.as_os_str())
+            }
+            Component::CurDir => (),
+            Component::ParentDir if normalized.pop() => (),
+            Component::ParentDir => {
+                return Err(unsafe_path(
+                    "profile redirect escapes its volume; repair the redirect and retry",
+                    path,
+                ));
+            }
+        }
+    }
+    if !normalized.is_absolute() {
+        return Err(unsafe_path(
+            "absolute profile redirect required; repair the redirect and retry",
+            path,
+        ));
+    }
+    Ok(normalized)
 }
 
 fn open_link(path: &Path, share: u32) -> Result<File> {

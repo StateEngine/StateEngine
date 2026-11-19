@@ -342,6 +342,27 @@ impl Directory {
     pub fn open_profile(path: &Path) -> Result<Self> {
         Self::open_with_layout(path, Layout::UserPrivate)
     }
+    pub fn create_profile(path: &Path) -> Result<Self> {
+        let ancestry = profile_ancestry::pin(path)?;
+        let sd = security::descriptor_for(path, true, Layout::UserPrivate)?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd.0,
+            bInheritHandle: 0,
+        };
+        // SAFETY: path and the security descriptor remain valid for the call.
+        if unsafe { CreateDirectoryW(wide(path)?.as_ptr(), &attributes) } == 0 {
+            // SAFETY: this reads the immediately preceding creation error.
+            if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
+                return Err(last("create private profile parent", path));
+            }
+        }
+        profile_ancestry::verify(&ancestry)?;
+        Self::open_profile(path)
+    }
+    pub fn resolved_root(&self) -> &Path {
+        &self.resolved_root
+    }
     fn open_with_layout(path: &Path, layout: Layout) -> Result<Self> {
         let file = walk_for(path, false, None, layout)?;
         let identity = metadata_for(&file, path, true, layout)?;

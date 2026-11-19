@@ -192,8 +192,8 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<()> {
         #[cfg(windows)]
-        if !service.journal.retired
-            && (service.journal.profile_identity.is_some() || service.journal.service.is_some())
+        if service.journal.profile_identity.is_some()
+            || (!service.journal.retired && service.journal.service.is_some())
         {
             self.qualify_secode_profile(service, deadline).await?;
         }
