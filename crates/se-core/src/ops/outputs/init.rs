@@ -28,8 +28,8 @@ pub struct GitView {
     pub uncommitted: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observation: Option<GitObservation>,
+    /// Token identifying the repository observation's basis, when requested.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(skip)]
     pub watch_ticket: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

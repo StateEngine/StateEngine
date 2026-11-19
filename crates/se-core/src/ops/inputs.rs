@@ -96,8 +96,8 @@ pub struct ProjectStatus {
     /// Re-scan the working tree instead of using a watched observation.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh: bool,
+    /// Include a token identifying the repository observation's basis.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    #[schemars(skip)]
     pub watch_ticket: bool,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
