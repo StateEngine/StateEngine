@@ -11,6 +11,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+mod cold_batch;
 #[path = "query_arena.rs"]
 mod query_arena;
 #[path = "statement.rs"]
@@ -161,6 +162,7 @@ pub struct CacheConnection<'a> {
     identity: CacheIdentity,
     role: ConnectionRole,
     arena: Option<query_arena::Reservation>,
+    cold_batch: Option<cold_batch::Batch<'a>>,
     _slot: Slot,
 }
 impl<'a> CacheConnection<'a> {
@@ -193,21 +195,13 @@ impl<'a> CacheConnection<'a> {
         let mut db = open(&pin, role, deadline)?;
         files.configure_connection_role(&mut db, role)?;
         configure_limits(&db, role, profile)?;
-        let diagnostic_started = Instant::now();
-        let validation = finite(&mut db, deadline, |db, _| {
+        finite(&mut db, deadline, |db, _| {
             schema::validate(db, &id)?;
             if role.writable() && role != ConnectionRole::MaintenanceWriter {
                 schema::validate_integrity(db)?;
             }
             Ok(())
-        });
-        if let Err(error) = &validation {
-            eprintln!(
-                "ATLAS_SQL_TRACE connection_validate role={role:?} elapsed_ms={} error={error:?}",
-                diagnostic_started.elapsed().as_millis()
-            );
-        }
-        validation?;
+        })?;
         configure_access(&db, role)?;
         if role == ConnectionRole::CandidateReader {
             finite(&mut db, deadline, |db, _| schema::validate_integrity(db))?;
@@ -220,6 +214,7 @@ impl<'a> CacheConnection<'a> {
             identity: id,
             role,
             arena,
+            cold_batch: None,
             _slot: slot,
         }))
     }
@@ -248,15 +243,6 @@ impl<'a> CacheConnection<'a> {
             db.execute_batch("PRAGMA page_size=4096")
                 .map_err(cache_error)?;
             configure(&db, role, profile)?;
-            if role == ConnectionRole::ColdWriter {
-                let mode: String = db
-                    .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-                    .map_err(cache_error)?;
-                let synchronous: i64 = db
-                    .query_row("PRAGMA synchronous", [], |row| row.get(0))
-                    .map_err(cache_error)?;
-                eprintln!("ATLAS_CHILD_PRAGMA journal_mode={mode} synchronous={synchronous}");
-            }
             finite(&mut db, deadline, |db, _| {
                 db.execute_batch("BEGIN EXCLUSIVE").map_err(cache_error)?;
                 let result = schema::initialize(db, seed);
@@ -291,6 +277,7 @@ impl<'a> CacheConnection<'a> {
             identity: seed.identity.clone(),
             role,
             arena: None,
+            cold_batch: None,
             _slot: slot,
         })
     }
@@ -305,7 +292,6 @@ impl<'a> CacheConnection<'a> {
     }
     /// A finite snapshot ends at response completion, including error paths.
     /// Output allocations belong to the host's single 98304-byte query arena.
-    #[track_caller]
     pub fn read<T>(
         &mut self,
         deadline: Instant,
@@ -316,7 +302,6 @@ impl<'a> CacheConnection<'a> {
     /// The bounded update owner supplies its maximum WAL emission before SQL
     /// runs; native reservation holds DB/WAL/retired/staging/global disk capacity.
     /// Underestimating emission is an invariant violation, never a renewed budget.
-    #[track_caller]
     pub fn write<T>(
         &mut self,
         maximum_wal_bytes: u64,
@@ -328,7 +313,6 @@ impl<'a> CacheConnection<'a> {
         }
         self.transaction(true, maximum_wal_bytes, deadline, write)
     }
-    #[track_caller]
     fn transaction<T>(
         &mut self,
         write: bool,
@@ -336,6 +320,9 @@ impl<'a> CacheConnection<'a> {
         deadline: Instant,
         work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
     ) -> AtlasResult<T> {
+        if self.cold_batch.is_some() {
+            return self.cold_batch_transaction(write, growth, deadline, work);
+        }
         let _arena = if self.arena.is_none()
             && matches!(
                 self.role,
@@ -377,10 +364,7 @@ impl<'a> CacheConnection<'a> {
         } else {
             None
         };
-        let diagnostic_started = Instant::now();
-        let diagnostic_caller = std::panic::Location::caller();
-        let diagnostic_cold = self.role == ConnectionRole::ColdWriter && write;
-        let result = finite(&mut self.db, deadline, |db, budget_ms| {
+        finite(&mut self.db, deadline, |db, budget_ms| {
             let behavior = if write {
                 rusqlite::TransactionBehavior::Immediate
             } else {
@@ -388,7 +372,6 @@ impl<'a> CacheConnection<'a> {
             };
             let transaction =
                 rusqlite::Transaction::new_unchecked(db, behavior).map_err(cache_error)?;
-            let diagnostic_work = Instant::now();
             let result = work(&SqlView {
                 db,
                 count: Cell::new(0),
@@ -396,7 +379,6 @@ impl<'a> CacheConnection<'a> {
                 readonly: !write,
                 deadline,
             });
-            let work_elapsed = diagnostic_work.elapsed();
             let changed = self.files.validate_database(&self.pin);
             let expired = crate::clock::now() >= deadline;
             let result = match (result, changed, expired) {
@@ -404,30 +386,13 @@ impl<'a> CacheConnection<'a> {
                 (Ok(value), Ok(()), false) => Ok(value),
                 (Err(e), _, false) | (_, Err(e), false) => Err(e),
             };
-            let diagnostic_finish = Instant::now();
             if result.is_ok() && write {
                 transaction.commit().map_err(cache_error)?;
             } else {
                 transaction.rollback().map_err(cache_error)?;
             }
-            if diagnostic_cold {
-                eprintln!(
-                    "ATLAS_CHILD_SQL work_us={} finish_us={} success={}",
-                    work_elapsed.as_micros(),
-                    diagnostic_finish.elapsed().as_micros(),
-                    result.is_ok()
-                );
-            }
             result
-        });
-        if let Err(error) = &result {
-            eprintln!(
-                "ATLAS_SQL_TRACE transaction caller={diagnostic_caller} role={:?} write={write} elapsed_ms={} error={error:?}",
-                self.role,
-                diagnostic_started.elapsed().as_millis()
-            );
-        }
-        result
+        })
     }
     /// Event/commit/drain driven only. External pinned snapshots keep writes
     /// suspended; no timer or forced reader expiry is introduced.
