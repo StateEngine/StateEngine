@@ -1,0 +1,37 @@
+name: macOS Atlas cold disk policy
+on:
+  push:
+    branches: [probe/macos-atlas-policy]
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '3'
+      CARGO_INCREMENTAL: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Build probe
+        run: cargo test --release --locked -p se --test atlas_macos_policy_probe --no-run
+      - name: Throttled disk policy
+        env:
+          ATLAS_FULL_REPOSITORY: ${{ github.workspace }}
+          ATLAS_SOURCE_COMMIT: ${{ github.sha }}
+          ATLAS_MACOS_DISK_POLICY: throttle
+        run: cargo test --release --locked -p se --test atlas_macos_policy_probe -- --nocapture
+      - name: Default disk policy
+        if: always()
+        env:
+          ATLAS_FULL_REPOSITORY: ${{ github.workspace }}
+          ATLAS_SOURCE_COMMIT: ${{ github.sha }}
+          ATLAS_MACOS_DISK_POLICY: normal
+        run: cargo test --release --locked -p se --test atlas_macos_policy_probe -- --nocapture
