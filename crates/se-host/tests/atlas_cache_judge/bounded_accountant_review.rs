@@ -163,43 +163,67 @@ fn bounded_accountant_discards_the_estimate_after_rollback() -> Check {
 
 #[test]
 fn bounded_accountant_releases_the_native_observation_before_cleanup() -> Check {
-    with_cold(|f, cache, db| {
-        let stage = outside_file(f)?;
-        let name = stage.path;
-        drop(stage.file);
-        drop(cache.reserve_growth(1)?);
-        let moved = f.dir.join("recovery-proof");
-        let held_before_close = match fs::rename(&name, &moved) {
-            Ok(()) => {
-                fs::rename(&moved, &name)?;
-                false
-            }
-            Err(error) => {
-                assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
-                true
-            }
-        };
-        drop(db);
-        fs::remove_file(&name)?;
-        assert!(!name.exists());
-        let key = epoch(4)?;
-        let pin = cache
-            .pin_database(&key)?
-            .ok_or("unpublished database absent")?;
-        let parent = pin.path.parent().ok_or("epoch parent absent")?;
-        cache.discard_unpublished(&pin)?;
-        assert!(!parent.exists());
-        assert!(cache.read_pointer()?.is_none());
-        drop(pin);
-        witness(
-            "atlas-accountant-cleanup",
-            serde_json::json!({
-                "held_before_close": held_before_close,
-                "observation_released": true,
-                "epoch_removed": true
-            }),
-        )
-    })
+    let _serial = SERIAL.lock().map_err(|_| "fixture lock")?;
+    let f = fixture()?;
+    let cache = NativeAtlasCache::create(&f.home, f.scope.clone())?;
+    let seed = seed(&f)?;
+    let db = CacheConnection::create(
+        &cache,
+        &seed,
+        ConnectionRole::ColdWriter,
+        &SqlProfile::contained_cold(),
+        setup_deadline(),
+    )?;
+    let stage = outside_file(&f)?;
+    let name = stage.path;
+    drop(stage.file);
+    drop(cache.reserve_growth(1)?);
+    let pin = cache
+        .pin_database(&seed.identity.epoch)?
+        .ok_or("unpublished database absent")?;
+    let parent = pin
+        .path
+        .parent()
+        .ok_or("epoch parent absent")?
+        .to_path_buf();
+    drop(pin);
+    drop(db);
+    fs::remove_file(&name)?;
+    assert!(
+        !name.exists(),
+        "temporary observation must be removable after SQL close"
+    );
+    assert!(
+        parent.is_dir(),
+        "the cold epoch must remain available for recovery"
+    );
+
+    // The cold process closes its cache before the parent opens the home for recovery.
+    drop(cache);
+    let recovered = NativeAtlasCache::create(&f.home, f.scope.clone())?;
+    assert!(
+        !parent.exists(),
+        "recovery must remove the unpublished epoch"
+    );
+    assert!(
+        !f.scope
+            .registration
+            .cache
+            .directory
+            .join("reservation.json")
+            .exists()
+    );
+    assert!(recovered.read_pointer()?.is_none());
+    drop(recovered);
+    witness(
+        "atlas-accountant-cleanup",
+        serde_json::json!({
+            "observation_released": true,
+            "epoch_removed": true,
+            "reservation_removed": true
+        }),
+    )?;
+    f._root_owner.finish(Ok(()))
 }
 
 #[test]
