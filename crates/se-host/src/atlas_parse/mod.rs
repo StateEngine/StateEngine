@@ -178,7 +178,9 @@ impl Parser {
             profile,
         };
         let request_bytes = serde_json::to_vec(&request).map_err(failure)?;
-        let (result, retain, consumed) = self.run_file(
+        // Custody is decided inside run_file: on return, the worker is
+        // either retained or already closed and the slot released.
+        let (result, consumed) = self.run_file(
             &image,
             &request_bytes,
             collect::Context {
@@ -201,9 +203,8 @@ impl Parser {
         } else {
             Ok(false)
         };
-        let close = if retain { Ok(()) } else { self.close(deadline) };
-        match (close, result, stalled) {
-            (Ok(()), result, Ok(stalled)) => {
+        match stalled {
+            Ok(stalled) => {
                 let retry_slice = if timed_out {
                     self.may_retry(budget)?
                 } else {
@@ -219,13 +220,13 @@ impl Parser {
                 }
                 result
             }
-            (Ok(()), _, Err(accounting)) => Err(accounting),
-            (Err(close), Err(error), _) => Err(close.with_cause(error)),
-            (Err(close), Ok(_), _) => Err(close),
+            Err(accounting) => Err(accounting),
         }
     }
-    /// Reuse the resident worker or spawn it, read the bounded file result
-    /// and return it with whether the worker's slot may be retained.
+    /// Reuse the resident worker or spawn it, read the bounded file result,
+    /// and leave custody consistent on every outcome: the single retain
+    /// decision below keeps the worker only for a complete file, otherwise
+    /// the exact child is closed and its slot released.
     fn run_file(
         &mut self,
         image: &Path,
@@ -234,35 +235,74 @@ impl Parser {
         deadline: Instant,
         work_end: Instant,
         remaining: Duration,
-    ) -> AtlasResult<(AtlasResult<ParsedFile>, bool, Duration)> {
-        let worker = if let Some(worker) = self.worker.as_mut() {
-            worker.extend_deadline(deadline);
-            worker
-                .send_control(request_bytes, work_end)
-                .map_err(|error| collect::channel_error(error, work_end))?;
-            worker
-        } else {
-            self.worker = Some(
-                AtlasWorker::spawn_bounded(image, request_bytes, deadline)
-                    .map_err(|error| start_error(error, deadline))?,
-            );
-            self.worker
+    ) -> AtlasResult<(AtlasResult<ParsedFile>, Duration)> {
+        // Deliver the request. A failed send closes the exact child first,
+        // so no early return leaves a live process or a held slot behind;
+        // a failed spawn reaps its own child and holds no slot.
+        if self.worker.is_some() {
+            let error = self
+                .worker
                 .as_mut()
-                .ok_or_else(|| failure("parse custody absent"))?
+                .and_then(|worker| {
+                    worker.extend_deadline(deadline);
+                    worker.send_control(request_bytes, work_end).err()
+                })
+                .map(|error| collect::channel_error(error, work_end));
+            if let Some(error) = error {
+                return Err(self.closed_error(deadline, error));
+            }
+        } else if let Err(error) =
+            AtlasWorker::spawn_bounded(image, request_bytes, deadline)
+        {
+            return Err(start_error(error, deadline));
+        }
+        let worker = match self.worker.as_mut() {
+            Some(worker) => worker,
+            // Neither branch left a child, so there is no custody to
+            // release; this is a plain invariant failure.
+            None => return Err(failure("parse custody absent")),
         };
         let mut consumed = Duration::ZERO;
         let result = collect::read(worker, context, remaining, &mut consumed);
-        // Only a fully read file keeps its worker: a failed or deferred read
-        // leaves the child desynchronized or mid-custody handshake, so the
-        // slot is closed and the next file gets a fresh worker. The guard
-        // still observes peak memory before the slot is retained.
-        let guard = if result.is_ok() {
-            worker.observe_memory().map(|_| ()).map_err(failure)
-        } else {
-            Ok(())
+        // One decision per outcome: only a complete file keeps its worker.
+        // A failed or desynchronized read leaves the child mid-custody, and
+        // a deferred ParseMemoryLimit file has driven the child to its
+        // memory peak, so the next file gets a fresh guard window. A failed
+        // peak observation fails the file, as a failed close did.
+        let (retain, custody) = match &result {
+            Ok(parsed)
+                if matches!(
+                    parsed.coverage,
+                    FileCoverage::Deferred {
+                        reason: CoverageReason::ParseMemoryLimit
+                    }
+                ) =>
+            {
+                (false, Ok(()))
+            }
+            Ok(_) => {
+                let guard = worker.observe_memory().map(|_| ()).map_err(failure);
+                (guard.is_ok(), guard)
+            }
+            Err(_) => (false, Ok(())),
         };
-        let retain = result.is_ok() && guard.is_ok();
-        Ok((guard.and(result), retain, consumed))
+        if retain {
+            return Ok((result, consumed));
+        }
+        let close = self.close(deadline);
+        match (close, custody.and(result)) {
+            (Ok(()), result) => Ok((result, consumed)),
+            (Err(close), Err(error)) => Err(close.with_cause(error)),
+            (Err(close), Ok(_)) => Err(close),
+        }
+    }
+    /// Close the exact child; a failed close carries the delivery error as
+    /// its cause so both custody failures stay diagnosable.
+    fn closed_error(&mut self, deadline: Instant, error: SeError) -> SeError {
+        match self.close(deadline) {
+            Ok(()) => error,
+            Err(close) => close.with_cause(error),
+        }
     }
 }
 #[cfg(any(target_os = "linux", windows))]
