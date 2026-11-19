@@ -127,6 +127,24 @@ try:
                     result['trace_report'] = report.stdout[-30000:]
                     result['trace_report_truncated'] = len(report.stdout) > 30000
                     result['trace_error'] = report.stderr[-2000:]
+                    threads = subprocess.run([str(xperf), '-i', str(trace), '-a', 'cswitch', '-thread'],
+                                             capture_output=True, text=True, timeout=60)
+                    result['thread_report'] = threads.stdout[-30000:]
+                    result['thread_report_truncated'] = len(threads.stdout) > 30000
+                    dump_path = root / 'switches.txt'
+                    dump = subprocess.run([str(xperf), '-i', str(trace), '-o', str(dump_path), '-a', 'dumper'],
+                                          capture_output=True, text=True, timeout=180)
+                    result['dump_status'] = dump.returncode
+                    if dump.returncode == 0:
+                        header, switches_sample = [], []
+                        with dump_path.open(errors='replace') as rows:
+                            for line in rows:
+                                if len(header) < 35:
+                                    header.append(line.rstrip())
+                                if 'CSwitch' in line and len(switches_sample) < 5:
+                                    switches_sample.append(line.rstrip())
+                        result['dump_header'] = header
+                        result['dump_switch_sample'] = switches_sample
     print(json.dumps(result, sort_keys=True), flush=True)
 finally:
     try:
