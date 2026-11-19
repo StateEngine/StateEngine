@@ -173,10 +173,15 @@ request_max_retries = 0
 stream_max_retries = 0
 ''')
     keep = ('PATH', 'LANG', 'USER', 'LOGNAME', 'SystemRoot', 'windir', 'ComSpec', 'PATHEXT', 'TEMP', 'TMP', 'SystemDrive', 'ProgramData', 'ProgramFiles', 'PSModulePath')
-    env = {k: v for k, v in os.environ.items() if k in keep}
+    # Windows environment names are case-insensitive (Python reports them upper-cased).
+    wanted = {k.upper() for k in keep}
+    env = {k: v for k, v in os.environ.items() if k.upper() in wanted}
     env.update(HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(home), HTTP_PROXY=url, HTTPS_PROXY=url, ALL_PROXY=url,
                NO_PROXY='127.0.0.1,localhost', NO_COLOR='1')
     sock = home / 'app-server-control' / 'app-server-control.sock'
+    if WIN and MODE == 'explicit':
+        rec['owner'] = subprocess.run(['powershell', '-NoProfile', '-Command', f'(Get-Acl "{home}").Owner'],
+                                      capture_output=True, text=True).stdout.strip()
     if MODE == 'explicit':
         # Stock Codex refuses a socket directory other users can reach. Windows
         # temp trees inherit broad access, so make this one owner-only.
