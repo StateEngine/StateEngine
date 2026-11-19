@@ -222,6 +222,26 @@ impl DaemonObservation {
         }
         self.answer.recv_timeout(timeout).ok()
     }
+
+    /// Whole-home inventory must remain available even if the live host stalls.
+    /// Keep an answer already received; otherwise report that live details were
+    /// not observed instead of waiting for the host's deadline.
+    fn finish_if_ready(self) -> Result<AnyOutput> {
+        if let Some(error) = self.start_failure {
+            return Err(error);
+        }
+        match self.answer.try_recv() {
+            Ok(answer) => answer,
+            Err(std::sync::mpsc::TryRecvError::Empty) => Err(scope::unreadable(
+                "live runtime details",
+                "the host did not answer during the local inventory; run se status in the project for live spawner details",
+            )),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(scope::unreadable(
+                "status daemon observation",
+                "the observation thread ended without an answer",
+            )),
+        }
+    }
     /// Receive the answer only when `used`, which is the one decision this frame
     /// makes about it.
     ///
@@ -321,14 +341,20 @@ fn finish_status_observation(
     output: &AnyOutput,
 ) -> Result<Option<Result<AnyOutput>>> {
     if early.is_some() {
-        return Ok(if daemon_answer_is_used(cx, output) {
+        return Ok(if daemon_answer_is_used(output) {
             early
         } else {
             None
         });
     }
     Ok(pending
-        .map(|pending| pending.finish(daemon_answer_is_used(cx, output)))
+        .map(|pending| {
+            if cx.selections.status_all {
+                Ok(daemon_answer_is_used(output).then(|| pending.finish_if_ready()))
+            } else {
+                pending.finish(daemon_answer_is_used(output))
+            }
+        })
         .transpose()?
         .flatten())
 }
@@ -481,7 +507,13 @@ fn dispatch_with_cold_recovery(
         let observed = finish_status_observation(pending, early, cx, &output)?;
         #[cfg(not(any(windows, target_os = "macos")))]
         let observed = pending
-            .map(|pending| pending.finish(daemon_answer_is_used(&output)))
+            .map(|pending| {
+                if cx.selections.status_all {
+                    Ok(daemon_answer_is_used(&output).then(|| pending.finish_if_ready()))
+                } else {
+                    pending.finish(daemon_answer_is_used(&output))
+                }
+            })
             .transpose()?
             .flatten();
         let mut service_observation = None;
