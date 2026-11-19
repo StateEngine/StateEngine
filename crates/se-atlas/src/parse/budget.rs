@@ -35,6 +35,8 @@ pub struct ParserProfile {
     pub placement: ParserPlacement,
     pub max_source_bytes: u32,
     pub max_rows: u32,
+    /// Base shares admitted by qualification. A parse may borrow unused
+    /// extraction space, bounded by the caller's whole parse reservation.
     pub parser_reservation_bytes: u32,
     pub extraction_bytes: u32,
     pub shared_grammar_pages: Option<GrammarPages>,
