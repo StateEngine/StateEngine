@@ -1,8 +1,10 @@
 //! Per-connection native SQLite allocation setup, confined to Atlas adapters.
 //! This changes no global SQLite settings or authoritative-store connection.
-pub fn cache_writes(connection: &rusqlite::Connection) -> rusqlite::Result<i32> {
+/// Observe pages emitted by this connection. A failed write invalidates this
+/// observation, so callers must discard their incremental estimate on error.
+pub fn written_pages(connection: &rusqlite::Connection) -> rusqlite::Result<u64> {
     let (mut current, mut highwater) = (0, 0);
-    // SAFETY: the connection and both output pointers remain live for this call.
+    // SAFETY: the connection and both output pointers remain valid for this call.
     let code = unsafe {
         rusqlite::ffi::sqlite3_db_status(
             connection.handle(),
@@ -12,13 +14,16 @@ pub fn cache_writes(connection: &rusqlite::Connection) -> rusqlite::Result<i32> 
             0,
         )
     };
-    if code != rusqlite::ffi::SQLITE_OK {
+    if code != rusqlite::ffi::SQLITE_OK || current < 0 {
         return Err(rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error::new(code),
             None,
         ));
     }
-    Ok(current)
+    Ok(current as u64)
+}
+pub fn cache_writes(connection: &rusqlite::Connection) -> rusqlite::Result<i32> {
+    written_pages(connection).map(|value| value as i32)
 }
 pub fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
     // SAFETY: the borrowed Connection owns a live handle, is not shared across

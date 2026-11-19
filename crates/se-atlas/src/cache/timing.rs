@@ -4,6 +4,11 @@ use std::time::Instant;
 
 pub static ADMISSION_US: AtomicU64 = AtomicU64::new(0);
 pub static PRIVATE_GUARD: AtomicU64 = AtomicU64::new(0);
+pub static ACCOUNTING_ESTIMATES: AtomicU64 = AtomicU64::new(0);
+pub static ACCOUNTING_REFRESHES: AtomicU64 = AtomicU64::new(0);
+pub static ACCOUNTING_GUARDS: AtomicU64 = AtomicU64::new(0);
+pub static ACCOUNTING_UNGUARDED: AtomicU64 = AtomicU64::new(0);
+pub static ACCOUNTING_DISABLED: AtomicU64 = AtomicU64::new(0);
 pub static INVENTORY_DIRECTORY_US: AtomicU64 = AtomicU64::new(0);
 pub static INVENTORY_ENUM_US: AtomicU64 = AtomicU64::new(0);
 pub static INVENTORY_METADATA_US: AtomicU64 = AtomicU64::new(0);
