@@ -98,7 +98,7 @@ impl NativeAtlasCache {
                 return Ok(());
             }
         }
-        let Some(pin) = self.pin_database(&record.epoch)? else {
+        let Some(pin) = self.pin_reservation(&record.epoch)? else {
             let directory = self
                 .path(&record.epoch)
                 .parent()

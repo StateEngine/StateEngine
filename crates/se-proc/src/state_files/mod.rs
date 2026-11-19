@@ -160,12 +160,27 @@ impl NativeStateFiles {
             directory,
         })
     }
+    /// Require administrator-only custody for reparse ancestors.
+    #[cfg(windows)]
+    pub fn open_trusted(root: &Path) -> Result<Self> {
+        let witness = os::pin_trusted_directory(root)?;
+        let files = Self::open(root)?;
+        files.directory.same_metadata_root(&witness, root)?;
+        files.directory.check_trusted_ancestry(root)?;
+        Ok(files)
+    }
     /// Explicit init only: creates absent directory components with native
     /// owner-only protection, and refuses an existing unsafe final directory.
     /// Existing ancestor permissions are never changed.
     pub fn create(root: &Path) -> Result<Self> {
         os::create_directories(root)?;
         Self::open(root)
+    }
+    /// Create only after validating each existing reparse ancestor.
+    #[cfg(windows)]
+    pub fn create_trusted(root: &Path) -> Result<Self> {
+        os::create_directories_trusted(root)?;
+        Self::open_trusted(root)
     }
     pub fn root(&self) -> &Path {
         &self.root
@@ -262,6 +277,14 @@ impl NativeStateFiles {
     /// Retain a metadata-only database identity, never a content-read descriptor.
     pub fn pin_metadata(&self, path: &Path) -> Result<Option<NativeMetadataPin>> {
         NativeMetadataPin::open(self, path)
+    }
+    /// Refuse reparse ancestors unless their custody is administrator-only.
+    #[cfg(windows)]
+    pub fn pin_trusted_metadata(&self, path: &Path) -> Result<Option<NativeMetadataPin>> {
+        self.directory.check_trusted_ancestry(&self.root)?;
+        self.pin_metadata(path)?
+            .map(NativeMetadataPin::require_trusted_ancestry)
+            .transpose()
     }
     /// Prepare one immediate protected child of this held root. Existing unsafe
     /// directories refuse and are never chmod/chowned to make them admissible.
