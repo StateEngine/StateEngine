@@ -35,7 +35,8 @@ pub(super) fn file(
         // a body that the qualified parser cannot admit.
         budget.max_source_bytes = budget.max_source_bytes.min(profile.max_source_bytes);
         budget.max_rows = budget.max_rows.min(profile.max_rows);
-        budget.reserved_bytes = budget.reserved_bytes.min(profile.anonymous_bytes() as u32);
+        // Keep the policy's total parse reservation so the native tree can
+        // borrow unused extraction space without exceeding that total.
     }
     budget.max_work = budget
         .max_work
