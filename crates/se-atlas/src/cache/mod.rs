@@ -5,6 +5,7 @@ pub mod pointer;
 pub mod prune;
 pub(crate) mod reference_counts;
 pub mod schema;
+pub mod timing;
 pub mod write;
 use crate::{errors::AtlasResult, model::*, scope::Scope};
 use std::path::{Path, PathBuf};
