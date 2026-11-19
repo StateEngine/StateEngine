@@ -220,7 +220,9 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     assert sys.platform == "win32", "native Windows is required"
-    assert os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "disposable hosted Windows is required"
+    assert os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted", (
+        "Use a disposable Windows VM that supports detached startup."
+    )
     for name in list(os.environ):
         if name.upper().startswith(("SE_", "STATEENGINE_", "CODEX", "CLAUDE", "ANTHROPIC_", "OPENAI_")):
             del os.environ[name]
