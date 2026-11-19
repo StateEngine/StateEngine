@@ -20,4 +20,4 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/rust
       - name: Cold watch matrix
-        run: cargo test --release --locked -p se-host --features cold-watch-probe --test atlas_cold_watch_probe -- matrix --nocapture
+        run: cargo test --release --locked -p se-host --features cold-watch-probe --test atlas_cold_watch_probe -- matrix
