@@ -1,5 +1,51 @@
 use super::*;
 impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
+    #[cfg(windows)]
+    fn begin_cold_capture(&mut self, source: &Source, policy: &AtlasPolicy) {
+        if self.cold_capture.is_none() {
+            self.cold_capture = cold_capture::Capture::start(source, policy).ok();
+        }
+    }
+    #[cfg(windows)]
+    fn cold_capture_available(&self, root: &RootId) -> bool {
+        self.cold_capture
+            .as_ref()
+            .is_some_and(|capture| &capture.id == root)
+    }
+    #[cfg(windows)]
+    fn activate_cold_capture(&mut self, root: &RootId) -> AtlasResult<()> {
+        let capture = self
+            .cold_capture
+            .as_mut()
+            .filter(|capture| &capture.id == root)
+            .ok_or_else(|| source_error("cold source watch", "capture disappeared"))?;
+        let signal = self.signal.clone();
+        capture
+            .native
+            .watch
+            .set_signal(std::sync::Arc::new(move || signal.notify_one()))
+            .map_err(|error| source_error("cold source readiness", error))?;
+        capture.activated = true;
+        self.signal.notify_one();
+        Ok(())
+    }
+    #[cfg(windows)]
+    fn discard_cold_capture(&mut self, root: &RootId) -> AtlasResult<()> {
+        if let Some(capture) = self
+            .cold_capture
+            .as_mut()
+            .filter(|capture| &capture.id == root)
+        {
+            let timeout = Duration::from_millis(200);
+            capture
+                .native
+                .watch
+                .shutdown(timeout)
+                .map_err(|error| crate::atlas_parse::cleanup_error(error, timeout))?;
+            self.cold_capture = None;
+        }
+        Ok(())
+    }
     fn bind_parser_image(&mut self, image: &std::path::Path) -> AtlasResult<()> {
         self.parser.bind_image(image);
         Ok(())
@@ -116,8 +162,75 @@ pub fn drive_events(
         .iter()
         .find(|item| &item.id == root)
         .is_some_and(|item| item.pending_events.is_some());
+    #[cfg(windows)]
+    let pending = finish_catchup(controller, root, deadline, pending)?;
     controller.set_watch_pending(root, pending)?;
     Ok(count + locks)
+}
+
+#[cfg(windows)]
+fn finish_catchup(
+    controller: &mut crate::atlas_runtime::NativeController<NativeRenewal>,
+    root: &RootId,
+    deadline: Instant,
+    mut pending: bool,
+) -> AtlasResult<bool> {
+    let caught = (|| -> AtlasResult<()> {
+        if let Some(item) = controller
+            .runtime_mut()
+            .driver_mut()
+            .roots
+            .iter_mut()
+            .find(|item| &item.id == root)
+            && item.catching_up == Catchup::Pending
+        {
+            let native = item
+                .native
+                .as_ref()
+                .ok_or_else(|| source_error("cold source watch", "closed"))?;
+            native
+                .watch
+                .synchronize(deadline.saturating_duration_since(Instant::now()))
+                .map_err(|error| source_error("cold watch barrier", error))?;
+            if !pending {
+                let mut buffer = [0u8; 4096];
+                let count = native
+                    .watch
+                    .read_one(&mut buffer)
+                    .map_err(|error| source_error("cold watch queue", error))?;
+                if count != 0 {
+                    item.pending_events = Some(PendingEvents {
+                        bytes: buffer[..count].to_vec(),
+                        next: 0,
+                        hints: Vec::new(),
+                    });
+                    pending = true;
+                }
+            }
+            if !pending {
+                item.catching_up = Catchup::Complete;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = caught {
+        let driver = controller.runtime_mut().driver_mut();
+        let retirement = driver
+            .roots
+            .iter()
+            .position(|item| &item.id == root)
+            .and_then(|index| driver.retire_native(index, deadline).err());
+        controller.enqueue(
+            root.clone(),
+            SourceHint::Reconcile(ReconcileReason::WatchFailure),
+        )?;
+        controller.set_watch_pending(root, false)?;
+        return Err(match retirement {
+            Some(retirement) => retain_failure(retirement, error),
+            None => error,
+        });
+    }
+    Ok(pending)
 }
 
 fn retain_failure(primary: SeError, other: SeError) -> SeError {

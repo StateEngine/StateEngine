@@ -1,16 +1,50 @@
 //! Streaming no-follow DFS; only ignore metadata and active ancestor cursors stay resident.
 use super::*;
+#[cfg(not(all(windows, feature = "listener")))]
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use se_atlas::source::{SourceDirectory, SourceEntryKind};
+#[cfg(not(all(windows, feature = "listener")))]
 use std::io::Read;
 struct Directory<'a> {
     path: Option<RelativePath>,
     cursor: Box<dyn SourceDirectory + 'a>,
+    #[cfg(not(all(windows, feature = "listener")))]
     rules: Gitignore,
+    #[cfg(all(windows, feature = "listener"))]
+    rules: crate::atlas_renewal::ignore::Rules,
 }
 pub(super) enum Entry {
-    Directory(Option<RelativePath>),
+    Directory {
+        path: Option<RelativePath>,
+        #[cfg(all(windows, feature = "listener"))]
+        identity: [u8; 32],
+    },
     File(RelativePath),
+}
+fn directory_entry(path: Option<RelativePath>, cursor: &dyn SourceDirectory) -> AtlasResult<Entry> {
+    #[cfg(not(all(windows, feature = "listener")))]
+    let _ = cursor;
+    Ok(Entry::Directory {
+        path,
+        #[cfg(all(windows, feature = "listener"))]
+        identity: cursor.physical_identity()?,
+    })
+}
+#[cfg(not(all(windows, feature = "listener")))]
+fn global_rules(root: &std::path::Path, request: &protocol::Request) -> AtlasResult<Gitignore> {
+    let mut global = GitignoreBuilder::new(root);
+    for pattern in &request.global_patterns {
+        global.add_line(None, pattern).map_err(failure)?;
+    }
+    global.build().map_err(failure)
+}
+#[cfg(all(windows, feature = "listener"))]
+fn ignore_policy(request: &protocol::Request) -> IgnorePolicy {
+    IgnorePolicy {
+        global_patterns: request.global_patterns.clone(),
+        generated_prefixes: request.generated_prefixes.clone(),
+        digest: request.ignore_digest,
+    }
 }
 pub(super) fn files(
     source: &RegisteredSource<NativeAtlasSource>,
@@ -18,20 +52,23 @@ pub(super) fn files(
     deadline: Instant,
     mut visit: impl FnMut(Entry) -> AtlasResult<()>,
 ) -> AtlasResult<bool> {
-    visit(Entry::Directory(None))?;
+    #[cfg(not(all(windows, feature = "listener")))]
     let root = source.scope.registration.canonical_source_root.clone();
-    let mut global = GitignoreBuilder::new(&root);
-    for pattern in &request.global_patterns {
-        global.add_line(None, pattern).map_err(failure)?;
-    }
-    let global = global.build().map_err(failure)?;
+    #[cfg(not(all(windows, feature = "listener")))]
+    let global = global_rules(&root, request)?;
+    #[cfg(all(windows, feature = "listener"))]
+    let policy = ignore_policy(request);
     let cursor = source
         .open_directory(None)?
         .ok_or_else(|| failure("registered root disappeared"))?;
+    visit(directory_entry(None, cursor.as_ref())?)?;
     let mut stack = vec![Directory {
         path: None,
         cursor,
+        #[cfg(not(all(windows, feature = "listener")))]
         rules: rules(source, None)?,
+        #[cfg(all(windows, feature = "listener"))]
+        rules: crate::atlas_renewal::ignore::Rules::load(source, &policy, "", deadline)?,
     }];
     let mut directories = 1u32;
     while !stack.is_empty() {
@@ -67,8 +104,11 @@ pub(super) fn files(
             continue;
         }
         let directory = entry.kind == SourceEntryKind::Directory;
+        #[cfg(not(all(windows, feature = "listener")))]
         let absolute = root.join(path.as_str());
+        #[cfg(not(all(windows, feature = "listener")))]
         let mut ignored = global.matched(&absolute, directory).is_ignore();
+        #[cfg(not(all(windows, feature = "listener")))]
         for ancestor in &stack {
             let matched = ancestor.rules.matched(&absolute, directory);
             if matched.is_ignore() {
@@ -77,11 +117,14 @@ pub(super) fn files(
                 ignored = false;
             }
         }
+        #[cfg(all(windows, feature = "listener"))]
+        let ignored = !stack[last]
+            .rules
+            .eligible(path.as_str(), directory, &policy, deadline)?;
         if ignored {
             continue;
         }
         if directory {
-            visit(Entry::Directory(Some(path.clone())))?;
             directories += 1;
             if stack.len() >= 128 || directories > 32768 {
                 return Err(failure("cold directory depth/count budget exhausted"));
@@ -89,7 +132,16 @@ pub(super) fn files(
             let cursor = source
                 .open_directory(Some(&path))?
                 .ok_or_else(|| failure("discovered source directory disappeared"))?;
+            visit(directory_entry(Some(path.clone()), cursor.as_ref())?)?;
+            #[cfg(not(all(windows, feature = "listener")))]
             let rules = rules(source, Some(&path))?;
+            #[cfg(all(windows, feature = "listener"))]
+            let rules = crate::atlas_renewal::ignore::Rules::load(
+                source,
+                &policy,
+                path.as_str(),
+                deadline,
+            )?;
             stack.push(Directory {
                 path: Some(path),
                 cursor,
@@ -101,6 +153,7 @@ pub(super) fn files(
     }
     Ok(true)
 }
+#[cfg(not(all(windows, feature = "listener")))]
 fn rules(
     source: &RegisteredSource<NativeAtlasSource>,
     directory: Option<&RelativePath>,
