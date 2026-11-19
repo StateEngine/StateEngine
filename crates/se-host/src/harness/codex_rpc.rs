@@ -411,16 +411,20 @@ impl Harness for CodexHarness {
                         )
                     })?,
             )?;
-            let forwarder = self.forwarder.as_deref().ok_or_else(|| {
-                incompatible(
-                    "this host has no forwarder image for Codex agents",
-                    "Restart StateEngine from its installed executable.",
-                )
-            })?;
+            // The host is the se executable, which also runs as each forwarder.
+            let forwarder = match &self.forwarder {
+                Some(path) => path.clone(),
+                None => std::env::current_exe().map_err(|e| {
+                    incompatible(
+                        &format!("this host cannot name its own executable: {e}"),
+                        "Restart StateEngine from its installed executable.",
+                    )
+                })?,
+            };
             let control = input::control_socket(&crate::codex_capture::existing_home()?);
             input::forwarder_invocation(
                 &self.plan(request, &resolved, socket.as_deref()),
-                forwarder,
+                &forwarder,
                 &control,
                 environment,
             )

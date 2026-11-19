@@ -91,7 +91,11 @@ impl LaunchCoordinator {
                 None => remove_record(&path)?,
             }
         }
-        *slot = None;
+        // A server this host started that has since ended: witness its exit and
+        // release its scope before starting another.
+        if let Some(previous) = slot.take() {
+            self.release_ended_codex_server(previous, deadline).await?;
+        }
         let owner = self
             .start_codex_server(&login, &path, launch, deadline)
             .await?;
@@ -188,6 +192,31 @@ impl LaunchCoordinator {
         remove_record(&path)?;
         *slot = None;
         Ok(())
+    }
+
+    async fn release_ended_codex_server(
+        &self,
+        owner: Arc<se_proc::OwnedProcess>,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let native = self.native.clone();
+        self.store
+            .pool
+            .run_owned(deadline, move || {
+                match native
+                    .witness_exit(&owner)
+                    .map_err(|e| error("Codex shared server exit", e))?
+                {
+                    StopObservation::Complete(witness) => native
+                        .release(&owner, &witness)
+                        .map_err(|e| error("Codex shared server release", e)),
+                    _ => Err(error(
+                        "Codex shared server",
+                        "the server this host started is not serving but has not exited; preserve it for reconciliation",
+                    )),
+                }
+            })
+            .await
     }
 
     fn live_codex_agents(&self) -> Result<bool> {
@@ -672,10 +701,10 @@ fn refusal(path: &Path, reason: &str) -> se_types::SeError {
     )
 }
 
-/// A Unix socket address holds about 107 bytes of path on every platform we
-/// support; the stock server refuses a longer one too.
+/// A local socket address holds a short path: 104 bytes with its terminator on
+/// macOS, 108 elsewhere. The stock server refuses a longer one too.
 fn socket_fits(control: &Path) -> Result<()> {
-    const LIMIT: usize = 107;
+    const LIMIT: usize = if cfg!(target_os = "macos") { 103 } else { 107 };
     let length = control.as_os_str().as_encoded_bytes().len();
     if length > LIMIT {
         return Err(crate::codex_rpc::incompatible(

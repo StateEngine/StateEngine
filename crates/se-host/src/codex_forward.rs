@@ -64,6 +64,10 @@ pub fn private_entry(args: &[OsString]) -> io::Result<()> {
 fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
     use std::net::Shutdown;
     use std::os::unix::net::UnixListener;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     let listener = UnixListener::bind(path)?;
     // The host accepts only an owner-only endpoint; the directory is private too.
     {
@@ -81,26 +85,41 @@ fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
                 let _ = std::thread::Builder::new()
                     .name("se-codex-forward-connection".into())
                     .spawn(move || {
-                        let Ok(server) = Upstream::connect(&control) else {
-                            let _ = ended.send(io::Error::other(
-                                "the login's app-server no longer accepts connections",
-                            ));
-                            return;
+                        let server = match Upstream::connect(&control) {
+                            Ok(server) => server,
+                            // Only an absent or refusing socket means the server is gone;
+                            // any other failure ends this one connection.
+                            Err(e)
+                                if matches!(
+                                    e.kind(),
+                                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                                ) =>
+                            {
+                                let _ = ended.send(io::Error::other(
+                                    "the login's app-server no longer accepts connections",
+                                ));
+                                return;
+                            }
+                            Err(_) => return,
                         };
                         let (Ok(mut client_in), Ok(mut server_out)) =
                             (client.try_clone(), server.try_clone())
                         else {
                             return;
                         };
-                        // Host to server on its own thread; server to host here.
+                        // Host to server on its own thread; server to host here. The
+                        // flag is set before the shutdown that ends the copy below,
+                        // so a client that left first is never read as a lost server.
+                        let client_left = Arc::new(AtomicBool::new(false));
+                        let left = Arc::clone(&client_left);
                         let to_server = std::thread::spawn(move || {
                             let _ = io::copy(&mut client_in, &mut server_out);
-                            // The client finished first: end this connection only.
+                            left.store(true, Ordering::Release);
                             let _ = server_out.shutdown(Shutdown::Both);
                         });
                         let (mut server_in, mut client_out) = (server, client);
                         let copied = io::copy(&mut server_in, &mut client_out);
-                        let client_finished = to_server.is_finished();
+                        let client_finished = client_left.load(Ordering::Acquire);
                         let _ = client_out.shutdown(Shutdown::Both);
                         let _ = to_server.join();
                         if !client_finished {
@@ -136,8 +155,18 @@ fn bridge_stdio(control: &Path) -> io::Result<()> {
                     .read_until(b'\n', &mut line);
                 // The host's end is the agent's end; a partial last line is
                 // never sent as a message.
-                if !matches!(read, Ok(n) if n > 0) || line.last() != Some(&b'\n') {
-                    std::process::exit(0);
+                match read {
+                    Ok(0) => std::process::exit(0),
+                    Ok(_) if line.last() == Some(&b'\n') => {}
+                    Ok(_) if line.len() > MAX_MESSAGE => {
+                        eprintln!("codex forwarder: a host message exceeds its bound");
+                        std::process::exit(1);
+                    }
+                    Ok(_) => std::process::exit(0),
+                    Err(error) => {
+                        eprintln!("codex forwarder: host input failed: {error}");
+                        std::process::exit(1);
+                    }
                 }
                 line.pop();
                 let sent = writer

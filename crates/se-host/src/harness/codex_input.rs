@@ -430,6 +430,12 @@ pub fn forwarder_invocation(
         let name = name.to_string_lossy().to_ascii_uppercase();
         name != "SE_SESSION" && !name.starts_with("STATEENGINE_") && !name.starts_with("SECODE_")
     });
+    // The public session handle, as before; the agent's tool shells receive it
+    // through their thread, because they run under the shared server.
+    environment.push((
+        "SE_SESSION".into(),
+        launch.request.identity.session.as_str().into(),
+    ));
     Ok(ProviderInvocation {
         executable: NativePath::from_local(forwarder.to_owned())?,
         arguments: vec![
