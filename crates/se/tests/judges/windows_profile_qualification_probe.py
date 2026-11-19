@@ -11,6 +11,20 @@ from secode_host_guards import Fixture
 from diagnostic_redaction_review import state_home
 
 
+class WindowsFixture(Fixture):
+    def call(self, *args):
+        self.calls += 1
+        command = [str(self.se), '--json', '--home', str(self.home), *args]
+        base = self.root / f'call-{self.calls:02}'
+        with base.with_suffix('.stdout').open('wb') as out, base.with_suffix('.stderr').open('wb') as err:
+            result = subprocess.run(command, cwd=self.repo, env=self.env, stdin=subprocess.DEVNULL,
+                                    stdout=out, stderr=err, timeout=90)
+        base.with_suffix('.exit').write_text(str(result.returncode))
+        return subprocess.CompletedProcess(command, result.returncode,
+                                           base.with_suffix('.stdout').read_bytes(),
+                                           base.with_suffix('.stderr').read_bytes())
+
+
 def read_json(path):
     try:
         return json.loads(path.read_text())
@@ -35,7 +49,7 @@ def main():
     capabilities = json.loads(args.capabilities.read_text())
     capabilities['service']['shutdown'] = ['Ctrl+C']
     (images / 'capabilities.json').write_text(json.dumps(capabilities))
-    f = Fixture(args.se, args.root / 'case', cli, 'read-only', 'never', home_factory=state_home)
+    f = WindowsFixture(args.se, args.root / 'case', cli, 'read-only', 'never', home_factory=state_home)
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
             task = pool.submit(f.call, '--key', str(uuid.uuid4()), '--project', f.project,
