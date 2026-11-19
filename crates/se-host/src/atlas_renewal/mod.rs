@@ -26,10 +26,9 @@ use se_proc::{
     NativeWatchEvents,
 };
 use se_types::{Detail, SeError, code::AtlasText, details};
-use std::{
-    os::fd::{AsFd, BorrowedFd},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
-};
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsFd, BorrowedFd};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 type Source = RegisteredSource<NativeAtlasSource>;
 // Reserve room within the adapter share for a native DIR buffer, retained
 // metadata pins and transient bounded ignore input. Qualification may admit less.
@@ -46,6 +45,14 @@ struct Native {
     root: NativeSourceRoot,
     watch: NativeSourceWatch,
     metadata: Option<metadata::Watches>,
+    #[cfg(windows)]
+    state: WatchState,
+}
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+enum WatchState {
+    Active,
+    Retiring,
 }
 struct Root {
     id: RootId,
@@ -69,6 +76,7 @@ struct Cycle {
     root: RootId,
     serial: u64,
     reconcile: bool,
+    subtree: Option<RelativePath>,
     cursor: Option<NativeWatchDirectory>,
     rules: Option<ignore::Rules>,
     pending_entry: Option<se_proc::NativeSourceEntry>,
@@ -91,6 +99,8 @@ enum Phase {
     Done,
 }
 pub struct NativeRenewal {
+    #[cfg(windows)]
+    signal: std::sync::Arc<tokio::sync::Notify>,
     started: Option<se_types::UnixMicros>,
     parser: crate::atlas_parse::Parser,
     roots: Vec<Root>,
@@ -123,6 +133,8 @@ impl NativeRenewal {
             .and_then(|n| u64::try_from(n.as_micros()).ok())
             .and_then(|n| se_types::UnixMicros::new(n).ok());
         Ok(Self {
+            #[cfg(windows)]
+            signal: std::sync::Arc::new(tokio::sync::Notify::new()),
             started,
             parser: crate::atlas_parse::Parser::new(profiles),
             roots: Vec::with_capacity(2),
@@ -130,6 +142,7 @@ impl NativeRenewal {
             cycle: None,
         })
     }
+    #[cfg(target_os = "linux")]
     pub fn event_fd(&self, root: &RootId) -> Option<BorrowedFd<'_>> {
         self.roots
             .iter()
@@ -137,6 +150,10 @@ impl NativeRenewal {
             .native
             .as_ref()
             .map(|r| r.watch.as_fd())
+    }
+    #[cfg(windows)]
+    pub fn signal(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        self.signal.clone()
     }
     #[expect(
         clippy::too_many_lines,
@@ -218,8 +235,16 @@ impl NativeRenewal {
             }
             slot
         };
+        #[cfg(windows)]
+        if self.roots[index]
+            .native
+            .as_ref()
+            .is_some_and(|native| matches!(native.state, WatchState::Retiring))
+        {
+            self.retire_native(index, deadline)?;
+        }
         if self.roots[index].epoch != connection.identity().epoch {
-            self.roots[index].native = None;
+            self.retire_native(index, deadline)?;
             self.roots[index].epoch = connection.identity().epoch.clone();
             self.mappings.retain(|m| m.root != index as u32);
             if self
@@ -269,10 +294,20 @@ impl NativeRenewal {
                     .map_err(sql_error)?;
                 Ok(())
             })?;
+            let watch = NativeSourceWatch::new().map_err(|e| source_error("source watch", e))?;
+            #[cfg(windows)]
+            {
+                let signal = self.signal.clone();
+                watch
+                    .set_signal(std::sync::Arc::new(move || signal.notify_one()))
+                    .map_err(|e| source_error("source watch readiness", e))?;
+            }
             root.native = Some(Native {
                 root: native,
-                watch: NativeSourceWatch::new().map_err(|e| source_error("source watch", e))?,
+                watch,
                 metadata: None,
+                #[cfg(windows)]
+                state: WatchState::Active,
             });
         }
         Ok(index)
@@ -294,7 +329,7 @@ impl NativeRenewal {
         self.parser.close(deadline)?;
         // Native handles close even when an absent cache cannot lend SQL.
         if let Some(index) = self.roots.iter().position(|r| &r.id == root) {
-            self.roots[index].native = None;
+            self.retire_native(index, deadline)?;
             self.roots[index].discovery_complete = false;
             self.roots[index].last_lock = None;
             self.roots[index].pending_lock = None;
@@ -343,6 +378,26 @@ impl NativeRenewal {
                 Ok(())
             })?;
         }
+        Ok(())
+    }
+
+    fn retire_native(&mut self, index: usize, deadline: Instant) -> AtlasResult<()> {
+        #[cfg(windows)]
+        {
+            let root = &mut self.roots[index];
+            if let Some(native) = root.native.as_mut() {
+                native.state = WatchState::Retiring;
+                let timeout = deadline.saturating_duration_since(Instant::now());
+                native
+                    .watch
+                    .shutdown(timeout)
+                    .map_err(|error| crate::atlas_parse::cleanup_error(error, timeout))?;
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = deadline;
+        self.roots[index].native = None;
+        self.mappings.retain(|mapping| mapping.root != index as u32);
         Ok(())
     }
 }

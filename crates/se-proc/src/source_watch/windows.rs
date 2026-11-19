@@ -248,6 +248,13 @@ impl NativeSourceWatch {
         })
     }
     pub fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.read_limit(buffer, usize::MAX)
+    }
+    /// Retain later records in the native queue for a bounded consumer.
+    pub fn read_one(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.read_limit(buffer, 1)
+    }
+    fn read_limit(&self, buffer: &mut [u8], maximum: usize) -> io::Result<usize> {
         if !(4096..=32768).contains(&buffer.len()) {
             return Err(invalid("native watch buffer must be 4096..32768 bytes"));
         }
@@ -273,8 +280,9 @@ impl NativeSourceWatch {
             return Ok(12);
         }
         let mut used = 0;
+        let mut records = 0;
         while let Some(event) = queue.events.front() {
-            if used + event.len() > buffer.len() {
+            if records == maximum || used + event.len() > buffer.len() {
                 break;
             }
             let event = queue
@@ -284,6 +292,7 @@ impl NativeSourceWatch {
             buffer[used..used + event.len()].copy_from_slice(&event);
             used += event.len();
             queue.bytes -= event.len();
+            records += 1;
         }
         if !queue.events.is_empty()
             && let Some(signal) = &queue.signal

@@ -14,6 +14,7 @@ use se_core::store_error::store_error;
 use se_store::{Actor, Admission, Scope, Snapshot};
 use se_types::{HumanId, ProjectId, Result, SeError};
 use std::future::{Future, poll_fn};
+#[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd;
 use std::task::Poll;
 use std::{
@@ -21,7 +22,9 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::{io::unix::AsyncFd, sync::watch};
+#[cfg(target_os = "linux")]
+use tokio::io::unix::AsyncFd;
+use tokio::sync::watch;
 
 /// Independent native measurements supply these admissions. Installation fills
 /// the measured Linux SQL/parser defaults within their qualified source bounds.
@@ -31,12 +34,15 @@ pub struct NativeAtlasQualification {
     pub parsers: Vec<ParserProfile>,
 }
 pub(super) struct Service {
+    #[cfg(windows)]
+    source_signal: Arc<tokio::sync::Notify>,
     state: Mutex<State>,
     readers: Mutex<read::Catalogue>,
     profile: Option<SqlProfile>,
     owner: HumanId,
     memory: MemoryBudget,
     enabled: bool,
+    unqualified: bool,
     interests: Arc<crate::atlas_runtime::record_fence::RecordFeedFence>,
     work: Arc<ProjectWork>,
     home: PathBuf,
@@ -68,13 +74,20 @@ struct Root {
 #[derive(Clone)]
 enum Wake {
     Core,
+    #[cfg(target_os = "linux")]
     Source(RootId),
+    #[cfg(windows)]
+    Sources,
+    #[cfg(target_os = "linux")]
     Child,
     Scheduled,
 }
 struct Plan {
     ready: bool,
     delay: Option<Duration>,
+    #[cfg(windows)]
+    listen_sources: bool,
+    #[cfg(target_os = "linux")]
     fds: Vec<(OwnedFd, Wake)>,
 }
 impl HostedRuntime {
@@ -106,19 +119,26 @@ impl HostedRuntime {
             .atlas
             .enabled;
         let qualification = qualification.with_native_sql()?;
+        let unqualified = cfg!(windows) && enabled && qualification.sql.is_none();
+        let enabled = enabled && !unqualified;
         let home = self.state_directory.join("atlas");
         let work = Arc::new(ProjectWork::new(
             self.state_directory.join("atlas-projects"),
         ));
         let memory = qualification.memory();
         let profile = qualification.sql.clone();
+        let renewal = NativeRenewal::new(qualification.parsers)?;
+        #[cfg(windows)]
+        let source_signal = renewal.signal();
         let controller = NativeController::new(NativeRuntime::new(
             home.clone(),
             image,
-            NativeRenewal::new(qualification.parsers)?,
+            renewal,
             qualification.sql,
         )?);
         let service = Arc::new(Service {
+            #[cfg(windows)]
+            source_signal,
             state: Mutex::new(State {
                 controller,
                 home: home.clone(),
@@ -138,6 +158,7 @@ impl HostedRuntime {
             owner: self.owner.clone(),
             memory,
             enabled,
+            unqualified,
             interests: self.execution.atlas.records.clone(),
             work,
             home,
@@ -194,6 +215,9 @@ impl Service {
                     Plan {
                         ready: false,
                         delay: None,
+                        #[cfg(windows)]
+                        listen_sources: false,
+                        #[cfg(target_os = "linux")]
                         fds: Vec::new(),
                     }
                 }
@@ -206,16 +230,26 @@ impl Service {
             let event = {
                 let stopped = stopped.changed();
                 let core = context.atlas.records.changed();
+                #[cfg(windows)]
+                let listen_sources = plan.listen_sources;
                 let ready = wait(plan);
+                #[cfg(windows)]
+                let source = self.source_signal.notified();
                 let mut stopped = std::pin::pin!(stopped);
                 let mut core = std::pin::pin!(core);
                 let mut ready = std::pin::pin!(ready);
+                #[cfg(windows)]
+                let mut source = std::pin::pin!(source);
                 poll_fn(|cx| {
                     if let Poll::Ready(value) = stopped.as_mut().poll(cx) {
                         return Poll::Ready(Event::Stop(value.is_err()));
                     }
                     if core.as_mut().poll(cx).is_ready() {
                         return Poll::Ready(Event::Core);
+                    }
+                    #[cfg(windows)]
+                    if listen_sources && source.as_mut().poll(cx).is_ready() {
+                        return Poll::Ready(Event::Ready(Ok(Wake::Sources)));
                     }
                     if let Poll::Ready(value) = ready.as_mut().poll(cx) {
                         return Poll::Ready(Event::Ready(value));
@@ -257,6 +291,7 @@ impl Service {
         }).await
     }
 }
+#[cfg(target_os = "linux")]
 async fn wait(plan: Plan) -> Result<Wake> {
     if plan.ready {
         tokio::task::yield_now().await;
@@ -306,6 +341,17 @@ async fn wait(plan: Plan) -> Result<Wake> {
         readable.as_mut().poll(cx)
     })
     .await
+}
+#[cfg(windows)]
+async fn wait(plan: Plan) -> Result<Wake> {
+    if plan.ready {
+        tokio::task::yield_now().await;
+    } else if let Some(delay) = plan.delay {
+        tokio::time::sleep(delay).await;
+    } else {
+        std::future::pending::<()>().await;
+    }
+    Ok(Wake::Scheduled)
 }
 fn deadline(timeout: Duration) -> Result<crate::client::lease::Deadline> {
     crate::client::lease::Deadline::from_options(&crate::client::ClientOptions {

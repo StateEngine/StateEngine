@@ -12,6 +12,21 @@ impl NativeRenewal {
         identity: [u8; 32],
         deadline: Instant,
     ) -> AtlasResult<()> {
+        #[cfg(windows)]
+        if !path.is_empty() {
+            // Store covered directories without allocating another native watch.
+            if !self
+                .mappings
+                .iter()
+                .any(|mapping| mapping.root == index as u32)
+            {
+                let root = &mut self.roots[index];
+                root.unwatched = root.unwatched.saturating_add(1);
+                reason(root, CoverageReason::PartialWatch);
+                return Ok(());
+            }
+            return record_recursive_directory(connection, path, identity, deadline);
+        }
         let existing = connection.read(deadline, |sql| {
             let mut statement =
                 sql.prepare("SELECT descriptor,identity FROM watch_directories WHERE path=?1")?;
@@ -68,9 +83,21 @@ impl NativeRenewal {
             .native
             .as_ref()
             .ok_or_else(|| source_error(path, "watch closed"))?;
-        let registration = match native.watch.subscribe(&native.root, path) {
+        #[cfg(target_os = "linux")]
+        let registration = native.watch.subscribe(&native.root, path);
+        #[cfg(windows)]
+        let registration = native.watch.subscribe_tree(&native.root);
+        let registration = match registration {
             Ok(Some(registration)) => registration,
-            Ok(None) => return Ok(()),
+            Ok(None) => {
+                #[cfg(windows)]
+                {
+                    let root = &mut self.roots[index];
+                    root.unwatched = root.unwatched.saturating_add(1);
+                    reason(root, CoverageReason::PartialWatch);
+                }
+                return Ok(());
+            }
             Err(error) => {
                 let root = &mut self.roots[index];
                 if !root.limited_this_activation {
@@ -192,10 +219,11 @@ impl NativeRenewal {
             .native
             .as_ref()
             .ok_or_else(|| source_error("watch", "closed"))?;
-        let count = native
-            .watch
-            .read(&mut buffer)
-            .map_err(|e| source_error("watch event read", e))?;
+        #[cfg(target_os = "linux")]
+        let count = native.watch.read(&mut buffer);
+        #[cfg(windows)]
+        let count = native.watch.read_one(&mut buffer);
+        let count = count.map_err(|e| source_error("watch event read", e))?;
         if let Some(metadata) = native.metadata.as_ref() {
             let held = metadata.lock_held()?;
             observe_lock(&mut self.roots[index], held);
@@ -257,6 +285,13 @@ impl NativeRenewal {
                 }
             };
             if event.action == NativeWatchAction::Invalidated {
+                #[cfg(windows)]
+                if let Some(native) = self.roots[index].native.as_ref() {
+                    native
+                        .watch
+                        .remove(mapping.descriptor)
+                        .map_err(|error| source_error("invalidated watch removal", error))?;
+                }
                 self.mappings
                     .retain(|m| m.root != mapping.root || m.directory != mapping.directory);
                 connection.write(65536, deadline, |sql| {
@@ -290,21 +325,79 @@ impl NativeRenewal {
             }
             spelling.push_str(name);
             let path = RelativePath::new(spelling)?;
+            if se_atlas::policy::built_in_denied(&path) {
+                continue;
+            }
+            let parent = path
+                .as_str()
+                .rsplit_once('/')
+                .map_or("", |(parent, _)| parent);
+            let basename = path.as_str().rsplit('/').next().unwrap_or_default();
             // Rule inputs are always observed. Other ignored churn never enters
             // the shared scheduler, including excluded newly-created trees.
-            if name == ".gitignore" {
+            if basename == ".gitignore"
+                || cfg!(windows) && basename.eq_ignore_ascii_case(".gitignore")
+            {
+                #[cfg(windows)]
+                if !parent.is_empty() {
+                    return Ok(vec![SourceHint::DirectoryChanged(RelativePath::new(
+                        parent,
+                    )?)]);
+                }
+                #[cfg(windows)]
+                {
+                    self.roots[index]
+                        .native
+                        .as_ref()
+                        .ok_or_else(|| source_error("watch", "closed"))?
+                        .watch
+                        .remove(mapping.descriptor)
+                        .map_err(|error| source_error("watch re-arm", error))?;
+                    self.mappings.retain(|item| {
+                        item.root != mapping.root || item.descriptor != mapping.descriptor
+                    });
+                    connection.write(65536, deadline, |sql| {
+                        sql.prepare("DELETE FROM watch_directories WHERE descriptor=?1")?
+                            .execute([mapping.descriptor])
+                            .map_err(sql_error)?;
+                        Ok(())
+                    })?;
+                    self.roots[index].requires_reconcile = true;
+                }
                 return Ok(vec![SourceHint::Reconcile(
                     ReconcileReason::IgnoreRulesChanged,
                 )]);
             }
-            let rules = ignore::Rules::load(source, policy, &directory, deadline)?;
-            if !rules.eligible(path.as_str(), event.directory, policy, deadline)? {
+            let rules = ignore::Rules::load(source, policy, parent, deadline)?;
+            #[cfg(windows)]
+            if !rules.eligible(path.as_str(), false, policy, deadline)?
+                && !rules.eligible(path.as_str(), true, policy, deadline)?
+            {
                 continue;
             }
-            if event.directory {
+            #[cfg(target_os = "linux")]
+            let directory_event = event.directory;
+            #[cfg(windows)]
+            let directory_event = windows_directory_event(
+                self.roots[index]
+                    .native
+                    .as_ref()
+                    .ok_or_else(|| source_error("watch", "closed"))?,
+                connection,
+                &path,
+                event.action,
+                deadline,
+            )?;
+            if !rules.eligible(path.as_str(), directory_event, policy, deadline)? {
+                continue;
+            }
+            if directory_event {
+                #[cfg(target_os = "linux")]
                 return Ok(vec![SourceHint::Reconcile(
                     ReconcileReason::DirectoryChanged,
                 )]);
+                #[cfg(windows)]
+                return Ok(vec![SourceHint::DirectoryChanged(path)]);
             }
             hints.push(
                 if matches!(
@@ -319,6 +412,64 @@ impl NativeRenewal {
         }
         Ok(hints)
     }
+}
+
+#[cfg(windows)]
+fn record_recursive_directory(
+    connection: &mut CacheConnection<'_>,
+    path: &str,
+    identity: [u8; 32],
+    deadline: Instant,
+) -> AtlasResult<()> {
+    connection.write(65536, deadline, |sql| {
+        let existing: Option<i64> = sql
+            .prepare("SELECT id FROM watch_directories WHERE path=?1")?
+            .query([path])
+            .map_err(sql_error)?
+            .next()
+            .map_err(sql_error)?
+            .map(|row| row.get(0).map_err(sql_error))
+            .transpose()?;
+        if let Some(id) = existing {
+            sql.prepare("UPDATE watch_directories SET identity=?1 WHERE id=?2")?
+                .execute((identity.as_slice(), id))
+                .map_err(sql_error)?;
+        } else {
+            sql.prepare("INSERT INTO watch_directories(descriptor,path,identity) SELECT coalesce(min(descriptor),0)-1,?1,?2 FROM watch_directories WHERE descriptor<0")?
+                .execute((path, identity.as_slice()))
+                .map_err(sql_error)?;
+        }
+        Ok(())
+    })
+}
+
+#[cfg(windows)]
+fn windows_directory_event(
+    native: &Native,
+    connection: &mut CacheConnection<'_>,
+    path: &RelativePath,
+    action: NativeWatchAction,
+    deadline: Instant,
+) -> AtlasResult<bool> {
+    if matches!(
+        action,
+        NativeWatchAction::Changed | NativeWatchAction::MovedTo
+    ) {
+        match native.root.open_directory(path.as_str()) {
+            Ok(Some(_)) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => return Ok(false),
+            Err(error) => return Err(source_error(path.as_str(), error)),
+            Ok(None) => (),
+        }
+    }
+    // A removed directory has no native type bit. Cached descendants witness it.
+    let lower = format!("{}/", path.as_str());
+    let upper = format!("{}0", path.as_str());
+    connection.read(deadline, |sql| {
+        sql.prepare("SELECT EXISTS(SELECT 1 FROM watch_directories WHERE path=?1) OR EXISTS(SELECT 1 FROM files WHERE path_key>=?2 AND path_key<?3)")?
+            .query_row((path.as_str(), lower, upper), |row| row.get(0))
+            .map_err(sql_error)
+    })
 }
 
 fn observe_lock(root: &mut Root, held: bool) {

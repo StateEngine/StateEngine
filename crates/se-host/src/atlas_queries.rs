@@ -352,6 +352,9 @@ fn unavailable(request: &se_core::ops::AtlasRead, index: IndexSummary) -> se_cor
                 reason: error.message(),
                 error: Some(Box::new(error.clone())),
             },
+            IndexState::Suspended { reason } => se_types::Read::Unknown {
+                what: reason.message(),
+            },
             state => se_types::Read::Unknown {
                 what: match state {
                     IndexState::Disabled => {
@@ -363,9 +366,6 @@ fn unavailable(request: &se_core::ops::AtlasRead, index: IndexSummary) -> se_cor
                     }
                     IndexState::Opening | IndexState::ColdIndexing { .. } => {
                         "Atlas indexing is queued or starting; retry this query in 1 second, or use se status to watch progress"
-                    }
-                    IndexState::Suspended { .. } => {
-                        "The registered Atlas index is suspended; inspect its retained status error"
                     }
                     IndexState::Draining | IndexState::Closed => {
                         "The registered Atlas index has closed reader admission"
