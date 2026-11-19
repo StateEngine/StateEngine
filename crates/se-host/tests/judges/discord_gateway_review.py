@@ -173,8 +173,24 @@ class Provider:
             assert auth["op"] == 6 and auth["d"]["session_id"] == self.session
             start = auth["d"]["seq"]
         if self.mode == "expired" and auth["op"] == 6:
+            link.enter("expired replay close")
             self.frame(stream, struct.pack("!H", 4009), 8)
             self.record(kind="replay_expired")
+            # Unread client frames during TCP close can discard the expiry
+            # frame. Let the client read it and end the close exchange.
+            stream.settimeout(0.05)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not (self.root / "stop").exists():
+                try:
+                    opcode, _ = self.read_frame(stream)
+                except socket.timeout:
+                    continue
+                except EOFError:
+                    return
+                if opcode == 8:
+                    return
+            if not (self.root / "stop").exists():
+                raise TimeoutError("client did not end the expired replay")
             return
         dispatches = self.dispatches()
         pending = iter(item for item in dispatches if item["s"] > start)
@@ -318,7 +334,14 @@ def main():
             elif route.startswith("/channels/"):
                 provider.channel_reads += 1
                 if args.mode == "cancel":
-                    time.sleep(0.7)
+                    deadline = time.monotonic() + 15
+                    while not (args.root / "release-channel-reads").exists():
+                        if (args.root / "stop").exists():
+                            self.close_connection = True
+                            return
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("test did not release the channel lookup")
+                        time.sleep(0.02)
                 channel = route.rsplit("/", 1)[1]
                 recipients = [{"id": "1002" if channel == "2002" else "1001", "bot": False}]
                 if channel == "3001":
