@@ -13,6 +13,35 @@ use windows_sys::Win32::{
 };
 
 pub const CONSOLE_INTERRUPT_ENTRY: &str = "__native-console-interrupt";
+
+/// Give a dedicated host a stable console policy before it creates children.
+/// The host absorbs interrupts; children inherit normal Ctrl+C processing.
+pub fn initialize_host_console_policy() -> ProcResult<()> {
+    // SAFETY: the static callback has the native signature and no borrowed state.
+    if unsafe { SetConsoleCtrlHandler(Some(host_console_handler), 1) } == 0 {
+        return Err(last(
+            ProcErrorCode::LaunchFailed,
+            "register host console handler",
+        ));
+    }
+    // SAFETY: this changes only the dedicated host's inherited Ctrl+C policy.
+    if unsafe { SetConsoleCtrlHandler(None, 0) } == 0 {
+        let cause = last(
+            ProcErrorCode::LaunchFailed,
+            "enable child console interrupts",
+        );
+        // SAFETY: unregister the same static handler after failed initialization.
+        unsafe {
+            SetConsoleCtrlHandler(Some(host_console_handler), 0);
+        }
+        return Err(cause);
+    }
+    Ok(())
+}
+
+unsafe extern "system" fn host_console_handler(event: u32) -> i32 {
+    i32::from(matches!(event, CTRL_C_EVENT | CTRL_BREAK_EVENT))
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Request {
@@ -152,8 +181,15 @@ pub fn console_interrupt_entry(request: &OsStr) -> ProcResult<StopDispatch> {
         return Ok(StopDispatch::NotNeeded);
     }
     security::verify_job(&job)?;
-    // The helper was created without a console. Never detach the runtime's or
-    // an inherited console to make this work.
+    // Only this isolated helper detaches its own console. The runtime and its
+    // target retain their consoles, and the pinned root prevents PID reuse.
+    // SAFETY: FreeConsole affects only the calling helper process.
+    if unsafe { FreeConsole() } == 0 {
+        return Err(last(
+            ProcErrorCode::StopDispatchFailed,
+            "detach helper console",
+        ));
+    }
     // SAFETY: original live process object remains pinned against PID reuse.
     if unsafe { AttachConsole(request.root.pid.0) } == 0 {
         return Err(last(

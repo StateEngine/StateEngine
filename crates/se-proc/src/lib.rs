@@ -27,11 +27,13 @@ mod canonical_path;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use allocator::{reclaim_unused_allocator_pages, release_read_only_mapped_pages};
 mod checkpoint;
+mod command;
 pub use canonical_path::canonicalize_path;
 pub use checkpoint::{
     Checkpoint, CheckpointError, CheckpointKind, CheckpointPrincipal, CheckpointSource,
     HistoricalCheckpoint, RootPublication, decode_checkpoint, encode_checkpoint,
 };
+pub use command::background_command;
 mod error;
 mod file_identity;
 pub use file_identity::NativeFileIdentity;
@@ -114,7 +116,9 @@ mod linux_native;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod platform;
 #[cfg(windows)]
-pub use platform::{CONSOLE_INTERRUPT_ENTRY, console_interrupt_entry};
+pub use platform::{
+    CONSOLE_INTERRUPT_ENTRY, console_interrupt_entry, initialize_host_console_policy,
+};
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod runtime;
 mod support;

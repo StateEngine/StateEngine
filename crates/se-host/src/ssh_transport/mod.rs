@@ -27,7 +27,7 @@ use diagnostics::read_errors;
 pub(crate) use transfer::upload;
 
 pub(crate) fn client(program: impl AsRef<std::ffi::OsStr>) -> Command {
-    let mut command = Command::new(program);
+    let mut command = Command::from(se_proc::background_command(program));
     command.kill_on_drop(true);
     // Every caller replaces stdio. A Windows SSH login's inherited descriptor
     // table describes the login pipes, not this child's new handles.

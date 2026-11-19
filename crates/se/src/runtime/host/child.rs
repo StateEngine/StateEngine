@@ -147,6 +147,8 @@ fn serve(
     if let Some(log) = &mut phases {
         log.note("Host process preparation started");
     }
+    #[cfg(windows)]
+    se_proc::initialize_host_console_policy().map_err(native_error)?;
     let initialized = se_host::initialize_host_process()?;
     let config = crate::config::load::<se_config::config_policy::ConfigFile>(
         &configuration,
