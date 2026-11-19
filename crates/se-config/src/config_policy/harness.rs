@@ -26,6 +26,9 @@ pub struct HarnessDescriptor {
     pub environment: Vec<String>,
     /// Optional native environment binding for the saved model, instead of an argv slot.
     pub model_environment: Option<String>,
+    /// Accepts HTTP MCP from agents that use it without advertising the capability.
+    #[serde(default)]
+    pub unadvertised_http_mcp: bool,
     /// Exact named launch profiles mapped to the harness's own permission choices.
     pub permissions: BTreeMap<String, PermissionChoice>,
 }
@@ -44,6 +47,7 @@ pub struct InvocationSettings {
     pub environment: Vec<String>,
     pub values: BTreeMap<String, String>,
     pub model_environment: Option<String>,
+    pub unadvertised_http_mcp: bool,
     pub mode: String,
 }
 pub fn validate_name(name: &str) -> Result<()> {
@@ -160,6 +164,7 @@ impl ConfigFile {
                 environment: self.acp.environment.clone(),
                 values: BTreeMap::new(),
                 model_environment: None,
+                unadvertised_http_mcp: self.acp.unadvertised_http_mcp,
                 mode: self.acp.mode.clone(),
             });
         };
@@ -173,6 +178,7 @@ impl ConfigFile {
             environment: descriptor.environment.clone(),
             values: permission.environment.clone(),
             model_environment: descriptor.model_environment.clone(),
+            unadvertised_http_mcp: descriptor.unadvertised_http_mcp,
             mode: permission.mode.clone(),
         })
     }

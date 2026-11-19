@@ -62,6 +62,13 @@ impl Session {
                         .ok_or_else(|| failure("ACP permission", "identity space exhausted"))?;
                     let request = state.next_permission;
                     let mut permission = Permission::parse(request, id, &params)?;
+                    let tool = params
+                        .pointer("/toolCall/toolCallId")
+                        .and_then(Value::as_str)
+                        .filter(|v| !v.is_empty() && v.len() <= 512);
+                    if let (Some(tool), Some(active)) = (tool, state.active.as_mut()) {
+                        active.permission_tool(tool)?;
+                    }
                     let (response, reason) = if state.cancelling {
                         (
                             json!({"outcome":{"outcome":"cancelled"}}),
@@ -268,7 +275,7 @@ impl Session {
                     ));
                 }
                 if let Some(expected) = state.loading.as_ref()
-                    && *expected != state.replay
+                    && !same_history(expected, &state.replay)
                 {
                     return Err(failure(
                         "ACP replay",

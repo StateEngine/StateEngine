@@ -166,6 +166,7 @@ impl Session {
         mcp_servers: Vec<Value>,
         previous: Option<(&str, Vec<CapturedMessage>)>,
         required_mode: &str,
+        unadvertised_http_mcp: bool,
         cx: CallContext,
     ) -> Result<String> {
         let until = super::connection::until(&cx)?;
@@ -184,6 +185,7 @@ impl Session {
             if mcp_servers
                 .iter()
                 .any(|v| v.get("type").and_then(Value::as_str) == Some("http"))
+                && !unadvertised_http_mcp
                 && state
                     .capabilities
                     .pointer("/mcpCapabilities/http")
@@ -192,7 +194,7 @@ impl Session {
             {
                 return Err(failure(
                     "ACP MCP",
-                    "The agent did not advertise authenticated HTTP MCP support. Configure command and arguments in the selected [harnesses.NAME] entry, or providers.acp.command and acp.arguments for a legacy agent, to an ACP v1 agent with HTTP MCP support, then retry launch.",
+                    "The agent did not advertise authenticated HTTP MCP support. Set unadvertised_http_mcp = true in the selected [harnesses.NAME] entry to accept this agent's unadvertised HTTP MCP, or configure command and arguments in the selected [harnesses.NAME] entry, or providers.acp.command and acp.arguments for a legacy agent, to an ACP v1 agent with HTTP MCP support, then retry launch.",
                 ));
             }
             state.required_mode = if required_mode.is_empty() {
@@ -589,6 +591,13 @@ fn normalize(messages: Vec<CapturedMessage>) -> Vec<CapturedMessage> {
         append(&mut result, &message.role, &message.text);
     }
     result
+}
+fn same_history(expected: &[CapturedMessage], replay: &[CapturedMessage]) -> bool {
+    expected.len() == replay.len()
+        && expected
+            .iter()
+            .zip(replay)
+            .all(|(a, b)| a.role == b.role && a.text.trim() == b.text.trim())
 }
 
 fn remaining(cx: &CallContext, until: tokio::time::Instant) -> Result<CallContext> {
