@@ -14,12 +14,12 @@ pub use se_types::{AtlasRootId as RootId, IndexEpochId as CacheEpoch};
 use std::{path::PathBuf, time::Duration};
 
 #[cfg(windows)]
-pub const ANONYMOUS_BYTES: u32 = 15_000_000;
+pub const ANONYMOUS_BYTES: u32 = 16_000_000;
 #[cfg(not(windows))]
 pub const ANONYMOUS_BYTES: u32 = 13_000_000;
 pub const SQL_QUERY_BYTES: u32 = 603_082;
 #[cfg(windows)]
-pub const PARSER_BYTES: u32 = 14_000_000;
+pub const PARSER_BYTES: u32 = 15_000_000;
 #[cfg(not(windows))]
 pub const PARSER_BYTES: u32 = 12_000_000;
 /// Counted parse/extraction share; native commit also includes allocator overhead.
