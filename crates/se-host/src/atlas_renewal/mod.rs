@@ -4,7 +4,10 @@ use crate::atlas_git_watch as metadata;
 use crate::atlas_ignore as ignore;
 mod observe;
 mod port;
-pub use port::{drive_events, drive_quantum};
+#[path = "../atlas_renewal_schedule.rs"]
+mod schedule;
+pub use port::drive_events;
+pub use schedule::drive_quantum;
 #[cfg(windows)]
 mod cold_capture;
 mod scan;

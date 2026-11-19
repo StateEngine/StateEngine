@@ -67,6 +67,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
     }
     pub fn poll_events(&mut self, id: &RootId, deadline: Instant) -> AtlasResult<Vec<SourceHint>> {
         self.poll_events_classified(id, deadline, None)
+            .map(|(hints, _)| hints)
             .map_err(PollEventsFailure::into_error)
     }
     pub(crate) fn poll_events_classified(
@@ -74,7 +75,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
         id: &RootId,
         deadline: Instant,
         event_budget: Option<std::time::Duration>,
-    ) -> std::result::Result<Vec<SourceHint>, PollEventsFailure> {
+    ) -> std::result::Result<(Vec<SourceHint>, Instant), PollEventsFailure> {
         let started = Instant::now();
         if self.active.is_some() {
             return Err(PollEventsFailure::Admission(atlas_cold::failure(
@@ -118,6 +119,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                 &root.policy,
                 deadline,
             )
+            .map(|hints| (hints, deadline))
             .map_err(PollEventsFailure::Driver)
     }
     #[cfg(unix)]

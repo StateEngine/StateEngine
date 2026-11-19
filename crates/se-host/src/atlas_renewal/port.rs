@@ -1,3 +1,4 @@
+use super::schedule::sync_locks;
 use super::*;
 #[cfg(feature = "cold-watch-probe")]
 impl NativeRenewal {
@@ -162,12 +163,12 @@ pub fn drive_events(
             budget,
         ));
     }
-    let hints = match controller.runtime_mut().poll_events_classified(
+    let (hints, event_deadline) = match controller.runtime_mut().poll_events_classified(
         root,
         now + std::time::Duration::from_secs(5),
         Some(budget),
     ) {
-        Ok(hints) => hints,
+        Ok(result) => result,
         Err(crate::atlas_runtime::PollEventsFailure::Admission(error)) => return Err(error),
         Err(crate::atlas_runtime::PollEventsFailure::Driver(error)) => {
             let watch_died = matches!(error.body.detail(), Detail::AtlasSourceUnreadable(detail)
@@ -235,7 +236,9 @@ pub fn drive_events(
         .find(|item| &item.id == root)
         .is_some_and(|item| item.pending_events.is_some());
     #[cfg(windows)]
-    let pending = finish_catchup(controller, root, deadline, pending)?;
+    let pending = finish_catchup(controller, root, event_deadline, pending)?;
+    #[cfg(not(windows))]
+    let _ = event_deadline;
     controller.set_watch_pending(root, pending)?;
     Ok(count + locks)
 }
@@ -256,6 +259,7 @@ fn finish_catchup(
             .find(|item| &item.id == root)
             && item.catching_up == Catchup::Pending
         {
+            timely(deadline)?;
             let native = item
                 .native
                 .as_ref()
@@ -263,7 +267,14 @@ fn finish_catchup(
             native
                 .watch
                 .synchronize(deadline.saturating_duration_since(Instant::now()))
-                .map_err(|error| source_error("cold watch barrier", error))?;
+                .map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::TimedOut {
+                        limit("renewal work deadline", 1, 0)
+                    } else {
+                        source_error("cold watch barrier", error)
+                    }
+                })?;
+            timely(deadline)?;
             if !pending {
                 let mut buffer = [0u8; 4096];
                 let count = native
@@ -286,12 +297,19 @@ fn finish_catchup(
         Ok(())
     })();
     if let Err(error) = caught {
+        if se_atlas::controller::quantum_expired(&error) {
+            return Err(error);
+        }
         let driver = controller.runtime_mut().driver_mut();
         let retirement = driver
             .roots
             .iter()
             .position(|item| &item.id == root)
-            .and_then(|index| driver.retire_native(index, deadline).err());
+            .and_then(|index| {
+                driver
+                    .retire_native(index, Instant::now() + Duration::from_secs(5))
+                    .err()
+            });
         controller.enqueue(
             root.clone(),
             SourceHint::Reconcile(ReconcileReason::WatchFailure),
@@ -312,32 +330,4 @@ fn retain_failure(primary: SeError, other: SeError) -> SeError {
         .map_or_else(String::new, ToString::to_string);
     let cause = std::io::Error::other(format!("{primary}; {native}; earlier failure: {other}"));
     primary.with_cause(cause)
-}
-
-/// Run source work and transfer newly observed checkout-lock state to the same
-/// scheduler before it can publish. Callers pair this with `drive_events`.
-pub fn drive_quantum(
-    controller: &mut crate::atlas_runtime::NativeController<NativeRenewal>,
-    duration: Duration,
-) -> AtlasResult<Option<WorkReport>> {
-    sync_locks(controller)?;
-    let result = controller.work_quantum(duration);
-    sync_locks(controller)?;
-    result
-}
-fn sync_locks(
-    controller: &mut crate::atlas_runtime::NativeController<NativeRenewal>,
-) -> AtlasResult<usize> {
-    let changes: Vec<_> = controller
-        .runtime_mut()
-        .driver_mut()
-        .roots
-        .iter_mut()
-        .filter_map(|root| root.pending_lock.take().map(|held| (root.id.clone(), held)))
-        .collect();
-    let count = changes.len();
-    for (root, held) in changes {
-        controller.git_lock(&root, held)?;
-    }
-    Ok(count)
 }
