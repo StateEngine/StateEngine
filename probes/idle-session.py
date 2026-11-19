@@ -162,8 +162,11 @@ try:
                                     wait_reasons[parts[13].strip()] += 1
                         if lost == 0 and reliable is not None and reliable <= 1_000_000 and trace_length is not None and trace_length >= 61:
                             after_trace = f.ok('--project', f.project, 'status')
-                            if process.create_time() != birth or after_trace['runtime']['process']['pid'] != pid:
-                                raise RuntimeError('host process changed during trace')
+                            active = [item for item in after_trace['agents']['items']
+                                      if (item.get('session') or {}).get('state') == 'running']
+                            if (process.create_time() != birth or after_trace['runtime']['process']['pid'] != pid
+                                    or len(active) != 1 or active[0]['session']['session_id'] != f.session):
+                                raise RuntimeError('host or live session changed during trace')
                             result['trace_switch_ins'] = incoming
                             result['trace_switch_ins_per_second'] = incoming / 60
                             result['trace_wait_reasons'] = dict(wait_reasons)
