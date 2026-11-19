@@ -72,11 +72,18 @@ try:
     seconds = time.monotonic() - start
     if process.create_time() != birth:
         raise RuntimeError('host process identity changed')
+    after_status = f.ok('--project', f.project, 'status')
+    after_active = [item for item in after_status['agents']['items']
+                    if (item.get('session') or {}).get('state') == 'running']
+    if (len(after_active) != 1 or after_active[0]['id'] != f.agent
+            or after_active[0]['session']['session_id'] != f.session
+            or after_status['runtime']['process']['pid'] != pid):
+        raise RuntimeError('host or live session changed during measurement')
     cpu = (cpu_end.user + cpu_end.system) - (cpu_start.user + cpu_start.system)
     if switches_start.keys() != switches_end.keys():
         raise RuntimeError('host thread identities changed during measurement')
     switch_count = sum(switches_end[key] - switches_start[key] for key in switches_start)
-    if switch_count < 0:
+    if any(switches_end[key] < switches_start[key] for key in switches_start):
         raise RuntimeError('context switch counter regressed')
     result.update(pid=pid, seconds=seconds, cpu_seconds=cpu, cpu_percent_one_core=100 * cpu / seconds,
                   context_switches=switch_count, context_switches_per_second=switch_count / seconds,
