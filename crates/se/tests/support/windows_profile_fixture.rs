@@ -43,10 +43,9 @@ fn run() -> Check {
         Some("init-profile") => {
             let profile = Path::new(value(&args, "--service")?);
             make_private(profile)?;
-            fs::write(
-                directory.join("bootstrap-pid"),
-                std::process::id().to_string(),
-            )?;
+            let pending = directory.join("bootstrap-pid.pending");
+            fs::write(&pending, std::process::id().to_string())?;
+            fs::rename(pending, directory.join("bootstrap-pid"))?;
             let until = Instant::now() + Duration::from_secs(60);
             while !directory.join("bootstrap-release").exists() {
                 if Instant::now() >= until {
