@@ -226,7 +226,7 @@ fn oversized_commit_degrades_only_itself_and_keeps_the_window() -> Check {
         window.commits[0]
             .paths_note
             .as_deref()
-            .is_some_and(|n| n.contains("65536")),
+            .is_some_and(|n| n.contains("bounded Git read")),
         "the degradation must say so: {:?}",
         window.commits[0].paths_note
     );
