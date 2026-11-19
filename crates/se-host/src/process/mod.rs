@@ -68,9 +68,9 @@ pub struct ProcessOptions {
     /// spawn; the production default stays 20 s.
     pub restore_deadline_ms: u64,
     /// Window given to a headless provider to exit after stdin closure before
-    /// forced stop. Independent judges shorten it at spawn; the production
-    /// default stays 5 s.
-    pub stop_grace_ms: u32,
+    /// forced stop. `None` keeps the production default; an explicit value is
+    /// capped by the stop budget at the staging site.
+    pub stop_grace_ms: Option<u32>,
 }
 impl ProcessOptions {
     /// Section 30's default native custody budget, independent of stored sessions.
@@ -93,7 +93,7 @@ pub struct ProcessConfiguration {
     pub linux_delegation: se_proc::LinuxDelegation,
     pub maximum_sessions: u32,
     pub restore_deadline_ms: u64,
-    pub stop_grace_ms: u32,
+    pub stop_grace_ms: Option<u32>,
 }
 pub struct LaunchCoordinator {
     kind: crate::HostKind,
