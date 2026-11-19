@@ -164,6 +164,31 @@ pub struct CacheConnection<'a> {
     _slot: Slot,
 }
 impl<'a> CacheConnection<'a> {
+    pub fn diagnostic_pragmas(&self) -> AtlasResult<String> {
+        let synchronous: i64 = self
+            .db
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .map_err(cache_error)?;
+        let journal: String = self
+            .db
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .map_err(cache_error)?;
+        let autocheckpoint: i64 = self
+            .db
+            .query_row("PRAGMA wal_autocheckpoint", [], |r| r.get(0))
+            .map_err(cache_error)?;
+        let fullfsync: i64 = self
+            .db
+            .query_row("PRAGMA fullfsync", [], |r| r.get(0))
+            .map_err(cache_error)?;
+        let checkpoint_fullfsync: i64 = self
+            .db
+            .query_row("PRAGMA checkpoint_fullfsync", [], |r| r.get(0))
+            .map_err(cache_error)?;
+        Ok(format!(
+            "synchronous={synchronous} journal={journal} autocheckpoint={autocheckpoint} fullfsync={fullfsync} checkpoint_fullfsync={checkpoint_fullfsync}"
+        ))
+    }
     pub fn open(
         files: &'a dyn CacheFiles,
         id: CacheIdentity,

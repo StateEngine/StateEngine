@@ -196,6 +196,10 @@ pub(crate) fn run_child(
         &SqlProfile::contained_cold(),
         deadline,
     )?;
+    notify(protocol::Reply::Timing {
+        job: request.job,
+        totals: format!("settings {}", db.diagnostic_pragmas()?),
+    })?;
     let mut parser = SemanticParser::contained_cold(scope)?;
     parser.set_resource_guard(parser_memory_guard);
     let mut completed = 0u64;
@@ -242,9 +246,13 @@ pub(crate) fn run_child(
         })?;
         completed += 1;
         if timing_reported.elapsed() >= Duration::from_secs(10) {
+            let settings = db.diagnostic_pragmas()?;
             notify(protocol::Reply::Timing {
                 job: request.job,
-                totals: timing::totals(timing_started.elapsed().as_millis(), completed),
+                totals: format!(
+                    "{} {settings}",
+                    timing::totals(timing_started.elapsed().as_millis(), completed)
+                ),
             })?;
             timing_reported = Instant::now();
         }
@@ -318,9 +326,13 @@ pub(crate) fn run_child(
         se_proc::atlas_worker::release_allocator_pages();
         completed += 1;
         if timing_reported.elapsed() >= Duration::from_secs(10) {
+            let settings = db.diagnostic_pragmas()?;
             notify(protocol::Reply::Timing {
                 job: request.job,
-                totals: timing::totals(timing_started.elapsed().as_millis(), completed),
+                totals: format!(
+                    "{} {settings}",
+                    timing::totals(timing_started.elapsed().as_millis(), completed)
+                ),
             })?;
             timing_reported = Instant::now();
         }
