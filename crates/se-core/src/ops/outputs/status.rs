@@ -106,6 +106,10 @@ pub struct ProjectSummary {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct StatusOutput {
+    /// In-process intent retained across the host's planning boundary.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub repository_request: Option<crate::ops::ProjectStatus>,
     pub scope: String,
     pub generated_at: String,
     pub version: String,

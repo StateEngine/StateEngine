@@ -10,5 +10,8 @@ publish.workspace = true
 git2 = { version = "=0.21.0", default-features = false, features = ["vendored-libgit2"] }
 se-proc = { path = "../se-proc" }
 
+[target.'cfg(windows)'.dependencies]
+sha2.workspace = true
+
 [lints]
 workspace = true

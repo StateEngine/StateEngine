@@ -34,6 +34,7 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
 }
 
 /// Status can reuse an exact history count from its protected data home.
+#[cfg(not(windows))]
 pub fn observe_cached(
     root: &Path,
     files: &dyn se_store::StateFiles,
@@ -43,19 +44,36 @@ pub fn observe_cached(
         root,
         Instant::now() + STATUS_OBSERVATION_DEADLINE,
         Some((files, home)),
+        None,
+    )
+}
+
+#[cfg(windows)]
+pub fn observe_cached_watched(
+    root: &Path,
+    files: &dyn se_store::StateFiles,
+    home: &Path,
+    watched: Option<&GitView>,
+) -> Result<Option<GitView>> {
+    observe_using(
+        root,
+        Instant::now() + STATUS_OBSERVATION_DEADLINE,
+        Some((files, home)),
+        watched,
     )
 }
 
 /// The observation with its one deadline supplied, so a test can drive the
 /// bounded paths without waiting the production bound out.
 pub(crate) fn observe_within(root: &Path, deadline: Instant) -> Result<Option<GitView>> {
-    observe_using(root, deadline, None)
+    observe_using(root, deadline, None, None)
 }
 
 fn observe_using(
     root: &Path,
     deadline: Instant,
     cache: Option<(&dyn se_store::StateFiles, &Path)>,
+    watched: Option<&GitView>,
 ) -> Result<Option<GitView>> {
     if !root.is_dir() {
         return Ok(None);
@@ -83,10 +101,36 @@ fn observe_using(
     };
     // Header and dirtiness come from the fresh native observer, or one bounded
     // `status --porcelain=v2 --branch` fallback. History counting is separate.
+    #[cfg(windows)]
+    let watched = watched.filter(|view| {
+        view.uncommitted.is_some()
+            && view
+                .observation
+                .as_ref()
+                .is_some_and(|value| value.basis == "watched")
+            && view.watch_ticket.as_ref().is_some_and(|expected| {
+                library::watch_ticket(root).is_ok_and(|actual| &actual == expected)
+            })
+    });
+    #[cfg(not(windows))]
+    let watched: Option<&GitView> = {
+        let _ = watched;
+        None
+    };
     let StatusRead::Known {
         header,
         dirty: observed_dirty,
-    } = status_within(root, deadline)?
+    } = (if let Some(view) = watched {
+        StatusRead::Known {
+            header: StatusHeader {
+                head: view.head.clone(),
+                branch: view.branch.clone(),
+            },
+            dirty: view.uncommitted,
+        }
+    } else {
+        status_within(root, deadline)?
+    })
     else {
         // Git metadata is present but this machine has no Git binary: the
         // state is absent to this machine, not unreadable.
@@ -130,6 +174,8 @@ fn observe_using(
         branch: header.branch,
         commits,
         uncommitted,
+        observation: watched.and_then(|view| view.observation.clone()),
+        watch_ticket: None,
     }))
 }
 

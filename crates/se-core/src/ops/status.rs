@@ -44,6 +44,7 @@ pub fn pending_mail(output: &mut StatusOutput) {
 
 pub fn missing(home: String, generated_at: String, checked: String) -> StatusOutput {
     StatusOutput {
+        repository_request: None,
         scope: "home".into(),
         generated_at,
         version: env!("CARGO_PKG_VERSION").into(),
