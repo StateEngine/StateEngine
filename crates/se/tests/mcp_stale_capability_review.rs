@@ -110,7 +110,12 @@ impl Door {
     }
 }
 
-const LIFE_US: i64 = 25_000_000;
+/// The synthetic credential's lifetime. Host and door startup plus the
+/// warm-up calls can take ~8 s pinned to one contended core (measured with
+/// two competing busy loops), so this keeps the expiry reachable in ~15 s
+/// with a ~1.8x margin on slow starts; do not shorten it below the warm-up
+/// window or the setup calls race their own expiry.
+const LIFE_US: i64 = 15_000_000;
 const WRONG_AGENT: &str = "ag_00000000-0000-0000-0000-000000000000";
 
 /// One synthetic active session credential for agent `b`, expiring `life_us` from now.
