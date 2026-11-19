@@ -245,6 +245,17 @@ pub fn observe(fixture: &Fixture) -> Observed<Value> {
     let read_after = native::load()?;
     let private_commit_after_queries = native::commit()?;
     let (sqlite_after_queries, sqlite_high_water) = sqlite_heap(false)?;
+    let pin = reader
+        .pin_database(&seed.identity.epoch)?
+        .ok_or("database absent for identity timing")?;
+    let mut identity_validation = Vec::with_capacity(READ_SAMPLES);
+    for repetition in 0..(WARMUP + READ_SAMPLES) {
+        let ((), elapsed) = timed(|| Ok(reader.validate_database(&pin)?))?;
+        if repetition >= WARMUP {
+            identity_validation.push(elapsed);
+        }
+    }
+    drop(pin);
     drop(current);
     let private_commit_after_close = native::commit()?;
     let sqlite_after_close = sqlite_heap(false)?.0;
@@ -262,6 +273,7 @@ pub fn observe(fixture: &Fixture) -> Observed<Value> {
             "load": [open_before, open_after],
         },
         "warm": {
+            "database_identity_validation_ns": identity_validation,
             "sqlite_general_heap_bytes": {
                 "scope": "process-wide SQLite general allocator; fixture has one warm reader; excludes non-SQLite memory",
                 "before_open": sqlite_before_open,
