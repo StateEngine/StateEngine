@@ -99,6 +99,34 @@ try:
                   counter_error=counter_error,
                   accounting='native process context switches; proxy for wakeups, not a direct wakeup count',
                   observer='Linux status calls bracket the measurement; their host work is included')
+    if sys.platform == 'win32':
+        # An independent second window records context-switch events even when
+        # short-lived threads make the process aggregate go backwards.
+        kits = Path(os.environ.get('ProgramFiles(x86)', ''))
+        xperf = kits / 'Windows Kits/10/Windows Performance Toolkit/xperf.exe'
+        trace = root / 'switches.etl'
+        if not xperf.is_file():
+            result['trace_status'] = 'unavailable: Windows Performance Toolkit missing'
+        else:
+            start_trace = subprocess.run([str(xperf), '-on', 'PROC_THREAD+CSWITCH'],
+                                         capture_output=True, text=True, timeout=30)
+            if start_trace.returncode != 0:
+                result['trace_status'] = 'unavailable: ' + start_trace.stderr[-2000:]
+            else:
+                try:
+                    time.sleep(60)
+                finally:
+                    stopped = subprocess.run([str(xperf), '-d', str(trace)],
+                                             capture_output=True, text=True, timeout=60)
+                if stopped.returncode != 0:
+                    result['trace_status'] = 'unavailable: ' + stopped.stderr[-2000:]
+                else:
+                    report = subprocess.run([str(xperf), '-i', str(trace), '-a', 'cswitch', '-process'],
+                                            capture_output=True, text=True, timeout=60)
+                    result['trace_status'] = 'captured' if report.returncode == 0 else 'analysis failed'
+                    result['trace_report'] = report.stdout[-30000:]
+                    result['trace_report_truncated'] = len(report.stdout) > 30000
+                    result['trace_error'] = report.stderr[-2000:]
     print(json.dumps(result, sort_keys=True), flush=True)
 finally:
     try:
