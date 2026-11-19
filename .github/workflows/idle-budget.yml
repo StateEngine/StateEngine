@@ -1,0 +1,49 @@
+name: Idle budget nightly
+'on':
+  schedule:
+    - cron: '30 9 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: idle-budget-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  PYTHONDONTWRITEBYTECODE: '1'
+  PYTHONUTF8: '1'
+jobs:
+  idle-budget:
+    name: One-session idle budget (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Install measurement dependency
+        run: python -m pip install psutil==7.1.0
+      - name: Build release executable
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then jobs=3; else jobs=4; fi
+          cargo build --release --locked --jobs "$jobs" -p se --bin se
+      - name: Check one-session idle budget
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then bin=target/release/se.exe; else bin=target/release/se; fi
+          python crates/se/tests/judges/idle_budget.py "$bin" "$RUNNER_TEMP/idle-budget"
+      - name: Upload idle measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: idle-budget-${{ matrix.os }}
+          path: ${{ runner.temp }}/idle-budget
+          if-no-files-found: warn
