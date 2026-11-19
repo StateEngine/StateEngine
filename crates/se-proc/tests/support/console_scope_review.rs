@@ -199,10 +199,25 @@ fn windowless_console_interrupts_root_and_descendants_without_crossing_scopes() 
     let attempt = runtime.request_interrupt(token).map_err(error)?;
     assert_eq!(attempt.dispatch.map_err(error)?, StopDispatch::Requested);
     let witness = loop {
-        match runtime.witness_stop(&attempt.ticket).map_err(error)? {
+        let observed = runtime.witness_stop(&attempt.ticket).map_err(error)?;
+        match observed {
             StopObservation::Complete(witness) => break witness,
             _ if Instant::now() < deadline => std::thread::park_timeout(Duration::from_millis(15)),
-            _ => return Err("interrupt did not close the targeted scope".into()),
+            other => {
+                let marks = MEMBERS.map(|name| {
+                    (
+                        name,
+                        fs::read_to_string(target_home.0.join(format!("{name}.interrupt"))).ok(),
+                    )
+                });
+                let pids = TOOLS.map(|name| {
+                    (
+                        name,
+                        fs::read_to_string(target_home.0.join(format!("{name}.pid"))).ok(),
+                    )
+                });
+                return Err(format!("scope remained open after requested interrupt; markers={marks:?}, tools={pids:?}, witness={other:?}").into());
+            }
         }
     };
     assert_eq!(witness.scope_exit.remaining.population, Population::Empty);
