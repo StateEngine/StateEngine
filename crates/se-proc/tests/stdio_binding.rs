@@ -759,3 +759,7 @@ fn native_prepared_stream_bindings_keep_custody_through_success_and_refusal() ->
     }
     Ok(())
 }
+
+#[cfg(windows)]
+#[path = "support/console_scope_review.rs"]
+mod console_scope_review;
