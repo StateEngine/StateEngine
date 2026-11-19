@@ -20,13 +20,7 @@ impl NativeAtlasQualification {
         Ok(self)
     }
     #[cfg(all(windows, target_arch = "x86_64"))]
-    pub(super) fn with_native_sql(mut self) -> Result<Self> {
-        if self.sql.is_none() {
-            if self.parsers.is_empty() {
-                return Self::measured_windows_components();
-            }
-            self.sql = Some(SqlProfile::from_qualified_joined(643_072)?);
-        }
+    pub(super) fn with_native_sql(self) -> Result<Self> {
         Ok(self)
     }
     #[cfg(not(any(
