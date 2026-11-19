@@ -394,6 +394,10 @@ fn registered_native_service_rebinds_and_releases_the_seat() -> Check {
                     .env("SE_REBIND_PROFILE", &profile).spawn()?);
                 let state_path = profile.join("fixture-state.json");
                 wait_json(&state_path, "rebound").await?;
+                let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+                for old_hash in [[11; 32], [12; 32]] {
+                    assert!(matches!(reader.credential(old_hash)?, se_types::Read::Absent { .. }));
+                }
                 let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(profile.join("fixture-replacement.json"))?)?;
                 let endpoint = saved["endpoint"].as_str().ok_or("replacement endpoint absent")?;
                 {
