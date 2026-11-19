@@ -56,13 +56,6 @@ impl WorkerChannel {
         {
             return Err(invalid("Atlas parent birth/image differs"));
         }
-        // Background mode lowers CPU and I/O priority for the entire cold process.
-        // SAFETY: current-process pseudo handle and documented mode constant.
-        if unsafe { SetPriorityClass(current, PROCESS_MODE_BACKGROUND_BEGIN) } == 0 {
-            return Err(last(
-                "SetPriorityClass(Atlas PROCESS_MODE_BACKGROUND_BEGIN)",
-            ));
-        }
         // SAFETY: POD job policy output; membership is read back before source access.
         let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
         // SAFETY: null job selects this process's assigned job, exact initialized output.

@@ -90,7 +90,10 @@ pub(super) fn start(
             ptr::null(),
             ptr::null(),
             1,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+            EXTENDED_STARTUPINFO_PRESENT
+                | CREATE_NO_WINDOW
+                | CREATE_UNICODE_ENVIRONMENT
+                | BELOW_NORMAL_PRIORITY_CLASS,
             environment.as_ptr().cast(),
             directory.as_ptr(),
             &startup.StartupInfo,
