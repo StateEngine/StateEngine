@@ -137,6 +137,66 @@ fn warm_meta(connection: &mut CacheConnection<'_>) -> Observed<((i64, String, St
     })
 }
 
+// Fresh child: the source and cache adapter are ready, but SQLite has not yet
+// opened a connection in this process. The profile is a behavior-only input.
+pub fn observe_joined(home: &std::path::Path, source: &Source) -> Observed<Value> {
+    let scope = &source.scope;
+    let cache = NativeAtlasCache::open(home, scope.clone())?.ok_or("cache absent")?;
+    let profile = SqlProfile::from_qualified_overhead(1)?;
+    let peak_before = native::memory()?;
+    let before = native::commit()?;
+    let mut writer = pointer::open_current(
+        &cache,
+        scope,
+        ConnectionRole::HostWriter,
+        &profile,
+        deadline(),
+    )?
+    .ok_or("writer absent")?;
+    let after_writer = native::commit()?;
+    let mut reader = pointer::open_current(
+        &cache,
+        scope,
+        ConnectionRole::HostReader,
+        &profile,
+        deadline(),
+    )?
+    .ok_or("reader absent")?;
+    let after_open = native::commit()?;
+    for _ in 0..25 {
+        let (writer_path, _) = warm_query(&mut writer.connection)?;
+        let (reader_path, _) = warm_query(&mut reader.connection)?;
+        assert_eq!(writer_path, PATH);
+        assert_eq!(reader_path, PATH);
+        let _ = warm_meta(&mut writer.connection)?;
+        let _ = warm_meta(&mut reader.connection)?;
+    }
+    let after_queries = native::commit()?;
+    let peak_after = native::memory()?;
+    let sqlite = sqlite_heap(false)?;
+    drop(reader);
+    drop(writer);
+    let after_close = native::commit()?;
+    let delta = |end: &Value| -> Option<i64> {
+        let start = i64::try_from(before.as_u64()?).ok()?;
+        Some(i64::try_from(end.as_u64()?).ok()? - start)
+    };
+    let peak_delta = delta(&peak_after["peak_commit"]);
+    Ok(json!({
+        "sql_reservation_bytes": SQL_QUERY_BYTES,
+        "process_private_commit_bytes": {
+            "before_open": before, "after_writer": after_writer, "after_both_open": after_open,
+            "after_queries": after_queries, "after_close": after_close,
+        },
+        "process_peak_before": peak_before, "process_peak_after": peak_after,
+        "commit_growth_after_queries_bytes": delta(&after_queries),
+        "peak_commit_above_baseline_bytes": peak_delta,
+        "observed_peak_within_reservation": peak_delta.map(|value| value <= i64::from(SQL_QUERY_BYTES)),
+        "sqlite_general_heap_bytes": { "current": sqlite.0, "high_water": sqlite.1 },
+        "scope": "fresh child, one Atlas host writer and one host reader, warm path and metadata queries",
+    }))
+}
+
 pub fn observe(fixture: &Fixture) -> Observed<Value> {
     let scope = &fixture.source.scope;
     let cache = NativeAtlasCache::create(&fixture.home, scope.clone())?;

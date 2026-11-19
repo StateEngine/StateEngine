@@ -87,6 +87,32 @@ fn output(section: &str, report: &Value) -> Observed<()> {
 
 #[test]
 fn atlas_components_native() -> Observed<()> {
+    if let Some(home) = std::env::var_os("ATLAS_SQL_JOINED_HOME") {
+        se_proc::initialize_file_creation_owner()?;
+        let home = PathBuf::from(home);
+        let source_path =
+            PathBuf::from(std::env::var_os("ATLAS_SQL_JOINED_SOURCE").ok_or("source absent")?);
+        let project = se_types::ProjectId::from_parts(1, [1; 10])?;
+        let root = RootId::from_parts(1, [2; 10])?;
+        let source = NativeAtlasSource::open(
+            RootRegistration {
+                cache: CacheLocation {
+                    directory: home.join(project.as_str()).join(root.as_str()),
+                },
+                project,
+                root,
+                canonical_source_root: source_path,
+                git_metadata: None,
+            },
+            if cfg!(windows) {
+                CaseMode::InsensitivePreserving
+            } else {
+                CaseMode::Sensitive
+            },
+        )?;
+        println!("ATLAS_SQL_JOINED {}", sql::observe_joined(&home, &source)?);
+        return Ok(());
+    }
     if let Ok(case) = std::env::var("ATLAS_COMPONENT_CASE") {
         println!("ATLAS_CASE {}", parser::observe(&case)?);
         return Ok(());
@@ -105,6 +131,32 @@ fn atlas_components_native() -> Observed<()> {
     let fixture = Fixture::new()?;
     output("status", &sql::status(&fixture)?)?;
     output("sql", &sql::observe(&fixture)?)?;
+    let mut samples = Vec::new();
+    for _ in 0..5 {
+        let child = std::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", "atlas_components_native", "--nocapture"])
+            .env("ATLAS_SQL_JOINED_HOME", &fixture.home)
+            .env(
+                "ATLAS_SQL_JOINED_SOURCE",
+                &fixture.source.scope.registration.canonical_source_root,
+            )
+            .output()?;
+        if !child.status.success() {
+            return Err(format!(
+                "joined SQL child failed: {}: {}",
+                child.status,
+                String::from_utf8_lossy(&child.stderr)
+            )
+            .into());
+        }
+        let stdout = String::from_utf8(child.stdout)?;
+        let line = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("ATLAS_SQL_JOINED "))
+            .ok_or("joined SQL child produced no measurement")?;
+        samples.push(serde_json::from_str::<Value>(line)?);
+    }
+    output("sql-joined", &json!({"samples": samples}))?;
     fixture.directory.finish(Ok::<(), Box<dyn Error>>(()))?;
-    parser::run()
+    Ok(())
 }
