@@ -47,7 +47,8 @@ fn pin_ancestors(root: &Path) -> Result<Vec<Pin>> {
             let prior = pins
                 .last()
                 .ok_or_else(|| unsafe_path("reparse parent missing", &prefix))?;
-            security::verify_trusted_reparse(&prior.file, &prior.path)?;
+            let parent = open_follow(&prior.path)?;
+            security::verify_trusted_reparse(&parent, &prior.path)?;
         }
         let before = crate::windows_native::file_id(&observed)
             .map_err(|cause| io_error("identify profile ancestor", &prefix, cause))?;
@@ -105,7 +106,8 @@ pub(super) fn verify(pins: &[Pin]) -> Result<()> {
                 .checked_sub(1)
                 .and_then(|i| pins.get(i))
                 .ok_or_else(|| unsafe_path("reparse parent missing", &pin.path))?;
-            security::verify_trusted_reparse(&prior.file, &prior.path)?;
+            let parent = open_follow(&prior.path)?;
+            security::verify_trusted_reparse(&parent, &prior.path)?;
         }
     }
     Ok(())
@@ -127,6 +129,27 @@ fn open_link(path: &Path, share: u32) -> Result<File> {
     };
     if raw == INVALID_HANDLE_VALUE || raw.is_null() {
         return Err(last("pin profile ancestor", path));
+    }
+    // SAFETY: successful creation transfers one owned handle.
+    Ok(unsafe { File::from_raw_handle(raw) })
+}
+
+fn open_follow(path: &Path) -> Result<File> {
+    let path_wide = wide(path)?;
+    // SAFETY: the terminated path and query-only directory flags live through the call.
+    let raw = unsafe {
+        CreateFileW(
+            path_wide.as_ptr(),
+            FILE_READ_ATTRIBUTES | READ_CONTROL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            ptr::null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE || raw.is_null() {
+        return Err(last("inspect resolved reparse parent", path));
     }
     // SAFETY: successful creation transfers one owned handle.
     Ok(unsafe { File::from_raw_handle(raw) })
