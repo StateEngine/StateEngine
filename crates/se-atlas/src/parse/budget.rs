@@ -91,10 +91,12 @@ impl ParserProfile {
         });
         Ok(self)
     }
+    /// Upper bound when unused shares are borrowed within the placement.
     pub fn anonymous_bytes(&self) -> u64 {
-        u64::from(self.max_source_bytes)
-            + u64::from(self.parser_reservation_bytes)
-            + u64::from(self.extraction_bytes)
+        match self.placement {
+            ParserPlacement::Incremental => u64::from(PARSER_BYTES),
+            ParserPlacement::ColdChild => 60_000_000,
+        }
     }
 }
 pub(super) struct Arena {
