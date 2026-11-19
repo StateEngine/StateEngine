@@ -90,9 +90,9 @@ mod native {
                 max_source_bytes: 65_536,
                 max_rows: 8_192,
                 max_work: Duration::from_millis(200),
-                reserved_bytes: 8_000_000,
+                reserved_bytes: PARSER_BYTES,
             },
-            total_reserved_bytes: 20_000_000,
+            total_reserved_bytes: ANONYMOUS_BYTES,
             max_files: 32,
             change_retention_days: 7,
             max_change_rows: 1_024,
@@ -121,7 +121,8 @@ mod native {
                     |e: rusqlite::Error| SeError::invalid("cold watch witness", &e.to_string());
                 let mut statement = sql.prepare(
                     "SELECT names.text FROM files JOIN symbols ON symbols.file=files.id
-                     JOIN names ON names.id=symbols.name WHERE files.path=?1 ORDER BY names.text",
+                     JOIN names ON names.id=symbols.name
+                     WHERE files.path=?1 AND symbols.kind='Function' ORDER BY names.text",
                 )?;
                 let mut rows = statement.query([path]).map_err(sql_error)?;
                 let mut found = Vec::new();
@@ -187,9 +188,8 @@ mod native {
     }
 
     fn run_case(base: &Path, case: Case, drop_event: bool) -> Check {
-        let home = base.join("atlas");
+        let home = base.to_path_buf();
         let source = base.join("source");
-        fs::create_dir(&home)?;
         fs::create_dir_all(source.join("src"))?;
         fs::create_dir(source.join("generated"))?;
         fs::write(source.join(".gitignore"), "/src/visible.js\n")?;
@@ -307,7 +307,7 @@ mod native {
                 _ => Err("native Atlas child failed".into()),
             };
         }
-        let mut args = std::env::args().skip(1);
+        let mut args = std::env::args().skip(1).filter(|arg| arg != "--nocapture");
         let case = match args.next().as_deref() {
             Some("matrix") if args.next().is_none() => return matrix(),
             Some("edit") => Case::Edit,
