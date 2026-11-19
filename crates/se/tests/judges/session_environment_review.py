@@ -160,8 +160,11 @@ class Case:
         assert record["state"] == "running" and record["process"]["pid"] == self.host.pid
 
     def launch(self):
-        result = self.run("--project", self.project, "launch", self.agent,
-                          "--detach", "--task", "Read the fixture state.")
+        return self.run("--project", self.project, "launch", self.agent,
+                        "--detach", "--task", "Read the fixture state.")
+
+    @staticmethod
+    def launched_session(result):
         if result.returncode != 0:
             raise AssertionError(f"native launch: {safe_issue(result)}")
         receipt = json.loads(result.stdout)
@@ -184,12 +187,19 @@ def judge(case, image):
     try:
         harness.prepare(case)
         harness.start()
-        session = harness.launch()
+        launch = harness.launch()
+        if case == "codex":
+            session = harness.launched_session(launch)
         values = until(lambda: try_json(root / "environment.json"), "child environment receipt absent")
         assert not values["has_credential_argv"], "provider argv contains credential bytes"
         if case != "codex":
             pipe = until(lambda: try_json(root / "acp-pipe.json"), "ACP protocol receipt absent")
-            assert pipe["session_proof_seen"], "ACP MCP descriptor lost its session proof"
+            assert pipe["session_proof_seen"] and pipe["http"], "ACP protocol HTTP proof missing"
+            if case == "acp-environment":
+                assert not values["has_credential_bytes"], "ACP child inherited credential bytes"
+            else:
+                assert pipe["ipc"], "ACP child's se discovery rejected the inherited session input"
+            session = harness.launched_session(launch)
         if case == "acp-consumer":
             (root / "call-se").touch()
             result = until(lambda: try_json(root / "consumer.json"), "ACP se-call receipt absent")

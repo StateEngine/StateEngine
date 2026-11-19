@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import uuid
 
 
@@ -52,6 +53,25 @@ def observe_environment(root):
     })
 
 
+def prepared_reply(data):
+    reply = json.loads(data)
+    return "result" in reply or reply.get("error", {}).get("message", "").startswith(
+        "session-not-active:"
+    )
+
+
+def discovery_request():
+    return json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode()
+
+
+def prepared_session(se, home):
+    result = subprocess.run(
+        [se, "--home", home, "mcp"], input=discovery_request() + b"\n",
+        capture_output=True, timeout=10,
+    )
+    return result.returncode == 0 and prepared_reply(result.stdout)
+
+
 def consumer(root, se, home):
     deadline = time.monotonic() + 60
     while not (root / "call-se").exists():
@@ -93,10 +113,20 @@ def acp(root, se, home):
                 "loadSession": True, "mcpCapabilities": {"http": True},
             }}
         elif method == "session/new":
+            (server,) = request["params"]["mcpServers"]
+            headers = {header["name"]: header["value"] for header in server["headers"]}
             proof = any(header["name"].lower() == "x-stateengine-session-proof"
                         and header.get("value", "").startswith("sec1.")
                         for server in request["params"]["mcpServers"] for header in server["headers"])
-            save(root / "acp-pipe.json", {"session_proof_seen": proof})
+            call = urllib.request.Request(
+                server["url"], data=discovery_request(),
+                headers={**headers, "Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(call, timeout=10) as response:
+                http = response.status == 200 and prepared_reply(response.read())
+            save(root / "acp-pipe.json", {
+                "session_proof_seen": proof, "http": http, "ipc": prepared_session(se, home),
+            })
             reply = {"sessionId": "fixture-conversation"}
         elif method == "session/prompt":
             reply = {"stopReason": "end_turn"}
@@ -144,7 +174,7 @@ def windows_codex(root, recovery):
         print(json.dumps({"id": request["id"], "result": reply}), flush=True)
 
 
-def codex(root):
+def codex(root, se, home):
     import codex_recovery_provider as recovery
     discover = recovery.discover
     def inspect(params):
@@ -152,6 +182,7 @@ def codex(root):
         save(root / "hooks.json", {"configured": bool(config.get("hooks"))
                                  and config.get("features.hooks") is True})
         discover(params)
+        assert prepared_session(se, home), "prepared session discovery failed"
     recovery.discover = inspect
     if os.name == "nt":
         windows_codex(root, recovery)
@@ -167,4 +198,4 @@ if __name__ == "__main__":
     if mode == "acp":
         acp(root, se, home)
     else:
-        codex(root)
+        codex(root, se, home)
