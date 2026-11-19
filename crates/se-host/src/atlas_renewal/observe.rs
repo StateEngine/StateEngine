@@ -37,6 +37,7 @@ pub(super) fn file(
         budget.max_rows = budget.max_rows.min(profile.max_rows);
         // Keep the policy's total parse reservation so the native tree can
         // borrow unused extraction space without exceeding that total.
+        budget.reserved_bytes = budget.reserved_bytes.min(profile.anonymous_bytes() as u32);
     }
     budget.max_work = budget
         .max_work
