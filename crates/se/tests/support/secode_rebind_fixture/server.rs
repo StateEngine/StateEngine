@@ -5,11 +5,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    env, fs,
+    fs,
     io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::{Arc, Mutex, atomic::AtomicBool},
     time::Duration,
 };
@@ -20,6 +19,7 @@ struct State {
     endpoint: String,
     saved: Value,
     capability: Option<Vec<u8>>,
+    http_bearer: Option<Vec<u8>>,
     restart_key: Option<String>,
     ready: bool,
     held: bool,
@@ -190,29 +190,7 @@ fn route(
         return Ok((403, json!({"error":"authorization"})));
     }
     if path == "/api/stateengine/rebind/release" {
-        if !state.ready {
-            return Ok((409, json!({"error":"NotReady"})));
-        }
-        let coords = state.saved.get("coordinates").ok_or("coordinates absent")?;
-        if body["project_id"] != coords["project_id"]
-            || body["agent_id"] != coords["agent_id"]
-            || state.restart_key.as_deref() != Some(text(body, "restart_key")?)
-            || signature(state, b"stateengine.rebind.release/v1", body, true)? != text(body, "mac")?
-        {
-            return Ok((403, json!({"error":"release proof"})));
-        }
-        let restart = decode(text(body, "restart_key")?)?;
-        let nonce = decode(text(body, "nonce")?)?;
-        let reply = hmac(
-            state.capability.as_deref().ok_or("capability absent")?,
-            &[b"stateengine.rebind.released/v1", &restart, &nonce],
-        );
-        state.saved["released"] = json!(true);
-        save(state)?;
-        return Ok((
-            200,
-            json!({"released":true,"mac":se_types::hex_lower(&reply)}),
-        ));
+        return release_route(state, body);
     }
     if path == "/api/health" {
         return Ok((200, json!({"ok":true})));
@@ -236,6 +214,11 @@ fn route(
         save(state)?;
         return Ok((200, json!({"armed":true})));
     }
+    if path == "/fixture/retry" {
+        state.saved["retry_requested"] = json!(true);
+        save(state)?;
+        return Ok((200, json!({"retrying":true})));
+    }
     if path == "/fixture/exit" {
         std::thread::spawn(|| {
             std::thread::sleep(Duration::from_millis(250));
@@ -247,19 +230,6 @@ fn route(
         state.saved["coordinates"] = body.clone();
         state.saved["restart_started"] = json!(true);
         save(state)?;
-        let executable = env::current_exe()?;
-        Command::new(executable)
-            .arg("fixture-restart")
-            .arg("--service")
-            .arg(&state.profile)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-        std::thread::spawn(|| {
-            std::thread::sleep(Duration::from_millis(250));
-            std::process::exit(0);
-        });
         return Ok((200, json!({"started":true})));
     }
     if path == "/api/session" && method == "POST" {
@@ -267,6 +237,35 @@ fn route(
         save(state)?;
         return Ok((200, json!({"data":body})));
     }
+    session_route(method, path, body, state)
+}
+fn release_route(state: &mut State, body: &Value) -> Check<(u16, Value)> {
+    if !state.ready {
+        return Ok((409, json!({"error":"NotReady"})));
+    }
+    let coords = state.saved.get("coordinates").ok_or("coordinates absent")?;
+    if body["project_id"] != coords["project_id"]
+        || body["agent_id"] != coords["agent_id"]
+        || state.restart_key.as_deref() != Some(text(body, "restart_key")?)
+        || signature(state, b"stateengine.rebind.release/v1", body, true)? != text(body, "mac")?
+    {
+        return Ok((403, json!({"error":"release proof"})));
+    }
+    let restart = decode(text(body, "restart_key")?)?;
+    let nonce = decode(text(body, "nonce")?)?;
+    let reply = hmac(
+        state.capability.as_deref().ok_or("capability absent")?,
+        &[b"stateengine.rebind.released/v1", &restart, &nonce],
+    );
+    state.saved["released"] = json!(true);
+    save(state)?;
+    Ok((
+        200,
+        json!({"released":true,"mac":se_types::hex_lower(&reply)}),
+    ))
+}
+
+fn session_route(method: &str, path: &str, body: &Value, state: &mut State) -> Check<(u16, Value)> {
     let parts: Vec<_> = path.trim_start_matches('/').split('/').collect();
     if parts.len() < 3 || parts[..2] != ["api", "session"] {
         return Ok((404, json!({"error":"unknown route"})));
@@ -361,6 +360,7 @@ fn route(
     }
     Ok((404, json!({"error":"unknown session route"})))
 }
+
 fn connection(stream: TcpStream, shared: Arc<Mutex<State>>) -> Check {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     let mut reader = BufReader::new(stream);
@@ -398,6 +398,7 @@ fn restart(shared: &Arc<Mutex<State>>) -> Check {
     {
         let mut state = shared.lock().map_err(|_| "fixture state poisoned")?;
         state.capability = Some(reply.capability.expose().to_vec());
+        state.http_bearer = Some(reply.http_bearer.expose().to_vec());
         state.restart_key = Some(reply.restart_key);
     }
     {
@@ -407,6 +408,38 @@ fn restart(shared: &Arc<Mutex<State>>) -> Check {
     }
     let _ = profile;
     Ok(())
+}
+
+fn repeat_when_requested(shared: &Arc<Mutex<State>>) -> Check {
+    loop {
+        let pending =
+            shared.lock().map_err(|_| "fixture state poisoned")?.saved["retry_requested"] == true;
+        if pending {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let (address, coords) = {
+        let state = shared.lock().map_err(|_| "fixture state poisoned")?;
+        (state.endpoint.clone(), state.saved["coordinates"].clone())
+    };
+    let home = PathBuf::from(text(&coords, "home")?);
+    let endpoint = endpoint::decode_endpoint(&fs::read(home.join("endpoint.json"))?)?;
+    let project = text(&coords, "project_id")?.parse()?;
+    let agent = text(&coords, "agent_id")?.parse()?;
+    let options = ClientOptions {
+        expected_generation: None,
+        timeout: Duration::from_secs(30),
+        cancelled: Arc::new(AtomicBool::new(false)),
+    };
+    let reply = BlockingIpcClient::rebind(&endpoint, &options, project, agent, address)?;
+    let mut state = shared.lock().map_err(|_| "fixture state poisoned")?;
+    state.saved["same_grants"] = json!(
+        state.capability.as_deref() == Some(reply.capability.expose())
+            && state.http_bearer.as_deref() == Some(reply.http_bearer.expose())
+            && state.restart_key.as_deref() == Some(reply.restart_key.as_str())
+    );
+    save(&state)
 }
 pub fn serve(profile: PathBuf, is_restart: bool) -> Check {
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -421,6 +454,7 @@ pub fn serve(profile: PathBuf, is_restart: bool) -> Check {
         endpoint: endpoint.clone(),
         saved,
         capability: None,
+        http_bearer: None,
         restart_key: None,
         ready: !is_restart,
         held: false,
@@ -456,6 +490,12 @@ pub fn serve(profile: PathBuf, is_restart: bool) -> Check {
         std::thread::spawn(move || {
             if let Err(error) = restart(&state) {
                 eprintln!("fixture rebind failed: {error}");
+            }
+        });
+        let state = shared.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = repeat_when_requested(&state) {
+                eprintln!("fixture repeat failed: {error}");
             }
         });
     }

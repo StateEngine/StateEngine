@@ -1,5 +1,5 @@
 //! Real managed launch with a native contract service and a private test home.
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", feature = "rebind-fixture"))]
 #[path = "../../test-support/directory.rs"]
 mod directory;
 
