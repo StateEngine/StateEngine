@@ -325,9 +325,10 @@ pub(crate) fn run_child(
         path: None,
         phase: protocol::Phase::Finalize,
     })?;
+    db.prepare_cold_publication()?;
     let summary = finish::finish(&mut db, coverage, deadline)?;
-    // Closing the last writer checkpoints even a sub-threshold WAL. Exact
-    // parent reopen/integrity validation happens only after process reap.
+    db.finish_cold_publication(deadline)?;
+    // Exact parent reopen/integrity validation happens only after process reap.
     drop(parser);
     drop(db);
     drop(cache);

@@ -255,6 +255,10 @@ impl<'a> CacheConnection<'a> {
             })?;
             db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
                 .map_err(cache_error)?;
+            if role == ConnectionRole::ColdWriter {
+                // A fresh cold epoch is private until its final durable checkpoint.
+                set_synchronous(&db, "OFF", 0)?;
+            }
             files.validate_database(&pin)?;
             Ok(db)
         })();
@@ -406,6 +410,46 @@ impl<'a> CacheConnection<'a> {
             Ok(busy == 0)
         })
     }
+    /// Restore durability before writing the final cold-epoch metadata.
+    pub fn prepare_cold_publication(&mut self) -> AtlasResult<()> {
+        if self.role != ConnectionRole::ColdWriter {
+            return Err(cache_error(
+                "cold publication requires the contained writer",
+            ));
+        }
+        self.files.validate_database(&self.pin)?;
+        set_synchronous(&self.db, "FULL", 2)
+    }
+    /// Flush the final metadata and all prior cold writes before adoption.
+    pub fn finish_cold_publication(&mut self, deadline: Instant) -> AtlasResult<()> {
+        if self.role != ConnectionRole::ColdWriter {
+            return Err(cache_error(
+                "cold publication requires the contained writer",
+            ));
+        }
+        self.files.validate_database(&self.pin)?;
+        let synchronous: i64 = self
+            .db
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .map_err(cache_error)?;
+        if synchronous != 2 || self.files.wal_bytes(&self.pin)? <= 32 {
+            return Err(cache_error(
+                "durable cold publication requires final WAL frames",
+            ));
+        }
+        let busy = finite(&mut self.db, deadline, |db, _| {
+            let (busy, _, _): (i64, i64, i64) = db
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .map_err(cache_error)?;
+            Ok(busy)
+        })?;
+        if busy != 0 {
+            return Err(cache_error("cold publication checkpoint remains busy"));
+        }
+        self.files.validate_database(&self.pin)
+    }
     /// Release reusable page buffers between cold files so the native parser
     /// margin does not become permanently occupied by the previous SQL work.
     /// No transaction or statement may cross this synchronous boundary.
@@ -420,6 +464,17 @@ impl<'a> CacheConnection<'a> {
             db.release_memory().map_err(cache_error)
         })
     }
+}
+fn set_synchronous(db: &Connection, setting: &str, expected: i64) -> AtlasResult<()> {
+    db.pragma_update(None, "synchronous", setting)
+        .map_err(cache_error)?;
+    let actual: i64 = db
+        .pragma_query_value(None, "synchronous", |row| row.get(0))
+        .map_err(cache_error)?;
+    if actual != expected {
+        return Err(cache_error("SQLite synchronous setting readback differs"));
+    }
+    Ok(())
 }
 fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResult<Connection> {
     if crate::clock::now() >= deadline {
