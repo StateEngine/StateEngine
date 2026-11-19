@@ -170,6 +170,12 @@ fn oid(text: &str) -> Result<GitObjectId> {
     }
 }
 fn target(m: &ArgMatches) -> Result<AtlasTarget> {
+    if text(m, "kind").is_some() && text(m, "target").is_none() {
+        return Err(SeError::invalid(
+            "Atlas --kind without a symbol name",
+            "a symbol name to narrow; a position lookup takes no --kind",
+        ));
+    }
     if let Some(line) = text(m, "line") {
         let line: u32 = line
             .parse()
@@ -376,6 +382,16 @@ mod tests {
             "kind and line must compose on the named target: {target:?}"
         );
         Ok(())
+    }
+    #[test]
+    fn a_kind_without_a_name_refuses() {
+        assert!(
+            matches!(
+                target_from(&["refs", "--path", "foo.rs", "--line", "1", "--kind", "Struct"]),
+                Err(refused) if refused.to_string().contains("symbol name")
+            ),
+            "--kind beside a bare position must refuse"
+        );
     }
     #[test]
     fn a_nonnumeric_column_refuses_on_the_position_lookup() {
