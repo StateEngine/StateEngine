@@ -25,6 +25,8 @@ mod counts;
 mod coverage_scan;
 #[path = "atlas_ingest_dev/exclusion.rs"]
 mod exclusion;
+#[path = "atlas_ingest_dev/selector.rs"]
+mod selector;
 type Check = Result<(), Box<dyn Error>>;
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)

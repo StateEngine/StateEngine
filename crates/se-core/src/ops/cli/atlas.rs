@@ -27,6 +27,30 @@ fn targeted(c: Command) -> Command {
     c.arg(positional("target", 1, false))
         .arg(value("path"))
         .arg(value("container"))
+        .arg(
+            value("kind")
+                .help("Symbol kind, e.g. Struct or Namespace")
+                .value_parser([
+                    "Module",
+                    "Namespace",
+                    "Class",
+                    "Interface",
+                    "Trait",
+                    "Struct",
+                    "Enum",
+                    "TypeAlias",
+                    "Function",
+                    "Method",
+                    "Constant",
+                    "Static",
+                    "Variable",
+                    "Parameter",
+                    "Field",
+                    "EnumVariant",
+                    "Macro",
+                ])
+                .conflicts_with_all(["file", "record", "commit", "symbol_id"]),
+        )
         .arg(value("line").requires("path"))
         .arg(value("column").requires("line").default_value("0"))
         .arg(toggle("file").conflicts_with_all(["record", "commit", "symbol_id", "line"]))
@@ -146,13 +170,37 @@ fn oid(text: &str) -> Result<GitObjectId> {
     }
 }
 fn target(m: &ArgMatches) -> Result<AtlasTarget> {
+    if text(m, "kind").is_some() && text(m, "target").is_none() {
+        return Err(SeError::invalid(
+            "Atlas --kind without a symbol name",
+            "a symbol name to narrow; a position lookup takes no --kind",
+        ));
+    }
     if let Some(line) = text(m, "line") {
+        let line: u32 = line
+            .parse()
+            .map_err(|_| SeError::invalid("line", "a positive line number"))?;
+        if let Some(name) = text(m, "target") {
+            if m.value_source("column") == Some(clap::parser::ValueSource::CommandLine) {
+                return Err(SeError::invalid(
+                    "an Atlas name with a column",
+                    "a name with only a line, or a position lookup: --path FILE --line N --column C",
+                ));
+            }
+            // A name plus a line keeps the symbol name and narrows by the
+            // definition's start line, so an indented declaration resolves.
+            return Ok(AtlasTarget::Symbol(SymbolSelector::Name {
+                name: QueryText::new(name)?,
+                path: Some(RelativePath::new(required(m, "path")?)?),
+                container: text(m, "container").map(QueryText::new).transpose()?,
+                kind: text(m, "kind").map(|s| parse("kind", &s)).transpose()?,
+                line: Some(line),
+            }));
+        }
         return Ok(AtlasTarget::Symbol(SymbolSelector::At {
             path: RelativePath::new(required(m, "path")?)?,
             position: Position {
-                line: line
-                    .parse()
-                    .map_err(|_| SeError::invalid("line", "a positive line number"))?,
+                line,
                 byte_column: required(m, "column")?
                     .parse()
                     .map_err(|_| SeError::invalid("column", "a zero-based byte column"))?,
@@ -185,6 +233,8 @@ fn target(m: &ArgMatches) -> Result<AtlasTarget> {
         name: QueryText::new(value)?,
         path: text(m, "path").map(RelativePath::new).transpose()?,
         container: text(m, "container").map(QueryText::new).transpose()?,
+        kind: text(m, "kind").map(|s| parse("kind", &s)).transpose()?,
+        line: None,
     }))
 }
 pub(super) fn decode(name: &str, m: &ArgMatches, json: bool) -> Result<AnyOp> {
@@ -260,4 +310,127 @@ pub(super) fn decode(name: &str, m: &ArgMatches, json: bool) -> Result<AnyOp> {
     };
     op.validate()?;
     Ok(op)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn target_from(args: &[&str]) -> std::result::Result<AtlasTarget, Box<dyn std::error::Error>> {
+        let command = command("atlas.refs", Command::new("refs"));
+        let matches = command
+            .try_get_matches_from(args)
+            .map_err(|err| Box::new(err) as Box<dyn std::error::Error>)?;
+        Ok(target(&matches)?)
+    }
+    #[test]
+    fn a_named_target_with_a_line_keeps_the_name()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let target = target_from(&["refs", "Foo", "--path", "foo.rs", "--line", "1"])?;
+        assert!(
+            matches!(
+                target,
+                AtlasTarget::Symbol(SymbolSelector::Name {
+                    line: Some(1),
+                    path: Some(_),
+                    ..
+                })
+            ),
+            "the line remedy must keep the symbol name: {target:?}"
+        );
+        Ok(())
+    }
+    #[test]
+    fn a_line_without_a_name_keeps_the_positional_lookup()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let target = target_from(&["refs", "--path", "foo.rs", "--line", "1"])?;
+        assert!(
+            matches!(target, AtlasTarget::Symbol(SymbolSelector::At { .. })),
+            "a bare position must stay a position lookup: {target:?}"
+        );
+        Ok(())
+    }
+    #[test]
+    fn an_explicit_column_beside_a_name_refuses() {
+        assert!(
+            matches!(
+                target_from(&[
+                    "refs", "Foo", "--path", "foo.rs", "--line", "1", "--column", "5"
+                ]),
+                Err(refused)
+                    if refused
+                        .to_string()
+                        .contains("position lookup: --path FILE --line N --column C")
+            ),
+            "the refusal must point to the position selector"
+        );
+    }
+    #[test]
+    fn kind_and_line_narrow_the_named_target_together()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let target = target_from(&[
+            "refs", "Foo", "--path", "foo.rs", "--kind", "Struct", "--line", "1",
+        ])?;
+        assert!(
+            matches!(
+                target,
+                AtlasTarget::Symbol(SymbolSelector::Name {
+                    kind: Some(SymbolKind::Struct),
+                    line: Some(1),
+                    ..
+                })
+            ),
+            "kind and line must compose on the named target: {target:?}"
+        );
+        Ok(())
+    }
+    #[test]
+    fn a_kind_without_a_name_refuses() {
+        assert!(
+            matches!(
+                target_from(&["refs", "--path", "foo.rs", "--line", "1", "--kind", "Struct"]),
+                Err(refused) if refused.to_string().contains("symbol name")
+            ),
+            "--kind beside a bare position must refuse"
+        );
+    }
+    #[test]
+    fn a_nonnumeric_column_refuses_on_the_position_lookup() {
+        assert!(
+            target_from(&[
+                "refs", "--path", "foo.rs", "--line", "1", "--column", "wide"
+            ])
+            .is_err(),
+            "a nonnumeric column must refuse on the position lookup"
+        );
+    }
+    #[test]
+    fn the_default_column_stays_off_the_query()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let target = target_from(&["refs", "Foo", "--path", "foo.rs", "--line", "1"])?;
+        assert!(
+            matches!(
+                target,
+                AtlasTarget::Symbol(SymbolSelector::Name { line: Some(1), .. })
+            ),
+            "the default column must not change the line filter: {target:?}"
+        );
+        Ok(())
+    }
+    #[test]
+    fn a_named_target_without_a_line_stays_plain()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let target = target_from(&["refs", "Foo", "--path", "foo.rs"])?;
+        assert!(
+            matches!(
+                target,
+                AtlasTarget::Symbol(SymbolSelector::Name {
+                    line: None,
+                    path: Some(_),
+                    ..
+                })
+            ),
+            "no line means no line filter: {target:?}"
+        );
+        Ok(())
+    }
 }
