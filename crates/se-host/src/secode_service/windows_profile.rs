@@ -7,13 +7,17 @@ impl LaunchCoordinator {
         service: &mut Service,
         deadline: &Deadline,
     ) -> Result<()> {
+        let path = service.journal.profile.to_local()?;
         if service.journal.profile_identity.is_none() && service.journal.service.is_some() {
             return Err(error(
                 "SE Code private profile",
-                "the original service has no retained profile identity; preserve the profile and recover its original custody before starting another service",
+                format!(
+                    "{}: the original service has no retained profile identity; preserve the profile and recover its original custody before starting another service",
+                    path.display()
+                ),
             ));
         }
-        let path = service.journal.profile.to_local()?;
+        let display_path = path.clone();
         let retained = service.profile_guard.clone();
         let (guard, identity) = self
             .store
@@ -23,12 +27,12 @@ impl LaunchCoordinator {
                     Some(guard) => guard,
                     None => Arc::new(
                         se_proc::NativeProfileFiles::open(&path)
-                            .map_err(|cause| error("SE Code private profile", cause))?,
+                            .map_err(|cause| error("SE Code private profile", format!("{cause}; restore current-user ownership and a protected current-user-only DACL on the profile, then retry")))?,
                     ),
                 };
                 let identity = guard
                     .identity()
-                    .map_err(|cause| error("SE Code private profile identity", cause))?;
+                    .map_err(|cause| error("SE Code private profile identity", format!("{cause}; restore the original profile and its protected permissions, then retry")))?;
                 Ok((guard, identity))
             })
             .await?;
@@ -39,7 +43,10 @@ impl LaunchCoordinator {
         {
             return Err(error(
                 "SE Code private profile identity",
-                "the profile directory differs from the original retained directory; preserve both locations and restore the original profile before retrying",
+                format!(
+                    "{}: the profile directory differs from the original retained directory; preserve both locations and restore the original profile before retrying",
+                    display_path.display()
+                ),
             ));
         }
         service.profile_guard = Some(guard);

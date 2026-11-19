@@ -94,25 +94,32 @@ async fn lock_service<'a>(
 
 impl Service {
     fn checked_profile(&self) -> Result<PathBuf> {
+        let profile = self.journal.profile.to_local()?;
         #[cfg(windows)]
         if let Some(expected) = self.journal.profile_identity {
             let guard = self.profile_guard.as_ref().ok_or_else(|| {
                 error(
                     "SE Code private profile",
-                    "the original profile guard is unavailable",
+                    format!("{}: the original profile guard is unavailable; restore the original profile and restart the host to recover its custody", profile.display()),
                 )
             })?;
             let actual = guard
                 .identity()
-                .map_err(|cause| error("SE Code private profile", cause))?;
+                .map_err(|cause| error("SE Code private profile", format!("{cause}; restore the original profile and its protected permissions, then retry")))?;
             if actual != expected {
                 return Err(error(
                     "SE Code private profile",
-                    "the original profile identity changed",
+                    format!(
+                        "{}: the original profile identity changed; restore the original profile before retrying",
+                        profile.display()
+                    ),
                 ));
             }
+            return guard
+                .resolved_root()
+                .map_err(|cause| error("SE Code private profile", cause));
         }
-        self.journal.profile.to_local()
+        Ok(profile)
     }
     fn current(&self) -> Result<crate::harness::secode_process::QualifiedControl> {
         self.checked_profile()?;

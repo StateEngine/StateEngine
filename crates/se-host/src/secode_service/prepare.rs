@@ -143,6 +143,30 @@ impl LaunchCoordinator {
                 .await?;
         }
         service.persist(self, deadline).await?;
+        #[cfg(windows)]
+        let (profile, _profile_parent) = if service.journal.profile_identity.is_none() {
+            let requested = service.journal.profile.to_local()?;
+            let fresh = service.journal.bootstrap.is_none();
+            self.store.pool.run_owned(deadline, move || {
+                let parent = requested.parent().ok_or_else(|| error("SE Code profile parent", "profile parent is absent"))?;
+                let base = parent.parent().ok_or_else(|| error("SE Code profile parent", "profile ancestor is absent"))?;
+                se_proc::NativeStateFiles::create(base).map_err(|cause| error("SE Code profile parent", cause))?;
+                let guard = se_proc::NativeProfileFiles::create(parent).map_err(|cause| error("SE Code profile parent", format!("{cause}; restore current-user ownership and a protected current-user-only DACL, then retry")))?;
+                let name = requested.file_name().ok_or_else(|| error("SE Code profile", "profile name is absent"))?;
+                let resolved = guard.resolved_root().map_err(|cause| error("SE Code profile parent", cause))?.join(name);
+                if fresh {
+                    match std::fs::symlink_metadata(&resolved) {
+                        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => (),
+                        Err(cause) => return Err(error("SE Code profile", format!("{}: {cause}; repair access and retry", resolved.display()))),
+                        Ok(_) => return Err(error("SE Code profile", format!("{} already exists; move it aside to preserve it, then retry", resolved.display()))),
+                    }
+                }
+                Ok((resolved, Some(guard)))
+            }).await?
+        } else {
+            (service.checked_profile()?, None)
+        };
+        #[cfg(not(windows))]
         let profile = service.checked_profile()?;
         let checked_images = images.clone();
         let (resume_supported, server_sha256) = self
@@ -184,6 +208,7 @@ impl LaunchCoordinator {
                 request.cwd.to_local()?,
                 request.policy.clone(),
                 None,
+                Some(profile.clone()),
                 deadline,
             )
             .await?;
@@ -255,7 +280,32 @@ impl LaunchCoordinator {
             ));
         }
         #[cfg(windows)]
+        if let Some(parent) = &_profile_parent {
+            let resolved = parent
+                .resolved_root()
+                .map_err(|cause| error("SE Code profile parent", cause))?;
+            if profile.parent() != Some(resolved.as_path()) {
+                return Err(error(
+                    "SE Code profile parent",
+                    format!(
+                        "{} changed during initialization; restore the original protected parent and retry",
+                        profile.display()
+                    ),
+                ));
+            }
+        }
+        #[cfg(windows)]
         self.qualify_secode_profile(&mut service, deadline).await?;
+        #[cfg(windows)]
+        if service.checked_profile()? != profile {
+            return Err(error(
+                "SE Code private profile",
+                format!(
+                    "{} does not identify the initialized profile; restore the original location and retry",
+                    profile.display()
+                ),
+            ));
+        }
         self.configure_secode(&mut service, request, deadline)
             .await?;
         if service.journal.service.is_none() {
@@ -290,6 +340,7 @@ impl LaunchCoordinator {
                 arguments,
                 request.cwd.to_local()?,
                 request.policy.clone(),
+                None,
                 None,
                 deadline,
             )
