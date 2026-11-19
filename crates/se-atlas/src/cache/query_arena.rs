@@ -1,6 +1,6 @@
 //! One SQL/result arena, with bounded foreground waiting instead of a refusal
 //! when the maintenance writer is finishing its current transaction.
-use super::{timeout, timeout_phase};
+use super::{stage_timeout, timeout_phase};
 use crate::{errors::AtlasResult, errors::cache_error};
 use std::{
     sync::{Condvar, Mutex},
@@ -34,7 +34,7 @@ impl Reservation {
         }
         let expired = || {
             if !reader || budget.is_zero() {
-                timeout(0)
+                stage_timeout("query arena admission", 0)
             } else {
                 timeout_phase("query arena admission", budget, started.elapsed())
             }

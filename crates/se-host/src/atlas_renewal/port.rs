@@ -41,16 +41,28 @@ impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
 }
 
 /// Preserve native readiness and consumed event bytes until lookup succeeds.
+/// Writer admission has its own bound; the supplied deadline bounds event work
+/// after admission, so opening the cache cannot consume the event allowance.
 pub fn drive_events(
     controller: &mut crate::atlas_runtime::NativeController<NativeRenewal>,
     root: &RootId,
     deadline: Instant,
 ) -> AtlasResult<usize> {
     controller.set_watch_pending(root, true)?;
-    let hints = match controller
-        .runtime_mut()
-        .poll_events_classified(root, deadline)
-    {
+    let now = Instant::now();
+    let budget = deadline.saturating_duration_since(now);
+    if budget.is_zero() {
+        return Err(se_atlas::cache::connection::timeout_phase(
+            "event drain admission",
+            budget,
+            budget,
+        ));
+    }
+    let hints = match controller.runtime_mut().poll_events_classified(
+        root,
+        now + std::time::Duration::from_secs(5),
+        Some(budget),
+    ) {
         Ok(hints) => hints,
         Err(crate::atlas_runtime::PollEventsFailure::Admission(error)) => return Err(error),
         Err(crate::atlas_runtime::PollEventsFailure::Driver(error)) => {
@@ -72,7 +84,9 @@ pub fn drive_events(
             let driver = controller.runtime_mut().driver_mut();
             let mut retirement_error = None;
             if let Some(index) = driver.roots.iter().position(|r| &r.id == root) {
-                retirement_error = driver.retire_native(index, deadline).err();
+                retirement_error = driver
+                    .retire_native(index, Instant::now() + std::time::Duration::from_secs(5))
+                    .err();
             }
             controller.enqueue(
                 root.clone(),

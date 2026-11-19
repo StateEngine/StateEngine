@@ -66,13 +66,14 @@ impl<D: RenewalDriver> NativeRuntime<D> {
         Ok(())
     }
     pub fn poll_events(&mut self, id: &RootId, deadline: Instant) -> AtlasResult<Vec<SourceHint>> {
-        self.poll_events_classified(id, deadline)
+        self.poll_events_classified(id, deadline, None)
             .map_err(PollEventsFailure::into_error)
     }
     pub(crate) fn poll_events_classified(
         &mut self,
         id: &RootId,
         deadline: Instant,
+        event_budget: Option<std::time::Duration>,
     ) -> std::result::Result<Vec<SourceHint>, PollEventsFailure> {
         if self.active.is_some() {
             return Err(PollEventsFailure::Admission(atlas_cold::failure(
@@ -99,6 +100,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             .ok_or_else(|| {
                 PollEventsFailure::Admission(atlas_cold::failure("native root disappeared"))
             })?;
+        let deadline = event_budget.map_or(deadline, |budget| Instant::now() + budget);
         self.driver
             .poll_events(
                 &root.source,
