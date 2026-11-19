@@ -271,6 +271,7 @@ impl<'a> CacheConnection<'a> {
         let db = match initialized {
             Ok(db) => db,
             Err(original) => {
+                files.release_creation_guard();
                 return match files.discard_unpublished(&pin) {
                     Ok(()) => Err(original),
                     Err(cleanup) => Err(original.with_cause(cleanup)),
@@ -423,6 +424,7 @@ impl<'a> CacheConnection<'a> {
                 "cold publication requires the contained writer",
             ));
         }
+        self.files.finish_creation_guard();
         self.files.validate_database(&self.pin)?;
         set_synchronous(&self.db, "FULL", 2)
     }

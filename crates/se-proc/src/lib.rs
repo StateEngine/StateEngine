@@ -175,8 +175,6 @@ mod parent_image;
 #[cfg(windows)]
 pub use parent_image::parent_process_image;
 
-pub mod atlas_sql;
-
 #[cfg(windows)]
 mod parent_lifetime;
 #[cfg(windows)]

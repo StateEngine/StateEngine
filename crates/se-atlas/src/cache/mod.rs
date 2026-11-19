@@ -12,6 +12,10 @@ use std::path::PathBuf;
 /// open. SQLite's own NOFOLLOW flag also rejects a linked final database name.
 /// This trusted port is never constructed from CLI/MCP destination arguments.
 pub trait CacheFiles {
+    /// Release any private creation guard before removing a failed reservation.
+    fn release_creation_guard(&self) {}
+    /// Restore full validation before finalizing a private cold epoch.
+    fn finish_creation_guard(&self) {}
     /// Fresh-connection allocator setup before any SQL prepares. Native Atlas
     /// disables lookaside here; other adapters must include their actual SQLite
     /// defaults in their independent profile measurement. This hook supplies no
