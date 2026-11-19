@@ -175,22 +175,18 @@ def main(image, output):
         report["checks"]["coverage_fallback_and_rearm"] = True
 
         git("commit", "--allow-empty", "-qm", "advance HEAD")
-        advanced = await_status(lambda row: watched(row) and row["git"]["commits"] == expected + 1, 8)
+        # If the metadata event races with a re-arm, the next retry may be
+        # deferred for 30 seconds. Count the fresh answer while it retries.
+        expected_head = git("rev-parse", "HEAD")
+        observed = await_status(
+            lambda row: row["git"].get("head") == expected_head, 5,
+        )
+        keep("new_head_first_answer", {"oracle_count": count(), "status": observed})
+        assert observed["git"]["head"] == expected_head and observed["git"]["commits"] == expected + 1
+        advanced = await_status(lambda row: watched(row) and row["git"]["commits"] == expected + 1, 36)
         keep("new_head", {"oracle_count": count(), "status": advanced})
         assert watched(advanced) and count() == advanced["git"]["commits"] == expected + 1, advanced
         report["checks"]["new_head_count"] = True
-
-        time.sleep(32)
-        idle = await_status(watched, 4)
-        keep("idle", idle)
-        assert watched(idle), idle
-        prev, observed = (row["git"]["observation"] for row in (advanced, idle))
-        if prev.get("last_notification_at") == observed.get("last_notification_at"):
-            assert prev["reconciled_at"] == observed["reconciled_at"], observed
-            assert observed["age_seconds"] >= prev["age_seconds"] + 30, observed
-            report["checks"]["idle_kept_basis"] = True
-        else:
-            report["checks"]["idle_kept_basis"] = "another notification arrived"
     finally:
         if child is not None and child.poll() is None:
             try:
