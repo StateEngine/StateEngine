@@ -91,7 +91,9 @@ impl Service {
                         == root.registration.canonical_source_root
             })
         {
-            return Ok(live.clone());
+            let mut live = live.clone();
+            self.mark_unavailable(&mut live.summary);
+            return Ok(live);
         }
         let registration = root.registration;
         let mut summary = root.summary.unwrap_or_else(|| IndexSummary {
