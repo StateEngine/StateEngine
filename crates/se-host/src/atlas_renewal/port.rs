@@ -47,9 +47,13 @@ pub fn drive_events(
     deadline: Instant,
 ) -> AtlasResult<usize> {
     controller.set_watch_pending(root, true)?;
-    let hints = match controller.runtime_mut().poll_events(root, deadline) {
+    let hints = match controller
+        .runtime_mut()
+        .poll_events_classified(root, deadline)
+    {
         Ok(hints) => hints,
-        Err(error) => {
+        Err(crate::atlas_runtime::PollEventsFailure::Admission(error)) => return Err(error),
+        Err(crate::atlas_runtime::PollEventsFailure::Driver(error)) => {
             let watch_died = matches!(error.body.detail(), Detail::AtlasSourceUnreadable(detail)
                 if detail.path == "watch event read" || detail.path == "watch mapping lost");
             let retryable = se_atlas::controller::quantum_expired(&error)
