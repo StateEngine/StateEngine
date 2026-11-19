@@ -316,6 +316,7 @@ impl<'a> CacheConnection<'a> {
         deadline: Instant,
         work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
     ) -> AtlasResult<T> {
+        let admission_start = Instant::now();
         let _arena = if self.arena.is_none()
             && matches!(
                 self.role,
@@ -357,6 +358,12 @@ impl<'a> CacheConnection<'a> {
         } else {
             None
         };
+        if self.role == ConnectionRole::ColdWriter {
+            timing::ADMISSION_US.fetch_add(
+                admission_start.elapsed().as_micros() as u64,
+                Ordering::Relaxed,
+            );
+        }
         finite(&mut self.db, deadline, |db, budget_ms| {
             let behavior = if write {
                 rusqlite::TransactionBehavior::Immediate
@@ -365,6 +372,7 @@ impl<'a> CacheConnection<'a> {
             };
             let transaction =
                 rusqlite::Transaction::new_unchecked(db, behavior).map_err(cache_error)?;
+            let sql_start = Instant::now();
             let result = work(&SqlView {
                 db,
                 count: Cell::new(0),
@@ -372,6 +380,14 @@ impl<'a> CacheConnection<'a> {
                 readonly: !write,
                 deadline,
             });
+            if self.role == ConnectionRole::ColdWriter {
+                let counter = if write {
+                    &timing::SQL_WRITE_US
+                } else {
+                    &timing::SQL_READ_US
+                };
+                counter.fetch_add(sql_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+            }
             let changed = self.files.validate_database(&self.pin);
             let expired = crate::clock::now() >= deadline;
             let result = match (result, changed, expired) {
@@ -380,7 +396,12 @@ impl<'a> CacheConnection<'a> {
                 (Err(e), _, false) | (_, Err(e), false) => Err(e),
             };
             if result.is_ok() && write {
-                transaction.commit().map_err(cache_error)?;
+                if self.role == ConnectionRole::ColdWriter {
+                    timing::measure(&timing::COMMIT_US, || transaction.commit())
+                        .map_err(cache_error)?;
+                } else {
+                    transaction.commit().map_err(cache_error)?;
+                }
             } else {
                 transaction.rollback().map_err(cache_error)?;
             }
@@ -390,6 +411,7 @@ impl<'a> CacheConnection<'a> {
     /// Event/commit/drain driven only. External pinned snapshots keep writes
     /// suspended; no timer or forced reader expiry is introduced.
     pub fn checkpoint(&mut self, deadline: Instant) -> AtlasResult<bool> {
+        let started = Instant::now();
         if !self.role.writable() {
             return Err(cache_error("reader cannot checkpoint"));
         }
@@ -397,14 +419,19 @@ impl<'a> CacheConnection<'a> {
         if wal < 4_000_000 {
             return Ok(true);
         }
-        finite(&mut self.db, deadline, |db, _| {
+        let result = finite(&mut self.db, deadline, |db, _| {
             let (busy, _, _): (i64, i64, i64) = db
                 .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?))
                 })
                 .map_err(cache_error)?;
             Ok(busy == 0)
-        })
+        });
+        if self.role == ConnectionRole::ColdWriter {
+            timing::CHECKPOINT_US
+                .fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+        result
     }
     /// Release reusable page buffers between cold files so the native parser
     /// margin does not become permanently occupied by the previous SQL work.

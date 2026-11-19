@@ -214,6 +214,12 @@ impl ColdJob {
         {
             let reply: protocol::Reply = serde_json::from_slice(&bytes).map_err(failure)?;
             match reply {
+                protocol::Reply::Timing { job, totals } => {
+                    if job != self.request.job {
+                        return Err(self.reject("foreign cold timing report"));
+                    }
+                    eprintln!("ATLAS_PHASE_TIMING {totals}");
+                }
                 protocol::Reply::Working { job, path, phase } => {
                     if job != self.request.job {
                         return Err(self.reject("foreign cold phase report"));
@@ -366,7 +372,14 @@ impl ColdJob {
         }
         let mut candidate = if let Some(history) = self.history.take() {
             drop(candidate);
-            let (generation, unavailable) = history.seed(&cache, &self.request, self.deadline)?;
+            let started = Instant::now();
+            let result = history.seed(&cache, &self.request, self.deadline);
+            eprintln!(
+                "ATLAS_HISTORY_TIMING elapsed_ms={} success={}",
+                started.elapsed().as_millis(),
+                result.is_ok()
+            );
+            let (generation, unavailable) = result?;
             summary.generation = Some(generation);
             if let Some(diagnostic) = unavailable {
                 summary.coverage.history_unavailable = Some(diagnostic);
