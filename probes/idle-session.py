@@ -38,7 +38,7 @@ try:
     connection.sendall(b'complete\n')
     if control.readline() != b'completed\n':
         raise RuntimeError('turn completion was not witnessed')
-    status = f.ok('status')
+    status = f.ok('--project', f.project, 'status')
     pid = status['runtime']['process']['pid']
     active = [item for item in status['agents']['items'] if (item.get('session') or {}).get('state') == 'running']
     if len(active) != 1 or active[0]['id'] != f.agent:
