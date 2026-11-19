@@ -1,0 +1,23 @@
+name: PR597 Windows cold watch judge
+on:
+  push:
+    branches: [vera/pr597-native-probe]
+permissions:
+  contents: read
+jobs:
+  judge:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '4'
+      CARGO_INCREMENTAL: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Cold watch matrix
+        run: cargo test --release --locked -p se-host --features cold-watch-probe --test atlas_cold_watch_probe -- matrix --nocapture
