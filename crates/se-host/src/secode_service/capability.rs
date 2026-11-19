@@ -74,11 +74,22 @@ impl LaunchCoordinator {
                 return Ok(Some(scheduled));
             }
             service.capability_check_at = Some(next);
+            let restart_pending = service
+                .restart
+                .as_ref()
+                .is_some_and(|restart| !restart.adopted);
             let result = if service.restart.is_some() {
                 self.adopt_restart(&mut service, &bound).await
             } else {
                 self.repair_secode_capability(&mut service, &bound).await
             };
+            if result.is_ok()
+                && restart_pending
+                && let Some(job) = self.find_job(&work.meta.project.id, &work.meta.agent.id)?
+            {
+                job.mail_pending
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
             if result.is_ok()
                 && service
                     .journal

@@ -6,6 +6,7 @@ mod embedded;
 pub use embedded::{embedded_session, retire_embedded};
 pub use rebind::{RebindGrant, rebind};
 mod launch;
+#[path = "../rebind/grant.rs"]
 mod rebind;
 pub use capture::{capture_failure, capture_verified, final_capture_failure};
 pub use launch::{

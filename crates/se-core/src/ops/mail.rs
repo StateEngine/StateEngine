@@ -1,6 +1,7 @@
 //! Recipient-scoped durable notice planning. No callback or read lease crosses a commit wait.
 mod coalesce;
 mod observation;
+#[path = "../rebind/mail.rs"]
 mod restart;
 mod settlement;
 use crate::{

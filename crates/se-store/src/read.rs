@@ -15,6 +15,7 @@ mod channel;
 mod continuity;
 mod control;
 mod conversation;
+#[path = "rebind/credential_head.rs"]
 mod credential_head;
 mod cursor;
 mod grant;

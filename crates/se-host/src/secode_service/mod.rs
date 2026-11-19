@@ -10,9 +10,11 @@ mod permission;
 mod prepare;
 mod provision;
 mod readiness;
+#[path = "../rebind/service.rs"]
 mod rebind;
 mod recovery;
 mod replacement;
+#[path = "../rebind/mail.rs"]
 mod restart_mail;
 mod resume;
 mod retirement;
