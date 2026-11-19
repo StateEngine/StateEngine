@@ -84,7 +84,7 @@ impl LaunchCoordinator {
             .journal
             .previous_policy_sha256
             .map(|hash| *hash.as_bytes());
-        let profile = service.journal.profile.to_local()?;
+        let profile = service.checked_profile()?;
         self.store
             .pool
             .run_owned(deadline, move || {
@@ -146,7 +146,7 @@ impl LaunchCoordinator {
                         .server_invocation()
                 })
                 .await?;
-            let profile = service.journal.profile.to_local()?;
+            let profile = service.checked_profile()?;
             let directory = request.cwd.to_local()?;
             let observed = crate::harness::secode_process::sandbox::inspect(
                 server, &profile, &directory, deadline,
@@ -344,7 +344,7 @@ impl LaunchCoordinator {
                 "saved project/agent instruction differs",
             ));
         }
-        let config = service.journal.profile.to_local()?.join("host-policy.json");
+        let config = service.checked_profile()?.join("host-policy.json");
         control
             .put_session_capability(&session, &request.launch_credential, &config, deadline)
             .await?;

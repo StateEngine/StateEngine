@@ -184,7 +184,7 @@ impl LaunchCoordinator {
                     }
                 }
                 self.retire_secode_registration(&mut service, deadline).await?;
-                let profile = service.journal.profile.to_local()?;
+                let profile = service.checked_profile()?;
                 self.store.pool.run_owned(deadline, move || {
                     match std::fs::symlink_metadata(&profile) {
                         Err(cause) if cause.kind()==std::io::ErrorKind::NotFound => return Ok(()),

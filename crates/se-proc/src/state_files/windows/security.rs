@@ -260,11 +260,73 @@ pub(super) fn verify_system_ancestor(file: &File, path: &Path) -> Result<()> {
     let owner = descriptor.owner;
     let system = sid("S-1-5-18", path)?;
     let administrators = sid("S-1-5-32-544", path)?;
-    if !equal(owner, user.sid()) && !equal(owner, system.0) && !equal(owner, administrators.0) {
+    let installer = sid(
+        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+        path,
+    )?;
+    if !equal(owner, user.sid())
+        && !equal(owner, system.0)
+        && !equal(owner, administrators.0)
+        && !equal(owner, installer.0)
+    {
         return Err(unsafe_path(
             "reparse ancestor owner must be user or system administrator",
             path,
         ));
+    }
+    Ok(())
+}
+
+/// A reparse point and its parent must not be writable by ordinary users.
+pub(super) fn verify_trusted_reparse(file: &File, path: &Path) -> Result<()> {
+    let descriptor = security(file, path, true)?;
+    let system = sid("S-1-5-18", path)?;
+    let administrators = sid("S-1-5-32-544", path)?;
+    let installer = sid(
+        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+        path,
+    )?;
+    let trusted = |principal| {
+        equal(principal, system.0)
+            || equal(principal, administrators.0)
+            || equal(principal, installer.0)
+    };
+    let refusal = || {
+        unsafe_path(
+            "reparse path can be changed by a non-administrator; choose a protected location or ask an administrator to secure it, then retry",
+            path,
+        )
+    };
+    if !trusted(descriptor.owner) {
+        return Err(refusal());
+    }
+    let dacl = descriptor.dacl().ok_or_else(refusal)?;
+    const MUTATE: u32 = 0x10000000
+        | 0x40000000
+        | windows_sys::Win32::Storage::FileSystem::DELETE
+        | windows_sys::Win32::Storage::FileSystem::WRITE_DAC
+        | windows_sys::Win32::Storage::FileSystem::WRITE_OWNER
+        | windows_sys::Win32::Storage::FileSystem::FILE_WRITE_DATA
+        | windows_sys::Win32::Storage::FileSystem::FILE_APPEND_DATA
+        | windows_sys::Win32::Storage::FileSystem::FILE_WRITE_EA
+        | windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES
+        | windows_sys::Win32::Storage::FileSystem::FILE_DELETE_CHILD;
+    for index in 0..dacl.len() {
+        let entry = dacl
+            .ace(index)
+            .map_err(|e| io_error("read reparse path DACL", path, e))?;
+        if entry.header().AceType == ACCESS_DENIED_ACE_TYPE as u8
+            || u32::from(entry.header().AceFlags) & INHERIT_ONLY_ACE != 0
+        {
+            continue;
+        }
+        let ace = entry.allowed().ok_or_else(refusal)?;
+        let principal = (&ace.SidStart as *const u32).cast_mut().cast();
+        // SAFETY: the SID is embedded in the validated retained ACE.
+        if unsafe { IsValidSid(principal) } == 0 || (!trusted(principal) && ace.Mask & MUTATE != 0)
+        {
+            return Err(refusal());
+        }
     }
     Ok(())
 }

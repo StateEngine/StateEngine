@@ -24,7 +24,7 @@ impl LaunchCoordinator {
         authenticated: &readiness::Registration,
         deadline: &Deadline,
     ) -> Result<()> {
-        let profile = service.journal.profile.to_local()?;
+        let profile = service.checked_profile()?;
         let bytes = self
             .store
             .pool
@@ -60,7 +60,7 @@ impl LaunchCoordinator {
         service: &mut Service,
         deadline: &Deadline,
     ) -> Result<()> {
-        let profile = service.journal.profile.to_local()?;
+        let profile = service.checked_profile()?;
         let check = profile.clone();
         if self
             .store

@@ -223,7 +223,7 @@ impl LaunchCoordinator {
         {
             return self.restore_secode_capability(service, deadline).await;
         }
-        let profile = service.journal.profile.to_local()?;
+        let profile = service.checked_profile()?;
         let endpoint = if let Some(endpoint) = &service.journal.endpoint {
             endpoint.clone()
         } else {
@@ -406,6 +406,20 @@ impl LaunchCoordinator {
             service: identity,
             live: service.live.clone(),
             profile: service.journal.profile.clone(),
+            #[cfg(windows)]
+            profile_guard: service.profile_guard.clone().ok_or_else(|| {
+                error(
+                    "SE Code private profile",
+                    "the original profile guard is unavailable",
+                )
+            })?,
+            #[cfg(windows)]
+            profile_identity: service.journal.profile_identity.ok_or_else(|| {
+                error(
+                    "SE Code private profile",
+                    "the original profile identity is unavailable",
+                )
+            })?,
             process: native_record::instance(
                 &record.root,
                 record.argv_sha256,
