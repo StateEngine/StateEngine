@@ -3,8 +3,7 @@ use super::*;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-const PAYLOADS: [(&str, &str); 3] = [
-    ("root.py", include_str!("console_scope_review/root.py")),
+const PAYLOADS: [(&str, &str); 2] = [
     ("tool.py", include_str!("console_scope_review/tool.py")),
     ("tool.ps1", include_str!("console_scope_review/tool.ps1")),
 ];
@@ -13,13 +12,23 @@ const MEMBERS: [&str; 3] = ["root", "powershell", "python"];
 const OUT: &[u8] = b"PROTOCOL-OUT:0\x00\xff\n";
 const ERR: &[u8] = b"PROTOCOL-ERR:0\x00\xfe\n";
 
-fn python_image() -> Check<PathBuf> {
-    let output = Command::new("python")
-        .args(["-I", "-c", "import sys; print(sys.executable)"])
+fn compile_scope_root(home: &Home) -> Check<PathBuf> {
+    let source = home.0.join("root.rs");
+    fs::write(&source, include_str!("console_scope_review/root.rs"))?;
+    let image = home.0.join("scope-root.exe");
+    let output = Command::new("rustc")
+        .args(["--edition", "2024"])
+        .arg(source)
+        .arg("-o")
+        .arg(&image)
         .stdin(Stdio::null())
         .output()?;
-    assert!(output.status.success(), "native Python unavailable");
-    Ok(Path::new(std::str::from_utf8(&output.stdout)?.trim()).canonicalize()?)
+    assert!(
+        output.status.success(),
+        "fixture root compilation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(image)
 }
 
 fn start<'a>(
@@ -45,12 +54,13 @@ fn start<'a>(
         "APPDATA",
         "PROGRAMFILES",
     ];
-    let entries = std::env::vars_os()
+    let mut entries: Vec<_> = std::env::vars_os()
         .filter(|(key, _)| {
             key.to_str()
                 .is_some_and(|key| keys.iter().any(|name| name.eq_ignore_ascii_case(key)))
         })
         .collect();
+    entries.push(("BINDING_SCOPE_HOME".into(), home.0.as_os_str().to_owned()));
     let generation = reservation.generation;
     let lifecycle = reservation.lifecycle.clone();
     let prepared = runtime
@@ -61,7 +71,7 @@ fn start<'a>(
                 lifecycle,
                 generation,
                 executable: executable.to_path_buf(),
-                arguments: ["-I", "-B", "root.py"].map(Into::into).into(),
+                arguments: Vec::new(),
                 cwd: home.0.clone(),
                 environment: Environment { entries },
                 stdio: empty(),
@@ -124,9 +134,10 @@ fn ready(home: &Home, deadline: Instant) -> Check {
     {
         if Instant::now() >= deadline {
             return Err(format!(
-                "tool readiness missing; redirected stdout={:?}; stderr={:?}",
-                fs::read(home.0.join("output-console")),
-                fs::read(home.0.join("error-console"))
+                "tool readiness missing; root stderr={:?}; PowerShell stderr={:?}; Python stderr={:?}",
+                fs::read_to_string(home.0.join("error-console")),
+                fs::read_to_string(home.0.join("powershell.stderr")),
+                fs::read_to_string(home.0.join("python.stderr"))
             )
             .into());
         }
@@ -174,7 +185,8 @@ fn windowless_console_interrupts_root_and_descendants_without_crossing_scopes() 
     };
     let target_home = Home::new()?;
     let guard_home = Home::new()?;
-    let image = python_image()?;
+    let compiler_home = Home::new()?;
+    let image = compile_scope_root(&compiler_home)?;
     let deadline = Instant::now() + Duration::from_secs(55);
     let mut target = start(&runtime, reserve(1)?, &target_home, &image, deadline)?;
     let mut guard = start(&runtime, reserve(2)?, &guard_home, &image, deadline)?;
