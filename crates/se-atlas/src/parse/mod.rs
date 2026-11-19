@@ -138,6 +138,7 @@ impl AtlasParser for SemanticParser {
         let Some(profile) = self.profiles.iter().find(|p| p.language == language) else {
             return Ok(defer(CoverageReason::ParserUnqualified));
         };
+        let budget = bounded_budget(budget, profile);
         if snapshot.bytes.len() > budget.max_source_bytes.min(profile.max_source_bytes) as usize {
             return Ok(defer(CoverageReason::SourceBytesLimit));
         }
@@ -213,6 +214,10 @@ impl AtlasParser for SemanticParser {
         result
     }
     fn release_scratch(&mut self) {}
+}
+fn bounded_budget(mut budget: ParseBudget, profile: &ParserProfile) -> ParseBudget {
+    budget.reserved_bytes = budget.reserved_bytes.min(profile.anonymous_bytes() as u32);
+    budget
 }
 fn extraction_reservation(
     profile: &ParserProfile,
