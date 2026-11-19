@@ -3,7 +3,7 @@ use super::failure;
 use se_types::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_TURN: usize = 8 * 1024 * 1024;
 
@@ -44,6 +44,7 @@ pub(super) struct Turn {
     pub tools: Vec<Value>,
     order: Vec<TurnItem>,
     statuses: BTreeMap<String, String>,
+    permission_tools: BTreeSet<String>,
     bytes: usize,
     echo: String,
     last_message: Option<(String, Option<String>)>,
@@ -65,10 +66,18 @@ impl Turn {
             tools: Vec::new(),
             order: Vec::new(),
             statuses: BTreeMap::new(),
+            permission_tools: BTreeSet::new(),
             bytes,
             echo: String::new(),
             last_message: None,
         })
+    }
+    /// A permission request names a tool call before its update arrives; remember
+    /// the id so an early tool_call_update cannot fail the connection.
+    pub(super) fn permission_tool(&mut self, id: &str) -> Result<()> {
+        self.count(id.len())?;
+        self.permission_tools.insert(id.into());
+        Ok(())
     }
     pub fn preview(&self) -> ProvisionalText {
         let total = self.messages.iter().map(|m| m.text.len()).sum::<usize>();
@@ -164,13 +173,17 @@ impl Turn {
                     if self.statuses.contains_key(id) {
                         return Err(failure("ACP tool", "duplicate tool creation"));
                     }
+                    self.permission_tools.remove(id);
                     self.statuses
                         .insert(id.into(), status.unwrap_or("pending").into());
                 } else {
+                    if !self.statuses.contains_key(id) && !self.permission_tools.remove(id) {
+                        return Err(failure("ACP tool", "update has no original tool call"));
+                    }
                     let original = self
                         .statuses
-                        .get_mut(id)
-                        .ok_or_else(|| failure("ACP tool", "update has no original tool call"))?;
+                        .entry(id.into())
+                        .or_insert_with(|| "pending".to_owned());
                     if let Some(status) = status {
                         *original = status.into();
                     }

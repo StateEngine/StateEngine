@@ -144,7 +144,17 @@ impl Fixture {
             Generation::new(1)?,
         )
         .await;
-        let session = Session::retain(connection.clone(), receiver, policy).await;
+        let session = Session::retain(
+            connection.clone(),
+            receiver,
+            policy,
+            Arc::new(
+                || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+                    Box::pin(async { false })
+                },
+            ),
+        )
+        .await;
         Ok(Self {
             io,
             connection,
@@ -214,6 +224,7 @@ impl Fixture {
                     vec![],
                     previous.map(|history| ("conversation", history)),
                     "safe",
+                    false,
                     context,
                 )
                 .await
@@ -382,6 +393,7 @@ async fn session_mode_and_capability_refusals_never_offer_a_prompt() -> Check {
                 vec![json!({"type":"http","url":"http://127.0.0.1:1/mcp"})],
                 None,
                 "safe",
+                false,
                 cx()?
             )
             .await
@@ -395,6 +407,7 @@ async fn session_mode_and_capability_refusals_never_offer_a_prompt() -> Check {
                 vec![],
                 Some(("conversation", vec![])),
                 "safe",
+                false,
                 cx()?
             )
             .await

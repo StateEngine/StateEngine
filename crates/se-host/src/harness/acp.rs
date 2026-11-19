@@ -195,6 +195,7 @@ impl Harness for AcpHarness {
                 connection,
                 incoming,
                 PermissionPolicy::from_saved_approval(resolved.approval),
+                attach.provider_exit,
             )
             .await;
             let binding = Arc::new(Binding {
@@ -248,6 +249,10 @@ impl Harness for AcpHarness {
                 Read::Unreadable { reason, .. } => return Err(error(reason)),
                 Read::Unknown { what } => return Err(error(what)),
             };
+            let settings = self.configuration.acp_settings(
+                request.profile.harness.as_deref(),
+                &request.profile.named_profile,
+            )?;
             let conversation = binding
                 .session
                 .open(
@@ -258,13 +263,8 @@ impl Harness for AcpHarness {
                         .ok_or_else(|| error("protocol cwd is not UTF-8"))?,
                     servers,
                     replay,
-                    &self
-                        .configuration
-                        .acp_settings(
-                            request.profile.harness.as_deref(),
-                            &request.profile.named_profile,
-                        )?
-                        .mode,
+                    &settings.mode,
+                    settings.unadvertised_http_mcp,
                     remaining(),
                 )
                 .await?;

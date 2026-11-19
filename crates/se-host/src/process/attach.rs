@@ -3,7 +3,7 @@ use super::*;
 use super::{launch::Work, launch_util::call};
 use crate::{HarnessAttach, HarnessRequest, client::lease::Deadline};
 use se_core::ops::{LaunchResult, ResumeCommand, process_commit};
-use se_proc::{CheckpointKind, ProcessRuntime};
+use se_proc::{CheckpointKind, ProcessRuntime, StopObservation};
 use se_types::{Read, Result};
 impl LaunchCoordinator {
     #[expect(
@@ -59,14 +59,38 @@ impl LaunchCoordinator {
         } else {
             let wake = work.wake.clone();
             let relaunch = self.window_command(work, true);
+            let attached = Arc::new(attach_owner);
+            let proof_owner = attached.clone();
+            let native = self.native.clone();
+            let pool = self.store.pool.clone();
+            let proof_deadline = deadline.clone();
+            let proof =
+                move || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+                    let attached = proof_owner.clone();
+                    let native = native.clone();
+                    let pool = pool.clone();
+                    let proof_deadline = proof_deadline.clone();
+                    Box::pin(async move {
+                        pool.run_owned(&proof_deadline, move || {
+                            native
+                                .witness_exit(&attached)
+                                .map_err(|e| error("provider exit witness", e))
+                                .map(|obs| matches!(obs, StopObservation::Complete(_)))
+                        })
+                        .await
+                        .unwrap_or(false)
+                    })
+                };
+            let provider_exit = Arc::new(proof);
             let input = HarnessAttach {
                 request,
-                process: attach_owner,
+                process: attached,
                 record: record.clone(),
                 transport,
                 transcript: Read::Absent {
                     checked: "transcript pin is published after session activation".into(),
                 },
+                provider_exit,
             };
             let cx = call(self.store.generation, deadline)?;
             let attach = if let Some(timing) = &mut work.startup_timing {

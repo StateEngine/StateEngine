@@ -151,7 +151,17 @@ impl Fixture {
             Generation::new(1)?,
         )
         .await;
-        let session = Session::retain(connection.clone(), receiver, policy).await;
+        let session = Session::retain(
+            connection.clone(),
+            receiver,
+            policy,
+            Arc::new(
+                || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+                    Box::pin(async { false })
+                },
+            ),
+        )
+        .await;
         Ok(Self {
             io,
             connection,
@@ -221,6 +231,7 @@ impl Fixture {
                     vec![],
                     previous.map(|history| ("conversation", history)),
                     "safe",
+                    false,
                     context,
                 )
                 .await
@@ -276,7 +287,14 @@ async fn open_with_mode(
     let context = cx()?;
     let run = tokio::spawn(async move {
         session
-            .open("/synthetic/workspace", vec![], None, required, context)
+            .open(
+                "/synthetic/workspace",
+                vec![],
+                None,
+                required,
+                false,
+                context,
+            )
             .await
     });
     let request = f.write(index).await?;
@@ -442,6 +460,7 @@ async fn missing_load_capability_names_the_real_new_conversation_option() -> Che
             vec![],
             Some(("conversation", vec![])),
             "",
+            false,
             cx()?,
         )
         .await
@@ -466,6 +485,7 @@ async fn unsupported_http_mcp_names_configured_entrypoint_before_session_write()
             vec![json!({"type":"http"})],
             None,
             "",
+            false,
             cx()?,
         )
         .await

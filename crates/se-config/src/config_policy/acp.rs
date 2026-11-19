@@ -16,6 +16,8 @@ pub struct AcpConfig {
     pub environment: Vec<String>,
     /// Optional mode the agent must echo. Empty uses its announced default.
     pub mode: String,
+    /// Accepts HTTP MCP from agents that use it without advertising the capability.
+    pub unadvertised_http_mcp: bool,
 }
 impl AcpConfig {
     pub fn is_default(&self) -> bool {
@@ -23,6 +25,7 @@ impl AcpConfig {
             && self.arguments.is_empty()
             && self.environment.is_empty()
             && self.mode.is_empty()
+            && !self.unadvertised_http_mcp
     }
     pub(super) fn validate(&self) -> Result<()> {
         if self.arguments.len() > 128
