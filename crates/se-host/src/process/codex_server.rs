@@ -65,6 +65,7 @@ impl LaunchCoordinator {
     ) -> Result<()> {
         let login = crate::codex_capture::existing_home()?;
         let control = crate::harness::codex_input::control_socket(&login);
+        socket_fits(&control)?;
         let path = self.codex_record(&login);
         let mut slot = crate::runtime::pool::within(deadline, self.codex_server.slot.lock()).await?;
         let record = self.read_codex_record(&path, deadline).await?;
@@ -595,6 +596,23 @@ fn refusal(path: &Path, reason: &str) -> se_types::SeError {
         &format!("{reason} ({})", path.display()),
         "Stop every Codex agent, make sure no StateEngine-started Codex app-server is still running, then remove that record and relaunch.",
     )
+}
+
+/// A Unix socket address holds about 107 bytes of path on every platform we
+/// support; the stock server refuses a longer one too.
+fn socket_fits(control: &Path) -> Result<()> {
+    const LIMIT: usize = 107;
+    let length = control.as_os_str().as_encoded_bytes().len();
+    if length > LIMIT {
+        return Err(crate::codex_rpc::incompatible(
+            &format!(
+                "the Codex login's control socket path is {length} bytes, longer than the {LIMIT} a local socket allows ({})",
+                control.display()
+            ),
+            "Set CODEX_HOME to a shorter folder (for example one directly under your home folder), sign in to Codex there, and relaunch.",
+        ));
+    }
+    Ok(())
 }
 
 /// Whether the login's control socket accepts a connection right now.

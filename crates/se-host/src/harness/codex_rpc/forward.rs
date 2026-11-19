@@ -65,6 +65,11 @@ fn pipe_socket(path: &Path, control: PathBuf) -> io::Result<()> {
     use std::net::Shutdown;
     use std::os::unix::net::UnixListener;
     let listener = UnixListener::bind(path)?;
+    // The host accepts only an owner-only endpoint; the directory is private too.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
     let (ended, server_gone) = std::sync::mpsc::channel::<io::Error>();
     std::thread::Builder::new()
         .name("se-codex-forward-accept".into())

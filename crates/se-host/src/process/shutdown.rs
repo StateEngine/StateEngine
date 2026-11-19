@@ -51,6 +51,12 @@ impl LaunchCoordinator {
         report
             .pending
             .extend(self.shutdown_observed(deadline).await?);
+        // The login's shared server follows its agents; with them stopped, it stops.
+        if let Err(failure) = self.retire_idle_codex_server(deadline).await {
+            report
+                .pending
+                .push(format!("Codex shared server: {}", failure.body));
+        }
         let native = self.native.clone();
         match self
             .store
