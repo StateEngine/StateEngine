@@ -6,6 +6,12 @@ use std::process::{Command, Stdio};
 #[ignore = "child selected by the native scope judge"]
 fn background_descendants() -> Check {
     let root = PathBuf::from(std::env::var_os("BINDING_SCOPE_HOME").ok_or("fixture home")?);
+    if std::env::var_os("BINDING_RESET_CTRL_C").is_some() {
+        use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+        if unsafe { SetConsoleCtrlHandler(None, 0) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
     let mut expected = String::new();
     std::io::stdin().read_to_string(&mut expected)?;
     assert_eq!(expected, "owned input marker");
@@ -41,7 +47,7 @@ fn start<'a>(runtime: &'a NativeProcessRuntime, home: &Home, machine: &MachineId
     }
     let lifecycle = LifecycleId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?;
     let mut entries: Vec<_> = std::env::vars_os().filter(|(key,_)| {
-        key.to_str().is_some_and(|key| ["SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "TEMP", "TMP", "COMSPEC", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "ProgramFiles"].iter().any(|name| key.eq_ignore_ascii_case(name)))
+        key.to_str().is_some_and(|key| ["SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "TEMP", "TMP", "COMSPEC", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "ProgramFiles", "BINDING_RESET_CTRL_C"].iter().any(|name| key.eq_ignore_ascii_case(name)))
     }).collect();
     entries.push(("BINDING_SCOPE_HOME".into(),home.0.as_os_str().to_owned()));
     let prepared = runtime.prepare_launch(LaunchReservation {
@@ -95,6 +101,21 @@ fn ready(home: &Home, deadline: Instant) -> Check {
 
 #[test]
 fn exact_windows_console_scope_interrupts_real_tools() -> Check {
+    if std::env::var_os("BINDING_OWN_CONSOLE").is_none() {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_NEW_CONSOLE;
+        for reset in [false, true] {
+            let mut command = Command::new(std::env::current_exe()?);
+            command.args(["--exact", "windows_console_scope::exact_windows_console_scope_interrupts_real_tools", "--nocapture"])
+                .env("BINDING_OWN_CONSOLE", "1")
+                .creation_flags(CREATE_NEW_CONSOLE);
+            if reset { command.env("BINDING_RESET_CTRL_C", "1"); }
+            let output = command.output()?;
+            println!("reset={reset} status={:?} stdout={} stderr={}", output.status.code(), String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            if reset && !output.status.success() { return Err("reset control failed".into()); }
+        }
+        return Ok(());
+    }
     let machine=MachineId::new("windows-console-scope-review")?;
     let bytes:[u8;16]=random_secret()?.expose()[..16].try_into()?;
     let host=HostInstanceId(bytes);
