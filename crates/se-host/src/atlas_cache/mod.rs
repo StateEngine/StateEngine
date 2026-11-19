@@ -1,5 +1,6 @@
 //! Protected cache files shared by hosted and hostless readers. Only activation
 //! creates directories or acquires the permanent kernel-owned writer lock.
+mod cold_accounting;
 mod inventory;
 #[cfg(windows)]
 #[path = "../atlas_private_guard.rs"]
@@ -38,6 +39,16 @@ pub struct NativeAtlasCache {
     #[cfg(windows)]
     private_guard: RefCell<Option<private_guard::PrivateGuard>>,
     inventory: RefCell<Option<inventory::Inventory>>,
+    #[cfg(windows)]
+    cold_accounting: Cell<bool>,
+    #[cfg(windows)]
+    measured_at: Cell<Option<std::time::Instant>>,
+    #[cfg(windows)]
+    measured_bytes: Cell<u64>,
+    #[cfg(windows)]
+    writer_growth: Cell<u64>,
+    #[cfg(windows)]
+    observed_wal: Cell<u64>,
 }
 impl NativeAtlasCache {
     /// No creation, permissions repair, writer lock or schema action on reads.
@@ -63,6 +74,16 @@ impl NativeAtlasCache {
             #[cfg(windows)]
             private_guard: RefCell::new(None),
             inventory: RefCell::new(None),
+            #[cfg(windows)]
+            cold_accounting: Cell::new(false),
+            #[cfg(windows)]
+            measured_at: Cell::new(None),
+            #[cfg(windows)]
+            measured_bytes: Cell::new(0),
+            #[cfg(windows)]
+            writer_growth: Cell::new(0),
+            #[cfg(windows)]
+            observed_wal: Cell::new(0),
         }))
     }
     /// Explicit after-ready activation only. All writers across this Atlas home,
@@ -120,6 +141,16 @@ impl NativeAtlasCache {
             #[cfg(windows)]
             private_guard: RefCell::new(None),
             inventory: RefCell::new(None),
+            #[cfg(windows)]
+            cold_accounting: Cell::new(false),
+            #[cfg(windows)]
+            measured_at: Cell::new(None),
+            #[cfg(windows)]
+            measured_bytes: Cell::new(0),
+            #[cfg(windows)]
+            writer_growth: Cell::new(0),
+            #[cfg(windows)]
+            observed_wal: Cell::new(0),
         };
         if let Some(epoch) = candidate {
             cache.claim_reservation(epoch)?;
@@ -185,11 +216,54 @@ impl CacheFiles for NativeAtlasCache {
         #[cfg(windows)]
         self.finish_private_creation();
     }
+    fn written_pages(
+        &self,
+        connection: &se_atlas::cache::connection::NativeSqlConnection,
+    ) -> Option<u64> {
+        #[cfg(windows)]
+        if self.cold_accounting.get() {
+            return se_atlas::native_sql::written_pages(connection).ok();
+        }
+        let _ = connection;
+        None
+    }
+    fn record_written_pages(&self, pages: Option<u64>) {
+        #[cfg(windows)]
+        if self.cold_accounting.get() {
+            // A frame can temporarily occupy both the WAL and the database.
+            let increment = pages
+                .and_then(|n| n.checked_mul(2 * (4096 + 24)))
+                .and_then(|n| n.checked_add(32));
+            match increment.and_then(|n| self.writer_growth.get().checked_add(n)) {
+                Some(total) => self.writer_growth.set(total),
+                None => {
+                    self.measured_at.set(None);
+                    self.cold_accounting.set(false);
+                    self.inventory.borrow_mut().take();
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = pages;
+    }
+    fn release_cold_observations(&self) {
+        #[cfg(windows)]
+        {
+            self.cold_accounting.set(false);
+            self.measured_at.set(None);
+            self.inventory.borrow_mut().take();
+        }
+    }
     fn configure_connection_role(
         &self,
         connection: &mut se_atlas::cache::connection::NativeSqlConnection,
         role: se_atlas::cache::connection::ConnectionRole,
     ) -> AtlasResult<()> {
+        #[cfg(windows)]
+        if role == se_atlas::cache::connection::ConnectionRole::ColdWriter {
+            self.cold_accounting.set(true);
+            self.measured_at.set(None);
+        }
         self.configure_connection(connection)?;
         #[cfg(windows)]
         if role == se_atlas::cache::connection::ConnectionRole::ColdWriter {
@@ -440,30 +514,15 @@ impl CacheFiles for NativeAtlasCache {
             }
         };
         self.validate_database(pin)?;
+        #[cfg(windows)]
+        if self.cold_accounting.get() {
+            self.observed_wal.set(bytes);
+        }
         Ok(bytes)
     }
     fn reserve_growth(&self, bytes: u64) -> AtlasResult<Box<dyn GrowthReservation + '_>> {
         self.require_writer()?;
-        let cached = self
-            .inventory
-            .borrow()
-            .as_ref()
-            .map(inventory::Inventory::measure)
-            .transpose()?
-            .flatten();
-        // Recount near the disk cap before trusting the cached inventory.
-        let root = match cached {
-            Some(root)
-                if root.saturating_add(self.growth.get()).saturating_add(bytes) < 504_000_000 =>
-            {
-                root
-            }
-            _ => {
-                let (root, snapshot) = inventory::root(&self.root)?;
-                *self.inventory.borrow_mut() = Some(snapshot);
-                root
-            }
-        };
+        let root = self.measured_root(bytes)?;
         let reserved = self.growth.get();
         let maximum = self.scope.registration.cache.directory.as_path();
         if maximum != self.root.root() {

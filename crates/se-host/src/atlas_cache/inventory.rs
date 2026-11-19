@@ -25,16 +25,8 @@ impl Inventory {
         if !self.complete {
             return Ok(None);
         }
-        for (files, previous) in &self.directories {
-            if files
-                .readback(&files.root().join(".atlas-inventory-check"))
-                .is_err()
-            {
-                return Ok(None);
-            }
-            if !entries_match(files.root(), previous) {
-                return Ok(None);
-            }
+        if !self.directories_valid() {
+            return Ok(None);
         }
         let mut bytes = 0u64;
         for (_, pin) in &self.files {
@@ -46,16 +38,19 @@ impl Inventory {
                 .checked_add(metadata.len())
                 .ok_or_else(|| fail("Atlas inventory byte overflow"))?;
         }
-        for (files, previous) in &self.directories {
-            if !entries_match(files.root(), previous)
-                || files
-                    .readback(&files.root().join(".atlas-inventory-check"))
-                    .is_err()
-            {
-                return Ok(None);
-            }
+        if !self.directories_valid() {
+            return Ok(None);
         }
         Ok(Some(bytes))
+    }
+
+    fn directories_valid(&self) -> bool {
+        self.directories.iter().all(|(files, previous)| {
+            let sentinel = files.root().join(".atlas-inventory-check");
+            files.readback(&sentinel).is_ok()
+                && entries_match(files.root(), previous)
+                && files.readback(&sentinel).is_ok()
+        })
     }
 }
 
