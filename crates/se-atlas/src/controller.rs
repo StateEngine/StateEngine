@@ -619,13 +619,14 @@ fn empty_coverage() -> Coverage {
 pub fn quantum_expired(error: &se_types::SeError) -> bool {
     match error.body.detail() {
         se_types::Detail::DeadlineExceeded(detail) => {
-            matches!(
-                detail.op.as_str(),
-                "Atlas SQL"
-                    | "Atlas source read"
-                    | "Atlas parse attempt"
-                    | "Atlas scheduling stall"
-            )
+            detail.op.starts_with("Atlas SQL ")
+                || matches!(
+                    detail.op.as_str(),
+                    "Atlas SQL"
+                        | "Atlas source read"
+                        | "Atlas parse attempt"
+                        | "Atlas scheduling stall"
+                )
         }
         se_types::Detail::AtlasResourceBudget(detail) => {
             detail.resource == "renewal work deadline" && detail.available == 0

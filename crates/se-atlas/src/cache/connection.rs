@@ -128,7 +128,7 @@ impl Slot {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
                     return Err(if role != ConnectionRole::QueryReader || budget.is_zero() {
-                        timeout(0)
+                        stage_timeout("reader slot admission", 0)
                     } else {
                         timeout_phase("reader slot admission", budget, started.elapsed())
                     });
@@ -199,7 +199,7 @@ impl<'a> CacheConnection<'a> {
         let mut db = open(&pin, role, deadline)?;
         files.configure_connection_role(&mut db, role)?;
         configure_limits(&db, role, profile)?;
-        finite(&mut db, deadline, |db, _| {
+        finite(&mut db, deadline, "open validation", |db, _| {
             schema::validate(db, &id)?;
             if role.writable() && role != ConnectionRole::MaintenanceWriter {
                 schema::validate_integrity(db)?;
@@ -208,7 +208,9 @@ impl<'a> CacheConnection<'a> {
         })?;
         configure_access(&db, role)?;
         if role == ConnectionRole::CandidateReader {
-            finite(&mut db, deadline, |db, _| schema::validate_integrity(db))?;
+            finite(&mut db, deadline, "candidate integrity", |db, _| {
+                schema::validate_integrity(db)
+            })?;
         }
         files.validate_database(&pin)?;
         Ok(Some(Self {
@@ -246,7 +248,7 @@ impl<'a> CacheConnection<'a> {
             db.execute_batch("PRAGMA page_size=4096")
                 .map_err(cache_error)?;
             configure(&db, role, profile)?;
-            finite(&mut db, deadline, |db, _| {
+            finite(&mut db, deadline, "epoch initialization", |db, _| {
                 db.execute_batch("BEGIN EXCLUSIVE").map_err(cache_error)?;
                 let result = schema::initialize(db, seed);
                 if let Err(original) = result {
@@ -289,7 +291,7 @@ impl<'a> CacheConnection<'a> {
     }
     pub fn validate(&mut self, deadline: Instant) -> AtlasResult<()> {
         self.files.validate_database(&self.pin)?;
-        finite(&mut self.db, deadline, |db, _| {
+        finite(&mut self.db, deadline, "identity validation", |db, _| {
             schema::validate(db, &self.identity)
         })
     }
@@ -367,7 +369,7 @@ impl<'a> CacheConnection<'a> {
         } else {
             None
         };
-        finite(&mut self.db, deadline, |db, budget_ms| {
+        finite(&mut self.db, deadline, "transaction", |db, budget_ms| {
             let behavior = if write {
                 rusqlite::TransactionBehavior::Immediate
             } else {
@@ -385,7 +387,12 @@ impl<'a> CacheConnection<'a> {
             let changed = self.files.validate_database(&self.pin);
             let expired = crate::clock::now() >= deadline;
             let result = match (result, changed, expired) {
-                (_, _, true) => Err(timeout(budget_ms)),
+                (Err(error), _, true)
+                    if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(_)) =>
+                {
+                    Err(error)
+                }
+                (_, _, true) => Err(stage_timeout("transaction", budget_ms)),
                 (Ok(value), Ok(()), false) => Ok(value),
                 (Err(e), _, false) | (_, Err(e), false) => Err(e),
             };
@@ -404,10 +411,13 @@ impl<'a> CacheConnection<'a> {
             return Err(cache_error("reader cannot checkpoint"));
         }
         let wal = self.files.wal_bytes(&self.pin)?;
+        if crate::clock::now() >= deadline {
+            return Err(stage_timeout("WAL checkpoint admission", 0));
+        }
         if wal < 4_000_000 {
             return Ok(true);
         }
-        finite(&mut self.db, deadline, |db, _| {
+        finite(&mut self.db, deadline, "WAL checkpoint", |db, _| {
             let (busy, _, _): (i64, i64, i64) = db
                 .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?))
@@ -443,7 +453,7 @@ impl<'a> CacheConnection<'a> {
                 "durable cold publication requires final WAL frames",
             ));
         }
-        let busy = finite(&mut self.db, deadline, |db, _| {
+        let busy = finite(&mut self.db, deadline, "publication checkpoint", |db, _| {
             let (busy, _, _): (i64, i64, i64) = db
                 .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?))
@@ -466,7 +476,7 @@ impl<'a> CacheConnection<'a> {
             ));
         }
         self.files.validate_database(&self.pin)?;
-        finite(&mut self.db, deadline, |db, _| {
+        finite(&mut self.db, deadline, "cold memory release", |db, _| {
             db.release_memory().map_err(cache_error)
         })
     }
@@ -484,7 +494,7 @@ fn set_synchronous(db: &Connection, setting: &str, expected: i64) -> AtlasResult
 }
 fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResult<Connection> {
     if crate::clock::now() >= deadline {
-        return Err(timeout(0));
+        return Err(stage_timeout("connection open", 0));
     }
     let flags = if role.writable() {
         OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -529,7 +539,7 @@ fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResu
         // This epoch is unpublished and has exactly one contained writer.
         // Exclusive WAL uses an in-process index, never a mapped -shm file.
         // Host handles retain normal locking after exact child reap/close.
-        finite(&mut db, deadline, |db, _| {
+        finite(&mut db, deadline, "cold locking setup", |db, _| {
             let locking: String = db
                 .query_row("PRAGMA locking_mode=EXCLUSIVE", [], |r| r.get(0))
                 .map_err(cache_error)?;
@@ -625,14 +635,15 @@ fn configure_access(db: &Connection, role: ConnectionRole) -> AtlasResult<()> {
 fn finite<T>(
     db: &mut Connection,
     deadline: Instant,
+    stage: &str,
     work: impl FnOnce(&Connection, u64) -> AtlasResult<T>,
 ) -> AtlasResult<T> {
     if crate::clock::now() >= deadline {
-        return Err(timeout(0));
+        return Err(stage_timeout(stage, 0));
     }
     let remaining = deadline.saturating_duration_since(crate::clock::now());
     if remaining.is_zero() {
-        return Err(timeout(0));
+        return Err(stage_timeout(stage, 0));
     }
     let budget_ms = u64::try_from(remaining.as_millis())
         .unwrap_or(u64::MAX)
@@ -644,16 +655,22 @@ fn finite<T>(
     let result = work(db, budget_ms);
     db.progress_handler(0, None::<fn() -> bool>)
         .map_err(cache_error)?;
-    if crate::clock::now() >= deadline {
-        Err(timeout(budget_ms))
-    } else {
-        result
+    match result {
+        Err(error) if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(_)) => {
+            Err(error)
+        }
+        _ if crate::clock::now() >= deadline => Err(stage_timeout(stage, budget_ms)),
+        result => result,
     }
 }
 pub(crate) fn timeout(budget_ms: u64) -> se_types::SeError {
+    stage_timeout("query admission", budget_ms)
+}
+
+pub(crate) fn stage_timeout(stage: &str, budget_ms: u64) -> se_types::SeError {
     se_types::SeError::new(se_types::Detail::DeadlineExceeded(
         se_types::details::DeadlineExceeded {
-            op: "Atlas SQL".into(),
+            op: format!("Atlas SQL {stage}"),
             deadline_ms: budget_ms,
         },
     ))

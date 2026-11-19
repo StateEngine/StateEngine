@@ -19,10 +19,17 @@ fn phase_error(
     end: Instant,
     mut error: se_types::SeError,
 ) -> se_types::SeError {
-    if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas SQL")
+    if let se_types::Detail::DeadlineExceeded(detail) = error.body.detail()
+        && detail.op.starts_with("Atlas SQL")
     {
+        let stage = detail.op.strip_prefix("Atlas SQL").unwrap_or("").trim();
+        let label = if stage.is_empty() {
+            phase.to_owned()
+        } else {
+            format!("{phase}: {stage}")
+        };
         error.body = crate::cache::connection::timeout_phase(
-            phase,
+            &label,
             end.saturating_duration_since(started),
             crate::clock::now().saturating_duration_since(started),
         )
