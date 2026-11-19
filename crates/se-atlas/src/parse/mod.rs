@@ -142,16 +142,7 @@ impl AtlasParser for SemanticParser {
         if snapshot.bytes.len() > budget.max_source_bytes.min(profile.max_source_bytes) as usize {
             return Ok(defer(CoverageReason::SourceBytesLimit));
         }
-        let reservation = snapshot.bytes.capacity() as u64
-            + u64::from(profile.parser_reservation_bytes)
-            + u64::from(profile.extraction_bytes);
-        if reservation > u64::from(budget.reserved_bytes) {
-            return Err(capacity(
-                "Atlas source/parser/extraction reservation",
-                reservation,
-                u64::from(budget.reserved_bytes),
-            ));
-        }
+        check_reservation(profile, budget, snapshot)?;
         let _lease = budget::Lease::take()?;
         // Parsing may use the extraction share until extraction starts; the
         // arena below receives only what remains of the total reservation.
@@ -218,6 +209,23 @@ impl AtlasParser for SemanticParser {
 fn bounded_budget(mut budget: ParseBudget, profile: &ParserProfile) -> ParseBudget {
     budget.reserved_bytes = budget.reserved_bytes.min(profile.anonymous_bytes() as u32);
     budget
+}
+fn check_reservation(
+    profile: &ParserProfile,
+    budget: ParseBudget,
+    snapshot: &SourceSnapshot,
+) -> AtlasResult<()> {
+    let reservation = snapshot.bytes.capacity() as u64
+        + u64::from(profile.parser_reservation_bytes)
+        + u64::from(profile.extraction_bytes);
+    if reservation > u64::from(budget.reserved_bytes) {
+        return Err(capacity(
+            "Atlas source/parser/extraction reservation",
+            reservation,
+            u64::from(budget.reserved_bytes),
+        ));
+    }
+    Ok(())
 }
 fn extraction_reservation(
     profile: &ParserProfile,
