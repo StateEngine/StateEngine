@@ -22,21 +22,26 @@ const HARD_FRAMES: i64 = 16384;
 /// commits keep completing while the load runs, and a loaded runner is
 /// allowed to spend this much per batch. One deadline is shared by all 64
 /// batches, so the budget scales with the workload instead of slicing a
-/// fixed window off each commit.
-const BATCH_ALLOWANCE: Duration = Duration::from_secs(2);
+/// fixed window off each commit, and the 64-second total stays inside
+/// nextest's 120-second termination threshold.
+const BATCH_ALLOWANCE: Duration = Duration::from_secs(1);
+/// No-progress bound per commit: the original five-second completion wait,
+/// kept so a stuck writer fails its step instead of spending the whole
+/// load budget.
+const NO_PROGRESS: Duration = Duration::from_secs(5);
 /// A one-shot batch has no workload to amortize over, so it gets four batch
 /// allowances of observation.
 const SINGLE_ALLOWANCE: Duration = Duration::from_secs(8);
-/// Close deadline for a case's own drain, matching the writer's own drop
-/// seal so the caller, not the clock, names the close budget.
+/// Close deadline for a case's own drain. The writer's drop seal is five
+/// seconds, so the explicit drain names its own longer budget.
 const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
 /// Observation window for a drain: the join can spend the close deadline,
 /// and the final flush I/O after it is not deadline-bounded.
-const DRAIN_BUDGET: Duration = Duration::from_secs(25);
+const DRAIN_BUDGET: Duration = Duration::from_secs(20);
 /// Settle window: the most the background task owes after the load is one
 /// full checkpoint of a WAL at the 64 MiB cutoff, and a loaded runner can
 /// stretch that single checkpoint well past a ten-second window.
-const SETTLE_BUDGET: Duration = Duration::from_secs(30);
+const SETTLE_BUDGET: Duration = Duration::from_secs(20);
 
 fn payload(f: &Fixture, key: &str) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
     let bodies = (0..40)
@@ -193,9 +198,12 @@ fn background_task_keeps_sustained_writes_below_the_cutoff() -> Check {
     let mut largest_log = 0;
     let mut batch_frames = 0;
     let load_deadline = Instant::now() + BATCH_ALLOWANCE * 64;
+    let mut last_progress = Instant::now();
     for n in 0..64 {
         let key = format!("bg-sustained-{n}");
-        let receipt = wait_until(client.submit(payload(&f, &key)?)?, load_deadline)??;
+        let step_deadline = (last_progress + NO_PROGRESS).min(load_deadline);
+        let receipt = wait_until(client.submit(payload(&f, &key)?)?, step_deadline)??;
+        last_progress = Instant::now();
         assert_eq!(receipt.state, CommitState::Committed);
         let log = wal(&outside)?.0;
         if n == 0 {
