@@ -1,0 +1,18 @@
+name: Windows hidden console probe
+on: [push]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Compile and run the console probe
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'C++ compiler unavailable' }
+          $setup = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          cmd /c "`"$setup`" >nul && cl /nologo /W3 /Fe:console-probe.exe probes\windows-hidden-console.c && console-probe.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
