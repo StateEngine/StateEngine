@@ -236,45 +236,47 @@ pub(crate) fn run_child(
             coverage.discovered_files += 1;
             pending.push(path);
             if pending.len() == 4 {
-                runner.run(&pending, coverage.discovered_files)?;
-                pending.clear();
+                runner.drain(&mut pending, coverage.discovered_files, false)?;
             }
             Ok(())
         })?;
-        runner.run(&pending, coverage.discovered_files)?;
+        runner.drain(&mut pending, coverage.discovered_files, true)?;
         (discovery_complete, runner.completed)
     };
     // Resolve against the completed catalog. Walking SQL in small key windows
     // avoids retaining a source inventory or reparsing once per graph edge.
     let mut after = 0i64;
+    let mut pending = Vec::new();
     loop {
         // Preserve captured files even when discovery is incomplete. Cross-file
         // resolution improves those rows, rather than discarding all of them.
         // Keep the reserved part of the existing job budget for coverage,
         // checkpoint and exact-reap publication; skipped files stay partial.
-        if !discovery_complete || Instant::now() >= work_deadline {
-            finish::limited_resolution(&mut db, after, deadline)?;
-            break;
+        let limited = !discovery_complete || Instant::now() >= work_deadline;
+        let next = if limited {
+            Vec::new()
+        } else {
+            db.read(sql_deadline(), |sql| {
+                let mut statement =
+                    sql.prepare("SELECT id,path FROM files WHERE id>?1 ORDER BY id LIMIT 4")?;
+                let mut rows = statement.query([after]).map_err(failure)?;
+                let mut paths = Vec::new();
+                while let Some(row) = rows.next().map_err(failure)? {
+                    paths.push((
+                        row.get::<_, i64>(0).map_err(failure)?,
+                        row.get::<_, String>(1).map_err(failure)?,
+                    ));
+                }
+                Ok(paths)
+            })?
+        };
+        let finished = next.is_empty();
+        if let Some((last, _)) = next.last() {
+            after = *last;
         }
-        let next = db.read(sql_deadline(), |sql| {
-            let mut statement =
-                sql.prepare("SELECT id,path FROM files WHERE id>?1 ORDER BY id LIMIT 4")?;
-            let mut rows = statement.query([after]).map_err(failure)?;
-            let mut paths = Vec::new();
-            while let Some(row) = rows.next().map_err(failure)? {
-                paths.push((
-                    row.get::<_, i64>(0).map_err(failure)?,
-                    row.get::<_, String>(1).map_err(failure)?,
-                ));
-            }
-            Ok(paths)
-        })?;
-        let Some((last, _)) = next.last() else { break };
-        after = *last;
-        let paths = next
-            .into_iter()
-            .map(|(_, path)| RelativePath::new(&path))
-            .collect::<Result<Vec<_>, _>>()?;
+        for (_, path) in next {
+            pending.push(RelativePath::new(&path)?);
+        }
         let mut runner = batch::Runner {
             source: &source,
             db: &mut db,
@@ -285,8 +287,14 @@ pub(crate) fn run_child(
             completed,
             reported: (completed / 16) * 16,
         };
-        runner.run(&paths, coverage.discovered_files)?;
+        runner.drain(&mut pending, coverage.discovered_files, finished)?;
         completed = runner.completed;
+        if finished {
+            if limited {
+                finish::limited_resolution(&mut db, after, deadline)?;
+            }
+            break;
+        }
     }
     coverage.discovery_complete = discovery_complete;
     notify(protocol::Reply::Working {

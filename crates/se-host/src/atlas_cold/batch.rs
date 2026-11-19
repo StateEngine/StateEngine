@@ -17,15 +17,20 @@ pub(super) struct Runner<'a, 'db, F> {
 }
 
 impl<F: FnMut(protocol::Reply) -> AtlasResult<()>> Runner<'_, '_, F> {
-    pub(super) fn run(&mut self, paths: &[RelativePath], discovered: u64) -> AtlasResult<()> {
-        let mut offset = 0;
-        while offset < paths.len() {
+    pub(super) fn drain(
+        &mut self,
+        paths: &mut Vec<RelativePath>,
+        discovered: u64,
+        finish: bool,
+    ) -> AtlasResult<()> {
+        while paths.len() >= MAX_FILES || (finish && !paths.is_empty()) {
             let capacity = self.db.cold_batch_capacity(self.deadline)?.min(MAX_FILES);
             if capacity == 0 {
                 return Err(failure("cold batch has no WAL capacity"));
             }
-            let end = (offset + capacity).min(paths.len());
-            offset += self.chunk(&paths[offset..end], discovered)?;
+            let end = capacity.min(paths.len());
+            let completed = self.chunk(&paths[..end], discovered)?;
+            drop(paths.drain(..completed));
         }
         Ok(())
     }
@@ -104,7 +109,8 @@ impl<F: FnMut(protocol::Reply) -> AtlasResult<()>> Runner<'_, '_, F> {
                     .map(|(_, path)| path.clone())
                     .collect();
                 if !remaining.is_empty() {
-                    self.run(&remaining, discovered)?;
+                    let mut remaining = remaining;
+                    self.drain(&mut remaining, discovered, true)?;
                 }
             }
             Err(error)

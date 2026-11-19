@@ -65,7 +65,6 @@ impl ColdStore for BatchStore<'_, '_> {
             .map_err(failure)?;
         let result = work(self.sql);
         if result.is_err() {
-            self.failed_write = true;
             self.sql
                 .prepare("ROLLBACK TO cold_file")?
                 .execute([])
@@ -75,6 +74,7 @@ impl ColdStore for BatchStore<'_, '_> {
             .prepare("RELEASE cold_file")?
             .execute([])
             .map_err(failure)?;
+        self.failed_write |= result.is_err();
         result
     }
     fn release(&mut self, _deadline: Instant) -> AtlasResult<()> {
