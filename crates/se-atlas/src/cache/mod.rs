@@ -16,6 +16,14 @@ pub trait CacheFiles {
     fn release_creation_guard(&self) {}
     /// Restore full validation before finalizing a private cold epoch.
     fn finish_creation_guard(&self) {}
+    /// Native cold writers may account for their own writes between inventories.
+    fn written_pages(&self, _connection: &rusqlite::Connection) -> Option<u64> {
+        None
+    }
+    /// An unknown or failed observation invalidates any incremental estimate.
+    fn record_written_pages(&self, _pages: Option<u64>) {}
+    /// Release native accounting guards before a cold SQLite connection closes.
+    fn release_cold_observations(&self) {}
     /// Fresh-connection allocator setup before any SQL prepares. Native Atlas
     /// disables lookaside here; other adapters must include their actual SQLite
     /// defaults in their independent profile measurement. This hook supplies no
