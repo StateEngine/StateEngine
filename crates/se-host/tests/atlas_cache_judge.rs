@@ -636,3 +636,6 @@ fn crash_recovery_preserves_published_epoch_and_unowned_sidecars() -> Check {
     assert_eq!(fs::read(wal)?, b"unowned WAL must survive crash recovery");
     f._root_owner.finish(Ok(()))
 }
+
+#[path = "atlas_cache_judge/disk_review.rs"]
+mod disk_review;
