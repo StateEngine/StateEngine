@@ -13,7 +13,21 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Single-step observation window; load phases that budget their whole
+/// workload pass one shared deadline to `wait_until` instead.
+const STEP: Duration = Duration::from_secs(5);
 pub fn wait<F: Future>(future: F) -> Result<F::Output, Box<dyn std::error::Error>> {
+    wait_until(future, Instant::now() + STEP)
+}
+/// Poll a completion against an absolute deadline. A load phase passes one
+/// deadline to every step so the allowance scales with the workload instead
+/// of slicing a fixed window off each commit: a slow runner spends the
+/// allowance rather than failing the case, and a stuck completion still
+/// times out.
+pub fn wait_until<F: Future>(
+    future: F,
+    end: Instant,
+) -> Result<F::Output, Box<dyn std::error::Error>> {
     struct Signal(std::thread::Thread);
     impl Wake for Signal {
         fn wake(self: Arc<Self>) {
@@ -26,7 +40,6 @@ pub fn wait<F: Future>(future: F) -> Result<F::Output, Box<dyn std::error::Error
     let waker = Waker::from(Arc::new(Signal(std::thread::current())));
     let mut context = Context::from_waker(&waker);
     let mut future = std::pin::pin!(future);
-    let end = Instant::now() + Duration::from_secs(5);
     loop {
         match future.as_mut().poll(&mut context) {
             Poll::Ready(value) => return Ok(value),

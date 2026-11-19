@@ -12,8 +12,27 @@ mod fixture;
 use fixture::*;
 #[path = "support/host_fixture.rs"]
 mod native_host;
-use native_host::{host, options, wait};
+use native_host::{host, options, wait_until};
 const HARD_FRAMES: i64 = 16384;
+/// Per-1-MiB-batch allowance for the sustained phase: the claim is that
+/// commits keep completing while the load runs, and a loaded runner is
+/// allowed to spend this much per batch. One deadline is shared by all 64
+/// batches, so the budget scales with the workload instead of slicing a
+/// fixed window off each commit.
+const BATCH_ALLOWANCE: Duration = Duration::from_secs(2);
+/// A one-shot batch has no workload to amortize over, so it gets four batch
+/// allowances of observation.
+const SINGLE_ALLOWANCE: Duration = Duration::from_secs(8);
+/// Close deadline for a case's own drain, matching the writer's own drop
+/// seal so the caller, not the clock, names the close budget.
+const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
+/// Observation window for a drain: the join can spend the close deadline,
+/// and the final flush I/O after it is not deadline-bounded.
+const DRAIN_BUDGET: Duration = Duration::from_secs(25);
+/// Settle window: the most the background task owes after the load is one
+/// full checkpoint of a WAL at the 64 MiB cutoff, and a loaded runner can
+/// stretch that single checkpoint well past a ten-second window.
+const SETTLE_BUDGET: Duration = Duration::from_secs(30);
 
 fn payload(f: &Fixture, key: &str) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
     let bodies = (0..40)
@@ -79,6 +98,34 @@ where
     }
     Err(format!("timed out waiting for {what}").into())
 }
+/// The writer owns the store until its drain joins the maintenance task and
+/// the writer thread closes its connections; the fixture root cannot be
+/// removed while that close cycle is live. Every case keeps the writer
+/// behind this guard and takes it out only for the case's own drain
+/// assertion, so a failed case still closes the store before cleanup.
+struct Quiesce(Option<SqliteWriter>);
+impl Quiesce {
+    fn new(writer: SqliteWriter) -> Self {
+        Self(Some(writer))
+    }
+    /// None once the case took the writer for its own drain assertion.
+    fn take(&mut self) -> Option<SqliteWriter> {
+        self.0.take()
+    }
+}
+impl Drop for Quiesce {
+    fn drop(&mut self) {
+        let Some(writer) = self.0.take() else {
+            return;
+        };
+        // Best effort: the case already failed, so the close result only
+        // matters to the fixture cleanup that follows.
+        let Ok(completion) = writer.drain(DRAIN_DEADLINE) else {
+            return;
+        };
+        let _ = wait_until(completion, Instant::now() + DRAIN_BUDGET);
+    }
+}
 
 /// Protects: a pinned reader blocks the WAL reset but not the copy; after the
 /// reader releases, the background task resets the file instead of leaving it
@@ -87,12 +134,16 @@ where
 fn background_task_resets_the_wal_after_the_reader_releases() -> Check {
     let f = Fixture::new()?;
     let (h, lease) = host(&f)?;
-    let mut writer = h.start_writer(options(256)?, lease.clone())?;
+    let writer = h.start_writer(options(256)?, lease.clone())?;
     let client = writer.client();
+    let mut guard = Quiesce::new(writer);
     let path = f.options.state_directory.join("state.db");
     let pinned = observer(&path)?;
     pin(&pinned)?;
-    let receipt = wait(client.submit(payload(&f, "bg-pinned")?)?)??;
+    let receipt = wait_until(
+        client.submit(payload(&f, "bg-pinned")?)?,
+        Instant::now() + SINGLE_ALLOWANCE,
+    )??;
     assert_eq!(receipt.state, CommitState::Committed);
     let outside = observer(&path)?;
     let (log, done, _) = wal(&outside)?;
@@ -103,7 +154,7 @@ fn background_task_resets_the_wal_after_the_reader_releases() -> Check {
     pinned.execute_batch("ROLLBACK")?;
     poll(
         "background task to reset the released WAL",
-        Duration::from_secs(10),
+        SETTLE_BUDGET,
         || matches!(wal(&outside), Ok((0, 0, _))),
     )?;
     assert_eq!(
@@ -111,8 +162,15 @@ fn background_task_resets_the_wal_after_the_reader_releases() -> Check {
         0,
         "reset left the WAL file behind"
     );
-    drop(wait(writer.flush(Duration::from_secs(4))?)??);
-    drop(wait(writer.drain(Duration::from_secs(4)))??);
+    let writer = guard.take().ok_or("writer was already drained")?;
+    drop(wait_until(
+        writer.flush(Duration::from_secs(4))?,
+        Instant::now() + DRAIN_BUDGET,
+    )??);
+    drop(wait_until(
+        writer.drain(DRAIN_DEADLINE)?,
+        Instant::now() + DRAIN_BUDGET,
+    )??);
     Ok(())
 }
 
@@ -129,12 +187,14 @@ fn background_task_keeps_sustained_writes_below_the_cutoff() -> Check {
     let (h, lease) = host(&f)?;
     let writer = h.start_writer(options(256)?, lease.clone())?;
     let client = writer.client();
+    let mut guard = Quiesce::new(writer);
     let outside = observer(&f.options.state_directory.join("state.db"))?;
     let mut largest_log = 0;
     let mut batch_frames = 0;
+    let load_deadline = Instant::now() + BATCH_ALLOWANCE * 64;
     for n in 0..64 {
         let key = format!("bg-sustained-{n}");
-        let receipt = wait(client.submit(payload(&f, &key)?)?)??;
+        let receipt = wait_until(client.submit(payload(&f, &key)?)?, load_deadline)??;
         assert_eq!(receipt.state, CommitState::Committed);
         let log = wal(&outside)?.0;
         if n == 0 {
@@ -149,10 +209,14 @@ fn background_task_keeps_sustained_writes_below_the_cutoff() -> Check {
     );
     poll(
         "background task to drain the settled WAL",
-        Duration::from_secs(10),
+        SETTLE_BUDGET,
         || matches!(wal(&outside), Ok((0, 0, _))),
     )?;
-    drop(wait(writer.drain(Duration::from_secs(4)))??);
+    let writer = guard.take().ok_or("writer was already drained")?;
+    drop(wait_until(
+        writer.drain(DRAIN_DEADLINE)?,
+        Instant::now() + DRAIN_BUDGET,
+    )??);
     eprintln!(
         "sustained controls: 64 groups, high_water_frames={largest_log} of {HARD_FRAMES}, one batch {batch_frames}"
     );
@@ -175,10 +239,15 @@ fn background_task_honors_backup_suppression() -> Check {
     )?;
     let h = present(SqliteFactory::open_host(&f.options, &*lease)?)?;
     let writer = h.start_writer(options(256)?, lease.clone())?;
+    let client = writer.client();
     let context = writer.backup_context();
+    let mut guard = Quiesce::new(writer);
     let path = f.options.state_directory.join("state.db");
     let outside = observer(&path)?;
-    let receipt = wait(writer.client().submit(payload(&f, "bg-backup")?)?)??;
+    let receipt = wait_until(
+        client.submit(payload(&f, "bg-backup")?)?,
+        Instant::now() + SINGLE_ALLOWANCE,
+    )??;
     assert_eq!(receipt.state, CommitState::Committed);
     let pinned = observer(&path)?;
     pin(&pinned)?;
@@ -195,9 +264,13 @@ fn background_task_honors_backup_suppression() -> Check {
     pinned.execute_batch("ROLLBACK")?;
     poll(
         "background task to reset the released WAL after backup",
-        Duration::from_secs(10),
+        SETTLE_BUDGET,
         || matches!(wal(&outside), Ok((0, 0, _))),
     )?;
-    drop(wait(writer.drain(Duration::from_secs(4)))??);
+    let writer = guard.take().ok_or("writer was already drained")?;
+    drop(wait_until(
+        writer.drain(DRAIN_DEADLINE)?,
+        Instant::now() + DRAIN_BUDGET,
+    )??);
     Ok(())
 }
