@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import subprocess
 import shutil
 import sys
 import time
@@ -41,7 +42,12 @@ result = {'platform': sys.platform, 'binary_sha256': hashlib.sha256(binary.read_
           'fixture': 'one live session with a completed turn and account-free provider',
           'warmup_seconds': 10, 'requested_seconds': 60}
 try:
-    f.ok('up')
+    with (root / 'up.stdout').open('wb') as out, (root / 'up.stderr').open('wb') as err:
+        started = subprocess.run([str(binary), '--json', '--home', str(f.home), 'up'],
+                                 stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                 env=f.env, timeout=90)
+    if started.returncode != 0:
+        raise RuntimeError(f"host startup failed: {(root / 'up.stderr').read_text(errors='replace')}")
     f.launch()
     connection, _ = listener.accept()
     connection.settimeout(30)
