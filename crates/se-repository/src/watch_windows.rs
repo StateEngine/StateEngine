@@ -4,7 +4,7 @@ use super::{Facts, Flight, backend::Prepared};
 use se_proc::{NativeSourceRoot, NativeSourceWatch, NativeWatchAction, NativeWatchEvents};
 use std::os::windows::fs::MetadataExt;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -15,9 +15,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-const IDLE_RECONCILE: Duration = Duration::from_secs(30);
-const RECENT_RECHECK: Duration = Duration::from_secs(2);
-const RECENT_RETENTION: Duration = Duration::from_secs(60);
+const RETRY_RECONCILE: Duration = Duration::from_secs(30);
 const MAX_EVENTS: usize = 128;
 
 #[derive(Clone, Debug)]
@@ -134,8 +132,6 @@ struct Worker {
     notification: Arc<AtomicU64>,
     armed: Option<Armed>,
     next_reconcile: Instant,
-    next_recent: Instant,
-    recent: HashMap<String, Instant>,
     error: String,
     stopping: Arc<AtomicBool>,
 }
@@ -154,8 +150,6 @@ impl Worker {
             notification: Arc::new(AtomicU64::new(0)),
             armed: None,
             next_reconcile: Instant::now(),
-            next_recent: Instant::now() + RECENT_RECHECK,
-            recent: HashMap::new(),
             error: "watch initialization is pending".into(),
             stopping,
         }
@@ -166,23 +160,8 @@ impl Worker {
             if self.stopping.load(Ordering::Acquire) {
                 break;
             }
-            let due = if self.recent.is_empty() || self.armed.is_none() {
-                self.next_reconcile
-            } else {
-                self.next_reconcile.min(self.next_recent)
-            };
-            let wait = due.saturating_duration_since(Instant::now());
-            match self.commands.recv_timeout(wait) {
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if Instant::now() >= self.next_reconcile {
-                        self.reconcile();
-                    } else if let Err(error) = self.recheck_recent() {
-                        self.error = error;
-                        self.armed = None;
-                        self.reconcile();
-                    }
-                }
+            match self.commands.recv() {
+                Err(_) => break,
                 Ok(Command::Wake) => {
                     if self.armed.is_none() {
                         if Instant::now() >= self.next_reconcile {
@@ -199,14 +178,7 @@ impl Worker {
                     let needs_reconcile =
                         self.armed.is_none() && Instant::now() >= self.next_reconcile;
                     let _ = result.send(value);
-                    if needs_reconcile || Instant::now() >= self.next_reconcile {
-                        self.reconcile();
-                    } else if !self.recent.is_empty()
-                        && Instant::now() >= self.next_recent
-                        && let Err(error) = self.recheck_recent()
-                    {
-                        self.error = error;
-                        self.armed = None;
+                    if needs_reconcile {
                         self.reconcile();
                     }
                 }
@@ -215,10 +187,8 @@ impl Worker {
     }
     fn reconcile(&mut self) {
         self.armed = None;
-        self.recent.clear();
-        self.next_recent = Instant::now() + RECENT_RECHECK;
         let result = self.arm();
-        self.next_reconcile = Instant::now() + IDLE_RECONCILE;
+        self.next_reconcile = Instant::now() + RETRY_RECONCILE;
         match result {
             Ok(armed) => self.armed = Some(armed),
             Err(error) => self.error = error,
@@ -352,10 +322,6 @@ impl Worker {
                     }
                     current = Some(observed);
                 }
-                if self.recent.len() >= MAX_EVENTS && !self.recent.contains_key(&key) {
-                    return Err("recent path set exceeds its bound".into());
-                }
-                self.recent.insert(key.clone(), Instant::now());
                 let changed = current
                     .as_ref()
                     .ok_or("repository observation unavailable")?
@@ -374,28 +340,6 @@ impl Worker {
             }
         }
         armed.revision = start;
-        Ok(())
-    }
-    fn recheck_recent(&mut self) -> Result<(), String> {
-        self.next_recent = Instant::now() + RECENT_RECHECK;
-        let armed = self.armed.as_mut().ok_or_else(|| self.error.clone())?;
-        let current = Prepared::open(&self.root)?;
-        current.watchable()?;
-        if current.ticket()? != armed.ticket {
-            return Err("repository configuration changed; reconciliation required".into());
-        }
-        let now = Instant::now();
-        self.recent
-            .retain(|_, touched| now.duration_since(*touched) < RECENT_RETENTION);
-        for path in self.recent.keys() {
-            let metadata = std::fs::symlink_metadata(armed.prepared.key().join(path))
-                .map_err(|_| "recent path became unavailable; reconciliation required")?;
-            if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
-                return Err("recent path changed type; reconciliation required".into());
-            }
-            let changed = current.changed_file(Path::new(path))?;
-            armed.update(path.clone(), changed)?;
-        }
         Ok(())
     }
     fn query(&mut self, deadline: Instant) -> Result<WatchedFacts, String> {
