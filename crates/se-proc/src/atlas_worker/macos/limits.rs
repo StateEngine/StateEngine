@@ -3,6 +3,7 @@ use super::*;
 use std::{ffi::c_char, os::fd::BorrowedFd};
 unsafe extern "C" {
     fn setiopolicy_np(kind: i32, scope: i32, policy: i32) -> i32;
+    fn getiopolicy_np(kind: i32, scope: i32) -> i32;
 }
 #[link(name = "sandbox")]
 unsafe extern "C" {
@@ -10,7 +11,7 @@ unsafe extern "C" {
     fn sandbox_free_error(error: *mut c_char);
 }
 /// Runs between fork and exec, using only native async-signal-safe calls.
-pub(super) unsafe fn prepare(parent: u32) -> io::Result<()> {
+pub(super) unsafe fn prepare(parent: u32, disk_policy: i32) -> io::Result<()> {
     // Darwin aliases RLIMIT_RSS to its address-space limit. The native
     // footprint guard below enforces the resident budget without capping mappings.
     for (kind, value) in [(libc::RLIMIT_CPU, 900), (libc::RLIMIT_NOFILE, 64)] {
@@ -29,8 +30,13 @@ pub(super) unsafe fn prepare(parent: u32) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: native process-local disk priority; scalar selectors only.
-    if unsafe { setiopolicy_np(0, 0, 3) } < 0 {
+    if unsafe { setiopolicy_np(0, 0, disk_policy) } < 0 {
         return Err(io::Error::last_os_error());
+    }
+    // SAFETY: native scalar query verifies the process policy before exec.
+    let observed = unsafe { getiopolicy_np(0, 0) };
+    if observed < 0 || (disk_policy == 3) != (observed == 3) {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
     }
     // SAFETY: immutable current creator query after all pre-exec preparation.
     if unsafe { libc::getppid() } as u32 != parent {

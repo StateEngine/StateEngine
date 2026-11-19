@@ -119,6 +119,16 @@ impl AtlasWorker {
         }
         let close_limit = descriptors.rlim_cur.min(i32::MAX as u64) as i32;
         let parent = std::process::id();
+        // Probe-only switch, evaluated before fork; normal launches stay throttled.
+        let disk_policy = match std::env::var("ATLAS_MACOS_DISK_POLICY").as_deref() {
+            Ok("normal") => 0,
+            Ok("throttle") | Err(std::env::VarError::NotPresent) => 3,
+            _ => {
+                return Err(invalid(
+                    "ATLAS_MACOS_DISK_POLICY must be normal or throttle",
+                ));
+            }
+        };
         let mut command = Command::new(image);
         command
             .arg(ENTRY)
@@ -135,7 +145,7 @@ impl AtlasWorker {
                 if libc::dup2(fd, 3) < 0 || libc::fcntl(3, libc::F_SETFD, 0) < 0 {
                     return Err(io::Error::last_os_error());
                 }
-                limits::prepare(parent)?;
+                limits::prepare(parent, disk_policy)?;
                 for descriptor in 4..close_limit {
                     // Preserve Command's error pipe until exec: closing it here
                     // would turn an exec failure into an apparent successful spawn.
