@@ -1,6 +1,6 @@
 //! One SQL/result arena, with bounded foreground waiting instead of a refusal
 //! when the maintenance writer is finishing its current transaction.
-use super::timeout;
+use super::{timeout, timeout_phase};
 use crate::{errors::AtlasResult, errors::cache_error};
 use std::{
     sync::{Condvar, Mutex},
@@ -20,6 +20,9 @@ static READY: Condvar = Condvar::new();
 pub(super) struct Reservation;
 impl Reservation {
     pub(super) fn acquire(reader: bool, deadline: Instant) -> AtlasResult<Self> {
+        let started = Instant::now();
+        let wait_deadline = crate::clock::wait_deadline(deadline);
+        let budget = wait_deadline.saturating_duration_since(started);
         let mut state = STATE
             .lock()
             .map_err(|_| cache_error("Atlas query arena lock poisoned"))?;
@@ -29,7 +32,13 @@ impl Reservation {
                 .checked_add(1)
                 .ok_or_else(|| cache_error("Atlas query arena waiter count exhausted"))?;
         }
-        let wait_deadline = crate::clock::wait_deadline(deadline);
+        let expired = || {
+            if !reader || budget.is_zero() {
+                timeout(0)
+            } else {
+                timeout_phase("query arena admission", budget, started.elapsed())
+            }
+        };
         let mut waited = false;
         while state.held || (!reader && state.readers != 0) {
             waited = true;
@@ -39,7 +48,7 @@ impl Reservation {
                     state.readers -= 1;
                 }
                 READY.notify_all();
-                return Err(timeout(0));
+                return Err(expired());
             }
             state = READY
                 .wait_timeout(state, remaining)
@@ -51,7 +60,7 @@ impl Reservation {
         }
         if crate::clock::now() >= deadline || (waited && Instant::now() >= wait_deadline) {
             READY.notify_all();
-            return Err(timeout(0));
+            return Err(expired());
         }
         state.held = true;
         Ok(Self)
