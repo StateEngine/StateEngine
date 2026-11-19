@@ -125,28 +125,6 @@ impl NativeMetadataPin {
         }
         self.metadata().map(|_| ())
     }
-    /// Inspect a sibling while retaining and revalidating this database identity.
-    #[cfg(windows)]
-    pub fn sibling_metadata(&self, path: &Path) -> Result<Option<Metadata>> {
-        if path.parent() != self.path.parent() {
-            return Err(unsafe_path("database sibling must share its parent", path));
-        }
-        self.metadata()?;
-        let metadata = if self.direct_metadata {
-            self.files
-                .directory
-                .read_admitted_metadata(path, &self.files.root)?
-                .map(|file| {
-                    file.metadata()
-                        .map_err(|error| io_error("inspect database sibling", path, error))
-                })
-                .transpose()?
-        } else {
-            self.files.inspect_metadata(path)?
-        };
-        self.metadata()?;
-        Ok(metadata)
-    }
     pub fn identity(&self) -> Result<([u8; 16], [u8; 16])> {
         let metadata = self.metadata()?;
         #[cfg(unix)]

@@ -62,14 +62,6 @@ pub trait DatabaseFile {
             "database file does not validate its name",
         ))
     }
-    /// Inspect a protected sibling of this database without losing custody.
-    #[cfg(windows)]
-    fn sibling_metadata(&self, _path: &Path) -> std::io::Result<Option<std::fs::Metadata>> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "database file does not inspect sibling names",
-        ))
-    }
 }
 
 pub struct DatabasePin {
