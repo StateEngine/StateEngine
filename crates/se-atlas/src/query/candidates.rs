@@ -1,7 +1,7 @@
 use super::*;
 use crate::cache::connection::BudgetStatement;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Kind {
     Symbol,
     File,
@@ -45,6 +45,9 @@ pub(super) fn collect(
     };
     let mut resident = 0;
     for plan in super::candidate_sql::plans(query, mode)? {
+        let started = std::time::Instant::now();
+        let kind = plan.kind;
+        let tier = plan.tier;
         admission_time(end)?;
         let mut ids = Vec::with_capacity(513);
         {
@@ -77,6 +80,11 @@ pub(super) fn collect(
             // An unfinished traversal prefix cannot provide a ranked continuation.
             admission_time(end)?;
             let kind = plan.kind;
+            // An earlier tier has already validated and retained this row in
+            // the same snapshot; avoid repeating its metadata and authority reads.
+            if output.values.iter().any(|c| c.kind == kind && c.rowid == rowid) {
+                continue;
+            }
             let (key, tie, path) = read_metadata(&mut metadata, rowid)?;
             if path.as_ref().is_some_and(crate::policy::built_in_denied) {
                 continue;
@@ -113,13 +121,6 @@ pub(super) fn collect(
                     _ => return Err(cache_error("search record authority unavailable")),
                 }
             }
-            if output
-                .values
-                .iter()
-                .any(|c| c.kind == kind && c.rowid == rowid)
-            {
-                continue;
-            }
             let cost = key.len() + tie.len() + 160;
             resident += cost;
             let candidate = Candidate {
@@ -155,6 +156,7 @@ pub(super) fn collect(
                 output.truncated = true;
             }
         }
+        eprintln!("ATLAS_QUERY_PLAN kind={kind:?} tier={tier} elapsed_us={} remaining_us={} candidates={}", started.elapsed().as_micros(), end.saturating_duration_since(std::time::Instant::now()).as_micros(), output.values.len());
     }
     let mut activity = crate::rank::ActivityReader::new(sql)?;
     for candidate in &mut output.values {

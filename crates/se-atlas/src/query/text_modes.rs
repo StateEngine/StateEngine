@@ -6,7 +6,9 @@ impl QueryReader<'_, '_, '_> {
         query: &FindQuery,
     ) -> AtlasResult<Answer<Read<SearchResults>>> {
         deadline(query.budget)?;
-        let end = crate::clock::now() + Duration::from_secs(1);
+        let end = crate::clock::now()
+            + super::text::SOURCE_WINDOW
+            + super::text::FINALIZE_ALLOWANCE;
         let initial = query.mode.unwrap_or_else(|| {
             if query.regex || query.kind == SearchKind::Text {
                 SearchMode::Literal

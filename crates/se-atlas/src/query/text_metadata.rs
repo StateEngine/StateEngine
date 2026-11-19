@@ -13,8 +13,16 @@ pub(super) fn collect(
     end: Instant,
 ) -> AtlasResult<Metadata> {
     // Metadata still has the short SQL budget; text uses the remaining scan budget.
-    let metadata_end = end.min(crate::clock::now() + query.budget.work);
-    let candidates = super::candidates::collect(env, sql, snapshot, query, mode, metadata_end)?;
+    let started = crate::clock::now();
+    let metadata_end = end.min(started + query.budget.work);
+    let result = super::phase_timeout(
+        "combined metadata candidates",
+        started,
+        metadata_end,
+        super::candidates::collect(env, sql, snapshot, query, mode, metadata_end),
+    );
+    eprintln!("ATLAS_QUERY_METADATA mode={mode:?} budget_us={} elapsed_us={} ok={}", metadata_end.saturating_duration_since(started).as_micros(), started.elapsed().as_micros(), result.is_ok());
+    let candidates = result?;
     let mut output = Metadata {
         values: Vec::new(),
         truncated: candidates.truncated,

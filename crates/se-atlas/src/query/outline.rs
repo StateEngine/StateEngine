@@ -3,10 +3,11 @@ use rusqlite::params;
 impl QueryReader<'_, '_, '_> {
     pub fn outline(&mut self, query: &OutlineQuery) -> AtlasResult<Answer<Read<Outline>>> {
         let end = deadline(query.budget)?;
+        let started = end - query.budget.work;
         let digest = cursor::digest(&("outline", &query.path, &self.ctx.viewer))?;
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
-        let answer = self.cache.read(end, |sql| {
+        let result = self.cache.read(end, |sql| {
             let snapshot = snapshot(&identity, &env, sql)?;
             if crate::policy::built_in_denied(&query.path) {return Ok(snapshot.unknown("source path is excluded by the built-in private-file policy"));}
             let previous = query.next.as_ref().map(PositionCursor::decode).transpose()?;
@@ -62,7 +63,8 @@ impl QueryReader<'_, '_, '_> {
                 output.complete = false;
             }
             check_output(snapshot.answer(Read::Present { value: output }, advanced), query.budget)
-        })?;
+        });
+        let answer = phase_timeout("outline query", started, end, result)?;
         super::freshness::finish(self, answer, query.budget, end)
     }
 }

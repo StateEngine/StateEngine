@@ -3,11 +3,12 @@ use rusqlite::params;
 impl QueryReader<'_, '_, '_> {
     pub fn changes(&mut self, query: &ChangesQuery) -> AtlasResult<Answer<Read<Page<CodeChange>>>> {
         let end = deadline(query.budget)?;
+        let started = end - query.budget.work;
         let digest = cursor::digest(&("changes", &query.since, &query.scope, &self.ctx.viewer))?;
         query.scope.validate()?;
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
-        let answer = self.cache.read(end, |sql| {
+        let result = self.cache.read(end, |sql| {
             let snapshot = snapshot(&identity, &env, sql)?;
             let baseline = baseline(&env, sql, &snapshot, &query.since)?;
             let previous = query.next.as_ref().map(PositionCursor::decode).transpose()?;
@@ -50,7 +51,8 @@ impl QueryReader<'_, '_, '_> {
             let page = page(&snapshot, items, query.budget, next, !snapshot.negative_complete() || advanced || incomplete,
                 bytes, query.next.as_ref())?;
             check_output(snapshot.answer(Read::Present { value: page }, advanced), query.budget)
-        })?;
+        });
+        let answer = phase_timeout("changes query", started, end, result)?;
         super::freshness::finish(self, answer, query.budget, end)
     }
 }

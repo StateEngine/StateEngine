@@ -18,6 +18,7 @@ struct ResultRow {
 impl QueryReader<'_, '_, '_> {
     pub fn impact(&mut self, query: &ImpactQuery) -> AtlasResult<Answer<Read<Impact>>> {
         let end = deadline(query.budget)?;
+        let started = end - query.budget.work;
         if !(1..=3).contains(&query.depth) {
             return Err(se_types::SeError::invalid("impact depth", "1..3"));
         }
@@ -30,9 +31,10 @@ impl QueryReader<'_, '_, '_> {
         ))?;
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
-        let answer = self.cache.read(end, |sql| {
+        let result = self.cache.read(end, |sql| {
             Self::impact_page(&identity, &env, query, end, digest, sql)
-        })?;
+        });
+        let answer = phase_timeout("impact query", started, end, result)?;
         super::freshness::finish(self, answer, query.budget, end)
     }
 

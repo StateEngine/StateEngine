@@ -301,6 +301,42 @@ fn deadline(budget: QueryBudget) -> AtlasResult<Instant> {
     }
     Ok(crate::clock::now() + budget.work)
 }
+/// Add the actual phase allowance and elapsed time to a generic SQL timeout.
+fn phase_timeout<T>(
+    phase: &str,
+    started: Instant,
+    end: Instant,
+    result: AtlasResult<T>,
+) -> AtlasResult<T> {
+    result.map_err(|error| phase_error(phase, started, end, error))
+}
+fn phase_error(
+    phase: &str,
+    started: Instant,
+    end: Instant,
+    mut error: se_types::SeError,
+) -> se_types::SeError {
+    if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas SQL")
+    {
+        let millis = |duration: Duration| {
+            u64::try_from(duration.as_millis())
+                .unwrap_or(u64::MAX)
+                .saturating_add(u64::from(
+                    !duration.subsec_nanos().is_multiple_of(1_000_000),
+                ))
+        };
+        let elapsed = millis(crate::clock::now().saturating_duration_since(started));
+        let budget = millis(end.saturating_duration_since(started));
+        error.body = se_types::SeError::new(se_types::Detail::DeadlineExceeded(
+            se_types::details::DeadlineExceeded {
+                op: format!("Atlas SQL {phase} (elapsed {elapsed} ms)"),
+                deadline_ms: budget,
+            },
+        ))
+        .body;
+    }
+    error
+}
 fn size(value: &impl Serialize) -> AtlasResult<usize> {
     struct Counter(usize);
     impl std::io::Write for Counter {
