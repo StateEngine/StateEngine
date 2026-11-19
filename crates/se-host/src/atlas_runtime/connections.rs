@@ -88,6 +88,12 @@ impl<D: RenewalDriver> NativeRuntime<D> {
         })?;
         let cache = NativeAtlasCache::create(&self.home, root.source.scope.clone())
             .map_err(PollEventsFailure::Admission)?;
+        #[cfg(all(windows, feature = "atlas-drain-probe"))]
+        match std::fs::remove_file(self.home.join("atlas-probe-slow-event-setup")) {
+            Ok(()) => std::thread::sleep(Duration::from_millis(175)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(PollEventsFailure::Admission(atlas_cold::failure(error))),
+        }
         let mut current = writer(&cache, root, profile, deadline)
             .map_err(PollEventsFailure::Admission)?
             .ok_or_else(|| {

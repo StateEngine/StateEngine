@@ -250,6 +250,14 @@ impl NativeSourceWatch {
     pub fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
         self.read_limit(buffer, usize::MAX)
     }
+    /// Witness overflow without removing any queued native notification.
+    #[cfg(feature = "atlas-drain-probe")]
+    pub fn probe_overflow_pending(&self) -> io::Result<bool> {
+        self.queue
+            .lock()
+            .map(|queue| queue.lost)
+            .map_err(|_| io::Error::other("watch queue poisoned"))
+    }
     /// Retain later records in the native queue for a bounded consumer.
     pub fn read_one(&self, buffer: &mut [u8]) -> io::Result<usize> {
         self.read_limit(buffer, 1)

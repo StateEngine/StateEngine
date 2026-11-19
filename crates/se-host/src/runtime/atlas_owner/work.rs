@@ -105,11 +105,7 @@ impl State {
                     root.event_retry
                         .map(|(_, delay, draining)| (delay, draining))
                 });
-            let result = drive_events(
-                &mut self.controller,
-                &id,
-                Instant::now() + Duration::from_millis(100),
-            );
+            let result = drive_owner_events(&mut self.controller, &id);
             let pending = self.controller.watch_pending(&id);
             let drain =
                 result.is_ok() && !pending && previous.is_some_and(|(_, draining)| !draining);

@@ -1,4 +1,46 @@
 use super::*;
+
+/// One source wake uses the same drain budget as the native owner loop.
+pub fn drive_owner_events(
+    controller: &mut crate::atlas_runtime::NativeController<NativeRenewal>,
+    root: &RootId,
+) -> AtlasResult<usize> {
+    drive_events(
+        controller,
+        root,
+        Instant::now() + Duration::from_millis(100),
+    )
+}
+
+#[cfg(all(windows, feature = "atlas-drain-probe"))]
+impl NativeRenewal {
+    pub fn probe_wait_overflow(&self, root: &RootId) -> AtlasResult<()> {
+        let watch = self
+            .roots
+            .iter()
+            .find(|item| &item.id == root)
+            .and_then(|item| item.native.as_ref())
+            .map(|native| &native.watch)
+            .ok_or_else(|| source_error("overflow deadline probe", "warm watch absent"))?;
+        let end = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < end {
+            watch
+                .synchronize(Duration::from_secs(1))
+                .map_err(|error| source_error("overflow deadline probe", error))?;
+            if watch
+                .probe_overflow_pending()
+                .map_err(|error| source_error("overflow deadline probe", error))?
+            {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Err(source_error(
+            "overflow deadline probe",
+            "native queue never overflowed",
+        ))
+    }
+}
 impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
     fn bind_parser_image(&mut self, image: &std::path::Path) -> AtlasResult<()> {
         self.parser.bind_image(image);

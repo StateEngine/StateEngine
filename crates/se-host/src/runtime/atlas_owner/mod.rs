@@ -6,7 +6,7 @@ mod records;
 mod roots;
 mod work;
 use super::{ExecutionContext, HostedRuntime, executor};
-use crate::atlas_renewal::{NativeRenewal, drive_events, drive_quantum};
+use crate::atlas_renewal::{NativeRenewal, drive_owner_events, drive_quantum};
 use crate::atlas_runtime::project_work::{ProjectWork, Ticket};
 use crate::atlas_runtime::{NativeController, NativeRuntime, read_port::*};
 use se_atlas::{cache::connection::SqlProfile, lifecycle::*, model::*, parse::ParserProfile};

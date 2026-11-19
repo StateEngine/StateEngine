@@ -5,7 +5,7 @@ mod ignore;
 mod metadata;
 mod observe;
 mod port;
-pub use port::{drive_events, drive_quantum};
+pub use port::{drive_events, drive_owner_events, drive_quantum};
 mod scan;
 mod summary;
 mod watch;
