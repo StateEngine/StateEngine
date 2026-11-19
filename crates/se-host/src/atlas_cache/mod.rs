@@ -23,6 +23,13 @@ impl DatabaseFile for Metadata {
     fn identity(&self) -> std::io::Result<DatabaseFileIdentity> {
         self.0.identity().map_err(std::io::Error::other)
     }
+    fn validate_path(&self, path: &Path) -> std::io::Result<()> {
+        self.0.validate_path(path).map_err(std::io::Error::other)
+    }
+    #[cfg(windows)]
+    fn sibling_metadata(&self, path: &Path) -> std::io::Result<Option<std::fs::Metadata>> {
+        self.0.sibling_metadata(path).map_err(std::io::Error::other)
+    }
 }
 pub struct NativeAtlasCache {
     home: NativeStateFiles,
@@ -266,14 +273,28 @@ impl CacheFiles for NativeAtlasCache {
     }
     fn pin_database(&self, epoch: &CacheEpoch) -> AtlasResult<Option<DatabasePin>> {
         let path = self.path(epoch);
-        Ok(self
-            .root
-            .pin_metadata(&path)
-            .map_err(fail)?
-            .map(|file| DatabasePin {
-                file: Box::new(Metadata(file)),
-                path,
-            }))
+        let Some(original) = self.root.pin_metadata(&path).map_err(fail)? else {
+            return Ok(None);
+        };
+        #[cfg(windows)]
+        let file = {
+            let parent = path.parent().ok_or_else(|| fail("epoch parent absent"))?;
+            let directory = NativeStateFiles::open(parent).map_err(fail)?;
+            let retained = directory
+                .pin_metadata(&path)
+                .map_err(fail)?
+                .ok_or_else(|| fail("retained database name absent"))?;
+            if original.identity().map_err(fail)? != retained.identity().map_err(fail)? {
+                return Err(fail("retained database identity changed"));
+            }
+            retained
+        };
+        #[cfg(not(windows))]
+        let file = original;
+        Ok(Some(DatabasePin {
+            file: Box::new(Metadata(file)),
+            path,
+        }))
     }
     fn reserve_database(&self, epoch: &CacheEpoch) -> AtlasResult<DatabasePin> {
         self.require_writer()?;
@@ -309,9 +330,16 @@ impl CacheFiles for NativeAtlasCache {
         files
             .publish_no_replace(&stage.path, &self.path(epoch))
             .map_err(fail)?;
-        let pin = self
-            .pin_database(epoch)?
-            .ok_or_else(|| fail("reserved database absent on readback"))?;
+        let path = self.path(epoch);
+        let pin = DatabasePin {
+            file: Box::new(Metadata(
+                self.root
+                    .pin_metadata(&path)
+                    .map_err(fail)?
+                    .ok_or_else(|| fail("reserved database absent on readback"))?,
+            )),
+            path,
+        };
         let identity = pin.file.identity().map_err(fail)?;
         self.remember_reservation(epoch, &pin)?;
         *self.reserved.borrow_mut() = Some((epoch.clone(), identity));
@@ -377,24 +405,42 @@ impl CacheFiles for NativeAtlasCache {
         Ok(())
     }
     fn validate_database(&self, pin: &DatabasePin) -> AtlasResult<()> {
-        let epoch = self.epoch(pin)?;
-        let named = self
-            .pin_database(&epoch)?
-            .ok_or_else(|| fail("retained database name absent"))?;
-        if pin.file.identity().map_err(fail)? != named.file.identity().map_err(fail)? {
-            return Err(fail("retained database identity changed"));
+        #[cfg(windows)]
+        {
+            self.epoch(pin)?;
+            pin.file.validate_path(&pin.path).map_err(fail)
         }
-        Ok(())
+        #[cfg(not(windows))]
+        {
+            let epoch = self.epoch(pin)?;
+            let named = self
+                .pin_database(&epoch)?
+                .ok_or_else(|| fail("retained database name absent"))?;
+            if pin.file.identity().map_err(fail)? != named.file.identity().map_err(fail)? {
+                return Err(fail("retained database identity changed"));
+            }
+            Ok(())
+        }
     }
     fn wal_bytes(&self, pin: &DatabasePin) -> AtlasResult<u64> {
         self.validate_database(pin)?;
         let path = pin.path.with_file_name("atlas.db-wal");
-        self.root
-            .pin_metadata(&path)
-            .map_err(fail)?
-            .map(|f| f.metadata().map(|m| m.len()).map_err(fail))
-            .transpose()
-            .map(|n| n.unwrap_or(0))
+        #[cfg(windows)]
+        {
+            pin.file
+                .sibling_metadata(&path)
+                .map_err(fail)
+                .map(|metadata| metadata.map_or(0, |metadata| metadata.len()))
+        }
+        #[cfg(not(windows))]
+        {
+            self.root
+                .pin_metadata(&path)
+                .map_err(fail)?
+                .map(|f| f.metadata().map(|m| m.len()).map_err(fail))
+                .transpose()
+                .map(|n| n.unwrap_or(0))
+        }
     }
     fn reserve_growth(&self, bytes: u64) -> AtlasResult<Box<dyn GrowthReservation + '_>> {
         self.require_writer()?;
