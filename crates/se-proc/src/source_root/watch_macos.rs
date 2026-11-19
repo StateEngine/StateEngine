@@ -5,7 +5,7 @@ use std::{
     collections::VecDeque,
     ffi::{CStr, CString, c_char, c_void},
     ptr,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
 
@@ -67,6 +67,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     fn dispatch_queue_create(label: *const c_char, attributes: Raw) -> Raw;
+    fn dispatch_async_f(queue: Raw, context: Raw, work: unsafe extern "C" fn(Raw));
     fn dispatch_sync_f(queue: Raw, context: Raw, work: unsafe extern "C" fn(Raw));
     fn dispatch_release(object: Raw);
 }
@@ -277,12 +278,21 @@ impl NativeSourceWatch {
             physical_directory: pin.identity.root_key(),
         }))
     }
-    pub fn synchronize(&self, _timeout: Duration) -> io::Result<()> {
-        // SAFETY: the queue remains retained; the barrier has no captured state.
+    pub fn synchronize(&self, timeout: Duration) -> io::Result<()> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let context = Box::into_raw(Box::new(sender));
+        // SAFETY: the queue remains retained and the callback owns this allocation.
         unsafe {
-            dispatch_sync_f(self.dispatch.0, ptr::null_mut(), barrier);
+            dispatch_async_f(self.dispatch.0, context.cast(), complete_barrier);
         }
-        Ok(())
+        receiver.recv_timeout(timeout).map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => {
+                io::Error::new(io::ErrorKind::TimedOut, "source watch barrier timed out")
+            }
+            mpsc::RecvTimeoutError::Disconnected => {
+                io::Error::other("source watch barrier stopped")
+            }
+        })
     }
     pub fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
         if !(4096..=32768).contains(&buffer.len()) {
@@ -320,6 +330,12 @@ impl NativeSourceWatch {
     }
 }
 unsafe extern "C" fn barrier(_: Raw) {}
+
+unsafe extern "C" fn complete_barrier(context: Raw) {
+    // SAFETY: the dispatch callback uniquely owns the boxed sender, even after timeout.
+    let sender = unsafe { Box::from_raw(context.cast::<mpsc::SyncSender<()>>()) };
+    let _ = sender.send(());
+}
 
 unsafe extern "C" fn callback(
     _: Raw,
