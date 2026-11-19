@@ -18,7 +18,10 @@ platform = 'win32' if os.name == 'nt' else sys.platform
 if platform not in PACKAGES:
     sys.exit(f'no pinned Codex package for {platform}')
 url, digest, member = PACKAGES[platform]
-work = Path(sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix='xprobe-')).resolve()
+# Windows AF_UNIX paths are limited to about 108 characters, and the login's control
+# socket sits three levels under the probe's home, so keep the work root short there.
+short_root = (os.environ.get('SystemDrive', 'C:') + '\\') if os.name == 'nt' else None
+work = Path(sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp(prefix='x', dir=short_root)).resolve()
 work.mkdir(parents=True, exist_ok=True)
 data = urllib.request.urlopen(url, timeout=300).read()
 actual = hashlib.sha256(data).hexdigest()
