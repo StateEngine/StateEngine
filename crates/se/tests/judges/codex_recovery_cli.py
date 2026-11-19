@@ -59,11 +59,12 @@ class Judge:
         self.env.update(HOME=str(self.root / "owner"), USERPROFILE=str(self.root / "owner"),
                         CODEX_HOME=str(self.root / "codex"), XDG_RUNTIME_DIR=str(self.root / "runtime"),
                         TMPDIR=str(self.root / "tmp"))
+        # Shorten the real provider-control windows at spawn; the engine
+        # still runs the same recovery and stop paths against the injected
+        # thresholds, and the production defaults are unchanged.
+        self.env["SE_PROVIDER_STOP_GRACE_MS"] = "500"
         if self.args.scenario == "slow":
-            # Shorten the real provider-control restore window at spawn; the
-            # engine still runs the same recovery path against the injected
-            # threshold, and the production default is unchanged.
-            self.env["SE_PROVIDER_RESTORE_DEADLINE_MS"] = "5000"
+            self.env["SE_PROVIDER_RESTORE_DEADLINE_MS"] = "1000"
         self.calls = 0
         self.stopped = []
         self.identities = []
