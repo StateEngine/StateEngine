@@ -40,15 +40,37 @@ struct Queued {
     bytes: usize,
     paths: usize,
 }
-#[derive(Default)]
+/// Window in which source work must settle before a fresh publication is
+/// offered. The production default stays 10 s; independent consumers shorten
+/// it explicitly instead of waiting it out.
+pub const DEFAULT_PUBLICATION_DELAY: Duration = Duration::from_secs(10);
 pub struct Scheduler {
     roots: Vec<Root>,
     queue: VecDeque<Queued>,
     bytes: usize,
     paths: usize,
     turn: usize,
+    publication_delay: Duration,
+}
+impl Default for Scheduler {
+    fn default() -> Self {
+        Self {
+            roots: Vec::new(),
+            queue: VecDeque::new(),
+            bytes: 0,
+            paths: 0,
+            turn: 0,
+            publication_delay: DEFAULT_PUBLICATION_DELAY,
+        }
+    }
 }
 impl Scheduler {
+    /// Replace the publication window for a consumer that must not wait the
+    /// production default; the scheduler logic itself is unchanged.
+    pub fn with_publication_delay(mut self, delay: Duration) -> Self {
+        self.publication_delay = delay;
+        self
+    }
     pub(crate) fn pending(&self, id: &RootId) -> bool {
         self.roots
             .iter()
@@ -219,7 +241,7 @@ impl Scheduler {
                 && r.reconcile.is_none()
                 && !self.queue.iter().any(|q| q.root == r.id)
                 && r.first.is_some_and(|first| {
-                    now.saturating_duration_since(first) >= Duration::from_secs(10)
+                    now.saturating_duration_since(first) >= self.publication_delay
                 })
         })
     }
@@ -253,8 +275,9 @@ impl Scheduler {
                 && !root.git_lock
                 && let Some(first) = root.first
             {
-                let wait =
-                    Duration::from_secs(10).saturating_sub(now.saturating_duration_since(first));
+                let wait = self
+                    .publication_delay
+                    .saturating_sub(now.saturating_duration_since(first));
                 delay = Some(delay.map_or(wait, |old: Duration| old.min(wait)));
             }
         }

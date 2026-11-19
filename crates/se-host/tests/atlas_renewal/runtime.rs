@@ -128,7 +128,10 @@ fn real_runtime_renews_watches_reconciles_and_preserves_failed_baselines() -> Ch
     pointer::publish(&cache, &mut db, None, deadline())?;
     drop(db);
     drop(cache);
-    let mut controller = Controller::new(runtime(&home)?);
+    // A 300 ms window keeps the publication gate under test without making
+    // the consumer wait the production default out.
+    let mut controller =
+        Controller::with_publication_delay(runtime(&home)?, Duration::from_millis(300));
     controller.register(registration.clone(), policy(2)?)?;
     controller.activate(registration.root.clone(), ReconcileReason::FirstSession)?;
     assert!(
@@ -645,7 +648,8 @@ fn real_runtime_renews_watches_reconciles_and_preserves_failed_baselines() -> Ch
         ["src/use.js"]
     );
     drop(controller);
-    let mut controller = Controller::new(runtime(&home)?);
+    let mut controller =
+        Controller::with_publication_delay(runtime(&home)?, Duration::from_millis(300));
     controller.register(registration.clone(), policy(64)?)?;
     controller.activate(registration.root.clone(), ReconcileReason::FirstSession)?;
     drain(&mut controller)?;
