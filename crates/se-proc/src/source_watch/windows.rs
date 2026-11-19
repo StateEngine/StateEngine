@@ -250,6 +250,21 @@ impl NativeSourceWatch {
     pub fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
         self.read_limit(buffer, usize::MAX)
     }
+    /// Inspect a probe stimulus without consuming any retained notification.
+    #[cfg(feature = "cold-watch-probe")]
+    pub fn probe_pending(&self, path: Option<&str>) -> io::Result<(bool, usize, bool)> {
+        let queue = self
+            .queue
+            .lock()
+            .map_err(|_| io::Error::other("watch queue poisoned"))?;
+        let witnessed = path.map_or(queue.lost, |path| {
+            queue.events.iter().any(|bytes| {
+                NativeWatchEvents::new(bytes)
+                    .any(|event| event.is_ok_and(|event| event.name == std::ffi::OsStr::new(path)))
+            })
+        });
+        Ok((witnessed, queue.events.len(), queue.lost))
+    }
     /// Retain later records in the native queue for a bounded consumer.
     pub fn read_one(&self, buffer: &mut [u8]) -> io::Result<usize> {
         self.read_limit(buffer, 1)

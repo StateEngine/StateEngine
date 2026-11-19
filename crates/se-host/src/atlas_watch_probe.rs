@@ -32,18 +32,23 @@ pub(crate) fn hold_finalization(home: &Path) -> AtlasResult<()> {
 }
 
 #[cfg(windows)]
-pub(crate) fn event(
-    source: &se_atlas::source::RegisteredSource<crate::atlas_source::NativeAtlasSource>,
-    kind: &str,
-) -> AtlasResult<bool> {
-    let home = source
-        .scope
-        .registration
-        .cache
-        .directory
-        .ancestors()
-        .nth(2)
-        .ok_or_else(|| crate::atlas_cold::failure("watch probe home absent"))?;
+type Source = se_atlas::source::RegisteredSource<crate::atlas_source::NativeAtlasSource>;
+
+#[cfg(windows)]
+fn home(source: &Source) -> Option<&Path> {
+    source.scope.registration.cache.directory.ancestors().nth(2)
+}
+
+#[cfg(windows)]
+pub(crate) fn trace(source: &Source, event: &se_proc::NativeWatchEvent<'_>) {
+    if home(source).is_some_and(|home| home.join("watch-probe").is_file()) {
+        eprintln!("cold watch event: {:?} {:?}", event.action, event.name);
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn event(source: &Source, kind: &str) -> AtlasResult<bool> {
+    let home = home(source).ok_or_else(|| crate::atlas_cold::failure("watch probe home absent"))?;
     let fault = match fs::read_to_string(home.join("watch-probe")) {
         Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),

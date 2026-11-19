@@ -1,17 +1,37 @@
 use super::*;
 #[cfg(all(windows, feature = "cold-watch-probe"))]
 impl NativeRenewal {
-    pub fn probe_flush_cold_watch(&self, root: &RootId) -> AtlasResult<()> {
+    pub fn probe_retained_event(&self, root: &RootId, path: Option<&str>) -> AtlasResult<()> {
         let capture = self
             .cold_capture
             .as_ref()
             .filter(|capture| &capture.id == root)
             .ok_or_else(|| source_error("cold watch probe", "no retained watch"))?;
-        capture
-            .native
-            .watch
-            .synchronize(Duration::from_secs(5))
-            .map_err(|error| source_error("cold watch probe", error))
+        let watch = &capture.native.watch;
+        let end = Instant::now() + Duration::from_secs(8);
+        loop {
+            watch
+                .synchronize(Duration::from_secs(1))
+                .map_err(|error| source_error("cold watch probe", error))?;
+            let (seen, queued, lost) = watch
+                .probe_pending(path)
+                .map_err(|error| source_error("cold watch probe", error))?;
+            if seen {
+                eprintln!(
+                    "cold watch witnessed before adoption: {path:?} queued={queued} lost={lost}"
+                );
+                return Ok(());
+            }
+            if Instant::now() >= end {
+                return Err(source_error(
+                    "cold watch probe",
+                    format!(
+                        "stimulus {path:?} absent before adoption; queued={queued} lost={lost}"
+                    ),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 

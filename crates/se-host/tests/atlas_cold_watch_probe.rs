@@ -18,6 +18,7 @@ mod native {
     use se_types::{ProjectId, SeError};
     use std::{
         fs,
+        io::Write,
         path::Path,
         process::Command,
         time::{Duration, Instant},
@@ -59,7 +60,7 @@ mod native {
                     }
                 }
                 Self::Ignore => {
-                    fs::write(source.join(".gitignore"), "/src/hidden.js\n")?;
+                    persist(&source.join(".gitignore"), b"/src/hidden.js\n")?;
                 }
             }
             Ok(())
@@ -67,10 +68,14 @@ mod native {
     }
 
     fn write_symbol(source: &Path, path: &str, name: &str) -> std::io::Result<()> {
-        fs::write(
-            source.join(path),
-            format!("export function {name}() {{ return 1; }}\n"),
-        )
+        let text = format!("export function {name}() {{ return 1; }}\n");
+        persist(&source.join(path), text.as_bytes())
+    }
+
+    fn persist(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let mut file = fs::File::create(path)?;
+        file.write_all(bytes)?;
+        file.sync_all()
     }
 
     fn policy() -> AtlasPolicy {
@@ -233,12 +238,25 @@ mod native {
         })?;
         case.modify(&source)?;
         #[cfg(windows)]
-        controller
-            .runtime_mut()
-            .driver_mut()
-            .probe_flush_cold_watch(&root)?;
+        {
+            let event = match case {
+                Case::Edit => Some(MAIN),
+                Case::Overflow => None,
+                Case::Ignore => Some(".gitignore"),
+            };
+            controller
+                .runtime_mut()
+                .driver_mut()
+                .probe_retained_event(&root, event)?;
+        }
         fs::write(home.join("watch-probe-release"), [])?;
         wait_for_child(&mut controller, |c| Ok(c.runtime().child_pid().is_none()))?;
+        #[cfg(windows)]
+        eprintln!(
+            "cold watch adopted with pending={}, discovery_complete={}",
+            controller.watch_pending(&root),
+            controller.summary(&root)?.coverage.discovery_complete
+        );
         if names(&controller, &root, MAIN)? != ["before_edit"]
             || names(&controller, &root, HIDDEN)? != ["hidden_before"]
             || !names(&controller, &root, VISIBLE)?.is_empty()
@@ -251,9 +269,10 @@ mod native {
             .join(format!("watch-probe-saw-{}", case.name()))
             .try_exists()?
         {
-            return Err(
-                format!("native watch never delivered the {} stimulus", case.name()).into(),
-            );
+            return Err(format!(
+                "native watch never delivered the {} stimulus after adoption; reconciliation={walked}, current={:?}",
+                case.name(), names(&controller, &root, MAIN)?
+            ).into());
         }
         let result = check_result(&controller, &root, case, walked);
         if !matches!(
@@ -277,9 +296,11 @@ mod native {
         } else {
             &["edit"]
         };
+        let mut failed = Vec::new();
         for case in cases {
             if !Command::new(&exe).arg(case).status()?.success() {
-                return Err(format!("unmodified cold watch case failed: {case}").into());
+                failed.push((*case, "unmodified implementation"));
+                continue;
             }
             if cfg!(windows) {
                 let mutant = Command::new(&exe).args([case, "--drop"]).output()?;
@@ -288,12 +309,17 @@ mod native {
                 if mutant.status.success()
                     || !failure.contains(&format!("cold-watch assertion [{case}]"))
                 {
-                    return Err(format!("mutant did not fail the intended {case} assertion").into());
+                    failed.push((*case, "mutant did not fail the intended assertion"));
+                    continue;
                 }
                 println!("PASS cold-watch {case} mutant failed its readiness assertion");
             }
         }
-        Ok(())
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("cold watch cases failed: {failed:?}").into())
+        }
     }
 
     pub fn run() -> Check {

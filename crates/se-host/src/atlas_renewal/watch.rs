@@ -263,6 +263,8 @@ impl NativeRenewal {
                             )]));
                         }
                     };
+                    #[cfg(all(windows, feature = "cold-watch-probe"))]
+                    crate::atlas_watch_probe::trace(source, &event);
                     if event.action == NativeWatchAction::Overflow {
                         #[cfg(all(windows, feature = "cold-watch-probe"))]
                         if crate::atlas_watch_probe::event(source, "overflow")? {
