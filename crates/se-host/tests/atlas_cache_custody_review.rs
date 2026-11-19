@@ -203,7 +203,20 @@ fn above_root_junction_checks_owner_and_acl() -> Check {
     let target = f.dir.join("redirected-parent");
     fs::create_dir(&target)?;
     fs::write(target.join("sentinel.txt"), b"redirected fixture");
-    let alias = f.dir.join("ancestor-link");
+    let parent = f.dir.join("trusted-parent");
+    fs::create_dir(&parent)?;
+    acl(&parent, &["/setowner", "*S-1-5-32-544", "/q"])?;
+    acl(
+        &parent,
+        &[
+            "/inheritance:r",
+            "/grant:r",
+            "*S-1-5-32-544:(F)",
+            "*S-1-5-18:(F)",
+            "/q",
+        ],
+    )?;
+    let alias = parent.join("ancestor-link");
     junction(&alias, &target)?;
     acl(&alias, &["/l", "/setowner", "*S-1-5-32-544", "/q"])?;
     acl(
