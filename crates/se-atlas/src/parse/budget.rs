@@ -91,7 +91,7 @@ impl ParserProfile {
         });
         Ok(self)
     }
-    /// Upper bound when unused shares are borrowed within the placement.
+    /// Reservation ceiling; native allocations can exceed it before cancellation.
     pub fn anonymous_bytes(&self) -> u64 {
         match self.placement {
             ParserPlacement::Incremental => u64::from(PARSER_BYTES),
