@@ -104,6 +104,10 @@ fn exact_windows_console_scope_interrupts_real_tools() -> Check {
     if std::env::var_os("BINDING_OWN_CONSOLE").is_none() {
         use std::os::windows::process::CommandExt;
         use windows_sys::Win32::System::Threading::CREATE_NEW_CONSOLE;
+        use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
+        if unsafe { SetConsoleCtrlHandler(None, 1) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
         for reset in [false, true] {
             let mut command = Command::new(std::env::current_exe()?);
             command.args(["--exact", "windows_console_scope::exact_windows_console_scope_interrupts_real_tools", "--nocapture"])
