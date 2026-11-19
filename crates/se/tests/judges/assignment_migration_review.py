@@ -1,5 +1,5 @@
 """Use the public CLI on a fresh store and, with an older CLI, a real upgrade."""
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import json
 import os
 from pathlib import Path
@@ -74,7 +74,7 @@ def use_cli(image, output, previous=None):
 
         def snapshot():
             uri = (store / "state.db").resolve(strict=True).as_uri() + "?mode=ro"
-            with sqlite3.connect(uri, uri=True) as db:
+            with closing(sqlite3.connect(uri, uri=True)) as db:
                 version = db.execute("PRAGMA user_version").fetchone()[0]
                 objects = {name for name, in db.execute("SELECT name FROM sqlite_schema")}
                 messages = db.execute("SELECT hex(message_id),recorded_at_us FROM messages ORDER BY sent_seq").fetchall()
