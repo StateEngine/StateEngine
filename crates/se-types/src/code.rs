@@ -158,6 +158,7 @@ pub enum CoverageReason {
     Generated,
     SourceBytesLimit,
     ParseWorkLimit,
+    ParseMemoryLimit,
     SchedulingStall,
     FileCountLimit,
     ParseErrors,

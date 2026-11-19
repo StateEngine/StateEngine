@@ -499,6 +499,11 @@ fn configure_limits(
         (Limit::SQLITE_LIMIT_WORKER_THREADS, 0),
     ] {
         db.set_limit(limit, value).map_err(cache_error)?;
+        if db.limit(limit).map_err(cache_error)? > value {
+            return Err(cache_error(
+                "SQLite connection limit readback exceeds its bound",
+            ));
+        }
     }
     db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA temp_store=FILE; PRAGMA mmap_size=0; PRAGMA cache_size=16;").map_err(cache_error)?;
     if role == ConnectionRole::ColdWriter {
@@ -522,6 +527,14 @@ fn configure_access(db: &Connection, role: ConnectionRole) -> AtlasResult<()> {
     }
     for (pragma, want) in [
         ("page_size", PAGE_BYTES as i64),
+        (
+            "cache_size",
+            if role == ConnectionRole::ColdWriter {
+                488
+            } else {
+                16
+            },
+        ),
         ("foreign_keys", 1),
         ("temp_store", 1),
         ("mmap_size", 0),
