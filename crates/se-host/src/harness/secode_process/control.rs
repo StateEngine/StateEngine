@@ -49,13 +49,24 @@ impl Control {
     }
 
     pub(crate) async fn require_idle(&self, deadline: &Deadline) -> Result<()> {
-        let active = self.read(&["api", "session", "active"], deadline).await?;
-        match active.get("data").and_then(Value::as_object) {
-            Some(rows) if rows.is_empty() => Ok(()),
-            _ => Err(shutdown_refusal(
-                "active execution inventory is nonempty or unreadable; service retained",
-            )),
+        if self.is_idle(deadline).await? {
+            Ok(())
+        } else {
+            Err(shutdown_refusal(
+                "active execution inventory is nonempty; service retained",
+            ))
         }
+    }
+
+    pub(crate) async fn is_idle(&self, deadline: &Deadline) -> Result<bool> {
+        let active = self.read(&["api", "session", "active"], deadline).await?;
+        let rows = active
+            .get("data")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                shutdown_refusal("active execution inventory is unreadable; service retained")
+            })?;
+        Ok(rows.is_empty())
     }
 
     pub(crate) async fn put_session_capability(

@@ -1,4 +1,5 @@
 //! Recipient-scoped durable notice planning. No callback or read lease crosses a commit wait.
+mod coalesce;
 mod observation;
 mod settlement;
 use crate::{
@@ -7,13 +8,14 @@ use crate::{
     scope,
     store_error::store_error,
 };
+pub use coalesce::reserve_coalesced;
 pub use observation::{
     InputAccepted, MailReceipt, ObservationThen, ObserveOffer, confirm_delivery,
     observation_committed, observe_offer,
 };
 use se_store::{
     Actor, CommitReceipt, EffectIntent, EffectKind, EventBody, ProjectionRecord, ReadBudget,
-    RecordId, RecordIdentity, Revision,
+    RecordId, RecordIdentity, Revision, WriterModeValue,
     mail::{MailNotice, MailSnapshot, MailThrough},
 };
 use se_types::{
@@ -52,10 +54,12 @@ pub struct Reservation {
     pub digest: Sha256,
     pub revision: Revision,
     pub event_id: EventId,
+    pub more_pending: bool,
 }
 pub struct MailThen {
     key: IdempotencyKey,
     target: MailTarget,
+    more_pending: bool,
 }
 
 fn budget(limit: u32, bytes: u32) -> Result<ReadBudget> {
@@ -133,6 +137,7 @@ fn readback<S: MailSnapshot>(
             .mail_cursor(&notice.through)
             .map_err(|error| store_error(&error))?,
         digest: Sha256::from_bytes(notice.digest),
+        more_pending: false,
         revision: record.revision,
         event_id: record
             .original
@@ -154,10 +159,6 @@ pub fn reserve_notice<S: MailSnapshot>(
 }
 /// A native consumer may negotiate a smaller IDs-per-notice ceiling. The
 /// committed descriptor remains whole; no adapter truncates it after commit.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn reserve_notice_bounded<S: MailSnapshot>(
     kernel: &Kernel,
     cx: &mut Cx<'_, S>,
@@ -180,6 +181,7 @@ pub fn reserve_notice_bounded<S: MailSnapshot>(
                 MailThen {
                     key: request.key,
                     target: request.target,
+                    more_pending: false,
                 },
                 receipt,
             )
@@ -222,88 +224,7 @@ pub fn reserve_notice_bounded<S: MailSnapshot>(
             "unresolved notice inventory is incomplete; preserve original notice identities and continue its cursor",
         ));
     }
-    let messages = cx
-        .read
-        .mail_pending(request.target.agent.clone(), budget(maximum_ids, 262144)?)
-        .map_err(|error| store_error(&error))?;
-    let window = messages
-        .window()
-        .fields()
-        .ok_or_else(|| scope::unreadable("mail debt", "query has no measured store window"))?;
-    if messages.items().is_empty() {
-        if !messages.window().complete() {
-            return Err(scope::unreadable(
-                "mail debt",
-                "empty incomplete page is not an empty mailbox",
-            ));
-        }
-        return Ok(OpStep::Complete(Read::Absent {
-            checked: "Complete indexed recipient inbox contains no unresolved messages".into(),
-        }));
-    }
-    let info = cx.read.info();
-    let mut notice = MailNotice {
-        version: 1,
-        notice_id: request.notice_id,
-        target_agent: request.target.agent.clone(),
-        session: request.target.session.clone(),
-        epoch: request.target.epoch.clone(),
-        generation: request.target.generation,
-        fingerprint: request.target.fingerprint,
-        ids: messages
-            .items()
-            .iter()
-            .map(|message| message.message.clone())
-            .collect(),
-        through: MailThrough {
-            store: info.id,
-            incarnation: info.incarnation,
-            sequence: window.to.get(),
-        },
-        digest: [0; 32],
-    };
-    loop {
-        notice.digest = notice
-            .expected_digest()
-            .map_err(|error| store_error(&error))?;
-        let size = serde_json::to_vec(&notice)
-            .map_err(|error| scope::unreadable("mail notice encoding", &error.to_string()))?
-            .len();
-        if size <= 8192 {
-            break;
-        }
-        if notice.ids.len() == 1 {
-            return Err(SeError::too_large("complete mail notice", 8192, size));
-        }
-        notice.ids.pop();
-    }
-    notice.validate().map_err(|error| store_error(&error))?;
-    let cause = messages.items()[0].event.clone();
-    let event = kernel.event(
-        EventBody::EffectRequested {
-            principal: Some(Actor::Agent(request.target.agent.clone())),
-            effect: request.effect_id,
-            kind: EffectKind::Bell,
-            intent: EffectIntent::MailNotice(Box::new(notice)),
-            cause,
-            request_key: request.key.clone(),
-        },
-        cx,
-    )?;
-    let batch = kernel.batch(
-        "mail.reserve_notice",
-        request.key.clone(),
-        serde_json::json!({"target":request.target}),
-        event,
-        cx,
-    )?;
-    Ok(OpStep::Commit {
-        batch,
-        then: MailThen {
-            key: request.key,
-            target: request.target,
-        },
-    })
+    coalesce::reserve_coalesced_bounded(kernel, cx, request, false, Vec::new(), maximum_ids)
 }
 /// The host reopens an admitted recipient snapshot after the actual writer
 /// completes. This function cannot turn an unconfirmed draft into a notice.
@@ -315,7 +236,34 @@ pub fn committed<S: MailSnapshot>(
 ) -> Result<Reservation> {
     authorize(cx, &then.target)?;
     super::receipt::receipt_key(&receipt, &then.key, "mail reservation completion")?;
-    let event = super::receipt::committed_event(cx.read, &receipt)?;
+    let mut requested = None;
+    for id in &receipt.events {
+        let event = scope::require_present(
+            cx.read.event(id.clone()).map_err(|e| store_error(&e))?,
+            "mail reservation event",
+            scope::COMMITTED_READ_RECOVERY,
+        )?;
+        if event.writer.kind() != receipt.writer.kind() || event.durability != receipt.durability {
+            return Err(scope::unreadable(
+                "mail reservation completion",
+                "event writer or durability differs from the receipt",
+            ));
+        }
+        if matches!(&event.body, EventBody::EffectRequested { request_key, intent: EffectIntent::MailNotice(_), .. } if request_key == &then.key)
+            && requested.replace(event).is_some()
+        {
+            return Err(scope::unreadable(
+                "mail reservation completion",
+                "multiple matching notice requests",
+            ));
+        }
+    }
+    let event = requested.ok_or_else(|| {
+        scope::unreadable(
+            "mail reservation completion",
+            "request key resolved to a different operation",
+        )
+    })?;
     let EventBody::EffectRequested {
         effect,
         intent: EffectIntent::MailNotice(notice),
@@ -324,7 +272,7 @@ pub fn committed<S: MailSnapshot>(
     else {
         return Err(scope::unreadable(
             "mail reservation completion",
-            "request key resolved to a different operation",
+            "matching notice changed",
         ));
     };
     if !matches_target(notice, &then.target) {
@@ -351,5 +299,7 @@ pub fn committed<S: MailSnapshot>(
             },
         )));
     }
-    readback(cx, &then.target, record)
+    let mut reservation = readback(cx, &then.target, record)?;
+    reservation.more_pending = then.more_pending;
+    Ok(reservation)
 }
