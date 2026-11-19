@@ -162,6 +162,7 @@ fn named_class(name: &[u8], value: u8) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     #[test]
     fn git_directory_wildcards_and_escaped_literals() -> AtlasResult<()> {
         let deadline = se_atlas::clock::now() + Duration::from_secs(2);

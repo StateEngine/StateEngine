@@ -192,7 +192,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             return Ok(None);
         };
         let job = request.job;
-        let release = self
+        let mut release = self
             .driver
             .release_parser(Instant::now() + Duration::from_millis(200));
         if release.is_ok()
@@ -201,7 +201,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                 .iter()
                 .find(|root| root.summary.root == request.root.root)
         {
-            self.driver.begin_cold_capture(&root.source, &root.policy);
+            release = self.driver.begin_cold_capture(&root.source, &root.policy);
         }
         let spawned: AtlasResult<_> = match release {
             Ok(()) => (|| {
@@ -401,7 +401,8 @@ pub trait RenewalDriver {
         &mut self,
         _source: &RegisteredSource<NativeAtlasSource>,
         _policy: &AtlasPolicy,
-    ) {
+    ) -> AtlasResult<()> {
+        Ok(())
     }
     fn cold_capture_available(&self, _root: &RootId) -> bool {
         false

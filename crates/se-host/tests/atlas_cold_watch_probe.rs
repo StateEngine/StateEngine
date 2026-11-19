@@ -10,6 +10,8 @@ mod native {
     use se_atlas::{controller::Controller, errors::AtlasResult, lifecycle::*, model::*};
     #[cfg(windows)]
     use se_host::atlas_renewal::drive_events;
+    #[cfg(windows)]
+    use se_host::atlas_runtime::RenewalDriver;
     use se_host::{
         NativeAtlasQualification,
         atlas_renewal::{NativeRenewal, drive_quantum},
@@ -139,7 +141,7 @@ mod native {
         })
     }
 
-    fn reach_current(controller: &mut Native, root: &RootId) -> Check<bool> {
+    fn settle(controller: &mut Native, root: &RootId) -> Check<(IndexSummary, bool)> {
         #[cfg(windows)]
         let signal = controller.runtime_mut().driver_mut().signal();
         let end = Instant::now() + Duration::from_secs(60);
@@ -157,10 +159,15 @@ mod native {
                 walked |= report.phase == WorkPhase::Discover;
             }
             let summary = controller.summary(root)?;
-            if matches!(summary.state, IndexState::Current)
-                && controller.next_work() == NextWork::Park
+            if matches!(
+                summary.state,
+                IndexState::Current
+                    | IndexState::VerificationNeeded {
+                        reason: CoverageReason::PartialWatch
+                    }
+            ) && controller.next_work() == NextWork::Park
             {
-                return Ok(walked);
+                return Ok((summary, walked));
             }
             if Instant::now() >= end || matches!(summary.state, IndexState::Suspended { .. }) {
                 return Err(format!("adopted index did not publish current: {summary:?}").into());
@@ -193,7 +200,7 @@ mod native {
     }
 
     fn run_case(base: &Path, case: Case, drop_event: bool) -> Check {
-        let home = base.to_path_buf();
+        let home = base;
         let source = base.join("source");
         fs::create_dir_all(source.join("src"))?;
         fs::create_dir(source.join("generated"))?;
@@ -205,37 +212,8 @@ mod native {
             home.join("watch-probe"),
             if drop_event { case.name() } else { "" },
         )?;
-        let project = ProjectId::from_parts(1, [4; 10])?;
-        let root = RootId::from_parts(1, [5; 10])?;
-        let registration = RootRegistration {
-            cache: CacheLocation {
-                directory: home.join(project.as_str()).join(root.as_str()),
-            },
-            project,
-            root: root.clone(),
-            canonical_source_root: source.clone(),
-            git_metadata: None,
-        };
-        #[cfg(windows)]
-        let qualification = NativeAtlasQualification::measured_windows_components()?;
-        #[cfg(target_os = "linux")]
-        let qualification = NativeAtlasQualification::measured_linux_components()?;
-        let mut controller = Controller::new(NativeRuntime::new(
-            home.clone(),
-            std::env::current_exe()?,
-            NativeRenewal::new(qualification.parsers)?,
-            qualification.sql,
-        )?);
-        controller.register(registration, policy())?;
-        controller.activate(root.clone(), ReconcileReason::FirstSession)?;
-        if let NextWork::AfterEventDebounce(wait) = controller.next_work() {
-            std::thread::sleep(wait + Duration::from_millis(1));
-        }
-        drive_quantum(&mut controller, Duration::from_millis(200))?;
-        drive_child(&mut controller)?;
-        wait_for_child(&mut controller, |_| {
-            Ok(home.join("watch-probe-arrived").try_exists()?)
-        })?;
+        let mut controller = native_controller(home)?;
+        let root = pause_cold(&mut controller, home, &source, 5, policy())?;
         case.modify(&source)?;
         #[cfg(windows)]
         {
@@ -249,8 +227,7 @@ mod native {
                 .driver_mut()
                 .probe_retained_event(&root, event)?;
         }
-        fs::write(home.join("watch-probe-release"), [])?;
-        wait_for_child(&mut controller, |c| Ok(c.runtime().child_pid().is_none()))?;
+        release_cold(&mut controller, home)?;
         #[cfg(windows)]
         eprintln!(
             "cold watch adopted with pending={}, discovery_complete={}",
@@ -263,7 +240,10 @@ mod native {
         {
             return Err("the cold snapshot did not retain the intended before-state".into());
         }
-        let walked = reach_current(&mut controller, &root)?;
+        let (summary, walked) = settle(&mut controller, &root)?;
+        if !matches!(summary.state, IndexState::Current) {
+            return Err(format!("event case never reached current: {summary:?}").into());
+        }
         #[cfg(windows)]
         if !home
             .join(format!("watch-probe-saw-{}", case.name()))
@@ -275,12 +255,7 @@ mod native {
             ).into());
         }
         let result = check_result(&controller, &root, case, walked);
-        if !matches!(
-            controller.close(root, CloseReason::HostDrain, Duration::from_secs(5))?,
-            CloseResult::Closed
-        ) {
-            return Err("the native controller did not close".into());
-        }
+        close(&mut controller, root)?;
         result?;
         println!(
             "PASS cold-watch {} at first current; reconciliation={walked}",
@@ -289,10 +264,123 @@ mod native {
         Ok(())
     }
 
+    fn native_controller(home: &Path) -> Check<Native> {
+        #[cfg(windows)]
+        let qualification = NativeAtlasQualification::measured_windows_components()?;
+        #[cfg(target_os = "linux")]
+        let qualification = NativeAtlasQualification::measured_linux_components()?;
+        Ok(Controller::new(NativeRuntime::new(
+            home.to_path_buf(),
+            std::env::current_exe()?,
+            NativeRenewal::new(qualification.parsers)?,
+            qualification.sql,
+        )?))
+    }
+
+    fn pause_cold(
+        controller: &mut Native,
+        home: &Path,
+        source: &Path,
+        marker: u8,
+        policy: AtlasPolicy,
+    ) -> Check<RootId> {
+        let project = ProjectId::from_parts(1, [4; 10])?;
+        let root = RootId::from_parts(1, [marker; 10])?;
+        controller.register(
+            RootRegistration {
+                cache: CacheLocation {
+                    directory: home.join(project.as_str()).join(root.as_str()),
+                },
+                project,
+                root: root.clone(),
+                canonical_source_root: source.to_path_buf(),
+                git_metadata: None,
+            },
+            policy,
+        )?;
+        controller.activate(root.clone(), ReconcileReason::FirstSession)?;
+        if let NextWork::AfterEventDebounce(wait) = controller.next_work() {
+            std::thread::sleep(wait + Duration::from_millis(1));
+        }
+        drive_quantum(controller, Duration::from_millis(200))?;
+        drive_child(controller)?;
+        wait_for_child(controller, |_| {
+            Ok(home.join("watch-probe-arrived").try_exists()?)
+        })?;
+        Ok(root)
+    }
+
+    fn release_cold(controller: &mut Native, home: &Path) -> Check {
+        fs::write(home.join("watch-probe-release"), [])?;
+        wait_for_child(controller, |c| Ok(c.runtime().child_pid().is_none()))
+    }
+
+    fn close(controller: &mut Native, root: RootId) -> Check {
+        match controller.close(root, CloseReason::HostDrain, Duration::from_secs(5))? {
+            CloseResult::Closed => Ok(()),
+            other => Err(format!("the native controller did not close: {other:?}").into()),
+        }
+    }
+
+    #[cfg(windows)]
+    fn capacity(home: &Path, drop_limit: bool) -> Check {
+        fs::write(
+            home.join("watch-probe"),
+            if drop_limit { "capacity" } else { "" },
+        )?;
+        let mut controller = native_controller(home)?;
+        let mut constrained = policy();
+        constrained.watch.max_directories = 1;
+        constrained.watch.max_mapping_bytes = 16;
+        let first_source = home.join("first");
+        let second_source = home.join("second");
+        for source in [&first_source, &second_source] {
+            fs::create_dir_all(source.join("src"))?;
+            write_symbol(source, MAIN, "capacity_witness")?;
+        }
+        let first = pause_cold(&mut controller, home, &first_source, 5, constrained.clone())?;
+        release_cold(&mut controller, home)?;
+        let (summary, _) = settle(&mut controller, &first)?;
+        if !matches!(summary.state, IndexState::Current)
+            || summary.coverage.watched_directories == 0
+        {
+            return Err("the first source did not claim the available recursive watch".into());
+        }
+        fs::remove_file(home.join("watch-probe-arrived"))?;
+        fs::remove_file(home.join("watch-probe-release"))?;
+        let second = pause_cold(&mut controller, home, &second_source, 6, constrained)?;
+        let captured = controller
+            .runtime_mut()
+            .driver_mut()
+            .cold_capture_available(&second);
+        release_cold(&mut controller, home)?;
+        let (summary, walked) = settle(&mut controller, &second)?;
+        let indexed = names(&controller, &second, MAIN)? == ["capacity_witness"];
+        close(&mut controller, second)?;
+        close(&mut controller, first)?;
+        if captured
+            || !walked
+            || !indexed
+            || summary.coverage.watched_directories != 0
+            || !matches!(
+                summary.state,
+                IndexState::VerificationNeeded {
+                    reason: CoverageReason::PartialWatch
+                }
+            )
+        {
+            return Err(format!(
+                "cold-watch assertion [capacity]: second capture={captured}, full reconciliation={walked}, indexed={indexed}, summary={summary:?}"
+            ).into());
+        }
+        println!("PASS cold-watch capacity held across both roots");
+        Ok(())
+    }
+
     fn matrix() -> Check {
         let exe = std::env::current_exe()?;
         let cases: &[&str] = if cfg!(windows) {
-            &["edit", "overflow", "ignore"]
+            &["edit", "overflow", "ignore", "capacity"]
         } else {
             &["edit"]
         };
@@ -334,18 +422,30 @@ mod native {
             };
         }
         let mut args = std::env::args().skip(1).filter(|arg| arg != "--nocapture");
-        let case = match args.next().as_deref() {
-            Some("matrix") if args.next().is_none() => return matrix(),
-            Some("edit") => Case::Edit,
-            Some("overflow") if cfg!(windows) => Case::Overflow,
-            Some("ignore") if cfg!(windows) => Case::Ignore,
-            None => return Ok(()),
-            _ => return Err("usage: atlas_cold_watch_probe edit|overflow|ignore [--drop]".into()),
-        };
+        let selected = args.next();
+        if matches!(selected.as_deref(), Some("matrix")) && args.next().is_none() {
+            return matrix();
+        }
         let drop_event = match (args.next().as_deref(), args.next()) {
             (None, None) => false,
             (Some("--drop"), None) if cfg!(windows) => true,
             _ => return Err("unsupported cold watch probe arguments".into()),
+        };
+        #[cfg(windows)]
+        if selected.as_deref() == Some("capacity") {
+            let base = super::directory::private_case_directory()?;
+            return base.finish(capacity(&base, drop_event));
+        }
+        let case = match selected.as_deref() {
+            Some("edit") => Case::Edit,
+            Some("overflow") if cfg!(windows) => Case::Overflow,
+            Some("ignore") if cfg!(windows) => Case::Ignore,
+            None => return Ok(()),
+            _ => {
+                return Err(
+                    "usage: atlas_cold_watch_probe edit|overflow|ignore|capacity [--drop]".into(),
+                );
+            }
         };
         let base = super::directory::private_case_directory()?;
         base.finish(run_case(&base, case, drop_event))

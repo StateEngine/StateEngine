@@ -37,10 +37,25 @@ impl NativeRenewal {
 
 impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
     #[cfg(windows)]
-    fn begin_cold_capture(&mut self, source: &Source, policy: &AtlasPolicy) {
+    fn begin_cold_capture(&mut self, source: &Source, policy: &AtlasPolicy) -> AtlasResult<()> {
         if self.cold_capture.is_none() {
-            self.cold_capture = cold_capture::Capture::start(source, policy).ok();
+            let used = self.mappings.len()
+                + self
+                    .roots
+                    .iter()
+                    .filter_map(|root| root.native.as_ref())
+                    .filter_map(|native| native.metadata.as_ref())
+                    .map(metadata::Watches::len)
+                    .sum::<usize>();
+            #[cfg(feature = "cold-watch-probe")]
+            let used = if crate::atlas_watch_probe::event(source, "capacity")? {
+                0
+            } else {
+                used
+            };
+            self.cold_capture = cold_capture::Capture::start(source, policy, used)?;
         }
+        Ok(())
     }
     #[cfg(windows)]
     fn cold_capture_available(&self, root: &RootId) -> bool {

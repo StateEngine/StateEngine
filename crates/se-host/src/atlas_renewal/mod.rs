@@ -1,18 +1,17 @@
 //! Event-driven Linux renewal. The runtime lends its one connection for each
 //! operation; this driver owns no SQLite executor, thread or timer.
-mod glob;
-pub(crate) mod ignore;
 use crate::atlas_git_watch as metadata;
+use crate::atlas_ignore as ignore;
 mod observe;
 mod port;
 pub use port::{drive_events, drive_quantum};
 #[cfg(windows)]
-#[path = "../atlas_cold_capture.rs"]
 mod cold_capture;
 mod scan;
 mod summary;
 mod watch;
 use crate::atlas_source::NativeAtlasSource;
+use crate::atlas_watch_error::{limit, source_error, timely};
 use se_atlas::{
     cache::connection::CacheConnection,
     controller::Step,
@@ -509,28 +508,6 @@ fn sql_error(error: impl std::fmt::Display) -> SeError {
         path: "atlas.db".into(),
         reason: error.to_string(),
     }))
-}
-pub(crate) fn source_error(path: &str, error: impl std::fmt::Display) -> SeError {
-    SeError::new(Detail::AtlasSourceUnreadable(
-        details::AtlasSourceUnreadable {
-            path: path.into(),
-            reason: error.to_string(),
-        },
-    ))
-}
-pub(crate) fn limit(resource: &str, requested: u64, available: u64) -> SeError {
-    SeError::new(Detail::AtlasResourceBudget(details::AtlasResourceBudget {
-        resource: resource.into(),
-        requested,
-        available,
-    }))
-}
-pub(crate) fn timely(deadline: Instant) -> AtlasResult<()> {
-    if se_atlas::clock::now() >= deadline {
-        Err(limit("renewal work deadline", 1, 0))
-    } else {
-        Ok(())
-    }
 }
 fn reason(root: &mut Root, reason: CoverageReason) {
     if !root.reasons.contains(&reason) {

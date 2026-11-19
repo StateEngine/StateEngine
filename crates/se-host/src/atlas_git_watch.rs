@@ -1,6 +1,6 @@
 //! Only registered Git metadata supplies subscriptions. One reference spelling
 //! and compact offsets cover its ancestor watches; objects/config are never read.
-use crate::atlas_renewal::{limit, source_error, timely};
+use crate::atlas_watch_error::{limit, source_error, timely};
 use se_atlas::{
     errors::AtlasResult,
     lifecycle::{ReconcileReason, SourceHint},
