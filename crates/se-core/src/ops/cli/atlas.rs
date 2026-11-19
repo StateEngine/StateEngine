@@ -183,6 +183,7 @@ fn target(m: &ArgMatches) -> Result<AtlasTarget> {
                 container: text(m, "container").map(QueryText::new).transpose()?,
                 kind: text(m, "kind").map(|s| parse("kind", &s)).transpose()?,
                 line: Some(line),
+                column: explicit_column(m)?,
             }));
         }
         return Ok(AtlasTarget::Symbol(SymbolSelector::At {
@@ -223,7 +224,19 @@ fn target(m: &ArgMatches) -> Result<AtlasTarget> {
         container: text(m, "container").map(QueryText::new).transpose()?,
         kind: text(m, "kind").map(|s| parse("kind", &s)).transpose()?,
         line: None,
+        column: None,
     }))
+}
+/// Only a column the user actually typed constrains the named query; the
+/// default zero stays off the wire and off the resolution.
+fn explicit_column(m: &ArgMatches) -> Result<Option<u32>> {
+    if m.value_source("column") != Some(clap::parser::ValueSource::CommandLine) {
+        return Ok(None);
+    }
+    let column: u32 = required(m, "column")?
+        .parse()
+        .map_err(|_| SeError::invalid("column", "a zero-based byte column"))?;
+    Ok(Some(column))
 }
 pub(super) fn decode(name: &str, m: &ArgMatches, json: bool) -> Result<AnyOp> {
     let options = options(m, json)?;
@@ -334,6 +347,48 @@ mod tests {
         assert!(
             matches!(target, AtlasTarget::Symbol(SymbolSelector::At { .. })),
             "a bare position must stay a position lookup: {target:?}"
+        );
+        Ok(())
+    }
+    #[test]
+    fn an_explicit_column_travels_with_the_name()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let target = target_from(&[
+            "refs", "Foo", "--path", "foo.rs", "--line", "1", "--column", "5",
+        ])?;
+        assert!(
+            matches!(
+                target,
+                AtlasTarget::Symbol(SymbolSelector::Name {
+                    line: Some(1),
+                    column: Some(5),
+                    ..
+                })
+            ),
+            "an explicit column must constrain the named query: {target:?}"
+        );
+        Ok(())
+    }
+    #[test]
+    fn a_nonnumeric_column_refuses() {
+        assert!(
+            target_from(&[
+                "refs", "Foo", "--path", "foo.rs", "--line", "1", "--column", "wide"
+            ])
+            .is_err(),
+            "main refuses a nonnumeric column"
+        );
+    }
+    #[test]
+    fn the_default_column_stays_off_the_query()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let target = target_from(&["refs", "Foo", "--path", "foo.rs", "--line", "1"])?;
+        assert!(
+            matches!(
+                target,
+                AtlasTarget::Symbol(SymbolSelector::Name { column: None, .. })
+            ),
+            "the default column must not constrain the query: {target:?}"
         );
         Ok(())
     }

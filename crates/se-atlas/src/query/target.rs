@@ -22,7 +22,7 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
             "a symbol, path, or path and position",
         ));
     };
-    let (name, path, container, kind, line) = match selector {
+    let (name, path, container, kind, line, column) = match selector {
         SymbolSelector::Id(id) => {
             let found = {
                 let mut stmt = sql.prepare("SELECT id FROM symbols WHERE key=?1")?;
@@ -69,7 +69,8 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
             container,
             kind,
             line,
-        } => (name, path, container, kind, line),
+            column,
+        } => (name, path, container, kind, line, column),
     };
     let file = path.as_ref().map(|p| file_by_path(sql, p)).transpose()?;
     if file.as_ref().is_some_and(Option::is_none) {
@@ -123,10 +124,18 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
         {
             continue;
         }
-        if let Some(line) = line
-            && symbol.span.start.line != *line
-        {
-            continue;
+        if let Some(line) = line {
+            if symbol.span.start.line != *line {
+                continue;
+            }
+            // An explicit column must sit inside the span, so a position on
+            // the line before or after the symbol never resolves to it.
+            if let Some(column) = column
+                && !(symbol.span.start.byte_column <= *column
+                    && (symbol.span.end.line > *line || symbol.span.end.byte_column > *column))
+            {
+                continue;
+            }
         }
         if let Some(container) = container
             && !container_matches(sql, id, container.as_str())?

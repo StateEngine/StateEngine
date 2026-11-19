@@ -40,6 +40,7 @@ fn run_refs<'a, 'c, 'x>(
     path: Option<&str>,
     kind: Option<SymbolKind>,
     line: Option<u32>,
+    column: Option<u32>,
 ) -> Result<Page<ReferenceHit>, se_types::SeError> {
     let target = AtlasTarget::Symbol(SymbolSelector::Name {
         name: QueryText::new(name)?,
@@ -47,6 +48,7 @@ fn run_refs<'a, 'c, 'x>(
         container: None,
         kind,
         line,
+        column,
     });
     let answer = reader.refs(&RefsQuery {
         target,
@@ -209,7 +211,7 @@ fn name_selector_prefers_the_type_definition_over_its_impl_block() -> Check {
     );
     let budget = Validate.query_budget(10, 4096)?;
     // The struct and its impl block share the name Foo in one file.
-    let default = run_refs(&mut reader, budget, "Foo", Some("foo.rs"), None, None)?;
+    let default = run_refs(&mut reader, budget, "Foo", Some("foo.rs"), None, None, None)?;
     assert!(
         !default.items().is_empty(),
         "the use site must resolve to the type"
@@ -221,13 +223,22 @@ fn name_selector_prefers_the_type_definition_over_its_impl_block() -> Check {
         Some("foo.rs"),
         Some(SymbolKind::Struct),
         None,
+        None,
     )?;
     assert_eq!(
         default.items(),
         declared.items(),
         "without a kind or line the type definition must win"
     );
-    let by_line = run_refs(&mut reader, budget, "Foo", Some("foo.rs"), None, Some(1))?;
+    let by_line = run_refs(
+        &mut reader,
+        budget,
+        "Foo",
+        Some("foo.rs"),
+        None,
+        Some(1),
+        None,
+    )?;
     assert_eq!(
         by_line.items(),
         declared.items(),
@@ -243,17 +254,56 @@ fn name_selector_prefers_the_type_definition_over_its_impl_block() -> Check {
         Some("foo.rs"),
         Some(SymbolKind::Namespace),
         None,
+        None,
     )?;
     // The line filter matches the declaration start line, so an indented
     // definition resolves by name plus line; the caller's site witnesses it.
-    let indented = run_refs(&mut reader, budget, "answer", Some("e.rs"), None, Some(2))?;
+    let indented = run_refs(
+        &mut reader,
+        budget,
+        "answer",
+        Some("e.rs"),
+        None,
+        Some(2),
+        None,
+    )?;
     assert!(
         !indented.items().is_empty(),
         "the indented declaration must resolve through the line filter"
     );
+    // An explicit column must sit inside the span: a column past the start
+    // on the first line resolves, a column before the start refuses, and the
+    // same name and line still resolve without any column.
+    let in_span = run_refs(
+        &mut reader,
+        budget,
+        "answer",
+        Some("e.rs"),
+        None,
+        Some(2),
+        Some(10),
+    )?;
+    assert_eq!(
+        in_span.items(),
+        indented.items(),
+        "a column inside the span must keep the same target"
+    );
+    assert!(
+        run_refs(
+            &mut reader,
+            budget,
+            "answer",
+            Some("e.rs"),
+            None,
+            Some(2),
+            Some(2)
+        )
+        .is_err(),
+        "a column before the span start must not resolve"
+    );
     // Two same-kind functions stay ambiguous, and the refusal lists the
     // kind, path and line of every candidate.
-    let refused = match run_refs(&mut reader, budget, "helper", None, None, None) {
+    let refused = match run_refs(&mut reader, budget, "helper", None, None, None, None) {
         Err(refused) => refused,
         Ok(_) => panic!("same-kind duplicates must stay ambiguous"),
     };
@@ -285,6 +335,7 @@ fn name_selector_prefers_the_type_definition_over_its_impl_block() -> Check {
                 container: None,
                 kind: None,
                 line: None,
+                column: None,
             }),
             depth: 1,
             include_name_only: false,

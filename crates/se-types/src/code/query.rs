@@ -92,6 +92,10 @@ pub enum SymbolSelector {
         /// Optional 1-based start line of the symbol definition.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         line: Option<u32>,
+        /// Optional zero-based byte column; the span must contain the line and
+        /// column together. A column without a line is invalid.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        column: Option<u32>,
     },
 }
 #[derive(
@@ -231,6 +235,7 @@ mod tests {
             container: None,
             kind: None,
             line: None,
+            column: None,
         };
         // The exact bytes the pre-change selector emitted for the same query.
         let old_shape = br#"{"Name":{"name":"Foo","path":null,"container":null}}"#;
@@ -252,10 +257,12 @@ mod tests {
             container: None,
             kind: Some(SymbolKind::Struct),
             line: Some(12),
+            column: Some(4),
         };
         let wire = serde_json::to_value(&selector)?;
         assert_eq!(wire["Name"]["kind"], "Struct");
         assert_eq!(wire["Name"]["line"], 12);
+        assert_eq!(wire["Name"]["column"], 4);
         assert_eq!(wire["Name"]["container"], serde_json::Value::Null);
         let decoded: SymbolSelector = serde_json::from_value(wire)?;
         assert_eq!(decoded, selector);
