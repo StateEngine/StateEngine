@@ -192,14 +192,12 @@ impl AtlasParser for SemanticParser {
         let extraction_bytes = extraction_reservation(profile, budget, snapshot, &memory);
         let arena = budget::Arena::new(extraction_bytes, budget.max_rows.min(profile.max_rows));
         let result = extract::extract(&self.scope, snapshot, language, &tree, arena);
+        let exceeded = memory.exceeded();
         // Tree and parser are owned by this call. Neither a failed parse nor a
         // caller forgetting release_scratch can retain them between work quanta.
         drop(tree);
         drop(parser);
-        if extraction_bytes < profile.extraction_bytes
-            && matches!(&result, Err(error) if matches!(error.body.detail(),
-                se_types::Detail::AtlasResourceBudget(detail) if detail.resource == "Atlas extraction arena"))
-        {
+        if exceeded || extraction_limit(&result, extraction_bytes, profile.extraction_bytes) {
             return Ok(defer(CoverageReason::ParseMemoryLimit));
         }
         result
@@ -209,6 +207,12 @@ impl AtlasParser for SemanticParser {
 fn bounded_budget(mut budget: ParseBudget, profile: &ParserProfile) -> ParseBudget {
     budget.reserved_bytes = budget.reserved_bytes.min(profile.anonymous_bytes() as u32);
     budget
+}
+fn extraction_limit(result: &AtlasResult<ParsedFile>, bytes: u32, maximum: u32) -> bool {
+    matches!(result, Err(error) if matches!(error.body.detail(),
+        se_types::Detail::AtlasResourceBudget(detail)
+        if detail.resource == "Atlas combined parse/extraction reservation"
+            || (bytes < maximum && detail.resource == "Atlas extraction arena")))
 }
 fn check_reservation(
     profile: &ParserProfile,
