@@ -77,7 +77,7 @@ impl SqliteSnapshot {
                 || (state == "not-applicable" && !human)
                 || (human && !matches!(state.as_str(), "not-applicable" | "unmeasured"))
                 || (sequence.is_none() != (state == "unmeasured"))
-                || (matches!(state.as_str(), "quiet" | "pending" | "not-applicable")
+                || (matches!(state.as_str(), "pending" | "not-applicable")
                     && sequence != Some(sent))
                 || if matches!(state.as_str(), "failed" | "unknown") {
                     !code.as_ref().is_some_and(|c| {
@@ -94,6 +94,24 @@ impl SqliteSnapshot {
                     StoreErrorCode::ProjectionInconsistent,
                     "notification intent/state differs from canonical mail",
                 ));
+            }
+            if quiet && !human && sequence != Some(sent) {
+                let seq = sequence.ok_or_else(|| {
+                    fail(
+                        StoreErrorCode::ProjectionInconsistent,
+                        "quiet continuation lacks its notice",
+                    )
+                })?;
+                let event = load_event(&self.db, seq, &self.info)
+                    .map_err(|error| context(error, &self.path, StoreIoStage::ReadSnapshot))?;
+                if !matches!(&event.body, EventBody::EffectRequested { kind: EffectKind::Bell, principal: Some(owner), intent: EffectIntent::MailNotice(notice), .. }
+                    if owner == &recipient && notice.through.sequence >= sent as u64 && Actor::Agent(notice.target_agent.clone()) == recipient)
+                {
+                    return Err(fail(
+                        StoreErrorCode::ProjectionInconsistent,
+                        "quiet continuation has no matching committed notice",
+                    ));
+                }
             }
             let (event, recorded_at_us) = if let Some(seq) = sequence {
                 let (event, at): (Vec<u8>, i64) = self

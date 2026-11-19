@@ -415,6 +415,7 @@ impl LaunchCoordinator {
             ready: watch::channel(None).0,
             settled: AtomicBool::new(false),
             mail_pending: AtomicBool::new(true),
+            mail_reoffer: AtomicBool::new(false),
             capture_pending: AtomicBool::new(false),
             wake,
             task: Mutex::new(None),
