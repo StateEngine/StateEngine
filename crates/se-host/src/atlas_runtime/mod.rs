@@ -190,43 +190,53 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             return Ok(None);
         };
         let job = request.job;
-        let spawned: AtlasResult<_> = (|| {
-            let root = self.root(&request.root.root)?;
-            let mut entropy = [0; 10];
-            se_proc::fill_entropy(&mut entropy).map_err(atlas_cold::failure)?;
-            let millis = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(atlas_cold::failure)?
-                .as_millis();
-            let epoch =
-                CacheEpoch::from_parts(millis.try_into().map_err(atlas_cold::failure)?, entropy)?;
-            let frame = protocol::Request {
-                history_unavailable: None,
-                job: request.job,
-                project: request.root.project,
-                root: request.root.root,
-                source_root: se_types::NativePath::from_local(request.root.canonical_source_root)?,
-                home: se_types::NativePath::from_local(self.home.clone())?,
-                physical_root: root.source.scope.physical_root,
-                expected_epoch: request.expected_epoch,
-                epoch,
-                max_files: request.policy.max_files,
-                ignore_digest: request.policy.ignore.digest,
-                global_patterns: request.policy.ignore.global_patterns,
-                generated_prefixes: request.policy.ignore.generated_prefixes,
-            };
-            let child = if let Some(metadata) = request.root.git_metadata {
-                atlas_cold::job::ColdJob::spawn_with_history(
-                    &self.image,
-                    frame,
-                    metadata,
-                    self.profile.as_ref(),
-                )?
-            } else {
-                atlas_cold::job::ColdJob::spawn(&self.image, frame)?
-            };
-            Ok(child)
-        })();
+        let release = self
+            .driver
+            .release_parser(Instant::now() + Duration::from_millis(200));
+        let spawned: AtlasResult<_> = match release {
+            Ok(()) => (|| {
+                let root = self.root(&request.root.root)?;
+                let mut entropy = [0; 10];
+                se_proc::fill_entropy(&mut entropy).map_err(atlas_cold::failure)?;
+                let millis = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(atlas_cold::failure)?
+                    .as_millis();
+                let epoch = CacheEpoch::from_parts(
+                    millis.try_into().map_err(atlas_cold::failure)?,
+                    entropy,
+                )?;
+                let frame = protocol::Request {
+                    history_unavailable: None,
+                    job: request.job,
+                    project: request.root.project,
+                    root: request.root.root,
+                    source_root: se_types::NativePath::from_local(
+                        request.root.canonical_source_root,
+                    )?,
+                    home: se_types::NativePath::from_local(self.home.clone())?,
+                    physical_root: root.source.scope.physical_root,
+                    expected_epoch: request.expected_epoch,
+                    epoch,
+                    max_files: request.policy.max_files,
+                    ignore_digest: request.policy.ignore.digest,
+                    global_patterns: request.policy.ignore.global_patterns,
+                    generated_prefixes: request.policy.ignore.generated_prefixes,
+                };
+                let child = if let Some(metadata) = request.root.git_metadata {
+                    atlas_cold::job::ColdJob::spawn_with_history(
+                        &self.image,
+                        frame,
+                        metadata,
+                        self.profile.as_ref(),
+                    )?
+                } else {
+                    atlas_cold::job::ColdJob::spawn(&self.image, frame)?
+                };
+                Ok(child)
+            })(),
+            Err(error) => Err(error),
+        };
         let child = match spawned {
             Ok(child) => child,
             Err(error) => {
@@ -375,6 +385,11 @@ pub fn drive_child<D: RenewalDriver>(controller: &mut NativeController<D>) -> At
 pub trait RenewalDriver {
     /// Use the same installed image already owned by the native runtime.
     fn bind_parser_image(&mut self, _image: &std::path::Path) -> AtlasResult<()> {
+        Ok(())
+    }
+    /// Release any resident parse custody so a cold child can take the
+    /// single global native slot. Idempotent; starts no work.
+    fn release_parser(&mut self, _deadline: Instant) -> AtlasResult<()> {
         Ok(())
     }
     fn step(

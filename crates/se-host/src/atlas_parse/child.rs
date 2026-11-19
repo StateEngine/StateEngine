@@ -40,6 +40,15 @@ fn send(channel: &mut WorkerChannel, reply: protocol::Reply) -> AtlasResult<()> 
     channel.send(&frame.bytes).map_err(failure)
 }
 pub(crate) fn run(channel: &mut WorkerChannel, bytes: &[u8]) -> AtlasResult<u8> {
+    let mut code = one_file(channel, bytes)?;
+    // The parent retains this worker between files; only a closed channel
+    // ends the run, and it does so cleanly.
+    while let Some(next) = channel.await_next_request().map_err(failure)? {
+        code = one_file(channel, &next)?;
+    }
+    Ok(code)
+}
+fn one_file(channel: &mut WorkerChannel, bytes: &[u8]) -> AtlasResult<u8> {
     let result = (|| {
         let request: protocol::Request = serde_json::from_slice(bytes).map_err(failure)?;
         if !request.parse_only || request.profile.language != request.language {
@@ -96,10 +105,12 @@ pub(crate) fn run(channel: &mut WorkerChannel, bytes: &[u8]) -> AtlasResult<u8> 
         }
         send(channel, protocol::Reply::Done)
     })();
-    let success = result.is_ok();
-    if let Err(error) = result {
-        send(channel, protocol::Reply::Failed { error: error.body })?;
-    }
+    let Err(error) = result else {
+        return Ok(0);
+    };
+    send(channel, protocol::Reply::Failed { error: error.body })?;
+    // The parent kills a failed file's worker; the reap frame stays the
+    // custody handshake for that path only.
     channel.await_reap().map_err(failure)?;
-    Ok(if success { 0 } else { 1 })
+    Ok(1)
 }
