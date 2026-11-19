@@ -4,7 +4,7 @@
  "default_crate_lines": 40000,
  "default_directory_lines": 10000,
  "crates": {
-  "se-host": 100020,
+  "se-host": 100013,
   "se-proc": 41520,
   "se-store": 25460,
   "se-core": 23883,
@@ -24,7 +24,7 @@
   "crates/se-atlas/src/query": 6216,
   "crates/se-host/src/channels": 6066,
   "crates/se-host/src/runtime/embedded": 5046,
-  "crates/se-host/src/secode_service": 6121,
+  "crates/se-host/src/secode_service": 6114,
   "crates/se-store/src/read": 5793,
   "crates/se-host/src/runtime/history_import": 4713,
   "crates/se-store/src/apply": 4840,
