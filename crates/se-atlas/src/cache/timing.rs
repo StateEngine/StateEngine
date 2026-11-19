@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 pub static ADMISSION_US: AtomicU64 = AtomicU64::new(0);
+pub static PRIVATE_GUARD: AtomicU64 = AtomicU64::new(0);
 pub static ADMISSION_VALIDATE_US: AtomicU64 = AtomicU64::new(0);
 pub static ADMISSION_WAL_US: AtomicU64 = AtomicU64::new(0);
 pub static ADMISSION_RESERVE_US: AtomicU64 = AtomicU64::new(0);

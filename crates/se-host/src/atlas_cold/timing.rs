@@ -15,7 +15,7 @@ pub(super) fn totals(elapsed_ms: u128, files: u64) -> String {
     use se_atlas::cache::timing as sql;
     let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
     format!(
-        "elapsed_ms={elapsed_ms} files={files} source_us={} parse_us={} resolve_us={} verify_us={} file_us={} checkpoint_us={} release_us={} admission_us={} sql_read_us={} sql_write_us={} commit_us={} sqlite_checkpoint_us={} checkpoints={} capacity_checkpoints={} max_wal_bytes={} final_sync_us={} final_flush_us={} admission_validate_us={} admission_wal_us={} admission_reserve_us={} inventory_cache_us={} inventory_walk_us={} inventory_hits={} inventory_walks={} admission_reads={} admission_writes={}",
+        "elapsed_ms={elapsed_ms} files={files} source_us={} parse_us={} resolve_us={} verify_us={} file_us={} checkpoint_us={} release_us={} admission_us={} sql_read_us={} sql_write_us={} commit_us={} sqlite_checkpoint_us={} checkpoints={} capacity_checkpoints={} max_wal_bytes={} final_sync_us={} final_flush_us={} admission_validate_us={} admission_wal_us={} admission_reserve_us={} inventory_cache_us={} inventory_walk_us={} inventory_hits={} inventory_walks={} admission_reads={} admission_writes={} private_guard={}",
         read(&SOURCE),
         read(&PARSE),
         read(&RESOLVE),
@@ -41,6 +41,7 @@ pub(super) fn totals(elapsed_ms: u128, files: u64) -> String {
         read(&sql::INVENTORY_HITS),
         read(&sql::INVENTORY_WALKS),
         read(&sql::ADMISSION_READS),
-        read(&sql::ADMISSION_WRITES)
+        read(&sql::ADMISSION_WRITES),
+        read(&sql::PRIVATE_GUARD)
     )
 }

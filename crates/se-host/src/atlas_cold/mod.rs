@@ -196,6 +196,10 @@ pub(crate) fn run_child(
         &SqlProfile::contained_cold(),
         deadline,
     )?;
+    #[cfg(windows)]
+    if cache.probe_private_guard(&request.epoch)? {
+        se_atlas::cache::timing::PRIVATE_GUARD.store(1, std::sync::atomic::Ordering::Relaxed);
+    }
     db.probe_cold_sync(false)?;
     let mut parser = SemanticParser::contained_cold(scope)?;
     parser.set_resource_guard(parser_memory_guard);
@@ -349,6 +353,8 @@ pub(crate) fn run_child(
         path: None,
         phase: protocol::Phase::Finalize,
     })?;
+    #[cfg(windows)]
+    cache.probe_finish_private();
     se_atlas::cache::timing::measure(&timing::FINAL_SYNC, || db.probe_cold_sync(true))?;
     let summary = finish::finish(&mut db, coverage, deadline)?;
     se_atlas::cache::timing::measure(&timing::FINAL_FLUSH, || db.probe_cold_flush(deadline))?;

@@ -16,6 +16,12 @@ use std::{
 };
 
 struct Metadata(se_proc::NativeMetadataPin);
+#[cfg(windows)]
+struct PrivateGuard {
+    path: PathBuf,
+    _directory_pin: se_proc::NativeMetadataPin,
+    _file: File,
+}
 impl DatabaseFile for Metadata {
     fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
         self.0.metadata().map_err(std::io::Error::other)
@@ -33,6 +39,10 @@ pub struct NativeAtlasCache {
     reserved: RefCell<Option<(CacheEpoch, DatabaseFileIdentity)>>,
     growth: Cell<u64>,
     inventory: RefCell<Option<inventory::Inventory>>,
+    #[cfg(windows)]
+    private_guard: RefCell<Option<PrivateGuard>>,
+    #[cfg(windows)]
+    private_fast: Cell<bool>,
 }
 impl NativeAtlasCache {
     /// No creation, permissions repair, writer lock or schema action on reads.
@@ -56,6 +66,10 @@ impl NativeAtlasCache {
             reserved: RefCell::new(None),
             growth: Cell::new(0),
             inventory: RefCell::new(None),
+            #[cfg(windows)]
+            private_guard: RefCell::new(None),
+            #[cfg(windows)]
+            private_fast: Cell::new(false),
         }))
     }
     /// Explicit after-ready activation only. All writers across this Atlas home,
@@ -111,6 +125,10 @@ impl NativeAtlasCache {
             reserved: RefCell::new(None),
             growth: Cell::new(0),
             inventory: RefCell::new(None),
+            #[cfg(windows)]
+            private_guard: RefCell::new(None),
+            #[cfg(windows)]
+            private_fast: Cell::new(false),
         };
         if let Some(epoch) = candidate {
             cache.claim_reservation(epoch)?;
@@ -118,6 +136,53 @@ impl NativeAtlasCache {
             cache.recover_reservation()?;
         }
         Ok(cache)
+    }
+    #[cfg(windows)]
+    pub(super) fn probe_private_guard(&self, epoch: &CacheEpoch) -> AtlasResult<bool> {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let Some(pin) = self.pin_database(epoch)? else {
+            return Ok(false);
+        };
+        let Some(parent) = pin.path.parent() else {
+            return Ok(false);
+        };
+        let directory = NativeStateFiles::open(parent).map_err(fail)?;
+        let Some(directory_pin) = directory.pin_metadata(&pin.path).map_err(fail)? else {
+            return Ok(false);
+        };
+        if !directory_pin.is_ordinary_local() {
+            return Ok(false);
+        }
+        // Deny delete sharing while allowing SQLite's ordinary reads and writes.
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x0000_0001 | 0x0000_0002)
+            .custom_flags(0x0020_0000)
+            .open(&pin.path)
+        {
+            Ok(file) => file,
+            Err(_) => return Ok(false),
+        };
+        let revision = observe_file_revision(&file).map_err(fail)?;
+        let identity = (revision.volume, revision.file);
+        if directory_pin.identity().map_err(fail)? != identity
+            || pin.file.identity().map_err(fail)? != identity
+        {
+            return Err(fail("private database guard identity differs"));
+        }
+        self.validate_database(&pin)?;
+        *self.private_guard.borrow_mut() = Some(PrivateGuard {
+            path: pin.path,
+            _directory_pin: directory_pin,
+            _file: file,
+        });
+        self.private_fast.set(true);
+        Ok(true)
+    }
+    #[cfg(windows)]
+    pub(super) fn probe_finish_private(&self) {
+        self.private_fast.set(false);
     }
     fn require_writer(&self) -> AtlasResult<()> {
         let Some(writer) = &self.writer else {
@@ -382,6 +447,16 @@ impl CacheFiles for NativeAtlasCache {
         Ok(())
     }
     fn validate_database(&self, pin: &DatabasePin) -> AtlasResult<()> {
+        #[cfg(windows)]
+        if self.private_fast.get()
+            && self
+                .private_guard
+                .borrow()
+                .as_ref()
+                .is_some_and(|guard| guard.path == pin.path)
+        {
+            return Ok(());
+        }
         let epoch = self.epoch(pin)?;
         let named = self
             .pin_database(&epoch)?
