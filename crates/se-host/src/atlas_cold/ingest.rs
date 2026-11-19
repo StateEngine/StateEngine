@@ -1,29 +1,158 @@
 use super::*;
 use se_atlas::{
+    cache::connection::SqlView,
     resolve::{self, catalog::SqlCatalog},
     update::{file, observation},
 };
+
+pub(super) trait ColdStore {
+    fn read<T>(
+        &mut self,
+        deadline: Instant,
+        work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
+    ) -> AtlasResult<T>;
+    fn write<T>(
+        &mut self,
+        growth: u64,
+        deadline: Instant,
+        work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
+    ) -> AtlasResult<T>;
+    fn release(&mut self, deadline: Instant) -> AtlasResult<()>;
+}
+
+impl ColdStore for CacheConnection<'_> {
+    fn read<T>(
+        &mut self,
+        deadline: Instant,
+        work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
+    ) -> AtlasResult<T> {
+        CacheConnection::read(self, deadline, work)
+    }
+    fn write<T>(
+        &mut self,
+        growth: u64,
+        deadline: Instant,
+        work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
+    ) -> AtlasResult<T> {
+        CacheConnection::write(self, growth, deadline, work)
+    }
+    fn release(&mut self, deadline: Instant) -> AtlasResult<()> {
+        self.release_cold_memory(deadline)
+    }
+}
+
+pub(super) struct BatchStore<'a, 'b> {
+    pub sql: &'a SqlView<'b>,
+    pub failed_write: bool,
+}
+impl ColdStore for BatchStore<'_, '_> {
+    fn read<T>(
+        &mut self,
+        _deadline: Instant,
+        work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
+    ) -> AtlasResult<T> {
+        work(self.sql)
+    }
+    fn write<T>(
+        &mut self,
+        _growth: u64,
+        _deadline: Instant,
+        work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
+    ) -> AtlasResult<T> {
+        self.sql
+            .prepare("SAVEPOINT cold_file")?
+            .execute([])
+            .map_err(failure)?;
+        let result = work(self.sql);
+        if result.is_err() {
+            self.failed_write = true;
+            self.sql
+                .prepare("ROLLBACK TO cold_file")?
+                .execute([])
+                .map_err(failure)?;
+        }
+        self.sql
+            .prepare("RELEASE cold_file")?
+            .execute([])
+            .map_err(failure)?;
+        result
+    }
+    fn release(&mut self, _deadline: Instant) -> AtlasResult<()> {
+        // The enclosing transaction remains active; release after it commits.
+        Ok(())
+    }
+}
+
+pub(super) enum Witness {
+    Content(SourceSnapshot),
+    Identity(RelativePath, FileIdentity),
+    Absent(RelativePath),
+    Failure,
+}
+impl Witness {
+    pub(super) fn unchanged(
+        &self,
+        source: &RegisteredSource<NativeAtlasSource>,
+    ) -> AtlasResult<bool> {
+        match self {
+            Self::Content(snapshot) => {
+                Ok(source.verify(snapshot)? == SourceVerification::Unchanged)
+            }
+            Self::Identity(path, identity) => {
+                let Some(file) = source.open(path)? else {
+                    return Ok(false);
+                };
+                Ok(file.identity()? == *identity && file.validate_path()?)
+            }
+            Self::Absent(path) => Ok(source.open(path)?.is_none()),
+            Self::Failure => Ok(true),
+        }
+    }
+}
 #[expect(
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 pub(super) fn file(
     source: &RegisteredSource<NativeAtlasSource>,
-    db: &mut CacheConnection<'_>,
+    db: &mut impl ColdStore,
     parser: &mut SemanticParser,
     path: &RelativePath,
     request: &protocol::Request,
     phase: &mut impl FnMut(protocol::Phase) -> AtlasResult<()>,
-) -> AtlasResult<()> {
+) -> AtlasResult<Witness> {
     let language = se_atlas::policy::language(path);
     phase(protocol::Phase::SourceRead)?;
     cpu::start()?;
     let read = source.read_with_wall_timeout(path, parse_budget(), Duration::from_secs(5));
+    let witness = match &read {
+        Ok(SourceRead::Bytes(snapshot)) => Witness::Content(SourceSnapshot {
+            path: snapshot.path.clone(),
+            identity: snapshot.identity.clone(),
+            content_hash: snapshot.content_hash,
+            bytes: Vec::new(),
+        }),
+        Ok(SourceRead::Hashed {
+            identity,
+            content_hash,
+            ..
+        }) => Witness::Content(SourceSnapshot {
+            path: path.clone(),
+            identity: identity.clone(),
+            content_hash: *content_hash,
+            bytes: Vec::new(),
+        }),
+        Ok(SourceRead::Deferred { identity, .. }) => {
+            Witness::Identity(path.clone(), identity.clone())
+        }
+        Ok(SourceRead::Removed) => Witness::Absent(path.clone()),
+        Err(_) => Witness::Failure,
+    };
     match read {
         Ok(SourceRead::Bytes(snapshot)) if language.is_some() => {
             let language = language.ok_or_else(|| failure("language disappeared"))?;
             let attempt = (|| {
-                db.release_cold_memory(sql_deadline())?;
+                db.release(sql_deadline())?;
                 se_proc::atlas_worker::release_allocator_pages();
                 phase(protocol::Phase::Parse)?;
                 let mut parsed = match cpu::check()
@@ -168,7 +297,7 @@ pub(super) fn file(
             })?;
         }
     }
-    Ok(())
+    Ok(witness)
 }
 fn deferred(
     source: &RegisteredSource<NativeAtlasSource>,
@@ -192,7 +321,7 @@ fn deferred(
 /// refusal still stops the job if this bounded metadata transaction cannot run.
 fn failed_file(
     source: &RegisteredSource<NativeAtlasSource>,
-    db: &mut CacheConnection<'_>,
+    db: &mut impl ColdStore,
     path: &RelativePath,
     language: Language,
     snapshot: &SourceSnapshot,

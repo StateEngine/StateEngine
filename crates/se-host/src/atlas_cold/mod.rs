@@ -1,5 +1,7 @@
 //! One derived cold epoch. Only the native private child invokes `run_child`.
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+mod batch;
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 mod cpu;
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 mod finish;
@@ -197,68 +199,51 @@ pub(crate) fn run_child(
     )?;
     let mut parser = SemanticParser::contained_cold(scope)?;
     parser.set_resource_guard(parser_memory_guard);
-    let mut completed = 0u64;
     let mut coverage = seed.coverage.clone();
     notify(protocol::Reply::Working {
         job: request.job,
         path: None,
         phase: protocol::Phase::Discovery,
     })?;
-    let discovery_complete = walk::files(&source, request, work_deadline, |entry| {
-        let path = match entry {
-            walk::Entry::Directory(path) => {
-                return notify(protocol::Reply::Working {
-                    job: request.job,
-                    path,
-                    phase: protocol::Phase::Discovery,
-                });
-            }
-            walk::Entry::File(path) => path,
-        };
-        if coverage.discovered_files >= u64::from(request.max_files) {
-            return Err(failure(
-                "cold file count limit reached; candidate remains unpublished",
-            ));
-        }
-        coverage.discovered_files += 1;
-        ingest::file(
-            &source,
-            &mut db,
-            &mut parser,
-            &path,
+    let (discovery_complete, mut completed) = {
+        let mut runner = batch::Runner {
+            source: &source,
+            db: &mut db,
+            parser: &mut parser,
             request,
-            &mut |phase| {
-                notify(protocol::Reply::Working {
-                    job: request.job,
-                    path: Some(path.clone()),
-                    phase,
-                })
-            },
-        )?;
-        completed += 1;
-        if completed.is_multiple_of(16) {
-            notify(protocol::Reply::Progress {
-                job: request.job,
-                discovered: coverage.discovered_files,
-                completed,
-            })?;
-        }
-        notify(protocol::Reply::Working {
-            job: request.job,
-            path: Some(path.clone()),
-            phase: protocol::Phase::Checkpoint,
+            notify: &mut notify,
+            deadline,
+            completed: 0,
+            reported: 0,
+        };
+        let mut pending = Vec::new();
+        let discovery_complete = walk::files(&source, request, work_deadline, |entry| {
+            let path = match entry {
+                walk::Entry::Directory(path) => {
+                    return (runner.notify)(protocol::Reply::Working {
+                        job: request.job,
+                        path,
+                        phase: protocol::Phase::Discovery,
+                    });
+                }
+                walk::Entry::File(path) => path,
+            };
+            if coverage.discovered_files >= u64::from(request.max_files) {
+                return Err(failure(
+                    "cold file count limit reached; candidate remains unpublished",
+                ));
+            }
+            coverage.discovered_files += 1;
+            pending.push(path);
+            if pending.len() == 4 {
+                runner.run(&pending, coverage.discovered_files)?;
+                pending.clear();
+            }
+            Ok(())
         })?;
-        // This private, exclusively owned epoch has no foreground readers.
-        // A disk checkpoint uses the existing whole-job wall allowance, not
-        // the short SQL query allowance; fsync can finish after that allowance
-        // without SQLite's VM progress handler being able to interrupt it.
-        if !db.checkpoint(deadline)? {
-            return Err(failure("unpublished cold epoch checkpoint remains busy"));
-        }
-        db.release_cold_memory(sql_deadline())?;
-        se_proc::atlas_worker::release_allocator_pages();
-        Ok(())
-    })?;
+        runner.run(&pending, coverage.discovered_files)?;
+        (discovery_complete, runner.completed)
+    };
     // Resolve against the completed catalog. Walking SQL in small key windows
     // avoids retaining a source inventory or reparsing once per graph edge.
     let mut after = 0i64;
@@ -273,51 +258,35 @@ pub(crate) fn run_child(
         }
         let next = db.read(sql_deadline(), |sql| {
             let mut statement =
-                sql.prepare("SELECT id,path FROM files WHERE id>?1 ORDER BY id LIMIT 1")?;
+                sql.prepare("SELECT id,path FROM files WHERE id>?1 ORDER BY id LIMIT 4")?;
             let mut rows = statement.query([after]).map_err(failure)?;
-            let Some(row) = rows.next().map_err(failure)? else {
-                return Ok(None);
-            };
-            Ok(Some((
-                row.get::<_, i64>(0).map_err(failure)?,
-                row.get::<_, String>(1).map_err(failure)?,
-            )))
+            let mut paths = Vec::new();
+            while let Some(row) = rows.next().map_err(failure)? {
+                paths.push((
+                    row.get::<_, i64>(0).map_err(failure)?,
+                    row.get::<_, String>(1).map_err(failure)?,
+                ));
+            }
+            Ok(paths)
         })?;
-        let Some((id, path)) = next else { break };
-        after = id;
-        ingest::file(
-            &source,
-            &mut db,
-            &mut parser,
-            &RelativePath::new(&path)?,
+        let Some((last, _)) = next.last() else { break };
+        after = *last;
+        let paths = next
+            .into_iter()
+            .map(|(_, path)| RelativePath::new(&path))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut runner = batch::Runner {
+            source: &source,
+            db: &mut db,
+            parser: &mut parser,
             request,
-            &mut |phase| {
-                notify(protocol::Reply::Working {
-                    job: request.job,
-                    path: Some(RelativePath::new(&path)?),
-                    phase,
-                })
-            },
-        )?;
-        se_proc::atlas_worker::release_allocator_pages();
-        completed += 1;
-        if completed.is_multiple_of(16) {
-            notify(protocol::Reply::Progress {
-                job: request.job,
-                discovered: coverage.discovered_files,
-                completed,
-            })?;
-        }
-        notify(protocol::Reply::Working {
-            job: request.job,
-            path: Some(RelativePath::new(&path)?),
-            phase: protocol::Phase::Checkpoint,
-        })?;
-        if !db.checkpoint(deadline)? {
-            return Err(failure("unpublished cold epoch checkpoint remains busy"));
-        }
-        db.release_cold_memory(sql_deadline())?;
-        se_proc::atlas_worker::release_allocator_pages();
+            notify: &mut notify,
+            deadline,
+            completed,
+            reported: (completed / 16) * 16,
+        };
+        runner.run(&paths, coverage.discovered_files)?;
+        completed = runner.completed;
     }
     coverage.discovery_complete = discovery_complete;
     notify(protocol::Reply::Working {
@@ -326,8 +295,8 @@ pub(crate) fn run_child(
         phase: protocol::Phase::Finalize,
     })?;
     let summary = finish::finish(&mut db, coverage, deadline)?;
-    // Closing the last writer checkpoints even a sub-threshold WAL. Exact
-    // parent reopen/integrity validation happens only after process reap.
+    db.finish_cold(deadline)?;
+    // Exact parent reopen/integrity validation happens only after process reap.
     drop(parser);
     drop(db);
     drop(cache);

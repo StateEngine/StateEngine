@@ -161,6 +161,7 @@ pub struct CacheConnection<'a> {
     identity: CacheIdentity,
     role: ConnectionRole,
     arena: Option<query_arena::Reservation>,
+    rollback_completed: Cell<bool>,
     _slot: Slot,
 }
 impl<'a> CacheConnection<'a> {
@@ -212,6 +213,7 @@ impl<'a> CacheConnection<'a> {
             identity: id,
             role,
             arena,
+            rollback_completed: Cell::new(false),
             _slot: slot,
         }))
     }
@@ -274,6 +276,7 @@ impl<'a> CacheConnection<'a> {
             identity: seed.identity.clone(),
             role,
             arena: None,
+            rollback_completed: Cell::new(false),
             _slot: slot,
         })
     }
@@ -285,6 +288,25 @@ impl<'a> CacheConnection<'a> {
     }
     pub fn identity(&self) -> &CacheIdentity {
         &self.identity
+    }
+    /// Bound a cold batch by the same per-file WAL admission as individual writes.
+    pub fn cold_batch_capacity(&mut self, deadline: Instant) -> AtlasResult<usize> {
+        if self.role != ConnectionRole::ColdWriter {
+            return Err(cache_error("cold batch requires the cold writer"));
+        }
+        let mut wal = self.files.wal_bytes(&self.pin)?;
+        if wal >= 4_000_000 {
+            if !self.checkpoint(deadline)? {
+                return Err(cache_error("cold batch checkpoint remains busy"));
+            }
+            wal = self.files.wal_bytes(&self.pin)?;
+        }
+        let count = WAL_STOP.saturating_sub(wal) / 2_000_000;
+        usize::try_from(count.min(4)).map_err(cache_error)
+    }
+    /// A timeout may be retried only after the enclosing transaction rolled back.
+    pub fn cold_rollback_completed(&self) -> bool {
+        self.role == ConnectionRole::ColdWriter && self.rollback_completed.get()
     }
     /// A finite snapshot ends at response completion, including error paths.
     /// Output allocations belong to the host's single 98304-byte query arena.
@@ -316,6 +338,7 @@ impl<'a> CacheConnection<'a> {
         deadline: Instant,
         work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
     ) -> AtlasResult<T> {
+        self.rollback_completed.set(false);
         let _arena = if self.arena.is_none()
             && matches!(
                 self.role,
@@ -383,6 +406,7 @@ impl<'a> CacheConnection<'a> {
                 transaction.commit().map_err(cache_error)?;
             } else {
                 transaction.rollback().map_err(cache_error)?;
+                self.rollback_completed.set(true);
             }
             result
         })
@@ -405,6 +429,27 @@ impl<'a> CacheConnection<'a> {
                 .map_err(cache_error)?;
             Ok(busy == 0)
         })
+    }
+    /// Make every completed cold batch durable before the epoch can be published.
+    pub fn finish_cold(&mut self, deadline: Instant) -> AtlasResult<()> {
+        if self.role != ConnectionRole::ColdWriter {
+            return Err(cache_error("cold flush requires the cold writer"));
+        }
+        self.files.validate_database(&self.pin)?;
+        finite(&mut self.db, deadline, |db, _| {
+            db.execute_batch("PRAGMA synchronous=FULL")
+                .map_err(cache_error)?;
+            let (busy, _, _): (i64, i64, i64) = db
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .map_err(cache_error)?;
+            if busy != 0 {
+                return Err(cache_error("cold final checkpoint remains busy"));
+            }
+            Ok(())
+        })?;
+        self.files.validate_database(&self.pin)
     }
     /// Release reusable page buffers between cold files so the native parser
     /// margin does not become permanently occupied by the previous SQL work.
