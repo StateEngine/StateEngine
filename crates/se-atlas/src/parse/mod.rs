@@ -197,12 +197,7 @@ impl AtlasParser for SemanticParser {
                 "native parser returned no tree".into(),
             ));
         };
-        let remaining = (budget.reserved_bytes as usize)
-            .saturating_sub(snapshot.bytes.capacity())
-            .saturating_sub(memory.used());
-        let extraction_bytes = profile
-            .extraction_bytes
-            .min(remaining.min(u32::MAX as usize) as u32);
+        let extraction_bytes = extraction_reservation(profile, budget, snapshot, &memory);
         let arena = budget::Arena::new(extraction_bytes, budget.max_rows.min(profile.max_rows));
         let result = extract::extract(&self.scope, snapshot, language, &tree, arena);
         // Tree and parser are owned by this call. Neither a failed parse nor a
@@ -218,6 +213,19 @@ impl AtlasParser for SemanticParser {
         result
     }
     fn release_scratch(&mut self) {}
+}
+fn extraction_reservation(
+    profile: &ParserProfile,
+    budget: ParseBudget,
+    snapshot: &SourceSnapshot,
+    memory: &native_memory::Reservation,
+) -> u32 {
+    let remaining = (budget.reserved_bytes as usize)
+        .saturating_sub(snapshot.bytes.capacity())
+        .saturating_sub(memory.used());
+    profile
+        .extraction_bytes
+        .min(remaining.min(u32::MAX as usize) as u32)
 }
 fn grammar(language: Language) -> tree_sitter::Language {
     match language {
