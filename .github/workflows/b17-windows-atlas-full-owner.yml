@@ -1,7 +1,7 @@
 name: Windows Atlas full owner measurement
 on:
   push:
-    branches: [probe/windows-atlas-pin-timeline-20261119]
+    branches: [probe/windows-atlas-growth-combined-20261119]
 permissions:
   contents: read
 jobs:
