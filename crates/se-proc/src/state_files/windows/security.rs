@@ -297,10 +297,16 @@ pub(super) fn verify_admin_only_ancestor(file: &File, path: &Path) -> Result<()>
             path,
         )
     };
+    let unknown = || {
+        unsafe_path(
+            "cannot verify reparse ancestor DACL; use another path or ask an administrator to inspect it",
+            path,
+        )
+    };
     if !trusted(descriptor.owner) {
         return Err(refusal());
     }
-    let dacl = descriptor.dacl().ok_or_else(refusal)?;
+    let dacl = descriptor.dacl().ok_or_else(unknown)?;
     const MUTATE: u32 = 0x10000000
         | 0x40000000
         | 0x02000000
@@ -322,11 +328,11 @@ pub(super) fn verify_admin_only_ancestor(file: &File, path: &Path) -> Result<()>
         {
             continue;
         }
-        let ace = entry.allowed().ok_or_else(refusal)?;
+        let ace = entry.allowed().ok_or_else(unknown)?;
         let principal = (&ace.SidStart as *const u32).cast_mut().cast();
         // SAFETY: the SID belongs to this retained, validated native ACE.
         if unsafe { IsValidSid(principal) } == 0 {
-            return Err(refusal());
+            return Err(unknown());
         }
         if !trusted(principal) && ace.Mask & MUTATE != 0 {
             return Err(refusal());
