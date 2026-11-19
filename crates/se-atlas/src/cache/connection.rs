@@ -165,6 +165,9 @@ pub struct CacheConnection<'a> {
     _slot: Slot,
 }
 impl<'a> CacheConnection<'a> {
+    pub fn diagnostic_connection(&self) -> &Connection {
+        &self.db
+    }
     pub fn open(
         files: &'a dyn CacheFiles,
         id: CacheIdentity,
