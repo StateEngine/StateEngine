@@ -75,7 +75,8 @@ def discover(params):
             raise ValueError('actual prepared MCP discovery was not verified')
 
 
-def connection(stream, number, thread, rollout, saved):
+def connection(stream, number, codex_home, saved):
+    thread = None
     try:
         request = bytearray()
         while not request.endswith(b'\r\n\r\n'):
@@ -103,23 +104,26 @@ def connection(stream, number, thread, rollout, saved):
             if method == 'initialize':
                 result = {'userAgent':'independent-recovery-double'}
             elif method == 'thread/resume' and 'config' not in params:
+                thread = params['threadId']
                 with saved['lock']:
-                    original = saved.get('policy')
-                    if original is None or params['threadId'] != original['thread']['id']:
-                        raise ValueError('reconnect did not select the original conversation')
-                    result = original | {'thread': original['thread'] |
-                                         {'turns': [], 'status': {'type': 'idle'}}}
-                witness('provider-reconnect.json', {
+                    original = saved['threads'].get(thread)
+                if original is None:
+                    raise ValueError('reconnect did not select the original conversation')
+                policy, session = original
+                result = policy | {'thread': policy['thread'] |
+                                   {'turns': [], 'status': {'type': 'idle'}}}
+                recovered = {
                     'connection': number, 'helper_pid': os.getpid(), 'native_pid': os.getppid(),
-                    'thread_id': result['thread']['id'],
-                    'policy': {k: result[k] for k in ('approvalPolicy', 'sandbox', 'cwd')}})
+                    'thread_id': thread, 'session': session,
+                    'policy': {k: result[k] for k in ('approvalPolicy', 'sandbox', 'cwd')}}
+                witness(Path(result['cwd']) / 'provider-reconnect.json', recovered)
+                witness(codex_home / f'reconnect-{thread}.json', recovered)
             elif method in ('thread/start', 'thread/resume'):
                 discover(params)
-                if method == 'thread/resume':
-                    thread = params['threadId']
-                    rollout = Path(os.environ['CODEX_HOME']) / 'sessions' / ('rollout-' + thread + '.jsonl')
-                    if not rollout.is_file():
-                        raise ValueError('resume did not select the existing native conversation')
+                thread = params['threadId'] if method == 'thread/resume' else str(uuid.uuid4())
+                rollout = codex_home / 'sessions' / ('rollout-' + thread + '.jsonl')
+                if method == 'thread/resume' and not rollout.is_file():
+                    raise ValueError('resume did not select the existing native conversation')
                 rollout.parent.mkdir(parents=True, exist_ok=True)
                 if method == 'thread/start':
                     rollout.write_text(json.dumps({'type':'session_meta',
@@ -137,15 +141,24 @@ def connection(stream, number, thread, rollout, saved):
                     sandbox = {'type':'dangerFullAccess'}
                 result = {'thread':{'id':thread, 'path':str(rollout)},
                           'approvalPolicy':params['approvalPolicy'], 'sandbox':sandbox, 'cwd':params['cwd']}
+                session = config.get('shell_environment_policy.set.SE_SESSION', os.environ.get('SE_SESSION'))
                 with saved['lock']:
-                    saved['policy'] = result
-                witness('provider-ready.json', {'helper_pid':os.getpid(),
-                    'native_pid':os.getppid(), 'discovery':True, 'thread_id': thread,
-                    'policy': {k: result[k] for k in ('approvalPolicy', 'sandbox', 'cwd')}})
-            elif method == 'thread/read':
-                result = {'thread':{'id':thread, 'path':str(rollout), 'turns':[], 'status':{'type':'idle'}}}
-            elif method == 'turn/start':
-                result = {'turn':{'id':'fixture-turn', 'status':'inProgress'}}
+                    saved['threads'][thread] = (result, session)
+                ready = {'helper_pid': os.getpid(), 'native_pid': os.getppid(),
+                         'discovery': True, 'thread_id': thread, 'session': session,
+                         'policy': {k: result[k] for k in ('approvalPolicy', 'sandbox', 'cwd')}}
+                witness(Path(params['cwd']) / 'provider-ready.json', ready)
+                if session is not None:
+                    witness(codex_home / f'ready-{session}.json', ready)
+            elif method in ('thread/read', 'turn/start'):
+                requested = params.get('threadId', thread)
+                with saved['lock']:
+                    policy, session = saved['threads'][requested]
+                if method == 'thread/read':
+                    result = {'thread': policy['thread'] | {'turns': [], 'status': {'type': 'idle'}}}
+                else:
+                    witness(codex_home / f'turn-{requested}.json', {'thread_id': requested, 'session': session})
+                    result = {'turn':{'id':'fixture-turn', 'status':'inProgress'}}
             else:
                 send(stream, json.dumps({'id':value['id'], 'error':{'code':-32601,
                      'message':'method is outside this process-recovery control'}}).encode())
@@ -163,19 +176,26 @@ def main():
     listen = sys.argv[sys.argv.index('--listen') + 1]
     if not listen.startswith('unix://'):
         raise ValueError('native fixture requires the production Unix transport')
-    path = Path(listen.removeprefix('unix://'))
+    codex_home = Path(os.environ['CODEX_HOME'])
+    explicit_path = listen.removeprefix('unix://')
+    if explicit_path:
+        path = Path(explicit_path)
+    else:
+        path = codex_home / 'app-server-control' / 'app-server-control.sock'
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        if path.is_socket():
+            path.unlink()
     server = socket.socket(socket.AF_UNIX)
     server.bind(str(path))
-    path.chmod(0o600)
+    if os.name != 'nt':
+        path.chmod(0o600)
     server.listen()
-    thread = str(uuid.uuid4())
-    rollout = Path(os.environ['CODEX_HOME']) / 'sessions' / ('rollout-' + thread + '.jsonl')
     number = 0
-    saved = {'lock': threading.Lock()}
+    saved = {'lock': threading.Lock(), 'threads': {}}
     while True:
         stream, _ = server.accept()
         number += 1
-        threading.Thread(target=connection, args=(stream, number, thread, rollout, saved), daemon=True).start()
+        threading.Thread(target=connection, args=(stream, number, codex_home, saved), daemon=True).start()
 
 
 if __name__ == '__main__':
