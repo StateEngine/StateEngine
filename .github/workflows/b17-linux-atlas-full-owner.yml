@@ -1,0 +1,34 @@
+name: Linux Atlas full owner measurement
+on:
+  push:
+    branches: [probe/windows-atlas-phase-timing-20261119]
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '4'
+      CARGO_INCREMENTAL: '0'
+      ATLAS_REPOSITORY_REVISION: '5e55728a8c1df057be179c655a7cebcb99522265'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Build release host consumer
+        run: cargo test --release --locked -p se --test atlas_startup_dev --no-run
+      - name: Observe full-history indexing and bounded queries
+        run: python crates/se/tests/support/atlas_full_owner_measure.py "$GITHUB_WORKSPACE"
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: linux-atlas-full-owner-measurements
+          path: target/judge-diagnostics/atlas-full-owner.*
+          if-no-files-found: warn
