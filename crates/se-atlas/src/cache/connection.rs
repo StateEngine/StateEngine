@@ -370,6 +370,7 @@ impl<'a> CacheConnection<'a> {
         };
         let diagnostic_started = Instant::now();
         let diagnostic_caller = std::panic::Location::caller();
+        let diagnostic_cold = self.role == ConnectionRole::ColdWriter && write;
         let result = finite(&mut self.db, deadline, |db, budget_ms| {
             let behavior = if write {
                 rusqlite::TransactionBehavior::Immediate
@@ -378,6 +379,7 @@ impl<'a> CacheConnection<'a> {
             };
             let transaction =
                 rusqlite::Transaction::new_unchecked(db, behavior).map_err(cache_error)?;
+            let diagnostic_work = Instant::now();
             let result = work(&SqlView {
                 db,
                 count: Cell::new(0),
@@ -385,6 +387,7 @@ impl<'a> CacheConnection<'a> {
                 readonly: !write,
                 deadline,
             });
+            let work_elapsed = diagnostic_work.elapsed();
             let changed = self.files.validate_database(&self.pin);
             let expired = crate::clock::now() >= deadline;
             let result = match (result, changed, expired) {
@@ -392,10 +395,19 @@ impl<'a> CacheConnection<'a> {
                 (Ok(value), Ok(()), false) => Ok(value),
                 (Err(e), _, false) | (_, Err(e), false) => Err(e),
             };
+            let diagnostic_finish = Instant::now();
             if result.is_ok() && write {
                 transaction.commit().map_err(cache_error)?;
             } else {
                 transaction.rollback().map_err(cache_error)?;
+            }
+            if diagnostic_cold {
+                eprintln!(
+                    "ATLAS_CHILD_SQL work_us={} finish_us={} success={}",
+                    work_elapsed.as_micros(),
+                    diagnostic_finish.elapsed().as_micros(),
+                    result.is_ok()
+                );
             }
             result
         });

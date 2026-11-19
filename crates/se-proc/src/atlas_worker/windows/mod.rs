@@ -360,6 +360,7 @@ impl AtlasWorker {
                 break;
             }
             consumed += count;
+            eprint!("{}", String::from_utf8_lossy(&bytes[..count]));
             self.tail.push(&bytes[..count]);
         }
         Ok(())

@@ -221,6 +221,7 @@ pub(crate) fn run_child(
             ));
         }
         coverage.discovered_files += 1;
+        let diagnostic_ingest = Instant::now();
         ingest::file(
             &source,
             &mut db,
@@ -235,6 +236,11 @@ pub(crate) fn run_child(
                 })
             },
         )?;
+        let (prepare_count, prepare_ns) = se_atlas::resolve::catalog::diagnostic_lookup_prepares();
+        eprintln!(
+            "ATLAS_CHILD_INGEST elapsed_ms={} prepare_count={prepare_count} prepare_ns={prepare_ns}",
+            diagnostic_ingest.elapsed().as_millis()
+        );
         completed += 1;
         if completed.is_multiple_of(16) {
             notify(protocol::Reply::Progress {
@@ -252,7 +258,13 @@ pub(crate) fn run_child(
         // A disk checkpoint uses the existing whole-job wall allowance, not
         // the short SQL query allowance; fsync can finish after that allowance
         // without SQLite's VM progress handler being able to interrupt it.
-        if !db.checkpoint(deadline)? {
+        let diagnostic_checkpoint = Instant::now();
+        let checkpoint_done = db.checkpoint(deadline)?;
+        eprintln!(
+            "ATLAS_CHILD_CHECKPOINT elapsed_us={}",
+            diagnostic_checkpoint.elapsed().as_micros()
+        );
+        if !checkpoint_done {
             return Err(failure("unpublished cold epoch checkpoint remains busy"));
         }
         db.release_cold_memory(sql_deadline())?;

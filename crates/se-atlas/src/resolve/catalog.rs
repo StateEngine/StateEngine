@@ -3,6 +3,14 @@ use super::*;
 use crate::{cache::connection::SqlView, errors::cache_error};
 use rusqlite::{OptionalExtension, params};
 use se_types::code::AtlasText;
+static LOOKUP_PREPARE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LOOKUP_PREPARES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub fn diagnostic_lookup_prepares() -> (u64, u64) {
+    (
+        LOOKUP_PREPARES.swap(0, std::sync::atomic::Ordering::Relaxed),
+        LOOKUP_PREPARE_NS.swap(0, std::sync::atomic::Ordering::Relaxed),
+    )
+}
 pub struct SqlCatalog<'a, 'db> {
     pub sql: &'a SqlView<'db>,
     pub deadline: Instant,
@@ -42,7 +50,16 @@ impl SqlCatalog<'_, '_> {
         }
         visited.push((file, name.to_owned()));
         let result = (|| {
+            let diagnostic_started = Instant::now();
             let mut statement=self.sql.prepare("SELECT s.key FROM symbols s JOIN files f ON f.id=s.file JOIN names n ON n.id=s.name WHERE f.key=?1 AND f.coverage_json='\"Indexed\"' AND s.exported=1 AND s.parent IN (SELECT id FROM symbols WHERE file=s.file AND parent IS NULL AND kind='Module') AND (n.text=?2 OR s.export_alias=?2) LIMIT 2")?;
+            LOOKUP_PREPARE_NS.fetch_add(
+                diagnostic_started
+                    .elapsed()
+                    .as_nanos()
+                    .min(u128::from(u64::MAX)) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            LOOKUP_PREPARES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let mut rows = statement
                 .query(params![file.0.as_slice(), name])
                 .map_err(cache_error)?;
@@ -59,7 +76,16 @@ impl SqlCatalog<'_, '_> {
             }
             drop(rows);
             drop(statement);
+            let diagnostic_started = Instant::now();
             let mut statement=self.sql.prepare("SELECT target.key,imported.text FROM imports i JOIN files f ON f.id=i.file JOIN files target ON target.id=i.target_file LEFT JOIN names local ON local.id=i.local_name LEFT JOIN names imported ON imported.id=i.imported_name WHERE f.key=?1 AND f.coverage_json='\"Indexed\"' AND target.coverage_json='\"Indexed\"' AND i.reexport=1 AND i.wildcard=0 AND local.text=?2 LIMIT 2")?;
+            LOOKUP_PREPARE_NS.fetch_add(
+                diagnostic_started
+                    .elapsed()
+                    .as_nanos()
+                    .min(u128::from(u64::MAX)) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            LOOKUP_PREPARES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let mut rows = statement
                 .query(params![file.0.as_slice(), name])
                 .map_err(cache_error)?;
