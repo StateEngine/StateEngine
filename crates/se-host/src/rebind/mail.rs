@@ -4,6 +4,15 @@ use se_core::{ops::mail as core, scope, store_error::store_error};
 use se_store::{Actor, EventBody, RecordIdentity, mail::MailSnapshot};
 use std::time::Duration;
 
+/// After the restart is durably settled, offer every unread message afresh on
+/// the replacement binding.
+fn reoffer_unread(work: &mut owned::Work) {
+    work.mail.flight = None;
+    work.mail.seen.clear();
+    work.mail.backlog = false;
+    work.mail.reoffer = true;
+}
+
 impl LaunchCoordinator {
     pub(in crate::process) async fn reconcile_restart_secode_mail(
         &self,
@@ -39,10 +48,7 @@ impl LaunchCoordinator {
             if let Some(restart) = service.restart.as_mut()
                 && !restart.mail_notified
             {
-                work.mail.flight = None;
-                work.mail.seen.clear();
-                work.mail.backlog = false;
-                work.mail.reoffer = true;
+                reoffer_unread(work);
                 restart.mail_notified = true;
             }
             return Ok(());
@@ -81,10 +87,7 @@ impl LaunchCoordinator {
         service.journal.notice = None;
         service.journal.restart_settled = true;
         service.persist(self, deadline).await?;
-        work.mail.flight = None;
-        work.mail.seen.clear();
-        work.mail.backlog = false;
-        work.mail.reoffer = true;
+        reoffer_unread(work);
         if let Some(restart) = service.restart.as_mut() {
             restart.mail_notified = true;
         }
