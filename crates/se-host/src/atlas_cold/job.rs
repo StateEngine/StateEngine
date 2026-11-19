@@ -214,6 +214,20 @@ impl ColdJob {
         {
             let reply: protocol::Reply = serde_json::from_slice(&bytes).map_err(failure)?;
             match reply {
+                protocol::Reply::Diagnostic {
+                    job,
+                    files,
+                    frames,
+                    commit_us,
+                    success,
+                } => {
+                    if job != self.request.job {
+                        return Err(self.reject("foreign cold diagnostic"));
+                    }
+                    eprintln!(
+                        "ATLAS_BATCH_FRAMES files={files} frames={frames} commit_us={commit_us} success={success}"
+                    );
+                }
                 protocol::Reply::Working { job, path, phase } => {
                     if job != self.request.job {
                         return Err(self.reject("foreign cold phase report"));

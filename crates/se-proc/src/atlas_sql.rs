@@ -23,6 +23,29 @@ pub fn configure(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Diagnostic count of dirty pages written by this connection.
+pub fn cache_writes(connection: &rusqlite::Connection) -> rusqlite::Result<i32> {
+    let mut current = 0;
+    let mut highwater = 0;
+    // SAFETY: the live connection and both output pointers remain valid for the call.
+    let code = unsafe {
+        rusqlite::ffi::sqlite3_db_status(
+            connection.handle(),
+            rusqlite::ffi::SQLITE_DBSTATUS_CACHE_WRITE,
+            &mut current,
+            &mut highwater,
+            0,
+        )
+    };
+    if code != rusqlite::ffi::SQLITE_OK {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ));
+    }
+    Ok(current)
+}
+
 /// Keep a short-lived Atlas connection's close from checkpointing the entire
 /// WAL. The maintenance owner checkpoints inside its bounded work instead.
 pub fn retain_wal(connection: &rusqlite::Connection) -> rusqlite::Result<()> {

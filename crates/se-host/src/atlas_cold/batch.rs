@@ -49,6 +49,8 @@ impl<F: FnMut(protocol::Reply) -> AtlasResult<()>> Runner<'_, '_, F> {
         let mut changed = Vec::new();
         let mut retry_individually = false;
         let mut entered = false;
+        let before =
+            se_proc::atlas_sql::cache_writes(self.db.diagnostic_connection()).map_err(failure)?;
         let deadline = sql_deadline().min(self.deadline);
         let result = self
             .db
@@ -90,6 +92,17 @@ impl<F: FnMut(protocol::Reply) -> AtlasResult<()>> Runner<'_, '_, F> {
                 }
                 Ok(())
             });
+        let after =
+            se_proc::atlas_sql::cache_writes(self.db.diagnostic_connection()).map_err(failure)?;
+        if self.completed < 64 {
+            (self.notify)(protocol::Reply::Diagnostic {
+                job: self.request.job,
+                files: attempted,
+                frames: after - before,
+                commit_us: self.db.diagnostic_commit_us(),
+                success: result.is_ok(),
+            })?;
+        }
         match result {
             Ok(()) => {
                 self.completed += attempted as u64;
@@ -137,6 +150,8 @@ impl<F: FnMut(protocol::Reply) -> AtlasResult<()>> Runner<'_, '_, F> {
     }
 
     fn single(&mut self, path: &RelativePath, discovered: u64) -> AtlasResult<()> {
+        let before =
+            se_proc::atlas_sql::cache_writes(self.db.diagnostic_connection()).map_err(failure)?;
         let request = self.request;
         let notify = &mut *self.notify;
         ingest::file(
@@ -153,6 +168,17 @@ impl<F: FnMut(protocol::Reply) -> AtlasResult<()>> Runner<'_, '_, F> {
                 })
             },
         )?;
+        let after =
+            se_proc::atlas_sql::cache_writes(self.db.diagnostic_connection()).map_err(failure)?;
+        if self.completed < 64 {
+            (self.notify)(protocol::Reply::Diagnostic {
+                job: self.request.job,
+                files: 1,
+                frames: after - before,
+                commit_us: self.db.diagnostic_commit_us(),
+                success: true,
+            })?;
+        }
         self.completed += 1;
         self.after_commit(discovered)
     }

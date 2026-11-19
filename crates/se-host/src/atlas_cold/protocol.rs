@@ -79,6 +79,13 @@ pub enum Phase {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum Reply {
+    Diagnostic {
+        job: AtlasJobId,
+        files: usize,
+        frames: i32,
+        commit_us: u64,
+        success: bool,
+    },
     Working {
         job: AtlasJobId,
         path: Option<RelativePath>,

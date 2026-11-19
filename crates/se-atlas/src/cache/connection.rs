@@ -162,9 +162,13 @@ pub struct CacheConnection<'a> {
     role: ConnectionRole,
     arena: Option<query_arena::Reservation>,
     rollback_completed: Cell<bool>,
+    diagnostic_commit_us: Cell<u64>,
     _slot: Slot,
 }
 impl<'a> CacheConnection<'a> {
+    pub fn diagnostic_connection(&self) -> &Connection {
+        &self.db
+    }
     pub fn open(
         files: &'a dyn CacheFiles,
         id: CacheIdentity,
@@ -214,6 +218,7 @@ impl<'a> CacheConnection<'a> {
             role,
             arena,
             rollback_completed: Cell::new(false),
+            diagnostic_commit_us: Cell::new(0),
             _slot: slot,
         }))
     }
@@ -277,6 +282,7 @@ impl<'a> CacheConnection<'a> {
             role,
             arena: None,
             rollback_completed: Cell::new(false),
+            diagnostic_commit_us: Cell::new(0),
             _slot: slot,
         })
     }
@@ -307,6 +313,9 @@ impl<'a> CacheConnection<'a> {
     /// A timeout may be retried only after the enclosing transaction rolled back.
     pub fn cold_rollback_completed(&self) -> bool {
         self.role == ConnectionRole::ColdWriter && self.rollback_completed.get()
+    }
+    pub fn diagnostic_commit_us(&self) -> u64 {
+        self.diagnostic_commit_us.get()
     }
     /// A finite snapshot ends at response completion, including error paths.
     /// Output allocations belong to the host's single 98304-byte query arena.
@@ -339,6 +348,7 @@ impl<'a> CacheConnection<'a> {
         work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
     ) -> AtlasResult<T> {
         self.rollback_completed.set(false);
+        self.diagnostic_commit_us.set(0);
         let _arena = if self.arena.is_none()
             && matches!(
                 self.role,
@@ -403,7 +413,11 @@ impl<'a> CacheConnection<'a> {
                 (Err(e), _, false) | (_, Err(e), false) => Err(e),
             };
             if result.is_ok() && write {
-                transaction.commit().map_err(cache_error)?;
+                let started = Instant::now();
+                let committed = transaction.commit();
+                self.diagnostic_commit_us
+                    .set(started.elapsed().as_micros() as u64);
+                committed.map_err(cache_error)?;
             } else {
                 transaction.rollback().map_err(cache_error)?;
                 self.rollback_completed.set(true);
