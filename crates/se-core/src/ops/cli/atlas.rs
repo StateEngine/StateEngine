@@ -303,13 +303,17 @@ pub(super) fn decode(name: &str, m: &ArgMatches, json: bool) -> Result<AnyOp> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn target_from(args: &[&str]) -> Result<AtlasTarget> {
+    fn target_from(args: &[&str]) -> std::result::Result<AtlasTarget, Box<dyn std::error::Error>> {
         let command = command("atlas.refs", Command::new("refs"));
-        target(&command.try_get_matches_from(args).unwrap())
+        let matches = command
+            .try_get_matches_from(args)
+            .map_err(|err| Box::new(err) as Box<dyn std::error::Error>)?;
+        Ok(target(&matches)?)
     }
     #[test]
-    fn a_named_target_with_a_line_keeps_the_name() {
-        let target = target_from(&["refs", "Foo", "--path", "foo.rs", "--line", "1"]).unwrap();
+    fn a_named_target_with_a_line_keeps_the_name()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let target = target_from(&["refs", "Foo", "--path", "foo.rs", "--line", "1"])?;
         assert!(
             matches!(
                 target,
@@ -321,18 +325,22 @@ mod tests {
             ),
             "the line remedy must keep the symbol name: {target:?}"
         );
+        Ok(())
     }
     #[test]
-    fn a_line_without_a_name_keeps_the_positional_lookup() {
-        let target = target_from(&["refs", "--path", "foo.rs", "--line", "1"]).unwrap();
+    fn a_line_without_a_name_keeps_the_positional_lookup()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let target = target_from(&["refs", "--path", "foo.rs", "--line", "1"])?;
         assert!(
             matches!(target, AtlasTarget::Symbol(SymbolSelector::At { .. })),
             "a bare position must stay a position lookup: {target:?}"
         );
+        Ok(())
     }
     #[test]
-    fn a_named_target_without_a_line_stays_plain() {
-        let target = target_from(&["refs", "Foo", "--path", "foo.rs"]).unwrap();
+    fn a_named_target_without_a_line_stays_plain()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let target = target_from(&["refs", "Foo", "--path", "foo.rs"])?;
         assert!(
             matches!(
                 target,
@@ -344,5 +352,6 @@ mod tests {
             ),
             "no line means no line filter: {target:?}"
         );
+        Ok(())
     }
 }
