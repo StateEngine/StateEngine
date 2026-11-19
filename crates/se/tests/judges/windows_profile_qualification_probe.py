@@ -27,7 +27,18 @@ class WindowsFixture(Fixture):
         return {}
 
     def close(self):
-        super().close()
+        deadline = time.monotonic() + 35
+        key = str(uuid.uuid4())
+        while True:
+            result = self.call('--key', key, 'down')
+            if result.returncode == 0:
+                value = json.loads(result.stdout)
+                assert value['complete'] and value['witness']['state'] == 'witnessed', value
+                break
+            assert b'native launch custody' in result.stdout + result.stderr, (result.stdout, result.stderr)
+            assert time.monotonic() < deadline, 'native launch custody did not settle'
+            time.sleep(1)
+        assert not (self.home / 'endpoint.json').exists(), 'runtime registration retained'
         assert self.host.wait(timeout=30) == 0, 'foreground host did not exit cleanly'
 
     def call(self, *args):
@@ -102,6 +113,7 @@ def main():
                 result = task.result()
                 assert result.returncode != 0, 'fixture service was expected to refuse'
                 assert bootstrap_released and service_released, (result.stdout, result.stderr)
+                print('profile and service checkpoints witnessed', flush=True)
             finally:
                 (images / 'bootstrap-release').touch()
                 (images / 'service-release').touch()
