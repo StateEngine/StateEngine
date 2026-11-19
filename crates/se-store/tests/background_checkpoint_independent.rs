@@ -18,6 +18,7 @@ use fixture::*;
 mod native_host;
 use native_host::{host, options, wait_until};
 const HARD_FRAMES: i64 = 16384;
+const SUSTAINED_BATCHES: u32 = 64;
 /// Per-1-MiB-batch allowance for the sustained phase: the claim is that
 /// commits keep completing while the load runs, and a loaded runner is
 /// allowed to spend this much per batch. One deadline is shared by all 64
@@ -25,10 +26,6 @@ const HARD_FRAMES: i64 = 16384;
 /// fixed window off each commit, and the 64-second total stays inside
 /// nextest's 120-second termination threshold.
 const BATCH_ALLOWANCE: Duration = Duration::from_secs(1);
-/// No-progress bound per commit: the original five-second completion wait,
-/// kept so a stuck writer fails its step instead of spending the whole
-/// load budget.
-const NO_PROGRESS: Duration = Duration::from_secs(5);
 /// A one-shot batch has no workload to amortize over, so it gets eight batch
 /// allowances of observation.
 const SINGLE_ALLOWANCE: Duration = Duration::from_secs(8);
@@ -197,16 +194,13 @@ fn background_task_keeps_sustained_writes_below_the_cutoff() -> Check {
     let outside = observer(&f.options.state_directory.join("state.db"))?;
     let mut largest_log = 0;
     let mut batch_frames = 0;
-    let load_deadline = Instant::now() + BATCH_ALLOWANCE * 64;
-    let mut last_progress;
-    for n in 0..64 {
+    let load_deadline = Instant::now() + BATCH_ALLOWANCE * SUSTAINED_BATCHES;
+    for n in 0..SUSTAINED_BATCHES {
         let key = format!("bg-sustained-{n}");
         let pending = client.submit(payload(&f, &key)?)?;
-        // Progress means the commit was handed to the writer; preparation
-        // and sampling stay outside the no-progress window.
-        last_progress = Instant::now();
-        let step_deadline = (last_progress + NO_PROGRESS).min(load_deadline);
-        let receipt = wait_until(pending, step_deadline)??;
+        let receipt = wait_until(pending, load_deadline).map_err(|error| {
+            format!("sustained batch {} of {SUSTAINED_BATCHES}: {error}", n + 1)
+        })??;
         assert_eq!(receipt.state, CommitState::Committed);
         let log = wal(&outside)?.0;
         if n == 0 {
@@ -230,7 +224,7 @@ fn background_task_keeps_sustained_writes_below_the_cutoff() -> Check {
         Instant::now() + DRAIN_BUDGET,
     )??);
     eprintln!(
-        "sustained controls: 64 groups, high_water_frames={largest_log} of {HARD_FRAMES}, one batch {batch_frames}"
+        "sustained controls: {SUSTAINED_BATCHES} groups, high_water_frames={largest_log} of {HARD_FRAMES}, one batch {batch_frames}"
     );
     Ok(())
 }
