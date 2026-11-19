@@ -30,8 +30,8 @@ mod native {
     type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
     const MAIN: &str = "src/main.js";
-    const HIDDEN: &str = "src/hidden.js";
-    const VISIBLE: &str = "src/visible.js";
+    const HIDDEN: &str = "hidden.js";
+    const VISIBLE: &str = "visible.js";
 
     #[derive(Clone, Copy)]
     enum Case {
@@ -62,7 +62,7 @@ mod native {
                     }
                 }
                 Self::Ignore => {
-                    persist(&source.join(".gitignore"), b"/src/hidden.js\n")?;
+                    persist(&source.join(".gitignore"), b"/hidden.js\n")?;
                 }
             }
             Ok(())
@@ -222,7 +222,7 @@ mod native {
     fn run_case(home: &Path, source: &Path, case: Case, drop_event: bool) -> Check {
         fs::create_dir_all(source.join("src"))?;
         fs::create_dir(source.join("generated"))?;
-        fs::write(source.join(".gitignore"), "/src/visible.js\n")?;
+        fs::write(source.join(".gitignore"), "/visible.js\n")?;
         write_symbol(source, MAIN, "before_edit")?;
         write_symbol(source, HIDDEN, "hidden_before")?;
         write_symbol(source, VISIBLE, "visible_after")?;
@@ -381,12 +381,19 @@ mod native {
             .driver_mut()
             .cold_capture_available(&second);
         release_cold(&mut controller, home)?;
+        if captured {
+            close(&mut controller, second)?;
+            close(&mut controller, first)?;
+            return Err(
+                "cold-watch assertion [capacity]: second watch armed while the first held the budget"
+                    .into(),
+            );
+        }
         let (summary, walked) = settle(&mut controller, &second)?;
         let indexed = names(&controller, &second, MAIN)? == ["capacity_witness"];
         close(&mut controller, second)?;
         close(&mut controller, first)?;
-        if captured
-            || !walked
+        if !walked
             || !indexed
             || summary.coverage.watched_directories != 0
             || !matches!(
