@@ -13,7 +13,7 @@ impl<'a> NativeWatchEvents<'a> {
         let header = self
             .bytes
             .get(..12)
-            .ok_or_else(|| invalid("short Windows watch envelope"))?;
+            .ok_or_else(|| invalid("short native watch envelope"))?;
         let id = u32::from_le_bytes(header[..4].try_into().map_err(|_| invalid("watch id"))?);
         let action = match header[4] {
             0 => NativeWatchAction::Changed,

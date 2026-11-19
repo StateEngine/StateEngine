@@ -35,11 +35,13 @@ mod watch_linux;
 #[cfg(target_os = "linux")]
 pub use watch_linux::{NativeSourceWatch, NativeWatchEvents};
 #[cfg(windows)]
+#[path = "../source_watch/windows.rs"]
 mod watch_windows;
 #[cfg(windows)]
 pub use watch_windows::{NativeSourceWatch, NativeWatchEvents};
 
 #[cfg(target_os = "macos")]
+#[path = "../source_watch/macos.rs"]
 mod watch_macos;
 #[cfg(target_os = "macos")]
 pub use watch_macos::{NativeSourceWatch, NativeWatchEvents};

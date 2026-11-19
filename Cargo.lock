@@ -1584,6 +1584,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "se-fsevents"
+version = "0.0.1-alpha.1"
+
+[[package]]
 name = "se-harness-registry"
 version = "0.0.1-alpha.1"
 dependencies = [
@@ -1639,6 +1643,7 @@ version = "0.0.1-alpha.1"
 dependencies = [
  "libc",
  "rusqlite",
+ "se-fsevents",
  "se-types",
  "serde",
  "serde_json",

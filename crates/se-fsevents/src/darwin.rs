@@ -1,6 +1,6 @@
 //! Bounded macOS file notifications. The operating system owns event delivery;
 //! this port owns every stream, callback context and queued record.
-use super::*;
+use std::io;
 use std::{
     collections::VecDeque,
     ffi::{CStr, CString, c_char, c_void},
@@ -8,10 +8,6 @@ use std::{
     sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
-
-#[path = "watch_windows/events.rs"]
-mod events;
-pub use events::NativeWatchEvents;
 
 const MAX_QUEUE: usize = 16_384;
 const MAX_STREAMS: usize = 3;
@@ -130,12 +126,12 @@ unsafe impl Send for Dispatch {}
 // SAFETY: libdispatch serializes callbacks and synchronization operations.
 unsafe impl Sync for Dispatch {}
 
-pub struct NativeSourceWatch {
+pub struct Watcher {
     queue: Arc<Mutex<Queue>>,
     dispatch: Dispatch,
     state: Mutex<State>,
 }
-impl NativeSourceWatch {
+impl Watcher {
     pub fn new() -> io::Result<Self> {
         // SAFETY: a static terminated label and NULL attributes create one serial queue.
         let dispatch =
@@ -170,13 +166,7 @@ impl NativeSourceWatch {
         }
         Ok(())
     }
-    pub fn subscribe_tree(
-        &self,
-        root: &NativeSourceRoot,
-    ) -> io::Result<Option<NativeWatchRegistration>> {
-        let Some(pin) = root.open_directory("")? else {
-            return Ok(None);
-        };
+    pub fn subscribe_tree(&self, root: &std::path::Path) -> io::Result<u32> {
         let mut state = self
             .state
             .lock()
@@ -189,11 +179,11 @@ impl NativeSourceWatch {
             .next
             .checked_add(1)
             .ok_or_else(|| invalid("source watch identifier overflow"))?;
-        let path = CString::new(root.path.as_os_str().as_encoded_bytes())
+        let path = CString::new(root.as_os_str().as_encoded_bytes())
             .map_err(|_| invalid("source path encoding"))?;
         let context = Box::into_raw(Box::new(Context {
             id,
-            root: root.path.clone(),
+            root: root.to_path_buf(),
             queue: self.queue.clone(),
         }));
         // SAFETY: path is NUL-terminated; returned Core Foundation objects are retained.
@@ -270,13 +260,7 @@ impl NativeSourceWatch {
             return Err(io::Error::other("cannot start source watch stream"));
         }
         state.streams.push(Stream { stream, context });
-        if !pin.validate_name()? {
-            return Err(changed("source changed while arming watch"));
-        }
-        Ok(Some(NativeWatchRegistration {
-            descriptor: id,
-            physical_directory: pin.identity.root_key(),
-        }))
+        Ok(id)
     }
     pub fn synchronize(&self, timeout: Duration) -> io::Result<()> {
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -404,7 +388,7 @@ unsafe extern "C" fn callback(
         queue.loss();
     }
 }
-impl Drop for NativeSourceWatch {
+impl Drop for Watcher {
     fn drop(&mut self) {
         let Ok(state) = self.state.get_mut() else {
             return;
@@ -432,4 +416,8 @@ impl Drop for NativeSourceWatch {
             dispatch_release(self.dispatch.0);
         }
     }
+}
+
+fn invalid(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
 }
