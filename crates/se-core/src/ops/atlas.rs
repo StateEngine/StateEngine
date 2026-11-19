@@ -81,8 +81,11 @@ impl AtlasFind {
             next: self.options.cursor.clone(),
             budget: {
                 let mut budget = self.options.budget()?;
-                if self.kind == SearchKind::All {
-                    // Combined searches admit candidates from every index family.
+                if matches!(
+                    self.kind,
+                    SearchKind::All | SearchKind::Code | SearchKind::Symbol
+                ) {
+                    // These searches admit candidates from the symbol index.
                     budget.work = std::time::Duration::from_millis(40);
                 }
                 if self.options.format == AtlasFormat::Compact
