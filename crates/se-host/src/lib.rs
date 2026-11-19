@@ -84,6 +84,8 @@ pub mod atlas_records;
 pub mod atlas_renewal;
 pub mod atlas_runtime;
 pub mod atlas_source;
+#[cfg(feature = "cold-watch-probe")]
+mod atlas_watch_probe;
 mod session;
 pub mod state_files;
 pub use harness::*;

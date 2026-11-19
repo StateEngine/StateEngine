@@ -1,4 +1,20 @@
 use super::*;
+#[cfg(all(windows, feature = "cold-watch-probe"))]
+impl NativeRenewal {
+    pub fn probe_flush_cold_watch(&self, root: &RootId) -> AtlasResult<()> {
+        let capture = self
+            .cold_capture
+            .as_ref()
+            .filter(|capture| &capture.id == root)
+            .ok_or_else(|| source_error("cold watch probe", "no retained watch"))?;
+        capture
+            .native
+            .watch
+            .synchronize(Duration::from_secs(5))
+            .map_err(|error| source_error("cold watch probe", error))
+    }
+}
+
 impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
     #[cfg(windows)]
     fn begin_cold_capture(&mut self, source: &Source, policy: &AtlasPolicy) {

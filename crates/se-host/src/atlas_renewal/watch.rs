@@ -264,6 +264,10 @@ impl NativeRenewal {
                         }
                     };
                     if event.action == NativeWatchAction::Overflow {
+                        #[cfg(all(windows, feature = "cold-watch-probe"))]
+                        if crate::atlas_watch_probe::event(source, "overflow")? {
+                            return Ok(None);
+                        }
                         reason(&mut self.roots[index], CoverageReason::WatchLoss);
                         return Ok(Some(vec![SourceHint::Reconcile(
                             ReconcileReason::WatchOverflow,
@@ -388,6 +392,10 @@ impl NativeRenewal {
                     if basename == ".gitignore"
                         || cfg!(windows) && basename.eq_ignore_ascii_case(".gitignore")
                     {
+                        #[cfg(all(windows, feature = "cold-watch-probe"))]
+                        if crate::atlas_watch_probe::event(source, "ignore")? {
+                            return Ok(None);
+                        }
                         return Ok(Some(vec![SourceHint::Reconcile(
                             ReconcileReason::IgnoreRulesChanged,
                         )]));
@@ -422,6 +430,12 @@ impl NativeRenewal {
                         )]));
                         #[cfg(windows)]
                         return Ok(Some(vec![SourceHint::DirectoryChanged(path)]));
+                    }
+                    #[cfg(all(windows, feature = "cold-watch-probe"))]
+                    if path.as_str() == "src/main.js"
+                        && crate::atlas_watch_probe::event(source, "edit")?
+                    {
+                        return Ok(None);
                     }
                     Ok(Some(vec![if matches!(
                         event.action,

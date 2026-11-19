@@ -11,6 +11,7 @@ default = ["runtime", "listener"]
 import = ["se-core/import"]
 runtime = ["dep:tokio"]
 listener = ["runtime", "se-remote/listener", "dep:reqwest", "tokio/macros", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync", "tokio/process", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio-tungstenite", "dep:futures-util"]
+cold-watch-probe = ["listener"]
 secode = ["runtime", "listener", "dep:secode-stateengine-api"]
 remote = ["se-remote/remote", "dep:base64", "dep:subtle", "listener", "tokio/fs", "dep:chacha20poly1305", "tokio/macros"]
 
@@ -76,3 +77,8 @@ harness = false
 [[test]]
 name = "atlas_cold_history_dev"
 harness = false
+
+[[test]]
+name = "atlas_cold_watch_probe"
+harness = false
+required-features = ["cold-watch-probe"]

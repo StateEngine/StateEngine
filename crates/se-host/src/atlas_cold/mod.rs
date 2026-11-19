@@ -102,6 +102,16 @@ pub fn private_entry() -> AtlasResult<u8> {
     let request: protocol::Request = serde_json::from_slice(&bytes).map_err(failure)?;
     let job = request.job;
     let result = run_child(&request, |reply| {
+        #[cfg(feature = "cold-watch-probe")]
+        if matches!(
+            reply,
+            protocol::Reply::Working {
+                phase: protocol::Phase::Finalize,
+                ..
+            }
+        ) {
+            crate::atlas_watch_probe::hold_finalization(&request.home.to_local()?)?;
+        }
         let bytes = serde_json::to_vec(&reply).map_err(failure)?;
         channel.send(&bytes).map_err(failure)?;
         if matches!(
