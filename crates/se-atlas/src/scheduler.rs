@@ -218,17 +218,13 @@ impl Scheduler {
         }
         None
     }
-    /// A reconciliation remains in flight until its streaming discovery fence
-    /// finishes; events arriving during it force another pass before Current.
-    pub fn finished(&mut self, id: &RootId, serial: u64, success: bool) {
+    /// Events received during work remain queued and must settle before Current.
+    pub fn finished(&mut self, id: &RootId, _serial: u64, success: bool) {
         if let Some(root) = self.roots.iter_mut().find(|r| &r.id == id) {
             root.processing = false;
             if !success {
                 root.suspended = true;
                 root.reconcile.get_or_insert(ReconcileReason::WatchFailure);
-            } else if root.serial != serial {
-                root.reconcile
-                    .get_or_insert(ReconcileReason::DirectoryChanged);
             }
         }
     }
@@ -295,7 +291,9 @@ fn size(hint: &SourceHint) -> (usize, usize) {
     use se_types::code::AtlasText;
     let overhead = std::mem::size_of::<Queued>() + 64; // bounded root-ID storage
     match hint {
-        SourceHint::FileChanged(p) | SourceHint::FileRemoved(p) => (overhead + p.as_str().len(), 1),
+        SourceHint::FileChanged(p)
+        | SourceHint::FileRemoved(p)
+        | SourceHint::DirectoryChanged(p) => (overhead + p.as_str().len(), 1),
         SourceHint::Rename { from, to } => (overhead + from.as_str().len() + to.as_str().len(), 2),
         SourceHint::Reconcile(_) => (overhead, 0),
     }
@@ -306,6 +304,7 @@ fn same_path(a: &SourceHint, b: &SourceHint) -> bool {
             SourceHint::FileChanged(a) | SourceHint::FileRemoved(a),
             SourceHint::FileChanged(b) | SourceHint::FileRemoved(b),
         ) => a == b,
+        (SourceHint::DirectoryChanged(a), SourceHint::DirectoryChanged(b)) => a == b,
         _ => false,
     }
 }

@@ -78,7 +78,7 @@ pub mod atlas_hooks;
 mod atlas_parse;
 pub mod atlas_queries;
 pub mod atlas_records;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
 pub mod atlas_renewal;
 pub mod atlas_runtime;
 pub mod atlas_source;

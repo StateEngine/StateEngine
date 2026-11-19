@@ -11,14 +11,14 @@ struct State {
     current: Vec<(RecordFeedScope, u64)>,
     #[cfg(feature = "listener")]
     interests: Vec<se_types::ProjectId>,
-    #[cfg(all(feature = "listener", target_os = "linux"))]
+    #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
     activity: Vec<se_types::ProjectId>,
-    #[cfg(all(feature = "listener", target_os = "linux"))]
+    #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
     activity_overflow: bool,
-    #[cfg(all(feature = "listener", target_os = "linux"))]
+    #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
     registry_dirty: bool,
 }
-#[cfg(all(feature = "listener", target_os = "linux"))]
+#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 pub(crate) struct Activity {
     pub projects: Vec<se_types::ProjectId>,
     pub overflow: bool,
@@ -63,11 +63,11 @@ impl RecordFeedWrite {
     }
 }
 impl RecordFeedFence {
-    #[cfg(all(feature = "listener", any(target_os = "linux", test)))]
+    #[cfg(all(feature = "listener", any(target_os = "linux", windows, test)))]
     pub(crate) async fn changed(&self) {
         self.changed.notified().await;
     }
-    #[cfg(all(feature = "listener", any(target_os = "linux", test)))]
+    #[cfg(all(feature = "listener", any(target_os = "linux", windows, test)))]
     pub(crate) fn interests(&self) -> Result<Vec<se_types::ProjectId>> {
         Ok(self.lock()?.interests.clone())
     }
@@ -79,7 +79,7 @@ impl RecordFeedFence {
         let guard = self.before_write()?;
         if let se_store::Scope::Project(project) = scope {
             self.interest(project)?;
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", windows))]
             {
                 let mut state = self.lock()?;
                 if !state.activity.contains(project) {
@@ -91,7 +91,7 @@ impl RecordFeedFence {
                 }
             }
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         if matches!(scope, se_store::Scope::Registry) {
             self.lock()?.registry_dirty = true;
         }
@@ -100,7 +100,7 @@ impl RecordFeedFence {
     /// Drain only settled authoritative activity. The source owner performs
     /// all cache/queue IO in its background work; core writers only set bounded
     /// hints. Overflow requests a paged catalogue pass instead of dropping work.
-    #[cfg(all(feature = "listener", target_os = "linux"))]
+    #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
     pub(crate) fn take_activity(&self) -> Result<Option<Activity>> {
         let mut state = self.lock()?;
         if state.pending != 0 {
