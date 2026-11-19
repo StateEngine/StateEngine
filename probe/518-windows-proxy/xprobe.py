@@ -4,7 +4,8 @@ Self-contained and cross-platform (Linux and Windows): synthetic loopback login 
 server, no real account. Checks: each agent's turn completes, each agent's tool shell sees
 only its own per-thread SE_SESSION, and one proxy exiting leaves the server and the other
 agent working. Usage: xprobe.py <codex-binary> <new-output-dir> [default|explicit]
-`default` listens on `unix://` (the login's default control socket); `explicit` names that path.
+`default` listens on `unix://` (the login's default control socket) and lets the server create its
+directory; `explicit` names that path in an owner-only directory the probe creates.
 """
 import base64, datetime, http.server, json, os, queue, struct, subprocess, sys, threading, time, traceback
 from pathlib import Path
@@ -175,7 +176,18 @@ stream_max_retries = 0
     env = {k: v for k, v in os.environ.items() if k in keep}
     env.update(HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(home), HTTP_PROXY=url, HTTPS_PROXY=url, ALL_PROXY=url,
                NO_PROXY='127.0.0.1,localhost', NO_COLOR='1')
-    sock = home / 'app-server-control' / 'app-server-control.sock'; sock.parent.mkdir()
+    sock = home / 'app-server-control' / 'app-server-control.sock'
+    if MODE == 'explicit':
+        # Stock Codex refuses a socket directory other users can reach. Windows
+        # temp trees inherit broad access, so make this one owner-only.
+        sock.parent.mkdir()
+        if WIN:
+            acl = subprocess.run(['icacls', str(sock.parent), '/inheritance:r', '/grant:r',
+                                  os.environ['USERNAME'] + ':(OI)(CI)F'], capture_output=True, text=True)
+            rec['icacls'] = {'rc': acl.returncode, 'out': acl.stdout[-500:], 'err': acl.stderr[-500:]}
+        else:
+            sock.parent.chmod(0o700)
+    # In default mode the server creates its own control directory.
     listen = 'unix://' if MODE == 'default' else f'unix://{sock}'
     rec['listen'] = listen
     print(f'listen argument: {listen}', flush=True)
