@@ -301,6 +301,22 @@ fn name_selector_prefers_the_type_definition_over_its_impl_block() -> Check {
         .is_err(),
         "a column before the span start must not resolve"
     );
+    // The span runs past its start line: a coordinate inside a later line
+    // of the same symbol must resolve it, the way the bare position does.
+    let inside = run_refs(
+        &mut reader,
+        budget,
+        "answer",
+        Some("e.rs"),
+        None,
+        Some(3),
+        Some(8),
+    )?;
+    assert_eq!(
+        inside.items(),
+        indented.items(),
+        "a coordinate inside a later line of the span must keep the same target"
+    );
     // Two same-kind functions stay ambiguous, and the refusal lists the
     // kind, path and line of every candidate.
     let refused = match run_refs(&mut reader, budget, "helper", None, None, None, None) {
