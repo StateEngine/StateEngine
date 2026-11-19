@@ -22,7 +22,8 @@ fn background_descendants() -> Check {
             child.args(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass"]);
         }
         let child = child.arg(argument).arg(root.join(file)).current_dir(&root)
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+            .map_err(|error| format!("failed to start {label}: {error}"))?;
         fs::write(root.join(format!("{label}.pid")),child.id().to_string())?;
     }
     let end = Instant::now() + Duration::from_secs(70);
@@ -40,7 +41,7 @@ fn start<'a>(runtime: &'a NativeProcessRuntime, home: &Home, machine: &MachineId
     }
     let lifecycle = LifecycleId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?;
     let mut entries: Vec<_> = std::env::vars_os().filter(|(key,_)| {
-        matches!(key.to_str(),Some("SYSTEMROOT" | "SystemRoot" | "WINDIR" | "PATH" | "PATHEXT" | "TEMP" | "TMP" | "COMSPEC" | "USERPROFILE" | "LOCALAPPDATA" | "APPDATA" | "ProgramFiles"))
+        key.to_str().is_some_and(|key| ["SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "TEMP", "TMP", "COMSPEC", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "ProgramFiles"].iter().any(|name| key.eq_ignore_ascii_case(name)))
     }).collect();
     entries.push(("BINDING_SCOPE_HOME".into(),home.0.as_os_str().to_owned()));
     let prepared = runtime.prepare_launch(LaunchReservation {
