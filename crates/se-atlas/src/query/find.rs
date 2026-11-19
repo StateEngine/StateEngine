@@ -46,6 +46,7 @@ impl QueryReader<'_, '_, '_> {
             return self.find_text(query);
         }
         let end = deadline(query.budget)?;
+        let started = end - query.budget.work;
         let digest = cursor::digest(&(
             "find",
             crate::rank::VERSION,
@@ -59,7 +60,7 @@ impl QueryReader<'_, '_, '_> {
         ))?;
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
-        let answer = self.cache.read(end, |sql| {
+        let result = self.cache.read(end, |sql| {
             let snapshot = snapshot(&identity, &env, sql)?;
             let previous = query
                 .next
@@ -100,14 +101,8 @@ impl QueryReader<'_, '_, '_> {
                 .map(|p| super::modes::from_key(p.last_key.integers.get(2)))
                 .transpose()?
                 .unwrap_or(initial);
-            let mut collected = super::candidates::collect(
-                &ranking,
-                sql,
-                &snapshot,
-                query,
-                mode,
-                end - (query.budget.work / 4).min(Duration::from_millis(3)),
-            )?;
+            let mut collected =
+                collect_phase(&ranking, sql, &snapshot, query, mode, (started, end))?;
             if query.mode.is_none()
                 && previous.is_none()
                 && collected.values.is_empty()
@@ -126,14 +121,8 @@ impl QueryReader<'_, '_, '_> {
                         continue;
                     }
                     mode = next;
-                    collected = super::candidates::collect(
-                        &ranking,
-                        sql,
-                        &snapshot,
-                        query,
-                        mode,
-                        end - (query.budget.work / 4).min(Duration::from_millis(3)),
-                    )?;
+                    collected =
+                        collect_phase(&ranking, sql, &snapshot, query, mode, (started, end))?;
                     if !collected.values.is_empty() || collected.truncated {
                         break;
                     }
@@ -274,8 +263,14 @@ impl QueryReader<'_, '_, '_> {
                 keys,
                 continuation,
             })
-        })?;
-        answer.finish(self, query, end)
+        });
+        let answer = phase_timeout("metadata search", started, end, result)?;
+        phase_timeout(
+            "metadata search",
+            started,
+            end,
+            answer.finish(self, query, end),
+        )
     }
 }
 pub(super) fn materialize(

@@ -77,6 +77,15 @@ pub(super) fn collect(
             // An unfinished traversal prefix cannot provide a ranked continuation.
             admission_time(end)?;
             let kind = plan.kind;
+            // An earlier tier has already validated and retained this row in
+            // the same snapshot; avoid repeating its metadata and authority reads.
+            if output
+                .values
+                .iter()
+                .any(|c| c.kind == kind && c.rowid == rowid)
+            {
+                continue;
+            }
             let (key, tie, path) = read_metadata(&mut metadata, rowid)?;
             if path.as_ref().is_some_and(crate::policy::built_in_denied) {
                 continue;
@@ -112,13 +121,6 @@ pub(super) fn collect(
                     Read::Absent { .. } => continue,
                     _ => return Err(cache_error("search record authority unavailable")),
                 }
-            }
-            if output
-                .values
-                .iter()
-                .any(|c| c.kind == kind && c.rowid == rowid)
-            {
-                continue;
             }
             let cost = key.len() + tie.len() + 160;
             resident += cost;

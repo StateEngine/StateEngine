@@ -26,6 +26,8 @@ mod text_files;
 mod text_metadata;
 mod text_modes;
 mod text_rank;
+#[path = "../query_timing.rs"]
+mod timing;
 use crate::{
     cache::CacheIdentity,
     cache::connection::{CacheConnection, SqlView},
@@ -44,6 +46,7 @@ use std::{
     num::NonZeroU32,
     time::{Duration, Instant},
 };
+use timing::{collect_phase, minimum_phase, phase_timeout};
 
 /// Supplied by core for this verified viewer. Every record and derived count is
 /// rechecked against its authoritative event; cached audiences are only hints.

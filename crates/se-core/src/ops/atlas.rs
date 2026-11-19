@@ -80,7 +80,7 @@ impl AtlasFind {
             regex: self.regex,
             next: self.options.cursor.clone(),
             budget: {
-                let mut budget = self.options.budget()?;
+                let mut budget = self.kind.query_budget(self.options.budget()?);
                 if self.options.format == AtlasFormat::Compact
                     && matches!(
                         self.kind,

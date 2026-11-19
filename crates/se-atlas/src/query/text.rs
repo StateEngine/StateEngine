@@ -9,6 +9,7 @@ const MAX_MATCHING_FILES: usize = 200;
 // compact rendering and the final native cache-custody check. Reserve one
 // quarter for those steps rather than spending nearly the entire snapshot on IO.
 pub(super) const FINALIZE_ALLOWANCE: Duration = Duration::from_millis(250);
+pub(super) const SOURCE_WINDOW: Duration = Duration::from_millis(750);
 impl QueryReader<'_, '_, '_> {
     pub(super) fn text_mode(
         &mut self,
@@ -32,10 +33,21 @@ impl QueryReader<'_, '_, '_> {
         ))?;
         let identity = self.cache.identity().clone();
         let env = self.ctx.split();
-        let answer = self.cache.read(end, |sql| {
-            Self::text_page(&identity, &env, query, mode, initial, work_end, digest, sql)
-        })?;
-        answer.finish(self, query, end)
+        let started = end - SOURCE_WINDOW - FINALIZE_ALLOWANCE;
+        let answer = phase_timeout(
+            "source search",
+            started,
+            end,
+            self.cache.read(end, |sql| {
+                Self::text_page(&identity, &env, query, mode, initial, work_end, digest, sql)
+            }),
+        )?;
+        phase_timeout(
+            "source search",
+            started,
+            end,
+            answer.finish(self, query, end),
+        )
     }
 
     #[expect(
@@ -115,8 +127,23 @@ impl QueryReader<'_, '_, '_> {
         let mut matched_bytes = 0;
         let mut window_end = None;
         let (pattern, regex) = super::modes::text_pattern(query.query.as_str(), mode, query.regex);
-        let metadata_pool =
-            super::source_metadata::Pool::collect(&ranking, sql, &snapshot, query, mode, work_end)?;
+        if work_end.saturating_duration_since(crate::clock::now())
+            < minimum_phase(query.budget.work)
+        {
+            return phase_timeout(
+                "source search before metadata admission",
+                work_end - SOURCE_WINDOW,
+                work_end,
+                Err(crate::cache::connection::timeout(0)),
+            );
+        }
+        let metadata_started = crate::clock::now();
+        let metadata_pool = phase_timeout(
+            "source metadata candidates",
+            metadata_started,
+            work_end,
+            super::source_metadata::Pool::collect(&ranking, sql, &snapshot, query, mode, work_end),
+        )?;
         range_incomplete |= metadata_pool.truncated;
         let matcher = crate::text::compile_pattern(&pattern, regex, !query.regex)?;
         let mut position = (

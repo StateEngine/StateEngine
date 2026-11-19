@@ -2,7 +2,7 @@
 //! Foreground reads open the published WAL epoch without taking its work lock.
 use super::*;
 use crate::{atlas_cache::NativeAtlasCache, atlas_source::NativeAtlasSource};
-use se_atlas::cache::{CacheFiles, connection::ConnectionRole, pointer};
+use se_atlas::cache::{CacheFiles, pointer};
 
 #[derive(Default)]
 pub(super) struct Catalogue {
@@ -274,20 +274,13 @@ impl AtlasReadPort for Service {
         let cache = NativeAtlasCache::open(home, source.scope.clone())?.ok_or_else(|| {
             se_core::scope::unreadable("Atlas cache", "the published root cache is absent")
         })?;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut current = pointer::open_current(
-            &cache,
-            &source.scope,
-            ConnectionRole::QueryReader,
-            profile,
-            deadline,
-        )?
-        .ok_or_else(|| {
-            se_core::scope::unreadable(
-                "Atlas pointer",
-                "the registered root has no published epoch",
-            )
-        })?;
+        let mut current = crate::atlas_queries::open_reader(&cache, &source.scope, profile)?
+            .ok_or_else(|| {
+                se_core::scope::unreadable(
+                    "Atlas pointer",
+                    "the registered root has no published epoch",
+                )
+            })?;
         let observed = self.reader_root(project, Some(&source.scope.registration.root))?;
         read(
             &mut current.connection,
