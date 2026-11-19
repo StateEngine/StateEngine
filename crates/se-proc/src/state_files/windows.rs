@@ -182,13 +182,14 @@ fn walk_for(
     private_from: Option<&Path>,
     layout: Layout,
 ) -> Result<File> {
-    walk_with_ancestry(path, create, private_from, layout).map(|(file, _)| file)
+    walk_with_ancestry(path, create, private_from, layout, false).map(|(file, _)| file)
 }
 fn walk_with_ancestry(
     path: &Path,
     create: bool,
     private_from: Option<&Path>,
     layout: Layout,
+    strict_links: bool,
 ) -> Result<(File, bool)> {
     if !path.is_absolute() {
         return Err(unsafe_path("absolute state directory required", path));
@@ -266,6 +267,9 @@ fn walk_with_ancestry(
             }
             if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
                 ordinary_ancestry = false;
+                if strict_links {
+                    verify_reparse_custody(&file, last_file.as_ref(), &prefix)?;
+                }
                 security::verify_system_ancestor(&file, &prefix)?;
                 // SAFETY: only this inspected trusted system ancestor may resolve a reparse point.
                 let raw = unsafe {
@@ -295,10 +299,34 @@ fn walk_with_ancestry(
         .map(|file| (file, ordinary_ancestry))
         .ok_or_else(|| unsafe_path("state directory missing", path))
 }
+fn verify_reparse_custody(file: &File, parent: Option<&File>, path: &Path) -> Result<()> {
+    let parent = parent.ok_or_else(|| {
+        unsafe_path(
+            "reparse ancestor has no verified parent; use another path",
+            path,
+        )
+    })?;
+    let parent_path = path.parent().ok_or_else(|| {
+        unsafe_path(
+            "reparse ancestor has no parent path; use another path",
+            path,
+        )
+    })?;
+    security::verify_admin_only_ancestor(parent, parent_path)?;
+    security::verify_admin_only_ancestor(file, path)
+}
 pub(super) fn create_directories(path: &Path) -> Result<()> {
     let file = walk(path, true, None)?;
     file.sync_all()
         .map_err(|e| io_error("flush created state directory", path, e))
+}
+pub(super) fn create_directories_trusted(path: &Path) -> Result<()> {
+    let (file, _) = walk_with_ancestry(path, true, None, Layout::State, true)?;
+    file.sync_all()
+        .map_err(|e| io_error("flush created directory", path, e))
+}
+pub(super) fn pin_trusted_directory(path: &Path) -> Result<File> {
+    walk_with_ancestry(path, false, None, Layout::State, true).map(|(file, _)| file)
 }
 pub(super) struct Directory {
     file: File,
