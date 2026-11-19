@@ -68,57 +68,7 @@ pub fn language(path: &RelativePath) -> Option<Language> {
 
 /// Always denied before traversal, observation or live text access. Ignore-file
 /// negations cannot override this private-file boundary.
-pub fn built_in_denied(path: &RelativePath) -> bool {
-    path.as_str().split('/').any(|part| {
-        let name = part.to_ascii_lowercase();
-        matches!(
-            name.as_str(),
-            ".git"
-                | ".stateengine"
-                | ".ssh"
-                | ".aws"
-                | ".gnupg"
-                | ".azure"
-                | ".kube"
-                | ".netrc"
-                | ".npmrc"
-                | ".pypirc"
-                | "secret"
-                | "secrets"
-                | "credentials"
-                | "credential"
-                | "keystore"
-        ) || name.starts_with(".env")
-            || name.starts_with("id_")
-            || [
-                "secret.",
-                "secrets.",
-                "credentials.",
-                "credential.",
-                "service-account.",
-                "service_account.",
-            ]
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
-            || matches!(
-                name.as_str(),
-                "config.js"
-                    | "config.mjs"
-                    | "config.cjs"
-                    | "config.ts"
-                    | "config.py"
-                    | "config.json"
-                    | "config.yaml"
-                    | "config.yml"
-                    | "config.toml"
-                    | "config.ini"
-                    | "settings.py"
-            )
-            || [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"]
-                .iter()
-                .any(|suffix| name.ends_with(suffix))
-    })
-}
+pub use se_types::code::built_in_denied;
 #[cfg(test)]
 mod tests {
     use super::*;

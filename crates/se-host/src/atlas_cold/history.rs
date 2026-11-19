@@ -221,8 +221,14 @@ fn feed(
             .count() as u32;
         commit.allowed_paths = Some(allowed);
         commit.paths.clear();
-        commit.paths_note =
-            Some("changed paths exceed the 32-path writer quantum; paths omitted".into());
+        commit.paths_note = Some(format!(
+            "changed paths exceed the 32-path writer quantum; {}",
+            if allowed > 0 {
+                "paths omitted"
+            } else {
+                "commit entry withheld for size"
+            }
+        ));
     }
     let oldest = window.commits.last().map(|c| c.oid.clone());
     let commits = window

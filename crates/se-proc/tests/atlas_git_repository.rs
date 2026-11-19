@@ -71,6 +71,85 @@ impl Fixture {
             &self.0.join("control"),
         )?)
     }
+    fn hash_blob(&self, data: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
+        let mut command = self.command();
+        command
+            .arg("--git-dir")
+            .arg(self.0.join("git"))
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        let mut child = command.spawn()?;
+        child
+            .stdin
+            .take()
+            .ok_or("git stdin absent")?
+            .write_all(data)?;
+        let output = child.wait_with_output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    }
+    fn make_tree(&self, names: &[String]) -> Result<String, Box<dyn std::error::Error>> {
+        let blob = self.hash_blob(b"content\n")?;
+        let mut listing = String::new();
+        for name in names {
+            listing.push_str(&format!("100644 blob {blob}\t{name}\n"));
+        }
+        let mut command = self.command();
+        command
+            .arg("--git-dir")
+            .arg(self.0.join("git"))
+            .arg("mktree")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        let mut child = command.spawn()?;
+        child
+            .stdin
+            .take()
+            .ok_or("git stdin absent")?
+            .write_all(listing.as_bytes())?;
+        let output = child.wait_with_output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    }
+    fn make_commit(
+        &self,
+        tree: &str,
+        parent: Option<&str>,
+        message: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let mut command = self.command();
+        command.arg("--git-dir").arg(self.0.join("git")).args([
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=atlas-fixture.invalid",
+            "commit-tree",
+        ]);
+        command.arg(tree);
+        if let Some(parent) = parent {
+            command.args(["-p", parent]);
+        }
+        command
+            .args(["-m", message])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped());
+        let output = command.output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    }
 }
 #[test]
 fn unborn_is_absent_but_missing_or_linked_head_and_foreign_roots_refuse() -> Check {
@@ -243,6 +322,91 @@ fn oversized_commit_degrades_only_itself_and_keeps_the_window() -> Check {
     assert!(window.commits[1].paths_note.is_none());
     assert_eq!(window.commits[1].allowed_paths, None);
     assert_eq!(window.limit, HistoryLimit::Complete);
+    reader.close()?;
+    Ok(())
+}
+#[test]
+fn oversized_all_allowed_commit_keeps_its_entry_with_the_truncated_list() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "lock")?;
+    let f = Fixture::new()?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let small = f.make_tree(&["one.rs".to_owned(), "two.rs".to_owned()])?;
+    // 300 allowed paths: the bounded read succeeds, the parser stops at the
+    // 256-path bound, and every parsed path clears the denial policy.
+    let allowed: Vec<String> = (0..300).map(|i| format!("module-{i:04}.rs")).collect();
+    let wide = f.make_tree(&allowed)?;
+    let old = f.make_commit(&small, None, "Small commit")?;
+    let head = f.make_commit(&wide, Some(&old), "Wide allowed commit")?;
+    fs::write(f.0.join("git/HEAD"), format!("{head}\n"))?;
+    let reader = f.reader()?;
+    let window = reader.window(&head, 2, deadline)?;
+    assert_eq!(window.commits.len(), 2);
+    let commit = &window.commits[0];
+    assert_eq!(commit.subject, "Wide allowed commit");
+    assert!(
+        commit.paths.is_empty(),
+        "a degraded commit retains no paths"
+    );
+    assert!(
+        commit
+            .paths_note
+            .as_deref()
+            .is_some_and(|n| n.contains("256-path or 1024-byte bound"))
+            && commit
+                .paths_note
+                .as_deref()
+                .is_some_and(|n| n.ends_with("paths omitted")),
+        "proven allowed paths keep the entry with the truncated list: {:?}",
+        commit.paths_note
+    );
+    assert_eq!(
+        commit.allowed_paths,
+        Some(256),
+        "the reader proves the 256 allowed paths it parsed"
+    );
+    assert_eq!(window.commits[1].subject, "Small commit");
+    assert_eq!(window.commits[1].allowed_paths, None);
+    assert_eq!(window.limit, HistoryLimit::Complete);
+    reader.close()?;
+    Ok(())
+}
+#[test]
+fn oversized_denied_first_commit_is_withheld_for_size() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "lock")?;
+    let f = Fixture::new()?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let small = f.make_tree(&["one.rs".to_owned(), "two.rs".to_owned()])?;
+    // 257 denied paths (id_ prefix) sort before the one allowed path: the
+    // reader stops at the 256-path bound having proven no allowed path, so
+    // the entry is withheld for size even though an allowed path exists past
+    // the bound.
+    let mixed: Vec<String> = (0..257)
+        .map(|i| format!("id_data-{i:04}"))
+        .chain(std::iter::once("kept-module.rs".to_owned()))
+        .collect();
+    let wide = f.make_tree(&mixed)?;
+    let old = f.make_commit(&small, None, "Small commit")?;
+    let head = f.make_commit(&wide, Some(&old), "Wide denied-first commit")?;
+    fs::write(f.0.join("git/HEAD"), format!("{head}\n"))?;
+    let reader = f.reader()?;
+    let window = reader.window(&head, 2, deadline)?;
+    assert_eq!(window.commits.len(), 2);
+    let commit = &window.commits[0];
+    assert_eq!(commit.subject, "Wide denied-first commit");
+    assert!(commit.paths.is_empty(), "a withheld entry retains no paths");
+    assert!(
+        commit
+            .paths_note
+            .as_deref()
+            .is_some_and(|n| n.ends_with("commit entry withheld for size")),
+        "no proven allowed path withholds the entry, and the note says so: {:?}",
+        commit.paths_note
+    );
+    assert_eq!(
+        commit.allowed_paths,
+        Some(0),
+        "denied paths are not evidence of an allowed path"
+    );
     reader.close()?;
     Ok(())
 }

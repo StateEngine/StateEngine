@@ -1,15 +1,15 @@
 //! Registered metadata custody and bounded first-parent commit windows.
 use super::*;
 use crate::source_root::NativeSourceRoot;
+use se_types::code::{RelativePath, built_in_denied};
 use std::{io::Read, path::PathBuf};
 pub const WINDOW_BYTES: usize = 65_536;
 pub const MAX_COMMITS: u16 = 128;
-/// Per-commit degradation notes; user-facing, so they name the omission.
-const NOTE_CHANGED_OVERFLOW: &str =
-    "changed paths could not be read within the bounded Git read; paths omitted";
-const NOTE_PATH_ENCODING: &str = "a changed path is not valid UTF-8; paths omitted";
-const NOTE_PATH_BOUND: &str = "changed paths exceed the 256-path or 1024-byte bound; paths omitted";
-const NOTE_WINDOW: &str = "commit exceeds the 65536-byte history window; paths omitted";
+/// Per-commit degradation reasons; user-facing, so they name the omission.
+const REASON_CHANGED_OVERFLOW: &str = "changed paths could not be read within the bounded Git read";
+const REASON_PATH_ENCODING: &str = "a changed path is not valid UTF-8";
+const REASON_PATH_BOUND: &str = "changed paths exceed the 256-path or 1024-byte bound";
+const REASON_WINDOW: &str = "commit exceeds the 65536-byte history window";
 #[derive(Clone, Debug)]
 pub struct GitRegistration {
     pub git_directory: PathBuf,
@@ -28,9 +28,10 @@ pub struct GitCommit {
     /// Present when the changed-path list was unreadable within bounds;
     /// paths is empty and the note names the omission.
     pub paths_note: Option<String>,
-    /// Set exactly when paths was omitted: changed paths observed that clear
-    /// the built-in denial policy. The window reader proves none, so it is
-    /// zero there; the host counts the writer-quantum overflow.
+    /// Set exactly when paths was omitted: changed paths the reader itself
+    /// parsed and cleared against the built-in denial policy. Zero proves no
+    /// allowed path, so the entry is withheld for size; the host counts the
+    /// writer-quantum overflow the same way.
     pub allowed_paths: Option<u32>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -177,7 +178,7 @@ impl GitRepository {
             ) {
                 Ok(bytes) => Some(bytes),
                 Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
-                    degrade(&mut commit, NOTE_CHANGED_OVERFLOW);
+                    degrade(&mut commit, REASON_CHANGED_OVERFLOW);
                     None
                 }
                 Err(error) => return Err(error),
@@ -197,12 +198,12 @@ impl GitRepository {
                     let path = match std::str::from_utf8(raw) {
                         Ok(path) => path,
                         Err(_) => {
-                            degrade(&mut commit, NOTE_PATH_ENCODING);
+                            degrade(&mut commit, REASON_PATH_ENCODING);
                             break;
                         }
                     };
                     if path.is_empty() || path.len() > 1024 || commit.paths.len() == 256 {
-                        degrade(&mut commit, NOTE_PATH_BOUND);
+                        degrade(&mut commit, REASON_PATH_BOUND);
                         break;
                     }
                     commit.paths.push(path.into());
@@ -210,7 +211,7 @@ impl GitRepository {
             }
             let mut cost = commit_cost(&commit);
             if cost > WINDOW_BYTES {
-                degrade(&mut commit, NOTE_WINDOW);
+                degrade(&mut commit, REASON_WINDOW);
                 cost = commit_cost(&commit);
             }
             if used + cost > WINDOW_BYTES {
@@ -231,13 +232,30 @@ impl GitRepository {
         self.control.close()
     }
 }
-/// A degraded commit keeps its bounded metadata and names the omission.
-fn degrade(commit: &mut GitCommit, note: &str) {
+/// A degraded commit keeps its bounded metadata and names the omission. The
+/// evidence is what the reader itself parsed before the bound stopped it: one
+/// proven allowed path retains the entry with its list truncated, the same
+/// footing as the host's writer-quantum overflow; none withholds the entry
+/// for size.
+fn degrade(commit: &mut GitCommit, reason: &str) {
+    let allowed = commit
+        .paths
+        .iter()
+        .filter(|path| {
+            RelativePath::new(path.as_str()).is_ok_and(|relative| !built_in_denied(&relative))
+        })
+        .count() as u32;
+    let note = format!(
+        "{reason}; {}",
+        if allowed > 0 {
+            "paths omitted"
+        } else {
+            "commit entry withheld for size"
+        }
+    );
     commit.paths = Vec::new();
-    commit.paths_note.get_or_insert(note.to_owned());
-    // The reader cannot evaluate the denial policy, so it proves no allowed
-    // path; only the host count can retain the commit metadata.
-    commit.allowed_paths = Some(0);
+    commit.paths_note.get_or_insert(note);
+    commit.allowed_paths = Some(allowed);
 }
 fn commit_cost(commit: &GitCommit) -> usize {
     std::mem::size_of::<GitCommit>()
