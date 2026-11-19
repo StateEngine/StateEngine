@@ -39,6 +39,16 @@ pub(super) struct Journal {
     #[serde(default)]
     pub input_free_resume: bool,
     pub notice: Option<Notice>,
+    #[serde(default)]
+    pub restart_key: Option<String>,
+    #[serde(default)]
+    pub restart_effect: Option<se_store::RecordId>,
+    #[serde(default)]
+    pub restart_settled: bool,
+    #[serde(default)]
+    pub restart_reply_sent: bool,
+    #[serde(default)]
+    pub superseded_by_restart: bool,
     pub bootstrap: Option<Checkpoint>,
     pub service: Option<Checkpoint>,
     #[serde(default)]
@@ -68,6 +78,8 @@ pub(super) struct ResumeRelease {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Notice {
+    #[serde(default)]
+    pub effect: Option<se_store::RecordId>,
     pub input: String,
     pub binding: crate::harness::secode_process::NoticeBinding,
     pub messages: Vec<String>,

@@ -21,7 +21,7 @@ pub(super) struct State {
     pub reoffer: bool,
 }
 pub(super) struct Flight {
-    reservation: core::Reservation,
+    pub(super) reservation: core::Reservation,
     text_sha256: [u8; 32],
     attempt: RecordId,
     evidence: Option<se_store::mail::OfferObservation>,
@@ -96,6 +96,7 @@ impl LaunchCoordinator {
             return Ok(());
         }
         work.mail.reoffer |= reoffer;
+        self.reconcile_restart_secode_mail(work, deadline).await?;
         self.reconcile_recovered_secode_notice(work, deadline)
             .await?;
         let target = core::MailTarget {

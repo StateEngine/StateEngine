@@ -368,6 +368,7 @@ impl LaunchCoordinator {
             http_hash,
         )?;
         work.pin_hash = Some(session_hash);
+        work.pin_file_hash = Some(session_hash);
         work.files = configuration
             .ephemeral_files
             .iter()

@@ -38,6 +38,9 @@ impl LaunchCoordinator {
             return Ok(false);
         };
         let mut service = lock_service(&slot, deadline).await?;
+        if service.restart.is_some() {
+            return Ok(false);
+        }
         if service.journal.session != work.meta.session
             || service
                 .journal

@@ -29,6 +29,7 @@ pub enum EventKind {
     CredentialIssued,
     CredentialActivated,
     CredentialRevoked,
+    CredentialRotated,
     MessageSent,
     WorkMessageSent,
     MessageDelivered,
@@ -220,6 +221,14 @@ pub enum EventBody<T> {
         session: SessionId,
         expected: Expected,
         first_request: RecordId,
+    },
+    CredentialRotated {
+        credential: RecordId,
+        session: SessionId,
+        secret_sha256: [u8; 32],
+        expires_at_us: i64,
+        restart: CredentialRestart,
+        expected: Expected,
     },
     CredentialRevoked {
         credential: RecordId,

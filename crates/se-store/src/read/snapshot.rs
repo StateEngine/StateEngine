@@ -626,6 +626,9 @@ impl Snapshot for SqliteSnapshot {
     ) -> StoreResult<Read<ProjectionRecord>> {
         self.read_control_session(target, session)
     }
+    fn credential_head(&self, id: RecordId) -> StoreResult<Read<CredentialHead>> {
+        self.read_credential_head(id)
+    }
     fn process(&mut self, _id: LifecycleId) -> StoreResult<Read<ProjectionRecord>> {
         let p = self.project_bytes()?;
         let s = scope_key(&self.db, &self.scope.admission.scope, false)?;

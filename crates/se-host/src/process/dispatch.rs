@@ -4,6 +4,27 @@ use crate::{CustodyExecutor, HostFuture, client::lease::Deadline};
 use se_core::{ops::AnyOutput, ports::CustodyPlan};
 use se_store::Admission;
 impl CustodyExecutor for Arc<LaunchCoordinator> {
+    fn rebind_replied<'a>(
+        &'a self,
+        reply: &'a crate::client::rebind::RebindReply,
+        deadline: &'a Deadline,
+    ) -> HostFuture<'a, ()> {
+        Box::pin(async move { self.rebind_reply_sent(reply, deadline).await })
+    }
+    fn rebind<'a>(
+        &'a self,
+        peer: &'a crate::PeerProof,
+        project: &'a se_types::ProjectId,
+        agent: &'a se_types::AgentId,
+        control_endpoint: &'a str,
+        deadline: &'a Deadline,
+    ) -> HostFuture<'a, crate::client::rebind::RebindReply> {
+        Box::pin(async move {
+            self.rebind_service(peer, project, agent, control_endpoint, deadline)
+                .await
+        })
+    }
+
     fn prepares_status(&self) -> bool {
         true
     }

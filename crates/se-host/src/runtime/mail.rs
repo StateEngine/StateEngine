@@ -45,7 +45,8 @@ pub(crate) fn revocations(batch: &AtomicBatch) -> Revocations {
                 incumbent: Some((session, _)),
                 ..
             } => result.sessions.push((project.clone(), session.clone())),
-            EventBody::CredentialRevoked { credential, .. } => {
+            EventBody::CredentialRevoked { credential, .. }
+            | EventBody::CredentialRotated { credential, .. } => {
                 result.credentials.push((project.clone(), *credential))
             }
             _ => (),

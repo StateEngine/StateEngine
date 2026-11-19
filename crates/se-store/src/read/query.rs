@@ -174,6 +174,7 @@ pub(super) fn kind_name(k: EventKind) -> &'static str {
         EventKind::CredentialIssued => "credential.issued",
         EventKind::CredentialActivated => "credential.activated",
         EventKind::CredentialRevoked => "credential.revoked",
+        EventKind::CredentialRotated => "credential.rotated",
         EventKind::MessageSent => "message.sent",
         EventKind::WorkMessageSent => "message.work_sent",
         EventKind::MessageDelivered => "message.delivered",

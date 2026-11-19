@@ -564,6 +564,7 @@ fn security<T>(b: &EventBody<T>) -> bool {
             | CredentialIssued { .. }
             | CredentialActivated { .. }
             | CredentialRevoked { .. }
+            | CredentialRotated { .. }
             | DecisionRatified { .. }
             | DecisionRejected { .. }
             | DecisionRetracted { .. }

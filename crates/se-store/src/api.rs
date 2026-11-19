@@ -484,6 +484,12 @@ pub trait Snapshot {
             what: "exact saved-session selection is not implemented by this snapshot".into(),
         })
     }
+    /// Exact credential head for host-owned rotation and cleanup; owner-only.
+    fn credential_head(&self, _id: RecordId) -> StoreResult<Read<CredentialHead>> {
+        Ok(Read::Unknown {
+            what: "credential head is unavailable in this snapshot".into(),
+        })
+    }
     fn process(&mut self, id: LifecycleId) -> StoreResult<Read<ProjectionRecord>>;
     /// Internal recorded custody for status/agent control, not a public process.list operation.
     fn processes(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;

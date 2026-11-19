@@ -12,6 +12,7 @@ use serde::{Deserialize, Deserializer};
 pub enum DecodedHandshake {
     Call(ClientHello),
     Stop(Box<super::endpoint::RuntimeStopRequest>),
+    Rebind(Box<super::rebind::RebindRequest>),
 }
 #[derive(Default)]
 enum Field<T> {
@@ -45,6 +46,9 @@ struct Envelope {
     expected_generation: Field<Option<se_types::Generation>>,
     maximum_reply_bytes: Field<std::num::NonZeroU32>,
     authority: Field<AuthorityWire>,
+    control_endpoint: Field<String>,
+    project_id: Field<se_types::ProjectId>,
+    agent_id: Field<se_types::AgentId>,
     expected_epoch: Field<Epoch>,
     generation: Field<se_types::Generation>,
     key: Field<se_types::IdempotencyKey>,
@@ -56,7 +60,10 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedHandshake> {
     let input: Envelope = wire::decode_json(bytes, wire::MAX_ENDPOINT_BYTES)?;
     match input.protocol {
         Field::Missing => {
-            if !input.expected_epoch.missing()
+            if !input.project_id.missing()
+                || !input.agent_id.missing()
+                || !input.control_endpoint.missing()
+                || !input.expected_epoch.missing()
                 || !input.generation.missing()
                 || !input.key.missing()
                 || !input.deadline_at.missing()
@@ -80,7 +87,32 @@ pub fn decode(bytes: &[u8]) -> Result<DecodedHandshake> {
             }))
         }
         Field::Present(protocol) => {
-            if protocol != "se.runtime.stop/v1"
+            if protocol == "se.session.rebind/v1" {
+                if !input.version.missing()
+                    || !input.expected_generation.missing()
+                    || !input.maximum_reply_bytes.missing()
+                    || !input.authority.missing()
+                    || !input.key.missing()
+                    || !input.deadline_at.missing()
+                    || !input.nonce.missing()
+                    || !input.mac.missing()
+                {
+                    return Err(invalid());
+                }
+                return Ok(DecodedHandshake::Rebind(Box::new(
+                    super::rebind::RebindRequest {
+                        project_id: input.project_id.required()?,
+                        agent_id: input.agent_id.required()?,
+                        expected_epoch: input.expected_epoch.required()?.0,
+                        generation: input.generation.required()?,
+                        control_endpoint: input.control_endpoint.required()?,
+                    },
+                )));
+            }
+            if !input.project_id.missing()
+                || !input.agent_id.missing()
+                || !input.control_endpoint.missing()
+                || protocol != "se.runtime.stop/v1"
                 || !input.version.missing()
                 || !input.expected_generation.missing()
                 || !input.maximum_reply_bytes.missing()

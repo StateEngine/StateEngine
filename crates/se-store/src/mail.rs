@@ -69,6 +69,12 @@ pub trait MailSnapshot: Snapshot {
     /// scope. Owner maintenance may reserve, but cannot mint an agent cursor
     /// under the owner's unrelated principal binding.
     fn mail_cursor(&self, through: &MailThrough) -> StoreResult<se_types::Cursor>;
+    /// A conservative recipient cursor backed by a witnessed settlement. Any
+    /// older unresolved message prevents the returned boundary passing it.
+    fn mail_settled_cursor(
+        &mut self,
+        recipient: AgentId,
+    ) -> StoreResult<se_types::Read<se_types::Cursor>>;
     fn mail_notices(
         &mut self,
         recipient: AgentId,

@@ -36,6 +36,7 @@ impl LaunchCoordinator {
             services.insert(
                 key.clone(),
                 Arc::new(tokio::sync::Mutex::new(Service {
+                    restart: None,
                     journal,
                     path,
                     digest: Some(digest),
@@ -189,7 +190,14 @@ impl LaunchCoordinator {
         service: &mut Service,
         deadline: &Deadline,
     ) -> Result<()> {
+        if service.journal.retired && service.journal.superseded_by_restart {
+            return Ok(());
+        }
+        self.restore_restart_state(service, deadline).await?;
         for auxiliary in Auxiliary::ALL {
+            if auxiliary == Auxiliary::Service && service.restart.is_some() {
+                continue;
+            }
             self.recover_secode_auxiliary(service, auxiliary, deadline)
                 .await?;
             if service
@@ -203,6 +211,9 @@ impl LaunchCoordinator {
                     "original scope is retained; finish its cleanup before another launch",
                 ));
             }
+        }
+        if service.restart.is_some() {
+            return Ok(());
         }
         if service.process.is_none() {
             return Ok(());
@@ -325,7 +336,8 @@ impl LaunchCoordinator {
                     "original private service journal absent",
                 )
             })?;
-        let service = lock_service(&slot, deadline).await?;
+        let mut service = lock_service(&slot, deadline).await?;
+        self.adopt_restart(&mut service, deadline).await?;
         if let Some(failure) = &service.failure {
             return Err(error("SE Code client recovery", failure));
         }
@@ -346,7 +358,7 @@ impl LaunchCoordinator {
                 "original service incarnation absent",
             )
         })?;
-        let se_proc::CheckpointKind::Process(record) = &service
+        let checkpoint = &service
             .journal
             .service
             .as_ref()
@@ -356,12 +368,26 @@ impl LaunchCoordinator {
                     "service native checkpoint absent",
                 )
             })?
-            .checkpoint
-        else {
-            return Err(error(
-                "SE Code client recovery",
-                "service process is not live",
-            ));
+            .checkpoint;
+        let record = match checkpoint {
+            se_proc::CheckpointKind::Process(record) => record,
+            se_proc::CheckpointKind::Exit { source, .. } if service.restart.is_some() => {
+                match source.as_ref() {
+                    se_proc::CheckpointSource::Process(record) => record,
+                    _ => {
+                        return Err(error(
+                            "SE Code client recovery",
+                            "original service record is unavailable",
+                        ));
+                    }
+                }
+            }
+            _ => {
+                return Err(error(
+                    "SE Code client recovery",
+                    "service process is not live",
+                ));
+            }
         };
         current
             .binding(&service.journal.vendor_session, deadline)

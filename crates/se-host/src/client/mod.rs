@@ -21,6 +21,8 @@ pub mod endpoint;
 pub mod lease;
 pub mod operation;
 pub mod presence;
+#[path = "../rebind/wire.rs"]
+pub mod rebind;
 pub mod wire;
 
 pub mod hello;

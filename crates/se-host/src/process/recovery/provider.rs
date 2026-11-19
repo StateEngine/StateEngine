@@ -14,6 +14,13 @@ impl LaunchCoordinator {
             Err(error) => Err(error),
         };
         if let Err(error) = recovered {
+            if work.meta.provider == se_store::Provider::SeCode
+                && self.restart_waiting(work, deadline).await
+            {
+                work.recover_provider = true;
+                work.cleanup_failure = Some(error.body);
+                return true;
+            }
             let reason = format!(
                 "{:?} agent {} ({}) session {}: provider control recovery failed: {error}. Preserve the original provider/session; inspect its protected rendezvous or use the exact public stop/resume command after proving native ownership. No replacement was launched or signalled.",
                 work.meta.provider, work.meta.agent.name, work.meta.agent.id, work.meta.session
@@ -173,16 +180,25 @@ impl LaunchCoordinator {
         let home = self.options.home.clone();
         let meta = work.meta.clone();
         let reader = self.store.reader.clone();
+        let restarted = if work.meta.provider == se_store::Provider::SeCode {
+            self.restart_session_hash(work, deadline).await?
+        } else {
+            None
+        };
         self.store
             .pool
             .run_owned(deadline, move || {
                 use sha2::{Digest, Sha256};
-                let files = se_proc::NativeStateFiles::open(&home)
-                    .map_err(|e| error("provider recovery session", e))?;
-                let pin = se_proc::read_session_pin(&files, meta.session.as_str())
-                    .map_err(|e| error("provider recovery session", e))?;
-                let actual: [u8; 32] = Sha256::digest(pin.expose()).into();
-                if actual != expected {
+                let actual = if let Some(hash) = restarted {
+                    hash
+                } else {
+                    let files = se_proc::NativeStateFiles::open(&home)
+                        .map_err(|e| error("provider recovery session", e))?;
+                    let pin = se_proc::read_session_pin(&files, meta.session.as_str())
+                        .map_err(|e| error("provider recovery session", e))?;
+                    Sha256::digest(pin.expose()).into()
+                };
+                if restarted.is_none() && actual != expected {
                     return Err(error(
                         "provider recovery session",
                         "protected pin differs from the original committed session",

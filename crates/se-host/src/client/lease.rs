@@ -327,6 +327,48 @@ impl crate::client::BlockingIpcClient {
             renew_needed: false,
         })
     }
+    /// Recover credentials only from a verified native host connection.
+    pub fn rebind(
+        endpoint: &crate::EndpointRecord,
+        options: &ClientOptions,
+        project_id: se_types::ProjectId,
+        agent_id: se_types::AgentId,
+        control_endpoint: String,
+    ) -> Result<super::rebind::RebindReply> {
+        use super::{auth, rebind, wire};
+        if options
+            .expected_generation
+            .is_some_and(|g| g != endpoint.generation)
+        {
+            return Err(SeError::invalid(
+                "rebind generation",
+                "the exact discovered runtime generation",
+            ));
+        }
+        let deadline = Deadline::from_options(options)?;
+        let hello = deadline.stage(HELLO_TIMEOUT)?;
+        let mut stream = native_connect(endpoint, &hello, false)?;
+        let bytes = wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &hello)?;
+        auth::decode_challenge(bytes.as_bytes(), endpoint)?;
+        let request = rebind::RebindRequest {
+            project_id,
+            agent_id,
+            expected_epoch: endpoint.epoch.clone(),
+            generation: endpoint.generation,
+            control_endpoint,
+        };
+        wire::write_frame_bounded(&mut stream, &rebind::encode_request(&request)?, &hello)?;
+        let bytes = wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)?;
+        let reply = rebind::decode_reply(bytes.as_bytes())?;
+        if reply.project != request.project_id || reply.agent != request.agent_id {
+            return Err(SeError::invalid(
+                "rebind reply",
+                "the selected project and agent",
+            ));
+        }
+        Ok(reply)
+    }
+
     /// This fixed control is usable across operation API versions. It never
     /// retries, invents a new key, kills by PID, or equates endpoint loss to stop.
     pub fn stop(

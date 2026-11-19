@@ -4,7 +4,7 @@ use super::*;
 use se_types::Read;
 use sha2::{Digest, Sha256};
 
-fn input(notice: &se_types::NoticeId) -> String {
+pub(in crate::process) fn input(notice: &se_types::NoticeId) -> String {
     let digest = Sha256::digest(notice.as_str().as_bytes());
     format!("msg_{}", se_types::hex_lower(&digest[..16]))
 }
@@ -100,6 +100,7 @@ impl LaunchCoordinator {
             let binding = qualified.binding(&managed.session, deadline).await?;
             binding.require_ready()?;
             let notice = custody::Notice {
+                effect: Some(reservation.effect_id),
                 input: key.clone(),
                 binding,
                 messages,
