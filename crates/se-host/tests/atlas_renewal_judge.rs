@@ -1,4 +1,4 @@
-//! Independent Linux consumer of the public native controller/watch pair.
+//! Independent consumer of the public native controller/watch pair.
 //! SQL reservation is synthetic for behavior only; native RAM/parser qualification
 //! belongs to the separate platform reviewer. No author fixtures are reused.
 #![cfg(any(target_os = "linux", windows))]
