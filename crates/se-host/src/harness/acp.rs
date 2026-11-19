@@ -195,6 +195,7 @@ impl Harness for AcpHarness {
                 connection,
                 incoming,
                 PermissionPolicy::from_saved_approval(resolved.approval),
+                attach.provider_exit,
             )
             .await;
             let binding = Arc::new(Binding {

@@ -144,7 +144,17 @@ impl Fixture {
             Generation::new(1)?,
         )
         .await;
-        let session = Session::retain(connection.clone(), receiver, policy).await;
+        let session = Session::retain(
+            connection.clone(),
+            receiver,
+            policy,
+            Arc::new(
+                || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+                    Box::pin(async { false })
+                },
+            ),
+        )
+        .await;
         Ok(Self {
             io,
             connection,

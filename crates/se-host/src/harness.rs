@@ -1,6 +1,6 @@
 use crate::{CallContext, HarnessKind, HostFuture, SessionIdentity};
 use se_types::{Body, IdempotencyKey, NativePath, ProviderSessionId, Read, Secret, Sha256};
-use std::{ffi::OsString, path::PathBuf};
+use std::{ffi::OsString, future::Future, path::PathBuf, pin::Pin, sync::Arc};
 #[cfg(feature = "listener")]
 pub(crate) mod binding {
     //! Adapter-owned lifecycle operations on the original retained streams.
@@ -222,11 +222,17 @@ pub struct ProviderInvocation {
 }
 pub struct HarnessAttach {
     pub request: HarnessRequest,
-    pub process: se_proc::OwnedProcess,
+    pub process: Arc<se_proc::OwnedProcess>,
     pub record: se_proc::ProcessRecord,
     pub transport: ProviderTransport,
     pub transcript: Read<crate::TranscriptPin>,
+    pub provider_exit: ProviderExitProof,
 }
+/// Lazy proof that the provider exited on its own with a witnessed native
+/// exit. Evaluated only when the protocol handshake fails; a live process
+/// stays unproven, so the real protocol error is preserved.
+pub type ProviderExitProof =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 /// One adapter's streams, retained through startup as well as a proven attach.
 /// Only the adapter modules construct it; empty and mixed bindings are impossible.
 pub struct HarnessBinding {

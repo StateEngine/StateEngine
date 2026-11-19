@@ -397,12 +397,17 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
             .attach(
                 HarnessAttach {
                     request,
-                    process: launched.process,
+                    process: Arc::new(launched.process),
                     record: launched.record,
                     transport: streams.host,
                     transcript: Read::Absent {
                         checked: "protocol fixture has no transcript".into(),
                     },
+                    provider_exit: Arc::new(
+                        || -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
+                            Box::pin(async { false })
+                        },
+                    ),
                 },
                 &mut retained,
                 context()?,

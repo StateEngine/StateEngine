@@ -29,6 +29,7 @@ pub struct Session {
     closing: AtomicBool,
     policy: PermissionPolicy,
     owner_wake: OnceLock<Arc<tokio::sync::Notify>>,
+    provider_exit: crate::harness::ProviderExitProof,
 }
 #[derive(Clone)]
 pub struct Observation {
@@ -77,6 +78,7 @@ impl Session {
         connection: Arc<Connection>,
         receiver: mpsc::Receiver<Incoming>,
         policy: PermissionPolicy,
+        provider_exit: crate::harness::ProviderExitProof,
     ) -> Arc<Self> {
         let session = Arc::new(Self {
             connection,
@@ -87,6 +89,7 @@ impl Session {
             closing: AtomicBool::new(false),
             policy,
             owner_wake: OnceLock::new(),
+            provider_exit,
         });
         let owned = session.clone();
         *session.pump.lock().await = Some(tokio::spawn(async move {
@@ -161,16 +164,11 @@ impl Session {
                 remaining(&cx, until)?,
             )
             .await;
-        if handshake.is_err() {
-            let settle = until
-                .saturating_duration_since(tokio::time::Instant::now())
-                .min(std::time::Duration::from_millis(500));
-            if self.connection.stdout_terminal_settled(settle).await? {
-                return Err(failure(
-                    "ACP initialization",
-                    "The provider exited before answering the protocol handshake. Its native entrypoint may have failed to start, often from a broken or incomplete first-run install or dependency setup. Reinstall or repair the harness, then retry launch with the same selection.",
-                ));
-            }
+        if handshake.is_err() && (self.provider_exit)().await {
+            return Err(failure(
+                "ACP initialization",
+                "The provider exited before answering the protocol handshake. Its native entrypoint may have failed to start, often from a broken or incomplete first-run install or dependency setup. Reinstall or repair the harness, then retry launch with the same selection.",
+            ));
         }
         handshake?;
         self.synchronize(until).await?;
