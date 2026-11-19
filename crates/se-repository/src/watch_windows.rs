@@ -24,7 +24,6 @@ pub struct WatchedFacts {
     pub commits: Option<u64>,
     pub reconciled_at_us: u64,
     pub last_notification_at_us: Option<u64>,
-    pub ticket: String,
 }
 
 enum Command {
@@ -401,7 +400,6 @@ impl Worker {
             commits: armed.commits,
             reconciled_at_us: armed.reconciled_at_us,
             last_notification_at_us,
-            ticket,
         })
     }
 }
@@ -447,12 +445,4 @@ fn now_us() -> Option<u64> {
         .duration_since(UNIX_EPOCH)
         .ok()
         .and_then(|n| u64::try_from(n.as_micros()).ok())
-}
-
-/// A local process supplies the same scope/configuration ticket before using a
-/// host's watched observation. No configuration value leaves this process.
-pub fn watch_ticket(root: &Path) -> Result<String, String> {
-    let prepared = Prepared::open(root)?;
-    prepared.watchable()?;
-    prepared.ticket()
 }

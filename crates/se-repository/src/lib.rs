@@ -14,7 +14,7 @@ use std::{
     time::Instant,
 };
 #[cfg(windows)]
-pub use watch_windows::{RepositoryWatch, WatchedFacts, watch_ticket};
+pub use watch_windows::{RepositoryWatch, WatchedFacts};
 
 /// Check whether the local caller shares the watch owner's Git environment.
 #[cfg(windows)]

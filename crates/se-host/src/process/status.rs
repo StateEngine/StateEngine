@@ -16,7 +16,7 @@ impl LaunchCoordinator {
         admission: Admission,
         deadline: &Deadline,
     ) -> Result<AnyOutput> {
-        let (fresh, include_ticket) = (input.fresh, input.watch_ticket);
+        let (fresh, watch_only) = (input.fresh, input.watch_only);
         let home = self.options.home.clone();
         let observed_admission = admission.clone();
         let (mut output, plans) = self
@@ -39,7 +39,7 @@ impl LaunchCoordinator {
             .run(BlockingClass::Foreground, deadline, move || {
                 bound.remaining()?;
                 crate::agent_observation::output::observe(&mut output, plans, bound.at(), &home)?;
-                coordinator.observe_repository(&mut output, fresh, include_ticket, &bound)?;
+                coordinator.observe_repository(&mut output, fresh, watch_only, &bound)?;
                 coordinator.observe_status(&mut output, &observed_admission, &bound)?;
                 bound.remaining()?;
                 Ok(output)

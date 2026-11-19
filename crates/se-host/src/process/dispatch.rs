@@ -35,7 +35,7 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
             if let AnyOutput::ProjectStatus(status) = &mut *output
                 && let Some(input) = status.value.repository_request.take()
             {
-                self.observe_repository(output, input.fresh, input.watch_ticket, deadline)?;
+                self.observe_repository(output, input.fresh, input.watch_only, deadline)?;
             }
             self.observe_status(output, admission, deadline)?;
         }

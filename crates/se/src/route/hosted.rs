@@ -188,7 +188,7 @@ impl StatusRequest {
             self.credential,
             AnyOp::ProjectStatus(se_core::ops::ProjectStatus {
                 all: false,
-                watch_ticket: cfg!(windows),
+                watch_only: cfg!(windows),
                 ..Default::default()
             }),
             &self.selections,

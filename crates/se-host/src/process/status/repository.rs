@@ -9,12 +9,12 @@ impl LaunchCoordinator {
         &self,
         output: &mut AnyOutput,
         fresh: bool,
-        include_ticket: bool,
+        watch_only: bool,
         deadline: &Deadline,
     ) -> Result<()> {
         #[cfg(not(windows))]
         if !fresh {
-            let _ = include_ticket;
+            let _ = watch_only;
             return Ok(());
         }
         let AnyOutput::ProjectStatus(status) = output else {
@@ -58,7 +58,7 @@ impl LaunchCoordinator {
         {
             let watched = self.watched_repository(&root, deadline);
             match watched {
-                Ok(value) => project.git = Some(watched_view(value, include_ticket)?),
+                Ok(value) => project.git = Some(watched_view(value)?),
                 Err(reason) => {
                     status.value.pending.push(PendingFact {
                         what: "repository watch".into(),
@@ -68,7 +68,7 @@ impl LaunchCoordinator {
                         ),
                     });
                     // The CLI owns its direct fallback; an MCP caller has no later local scan.
-                    if !include_ticket {
+                    if !watch_only {
                         match fresh_view(&root, deadline.at()) {
                             Ok(git) => project.git = git,
                             Err(error) => status.value.pending.push(PendingFact {
@@ -115,7 +115,7 @@ impl LaunchCoordinator {
     }
 }
 #[cfg(windows)]
-fn watched_view(value: se_repository::WatchedFacts, include_ticket: bool) -> Result<GitView> {
+fn watched_view(value: se_repository::WatchedFacts) -> Result<GitView> {
     let age_seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
@@ -138,7 +138,6 @@ fn watched_view(value: se_repository::WatchedFacts, include_ticket: bool) -> Res
             reconciled_at: timestamp(value.reconciled_at_us)?,
             last_notification_at: value.last_notification_at_us.map(timestamp).transpose()?,
         }),
-        watch_ticket: include_ticket.then_some(value.ticket),
     })
 }
 
@@ -160,7 +159,6 @@ fn fresh_view(root: &Path, deadline: Instant) -> Result<Option<GitView>> {
             commits: None,
             uncommitted: facts.dirty,
             observation: None,
-            watch_ticket: None,
         })),
         se_repository::Read::Fallback(reason) => Err(error("repository observation", &reason)),
     }

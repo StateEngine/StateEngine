@@ -85,12 +85,9 @@ fn observe_using(
                 .observation
                 .as_ref()
                 .is_some_and(|value| value.basis == "watched")
-            && view.watch_ticket.is_some()
             && library::watch_environment().is_ok()
     }) {
-        let mut result = view.clone();
-        result.watch_ticket = None;
-        return Ok(Some(result));
+        return Ok(Some(view.clone()));
     }
     let mut candidate = Some(root);
     let mut registered = None;
@@ -165,7 +162,6 @@ fn observe_using(
         commits,
         uncommitted,
         observation: None,
-        watch_ticket: None,
     }))
 }
 
