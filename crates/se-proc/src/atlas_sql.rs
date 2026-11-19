@@ -1,5 +1,26 @@
 //! Per-connection native SQLite allocation setup, confined to Atlas adapters.
 //! This changes no global SQLite settings or authoritative-store connection.
+/// Diagnostic: read SQLite's valid WAL frame count without checkpointing.
+pub fn probe_wal_frames(connection: &rusqlite::Connection) -> rusqlite::Result<Option<u64>> {
+    let (mut log, mut checkpointed) = (-1, -1);
+    // SAFETY: the connection and output pointers remain live during the call.
+    let result = unsafe {
+        rusqlite::ffi::sqlite3_wal_checkpoint_v2(
+            connection.handle(),
+            c"main".as_ptr(),
+            -1,
+            &mut log,
+            &mut checkpointed,
+        )
+    };
+    if result != rusqlite::ffi::SQLITE_OK {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(result),
+            None,
+        ));
+    }
+    Ok(u64::try_from(log).ok())
+}
 /// Observe pages emitted by this connection. A failed write invalidates this
 /// observation, so callers must discard their incremental estimate on error.
 pub fn written_pages(connection: &rusqlite::Connection) -> rusqlite::Result<u64> {

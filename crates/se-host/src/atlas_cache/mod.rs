@@ -263,6 +263,13 @@ impl NativeAtlasCache {
     }
 }
 impl CacheFiles for NativeAtlasCache {
+    fn probe_wal_frames(
+        &self,
+        connection: &se_atlas::cache::connection::NativeSqlConnection,
+    ) -> AtlasResult<Option<u64>> {
+        se_proc::atlas_sql::probe_wal_frames(connection)
+            .map_err(|error| fail(error.to_string().as_str()))
+    }
     fn probe_page_writes(
         &self,
         connection: &se_atlas::cache::connection::NativeSqlConnection,

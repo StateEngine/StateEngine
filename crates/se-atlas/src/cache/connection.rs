@@ -160,6 +160,7 @@ pub struct CacheConnection<'a> {
     pin: DatabasePin,
     identity: CacheIdentity,
     role: ConnectionRole,
+    probe_restart_pending: bool,
     arena: Option<query_arena::Reservation>,
     _slot: Slot,
 }
@@ -218,6 +219,7 @@ impl<'a> CacheConnection<'a> {
             pin,
             identity: id,
             role,
+            probe_restart_pending: false,
             arena,
             _slot: slot,
         }))
@@ -284,6 +286,7 @@ impl<'a> CacheConnection<'a> {
             pin,
             identity: seed.identity.clone(),
             role,
+            probe_restart_pending: false,
             arena: None,
             _slot: slot,
         })
@@ -350,9 +353,10 @@ impl<'a> CacheConnection<'a> {
             self.files.validate_database(&self.pin)
         })?;
         if write {
-            let mut wal = timing::measure(&timing::ADMISSION_WAL_US, || {
+            let mut physical_wal = timing::measure(&timing::ADMISSION_WAL_US, || {
                 self.files.wal_bytes(&self.pin)
             })?;
+            let mut wal = self.probe_logical_wal(physical_wal)?;
             if growth <= WAL_STOP && wal.saturating_add(growth) > WAL_STOP {
                 if self.role == ConnectionRole::ColdWriter {
                     timing::CAPACITY_CHECKPOINTS.fetch_add(1, Ordering::Relaxed);
@@ -361,11 +365,15 @@ impl<'a> CacheConnection<'a> {
                 // same connection. Reclaim earlier commits before refusing the
                 // next one; pinned readers still have to pass the size check.
                 self.checkpoint(deadline)?;
-                wal = timing::measure(&timing::ADMISSION_WAL_US, || {
+                physical_wal = timing::measure(&timing::ADMISSION_WAL_US, || {
                     self.files.wal_bytes(&self.pin)
                 })?;
+                wal = self.probe_logical_wal(physical_wal)?;
             }
-            if growth > WAL_STOP || wal.checked_add(growth).is_none_or(|v| v > WAL_STOP) {
+            if physical_wal > WAL_STOP
+                || growth > WAL_STOP
+                || wal.checked_add(growth).is_none_or(|v| v > WAL_STOP)
+            {
                 return Err(capacity(
                     "Atlas WAL capacity; checkpoint or release external readers",
                     growth,
@@ -440,6 +448,9 @@ impl<'a> CacheConnection<'a> {
             result
         });
         if write && self.role == ConnectionRole::ColdWriter {
+            if result.is_ok() {
+                self.probe_restart_pending = false;
+            }
             let pages = if result.is_ok() {
                 before.and_then(|before| {
                     self.files
@@ -455,14 +466,41 @@ impl<'a> CacheConnection<'a> {
     }
     /// Event/commit/drain driven only. External pinned snapshots keep writes
     /// suspended; no timer or forced reader expiry is introduced.
+    fn probe_logical_wal(&self, physical: u64) -> AtlasResult<u64> {
+        if self.role != ConnectionRole::ColdWriter {
+            return Ok(physical);
+        }
+        if self.probe_restart_pending {
+            return Ok(0);
+        }
+        let start = Instant::now();
+        let frames = self.files.probe_wal_frames(&self.db)?;
+        timing::WAL_NOOP_US.fetch_add(start.elapsed().as_micros() as u64, Ordering::Relaxed);
+        timing::WAL_NOOP_CALLS.fetch_add(1, Ordering::Relaxed);
+        let logical = match frames {
+            Some(0) => 0,
+            Some(frames) => frames
+                .checked_mul(PAGE_BYTES + 24)
+                .and_then(|n| n.checked_add(32))
+                .ok_or_else(|| cache_error("WAL frame size overflow"))?,
+            None if physical == 0 => 0,
+            None => return Err(cache_error("WAL frame count unavailable")),
+        };
+        if logical > physical {
+            return Err(cache_error("logical WAL exceeds the observed file size"));
+        }
+        timing::LOGICAL_WAL_MAX_BYTES.fetch_max(logical, Ordering::Relaxed);
+        Ok(logical)
+    }
     pub fn checkpoint(&mut self, deadline: Instant) -> AtlasResult<bool> {
         let started = Instant::now();
         if !self.role.writable() {
             return Err(cache_error("reader cannot checkpoint"));
         }
-        let wal = self.files.wal_bytes(&self.pin)?;
+        let physical = self.files.wal_bytes(&self.pin)?;
+        let wal = self.probe_logical_wal(physical)?;
         if self.role == ConnectionRole::ColdWriter {
-            timing::MAX_WAL_BYTES.fetch_max(wal, Ordering::Relaxed);
+            timing::MAX_WAL_BYTES.fetch_max(physical, Ordering::Relaxed);
         }
         if wal < 4_000_000 {
             return Ok(true);
@@ -473,9 +511,15 @@ impl<'a> CacheConnection<'a> {
         let query_started = Instant::now();
         let result = finite(&mut self.db, deadline, |db, _| {
             let (busy, _, _): (i64, i64, i64) = db
-                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-                })
+                .query_row(
+                    if self.role == ConnectionRole::ColdWriter {
+                        "PRAGMA wal_checkpoint(RESTART)"
+                    } else {
+                        "PRAGMA wal_checkpoint(TRUNCATE)"
+                    },
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
                 .map_err(cache_error)?;
             Ok(busy == 0)
         });
@@ -495,6 +539,9 @@ impl<'a> CacheConnection<'a> {
             bucket.fetch_add(1, Ordering::Relaxed);
             timing::CHECKPOINT_US
                 .fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
+        if self.role == ConnectionRole::ColdWriter && matches!(&result, Ok(true)) {
+            self.probe_restart_pending = true;
         }
         result
     }
@@ -682,6 +729,16 @@ fn configure_access(db: &Connection, role: ConnectionRole) -> AtlasResult<()> {
             return Err(cache_error("WAL mode refused"));
         }
         db.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=0; PRAGMA journal_size_limit=4000000; PRAGMA max_page_count=125000;").map_err(cache_error)?;
+        if role == ConnectionRole::ColdWriter {
+            db.execute_batch("PRAGMA journal_size_limit=8000000")
+                .map_err(cache_error)?;
+            let limit: i64 = db
+                .pragma_query_value(None, "journal_size_limit", |row| row.get(0))
+                .map_err(cache_error)?;
+            if limit != 8_000_000 {
+                return Err(cache_error("cold WAL reuse limit readback differs"));
+            }
+        }
     } else {
         db.execute_batch("PRAGMA query_only=ON")
             .map_err(cache_error)?;

@@ -13,6 +13,11 @@ use std::path::PathBuf;
 /// open. SQLite's own NOFOLLOW flag also rejects a linked final database name.
 /// This trusted port is never constructed from CLI/MCP destination arguments.
 pub trait CacheFiles {
+    fn probe_wal_frames(&self, _connection: &rusqlite::Connection) -> AtlasResult<Option<u64>> {
+        Err(crate::errors::cache_error(
+            "WAL frame observation unavailable",
+        ))
+    }
     fn probe_page_writes(&self, _connection: &rusqlite::Connection) -> AtlasResult<u64> {
         Err(crate::errors::cache_error(
             "page-write observation unavailable",
