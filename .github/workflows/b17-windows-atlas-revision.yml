@@ -1,0 +1,30 @@
+name: Windows Atlas release measurements
+on:
+  push:
+    branches: [probe/windows-atlas-memory-revision-20261119]
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Measure original native component probe in release mode
+        run: cargo test --release --locked -p se-host --test atlas_windows_probe -- --exact atlas_components_native --nocapture
+      - name: Upload native measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-atlas-revision-measurements
+          path: target/judge-diagnostics/atlas-components-*.json
+          if-no-files-found: warn
