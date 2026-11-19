@@ -93,6 +93,22 @@ fn setup(f: &Fixture) -> Check {
             )
             .into());
         }
+        let checkout = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args([
+                "checkout",
+                "--detach",
+                "5e55728a8c1df057be179c655a7cebcb99522265",
+            ])
+            .output()?;
+        if !checkout.status.success() {
+            return Err(format!(
+                "diagnostic checkout failed: {}",
+                String::from_utf8_lossy(&checkout.stderr)
+            )
+            .into());
+        }
         let history = std::process::Command::new("git")
             .arg("-C")
             .arg(&source)
@@ -507,17 +523,40 @@ async fn benchmark_caught_up(
     project: &se_types::ProjectId,
     records: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let end = Instant::now() + Duration::from_secs(1200);
+    let end = Instant::now() + Duration::from_secs(180);
+    let progress = Arc::new(std::sync::Mutex::new(String::from("starting")));
+    let done = Arc::new(AtomicBool::new(false));
+    let reporter_progress = Arc::clone(&progress);
+    let reporter_done = Arc::clone(&done);
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        loop {
+            std::thread::sleep(Duration::from_secs(10));
+            if reporter_done.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            eprintln!(
+                "ATLAS_PROGRESS elapsed_s={} {}",
+                started.elapsed().as_secs(),
+                reporter_progress.lock().unwrap()
+            );
+        }
+    });
     loop {
         let context = context.clone();
         let project = project.clone();
         let pool = context.blocking.clone();
+        let current = Arc::clone(&progress);
+        *progress.lock().unwrap() = "waiting for foreground worker".into();
         let observed = pool.run(BlockingClass::Foreground, &deadline()?, move || {
+            *current.lock().unwrap() = "reading summary".into();
             let summary = context.atlas.summary(&project, None)?;
+            *current.lock().unwrap() = format!("state={:?} discovery_complete={} discovered={} indexed={} partial={} deferred={} failed={} reasons={:?}", summary.state, summary.coverage.discovery_complete, summary.coverage.discovered_files, summary.coverage.indexed_files, summary.coverage.partial_files, summary.coverage.deferred_files, summary.coverage.failed_files, summary.coverage.reasons);
             if !summary.coverage.discovery_complete || !matches!(summary.state, se_types::code::IndexState::Current | se_types::code::IndexState::Partial { .. } | se_types::code::IndexState::VerificationNeeded { .. }) {
                 return Ok(None);
             }
             let ticket = context.atlas.records.ticket()?;
+            *current.lock().unwrap() = "reading index counts".into();
             let mut counts = None;
             context.atlas.with_reader(&project, None, ticket, &mut |cache, _, fresh| {
                 cache.read(Instant::now() + Duration::from_secs(2), |sql| {
@@ -531,6 +570,14 @@ async fn benchmark_caught_up(
             })?;
             Ok(counts)
         }).await;
+        match &observed {
+            Ok(Some((fresh, files, good, count))) => {
+                *progress.lock().unwrap() =
+                    format!("fresh={fresh} files={files} good={good} records={count}")
+            }
+            Err(error) => *progress.lock().unwrap() = format!("observation error: {error:?}"),
+            Ok(None) => {}
+        }
         if let Ok(Some((true, files, 1, count))) = observed
             && files >= 1000
             && count >= records
@@ -538,10 +585,14 @@ async fn benchmark_caught_up(
             if records == 1 {
                 println!("ATLAS_BENCH_INDEXED_FILES {files}");
             }
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
             return Ok(());
         }
         if Instant::now() >= end {
-            return Err("full repository owner did not finish indexing within 1200 seconds".into());
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Err(
+                "full repository diagnostic did not finish indexing within 180 seconds".into(),
+            );
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
