@@ -86,6 +86,8 @@ pub(super) struct Work {
     pub attended_setup_deadline: Option<i64>,
     pub cleanup_failure: Option<se_types::ErrorBody>,
     pub pin_hash: Option<[u8; 32]>,
+    /// Digest of the originally published cleanup file; rebind rotates the grant, not this file.
+    pub pin_file_hash: Option<[u8; 32]>,
     pub cleanup_files_known: bool,
     pub secode_service_lost: bool,
     pub files: Vec<(PathBuf, [u8; 32])>,
@@ -149,6 +151,7 @@ impl Work {
             attended_setup_deadline: None,
             cleanup_failure: None,
             pin_hash: None,
+            pin_file_hash: None,
             cleanup_files_known: false,
             secode_service_lost: false,
             files: Vec::new(),

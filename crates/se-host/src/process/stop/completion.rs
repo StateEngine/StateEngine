@@ -231,7 +231,7 @@ impl LaunchCoordinator {
         }
         let home = self.options.home.clone();
         let session = work.meta.session.clone();
-        let pin = work.pin_hash;
+        let pin = work.pin_file_hash;
         let files = work.files.clone();
         let codex = self.codex.clone();
         let is_codex = work.meta.provider == se_store::Provider::Codex;

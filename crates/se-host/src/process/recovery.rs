@@ -61,6 +61,7 @@ impl LaunchCoordinator {
             crate::runtime::executor::close_read(result,phase.close())
         }).await?;
         work.pin_hash = pin;
+        work.pin_file_hash = pin;
         work.files = files;
         work.cleanup_files_known = true;
         Ok(())
