@@ -96,8 +96,12 @@ pub fn apply(sql: &SqlView<'_>, feed: &HistoryFeed) -> AtlasResult<HistoryReceip
         if paths.is_empty() && commit.paths_note.is_none() {
             continue;
         }
-        // A degraded commit keeps its bounded metadata row; only its changed
-        // paths are omitted, so it derives no file links.
+        // A degraded commit retains its bounded metadata row only on evidence
+        // of an allowed omitted path; the omission note stays in coverage
+        // either way, and it derives no file links.
+        if commit.paths_note.is_some() && commit.allowed_paths.unwrap_or(0) == 0 {
+            continue;
+        }
         let id = upsert(sql, commit)?;
         let oid = object(&commit.oid)?;
         sql.prepare("INSERT OR IGNORE INTO observed_commits VALUES(?1,?2)")?

@@ -28,6 +28,10 @@ pub struct GitCommit {
     /// Present when the changed-path list was unreadable within bounds;
     /// paths is empty and the note names the omission.
     pub paths_note: Option<String>,
+    /// Set exactly when paths was omitted: changed paths observed that clear
+    /// the built-in denial policy. The window reader proves none, so it is
+    /// zero there; the host counts the writer-quantum overflow.
+    pub allowed_paths: Option<u32>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HistoryLimit {
@@ -231,6 +235,9 @@ impl GitRepository {
 fn degrade(commit: &mut GitCommit, note: &str) {
     commit.paths = Vec::new();
     commit.paths_note.get_or_insert(note.to_owned());
+    // The reader cannot evaluate the denial policy, so it proves no allowed
+    // path; only the host count can retain the commit metadata.
+    commit.allowed_paths = Some(0);
 }
 fn commit_cost(commit: &GitCommit) -> usize {
     std::mem::size_of::<GitCommit>()
@@ -282,6 +289,7 @@ fn metadata(bytes: &[u8]) -> io::Result<Vec<GitCommit>> {
             subject: subject.into(),
             paths: Vec::new(),
             paths_note: None,
+            allowed_paths: None,
         });
     }
     if result.is_empty() {

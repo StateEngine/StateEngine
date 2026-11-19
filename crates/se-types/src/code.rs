@@ -237,8 +237,9 @@ pub enum FileCoverage {
         diagnostic: Option<ErrorBody>,
     },
 }
-/// A retained Git commit whose changed paths could not be read within the
-/// bounded reader. The commit metadata is indexed; its paths are omitted.
+/// A degraded Git commit in the current history window: its changed paths
+/// were unreadable within bounds and are omitted. Commit metadata is indexed
+/// only when an omitted path clears the built-in denial policy.
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]

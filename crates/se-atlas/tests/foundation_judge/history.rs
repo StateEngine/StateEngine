@@ -73,6 +73,7 @@ fn history_feed_filters_secrets_before_all_derivations_and_retries_immutably() -
                 subject: "Public commit".into(),
                 paths: vec![RelativePath::new("src/ok.rs")?, RelativePath::new(".env")?],
                 paths_note: None,
+                allowed_paths: None,
             },
             Commit {
                 oid: b,
@@ -82,6 +83,7 @@ fn history_feed_filters_secrets_before_all_derivations_and_retries_immutably() -
                 subject: "secret-only-subject-DO-NOT-STORE".into(),
                 paths: vec![RelativePath::new(".env")?],
                 paths_note: None,
+                allowed_paths: None,
             },
         ],
     };
@@ -249,6 +251,7 @@ fn history_cursor_scope_and_quantum_refusals_preserve_the_previous_generation() 
             subject: "root".into(),
             paths: vec![RelativePath::new("src/ok.rs")?],
             paths_note: None,
+            allowed_paths: None,
         }],
     };
     ingest(&mut db, &feed, deadline())?;
@@ -322,6 +325,7 @@ fn history_window_degrades_one_commit_and_keeps_the_rest() -> Check {
                 subject: "Public commit".into(),
                 paths: vec![RelativePath::new("src/ok.rs")?],
                 paths_note: None,
+                allowed_paths: None,
             },
             Commit {
                 oid: b.clone(),
@@ -331,6 +335,7 @@ fn history_window_degrades_one_commit_and_keeps_the_rest() -> Check {
                 subject: "Oversized commit".into(),
                 paths: Vec::new(),
                 paths_note: Some(note.clone()),
+                allowed_paths: Some(1),
             },
         ],
     };
@@ -409,10 +414,89 @@ fn history_window_degrades_one_commit_and_keeps_the_rest() -> Check {
     let mut verbose = feed.clone();
     verbose.commits[1].paths_note = Some("x".repeat(513));
     assert!(verbose.validate().is_err());
+    let mut no_evidence = feed.clone();
+    no_evidence.commits[1].allowed_paths = None;
+    assert!(no_evidence.validate().is_err());
+    let mut stray_evidence = feed.clone();
+    stray_evidence.commits[0].allowed_paths = Some(1);
+    assert!(stray_evidence.validate().is_err());
     // Older coverage records without the field still deserialize.
     let old: Coverage = serde_json::from_value(
         serde_json::json!({"discovered_files":0,"indexed_files":0,"partial_files":0,"deferred_files":0,"failed_files":0,"discovery_complete":true,"stale_files":0,"resolved_references":0,"name_only_references":0,"watched_directories":0,"unwatched_directories":0,"watch_discovery_complete":true,"watch_stats_started":null,"watch_activation_attempts":0,"watch_limited_activations":0,"reasons":[],"history_unavailable":null}),
     )?;
     assert!(old.history_commit_notes.is_empty());
+    Ok(())
+}
+
+#[test]
+fn degraded_commit_without_allowed_evidence_keeps_the_note_but_not_the_metadata() -> Check {
+    use se_atlas::history::*;
+    use se_types::code::*;
+    let _serial = SERIAL.lock().map_err(|_| "lock")?;
+    let (f, s, p) = setup()?;
+    let mut db = CacheConnection::create(&f, &s, ConnectionRole::HostWriter, &p, deadline())?;
+    let a = "a".repeat(40);
+    let b = "b".repeat(40);
+    let note =
+        "changed paths could not be read within the bounded Git read; paths omitted".to_owned();
+    let feed = HistoryFeed {
+        project: s.identity.scope.registration.project.clone(),
+        root: s.identity.scope.registration.root.clone(),
+        expected: None,
+        bound: HistoryBound {
+            head: a.clone(),
+            oldest: Some(b.clone()),
+            next: None,
+            limit: HistoryLimit::Complete,
+        },
+        observed_unix_ms: 10,
+        commits: vec![
+            Commit {
+                oid: a.clone(),
+                parent: Some(b.clone()),
+                author_unix_ms: 1,
+                author: "Public author".into(),
+                subject: "Public commit".into(),
+                paths: vec![RelativePath::new("src/ok.rs")?],
+                paths_note: None,
+                allowed_paths: None,
+            },
+            Commit {
+                oid: b,
+                parent: None,
+                author_unix_ms: 2,
+                author: "Denied-only author".into(),
+                subject: "Denied-only commit".into(),
+                paths: Vec::new(),
+                paths_note: Some(note),
+                allowed_paths: Some(0),
+            },
+        ],
+    };
+    feed.validate()?;
+    let receipt = ingest(&mut db, &feed, deadline())?;
+    assert_eq!(
+        (receipt.changed, receipt.denied_paths, receipt.generation.0),
+        (1, 0, 1)
+    );
+    let outside = rusqlite::Connection::open(f.dir.join(s.identity.epoch.as_str()))?;
+    for (sql, want) in [
+        ("SELECT count(*) FROM commits", 1),
+        (
+            "SELECT count(*) FROM commits WHERE subject='Denied-only commit'",
+            0,
+        ),
+        (
+            "SELECT count(*) FROM commits WHERE subject='Public commit'",
+            1,
+        ),
+        ("SELECT count(*) FROM touches WHERE target_kind='commit'", 1),
+    ] {
+        assert_eq!(
+            outside.query_row(sql, [], |r| r.get::<_, i64>(0))?,
+            want,
+            "{sql}"
+        );
+    }
     Ok(())
 }

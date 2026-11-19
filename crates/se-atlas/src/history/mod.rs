@@ -56,6 +56,11 @@ pub struct Commit {
     /// paths is empty and the note names the omission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paths_note: Option<String>,
+    /// Set exactly when paths was omitted: omitted changed paths that clear
+    /// the built-in denial policy. Metadata is retained only when greater
+    /// than zero; the omission note remains in coverage either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_paths: Option<u32>,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -147,6 +152,11 @@ impl HistoryFeed {
             if commit.paths_note.is_some() && !commit.paths.is_empty() {
                 return Err(cache_error(
                     "a degraded Git commit retains no changed paths",
+                ));
+            }
+            if commit.paths_note.is_some() != commit.allowed_paths.is_some() {
+                return Err(cache_error(
+                    "degraded Git commits require allowed-path evidence and complete commits carry none",
                 ));
             }
             if let Some(parent) = &commit.parent {

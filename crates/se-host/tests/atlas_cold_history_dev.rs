@@ -103,6 +103,7 @@ mod native {
     enum Case {
         Bounded,
         Wide,
+        SecretWide,
         Unqualified,
         Unreadable,
     }
@@ -121,10 +122,13 @@ mod native {
         }
         let cases: &[Case] = if std::env::args().any(|arg| arg == "--wide-history") {
             &[Case::Wide]
+        } else if std::env::args().any(|arg| arg == "--secret-wide-history") {
+            &[Case::SecretWide]
         } else {
             &[
                 Case::Bounded,
                 Case::Wide,
+                Case::SecretWide,
                 Case::Unqualified,
                 Case::Unreadable,
             ]
@@ -138,6 +142,7 @@ mod native {
     fn run_case(case: Case) -> Check {
         let bounded = case == Case::Bounded;
         let wide = case == Case::Wide;
+        let secret_wide = case == Case::SecretWide;
         let unavailable = matches!(case, Case::Unqualified | Case::Unreadable);
         let expected_reason = if unavailable {
             CoverageReason::HistoryUnavailable
@@ -179,6 +184,19 @@ mod native {
             }
             git(&source, &["add", "--", "."])?;
             git(&source, &["commit", "-m", "wide_history_marker"])?;
+        }
+        if case == Case::SecretWide {
+            // The same overflow with every path denied: the window degrades
+            // the commit, but none of its metadata may survive.
+            fs::create_dir(source.join("secret"))?;
+            for index in 0..33 {
+                fs::write(
+                    source.join(format!("secret/secret_{index}.js")),
+                    format!("export function secret_{index}() {{ return {index}; }}\n"),
+                )?;
+            }
+            git(&source, &["add", "--", "."])?;
+            git(&source, &["commit", "-m", "secret_wide_marker"])?;
         }
         if case == Case::Unreadable {
             fs::remove_file(source.join(".git/HEAD"))?;
@@ -346,12 +364,14 @@ mod native {
             match case {
                 Case::Bounded => 3,
                 Case::Wide => 1,
+                Case::SecretWide => 0,
                 Case::Unqualified | Case::Unreadable => 0,
             }
         );
-        if wide {
-            // The writer-quantum commit degrades: its metadata row survives,
-            // its paths are omitted, and coverage names the omission.
+        if wide || secret_wide {
+            // The writer-quantum commit degrades: its paths are omitted and
+            // coverage names the omission. Metadata survives only on evidence
+            // of an allowed omitted path.
             assert!(
                 summary
                     .coverage
@@ -360,6 +380,8 @@ mod native {
                     .any(|note| note.note.contains("32-path writer quantum")),
                 "the writer-quantum omission must be named in coverage"
             );
+        }
+        if wide {
             assert_eq!(
                 count(
                     &mut current.connection,
@@ -367,6 +389,16 @@ mod native {
                 )?,
                 1,
                 "the degraded commit must keep its metadata row"
+            );
+        }
+        if secret_wide {
+            assert_eq!(
+                count(
+                    &mut current.connection,
+                    "SELECT count(*) FROM commits WHERE subject='secret_wide_marker'"
+                )?,
+                0,
+                "a denied-only degraded commit must keep no metadata"
             );
         }
         assert_eq!(

@@ -235,7 +235,13 @@ fn oversized_commit_degrades_only_itself_and_keeps_the_window() -> Check {
         window.commits[1].paths,
         vec!["one.rs".to_owned(), "two.rs".to_owned()]
     );
+    assert_eq!(
+        window.commits[0].allowed_paths,
+        Some(0),
+        "the window reader proves no allowed path"
+    );
     assert!(window.commits[1].paths_note.is_none());
+    assert_eq!(window.commits[1].allowed_paths, None);
     assert_eq!(window.limit, HistoryLimit::Complete);
     reader.close()?;
     Ok(())

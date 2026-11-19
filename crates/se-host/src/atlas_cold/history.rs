@@ -205,11 +205,21 @@ fn feed(
     }
     if paths > 32 {
         // A single commit outside the writer quantum must not unmake the
-        // window: degrade its paths and say so.
+        // window: degrade its paths and say so. Its metadata is retained
+        // only when an omitted path clears the built-in denial policy.
         let commit = window
             .commits
             .first_mut()
             .ok_or_else(|| failure("history window disappeared"))?;
+        let allowed = commit
+            .paths
+            .iter()
+            .filter(|path| {
+                RelativePath::new(path.as_str())
+                    .is_ok_and(|relative| !se_atlas::policy::built_in_denied(&relative))
+            })
+            .count() as u32;
+        commit.allowed_paths = Some(allowed);
         commit.paths.clear();
         commit.paths_note =
             Some("changed paths exceed the 32-path writer quantum; paths omitted".into());
@@ -231,6 +241,7 @@ fn feed(
                     .map(|path| RelativePath::new(&path))
                     .collect::<AtlasResult<_>>()?,
                 paths_note: commit.paths_note,
+                allowed_paths: commit.allowed_paths,
             })
         })
         .collect::<AtlasResult<Vec<_>>>()?;
