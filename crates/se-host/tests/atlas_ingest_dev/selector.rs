@@ -192,6 +192,9 @@ fn name_selector_prefers_the_type_definition_over_its_impl_block() -> Check {
         false,
         4,
     )?;
+    // Keep the selector assertions independent of runner scheduling.
+    #[cfg(debug_assertions)]
+    let _clock = se_atlas::clock::pause();
     let viewer = AtlasPrincipal::Human(se_types::HumanId::from_parts(1, [22; 10])?);
     let records = NoRecords;
     let mut reader = QueryReader::new(
