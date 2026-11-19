@@ -65,6 +65,10 @@ fn run_refs<'a, 'c, 'x>(
     }
 }
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one real-parser fixture, then a short matrix of selector queries"
+)]
 fn name_selector_prefers_the_type_definition_over_its_impl_block() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let dir = std::env::temp_dir().join(format!(
@@ -229,8 +233,10 @@ fn name_selector_prefers_the_type_definition_over_its_impl_block() -> Check {
     )?;
     // Two same-kind functions stay ambiguous, and the refusal lists the
     // kind, path and line of every candidate.
-    let refused = run_refs(&mut reader, budget, "helper", None, None, None)
-        .expect_err("same-kind duplicates must stay ambiguous");
+    let refused = match run_refs(&mut reader, budget, "helper", None, None, None) {
+        Err(refused) => refused,
+        Ok(_) => panic!("same-kind duplicates must stay ambiguous"),
+    };
     let candidates = match refused.body.detail() {
         se_types::Detail::AtlasSymbolAmbiguous(value) => value.candidates.clone(),
         other => panic!("expected an ambiguity refusal, got {other:?}"),
