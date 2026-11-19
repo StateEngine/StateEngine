@@ -35,6 +35,13 @@ pub struct SourceEntry {
     pub kind: SourceEntryKind,
 }
 pub trait SourceDirectory: Send {
+    #[cfg(windows)]
+    fn physical_identity(&self) -> AtlasResult<[u8; 32]> {
+        Err(SeError::invalid(
+            "Atlas source directory",
+            "a native retained directory identity",
+        ))
+    }
     fn next_entry(&mut self) -> AtlasResult<Option<SourceEntry>>;
     fn validate_path(&self) -> AtlasResult<bool>;
 }

@@ -142,7 +142,9 @@ impl NativeRenewal {
                             return Ok(false);
                         }
                     }
-                    SourceHint::DirectoryChanged(_) | SourceHint::Reconcile(_) => (),
+                    SourceHint::DirectoryChanged(_)
+                    | SourceHint::Reconcile(_)
+                    | SourceHint::ColdSnapshot => (),
                 }
                 cycle.part = 2;
                 cycle.phase = Phase::Repairs;
@@ -175,8 +177,8 @@ impl NativeRenewal {
                                 true
                             } else {
                                 let parent = path.rsplit_once('/').map_or("", |p| p.0);
-                                ignore::Rules::load(source, policy, parent, work_deadline)?
-                                    .eligible(&path, true, policy, work_deadline)?
+                                ignore::Rules::load(source, &policy.ignore, parent, work_deadline)?
+                                    .eligible(&path, true, &policy.ignore, work_deadline)?
                             };
                             let native = self.roots[index]
                                 .native
@@ -213,8 +215,12 @@ impl NativeRenewal {
                             cycle.cursor = Some(cursor);
                             // This directory's own rule file is descendant
                             // content: read it only after its native subscription.
-                            cycle.rules =
-                                Some(ignore::Rules::load(source, policy, &path, work_deadline)?);
+                            cycle.rules = Some(ignore::Rules::load(
+                                source,
+                                &policy.ignore,
+                                &path,
+                                work_deadline,
+                            )?);
                         }
                         if cycle.rules.is_none() {
                             let path = cycle
@@ -222,9 +228,10 @@ impl NativeRenewal {
                                 .as_ref()
                                 .ok_or_else(|| source_error("enumeration", "cursor absent"))?
                                 .path();
-                            let rules = ignore::Rules::load(source, policy, path, work_deadline)?;
+                            let rules =
+                                ignore::Rules::load(source, &policy.ignore, path, work_deadline)?;
                             if !path.is_empty()
-                                && !rules.eligible(path, true, policy, work_deadline)?
+                                && !rules.eligible(path, true, &policy.ignore, work_deadline)?
                             {
                                 remove_pending(connection, path, work_deadline)?;
                                 cycle.cursor = None;
@@ -266,7 +273,7 @@ impl NativeRenewal {
                             .rules
                             .as_ref()
                             .ok_or_else(|| source_error(path.as_str(), "ignore rules absent"))?
-                            .eligible(path.as_str(), directory, policy, work_deadline)?
+                            .eligible(path.as_str(), directory, &policy.ignore, work_deadline)?
                         {
                             cycle.pending_entry = None;
                             continue;
@@ -328,8 +335,9 @@ impl NativeRenewal {
                         };
                         let path = RelativePath::new(path)?;
                         let parent = path.as_str().rsplit_once('/').map_or("", |p| p.0);
-                        let rules = ignore::Rules::load(source, policy, parent, work_deadline)?;
-                        if !rules.eligible(path.as_str(), false, policy, work_deadline)? {
+                        let rules =
+                            ignore::Rules::load(source, &policy.ignore, parent, work_deadline)?;
+                        if !rules.eligible(path.as_str(), false, &policy.ignore, work_deadline)? {
                             connection.write(WAL, work_deadline, |sql| {
                                 observation::excluded(sql, &source.scope, &path, work.serial)
                                     .map(|_| ())
@@ -376,13 +384,14 @@ impl NativeRenewal {
                             self.roots[index].discovery_complete = true;
                             continue;
                         };
-                        let rules = ignore::Rules::load(source, policy, &path, work_deadline)?;
+                        let rules =
+                            ignore::Rules::load(source, &policy.ignore, &path, work_deadline)?;
                         let native = self.roots[index]
                             .native
                             .as_ref()
                             .ok_or_else(|| source_error(&path, "root closed"))?;
                         if (!path.is_empty()
-                            && !rules.eligible(&path, true, policy, work_deadline)?)
+                            && !rules.eligible(&path, true, &policy.ignore, work_deadline)?)
                             || !directory_present(&native.root, &path)?
                         {
                             if let Some(mapping) = self

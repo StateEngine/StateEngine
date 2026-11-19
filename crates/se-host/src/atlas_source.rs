@@ -65,6 +65,12 @@ impl SourceAccess for NativeAtlasSource {
 }
 struct PinnedDirectory<'a>(NativeRootDirectory<'a>);
 impl SourceDirectory for PinnedDirectory<'_> {
+    #[cfg(windows)]
+    fn physical_identity(&self) -> AtlasResult<[u8; 32]> {
+        self.0
+            .physical_identity()
+            .map_err(|cause| error("source directory identity", cause))
+    }
     fn next_entry(&mut self) -> AtlasResult<Option<SourceEntry>> {
         self.0
             .next_entry()

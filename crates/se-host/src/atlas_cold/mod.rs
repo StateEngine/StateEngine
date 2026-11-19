@@ -206,7 +206,18 @@ pub(crate) fn run_child(
     })?;
     let discovery_complete = walk::files(&source, request, work_deadline, |entry| {
         let path = match entry {
-            walk::Entry::Directory(path) => {
+            walk::Entry::Directory {
+                path,
+                #[cfg(all(windows, feature = "listener"))]
+                identity,
+            } => {
+                #[cfg(all(windows, feature = "listener"))]
+                db.write(65536, sql_deadline(), |sql| {
+                    sql.prepare("INSERT INTO watch_directories(descriptor,path,identity) SELECT coalesce(min(descriptor),0)-1,?1,?2 FROM watch_directories WHERE descriptor<0")?
+                        .execute((path.as_ref().map_or("", |path| path.as_str()), identity.as_slice()))
+                        .map_err(failure)?;
+                    Ok(())
+                })?;
                 return notify(protocol::Reply::Working {
                     job: request.job,
                     path,

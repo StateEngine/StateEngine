@@ -321,7 +321,7 @@ fn size(hint: &SourceHint) -> (usize, usize) {
         | SourceHint::FileRemoved(p)
         | SourceHint::DirectoryChanged(p) => (overhead + p.as_str().len(), 1),
         SourceHint::Rename { from, to } => (overhead + from.as_str().len() + to.as_str().len(), 2),
-        SourceHint::Reconcile(_) => (overhead, 0),
+        SourceHint::Reconcile(_) | SourceHint::ColdSnapshot => (overhead, 0),
     }
 }
 fn same_path(a: &SourceHint, b: &SourceHint) -> bool {

@@ -209,6 +209,10 @@ impl NativeSourceRoot {
     }
 }
 impl NativeRootDirectory<'_> {
+    /// Identity of the directory retained by this cursor, after name validation.
+    pub fn physical_identity(&self) -> io::Result<[u8; 32]> {
+        self.revision().map(|revision| revision.root_key())
+    }
     /// Read at most 128 entries from the retained stream, validating its name on
     /// both sides of the batch. An empty batch means observed end of stream.
     pub fn next_batch(&mut self) -> io::Result<Vec<NativeSourceEntry>> {
