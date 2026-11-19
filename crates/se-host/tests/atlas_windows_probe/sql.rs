@@ -15,6 +15,14 @@ fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)
 }
 
+// SQLite's own process-wide allocation counter, measured only while this
+// fixture has no connection or its single warm reader. It excludes allocations
+// outside SQLite's general allocator and is not a per-connection hard limit.
+fn sqlite_heap(reset_high_water: bool) -> Observed<(i64, i64)> {
+    se_atlas::native_diagnostic::sqlite_heap(reset_high_water)
+        .map_err(|status| format!("SQLite heap counter returned {status}").into())
+}
+
 fn coverage() -> Coverage {
     Coverage {
         discovered_files: 1_000,
@@ -201,6 +209,7 @@ pub fn observe(fixture: &Fixture) -> Observed<Value> {
 
     let reader = NativeAtlasCache::open(&fixture.home, scope.clone())?.ok_or("reader absent")?;
     let private_commit_before_open = native::commit()?;
+    let sqlite_before_open = sqlite_heap(true)?.0;
     let mut current = pointer::open_current(
         &reader,
         scope,
@@ -210,6 +219,7 @@ pub fn observe(fixture: &Fixture) -> Observed<Value> {
     )?
     .ok_or("warm reader absent")?;
     let private_commit_after_open = native::commit()?;
+    let sqlite_after_open = sqlite_heap(false)?.0;
     let mut queries = Vec::with_capacity(READ_SAMPLES);
     let mut meta_queries = Vec::with_capacity(READ_SAMPLES);
     let read_before = native::load()?;
@@ -234,8 +244,10 @@ pub fn observe(fixture: &Fixture) -> Observed<Value> {
     }
     let read_after = native::load()?;
     let private_commit_after_queries = native::commit()?;
+    let (sqlite_after_queries, sqlite_high_water) = sqlite_heap(false)?;
     drop(current);
     let private_commit_after_close = native::commit()?;
+    let sqlite_after_close = sqlite_heap(false)?.0;
     Ok(json!({
         "sqlite": rusqlite::version(),
         "files": 1000,
@@ -250,6 +262,14 @@ pub fn observe(fixture: &Fixture) -> Observed<Value> {
             "load": [open_before, open_after],
         },
         "warm": {
+            "sqlite_general_heap_bytes": {
+                "scope": "process-wide SQLite general allocator; fixture has one warm reader; excludes non-SQLite memory",
+                "before_open": sqlite_before_open,
+                "after_open": sqlite_after_open,
+                "after_queries": sqlite_after_queries,
+                "high_water": sqlite_high_water,
+                "after_close": sqlite_after_close,
+            },
             "path_lookup": LOOKUP,
             "path_lookup_ns": queries,
             "meta_lookup": META,

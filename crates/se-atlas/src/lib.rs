@@ -6,6 +6,8 @@ pub mod coverage;
 pub mod errors;
 pub mod lifecycle;
 pub mod model;
+#[allow(unsafe_code)]
+pub mod native_diagnostic;
 pub mod queries;
 
 pub mod cache;
