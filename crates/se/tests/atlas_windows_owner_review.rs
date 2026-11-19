@@ -197,6 +197,45 @@ async fn observe(
     .into())
 }
 
+fn query(
+    endpoint: se_host::EndpointRecord,
+    project: ProjectId,
+) -> Result<se_core::ops::AnyOutput, Box<dyn std::error::Error>> {
+    let options = client::ClientOptions {
+        expected_generation: None,
+        timeout: Duration::from_secs(10),
+        cancelled: Arc::new(AtomicBool::new(false)),
+    };
+    let mut connection = client::BlockingIpcClient::connect_authenticated(
+        &endpoint,
+        client::lease::ClientCredential::Machine(se_types::Secret::new(vec![23; 32])?),
+        number(32_768)?,
+        &options,
+    )?;
+    let reply = connection.exchange(
+        se_host::IpcEnvelope {
+            version: connection.negotiated().version,
+            request_id: 1,
+            generation: endpoint.generation,
+            authority: None,
+            presence: None,
+            cli_selections: Some(serde_json::to_value(se_core::ops::CliSelections {
+                project: Some(project),
+                ..Default::default()
+            })?),
+            request: se_host::IpcRequest::Operation(se_host::RawOperation {
+                name: "atlas.find".into(),
+                arguments: serde_json::json!({"query":"offline_marker","mode":"exact"}),
+                key: None,
+            }),
+        },
+        &options,
+    )?;
+    let mut output = reply.value;
+    output["schema"] = reply.schema.into();
+    Ok(serde_json::from_value(output)?)
+}
+
 fn assert_history(summary: &IndexSummary) -> Check {
     assert!(
         summary
@@ -237,7 +276,7 @@ fn windows_owner_keeps_source_renewal_and_explains_unavailable_history() -> Chec
         .max_blocking_threads(4)
         .build()?;
     let mut observations = Vec::new();
-    for generation in 1..=2 {
+    for generation in 1..=3 {
         let epoch = initialize_host_process()?;
         let bound = deadline()?;
         let host_start = start(&f, generation)?;
@@ -245,15 +284,36 @@ fn windows_owner_keeps_source_renewal_and_explains_unavailable_history() -> Chec
             let mut host =
                 HostedRuntime::prepare(epoch, host_start, runtime.handle().clone(), &bound).await?;
             host.configure(se_config::config_policy::ConfigFile::default())?;
-            host.install_native_atlas(
-                image.clone(),
-                NativeAtlasQualification::measured_windows_components()?,
-            )?;
+            let qualification = if generation == 3 {
+                NativeAtlasQualification::default()
+            } else {
+                NativeAtlasQualification::measured_windows_components()?
+            };
+            host.install_native_atlas(image.clone(), qualification)?;
             let context = host.execution_context();
             let stop = host.local_stop();
             let listener = host.listen(runtime.handle().clone(), &bound).await?;
+            let endpoint = listener.endpoint().clone();
             let serve = tokio::spawn(host.serve(listener));
             let result = async {
+                if generation >= 2 {
+                    let project = f.project.clone();
+                    let output = tokio::task::spawn_blocking(move || {
+                        query(endpoint, project).map_err(|error| error.to_string())
+                    }).await??;
+                    if generation == 3 {
+                        let se_core::ops::AnyOutput::AtlasFind(output) = output else {
+                            return Err("warm-cache query returned a different family".into());
+                        };
+                        let query_reason = serde_json::to_value(&output.value.answer.data)?;
+                        assert!(query_reason.to_string().contains("not yet qualified"), "{query_reason}");
+                        assert!(output.value.answer.index.epoch.is_none());
+                        let status = se_core::ops::status::atlas_view(context.atlas.status(&f.project, None));
+                        assert_eq!(status.state, "unavailable");
+                        assert!(status.reason.as_deref().is_some_and(|r| r.contains("not yet qualified")));
+                        return Ok(serde_json::json!({"generation":generation,"query":query_reason,"status":status}));
+                    }
+                }
                 let first = observe(
                     &context,
                     &f.project,
@@ -265,6 +325,7 @@ fn windows_owner_keeps_source_renewal_and_explains_unavailable_history() -> Chec
                 )
                 .await?;
                 assert_history(&first)?;
+                let mut renewed = None;
                 if generation == 1 {
                     fs::write(root.join("sample.js"), WRITE)?;
                     let renewal = observe(&context, &f.project, "renewed_marker").await?;
@@ -273,8 +334,9 @@ fn windows_owner_keeps_source_renewal_and_explains_unavailable_history() -> Chec
                         renewal.epoch, first.epoch,
                         "ordinary watch change should renew the live epoch"
                     );
+                    renewed = Some(renewal);
                 }
-                Ok::<_, Box<dyn std::error::Error>>(first)
+                Ok::<_, Box<dyn std::error::Error>>(serde_json::json!({"generation":generation,"first":first,"renewed":renewed}))
             }
             .await;
             stop.request();
@@ -298,7 +360,10 @@ fn windows_owner_keeps_source_renewal_and_explains_unavailable_history() -> Chec
             fs::write(root.join("sample.js"), OFFLINE)?;
         }
     }
-    assert_eq!(observations[0].root, observations[1].root);
+    assert_eq!(
+        observations[0]["first"]["root"],
+        observations[1]["first"]["root"]
+    );
     let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/judge-diagnostics");
     fs::create_dir_all(&output)?;
     fs::write(
