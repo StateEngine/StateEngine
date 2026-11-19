@@ -19,6 +19,7 @@ pub(crate) fn prepare<S: Snapshot>(
     );
     status.setup.state = SetupState::Configured;
     status.setup.reason = None;
+    status.repository_request = Some(input);
     project(&mut status, cx)?;
     Ok(status.into())
 }

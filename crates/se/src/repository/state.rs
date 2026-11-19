@@ -34,6 +34,7 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
 }
 
 /// Status can reuse an exact history count from its protected data home.
+#[cfg(not(windows))]
 pub fn observe_cached(
     root: &Path,
     files: &dyn se_store::StateFiles,
@@ -43,22 +44,53 @@ pub fn observe_cached(
         root,
         Instant::now() + STATUS_OBSERVATION_DEADLINE,
         Some((files, home)),
+        None,
+    )
+}
+
+#[cfg(windows)]
+pub fn observe_cached_watched(
+    root: &Path,
+    files: &dyn se_store::StateFiles,
+    home: &Path,
+    watched: Option<&GitView>,
+) -> Result<Option<GitView>> {
+    observe_using(
+        root,
+        Instant::now() + STATUS_OBSERVATION_DEADLINE,
+        Some((files, home)),
+        watched,
     )
 }
 
 /// The observation with its one deadline supplied, so a test can drive the
 /// bounded paths without waiting the production bound out.
 pub(crate) fn observe_within(root: &Path, deadline: Instant) -> Result<Option<GitView>> {
-    observe_using(root, deadline, None)
+    observe_using(root, deadline, None, None)
 }
 
 fn observe_using(
     root: &Path,
     deadline: Instant,
     cache: Option<(&dyn se_store::StateFiles, &Path)>,
+    watched: Option<&GitView>,
 ) -> Result<Option<GitView>> {
     if !root.is_dir() {
         return Ok(None);
+    }
+    #[cfg(windows)]
+    if let Some(view) = watched.filter(|view| {
+        view.uncommitted.is_some()
+            && view
+                .observation
+                .as_ref()
+                .is_some_and(|value| value.basis == "watched")
+            && view.watch_ticket.is_some()
+            && library::watch_environment().is_ok()
+    }) {
+        let mut result = view.clone();
+        result.watch_ticket = None;
+        return Ok(Some(result));
     }
     let mut candidate = Some(root);
     let mut registered = None;
@@ -83,6 +115,8 @@ fn observe_using(
     };
     // Header and dirtiness come from the fresh native observer, or one bounded
     // `status --porcelain=v2 --branch` fallback. History counting is separate.
+    #[cfg(not(windows))]
+    let _ = watched;
     let StatusRead::Known {
         header,
         dirty: observed_dirty,
@@ -130,6 +164,8 @@ fn observe_using(
         branch: header.branch,
         commits,
         uncommitted,
+        observation: None,
+        watch_ticket: None,
     }))
 }
 

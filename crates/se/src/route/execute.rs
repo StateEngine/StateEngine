@@ -214,6 +214,13 @@ fn daemon_observation_start(request: Result<super::hosted::StatusRequest>) -> Da
 }
 
 impl DaemonObservation {
+    #[cfg(windows)]
+    fn early(&self, timeout: Duration) -> Option<Result<AnyOutput>> {
+        if self.start_failure.is_some() {
+            return None;
+        }
+        self.answer.recv_timeout(timeout).ok()
+    }
     /// Receive the answer only when `used`, which is the one decision this frame
     /// makes about it.
     ///
@@ -253,6 +260,79 @@ fn daemon_answer_is_used(cx: &Bootstrap, output: &AnyOutput) -> bool {
         }
         _ => false,
     }
+}
+
+fn merge_status_pending(
+    target: &mut Vec<se_core::ops::PendingFact>,
+    incoming: &[se_core::ops::PendingFact],
+    operation: &AnyOp,
+) {
+    for pending in incoming {
+        #[cfg(windows)]
+        if matches!(operation, AnyOp::ProjectStatus(input) if input.fresh)
+            && pending.what == "repository watch"
+        {
+            continue;
+        }
+        #[cfg(not(windows))]
+        let _ = operation;
+        if !target.iter().any(|known| {
+            known.what == pending.what
+                && known.since == pending.since
+                && known.detail == pending.detail
+        }) {
+            target.push(pending.clone());
+        }
+    }
+}
+
+#[cfg(windows)]
+fn early_status(
+    pending: &Option<DaemonObservation>,
+    op: &AnyOp,
+    eligible: bool,
+) -> Option<Result<AnyOutput>> {
+    if eligible && matches!(op, AnyOp::ProjectStatus(input) if !input.fresh) {
+        pending
+            .as_ref()
+            .and_then(|pending| pending.early(Duration::from_millis(15)))
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn complete_deferred_status(
+    cx: &Bootstrap,
+    files: &Files,
+    output: &mut AnyOutput,
+    early: &Option<Result<AnyOutput>>,
+    deferred: bool,
+) {
+    if deferred {
+        let watched = early.as_ref().and_then(|answer| answer.as_ref().ok());
+        super::status::complete_deferred_git(cx, files, output, watched);
+    }
+}
+
+#[cfg(windows)]
+fn finish_status_observation(
+    pending: Option<DaemonObservation>,
+    early: Option<Result<AnyOutput>>,
+    cx: &Bootstrap,
+    output: &AnyOutput,
+) -> Result<Option<Result<AnyOutput>>> {
+    if early.is_some() {
+        return Ok(if daemon_answer_is_used(cx, output) {
+            early
+        } else {
+            None
+        });
+    }
+    Ok(pending
+        .map(|pending| pending.finish(daemon_answer_is_used(cx, output)))
+        .transpose()?
+        .flatten())
 }
 
 #[expect(
@@ -364,21 +444,42 @@ fn dispatch_with_cold_recovery(
                 &selections,
             ))
         });
-        let result =
-            super::status::observe_snapshot(cx, &mut snapshot, owner, &files, &caller.admission)
-                .and_then(|output| {
-                    super::session_observation::prepare(
-                        output,
-                        &mut snapshot,
-                        &caller.admission,
-                        observation_deadline,
-                    )
-                });
+        #[cfg(windows)]
+        let defer_git =
+            pending.is_some() && matches!(&op, AnyOp::ProjectStatus(input) if !input.fresh);
+        #[cfg(not(windows))]
+        let defer_git = false;
+        let result = super::status::observe_snapshot_watched(
+            cx,
+            &mut snapshot,
+            owner,
+            &files,
+            &caller.admission,
+            None,
+            defer_git,
+        );
+        #[cfg(windows)]
+        let early = early_status(&pending, &op, defer_git && result.is_ok());
+        let result = result.and_then(|mut output| {
+            #[cfg(windows)]
+            complete_deferred_status(cx, &files, &mut output, &early, defer_git);
+            #[cfg(not(windows))]
+            let _ = &mut output;
+            super::session_observation::prepare(
+                output,
+                &mut snapshot,
+                &caller.admission,
+                observation_deadline,
+            )
+        });
         let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
         let mut output = super::session_observation::finish(prepared, &cx.home)?;
         // None means nothing was asked, so there is nothing to merge and no
         // invented error: a read that never needs the host behaves exactly as it
         // did before this overlap existed.
+        #[cfg(windows)]
+        let observed = finish_status_observation(pending, early, cx, &output)?;
+        #[cfg(not(windows))]
         let observed = pending
             .map(|pending| pending.finish(daemon_answer_is_used(cx, &output)))
             .transpose()?
@@ -394,15 +495,7 @@ fn dispatch_with_cold_recovery(
             super::status::merge_resources(&mut status.value.runtime, &observed);
             status.value.atlas = match &observed {
                 Ok(AnyOutput::ProjectStatus(live)) => {
-                    for pending in &live.value.pending {
-                        if !status.value.pending.iter().any(|known| {
-                            known.what == pending.what
-                                && known.since == pending.since
-                                && known.detail == pending.detail
-                        }) {
-                            status.value.pending.push(pending.clone());
-                        }
-                    }
+                    merge_status_pending(&mut status.value.pending, &live.value.pending, &op);
                     live.value.atlas.clone()
                 }
                 Ok(_) => se_core::ops::status::atlas_view(Err(scope::unreadable(

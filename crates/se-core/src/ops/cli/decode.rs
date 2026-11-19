@@ -163,6 +163,8 @@ pub fn from_matches_with_key(
         }),
         "captain.show" => AnyOp::CaptainShow(CaptainShow {}),
         "project.status" => AnyOp::ProjectStatus(ProjectStatus {
+            fresh: !path.is_empty() && flag(m, "fresh"),
+            watch_ticket: false,
             all: if path.is_empty() {
                 false
             } else {

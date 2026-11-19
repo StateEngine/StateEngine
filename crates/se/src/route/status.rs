@@ -37,10 +37,6 @@ pub fn observe<R: ReadStore>(
         }),
     }
 }
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn observe_snapshot<S: Snapshot>(
     cx: &Bootstrap,
     snap: &mut S,
@@ -48,6 +44,24 @@ pub fn observe_snapshot<S: Snapshot>(
     files: &Files,
     admission: &Admission,
 ) -> Result<AnyOutput> {
+    observe_snapshot_watched(cx, snap, owner, files, admission, None, false)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "Status assembles one finite snapshot before native observation."
+)]
+pub fn observe_snapshot_watched<S: Snapshot>(
+    cx: &Bootstrap,
+    snap: &mut S,
+    owner: Option<Read<RuntimeOwnerHead>>,
+    files: &Files,
+    admission: &Admission,
+    watched: Option<&AnyOutput>,
+    defer_git: bool,
+) -> Result<AnyOutput> {
+    #[cfg(not(windows))]
+    let _ = watched;
     let generated = receipt::timestamp(execute::now_us()?)?;
     let mut output = status::missing(
         cx.home.display().to_string(),
@@ -126,43 +140,10 @@ pub fn observe_snapshot<S: Snapshot>(
                 .map(|r| r.path.to_local().map(|p| p.display().to_string()))
                 .transpose()?
                 .unwrap_or_default();
-            let git = if root.is_empty() {
+            let git = if defer_git || root.is_empty() {
                 None
             } else {
-                match super::git_state::observe_cached(std::path::Path::new(&root), files, &cx.home)
-                {
-                    Ok(observed) => {
-                        if let Some(view) = &observed
-                            && view.head.is_some()
-                            && view.commits.is_none()
-                        {
-                            output.pending.push(PendingFact {
-                                what: "repository state".into(),
-                                since: None,
-                                detail: "Commit count is unknown: the history walk did not finish before its bounded deadline; the branch and uncommitted state are still reported.".into(),
-                            });
-                        }
-                        if let Some(view) = &observed
-                            && view.head.is_some()
-                            && view.uncommitted.is_none()
-                        {
-                            output.pending.push(PendingFact {
-                                what: "repository state".into(),
-                                since: None,
-                                detail: "Uncommitted state is unknown: the working-tree scan did not settle before its bounded deadline; the branch and commit count are still reported.".into(),
-                            });
-                        }
-                        observed
-                    }
-                    Err(error) => {
-                        output.pending.push(PendingFact {
-                            what: "repository state".into(),
-                            since: None,
-                            detail: format!("Git state could not be read: {error}"),
-                        });
-                        None
-                    }
-                }
+                git_observation(cx, files, project, &root, watched, &mut output.pending)
             };
             output.project = Read::Present {
                 value: ProjectView {
@@ -314,6 +295,90 @@ pub fn observe_snapshot<S: Snapshot>(
     }
     Ok(output.into())
 }
+fn git_observation(
+    cx: &Bootstrap,
+    files: &Files,
+    project: &se_types::ProjectId,
+    root: &str,
+    watched: Option<&AnyOutput>,
+    pending: &mut Vec<PendingFact>,
+) -> Option<GitView> {
+    #[cfg(windows)]
+    let watched_git = match watched {
+        Some(AnyOutput::ProjectStatus(live)) => match &live.value.project {
+            Read::Present { value } if &value.id == project && value.root == root => {
+                value.git.as_ref()
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    #[cfg(not(windows))]
+    let _ = (project, watched);
+    #[cfg(windows)]
+    let observed = super::git_state::observe_cached_watched(
+        std::path::Path::new(root),
+        files,
+        &cx.home,
+        watched_git,
+    );
+    #[cfg(not(windows))]
+    let observed = super::git_state::observe_cached(std::path::Path::new(root), files, &cx.home);
+    match observed {
+        Ok(observed) => {
+            if let Some(view) = &observed
+                && view.head.is_some()
+                && view.commits.is_none()
+            {
+                pending.push(PendingFact { what: "repository state".into(), since: None,
+                    detail: "Commit count is unknown: the history walk did not finish before its bounded deadline; the branch and uncommitted state are still reported.".into() });
+            }
+            if let Some(view) = &observed
+                && view.head.is_some()
+                && view.uncommitted.is_none()
+            {
+                pending.push(PendingFact { what: "repository state".into(), since: None,
+                    detail: "Uncommitted state is unknown: the working-tree scan did not settle before its bounded deadline; the branch and commit count are still reported.".into() });
+            }
+            observed
+        }
+        Err(error) => {
+            pending.push(PendingFact {
+                what: "repository state".into(),
+                since: None,
+                detail: format!("Git state could not be read: {error}"),
+            });
+            None
+        }
+    }
+}
+
+#[cfg(windows)]
+pub(super) fn complete_deferred_git(
+    cx: &Bootstrap,
+    files: &Files,
+    output: &mut AnyOutput,
+    watched: Option<&AnyOutput>,
+) {
+    let AnyOutput::ProjectStatus(status) = output else {
+        return;
+    };
+    let Read::Present { value: project } = &mut status.value.project else {
+        return;
+    };
+    if project.root.is_empty() {
+        return;
+    }
+    project.git = git_observation(
+        cx,
+        files,
+        &project.id,
+        &project.root,
+        watched,
+        &mut status.value.pending,
+    );
+}
+
 pub fn endpoint_name(endpoint: &se_host::EndpointRecord) -> Result<String> {
     Ok(match &endpoint.address {
         se_host::IpcEndpoint::UnixSocket(path) => path.to_local()?.display().to_string(),

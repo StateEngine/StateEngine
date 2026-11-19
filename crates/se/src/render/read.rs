@@ -412,6 +412,27 @@ pub(super) fn repo_line(git: &GitView, out: &mut impl Write) -> io::Result<()> {
     if git.uncommitted == Some(true) {
         line.push_str("; uncommitted changes left untouched");
     }
+    if let Some(observation) = &git.observation
+        && observation.basis == "watched"
+    {
+        let state = if git.uncommitted == Some(false) {
+            "watched clean"
+        } else {
+            "watched"
+        };
+        line.push_str(&format!(
+            "; {state}, last reconciled {}",
+            observation.reconciled_at
+        ));
+        if let Some(age) = observation.age_seconds.filter(|age| *age > 3) {
+            line.push_str(&format!(" ({age}s ago)"));
+        }
+        if let Some(last) = &observation.last_notification_at {
+            line.push_str(&format!("; last notification {last}"));
+        } else {
+            line.push_str("; no notifications since the watch started");
+        }
+    }
     writeln!(out, "{line}.")
 }
 
