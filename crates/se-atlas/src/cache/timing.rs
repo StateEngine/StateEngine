@@ -7,6 +7,9 @@ pub static SQL_READ_US: AtomicU64 = AtomicU64::new(0);
 pub static SQL_WRITE_US: AtomicU64 = AtomicU64::new(0);
 pub static COMMIT_US: AtomicU64 = AtomicU64::new(0);
 pub static CHECKPOINT_US: AtomicU64 = AtomicU64::new(0);
+pub static CHECKPOINTS: AtomicU64 = AtomicU64::new(0);
+pub static CAPACITY_CHECKPOINTS: AtomicU64 = AtomicU64::new(0);
+pub static MAX_WAL_BYTES: AtomicU64 = AtomicU64::new(0);
 
 pub fn measure<T>(counter: &AtomicU64, work: impl FnOnce() -> T) -> T {
     let start = Instant::now();

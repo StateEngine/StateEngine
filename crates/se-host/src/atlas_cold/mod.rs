@@ -196,6 +196,7 @@ pub(crate) fn run_child(
         &SqlProfile::contained_cold(),
         deadline,
     )?;
+    db.probe_cold_sync(false)?;
     let mut parser = SemanticParser::contained_cold(scope)?;
     parser.set_resource_guard(parser_memory_guard);
     let mut completed = 0u64;
@@ -348,7 +349,13 @@ pub(crate) fn run_child(
         path: None,
         phase: protocol::Phase::Finalize,
     })?;
+    se_atlas::cache::timing::measure(&timing::FINAL_SYNC, || db.probe_cold_sync(true))?;
     let summary = finish::finish(&mut db, coverage, deadline)?;
+    se_atlas::cache::timing::measure(&timing::FINAL_FLUSH, || db.probe_cold_flush(deadline))?;
+    notify(protocol::Reply::Timing {
+        job: request.job,
+        totals: timing::totals(timing_started.elapsed().as_millis(), completed),
+    })?;
     // Closing the last writer checkpoints even a sub-threshold WAL. Exact
     // parent reopen/integrity validation happens only after process reap.
     drop(parser);

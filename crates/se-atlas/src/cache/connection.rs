@@ -339,6 +339,9 @@ impl<'a> CacheConnection<'a> {
         if write {
             let mut wal = self.files.wal_bytes(&self.pin)?;
             if growth <= WAL_STOP && wal.saturating_add(growth) > WAL_STOP {
+                if self.role == ConnectionRole::ColdWriter {
+                    timing::CAPACITY_CHECKPOINTS.fetch_add(1, Ordering::Relaxed);
+                }
                 // One renewal quantum can commit several transactions on the
                 // same connection. Reclaim earlier commits before refusing the
                 // next one; pinned readers still have to pass the size check.
@@ -416,8 +419,14 @@ impl<'a> CacheConnection<'a> {
             return Err(cache_error("reader cannot checkpoint"));
         }
         let wal = self.files.wal_bytes(&self.pin)?;
+        if self.role == ConnectionRole::ColdWriter {
+            timing::MAX_WAL_BYTES.fetch_max(wal, Ordering::Relaxed);
+        }
         if wal < 4_000_000 {
             return Ok(true);
+        }
+        if self.role == ConnectionRole::ColdWriter {
+            timing::CHECKPOINTS.fetch_add(1, Ordering::Relaxed);
         }
         let result = finite(&mut self.db, deadline, |db, _| {
             let (busy, _, _): (i64, i64, i64) = db
@@ -432,6 +441,43 @@ impl<'a> CacheConnection<'a> {
                 .fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
         }
         result
+    }
+    pub fn probe_cold_sync(&mut self, durable: bool) -> AtlasResult<()> {
+        if self.role != ConnectionRole::ColdWriter {
+            return Err(cache_error("cold sync requires cold writer"));
+        }
+        let (setting, expected) = if durable { ("FULL", 2) } else { ("OFF", 0) };
+        self.db
+            .pragma_update(None, "synchronous", setting)
+            .map_err(cache_error)?;
+        let actual: i64 = self
+            .db
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .map_err(cache_error)?;
+        if actual != expected {
+            return Err(cache_error("cold sync setting readback differs"));
+        }
+        Ok(())
+    }
+    pub fn probe_cold_flush(&mut self, deadline: Instant) -> AtlasResult<()> {
+        if self.role != ConnectionRole::ColdWriter || self.files.wal_bytes(&self.pin)? <= 32 {
+            return Err(cache_error(
+                "cold final checkpoint requires committed WAL frames",
+            ));
+        }
+        self.files.validate_database(&self.pin)?;
+        let busy = finite(&mut self.db, deadline, |db, _| {
+            let (busy, _, _): (i64, i64, i64) = db
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .map_err(cache_error)?;
+            Ok(busy)
+        })?;
+        if busy != 0 {
+            return Err(cache_error("cold final checkpoint remains busy"));
+        }
+        self.files.validate_database(&self.pin)
     }
     /// Release reusable page buffers between cold files so the native parser
     /// margin does not become permanently occupied by the previous SQL work.
