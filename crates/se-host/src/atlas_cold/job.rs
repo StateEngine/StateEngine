@@ -298,6 +298,7 @@ impl ColdJob {
                         return Err(self.reject("cold completion does not match job/root/epoch or explicit partial discovery"));
                     }
                     self.completion = Some(*summary);
+                    eprintln!("ATLAS_COLD_DIAGNOSTIC {}", self.stderr_report());
                     self.worker.acknowledge_completion().map_err(|error| {
                         crate::atlas_parse::cleanup_error(error, Duration::from_millis(200))
                     })?;

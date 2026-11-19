@@ -64,6 +64,7 @@ impl NativeAtlasCache {
             _namespace: namespace,
             _file: file,
         });
+        eprintln!("ATLAS_PRIVATE_COLD_GUARD active");
         Ok(())
     }
 
