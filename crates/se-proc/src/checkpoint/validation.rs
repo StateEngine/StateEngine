@@ -320,6 +320,16 @@ pub(super) fn checkpoint(value: &Checkpoint) -> Result<()> {
         value.format_version == 1,
         "unsupported native custody schema version",
     )?;
+    if let CheckpointPrincipal::Host { scope } = &value.principal {
+        require(
+            value.session.is_none(),
+            "a host-owned process serves no single session",
+        )?;
+        require(
+            scope == &value.lifecycle,
+            "host custody scope differs from the shared scope it serves",
+        )?;
+    }
     let expected_root = match &value.checkpoint {
         CheckpointKind::Reservation(v) => {
             reservation(v, &value.lifecycle)?;

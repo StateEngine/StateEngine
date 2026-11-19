@@ -126,20 +126,65 @@ pub(crate) fn identity(
             "process projection differs from its immutable head",
         ));
     }
-    let principal = blob("principal_id")?;
-    let registered: bool = db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM principals WHERE project_id=? AND principal_id=?)",
-            rusqlite::params![project, &principal],
-            |r| r.get(0),
-        )
-        .map_err(sql)?;
-    if !registered {
-        return Err(fail(
-            StoreErrorCode::ProjectionInconsistent,
-            "recorded process principal is not registered in its project",
-        ));
-    }
+    // Host-owned custody decodes through its own binding, never through the
+    // principal registry, which stays limited to humans and agents. A missing
+    // or inconsistent binding is unreadable custody, not an unowned process.
+    let principal_id: Option<Vec<u8>> = row.get("principal_id").map_err(sql)?;
+    let host_bound = principal_id.is_none();
+    let host_scope: Option<Vec<u8>> = row.get("host_scope").map_err(sql)?;
+    let host_epoch: Option<String> = row.get("host_epoch").map_err(sql)?;
+    let principal = match (principal_id, host_scope, host_epoch) {
+        (Some(principal), None, None) => {
+            let registered: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM principals WHERE project_id=? AND principal_id=?)",
+                    rusqlite::params![project, &principal],
+                    |r| r.get(0),
+                )
+                .map_err(sql)?;
+            if !registered {
+                return Err(fail(
+                    StoreErrorCode::ProjectionInconsistent,
+                    "recorded process principal is not registered in its project",
+                ));
+            }
+            principal
+        }
+        (None, Some(host_scope), Some(host_epoch)) => {
+            let session: Option<Vec<u8>> = row.get("target_session_id").map_err(sql)?;
+            if session.is_some() {
+                return Err(fail(
+                    StoreErrorCode::Unreadable,
+                    "host-owned custody is unreadable: it serves no single session",
+                ));
+            }
+            let epoch: se_types::HostEpoch = serde_json::from_str(&host_epoch).map_err(|e| {
+                fail(
+                    StoreErrorCode::Unreadable,
+                    format!("host-owned custody is unreadable: recorded host epoch: {e}"),
+                )
+            })?;
+            let custody_version: u16 = row.get("custody_version").map_err(sql)?;
+            let custody = blob("custody")?;
+            host_binding(
+                db,
+                project,
+                id,
+                &host_scope,
+                &epoch,
+                custody_version,
+                &custody,
+            )?;
+            // The host's fixed key; it grants no authority.
+            identity::host_key()
+        }
+        _ => {
+            return Err(fail(
+                StoreErrorCode::Unreadable,
+                "host-owned custody is unreadable: principal and host binding disagree",
+            ));
+        }
+    };
     let scope = [&[1u8][..], project].concat();
     let root_identity = match text("root_identity")?.as_str() {
         "no-child-created" => RootIdentityState::NoChildCreated,
@@ -271,7 +316,11 @@ pub(crate) fn identity(
         record: identity::wire(db, "lifecycle", id, &scope)?
             .parse()
             .map_err(invalid)?,
-        principal: identity::actor(db, &principal, &scope)?,
+        principal: if host_bound {
+            Actor::Host
+        } else {
+            identity::actor(db, &principal, &scope)?
+        },
         session: row
             .get::<_, Option<Vec<u8>>>("target_session_id")
             .map_err(sql)?
@@ -287,4 +336,41 @@ pub(crate) fn identity(
         },
         containment,
     })
+}
+
+/// Verify the tagged host owner against the stored binding: the binding's
+/// scope is this lifecycle's own key, and the custody decodes through the
+/// process codec as this lifecycle's sessionless host checkpoint whose native
+/// owner and generation are the recorded originating epoch. The scope row's
+/// coupling to this server is guarded where the scope is written; a first
+/// registration decodes before any scope names it.
+fn host_binding(
+    db: &Connection,
+    project: &[u8],
+    id: &[u8],
+    host_scope: &[u8],
+    epoch: &se_types::HostEpoch,
+    custody_version: u16,
+    custody: &[u8],
+) -> StoreResult<()> {
+    let unreadable = crate::process_custody::unreadable;
+    let lifecycle: se_types::LifecycleId =
+        identity::wire(db, "lifecycle", id, &[&[1u8][..], project].concat())?
+            .parse()
+            .map_err(invalid)?;
+    if host_scope != identity::key(db, "lifecycle", lifecycle.as_str(), &[0], false)? {
+        return Err(unreadable("the host binding names a different scope"));
+    }
+    let record = crate::NativeCustody {
+        format_version: custody_version,
+        record: custody.to_vec(),
+    };
+    let checkpoint = crate::process_custody::decoded(&record, &lifecycle)?;
+    let (owner, generation) = crate::process_custody::origin(&checkpoint)?;
+    if !crate::process_custody::same_epoch(&owner, generation, epoch) {
+        return Err(unreadable(
+            "checkpoint custody names a different originating host epoch",
+        ));
+    }
+    Ok(())
 }

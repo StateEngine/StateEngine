@@ -5,7 +5,7 @@ pub(crate) struct Step {
     pub(crate) sql: &'static str,
     pub(crate) table_rebuild: bool,
 }
-pub(crate) const STEPS: [Step; 15] = [
+pub(crate) const STEPS: [Step; 17] = [
     Step {
         version: 2,
         sql: include_str!("../migrations/002.sql"),
@@ -80,5 +80,15 @@ pub(crate) const STEPS: [Step; 15] = [
         version: 16,
         sql: include_str!("../migrations/016.sql"),
         table_rebuild: false,
+    },
+    Step {
+        version: 17,
+        sql: include_str!("../migrations/017.sql"),
+        table_rebuild: false,
+    },
+    Step {
+        version: 18,
+        sql: include_str!("../migrations/018.sql"),
+        table_rebuild: true,
     },
 ];

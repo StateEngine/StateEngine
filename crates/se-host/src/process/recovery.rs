@@ -441,13 +441,28 @@ impl LaunchCoordinator {
         Ok(job)
     }
 }
+/// Whether the native checkpoint and the protected index name the same owner.
+///
+/// A host-owned scope is one login's shared daemon: it serves agents rather than
+/// belonging to one, so it is recorded with the host's own principal instead of
+/// an agent. Every other pairing must match exactly; a host scope recorded as an
+/// agent, or an agent's process recorded as the host's, is a refusal.
+fn same_principal(native: &se_proc::CheckpointPrincipal, stored: &Actor) -> bool {
+    match (native, stored) {
+        (se_proc::CheckpointPrincipal::Agent(agent), Actor::Agent(recorded)) => agent == recorded,
+        (se_proc::CheckpointPrincipal::Human(human), Actor::Human(recorded)) => human == recorded,
+        (se_proc::CheckpointPrincipal::Host { .. }, Actor::Host) => true,
+        _ => false,
+    }
+}
+
 pub(super) fn recovery_source(
     checkpoint: se_proc::Checkpoint,
     retained: &OwnerGuardProcess,
 ) -> Result<RecoverySource> {
     if checkpoint.lifecycle != retained.identity.record
         || checkpoint.session != retained.identity.session
-        || !matches!((&checkpoint.principal, &retained.identity.principal), (se_proc::CheckpointPrincipal::Agent(a),Actor::Agent(b)) if a==b)
+        || !same_principal(&checkpoint.principal, &retained.identity.principal)
     {
         return Err(error(
             "startup custody codec",

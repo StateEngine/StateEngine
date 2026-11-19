@@ -250,6 +250,13 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
         let principal = match &source.header.actor {
             Actor::Agent(id) => AtlasPrincipal::Agent(id.clone()),
             Actor::Human(id) => AtlasPrincipal::Human(id.clone()),
+            // Atlas records describe people and agents; a host-owned process
+            // fact is custody, and it is not indexed as if it were a person.
+            Actor::Host => {
+                return Ok(Read::Absent {
+                    checked: "a person or agent acted on this record".into(),
+                });
+            }
             Actor::Remote(id) => {
                 return Ok(Read::Present {
                     value: Document {

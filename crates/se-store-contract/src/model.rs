@@ -52,6 +52,9 @@ pub enum Actor {
     Human(HumanId),
     Agent(AgentId),
     Remote(se_types::remote::RemotePrincipalId),
+    /// The host itself, for processes it owns for its own purposes rather than
+    /// for one agent. It is not a person or an agent and grants no authority.
+    Host,
 }
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Scope {

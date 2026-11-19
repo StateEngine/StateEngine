@@ -11,6 +11,7 @@ mod materialized_text_review;
 pub(crate) mod process;
 pub(crate) mod semantic;
 pub(crate) mod session;
+pub(crate) mod shared;
 // Closed wave-1 metadata codec; text lives only in its typed payload column.
 use crate::{error::*, identity::*, *};
 use rusqlite::Connection;

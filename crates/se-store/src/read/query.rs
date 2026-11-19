@@ -214,6 +214,10 @@ pub(super) fn kind_name(k: EventKind) -> &'static str {
         EventKind::ErasureRequested => "erasure.requested",
         EventKind::ErasureCompleted => "erasure.completed",
         EventKind::RecoveryRecorded => "recovery.recorded",
+        EventKind::SharedScopeChanged => "shared.scope",
+        EventKind::ThreadAttached => "shared.thread_attached",
+        EventKind::ThreadDetached => "shared.thread_detached",
+        EventKind::SharedScopeSettled => "shared.settled",
     }
 }
 

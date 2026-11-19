@@ -76,7 +76,8 @@ pub fn read_scope(admission: &Admission) -> se_store::ReadScope {
     let visibility = match &admission.actor {
         Actor::Human(_) => se_store::Visibility::Owner,
         Actor::Agent(agent) => se_store::Visibility::SelfOnly(agent.clone()),
-        Actor::Remote(_) => se_store::Visibility::None,
+        // The host owns processes, not project history; it reads nothing here.
+        Actor::Remote(_) | Actor::Host => se_store::Visibility::None,
     };
     se_store::ReadScope {
         admission: admission.clone(),

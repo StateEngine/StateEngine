@@ -14,7 +14,8 @@ fn schema_objects(
         Ok((
             row.get(0)?,
             row.get(1)?,
-            sql.replace("\"session_data\"", "session_data")
+            sql.replace("\"process_data\"", "process_data")
+                .replace("\"session_data\"", "session_data")
                 .replace("\"turn_data\"", "turn_data")
                 .replace("\"channel_connections\"", "channel_connections")
                 .replace("\"channel_updates\"", "channel_updates")
@@ -31,9 +32,12 @@ fn restore_schema_six(db: &rusqlite::Connection) -> Check {
     // The append-stamp column postdates schema six and re-derives from the
     // events table, so the downgrade discards it with the later objects.
     db.execute_batch("ALTER TABLE messages DROP COLUMN recorded_at_us")?;
-    // Schema eight widened these constraints. Preserve the rows while restoring
-    // the actual pre-upgrade tables, indices and immutable-history triggers.
+    // Schema eight widened these constraints, and schema eighteen made the
+    // principal nullable with host-binding columns. Preserve the rows while
+    // restoring the actual pre-upgrade tables, indices and immutable-history
+    // triggers.
     for table in [
+        "process_data",
         "session_data",
         "turn_data",
         "channel_connections",

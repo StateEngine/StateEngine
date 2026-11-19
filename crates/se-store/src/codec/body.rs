@@ -35,6 +35,9 @@ pub(crate) fn body(
         "import.started" | "import.progress" | "import.finished" | "import.unreadable"
         | "legacy.retained" | "alias.imported" => crate::import::decode(c, seq, kind)?,
         "process.registered" | "process.transition" => process::body(c, seq, kind, scope)?,
+        "shared.scope" | "shared.thread_attached" | "shared.thread_detached" | "shared.settled" => {
+            shared::body(c, seq, kind)?
+        }
         "message.superseded" => {
             let v = facts(c, seq)?;
             MessageSuperseded {

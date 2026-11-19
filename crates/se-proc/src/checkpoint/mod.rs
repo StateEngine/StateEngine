@@ -48,6 +48,13 @@ pub enum RootPublication {
 pub enum CheckpointPrincipal {
     Human(HumanId),
     Agent(AgentId),
+    /// A process the host owns for itself, serving no single agent: one login's
+    /// shared daemon. The tag names the exact scope it serves; its lifetime is
+    /// the host's to account for, and its agents are recorded separately as
+    /// thread membership.
+    Host {
+        scope: LifecycleId,
+    },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

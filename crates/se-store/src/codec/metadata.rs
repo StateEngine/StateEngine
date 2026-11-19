@@ -459,6 +459,46 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             "integration.recorded",
             json!({"integration":integration,"path":path,"key":key,"marker":marker,"prior_sha256":prior_sha256,"written_sha256":written_sha256,"state":state,"witness":witness,"expected":expected}),
         ),
+        SharedScopeChanged {
+            scope,
+            login,
+            server_process,
+            phase,
+            from,
+            expected,
+        } => (
+            "shared.scope",
+            json!({"scope":scope,"login":login,"server_process":server_process,"phase":phase,"from":from,"expected":expected}),
+        ),
+        ThreadAttached {
+            scope,
+            session,
+            thread,
+            expected,
+        } => (
+            "shared.thread_attached",
+            json!({"scope":scope,"session":session,"thread":thread,"expected":expected}),
+        ),
+        ThreadDetached {
+            scope,
+            session,
+            end,
+            reason,
+            expected,
+        } => (
+            "shared.thread_detached",
+            json!({"scope":scope,"session":session,"end":end,"reason":reason,"expected":expected}),
+        ),
+        SharedScopeSettled {
+            scope,
+            server_process,
+            exit_witness,
+            reason,
+            expected,
+        } => (
+            "shared.settled",
+            json!({"scope":scope,"server_process":server_process,"exit_witness":exit_witness,"reason":reason,"expected":expected}),
+        ),
         ImportStarted { .. }
         | ImportProgress { .. }
         | ImportFinished { .. }

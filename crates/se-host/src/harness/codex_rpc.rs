@@ -6,6 +6,7 @@ mod channel;
 mod connection;
 #[cfg(target_os = "linux")]
 mod console;
+pub mod daemon;
 mod location;
 mod mail;
 pub(crate) mod probe;

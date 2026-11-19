@@ -102,7 +102,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
         if let Some(actor) = actor {
             let selector = match actor {
                 Actor::Human(_) => original.unwrap_or("owner").to_owned(),
-                Actor::Agent(_) | Actor::Remote(_) => scope::actor_id(actor),
+                Actor::Agent(_) | Actor::Remote(_) | Actor::Host => scope::actor_id(actor),
             };
             full_command.extend([flag.into(), selector]);
         }
@@ -327,7 +327,9 @@ fn scope_denied<R: Snapshot>(cx: &Cx<'_, R>, filter: &str) -> SeError {
                 agent: agent.clone(),
             }))
         }
-        Actor::Human(_) | Actor::Remote(_) => SeError::invalid("mail filters", filter),
+        Actor::Human(_) | Actor::Remote(_) | Actor::Host => {
+            SeError::invalid("mail filters", filter)
+        }
     }
 }
 

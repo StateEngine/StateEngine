@@ -641,6 +641,18 @@ impl Snapshot for SqliteSnapshot {
         self.require_local_port()?;
         self.read_processes(budget)
     }
+    fn shared_scope(&mut self, scope: LifecycleId) -> StoreResult<Read<SharedScope>> {
+        self.require_local_port()?;
+        self.read_shared_scope(scope)
+    }
+    fn shared_threads(
+        &mut self,
+        scope: LifecycleId,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<SharedThread>> {
+        self.require_local_port()?;
+        self.read_shared_threads(scope, budget)
+    }
     fn cursor(&mut self, agent: AgentId, purpose: String) -> StoreResult<Read<CursorHead>> {
         self.require_local_port()?;
         self.read_cursor(agent, purpose)

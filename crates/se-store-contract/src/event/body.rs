@@ -69,6 +69,10 @@ pub enum EventKind {
     ErasureRequested,
     ErasureCompleted,
     RecoveryRecorded,
+    SharedScopeChanged,
+    ThreadAttached,
+    ThreadDetached,
+    SharedScopeSettled,
 }
 
 #[derive(Clone)]
@@ -484,6 +488,42 @@ pub enum EventBody<T> {
         manifest_sha256: [u8; 32],
         incarnation: u64,
         witnesses: Vec<EventId>,
+    },
+    /// One shared scope's lifetime. `server_process` is the ordinary process
+    /// record; this fact never describes that process's native state.
+    SharedScopeChanged {
+        scope: LifecycleId,
+        login: String,
+        server_process: LifecycleId,
+        phase: crate::SharedScopePhase,
+        from: Option<crate::SharedScopePhase>,
+        expected: Expected,
+    },
+    /// One agent's thread is attached to a live shared scope.
+    ThreadAttached {
+        scope: LifecycleId,
+        session: SessionId,
+        thread: String,
+        expected: Expected,
+    },
+    /// One agent's thread ended, with the reason that ended it.
+    ThreadDetached {
+        scope: LifecycleId,
+        session: SessionId,
+        end: crate::ThreadEnd,
+        reason: String,
+        expected: Expected,
+    },
+    /// Startup custody settled a shared scope whose server the host proved
+    /// exited: the scope is died and every open thread ended with its relaunch
+    /// step, in the same transaction as the witnessed process exit. The
+    /// witness is that exit's own event; an unproved observation never settles.
+    SharedScopeSettled {
+        scope: LifecycleId,
+        server_process: LifecycleId,
+        exit_witness: EventId,
+        reason: String,
+        expected: Expected,
     },
     RecoveryRecorded {
         recovery: RecordId,

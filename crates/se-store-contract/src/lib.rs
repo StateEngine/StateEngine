@@ -10,11 +10,13 @@ pub mod mail;
 mod model;
 mod query;
 pub mod remote;
+pub mod shared;
 mod timings;
 pub use error::{StoreDetail, StoreError, StoreErrorCode, StoreIoStage, StoreResult};
 pub use event::*;
 pub use model::*;
 pub use query::*;
+pub use shared::*;
 pub use timings::*;
 
 /// Value types re-exported by the store without exposing implementation modules.

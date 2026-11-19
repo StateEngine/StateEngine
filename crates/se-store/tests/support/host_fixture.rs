@@ -61,66 +61,120 @@ pub fn options(queue: u16) -> Result<WriterOptions, Box<dyn std::error::Error>> 
     })
 }
 pub fn epoch() -> Result<HostEpoch, Box<dyn std::error::Error>> {
-    #[cfg(target_os = "linux")]
-    let (boot, started) = {
-        let stat = std::fs::read_to_string("/proc/self/stat")?;
-        let suffix = stat.rsplit_once(')').ok_or("proc stat delimiter")?.1;
-        let ticks = suffix
-            .split_whitespace()
-            .nth(19)
-            .ok_or("proc start time")?
-            .parse()?;
-        (
-            std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?
-                .trim()
-                .to_string(),
-            StartIdentity::Linux { start_ticks: ticks },
-        )
-    };
-    #[cfg(windows)]
-    let (boot, started) = {
-        let output = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &format!(
-                    "(Get-Process -Id {}).StartTime.ToFileTimeUtc()",
-                    std::process::id()
-                ),
-            ])
-            .output()?;
-        if !output.status.success() {
-            return Err("native creation time unavailable".into());
-        }
-        let time = String::from_utf8(output.stdout)?.trim().parse()?;
-        (
-            "windows-absolute-creation-clock".to_string(),
-            StartIdentity::Windows {
-                creation_filetime: std::num::NonZeroU64::new(time).ok_or("zero creation time")?,
-            },
-        )
-    };
-    #[cfg(target_os = "macos")]
-    let (boot, started) = {
-        let peer = se_proc::native_ipc::observe_ipc_self()?;
-        (
-            se_proc::observe_boot_id()?.as_str().to_owned(),
-            peer.started().clone(),
-        )
+    // The same native self-observation the real host uses, so a fixture epoch
+    // and a fixture checkpoint describe one host instance.
+    let machine = MachineId::new("public-store-consumer")?;
+    let identity = se_proc::current_runtime_identity(machine.clone())
+        .map_err(|e| format!("native self identity: {e:?}"))?;
+    let started = match identity.process.start {
+        se_proc::StartIdentity::Linux { start_ticks } => StartIdentity::Linux { start_ticks },
+        se_proc::StartIdentity::Windows { creation_filetime } => StartIdentity::Windows {
+            creation_filetime: std::num::NonZeroU64::new(creation_filetime)
+                .ok_or("zero creation time")?,
+        },
+        se_proc::StartIdentity::MacOs {
+            seconds,
+            microseconds,
+        } => StartIdentity::Macos {
+            start_seconds: seconds,
+            start_micros: microseconds,
+        },
     };
     let owner = ProcessInstance::from_observation(ProcessFields {
-        machine: MachineId::new("public-store-consumer")?,
-        boot: BootId::new(boot)?,
+        machine,
+        boot: identity.boot_id,
         pid: NonZeroU32::new(std::process::id()).ok_or("pid")?,
         started,
-        executable: NativePath::from_local(std::env::current_exe()?)?,
+        executable: NativePath::from_local(identity.process.image.clone())?,
         argv_sha256: Sha256::from_bytes([0; 32]),
     })?;
     Ok(HostEpoch {
         owner,
         generation: HostGeneration::new(1)?,
     })
+}
+/// A version-1 reservation checkpoint for a host-owned shared scope, bound to
+/// the fixture epoch's own native host instance. The scope tag is the shared
+/// scope's lifecycle, which the server record also uses.
+#[allow(
+    dead_code,
+    reason = "Only the shared-scope binaries reserve a host server."
+)]
+pub fn host_reservation(
+    scope: &se_types::LifecycleId,
+    epoch: &HostEpoch,
+) -> Result<se_proc::Checkpoint, Box<dyn std::error::Error>> {
+    let fields = epoch.owner.fields();
+    let start = match &fields.started {
+        StartIdentity::Linux { start_ticks } => se_proc::StartIdentity::Linux {
+            start_ticks: *start_ticks,
+        },
+        StartIdentity::Windows { creation_filetime } => se_proc::StartIdentity::Windows {
+            creation_filetime: creation_filetime.get(),
+        },
+        StartIdentity::Macos {
+            start_seconds,
+            start_micros,
+        } => se_proc::StartIdentity::MacOs {
+            seconds: *start_seconds,
+            microseconds: *start_micros,
+        },
+    };
+    let parent = match &start {
+        se_proc::StartIdentity::Linux { .. } => se_proc::ReservationParent::LinuxTracked,
+        se_proc::StartIdentity::Windows { .. } => se_proc::ReservationParent::Windows,
+        se_proc::StartIdentity::MacOs { .. } => se_proc::ReservationParent::MacOs,
+    };
+    Ok(se_proc::Checkpoint {
+        format_version: 1,
+        lifecycle: scope.clone(),
+        principal: se_proc::CheckpointPrincipal::Host {
+            scope: scope.clone(),
+        },
+        session: None,
+        root_identity: se_proc::RootPublication::NoChildCreated,
+        checkpoint: se_proc::CheckpointKind::Reservation(se_proc::LaunchReservation {
+            format_version: 1,
+            lifecycle: scope.clone(),
+            host: se_proc::HostInstanceId([41; 16]),
+            owner: se_proc::ProcessIdentity {
+                machine: fields.machine.clone(),
+                boot: native_boot(&fields.boot)?,
+                pid: se_proc::ProcessId(fields.pid.get()),
+                start,
+                image: fields.executable.to_local()?,
+            },
+            generation: se_proc::GenerationId::new(epoch.generation.get())
+                .map_err(|e| format!("host generation: {e}"))?,
+            scope_nonce: [43; 16],
+            parent,
+            created_at_unix_ns: 1_700_000_000_000_000_000,
+        }),
+    })
+}
+/// The typed native boot fact for the epoch's recorded platform boot string.
+#[allow(
+    dead_code,
+    reason = "Only the shared-scope binaries reserve a host server."
+)]
+fn native_boot(boot: &BootId) -> Result<se_proc::BootIdentity, Box<dyn std::error::Error>> {
+    if let Some(text) = boot.as_str().strip_prefix("linux:") {
+        let id = uuid::Uuid::parse_str(text)?;
+        return Ok(se_proc::BootIdentity::Linux {
+            boot_id: *id.as_bytes(),
+        });
+    }
+    if let Some(text) = boot.as_str().strip_prefix("macos-") {
+        let (seconds, micros) = text.split_once('-').ok_or("macos boot shape")?;
+        return Ok(se_proc::BootIdentity::MacOs {
+            seconds: seconds.parse()?,
+            microseconds: micros.parse()?,
+        });
+    }
+    if boot.as_str().starts_with("windows:") {
+        return Ok(se_proc::BootIdentity::WindowsAbsoluteCreationClock);
+    }
+    Err("unrecognized platform boot identity".into())
 }
 pub fn host(f: &Fixture) -> Result<(SqliteHost, Arc<Lease>), Box<dyn std::error::Error>> {
     let (direct, lease) = f.direct()?;

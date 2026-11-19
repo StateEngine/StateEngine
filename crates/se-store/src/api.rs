@@ -485,6 +485,14 @@ pub trait Snapshot {
         })
     }
     fn process(&mut self, id: LifecycleId) -> StoreResult<Read<ProjectionRecord>>;
+    /// One login's shared scope as stored, for custody and stop decisions.
+    fn shared_scope(&mut self, scope: LifecycleId) -> StoreResult<Read<SharedScope>>;
+    /// The scope's thread memberships, open and closed, in attachment order.
+    fn shared_threads(
+        &mut self,
+        scope: LifecycleId,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<SharedThread>>;
     /// Internal recorded custody for status/agent control, not a public process.list operation.
     fn processes(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     fn working_state(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>>;

@@ -44,6 +44,11 @@ pub(crate) fn key(
     scope: &[u8],
     insert: bool,
 ) -> StoreResult<Vec<u8>> {
+    // The host is one principal in every store: a fixed key, no identity row,
+    // and no authority. Its events decode back to the host by this key alone.
+    if kind == "host" && wire == "host" {
+        return Ok(host_key());
+    }
     if let Some(bytes) = canonical(wire) {
         return Ok(bytes);
     }
@@ -110,7 +115,17 @@ pub(crate) fn wire(db: &Connection, kind: &str, bytes: &[u8], scope: &[u8]) -> S
     )
     .map_err(sql)
 }
+/// The host's fixed storage key: SHA-256("host") truncated like other keys.
+pub(crate) fn host_key() -> Vec<u8> {
+    let mut bytes = Sha256::digest(b"stateengine-host-principal")[..16].to_vec();
+    bytes[6] = (bytes[6] & 15) | 0x80;
+    bytes[8] = (bytes[8] & 63) | 0x80;
+    bytes
+}
 pub(crate) fn actor(db: &Connection, bytes: &[u8], scope: &[u8]) -> StoreResult<Actor> {
+    if bytes == host_key() {
+        return Ok(Actor::Host);
+    }
     if scope.len() == 17 && scope[0] == 1 {
         let kind: Option<String> = db
             .prepare_cached(

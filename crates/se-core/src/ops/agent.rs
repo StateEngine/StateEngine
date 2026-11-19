@@ -281,7 +281,7 @@ pub fn rename<R: Snapshot>(
         Some(agent) => agent,
         None => match scope::selected_actor(cx, &input.agent)? {
             Actor::Agent(agent) => agent,
-            Actor::Human(_) | Actor::Remote(_) => {
+            Actor::Human(_) | Actor::Remote(_) | Actor::Host => {
                 return Err(SeError::invalid(
                     "agent selector",
                     "a saved agent, not the owner",

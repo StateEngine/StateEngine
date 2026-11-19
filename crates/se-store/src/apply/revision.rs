@@ -232,6 +232,10 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
             expected(c, "runtime_owner", "singleton=1", &[], *want)
         }
         ProcessRegistered { .. } | ProcessTransition { .. } => process::revision(c, e),
+        SharedScopeChanged { .. }
+        | ThreadAttached { .. }
+        | ThreadDetached { .. }
+        | SharedScopeSettled { .. } => shared::revision(c, e),
         SessionPrepared { .. }
         | SessionActivated { .. }
         | SessionEnded { .. }

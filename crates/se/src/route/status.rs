@@ -177,7 +177,7 @@ pub fn observe_snapshot_watched<S: Snapshot>(
                 },
             )?);
             match &admission.actor {
-                Actor::Remote(_) => {
+                Actor::Remote(_) | Actor::Host => {
                     return Err(se_types::SeError::invalid(
                         "local status",
                         "local human or agent authority",

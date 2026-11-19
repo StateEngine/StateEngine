@@ -1,6 +1,7 @@
 //! Persist witnessed launch/custody facts; no native observation or process action.
 use super::*;
 mod console;
+mod host;
 mod release;
 use crate::codec::process::{name, state};
 pub(super) fn revision(c: &Connection, event: &NewEvent) -> StoreResult<u64> {
@@ -181,54 +182,29 @@ pub(super) fn apply(
     };
     shape(&identity, to)?;
     let id = key(c, "lifecycle", identity.record.as_str(), &scope, true)?;
-    let principal = key(
-        c,
-        identity.principal.kind(),
-        identity.principal.wire(),
-        if identity.principal.kind() == "human" {
-            &[0]
-        } else {
-            &scope
-        },
-        false,
-    )?;
-    let owner: Option<Vec<u8>> = c
-        .query_row(
-            "SELECT owner_id FROM principals WHERE project_id=? AND principal_id=?",
-            rusqlite::params![p, principal],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(sql)?;
-    let owner = owner.ok_or_else(|| {
-        fail(
-            StoreErrorCode::ReferenceMissing,
-            "process principal is not registered in its project",
-        )
-    })?;
-    let permitted = match (&h.actor, &identity.principal) {
-        (Actor::Remote(_), Actor::Agent(_)) => authority.remote_launch.is_some(),
-        (Actor::Remote(_), _) | (_, Actor::Remote(_)) => false,
-        (Actor::Human(human), _) => key(c, "human", human.as_str(), &[0], false)? == owner,
-        (Actor::Agent(_), _) if h.actor == identity.principal => h.session == identity.session,
-        (Actor::Agent(creator), Actor::Agent(_)) => {
-            crate::creator::require(c, &p, &scope, creator, &principal)?;
-            true
+    // Host-owned custody is its own branch: the principal registry stays
+    // limited to humans and agents, and the host binding lives in the
+    // immutable fact instead of a borrowed principal row.
+    let binding = match (&h.actor, &identity.principal) {
+        (Actor::Host, Actor::Host) => Some(host::bind(c, h, &identity, lease)?),
+        (Actor::Host, _) | (_, Actor::Host) => {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "process fact actor differs from its admitted principal/owner",
+            ));
         }
-        (Actor::Agent(_), Actor::Human(_)) => false,
+        _ => None,
     };
-    if !permitted {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
-            "process fact actor differs from its admitted principal/owner",
-        ));
-    }
+    let principal = match &binding {
+        Some(_) => None,
+        None => Some(principal_owner(c, &p, &scope, h, &identity, authority)?),
+    };
     let target = identity
         .session
         .as_ref()
         .map(|s| key(c, "session", s.as_str(), &scope, false))
         .transpose()?;
-    if let Some(target) = &target {
+    if let (Some(target), Some((principal, _))) = (&target, &principal) {
         let valid: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=? AND session_id=? AND agent_id=?)",rusqlite::params![p,target,principal],|r|r.get(0)).map_err(sql)?;
         if !valid {
             return Err(fail(
@@ -246,6 +222,17 @@ pub(super) fn apply(
             ));
         }
         let old = codec::process::identity(c, old_seq, &p, &id, rev - 1, &old_state, false)?;
+        if binding.is_some() {
+            // The successor keeps the recorded origin: same scope, same
+            // originating epoch, decoded again from the new custody bytes.
+            let recorded = host::consistent(c, old_seq, &identity)?;
+            if binding.as_ref().map(|(_, epoch)| epoch) != Some(&recorded) {
+                return Err(fail(
+                    StoreErrorCode::SourceChanged,
+                    "the originating host epoch cannot be replaced",
+                ));
+            }
+        }
         if from == ProcessState::StopUnproved && to == ProcessState::StopUnproved {
             release::apply(c, h, &p, &old, &identity, rev, lease)?;
         }
@@ -380,7 +367,12 @@ pub(super) fn apply(
         .as_ref()
         .map(|e| key(c, "event", e.as_str(), &scope, false))
         .transpose()?;
-    c.execute("INSERT INTO process_data(event_seq,process_id,principal_id,target_session_id,root_identity,identity_state,identity_cause,machine_id,boot_identity,pid,birth_identity,executable,argv_sha256,custody_version,custody,containment,containment_cause,containment_unknown_reason,containment_observed_at_us,containment_probe,state,expected_revision,observation_event) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![seq,id,principal,target,root,identity_state,cause,machine,boot,pid,birth,executable,argv,identity.custody.format_version,identity.custody.record,containment,containment_cause,unknown,observed,probe,name(to),expected_revision,observation]).map_err(sql)?;
+    let principal_id = principal.as_ref().map(|(principal, _)| principal.clone());
+    let (host_scope, host_epoch) = match &binding {
+        Some((scope, epoch)) => (Some(scope.clone()), Some(epoch.clone())),
+        None => (None, None),
+    };
+    c.execute("INSERT INTO process_data(event_seq,process_id,principal_id,host_scope,host_epoch,target_session_id,root_identity,identity_state,identity_cause,machine_id,boot_identity,pid,birth_identity,executable,argv_sha256,custody_version,custody,containment,containment_cause,containment_unknown_reason,containment_observed_at_us,containment_probe,state,expected_revision,observation_event) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![seq,id,principal_id,host_scope,host_epoch,target,root,identity_state,cause,machine,boot,pid,birth,executable,argv,identity.custody.format_version,identity.custody.record,containment,containment_cause,unknown,observed,probe,name(to),expected_revision,observation]).map_err(sql)?;
     if let Some(from) = from {
         codec::aux(c, seq, serde_json::json!({"from":from,"outcome":outcome}))?;
         let released = from == ProcessState::StopUnproved && to == ProcessState::StopUnproved;
@@ -395,4 +387,60 @@ pub(super) fn apply(
         c.execute("INSERT INTO processes(project_id,process_id,first_seq,revision,last_seq,state) VALUES(?,?,?,?,?,?)",crate::sql_value::sql_params![p,id,seq,rev,seq,name(to)]).map_err(sql)?;
     }
     Ok(())
+}
+
+/// The registered-principal arm, unchanged for humans and agents: the row
+/// must exist in this project and the actor must be admitted to write it.
+fn principal_owner(
+    c: &Connection,
+    p: &[u8],
+    scope: &[u8],
+    h: &EventHeader,
+    identity: &ProcessIdentityRecord,
+    authority: &ApplyAuthority<'_>,
+) -> StoreResult<(Vec<u8>, Vec<u8>)> {
+    let principal = key(
+        c,
+        identity.principal.kind(),
+        identity.principal.wire(),
+        if identity.principal.kind() == "human" {
+            &[0]
+        } else {
+            scope
+        },
+        false,
+    )?;
+    let owner: Option<Vec<u8>> = c
+        .query_row(
+            "SELECT owner_id FROM principals WHERE project_id=? AND principal_id=?",
+            rusqlite::params![p, principal],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    let owner = owner.ok_or_else(|| {
+        fail(
+            StoreErrorCode::ReferenceMissing,
+            "process principal is not registered in its project",
+        )
+    })?;
+    let permitted = match (&h.actor, &identity.principal) {
+        (Actor::Remote(_), Actor::Agent(_)) => authority.remote_launch.is_some(),
+        (Actor::Remote(_), _) | (_, Actor::Remote(_)) => false,
+        (Actor::Human(human), _) => key(c, "human", human.as_str(), &[0], false)? == owner,
+        (Actor::Agent(_), _) if h.actor == identity.principal => h.session == identity.session,
+        (Actor::Agent(creator), Actor::Agent(_)) => {
+            crate::creator::require(c, p, scope, creator, &principal)?;
+            true
+        }
+        (Actor::Agent(_), Actor::Human(_)) => false,
+        (Actor::Host, _) | (_, Actor::Host) => false,
+    };
+    if !permitted {
+        return Err(fail(
+            StoreErrorCode::ScopeMismatch,
+            "process fact actor differs from its admitted principal/owner",
+        ));
+    }
+    Ok((principal, owner))
 }

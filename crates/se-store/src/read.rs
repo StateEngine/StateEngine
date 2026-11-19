@@ -33,6 +33,7 @@ mod remote_launch;
 mod runtime;
 mod search;
 mod selector;
+mod shared;
 mod snapshot;
 mod transcript;
 use crate::{codec, connection, error::*, identity::*, open::SqliteReader, *};
