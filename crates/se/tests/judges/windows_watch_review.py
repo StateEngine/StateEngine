@@ -103,16 +103,17 @@ def main(image, output):
             changed = b"changed while the native writer stays open\n"
             assert writer.write(changed) == len(changed)
             # Invoke the public consumer before an oracle read can affect cache state.
-            before_flush = status()
+            before_flush = await_status(watched, 4)
             plain = run([image, "--home", home, "status"])
+            if "watched" not in plain.lower():
+                plain = run([image, "--home", home, "status"])
             keep("held_before_flush", {"status": before_flush, "plain": plain})
             assert tracked.read_bytes() == original + changed and not writer.closed
             observed = before_flush["git"]
             if watched(before_flush):
                 basis = observed["observation"]
                 assert basis["reconciled_at"]
-                if observed["uncommitted"] is False:
-                    assert "watched clean" in plain.lower() or "watched" in plain.lower(), plain
+                assert "watched" in plain.lower() and "last reconciled" in plain.lower(), plain
             forced = status("--fresh")
             keep("held_fresh", forced)
             assert not watched(forced) and forced["git"]["uncommitted"] is True, forced
@@ -133,13 +134,22 @@ def main(image, output):
         keep("restored_clean", clean)
         assert watched(clean) and clean["git"]["uncommitted"] is False, clean
 
-        override = {"GIT_INDEX_FILE": str(fixture / "alternate-index")}
-        git("read-tree", "--empty", override=override)
+        untracked = repo / "untracked.txt"
+        untracked.write_text("untracked control\n")
+        host_dirty = await_status(lambda row: watched(row) and row["git"]["uncommitted"] is True, 8)
+        keep("untracked_watched", host_dirty)
+        assert watched(host_dirty) and host_dirty["git"]["uncommitted"] is True, host_dirty
+        override = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "status.showUntrackedFiles",
+                    "GIT_CONFIG_VALUE_0": "no"}
         oracle = git("status", "--porcelain", override=override)
         alternate = status(override=override)
         keep("git_environment_fallback", {"oracle_dirty": bool(oracle), "status": alternate})
-        assert oracle and not watched(alternate) and alternate["git"]["uncommitted"] is True, alternate
+        assert not oracle and not watched(alternate) and alternate["git"]["uncommitted"] is False, alternate
         report["checks"]["git_environment_fallback"] = True
+        untracked.unlink()
+        clean = await_status(lambda row: watched(row) and row["git"]["uncommitted"] is False, 34)
+        keep("deleted_clean", clean)
+        assert watched(clean) and clean["git"]["uncommitted"] is False, clean
 
         # Force a real coverage refusal and hold the incompatible policy long
         # enough that the public fallback is observed before restoring it.
@@ -160,7 +170,7 @@ def main(image, output):
         assert watched(advanced) and count() == advanced["git"]["commits"] == expected + 1, advanced
         report["checks"]["new_head_count"] = True
 
-        time.sleep(34)
+        time.sleep(32)
         idle = status()
         keep("idle", idle)
         report["checks"]["idle_reconciled"] = (
