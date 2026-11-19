@@ -1,7 +1,7 @@
 name: Windows Atlas full owner measurement
 on:
   push:
-    branches: [probe/windows-atlas-full-owner-20261119]
+    branches: [probe/windows-atlas-pin-validation-20261119]
 permissions:
   contents: read
 jobs:
