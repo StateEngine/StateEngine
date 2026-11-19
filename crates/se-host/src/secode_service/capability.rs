@@ -130,7 +130,7 @@ impl LaunchCoordinator {
         service: &Service,
         deadline: &Deadline,
     ) -> Result<(Vec<u8>, Control, NoticeBinding)> {
-        let profile = service.journal.profile.to_local()?;
+        let profile = service.checked_profile()?;
         let (registration, control) = self
             .store
             .pool
@@ -214,7 +214,7 @@ impl LaunchCoordinator {
         control: Control,
         deadline: &Deadline,
     ) -> Result<()> {
-        let profile = service.journal.profile.to_local()?;
+        let profile = service.checked_profile()?;
         let policy_hash = service.journal.policy_sha256;
         let config = profile.join("host-policy.json");
         let authority = self.capability_admission.clone();

@@ -93,7 +93,29 @@ async fn lock_service<'a>(
 }
 
 impl Service {
+    fn checked_profile(&self) -> Result<PathBuf> {
+        #[cfg(windows)]
+        if let Some(expected) = self.journal.profile_identity {
+            let guard = self.profile_guard.as_ref().ok_or_else(|| {
+                error(
+                    "SE Code private profile",
+                    "the original profile guard is unavailable",
+                )
+            })?;
+            let actual = guard
+                .identity()
+                .map_err(|cause| error("SE Code private profile", cause))?;
+            if actual != expected {
+                return Err(error(
+                    "SE Code private profile",
+                    "the original profile identity changed",
+                ));
+            }
+        }
+        self.journal.profile.to_local()
+    }
     fn current(&self) -> Result<crate::harness::secode_process::QualifiedControl> {
+        self.checked_profile()?;
         self.live.resolve(
             self.control.clone().ok_or_else(|| {
                 error("SE Code current binding", "authenticated control is absent")
