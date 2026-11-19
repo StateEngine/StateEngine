@@ -28,6 +28,11 @@ with tarfile.open(fileobj=io.BytesIO(data)) as archive:
     archive.extractall(work / 'codex', filter='data')
 binary = work / 'codex' / member
 print(f'codex {binary} sha256 verified package', flush=True)
-result = subprocess.run([sys.executable, '-I', str(Path(__file__).with_name('xprobe.py')), str(binary), str(work / 'run')], timeout=600)
-print(f'xprobe exit {result.returncode}', flush=True)
-sys.exit(result.returncode)
+codes = {}
+for mode in ('default', 'explicit'):
+    print(f'== case {mode}', flush=True)
+    codes[mode] = subprocess.run([sys.executable, '-I', str(Path(__file__).with_name('xprobe.py')), str(binary),
+                                  str(work / f'run-{mode}'), mode], timeout=600).returncode
+    print(f'xprobe {mode} exit {codes[mode]}', flush=True)
+# The product listens on the default control socket, which is the path the stock proxy dials.
+sys.exit(codes['default'])

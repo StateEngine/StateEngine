@@ -3,12 +3,14 @@
 Self-contained and cross-platform (Linux and Windows): synthetic loopback login and model
 server, no real account. Checks: each agent's turn completes, each agent's tool shell sees
 only its own per-thread SE_SESSION, and one proxy exiting leaves the server and the other
-agent working. Usage: xprobe.py <codex-binary> <new-output-dir>
+agent working. Usage: xprobe.py <codex-binary> <new-output-dir> [default|explicit]
+`default` listens on `unix://` (the login's default control socket); `explicit` names that path.
 """
 import base64, datetime, http.server, json, os, queue, struct, subprocess, sys, threading, time, traceback
 from pathlib import Path
 
 B = sys.argv[1]; OUT = Path(sys.argv[2]).resolve(); OUT.mkdir(parents=True, exist_ok=False)
+MODE = sys.argv[3] if len(sys.argv) > 3 else 'default'
 WIN = os.name == 'nt'
 
 
@@ -145,7 +147,7 @@ def turn(c, t, text):
     return c.next(lambda x: x.get('method') == 'turn/completed' and x['params'].get('threadId') == t)['params']['turn']['status']
 
 
-rec = {'platform': sys.platform, 'complete': False}
+rec = {'platform': sys.platform, 'mode': MODE, 'complete': False}
 model = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Model); model.daemon_threads = True
 threading.Thread(target=model.serve_forever, daemon=True).start(); url = f'http://127.0.0.1:{model.server_port}'
 server = None; clients = []
@@ -174,8 +176,11 @@ stream_max_retries = 0
     env.update(HOME=str(home), USERPROFILE=str(home), CODEX_HOME=str(home), HTTP_PROXY=url, HTTPS_PROXY=url, ALL_PROXY=url,
                NO_PROXY='127.0.0.1,localhost', NO_COLOR='1')
     sock = home / 'app-server-control' / 'app-server-control.sock'; sock.parent.mkdir()
+    listen = 'unix://' if MODE == 'default' else f'unix://{sock}'
+    rec['listen'] = listen
+    print(f'listen argument: {listen}', flush=True)
     started = time.monotonic()
-    server = subprocess.Popen([B, 'app-server', '--listen', f'unix://{sock}'], env=env, cwd=OUT, stdin=subprocess.DEVNULL,
+    server = subprocess.Popen([B, 'app-server', '--listen', listen], env=env, cwd=OUT, stdin=subprocess.DEVNULL,
                               stdout=open(OUT / 'server.out', 'wb'), stderr=open(OUT / 'server.err', 'wb'))
     while not sock.exists() and time.monotonic() - started < 30 and server.poll() is None:
         time.sleep(.1)
@@ -212,6 +217,11 @@ finally:
         server.terminate(); server.wait(timeout=15)
     rec['server_exit_after_stop'] = server.poll() if server else None
     model.shutdown()
+    try:
+        err = (OUT / 'server.err').read_bytes().decode(errors='replace')
+    except OSError as e:
+        err = f'<unreadable: {e}>'
+    print('server stderr begin', flush=True); print(err[-4000:], flush=True); print('server stderr end', flush=True)
     (OUT / 'result.json').write_text(json.dumps(rec, indent=2) + '\n')
     print(json.dumps(rec)[:3000])
     sys.exit(0 if rec['complete'] and rec.get('own_session_only') and rec.get('server_alive') else 1)
