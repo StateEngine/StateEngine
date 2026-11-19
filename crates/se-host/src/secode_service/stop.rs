@@ -254,6 +254,20 @@ impl LaunchCoordinator {
                 }
             }
             service.live.invalidate()?;
+            if let Some(owner) = service.process.clone() {
+                let native = self.native.clone();
+                self.store.pool.run_owned(deadline, move || {
+                    let observed = native.witness_exit(&owner).map_err(|cause| error("superseded SE Code scope", cause))?;
+                    let se_proc::StopObservation::Complete(witness) = observed else {
+                        return Err(error("superseded SE Code scope", "the original native scope is not yet empty; retain its custody and retry shutdown"));
+                    };
+                    if witness.scope_exit.exit_basis.is_none() {
+                        return Err(error("superseded SE Code scope", "the original native scope has no empty-scope witness"));
+                    }
+                    native.release(&owner, &witness).map_err(|cause| error("superseded SE Code scope", cause))
+                }).await?;
+                service.process = None;
+            }
             service.journal.retired = true;
             return service.persist(self, deadline).await;
         }
