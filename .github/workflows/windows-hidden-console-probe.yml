@@ -18,3 +18,22 @@ jobs:
           $setup = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
           cmd /c "`"$setup`" >nul && cl /nologo /W3 /Fe:console-probe.exe probes\windows-hidden-console.c && console-probe.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 174c907f41dee2cbaded6bf3c98f47c5669ae629
+          path: candidate
+      - name: Prepare independent process-scope control
+        shell: pwsh
+        run: |
+          Copy-Item probes/windows_console_scope.rs candidate/crates/se-proc/tests/support/windows_console_scope.rs
+          Add-Content candidate/crates/se-proc/tests/stdio_binding.rs "`n#[cfg(windows)]`n#[path = `"support/windows_console_scope.rs`"]`nmod windows_console_scope;"
+      - name: Build and exercise the native process runtime
+        shell: pwsh
+        working-directory: candidate
+        run: |
+          cargo build --locked -p se --bin se
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:BINDING_SCOPE_HELPER = (Resolve-Path target/debug/se.exe).Path
+          $env:BINDING_SCOPE_PAYLOAD = (Resolve-Path ../probes).Path
+          cargo test --locked -p se-proc --test stdio_binding windows_console_scope::exact_windows_console_scope_interrupts_real_tools -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
