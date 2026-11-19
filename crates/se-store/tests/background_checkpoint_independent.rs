@@ -159,7 +159,7 @@ fn background_task_resets_the_wal_after_the_reader_releases() -> Check {
         0,
         "reset left the WAL file behind"
     );
-    let writer = guard.take().ok_or("writer was already drained")?;
+    let mut writer = guard.take().ok_or("writer was already drained")?;
     drop(wait_until(
         writer.flush(Duration::from_secs(4))?,
         Instant::now() + DRAIN_BUDGET,
@@ -209,7 +209,7 @@ fn background_task_keeps_sustained_writes_below_the_cutoff() -> Check {
         SETTLE_BUDGET,
         || matches!(wal(&outside), Ok((0, 0, _))),
     )?;
-    let writer = guard.take().ok_or("writer was already drained")?;
+    let mut writer = guard.take().ok_or("writer was already drained")?;
     drop(wait_until(
         writer.drain(DRAIN_DEADLINE),
         Instant::now() + DRAIN_BUDGET,
@@ -264,7 +264,7 @@ fn background_task_honors_backup_suppression() -> Check {
         SETTLE_BUDGET,
         || matches!(wal(&outside), Ok((0, 0, _))),
     )?;
-    let writer = guard.take().ok_or("writer was already drained")?;
+    let mut writer = guard.take().ok_or("writer was already drained")?;
     drop(wait_until(
         writer.drain(DRAIN_DEADLINE),
         Instant::now() + DRAIN_BUDGET,
