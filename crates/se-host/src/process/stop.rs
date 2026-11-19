@@ -223,7 +223,8 @@ impl LaunchCoordinator {
         // closing provider stdin. Graceful closure is already a stop effect.
         if let Some(binding) = &work.binding {
             let policy = binding.stop_policy();
-            let graceful = deadline.stage(Duration::from_secs(5))?;
+            let window = grace_window(&self.options, deadline)?;
+            let graceful = deadline.stage(window)?;
             match self
                 .harness_for(work.meta.provider)?
                 .graceful_stop(binding, call(self.store.generation, &graceful)?)
@@ -500,5 +501,20 @@ impl LaunchCoordinator {
         work.session_retired = true;
         self.proofs.remove(&work.meta.session)?;
         Ok(())
+    }
+}
+/// An explicit override shares this stop's budget with the forced stop and
+/// its receipt commit, so cap it at half of what remains to keep that final
+/// half bounded, however large the injected window is. The default window
+/// keeps its original size.
+fn grace_window(options: &ProcessConfiguration, deadline: &Deadline) -> Result<Duration> {
+    match options.stop_grace_ms {
+        Some(explicit) => {
+            let half = (deadline.remaining()?.as_millis() / 2) as u64;
+            Ok(Duration::from_millis(u64::from(explicit)).min(Duration::from_millis(half)))
+        }
+        None => Ok(Duration::from_millis(u64::from(
+            ProcessOptions::DEFAULT_STOP_GRACE_MS,
+        ))),
     }
 }

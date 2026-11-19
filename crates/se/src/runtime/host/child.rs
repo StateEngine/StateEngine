@@ -266,6 +266,7 @@ fn serve(
                 linux_delegation: se_proc::LinuxDelegation::CurrentScope,
                 maximum_sessions: se_host::ProcessOptions::DEFAULT_MAXIMUM_SESSIONS,
                 restore_deadline_ms: provider_restore_deadline_ms()?,
+                stop_grace_ms: stop_grace_ms()?,
             },
             &bound,
         )
@@ -374,6 +375,21 @@ fn provider_restore_deadline_ms() -> Result<u64> {
         &raw,
         se_host::ProcessOptions::MAX_RESTORE_DEADLINE_MS,
     )
+}
+/// The independent judges spawn the host with a shortened provider
+/// graceful-stop window. An invalid explicit value fails startup, so a
+/// misconfigured judge cannot pass silently on the production timing.
+fn stop_grace_ms() -> Result<Option<u32>> {
+    let Some(raw) = std::env::var_os(PROVIDER_STOP_GRACE_ENV) else {
+        return Ok(None);
+    };
+    let value = explicit_millis(
+        PROVIDER_STOP_GRACE_ENV,
+        &raw,
+        u64::from(se_host::ProcessOptions::MAX_STOP_GRACE_MS),
+    )?;
+    // explicit_millis is bounded by the maximum, which fits a u32.
+    Ok(Some(value as u32))
 }
 fn argv_digest() -> Sha256 {
     let mut digest = Hasher::new();
