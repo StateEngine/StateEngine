@@ -55,14 +55,12 @@ impl ConnectionRole {
         )
     }
 }
-/// Measured upper bound from native SQL/allocator qualification, not an estimate
-/// or a request-supplied flag. Until that witness exists the host must not admit
-/// the profile. Two page caches, statement allowances and one query arena reserve
-/// 262144 bytes; measured connection/SQLite overhead shares the 600 KB SQL
-/// reservation. The extra 100 KB comes from the coalesced queue, not the total.
+/// Native SQL/allocator qualification, not an estimate or request-supplied flag.
+/// A profile may carry measured per-connection overhead or a measured combined
+/// two-connection peak. The latter does not imply a per-connection measurement.
 #[derive(Clone, Debug)]
 pub struct SqlProfile {
-    overhead: u32,
+    overhead: Option<u32>,
     cold_only: bool,
 }
 impl SqlProfile {
@@ -76,18 +74,33 @@ impl SqlProfile {
             ));
         }
         Ok(Self {
-            overhead: bytes,
+            overhead: Some(bytes),
+            cold_only: false,
+        })
+    }
+    /// A measured two-connection peak qualifies their shared reservation, but
+    /// does not establish a separate per-connection overhead measurement.
+    pub fn from_qualified_joined(bytes: u32) -> AtlasResult<Self> {
+        if bytes == 0 || bytes > crate::model::SQL_QUERY_BYTES {
+            return Err(capacity(
+                "Atlas joined SQL commit",
+                u64::from(bytes),
+                u64::from(crate::model::SQL_QUERY_BYTES),
+            ));
+        }
+        Ok(Self {
+            overhead: None,
             cold_only: false,
         })
     }
     pub fn qualified_overhead_bytes(&self) -> Option<u32> {
-        (!self.cold_only).then_some(self.overhead)
+        self.overhead
     }
     /// Cold-window reservation, not evidence of the host's 600 KB SQL share.
     /// External validation may use it only outside the steady host read path.
     pub fn contained_cold() -> Self {
         Self {
-            overhead: 0,
+            overhead: None,
             cold_only: true,
         }
     }
