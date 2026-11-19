@@ -12,6 +12,24 @@ from diagnostic_redaction_review import state_home
 
 
 class WindowsFixture(Fixture):
+    def ok(self, *args):
+        if args != ('up',):
+            return super().ok(*args)
+        command = [str(self.se), '--json', '--home', str(self.home), 'up', '--foreground']
+        with (self.root / 'host.stdout').open('wb') as out, (self.root / 'host.stderr').open('wb') as err:
+            self.host = subprocess.Popen(command, cwd=self.repo, env=self.env, stdin=subprocess.DEVNULL,
+                                         stdout=out, stderr=err)
+        deadline = time.monotonic() + 60
+        while not read_json(self.home / 'endpoint.json'):
+            assert self.host.poll() is None, 'foreground host exited before readiness'
+            assert time.monotonic() < deadline, 'foreground host readiness timed out'
+            time.sleep(.05)
+        return {}
+
+    def close(self):
+        super().close()
+        assert self.host.wait(timeout=30) == 0, 'foreground host did not exit cleanly'
+
     def call(self, *args):
         self.calls += 1
         command = [str(self.se), '--json', '--home', str(self.home), *args]
