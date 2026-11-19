@@ -44,7 +44,7 @@ pub fn execute(
 
 fn sql_deadline(error: &SeError) -> bool {
     matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail)
-        if detail.op == "Atlas SQL")
+        if detail.op.starts_with("Atlas SQL"))
 }
 
 fn execute_once(

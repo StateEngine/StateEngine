@@ -323,7 +323,7 @@ fn exercise(case: Case) -> Check {
         Case::Twice => {
             let error = answer.err().ok_or("repeated timeout was hidden")?;
             assert!(
-                matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op=="Atlas SQL"),
+                matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op.starts_with("Atlas SQL")),
                 "{error}"
             );
             assert!(
