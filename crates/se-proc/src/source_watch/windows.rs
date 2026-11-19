@@ -503,6 +503,8 @@ impl Worker {
                     let _ = response.send(());
                 }
                 Command::Stop => {
+                    // Diagnostic-only: leave cancellation in flight long enough to observe custody.
+                    std::thread::sleep(std::time::Duration::from_millis(750));
                     self.stopping = true;
                     for item in self.subscriptions.values_mut() {
                         item.active = false;

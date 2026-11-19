@@ -155,6 +155,19 @@ impl NativeRenewal {
     pub fn signal(&self) -> std::sync::Arc<tokio::sync::Notify> {
         self.signal.clone()
     }
+    #[cfg(windows)]
+    pub fn diagnostic_watch_state(&self, id: &RootId) -> &'static str {
+        match self
+            .roots
+            .iter()
+            .find(|root| &root.id == id)
+            .and_then(|root| root.native.as_ref())
+        {
+            Some(native) if matches!(native.state, WatchState::Retiring) => "retiring",
+            Some(_) => "active",
+            None => "absent",
+        }
+    }
     #[expect(
         clippy::too_many_lines,
         reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"

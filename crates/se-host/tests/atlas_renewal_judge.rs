@@ -1,7 +1,7 @@
-//! Independent Linux consumer of the public native controller/watch pair.
+//! Independent consumer of the public native controller/watch pair.
 //! SQL reservation is synthetic for behavior only; native RAM/parser qualification
 //! belongs to the separate platform reviewer. No author fixtures are reused.
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", windows))]
 use se_atlas::{
     cache::{CacheIdentity, CacheSeed, connection::*, pointer},
     controller::Controller,
@@ -191,6 +191,7 @@ fn start(controller: &mut Native, registration: &RootRegistration) -> Check {
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 fn native_events_repair_after_writer_contention_and_release_root_slots() -> Check {
+    se_proc::initialize_file_creation_owner()?;
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let base = std::env::temp_dir().join(format!("se-atlas-native-{}-{nonce}", std::process::id()));
     fs::create_dir(&base)?;
@@ -225,6 +226,37 @@ fn native_events_repair_after_writer_contention_and_release_root_slots() -> Chec
     let mut controller = Controller::new(runtime);
     eprintln!("phase: activate and discover");
     start(&mut controller, &first).map_err(|e| format!("initial activation: {e:?}"))?;
+    #[cfg(windows)]
+    {
+        let first_error = drive_events(&mut controller, &first.root, Instant::now()).err();
+        let first_state = controller
+            .runtime_mut()
+            .driver_mut()
+            .diagnostic_watch_state(&first.root);
+        let second_error = drive_events(
+            &mut controller,
+            &first.root,
+            Instant::now() + Duration::from_millis(20),
+        )
+        .err();
+        let second_state = controller
+            .runtime_mut()
+            .driver_mut()
+            .diagnostic_watch_state(&first.root);
+        std::thread::sleep(Duration::from_secs(1));
+        let recovery = drive_events(&mut controller, &first.root, deadline());
+        let recovered_state = controller
+            .runtime_mut()
+            .driver_mut()
+            .diagnostic_watch_state(&first.root);
+        println!(
+            "CUSTODY_OBSERVATION first={first_state} second={second_state} recovered={recovered_state} first_error={first_error:?} second_error={second_error:?} recovery={recovery:?}"
+        );
+        pump(&mut controller, &first.root, |c| {
+            Ok(c.summary(&first.root)?.coverage.discovery_complete)
+        })?;
+    }
+    #[cfg(target_os = "linux")]
     assert!(
         controller
             .runtime_mut()
@@ -329,6 +361,7 @@ fn native_events_repair_after_writer_contention_and_release_root_slots() -> Chec
         )?,
         CloseResult::Closed
     ));
+    #[cfg(target_os = "linux")]
     assert!(
         controller
             .runtime_mut()
@@ -361,6 +394,7 @@ fn native_events_repair_after_writer_contention_and_release_root_slots() -> Chec
             )?,
             CloseResult::Closed
         ));
+        #[cfg(target_os = "linux")]
         assert!(
             controller
                 .runtime_mut()
