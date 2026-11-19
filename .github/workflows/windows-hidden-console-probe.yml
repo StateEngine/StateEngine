@@ -1,5 +1,7 @@
 name: Windows hidden console probe
-on: [push]
+on:
+  push:
+    branches: [probe/windows-hidden-console-20261119]
 permissions:
   contents: read
 jobs:
@@ -7,7 +9,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Compile and run the console probe
         shell: pwsh
         run: |
