@@ -52,7 +52,17 @@ pub fn drive_events(
         Err(error) => {
             let watch_died = matches!(error.body.detail(), Detail::AtlasSourceUnreadable(detail)
                 if detail.path == "watch event read" || detail.path == "watch mapping lost");
-            if !watch_died {
+            let retryable = se_atlas::controller::quantum_expired(&error)
+                || matches!(error.body.detail(), Detail::AtlasResourceBudget(detail)
+                    if detail.resource == "Atlas home writer lease");
+            let consumed = controller
+                .runtime_mut()
+                .driver_mut()
+                .roots
+                .iter()
+                .find(|item| &item.id == root)
+                .is_some_and(|item| item.pending_events.is_some());
+            if !watch_died && (retryable || !consumed) {
                 return Err(error);
             }
             let driver = controller.runtime_mut().driver_mut();
@@ -75,6 +85,25 @@ pub fn drive_events(
     let count = hints.len();
     for hint in hints {
         controller.enqueue(root.clone(), hint)?;
+    }
+    let issue = controller
+        .runtime_mut()
+        .driver_mut()
+        .roots
+        .iter()
+        .find(|item| &item.id == root)
+        .and_then(|item| {
+            item.reasons.iter().copied().find(|reason| {
+                matches!(
+                    reason,
+                    CoverageReason::ReadFailure
+                        | CoverageReason::ByteLimit
+                        | CoverageReason::UnsupportedEncoding
+                )
+            })
+        });
+    if let Some(issue) = issue {
+        controller.note_watch_issue(root, issue)?;
     }
     let pending = controller
         .runtime_mut()

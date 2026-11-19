@@ -101,6 +101,24 @@ impl<R: Runtime> Controller<R> {
     pub fn watch_pending(&self, root: &RootId) -> bool {
         self.scheduler.watch_pending(root)
     }
+    /// Preserve an observed watch coverage limitation without inventing a file event.
+    pub fn note_watch_issue(&mut self, id: &RootId, reason: CoverageReason) -> AtlasResult<()> {
+        let root = self
+            .roots
+            .iter_mut()
+            .find(|root| &root.registration.root == id)
+            .ok_or_else(|| se_types::SeError::invalid("Atlas watch", "a registered root"))?;
+        if !root.summary.coverage.reasons.contains(&reason) {
+            root.summary.coverage.reasons.push(reason);
+        }
+        if matches!(
+            root.summary.state,
+            IndexState::Current | IndexState::VerificationNeeded { .. }
+        ) {
+            root.summary.state = IndexState::VerificationNeeded { reason };
+        }
+        Ok(())
+    }
     /// Keep a live slot while a finite quantum still owns unfinished source IO.
     pub fn work_pending(&self, root: &RootId) -> bool {
         self.in_flight
@@ -165,6 +183,11 @@ impl<R: Runtime> Controller<R> {
         );
         if !retain_failure && !native_progress && !native_stall {
             summary.state = root.summary.state.clone();
+        }
+        if let IndexState::VerificationNeeded { reason } = &root.summary.state
+            && !summary.coverage.reasons.contains(reason)
+        {
+            summary.coverage.reasons.push(*reason);
         }
         if self.scheduler.watch_pending(id)
             && matches!(

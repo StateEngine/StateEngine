@@ -334,7 +334,12 @@ impl NativeRenewal {
                             )
                         })?;
                     let Some(name) = event.name.to_str() else {
-                        reason(&mut self.roots[index], CoverageReason::UnsupportedEncoding);
+                        if !matches!(
+                            event.action,
+                            NativeWatchAction::Removed | NativeWatchAction::MovedFrom
+                        ) {
+                            reason(&mut self.roots[index], CoverageReason::UnsupportedEncoding);
+                        }
                         return Ok(None);
                     };
                     if name.is_empty() {
@@ -344,7 +349,13 @@ impl NativeRenewal {
                     }
                     let length = directory.len() + usize::from(!directory.is_empty()) + name.len();
                     if length > 4096 {
-                        return Err(limit("native event path", length as u64, 4096));
+                        if !matches!(
+                            event.action,
+                            NativeWatchAction::Removed | NativeWatchAction::MovedFrom
+                        ) {
+                            reason(&mut self.roots[index], CoverageReason::ByteLimit);
+                        }
+                        return Ok(None);
                     }
                     let mut spelling = String::with_capacity(length);
                     if !directory.is_empty() {
@@ -352,7 +363,18 @@ impl NativeRenewal {
                         spelling.push('/');
                     }
                     spelling.push_str(name);
-                    let path = RelativePath::new(spelling)?;
+                    let path = match RelativePath::new(spelling) {
+                        Ok(path) => path,
+                        Err(_) => {
+                            if !matches!(
+                                event.action,
+                                NativeWatchAction::Removed | NativeWatchAction::MovedFrom
+                            ) {
+                                reason(&mut self.roots[index], CoverageReason::ReadFailure);
+                            }
+                            return Ok(None);
+                        }
+                    };
                     if se_atlas::policy::built_in_denied(&path) {
                         return Ok(None);
                     }

@@ -56,6 +56,8 @@ pub(super) fn get(
         } else { None };
         let state = if let Some(error) = failure {
             IndexState::Partial { error }
+        } else if complete && let Some(reason) = root.reasons.iter().copied().find(|reason| matches!(reason, CoverageReason::ReadFailure | CoverageReason::ByteLimit | CoverageReason::UnsupportedEncoding)) {
+            IndexState::VerificationNeeded { reason }
         } else if complete && (root.unwatched > 0 || !coverage.watch_discovery_complete) {
             IndexState::VerificationNeeded { reason: CoverageReason::PartialWatch }
         } else if !complete || pending > 0 {

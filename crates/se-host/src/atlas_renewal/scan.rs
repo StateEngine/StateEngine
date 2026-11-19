@@ -257,7 +257,10 @@ impl NativeRenewal {
                         } else {
                             format!("{}/{name}", cursor.path())
                         };
-                        let path = RelativePath::new(spelling)?;
+                        let Some(path) = entry_path(&mut self.roots[index], spelling) else {
+                            cycle.pending_entry = None;
+                            continue;
+                        };
                         let directory = entry.kind == NativeSourceKind::Directory;
                         if !cycle
                             .rules
@@ -502,6 +505,16 @@ impl NativeRenewal {
             complete,
         })
     }
+}
+fn entry_path(root: &mut Root, spelling: String) -> Option<RelativePath> {
+    let path_reason = if spelling.len() > 4096 {
+        CoverageReason::ByteLimit
+    } else {
+        CoverageReason::ReadFailure
+    };
+    RelativePath::new(spelling)
+        .map_err(|_| reason(root, path_reason))
+        .ok()
 }
 fn remove_pending(
     connection: &mut CacheConnection<'_>,
