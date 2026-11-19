@@ -1,0 +1,80 @@
+"""Exercise Windows profile custody through a disposable managed launch."""
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import json
+import shutil
+import subprocess
+import time
+import uuid
+from pathlib import Path
+from secode_host_guards import Fixture
+
+
+def read_json(path):
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--se', type=Path, required=True)
+    parser.add_argument('--source', type=Path, required=True)
+    parser.add_argument('--capabilities', type=Path, required=True)
+    parser.add_argument('--root', type=Path, required=True)
+    args = parser.parse_args()
+    images = args.root / 'images'
+    images.mkdir()
+    cli = images / 'secode.exe'
+    server = images / 'secode-server.exe'
+    subprocess.run(['rustc', '--edition=2024', str(args.source), '-o', str(cli)],
+                   stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=120)
+    shutil.copy2(cli, server)
+    capabilities = json.loads(args.capabilities.read_text())
+    capabilities['service']['shutdown'] = ['Ctrl+C']
+    (images / 'capabilities.json').write_text(json.dumps(capabilities))
+    f = Fixture(args.se, args.root / 'case', cli, 'read-only', 'never')
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            task = pool.submit(f.call, '--key', str(uuid.uuid4()), '--project', f.project,
+                               'launch', f.agent, '--task', 'Synthetic input.', '--detach')
+            until = time.monotonic() + 60
+            bootstrap_released = False
+            service_released = False
+            try:
+                while not task.done():
+                    for path in (f.home / 'secode').glob('*.json'):
+                        journal = read_json(path)
+                        if not journal:
+                            continue
+                        bootstrap = journal.get('bootstrap')
+                        if not bootstrap_released and (images / 'bootstrap-pid').exists() and bootstrap:
+                            checkpoint = bootstrap.get('checkpoint') or {}
+                            if checkpoint.get('kind') == 'process':
+                                assert checkpoint['value']['root']['pid'] == int((images / 'bootstrap-pid').read_text())
+                                (images / 'bootstrap-release').touch()
+                                bootstrap_released = True
+                        service = journal.get('service')
+                        if (not service_released and (images / 'service-attempted').exists()
+                                and service and (service.get('checkpoint') or {}).get('kind') == 'process'):
+                            assert isinstance(journal.get('profile_identity'), list) and len(journal['profile_identity']) == 24
+                            assert (images / 'rename-denied').read_bytes() == b'yes'
+                            profile = next((f.home / 'secode-profiles').glob('*/profile'))
+                            assert (profile / 'host-policy.json').is_file()
+                            (images / 'service-release').touch()
+                            service_released = True
+                    assert time.monotonic() < until, 'native profile qualification timed out'
+                    time.sleep(.02)
+                result = task.result()
+                assert result.returncode != 0, 'fixture service was expected to refuse'
+                assert bootstrap_released and service_released, (result.stdout, result.stderr)
+            finally:
+                (images / 'bootstrap-release').touch()
+                (images / 'service-release').touch()
+    finally:
+        f.close()
+
+
+if __name__ == '__main__':
+    main()
