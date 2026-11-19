@@ -1,7 +1,7 @@
 //! Bounded transactions for an unpublished cold epoch.
 use super::*;
 
-const MAX_FILES: usize = 4;
+const MAX_FILES: usize = 1;
 const FILE_GROWTH: u64 = 2_000_000;
 const BATCH_TIME: Duration = Duration::from_millis(250);
 
