@@ -4,6 +4,7 @@ use crate::harness::binding::{AdapterBinding, Observation, StopPolicy};
 mod attach;
 mod channel;
 mod connection;
+pub mod forward;
 #[cfg(target_os = "linux")]
 mod console;
 mod location;

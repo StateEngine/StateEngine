@@ -50,6 +50,10 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 toml = "0.9.11"
 chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["std"], optional = true }
 
+# The stock Codex control socket is AF_UNIX on Windows too; std has no client for it.
+[target.'cfg(windows)'.dependencies]
+uds_windows = "1.2.1"
+
 [lints]
 workspace = true
 
