@@ -44,6 +44,13 @@ pub fn drive_events(
     root: &RootId,
     deadline: Instant,
 ) -> AtlasResult<usize> {
+    eprintln!(
+        "ATLAS_EVENT_POLL_BEGIN unix_ms={:?}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_millis())
+    );
     let hints = match controller.runtime_mut().poll_events(root, deadline) {
         Ok(hints) => hints,
         Err(error) => {
