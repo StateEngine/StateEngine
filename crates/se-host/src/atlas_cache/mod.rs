@@ -26,10 +26,6 @@ impl DatabaseFile for Metadata {
     fn validate_path(&self, path: &Path) -> std::io::Result<()> {
         self.0.validate_path(path).map_err(std::io::Error::other)
     }
-    #[cfg(windows)]
-    fn sibling_metadata(&self, path: &Path) -> std::io::Result<Option<std::fs::Metadata>> {
-        self.0.sibling_metadata(path).map_err(std::io::Error::other)
-    }
 }
 pub struct NativeAtlasCache {
     home: NativeStateFiles,
@@ -425,23 +421,14 @@ impl CacheFiles for NativeAtlasCache {
     fn wal_bytes(&self, pin: &DatabasePin) -> AtlasResult<u64> {
         self.validate_database(pin)?;
         let path = pin.path.with_file_name("atlas.db-wal");
-        #[cfg(windows)]
-        {
-            pin.file
-                .sibling_metadata(&path)
-                .map_err(fail)
-                .map(|metadata| metadata.map_or(0, |metadata| metadata.len()))
-        }
-        #[cfg(not(windows))]
-        {
-            self.root
-                .pin_metadata(&path)
-                .map_err(fail)?
-                .map(|f| f.metadata().map(|m| m.len()).map_err(fail))
-                .transpose()
-                .map(|n| n.unwrap_or(0))
-        }
+        self.root
+            .pin_metadata(&path)
+            .map_err(fail)?
+            .map(|f| f.metadata().map(|m| m.len()).map_err(fail))
+            .transpose()
+            .map(|n| n.unwrap_or(0))
     }
+
     fn reserve_growth(&self, bytes: u64) -> AtlasResult<Box<dyn GrowthReservation + '_>> {
         self.require_writer()?;
         let root = inventory::root(&self.root)?;
