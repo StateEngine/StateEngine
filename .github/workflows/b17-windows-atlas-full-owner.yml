@@ -1,7 +1,7 @@
 name: Windows Atlas full owner measurement
 on:
   push:
-    branches: [probe/windows-atlas-pin-timeline-20261119]
+    branches: [probe/windows-atlas-pin-symbols-20261119]
 permissions:
   contents: read
 jobs:
@@ -11,6 +11,7 @@ jobs:
     env:
       CARGO_BUILD_JOBS: '4'
       CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
     defaults:
       run:
         shell: bash
@@ -28,6 +29,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: windows-atlas-full-owner-measurements
-          path: target/judge-diagnostics/atlas-full-owner.*
+          name: windows-atlas-symbolized-measurements
+          path: |
+            target/judge-diagnostics/atlas-full-owner.*
+            target/release/se.exe
+            target/release/se*.pdb
+            target/release/deps/se*.pdb
+            target/release/deps/atlas_startup_dev*.pdb
+            target/release/deps/atlas_startup_dev*.exe
           if-no-files-found: warn
