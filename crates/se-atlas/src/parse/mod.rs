@@ -3,6 +3,8 @@ mod budget;
 mod extract;
 mod imports;
 mod javascript;
+#[allow(unsafe_code)]
+mod native_memory;
 mod python;
 mod rust;
 mod syntax;
@@ -136,20 +138,18 @@ impl AtlasParser for SemanticParser {
         let Some(profile) = self.profiles.iter().find(|p| p.language == language) else {
             return Ok(defer(CoverageReason::ParserUnqualified));
         };
+        let budget = bounded_budget(budget, profile);
         if snapshot.bytes.len() > budget.max_source_bytes.min(profile.max_source_bytes) as usize {
             return Ok(defer(CoverageReason::SourceBytesLimit));
         }
-        let reservation = snapshot.bytes.capacity() as u64
-            + u64::from(profile.parser_reservation_bytes)
-            + u64::from(profile.extraction_bytes);
-        if reservation > u64::from(budget.reserved_bytes) {
-            return Err(capacity(
-                "Atlas source/parser/extraction reservation",
-                reservation,
-                u64::from(budget.reserved_bytes),
-            ));
-        }
+        check_reservation(profile, budget, snapshot)?;
+        let counted = counted_budget(budget, profile);
         let _lease = budget::Lease::take()?;
+        // Parsing may use the extraction share until extraction starts; the
+        // arena below receives only what remains of the total reservation.
+        let source_bytes = u32::try_from(snapshot.bytes.capacity()).unwrap_or(u32::MAX);
+        let memory =
+            native_memory::Reservation::start(counted.reserved_bytes.saturating_sub(source_bytes));
         if let Some(guard) = self.resource_guard {
             guard()?;
         }
@@ -158,7 +158,12 @@ impl AtlasParser for SemanticParser {
             .set_language(&grammar(language))
             .map_err(|e| failure(&snapshot.path, language, e.to_string()))?;
         let mut resource_error = None;
+        let mut memory_exceeded = false;
         let mut progress = |_: &tree_sitter::ParseState| {
+            if memory.exceeded() {
+                memory_exceeded = true;
+                return ControlFlow::Break(());
+            }
             if let Some(guard) = self.resource_guard
                 && let Err(error) = guard()
             {
@@ -172,6 +177,9 @@ impl AtlasParser for SemanticParser {
             None,
             Some(tree_sitter::ParseOptions::new().progress_callback(&mut progress)),
         );
+        if memory_exceeded || memory.exceeded() {
+            return Ok(defer(CoverageReason::ParseMemoryLimit));
+        }
         if let Some(error) = resource_error {
             return Err(error);
         }
@@ -182,18 +190,66 @@ impl AtlasParser for SemanticParser {
                 "native parser returned no tree".into(),
             ));
         };
-        let arena = budget::Arena::new(
-            profile.extraction_bytes,
-            budget.max_rows.min(profile.max_rows),
-        );
+        let extraction_bytes = extraction_reservation(profile, counted, snapshot, &memory);
+        let arena = budget::Arena::new(extraction_bytes, budget.max_rows.min(profile.max_rows));
         let result = extract::extract(&self.scope, snapshot, language, &tree, arena);
+        let exceeded = memory.exceeded();
         // Tree and parser are owned by this call. Neither a failed parse nor a
         // caller forgetting release_scratch can retain them between work quanta.
         drop(tree);
         drop(parser);
+        if exceeded || extraction_limit(&result, extraction_bytes, profile.extraction_bytes) {
+            return Ok(defer(CoverageReason::ParseMemoryLimit));
+        }
         result
     }
     fn release_scratch(&mut self) {}
+}
+fn bounded_budget(mut budget: ParseBudget, profile: &ParserProfile) -> ParseBudget {
+    budget.reserved_bytes = budget.reserved_bytes.min(profile.anonymous_bytes() as u32);
+    budget
+}
+fn counted_budget(mut budget: ParseBudget, profile: &ParserProfile) -> ParseBudget {
+    if profile.placement == ParserPlacement::Incremental {
+        budget.reserved_bytes = budget.reserved_bytes.min(PARSER_COUNTED_BYTES);
+    }
+    budget
+}
+fn extraction_limit(result: &AtlasResult<ParsedFile>, bytes: u32, maximum: u32) -> bool {
+    matches!(result, Err(error) if matches!(error.body.detail(),
+        se_types::Detail::AtlasResourceBudget(detail)
+        if detail.resource == "Atlas combined parse/extraction reservation"
+            || (bytes < maximum && detail.resource == "Atlas extraction arena")))
+}
+fn check_reservation(
+    profile: &ParserProfile,
+    budget: ParseBudget,
+    snapshot: &SourceSnapshot,
+) -> AtlasResult<()> {
+    let reservation = snapshot.bytes.capacity() as u64
+        + u64::from(profile.parser_reservation_bytes)
+        + u64::from(profile.extraction_bytes);
+    if reservation > u64::from(budget.reserved_bytes) {
+        return Err(capacity(
+            "Atlas source/parser/extraction reservation",
+            reservation,
+            u64::from(budget.reserved_bytes),
+        ));
+    }
+    Ok(())
+}
+fn extraction_reservation(
+    profile: &ParserProfile,
+    budget: ParseBudget,
+    snapshot: &SourceSnapshot,
+    memory: &native_memory::Reservation,
+) -> u32 {
+    let remaining = (budget.reserved_bytes as usize)
+        .saturating_sub(snapshot.bytes.capacity())
+        .saturating_sub(memory.used());
+    profile
+        .extraction_bytes
+        .min(remaining.min(u32::MAX as usize) as u32)
 }
 fn grammar(language: Language) -> tree_sitter::Language {
     match language {

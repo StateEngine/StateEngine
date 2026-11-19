@@ -141,7 +141,10 @@ fn mcp_compact_and_json_each_have_one_honest_budgeted_representation() -> Check 
             assert_eq!(value["schema"], "se.code-hits/v1");
             assert!(text.contains("fixture has no verified index"));
         } else {
-            assert!(text.starts_with("[atlas current; anonymous cap 13000000 B; shared grammar pages unqualified; joined unqualified]"));
+            assert!(text.starts_with(&format!(
+                "[atlas current; anonymous cap {} B; shared grammar pages unqualified; joined unqualified]",
+                se_atlas::model::ANONYMOUS_BYTES
+            )));
             assert!(text.contains("unknown: fixture has no verified index"));
         }
     }

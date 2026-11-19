@@ -259,6 +259,7 @@ fn state(index: &IndexSummary) -> String {
             CoverageReason::TimeLimit => "source work reached its time limit",
             CoverageReason::SchedulingStall => "source work stalled while waiting for the worker",
             CoverageReason::SourceBytesLimit => "source exceeds the admitted byte limit",
+            CoverageReason::ParseMemoryLimit => "source parse exceeded its memory reservation",
             _ => continue,
         };
         output.push_str(&format!("source: {detail} ({reason:?})\n"));

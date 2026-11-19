@@ -35,6 +35,8 @@ pub struct ParserProfile {
     pub placement: ParserPlacement,
     pub max_source_bytes: u32,
     pub max_rows: u32,
+    /// Base shares admitted by qualification. A parse may borrow unused
+    /// extraction space, bounded by the caller's whole parse reservation.
     pub parser_reservation_bytes: u32,
     pub extraction_bytes: u32,
     pub shared_grammar_pages: Option<GrammarPages>,
@@ -89,10 +91,12 @@ impl ParserProfile {
         });
         Ok(self)
     }
+    /// Reservation ceiling; native allocations can exceed it before cancellation.
     pub fn anonymous_bytes(&self) -> u64 {
-        u64::from(self.max_source_bytes)
-            + u64::from(self.parser_reservation_bytes)
-            + u64::from(self.extraction_bytes)
+        match self.placement {
+            ParserPlacement::Incremental => u64::from(PARSER_BYTES),
+            ParserPlacement::ColdChild => 60_000_000,
+        }
     }
 }
 pub(super) struct Arena {
@@ -116,6 +120,13 @@ impl Arena {
                 self.left as u64,
             ));
         }
+        super::native_memory::charge_extraction(bytes).map_err(|available| {
+            capacity(
+                "Atlas combined parse/extraction reservation",
+                bytes as u64,
+                available as u64,
+            )
+        })?;
         self.left -= bytes;
         Ok(())
     }
