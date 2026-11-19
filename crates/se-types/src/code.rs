@@ -35,7 +35,7 @@ mod id_encoding {
                 .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Str(value), &self))
         }
 
-        fn visit_seq<A: SeqAccess<'de>>(mut self, mut seq: A) -> Result<Self::Value, A::Error> {
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
             let mut bytes = [0; N];
             for slot in &mut bytes {
                 *slot = seq

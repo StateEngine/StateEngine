@@ -13,11 +13,23 @@ type Check = Result<(), Box<dyn Error>>;
 #[test]
 fn atlas_ids_serialize_as_lowercase_hex_strings() -> Check {
     for (value, expected) in [
-        (serde_json::to_value(&AtlasJobId([0x01; 16]))?, "01".repeat(16)),
+        (
+            serde_json::to_value(&AtlasJobId([0x01; 16]))?,
+            "01".repeat(16),
+        ),
         (serde_json::to_value(&FileId([0xab; 16]))?, "ab".repeat(16)),
-        (serde_json::to_value(&SymbolId([0xcd; 32]))?, "cd".repeat(32)),
-        (serde_json::to_value(&ContentHash([0xef; 32]))?, "ef".repeat(32)),
-        (serde_json::to_value(&ResumeOfferId([0x7f; 16]))?, "7f".repeat(16)),
+        (
+            serde_json::to_value(&SymbolId([0xcd; 32]))?,
+            "cd".repeat(32),
+        ),
+        (
+            serde_json::to_value(&ContentHash([0xef; 32]))?,
+            "ef".repeat(32),
+        ),
+        (
+            serde_json::to_value(&ResumeOfferId([0x7f; 16]))?,
+            "7f".repeat(16),
+        ),
     ] {
         assert_eq!(value, expected);
     }
@@ -32,7 +44,10 @@ fn atlas_ids_serialize_as_lowercase_hex_strings() -> Check {
 fn legacy_byte_arrays_still_deserialize() -> Check {
     let bytes: [u8; 16] = std::array::from_fn(|index| index as u8);
     let legacy = Value::Array(bytes.iter().map(|byte| json!(*byte)).collect());
-    assert_eq!(serde_json::from_value::<FileId>(legacy.clone())?, FileId(bytes));
+    assert_eq!(
+        serde_json::from_value::<FileId>(legacy.clone())?,
+        FileId(bytes)
+    );
     let hash_bytes: [u8; 32] = std::array::from_fn(|index| index as u8);
     let legacy_hash = Value::Array(hash_bytes.iter().map(|byte| json!(*byte)).collect());
     assert_eq!(
