@@ -16,12 +16,15 @@ pub(super) fn prepare(
     if super::startup_log::StartupLog::success_enabled() {
         entries.push(("SE_STARTUP_LOG".into(), "1".into()));
     }
-    // The restore-window override crosses this boundary as an explicit name;
-    // it is a tuning value, never fleet or session authority. Its explicit
-    // value crosses raw so the child validator refuses empty, whitespace-only
-    // and non-UTF-8 values by name instead of dropping them.
-    if let Some(value) = std::env::var_os(PROVIDER_RESTORE_DEADLINE_ENV) {
-        entries.push((PROVIDER_RESTORE_DEADLINE_ENV.into(), value));
+    // The restore-window and graceful-stop overrides cross this boundary as
+    // explicit names; they are tuning values, never fleet or session
+    // authority. Their explicit values cross raw so the child validator
+    // refuses empty, whitespace-only and non-UTF-8 values by name instead of
+    // dropping them.
+    for name in [PROVIDER_RESTORE_DEADLINE_ENV, PROVIDER_STOP_GRACE_ENV] {
+        if let Some(value) = std::env::var_os(name) {
+            entries.push((name.into(), value));
+        }
     }
     // The host launches configured providers. Each child is filtered again through
     // its own provider allowlist, so Codex login/config does not reach Claude.

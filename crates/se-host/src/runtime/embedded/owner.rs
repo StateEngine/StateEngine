@@ -309,6 +309,7 @@ async fn take_ownership(
                 linux_delegation,
                 maximum_sessions: crate::ProcessOptions::DEFAULT_MAXIMUM_SESSIONS,
                 restore_deadline_ms: crate::ProcessOptions::DEFAULT_RESTORE_DEADLINE_MS,
+                stop_grace_ms: crate::ProcessOptions::DEFAULT_STOP_GRACE_MS,
             },
             &deadline,
         )

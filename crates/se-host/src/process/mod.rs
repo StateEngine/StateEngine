@@ -67,6 +67,10 @@ pub struct ProcessOptions {
     /// live provider after a native crash. Independent judges shorten it at
     /// spawn; the production default stays 20 s.
     pub restore_deadline_ms: u64,
+    /// Window given to a headless provider to exit after stdin closure before
+    /// forced stop. Independent judges shorten it at spawn; the production
+    /// default stays 5 s.
+    pub stop_grace_ms: u32,
 }
 impl ProcessOptions {
     /// Section 30's default native custody budget, independent of stored sessions.
@@ -75,6 +79,10 @@ impl ProcessOptions {
     pub const DEFAULT_RESTORE_DEADLINE_MS: u64 = 20_000;
     /// Upper bound for an explicitly injected restore window.
     pub const MAX_RESTORE_DEADLINE_MS: u64 = 3_600_000;
+    /// Default provider graceful-stop window before forced stop.
+    pub const DEFAULT_STOP_GRACE_MS: u32 = 5_000;
+    /// Upper bound for an explicitly injected graceful-stop window.
+    pub const MAX_STOP_GRACE_MS: u32 = 3_600_000;
 }
 pub struct ProcessConfiguration {
     pub home: PathBuf,
@@ -85,6 +93,7 @@ pub struct ProcessConfiguration {
     pub linux_delegation: se_proc::LinuxDelegation,
     pub maximum_sessions: u32,
     pub restore_deadline_ms: u64,
+    pub stop_grace_ms: u32,
 }
 pub struct LaunchCoordinator {
     kind: crate::HostKind,
@@ -167,6 +176,7 @@ impl LaunchCoordinator {
             linux_delegation: requested.linux_delegation,
             maximum_sessions: requested.maximum_sessions,
             restore_deadline_ms: requested.restore_deadline_ms,
+            stop_grace_ms: requested.stop_grace_ms,
         };
         let pool = context.blocking.clone();
         #[cfg(unix)]

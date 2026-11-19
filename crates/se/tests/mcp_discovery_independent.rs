@@ -195,6 +195,7 @@ fn discovery(config: se_config::config_policy::ConfigFile) -> Check {
                 linux_delegation: se_proc::LinuxDelegation::CurrentScope,
                 maximum_sessions: 2,
                 restore_deadline_ms: ProcessOptions::DEFAULT_RESTORE_DEADLINE_MS,
+                stop_grace_ms: ProcessOptions::DEFAULT_STOP_GRACE_MS,
             },
             &bound()?,
         ).await?;

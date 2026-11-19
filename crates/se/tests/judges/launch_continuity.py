@@ -43,6 +43,10 @@ def run(options):
             path = fixture.root / key.lower()
             path.mkdir()
             fixture.env[key] = str(path)
+        # Shorten the provider graceful-stop window at spawn; the host runs
+        # the same stop path and every stop still proves its committed
+        # receipt, so the window is the only thing the judge stops waiting for.
+        fixture.env['SE_PROVIDER_STOP_GRACE_MS'] = '500'
         fixture.ok('up')
 
         def observe(receipt):

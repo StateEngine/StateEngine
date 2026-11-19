@@ -223,7 +223,15 @@ impl LaunchCoordinator {
         // closing provider stdin. Graceful closure is already a stop effect.
         if let Some(binding) = &work.binding {
             let policy = binding.stop_policy();
-            let graceful = deadline.stage(Duration::from_secs(5))?;
+            // The graceful window shares this stop's budget with the forced
+            // stop and its receipt commit. Cap it at half of what remains so
+            // that final half keeps a bounded clock, however large an
+            // explicit window was injected.
+            let remaining = deadline.remaining()?;
+            let half = (remaining.as_millis() / 2) as u64;
+            let window = Duration::from_millis(u64::from(self.options.stop_grace_ms))
+                .min(Duration::from_millis(half));
+            let graceful = deadline.stage(window)?;
             match self
                 .harness_for(work.meta.provider)?
                 .graceful_stop(binding, call(self.store.generation, &graceful)?)
