@@ -198,11 +198,14 @@ impl LaunchCoordinator {
         // package environment and any alias supervisor belong to the login's
         // shared server instead.
         let codex_server = if provider == se_types::Provider::Codex {
-            let (entries, windows_sandbox) = self.codex.server_settings(&request)?;
+            let settings = self.codex.server_settings(&request)?;
+            let windows_sandbox = settings.windows_sandbox;
             let mut server = crate::ProviderInvocation {
                 executable: request.executable.clone(),
                 arguments: Vec::new(),
-                environment: se_proc::Environment { entries },
+                environment: se_proc::Environment {
+                    entries: settings.environment,
+                },
             };
             if let Some(package) = package {
                 package

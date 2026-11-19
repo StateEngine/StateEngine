@@ -4,9 +4,9 @@ use crate::harness::binding::{AdapterBinding, Observation, StopPolicy};
 mod attach;
 mod channel;
 mod connection;
-pub mod forward;
 #[cfg(target_os = "linux")]
 mod console;
+pub mod forward;
 mod location;
 mod mail;
 pub(crate) mod probe;
@@ -39,6 +39,12 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+
+/// What the login's shared app-server is started with.
+pub(crate) struct ServerSettings {
+    pub environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    pub windows_sandbox: Option<&'static str>,
+}
 
 pub struct CodexHarness {
     io: Arc<dyn ProviderIoPlatform>,
@@ -99,10 +105,7 @@ impl CodexHarness {
     }
     /// The environment and Windows sandbox selection the login's shared
     /// app-server starts with: what a private Codex process used to receive.
-    pub(crate) fn server_settings(
-        &self,
-        request: &HarnessRequest,
-    ) -> Result<(Vec<(std::ffi::OsString, std::ffi::OsString)>, Option<&'static str>)> {
+    pub(crate) fn server_settings(&self, request: &HarnessRequest) -> Result<ServerSettings> {
         let environment = input::provider_environment();
         #[cfg(windows)]
         let environment = windows_shell::apply(
@@ -119,13 +122,17 @@ impl CodexHarness {
                 })?,
         )?;
         #[cfg(windows)]
-        let named = windows_sandbox::selection(request)?.map(windows_sandbox::Implementation::key);
+        let windows_sandbox =
+            windows_sandbox::selection(request)?.map(windows_sandbox::Implementation::key);
         #[cfg(not(windows))]
-        let named = {
+        let windows_sandbox = {
             let _ = request;
             None
         };
-        Ok((environment, named))
+        Ok(ServerSettings {
+            environment,
+            windows_sandbox,
+        })
     }
     /// Agents run as forwarders to their login's shared app-server.
     pub fn with_forwarder(mut self, executable: PathBuf) -> Self {
