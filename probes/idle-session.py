@@ -90,10 +90,13 @@ try:
         raise RuntimeError('host or live session changed during measurement')
     cpu = (cpu_end.user + cpu_end.system) - (cpu_start.user + cpu_start.system)
     switch_count = switches_end - switches_start
-    if switch_count < 0:
-        raise RuntimeError('context switch counter regressed')
+    counter_error = 'context switch counter regressed as threads changed' if switch_count < 0 else None
+    if counter_error:
+        switch_count = None
     result.update(pid=pid, seconds=seconds, cpu_seconds=cpu, cpu_percent_one_core=100 * cpu / seconds,
-                  context_switches=switch_count, context_switches_per_second=switch_count / seconds,
+                  context_switches=switch_count,
+                  context_switches_per_second=(switch_count / seconds if switch_count is not None else None),
+                  counter_error=counter_error,
                   accounting='native process context switches; proxy for wakeups, not a direct wakeup count',
                   observer='Linux status calls bracket the measurement; their host work is included')
     print(json.dumps(result, sort_keys=True), flush=True)
