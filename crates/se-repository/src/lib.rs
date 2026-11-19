@@ -3,21 +3,21 @@
 //! the reservation until it finishes, including after its receiver times out.
 #[path = "git2.rs"]
 mod backend;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod watch_inventory;
-#[cfg(windows)]
-mod watch_windows;
+#[cfg(any(windows, target_os = "macos"))]
+mod watch_repository;
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock, mpsc},
     time::Instant,
 };
-#[cfg(windows)]
-pub use watch_windows::{RepositoryWatch, WatchedFacts};
+#[cfg(any(windows, target_os = "macos"))]
+pub use watch_repository::{RepositoryWatch, WatchedFacts};
 
 /// Check whether the local caller shares the watch owner's Git environment.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub fn watch_environment() -> Result<(), String> {
     backend::watch_environment().map(|_| ())
 }

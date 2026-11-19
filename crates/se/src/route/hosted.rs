@@ -188,7 +188,7 @@ impl StatusRequest {
             self.credential,
             AnyOp::ProjectStatus(se_core::ops::ProjectStatus {
                 all: false,
-                watch_only: cfg!(windows),
+                watch_only: cfg!(any(windows, target_os = "macos")),
                 ..Default::default()
             }),
             &self.selections,

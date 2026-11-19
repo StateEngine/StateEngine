@@ -2,7 +2,7 @@
 //! library handle or status entry across the repository-observation interface.
 use super::Facts;
 use git2::{ErrorCode, Repository, RepositoryOpenFlags, Status, StatusOptions};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -11,7 +11,7 @@ pub(super) struct Prepared {
     key: PathBuf,
     facts: Facts,
     untracked: bool,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     config_token: [u8; 32],
 }
 impl Prepared {
@@ -40,12 +40,12 @@ impl Prepared {
         // rather than silently omitting configuration it could have applied.
         let mut entries = config.entries(None).map_err(describe)?;
         let mut gitdir_condition = false;
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         let mut config_hash = Sha256::new();
         while let Some(entry) = entries.next() {
             let entry = entry.map_err(describe)?;
             let name = entry.name_bytes();
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             if status_config_key(name) {
                 let value = entry.value_bytes();
                 config_hash.update((name.len() as u64).to_le_bytes());
@@ -119,7 +119,7 @@ impl Prepared {
             key,
             facts,
             untracked,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             config_token: config_hash.finalize().into(),
         })
     }
@@ -129,15 +129,15 @@ impl Prepared {
     pub(super) fn key(&self) -> &Path {
         &self.key
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub(super) fn metadata_directory(&self) -> &Path {
         self.repository.path()
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub(super) fn common_directory(&self) -> &Path {
         self.repository.commondir()
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub(super) fn ticket(&self) -> Result<String, String> {
         let mut hash = Sha256::new();
         for bytes in [
@@ -161,7 +161,7 @@ impl Prepared {
             .map(|byte| format!("{byte:02x}"))
             .collect())
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub(super) fn watchable(&self) -> Result<(), String> {
         let profile = watch_environment()?;
         let config = self.repository.config().map_err(describe)?;
@@ -192,7 +192,7 @@ impl Prepared {
         Ok(())
     }
     /// Count reachable commits once per watched baseline, or retain unknown.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub(super) fn commit_count(&self) -> Option<u64> {
         let head = self.facts.head.as_deref()?;
         for directory in [self.repository.path(), self.repository.commondir()] {
@@ -223,7 +223,7 @@ impl Prepared {
         }
         Some(count)
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub(super) fn inventory(&self) -> Result<std::collections::HashSet<String>, String> {
         let index = self.repository.index().map_err(describe)?;
         if index.iter().any(|entry| entry.mode & 0o170000 == 0o160000) {
@@ -318,7 +318,7 @@ impl Prepared {
         }
         Ok(changed)
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pub(super) fn changed_file(&self, path: &Path) -> Result<bool, String> {
         let status = match self.repository.status_file(path) {
             Ok(status) => status,
@@ -374,7 +374,7 @@ impl Prepared {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(super) fn watch_environment() -> Result<PathBuf, String> {
     if std::env::vars_os().any(|(name, _)| {
         name.as_encoded_bytes()
@@ -403,7 +403,7 @@ pub(super) fn watch_environment() -> Result<PathBuf, String> {
     Ok(profile.to_owned())
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn status_config_key(name: &[u8]) -> bool {
     [
         b"core.filemode".as_slice(),

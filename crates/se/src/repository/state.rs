@@ -34,7 +34,7 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
 }
 
 /// Status can reuse an exact history count from its protected data home.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn observe_cached(
     root: &Path,
     files: &dyn se_store::StateFiles,
@@ -48,7 +48,7 @@ pub fn observe_cached(
     )
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub fn observe_cached_watched(
     root: &Path,
     files: &dyn se_store::StateFiles,
@@ -78,7 +78,7 @@ fn observe_using(
     if !root.is_dir() {
         return Ok(None);
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if let Some(view) = watched.filter(|view| {
         view.uncommitted.is_some()
             && view
@@ -112,7 +112,7 @@ fn observe_using(
     };
     // Header and dirtiness come from the fresh native observer, or one bounded
     // `status --porcelain=v2 --branch` fallback. History counting is separate.
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = watched;
     let StatusRead::Known {
         header,
