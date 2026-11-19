@@ -162,7 +162,12 @@ def run(options):
                 facts(saved, False, door + '-first', before, after)
                 stop = fixture.ok('--project', fixture.project, 'stop', target)
                 assert stop['complete'] and stop['capture']['flushed'], stop
-                time.sleep(1.1)
+                # The resume must see the saved conversation at least one real
+                # second old; the launch and stop above already cover part of
+                # that interval, so wait only for the remainder.
+                deadline = after + 1.1
+                while time.time() < deadline:
+                    time.sleep(.05)
                 resuming_at = time.time()
                 plain = None
                 if door == 'cli':
