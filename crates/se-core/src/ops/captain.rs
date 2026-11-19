@@ -87,11 +87,12 @@ pub fn show<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<CaptainShowOutput> {
             }
         },
         other => {
-            scope::require_present(
-                other,
-                "captain",
-                "Restore access to the project store, then retry se captain show.",
-            )?;
+            let remedy = if matches!(other, Read::Unknown { .. }) {
+                "Run se up for this data home, then retry se captain show."
+            } else {
+                "Restore access to the project store, then retry se captain show."
+            };
+            scope::require_present(other, "captain", remedy)?;
             return Err(scope::unreadable(
                 "captain read",
                 "unexpected present value",
@@ -123,6 +124,9 @@ pub fn change<R: Snapshot>(
         .read
         .operation_receipt(cx.admission.actor.clone(), key.clone())
         .map_err(|e| store_error(&e))?;
+    if selector.is_none() && matches!(&replay, Read::Absent { .. }) {
+        super::assignment::require_closed(cx, "captain clear")?;
+    }
     let captain = match replay {
         Read::Present { value } => {
             let event = super::receipt::committed_event(cx.read, &value)?;

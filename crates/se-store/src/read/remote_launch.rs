@@ -44,6 +44,8 @@ impl ReadPhase {
         Ok(SqliteSnapshot {
             db: self.db,
             remote_launch_grant: Some(grant),
+            assignment_captain: std::cell::OnceCell::new(),
+            assignment_floor_exists: std::cell::OnceCell::new(),
             recycle: self.recycle,
             info: self.info,
             scope: ReadScope {

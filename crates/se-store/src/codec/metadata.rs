@@ -31,6 +31,34 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             "project.captain_changed",
             json!({"project":project,"captain":captain,"expected":expected}),
         ),
+        CaptainMessageRouted {
+            message_event,
+            captain,
+        } => (
+            "captain.message_routed",
+            json!({"message_event":message_event,"captain":captain}),
+        ),
+        AssignmentOpened {
+            project,
+            assignment,
+            assignee,
+            captain,
+            floor_event,
+            expected,
+        } => (
+            "assignment.opened",
+            json!({"project":project,"assignment":assignment,"assignee":assignee,"captain":captain,"floor_event":floor_event,"expected":expected}),
+        ),
+        AssignmentTransitioned {
+            assignment,
+            action,
+            captain,
+            floor_event,
+            expected,
+        } => (
+            "assignment.transitioned",
+            json!({"assignment":assignment,"action":action,"captain":captain,"floor_event":floor_event,"expected":expected}),
+        ),
         ProjectRegistered {
             project,
             name,

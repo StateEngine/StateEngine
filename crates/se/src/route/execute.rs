@@ -32,6 +32,10 @@ pub fn facts() -> Result<CallFacts> {
         .map_err(|e| scope::unreadable("operation identity allocation", &e.to_string()))?;
     let agent_random = se_proc::random_secret()
         .map_err(|e| scope::unreadable("agent identity allocation", &e.to_string()))?;
+    let mut notification_event = [0; 10];
+    let mut notification_message = [0; 10];
+    notification_event.copy_from_slice(&random.expose()[20..30]);
+    notification_message.copy_from_slice(&agent_random.expose()[20..30]);
     let mut event = [0; 10];
     let mut message = [0; 10];
     let mut agent = [0; 10];
@@ -45,6 +49,8 @@ pub fn facts() -> Result<CallFacts> {
         message: MessageId::from_parts(now as u64 / 1000, message)?,
         agent: AgentId::from_parts(now as u64 / 1000, agent)?,
         profile_event: EventId::from_parts(now as u64 / 1000, profile_event)?,
+        notification_event: EventId::from_parts(now as u64 / 1000, notification_event)?,
+        notification_message: MessageId::from_parts(now as u64 / 1000, notification_message)?,
         occurred_at_us: now,
         door: se_store::Door::Cli,
     })

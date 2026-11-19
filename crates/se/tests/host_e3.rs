@@ -150,7 +150,7 @@ fn listener_message_working_and_hook() -> Check {
                     Ok(se_core::ops::AnyOp::MessageSend(
                         se_core::ops::MessageSend {
                             quiet: false,
-                            to: b.as_str().into(),
+                            to: Some(b.as_str().into()),
                             body: "real listener message".into(),
                             kind: Default::default(),
                             refs: vec![],

@@ -162,6 +162,31 @@ pub fn from_matches_with_key(
             idempotency_key: key()?,
         }),
         "captain.show" => AnyOp::CaptainShow(CaptainShow {}),
+        "assignment.write" => AnyOp::AssignmentWrite(AssignmentWrite {
+            action: match required(m, "action")?.as_str() {
+                "open" => AssignmentAction::Open,
+                "accept" => AssignmentAction::Accept,
+                "done" => AssignmentAction::Done,
+                "block" => AssignmentAction::Block,
+                "hand-back" => AssignmentAction::HandBack,
+                _ => {
+                    return Err(SeError::invalid(
+                        "action",
+                        "open, accept, done, block, or hand-back",
+                    ));
+                }
+            },
+            assignment: text(m, "assignment").map(|s| s.try_into()).transpose()?,
+            assignee: text(m, "assignee"),
+            body: required(m, "body")?,
+            idempotency_key: key()?,
+        }),
+        "assignment.list" => AnyOp::AssignmentList(AssignmentList {
+            limit: required(m, "limit")?
+                .parse()
+                .map_err(|_| SeError::invalid("limit", "1..100"))?,
+            cursor: text(m, "cursor").map(Cursor::new).transpose()?,
+        }),
         "project.status" => AnyOp::ProjectStatus(ProjectStatus {
             fresh: !path.is_empty() && flag(m, "fresh"),
             watch_only: false,
@@ -249,8 +274,14 @@ pub fn from_matches_with_key(
                 .map_err(|_| SeError::invalid("message ID", "a canonical msg_ ID"))?,
         }),
         "message.send" => AnyOp::MessageSend(MessageSend {
-            to: required(m, "to")?,
-            body: required(m, "body")?,
+            to: if text(m, "body").is_some() {
+                Some(required(m, "to")?)
+            } else {
+                None
+            },
+            body: text(m, "body")
+                .or_else(|| text(m, "to"))
+                .ok_or_else(|| SeError::invalid("body", "message text"))?,
             quiet: flag(m, "no_wake"),
             kind: serde_json::from_value(serde_json::Value::String(required(m, "kind")?))
                 .map_err(|_| SeError::invalid("kind", "a registered message kind"))?,

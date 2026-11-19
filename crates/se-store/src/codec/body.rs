@@ -167,6 +167,25 @@ pub(crate) fn body(
                     captain: field(&v, "captain")?,
                     expected: field(&v, "expected")?,
                 },
+                "captain.message_routed" => CaptainMessageRouted {
+                    message_event: field(&v, "message_event")?,
+                    captain: field(&v, "captain")?,
+                },
+                "assignment.opened" => AssignmentOpened {
+                    project: field(&v, "project")?,
+                    assignment: field(&v, "assignment")?,
+                    assignee: field(&v, "assignee")?,
+                    captain: field(&v, "captain")?,
+                    floor_event: field(&v, "floor_event")?,
+                    expected: field(&v, "expected")?,
+                },
+                "assignment.transitioned" => AssignmentTransitioned {
+                    assignment: field(&v, "assignment")?,
+                    action: field(&v, "action")?,
+                    captain: field(&v, "captain")?,
+                    floor_event: field(&v, "floor_event")?,
+                    expected: field(&v, "expected")?,
+                },
                 "project.updated" => ProjectUpdated {
                     project: field(&v, "project")?,
                     name: field(&v, "name")?,

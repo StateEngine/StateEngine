@@ -232,10 +232,26 @@ impl Validate for ProjectInit {
 }
 impl Validate for MessageSend {
     fn validate(&self) -> Result<()> {
-        bounded("to", &self.to, 512, false)?;
+        if self.to.is_none() {
+            if !matches!(
+                self.kind,
+                crate::commit::MessageKind::Question
+                    | crate::commit::MessageKind::Blocker
+                    | crate::commit::MessageKind::Done
+            ) || self.reply_to.is_some()
+                || self.work.is_some()
+            {
+                return Err(SeError::invalid(
+                    "to",
+                    "a recipient, or omit it for a crew question, blocker, or done report",
+                ));
+            }
+        } else if let Some(to) = &self.to {
+            bounded("to", to, 512, false)?;
+        }
         bounded("body", &self.body, MESSAGE_BODY_MAX_BYTES, false)?;
-        match (&*self.to, &self.work) {
-            ("floor", Some(work)) => {
+        match (self.to.as_deref(), &self.work) {
+            (Some("floor"), Some(work)) => {
                 work.validate()?;
                 if matches!(self.kind, crate::commit::MessageKind::Finding)
                     != matches!(work.action, se_types::WorkAction::Finding)
@@ -246,7 +262,7 @@ impl Validate for MessageSend {
                     ));
                 }
             }
-            ("floor", None) => {
+            (Some("floor"), None) => {
                 return Err(SeError::invalid(
                     "floor message",
                     "work.action and 1..20 work.addressees",

@@ -378,6 +378,19 @@ fn count(value: Option<u64>) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+pub(super) fn assignments(
+    value: &se_core::ops::AssignmentPage,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    if value.page.items().is_empty() && value.page.window().complete() {
+        writeln!(out, "No open assignments.")?;
+    }
+    for row in value.page.items() {
+        writeln!(out, "{}  {}  {}", row.id, row.assignee, row.state)?;
+    }
+    omissions(&value.page, out)
+}
+
 fn omissions<T>(page: &Page<T>, out: &mut impl Write) -> io::Result<()> {
     if !page.window().complete() {
         let omitted = page.window().omitted();

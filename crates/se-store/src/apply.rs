@@ -1,4 +1,5 @@
 //! Transaction-only projections. No native, network or provider calls.
+mod assignment;
 pub(crate) mod capture;
 pub(crate) mod channel;
 pub(crate) use channel::capacity as channel_capacity;
@@ -215,6 +216,13 @@ pub(crate) fn apply(
         b @ (ProcessRegistered { .. } | ProcessTransition { .. }) => {
             process::apply(c, header, b, seq, revision, authority)?
         }
+        CaptainMessageRouted { captain, .. } => {
+            assignment::check_route(c, header, &captain)?;
+            codec::aux(c, seq, facts)?;
+        }
+        b @ (AssignmentOpened { .. } | AssignmentTransitioned { .. }) => {
+            assignment::apply(c, header, b, seq, revision, facts)?
+        }
         ProjectCaptainChanged {
             project: target,
             captain,
@@ -247,7 +255,7 @@ pub(crate) fn apply(
                         "captain must be the project owner or a registered project agent",
                     ));
                 }
-                None => {}
+                None => assignment::require_closed(c, p)?,
             }
             let changed = c.execute("INSERT INTO project_captain(project_id,revision,last_seq) VALUES(?,?,?) ON CONFLICT(project_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq WHERE project_captain.revision=excluded.revision-1", crate::sql_value::sql_params![p,revision,seq]).map_err(sql)?;
             if changed != 1 {

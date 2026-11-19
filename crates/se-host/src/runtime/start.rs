@@ -433,7 +433,7 @@ pub(crate) fn allocate_facts() -> Result<se_core::dispatch::CallFacts> {
     let time = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| se_core::scope::unreadable("system clock", &e.to_string()))?;
-    let mut random = [0; 40];
+    let mut random = [0; 60];
     se_proc::fill_entropy(&mut random)
         .map_err(|e| se_core::scope::unreadable("host identity entropy", &e.to_string()))?;
     let mut event = [0; 10];
@@ -443,12 +443,24 @@ pub(crate) fn allocate_facts() -> Result<se_core::dispatch::CallFacts> {
     let mut agent = [0; 10];
     agent.copy_from_slice(&random[20..30]);
     let mut profile_event = [0; 10];
-    profile_event.copy_from_slice(&random[30..]);
+    profile_event.copy_from_slice(&random[30..40]);
+    let mut notification_event = [0; 10];
+    notification_event.copy_from_slice(&random[40..50]);
+    let mut notification_message = [0; 10];
+    notification_message.copy_from_slice(&random[50..60]);
     Ok(se_core::dispatch::CallFacts {
         event: se_types::EventId::from_parts(time.as_millis() as u64, event)?,
         message: se_types::MessageId::from_parts(time.as_millis() as u64, message)?,
         agent: se_types::AgentId::from_parts(time.as_millis() as u64, agent)?,
         profile_event: se_types::EventId::from_parts(time.as_millis() as u64, profile_event)?,
+        notification_event: se_types::EventId::from_parts(
+            time.as_millis() as u64,
+            notification_event,
+        )?,
+        notification_message: se_types::MessageId::from_parts(
+            time.as_millis() as u64,
+            notification_message,
+        )?,
         occurred_at_us: i64::try_from(time.as_micros())
             .map_err(|_| SeError::invalid("system clock", "representable microseconds"))?,
         door: se_store::Door::Host,

@@ -31,6 +31,8 @@ fn facts(occurred_at_us: i64) -> Boxed<CallFacts> {
         message: message()?,
         agent: agent()?,
         profile_event: event()?,
+        notification_event: event()?,
+        notification_message: message()?,
         occurred_at_us,
         door: Door::Mcp,
     })
@@ -56,7 +58,7 @@ struct Sender<'a> {
 impl Sender<'_> {
     fn send(&mut self, to: String, key: &str, work: Option<WorkAddressing>) -> Result<()> {
         let input = MessageSend {
-            to,
+            to: Some(to),
             body: "rate cap probe".into(),
             quiet: false,
             kind: Default::default(),

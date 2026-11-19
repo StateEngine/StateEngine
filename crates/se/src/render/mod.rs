@@ -133,6 +133,16 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::Status, AnyOutput::ProjectStatus(value)) => {
                 read::status(&value.value, out)?
             }
+            (HumanKind::Assignment, AnyOutput::AssignmentWrite(value)) => {
+                writeln!(
+                    out,
+                    "Assignment {}: {}",
+                    value.value.assignment, value.value.state
+                )?;
+            }
+            (HumanKind::Assignment, AnyOutput::AssignmentList(value)) => {
+                read::assignments(&value.value, out)?
+            }
             (HumanKind::Captain, AnyOutput::CaptainShow(value)) => {
                 if let Some(captain) = &value.value.captain {
                     writeln!(out, "Captain: {} ({})", captain.name, captain.id)?;

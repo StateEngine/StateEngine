@@ -105,8 +105,15 @@ reads a whole message and marks it read as its recipient; stateengine_msg_ack
 marks it read without returning the body. stateengine_msg_dismiss archives it
 without claiming a read. Owner inspection cannot manufacture a recipient's mark.
 
-MCP direct mail uses to; floor mail additionally requires work.action and
-work.addressees. quiet suppresses notifications while leaving the message unread.
+Direct mail normally names to. A crew question, blocker or done report can omit
+it to reach the current captain; replies still need their verified route. Floor
+mail requires work.action and work.addressees. quiet suppresses notifications
+while leaving the message unread.
+
+Use assignment.write to open work or record accept, done, block and hand_back;
+assignment.list shows open and blocked work. Each change records a floor message.
+Use its assignment ID with event.read to inspect the opening floor event. A blocked
+assignee can accept again when ready to continue.
 "#,
     },
     Topic {
