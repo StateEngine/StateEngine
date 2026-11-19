@@ -1,5 +1,7 @@
 """Record a bounded native cold-worker trace in the hosted diagnostic run."""
 import json
+import ctypes as c
+from ctypes import wintypes as w
 import os
 from pathlib import Path
 import re
@@ -34,19 +36,43 @@ def start(owner, log, target):
                 value = value[0]
             return value
 
+        def priority(pid):
+            kernel = c.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+            kernel.OpenProcess.restype = w.HANDLE
+            kernel.GetPriorityClass.argtypes = [w.HANDLE]
+            kernel.GetPriorityClass.restype = w.DWORD
+            kernel.CloseHandle.argtypes = [w.HANDLE]
+            handle = kernel.OpenProcess(0x1000, False, pid)
+            if not handle:
+                raise c.WinError(c.get_last_error())
+            try:
+                process_class = kernel.GetPriorityClass(handle)
+                if not process_class:
+                    raise c.WinError(c.get_last_error())
+                ntdll = c.WinDLL("ntdll")
+                ntdll.NtQueryInformationProcess.argtypes = [w.HANDLE, c.c_ulong, c.c_void_p, c.c_ulong, c.c_void_p]
+                ntdll.NtQueryInformationProcess.restype = c.c_long
+                io_priority = c.c_ulong()
+                status = ntdll.NtQueryInformationProcess(handle, 33, c.byref(io_priority), c.sizeof(io_priority), None)
+                return {"priority_class": process_class, "io_priority": io_priority.value if status == 0 else None, "query_status": status}
+            finally:
+                kernel.CloseHandle(handle)
+
         try:
             if not xperf.is_file():
                 raise RuntimeError("Windows Performance Toolkit xperf unavailable")
             until = time.monotonic() + 100
             while time.monotonic() < until and owner.poll() is None:
                 progress = re.findall(r"ATLAS_PROGRESS elapsed_s=(\d+)", log.read_text(encoding="utf-8", errors="replace"))
-                if progress and int(progress[-1]) >= 30:
+                if progress and int(progress[-1]) >= 10:
                     break
                 time.sleep(0.25)
             else:
                 raise RuntimeError("cold indexing did not reach the 30 second trace start")
             before = worker()
             report["worker_before"] = before
+            report["priority_before"] = priority(before["ProcessId"])
             started = run([wpr, "-start", "CPU", "-start", "FileIO", "-start", "DiskIO", "-filemode"])
             report["start"] = {"returncode": started.returncode, "stdout": started.stdout, "stderr": started.stderr}
             if started.returncode:
@@ -61,6 +87,7 @@ def start(owner, log, target):
                 time.sleep(min(0.5, 60 - (time.monotonic() - begin)))
             after = worker()
             report["worker_after"] = after
+            report["priority_after"] = priority(after["ProcessId"])
             if before.get("ProcessId") != after.get("ProcessId") or before.get("CreationDate") != after.get("CreationDate"):
                 raise RuntimeError("cold worker changed during trace")
             status = run([wpr, "-status", "collectors"])
