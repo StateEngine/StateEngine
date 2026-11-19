@@ -38,16 +38,21 @@ listener.settimeout(60)
 nonce = uuid.uuid4().hex
 (f.repo / 'idle-control.json').write_text(json.dumps({'port': listener.getsockname()[1], 'nonce': nonce}))
 connection = None
+child = None
+out = (root / 'up.stdout').open('wb')
+err = (root / 'up.stderr').open('wb')
 result = {'platform': sys.platform, 'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
           'fixture': 'one live session with a completed turn and account-free provider',
           'warmup_seconds': 10, 'requested_seconds': 60}
 try:
-    with (root / 'up.stdout').open('wb') as out, (root / 'up.stderr').open('wb') as err:
-        started = subprocess.run([str(binary), '--json', '--home', str(f.home), 'up'],
-                                 stdin=subprocess.DEVNULL, stdout=out, stderr=err,
-                                 env=f.env, timeout=90)
-    if started.returncode != 0:
-        raise RuntimeError(f"host startup failed: {(root / 'up.stderr').read_text(errors='replace')}")
+    child = subprocess.Popen([str(binary), '--json', '--home', str(f.home), 'up', '--foreground'],
+                             stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                             env=f.env, cwd=f.repo)
+    until = time.monotonic() + 90
+    while not (f.home / 'endpoint.json').exists():
+        if child.poll() is not None or time.monotonic() >= until:
+            raise RuntimeError(f"foreground host unavailable: {(root / 'up.stderr').read_text(errors='replace')}")
+        time.sleep(.05)
     f.launch()
     connection, _ = listener.accept()
     connection.settimeout(30)
@@ -99,3 +104,9 @@ finally:
         if connection is not None:
             connection.close()
         listener.close()
+        if child is not None:
+            code = child.wait(timeout=60)
+            if code != 0:
+                raise RuntimeError(f'foreground host exited {code}')
+        out.close()
+        err.close()
