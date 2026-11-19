@@ -214,201 +214,230 @@ impl NativeRenewal {
         if let Some(cycle) = self.cycle.as_mut() {
             cycle.rules = None;
         }
-        let mut buffer = [0u8; 16384];
-        let native = self.roots[index]
+        if self.roots[index].pending_events.is_none() {
+            let mut buffer = [0u8; 4096];
+            let native = self.roots[index]
+                .native
+                .as_ref()
+                .ok_or_else(|| source_error("watch", "closed"))?;
+            #[cfg(target_os = "linux")]
+            let count = native.watch.read(&mut buffer);
+            #[cfg(windows)]
+            let count = native.watch.read_one(&mut buffer);
+            let count = count.map_err(|e| source_error("watch event read", e))?;
+            self.roots[index].pending_events = Some(PendingEvents {
+                bytes: buffer[..count].to_vec(),
+                next: 0,
+                hints: Vec::new(),
+            });
+        }
+        if let Some(metadata) = self.roots[index]
             .native
             .as_ref()
-            .ok_or_else(|| source_error("watch", "closed"))?;
-        #[cfg(target_os = "linux")]
-        let count = native.watch.read(&mut buffer);
-        #[cfg(windows)]
-        let count = native.watch.read_one(&mut buffer);
-        let count = count.map_err(|e| source_error("watch event read", e))?;
-        if let Some(metadata) = native.metadata.as_ref() {
+            .and_then(|native| native.metadata.as_ref())
+        {
             let held = metadata.lock_held()?;
             observe_lock(&mut self.roots[index], held);
         }
-        let mut hints = Vec::new();
-        for event in NativeWatchEvents::new(&buffer[..count]) {
-            // A bounded reconcile replaces the consumed tail, never silent loss.
-            if se_atlas::clock::now() >= deadline || hints.len() >= 4 {
-                reason(&mut self.roots[index], CoverageReason::WatchLoss);
-                return Ok(vec![SourceHint::Reconcile(ReconcileReason::WatchOverflow)]);
-            }
-            let event = match event {
-                Ok(event) => event,
-                Err(error) => {
-                    self.roots[index].limit_error = Some(error.to_string());
-                    reason(&mut self.roots[index], CoverageReason::WatchLoss);
-                    return Ok(vec![SourceHint::Reconcile(ReconcileReason::WatchFailure)]);
-                }
-            };
-            if event.action == NativeWatchAction::Overflow {
-                reason(&mut self.roots[index], CoverageReason::WatchLoss);
-                return Ok(vec![SourceHint::Reconcile(ReconcileReason::WatchOverflow)]);
-            }
-            if let Some(metadata) = self.roots[index]
-                .native
-                .as_ref()
-                .and_then(|n| n.metadata.as_ref())
-                && metadata.handles(event.descriptor)
+        let mut pending = self.roots[index]
+            .pending_events
+            .take()
+            .ok_or_else(|| source_error("watch", "pending buffer absent"))?;
+        let result = (|| {
+            for (position, event) in NativeWatchEvents::new(&pending.bytes)
+                .enumerate()
+                .skip(pending.next)
             {
-                if let Some(hint) = metadata.hint(&event)? {
-                    return Ok(vec![hint]);
+                timely(deadline)?;
+                if pending.hints.len() >= 4 {
+                    break;
                 }
-                continue;
-            }
-            let Some(mapping) = self
-                .mappings
-                .iter()
-                .find(|m| m.root == index as u32 && Some(m.descriptor) == event.descriptor)
-                .copied()
-            else {
-                if event.watch_removed {
-                    continue;
-                }
-                reason(&mut self.roots[index], CoverageReason::WatchLoss);
-                return Ok(vec![SourceHint::Reconcile(ReconcileReason::WatchFailure)]);
-            };
-            let directory = connection.read(deadline, |sql| {
-                sql.prepare("SELECT path FROM watch_directories WHERE id=?1 AND descriptor=?2")?
-                    .query_row((mapping.directory, mapping.descriptor), |r| {
-                        r.get::<_, String>(0)
-                    })
-                    .map_err(sql_error)
-            });
-            let directory = match directory {
-                Ok(path) => path,
-                Err(error) => {
-                    reason(&mut self.roots[index], CoverageReason::WatchLoss);
-                    return Err(error);
-                }
-            };
-            if event.action == NativeWatchAction::Invalidated {
-                #[cfg(windows)]
-                if let Some(native) = self.roots[index].native.as_ref() {
-                    native
-                        .watch
-                        .remove(mapping.descriptor)
-                        .map_err(|error| source_error("invalidated watch removal", error))?;
-                }
-                self.mappings
-                    .retain(|m| m.root != mapping.root || m.directory != mapping.directory);
-                connection.write(65536, deadline, |sql| {
-                    sql.prepare("DELETE FROM watch_directories WHERE id=?1")?
-                        .execute([mapping.directory])
-                        .map_err(sql_error)?;
-                    Ok(())
-                })?;
-                reason(&mut self.roots[index], CoverageReason::WatchLoss);
-                return Ok(vec![SourceHint::Reconcile(
-                    ReconcileReason::DirectoryChanged,
-                )]);
-            }
-            let Some(name) = event.name.to_str() else {
-                reason(&mut self.roots[index], CoverageReason::UnsupportedEncoding);
-                continue;
-            };
-            if name.is_empty() {
-                return Ok(vec![SourceHint::Reconcile(
-                    ReconcileReason::DirectoryChanged,
-                )]);
-            }
-            let length = directory.len() + usize::from(!directory.is_empty()) + name.len();
-            if length > 4096 {
-                return Err(limit("native event path", length as u64, 4096));
-            }
-            let mut spelling = String::with_capacity(length);
-            if !directory.is_empty() {
-                spelling.push_str(&directory);
-                spelling.push('/');
-            }
-            spelling.push_str(name);
-            let path = RelativePath::new(spelling)?;
-            if se_atlas::policy::built_in_denied(&path) {
-                continue;
-            }
-            let parent = path
-                .as_str()
-                .rsplit_once('/')
-                .map_or("", |(parent, _)| parent);
-            let basename = path.as_str().rsplit('/').next().unwrap_or_default();
-            // Rule inputs are always observed. Other ignored churn never enters
-            // the shared scheduler, including excluded newly-created trees.
-            if basename == ".gitignore"
-                || cfg!(windows) && basename.eq_ignore_ascii_case(".gitignore")
-            {
-                #[cfg(windows)]
-                if !parent.is_empty() {
-                    return Ok(vec![SourceHint::DirectoryChanged(RelativePath::new(
-                        parent,
-                    )?)]);
-                }
-                #[cfg(windows)]
-                {
-                    self.roots[index]
+                let outcome = (|| -> AtlasResult<Option<Vec<SourceHint>>> {
+                    let event = match event {
+                        Ok(event) => event,
+                        Err(error) => {
+                            self.roots[index].limit_error = Some(error.to_string());
+                            reason(&mut self.roots[index], CoverageReason::WatchLoss);
+                            return Ok(Some(vec![SourceHint::Reconcile(
+                                ReconcileReason::WatchFailure,
+                            )]));
+                        }
+                    };
+                    if event.action == NativeWatchAction::Overflow {
+                        reason(&mut self.roots[index], CoverageReason::WatchLoss);
+                        return Ok(Some(vec![SourceHint::Reconcile(
+                            ReconcileReason::WatchOverflow,
+                        )]));
+                    }
+                    if let Some(metadata) = self.roots[index]
                         .native
                         .as_ref()
-                        .ok_or_else(|| source_error("watch", "closed"))?
-                        .watch
-                        .remove(mapping.descriptor)
-                        .map_err(|error| source_error("watch re-arm", error))?;
-                    self.mappings.retain(|item| {
-                        item.root != mapping.root || item.descriptor != mapping.descriptor
-                    });
-                    connection.write(65536, deadline, |sql| {
-                        sql.prepare("DELETE FROM watch_directories WHERE descriptor=?1")?
-                            .execute([mapping.descriptor])
-                            .map_err(sql_error)?;
-                        Ok(())
-                    })?;
-                    self.roots[index].requires_reconcile = true;
+                        .and_then(|n| n.metadata.as_ref())
+                        && metadata.handles(event.descriptor)
+                    {
+                        if let Some(hint) = metadata.hint(&event)? {
+                            return Ok(Some(vec![hint]));
+                        }
+                        return Ok(None);
+                    }
+                    let Some(mapping) = self
+                        .mappings
+                        .iter()
+                        .find(|m| m.root == index as u32 && Some(m.descriptor) == event.descriptor)
+                        .copied()
+                    else {
+                        if event.watch_removed {
+                            return Ok(None);
+                        }
+                        reason(&mut self.roots[index], CoverageReason::WatchLoss);
+                        return Ok(Some(vec![SourceHint::Reconcile(
+                            ReconcileReason::WatchFailure,
+                        )]));
+                    };
+                    if event.action == NativeWatchAction::Invalidated {
+                        connection.write(65536, deadline, |sql| {
+                            sql.prepare("DELETE FROM watch_directories WHERE id=?1")?
+                                .execute([mapping.directory])
+                                .map_err(sql_error)?;
+                            Ok(())
+                        })?;
+                        #[cfg(windows)]
+                        if let Some(native) = self.roots[index].native.as_ref() {
+                            native.watch.remove(mapping.descriptor).map_err(|error| {
+                                source_error("invalidated watch removal", error)
+                            })?;
+                        }
+                        self.mappings
+                            .retain(|m| m.root != mapping.root || m.directory != mapping.directory);
+                        reason(&mut self.roots[index], CoverageReason::WatchLoss);
+                        return Ok(Some(vec![SourceHint::Reconcile(
+                            ReconcileReason::DirectoryChanged,
+                        )]));
+                    }
+                    let directory = connection
+                        .read(deadline, |sql| {
+                            let mut statement = sql.prepare(
+                                "SELECT path FROM watch_directories WHERE id=?1 AND descriptor=?2",
+                            )?;
+                            let mut rows = statement
+                                .query((mapping.directory, mapping.descriptor))
+                                .map_err(sql_error)?;
+                            rows.next()
+                                .map_err(sql_error)?
+                                .map(|row| row.get::<_, String>(0).map_err(sql_error))
+                                .transpose()
+                        })?
+                        .ok_or_else(|| {
+                            source_error(
+                                "watch mapping lost",
+                                "the native event's retained directory mapping is absent",
+                            )
+                        })?;
+                    let Some(name) = event.name.to_str() else {
+                        reason(&mut self.roots[index], CoverageReason::UnsupportedEncoding);
+                        return Ok(None);
+                    };
+                    if name.is_empty() {
+                        return Ok(Some(vec![SourceHint::Reconcile(
+                            ReconcileReason::DirectoryChanged,
+                        )]));
+                    }
+                    let length = directory.len() + usize::from(!directory.is_empty()) + name.len();
+                    if length > 4096 {
+                        return Err(limit("native event path", length as u64, 4096));
+                    }
+                    let mut spelling = String::with_capacity(length);
+                    if !directory.is_empty() {
+                        spelling.push_str(&directory);
+                        spelling.push('/');
+                    }
+                    spelling.push_str(name);
+                    let path = RelativePath::new(spelling)?;
+                    if se_atlas::policy::built_in_denied(&path) {
+                        return Ok(None);
+                    }
+                    let parent = path
+                        .as_str()
+                        .rsplit_once('/')
+                        .map_or("", |(parent, _)| parent);
+                    let basename = path.as_str().rsplit('/').next().unwrap_or_default();
+                    // Rule inputs are always observed. Other ignored churn never enters
+                    // the shared scheduler, including excluded newly-created trees.
+                    if basename == ".gitignore"
+                        || cfg!(windows) && basename.eq_ignore_ascii_case(".gitignore")
+                    {
+                        #[cfg(windows)]
+                        if !parent.is_empty() {
+                            return Ok(Some(vec![SourceHint::DirectoryChanged(
+                                RelativePath::new(parent)?,
+                            )]));
+                        }
+                        return Ok(Some(vec![SourceHint::Reconcile(
+                            ReconcileReason::IgnoreRulesChanged,
+                        )]));
+                    }
+                    let rules = ignore::Rules::load(source, policy, parent, deadline)?;
+                    #[cfg(windows)]
+                    if !rules.eligible(path.as_str(), false, policy, deadline)?
+                        && !rules.eligible(path.as_str(), true, policy, deadline)?
+                    {
+                        return Ok(None);
+                    }
+                    #[cfg(target_os = "linux")]
+                    let directory_event = event.directory;
+                    #[cfg(windows)]
+                    let directory_event = windows_directory_event(
+                        self.roots[index]
+                            .native
+                            .as_ref()
+                            .ok_or_else(|| source_error("watch", "closed"))?,
+                        connection,
+                        &path,
+                        event.action,
+                        deadline,
+                    )?;
+                    if !rules.eligible(path.as_str(), directory_event, policy, deadline)? {
+                        return Ok(None);
+                    }
+                    if directory_event {
+                        #[cfg(target_os = "linux")]
+                        return Ok(Some(vec![SourceHint::Reconcile(
+                            ReconcileReason::DirectoryChanged,
+                        )]));
+                        #[cfg(windows)]
+                        return Ok(Some(vec![SourceHint::DirectoryChanged(path)]));
+                    }
+                    Ok(Some(vec![if matches!(
+                        event.action,
+                        NativeWatchAction::Removed | NativeWatchAction::MovedFrom
+                    ) {
+                        SourceHint::FileRemoved(path)
+                    } else {
+                        SourceHint::FileChanged(path)
+                    }]))
+                })();
+                match outcome {
+                    Ok(hints) => {
+                        pending.next = position + 1;
+                        if let Some(hints) = hints {
+                            pending.hints.extend(hints);
+                        }
+                    }
+                    Err(error) => return Err(error),
                 }
-                return Ok(vec![SourceHint::Reconcile(
-                    ReconcileReason::IgnoreRulesChanged,
-                )]);
             }
-            let rules = ignore::Rules::load(source, policy, parent, deadline)?;
-            #[cfg(windows)]
-            if !rules.eligible(path.as_str(), false, policy, deadline)?
-                && !rules.eligible(path.as_str(), true, policy, deadline)?
-            {
-                continue;
-            }
-            #[cfg(target_os = "linux")]
-            let directory_event = event.directory;
-            #[cfg(windows)]
-            let directory_event = windows_directory_event(
-                self.roots[index]
-                    .native
-                    .as_ref()
-                    .ok_or_else(|| source_error("watch", "closed"))?,
-                connection,
-                &path,
-                event.action,
-                deadline,
-            )?;
-            if !rules.eligible(path.as_str(), directory_event, policy, deadline)? {
-                continue;
-            }
-            if directory_event {
-                #[cfg(target_os = "linux")]
-                return Ok(vec![SourceHint::Reconcile(
-                    ReconcileReason::DirectoryChanged,
-                )]);
-                #[cfg(windows)]
-                return Ok(vec![SourceHint::DirectoryChanged(path)]);
-            }
-            hints.push(
-                if matches!(
-                    event.action,
-                    NativeWatchAction::Removed | NativeWatchAction::MovedFrom
-                ) {
-                    SourceHint::FileRemoved(path)
-                } else {
-                    SourceHint::FileChanged(path)
-                },
-            );
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.roots[index].pending_events = Some(pending);
+            return Err(error);
+        }
+        let remaining = NativeWatchEvents::new(&pending.bytes)
+            .nth(pending.next)
+            .is_some();
+        let hints = std::mem::take(&mut pending.hints);
+        if remaining {
+            self.roots[index].pending_events = Some(pending);
         }
         Ok(hints)
     }

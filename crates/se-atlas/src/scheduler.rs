@@ -27,6 +27,7 @@ struct Root {
     suspended: bool,
     processing: bool,
     publication: bool,
+    watch_pending: bool,
 }
 pub struct Scheduled {
     pub root: RootId,
@@ -78,6 +79,7 @@ impl Scheduler {
             .is_some_and(|root| {
                 !root.suspended
                     && (root.processing
+                        || root.watch_pending
                         || root.reconcile.is_some()
                         || self.queue.iter().any(|queued| &queued.root == id))
             })
@@ -108,6 +110,7 @@ impl Scheduler {
             suspended: false,
             processing: false,
             publication: false,
+            watch_pending: false,
         });
         Ok(())
     }
@@ -116,6 +119,23 @@ impl Scheduler {
         self.queue.retain(|q| &q.root != id);
         self.bytes = self.queue.iter().map(|q| q.bytes).sum();
         self.paths = self.queue.iter().map(|q| q.paths).sum();
+    }
+    pub(crate) fn watch_pending(&self, id: &RootId) -> bool {
+        self.roots
+            .iter()
+            .find(|root| &root.id == id)
+            .is_some_and(|root| root.watch_pending)
+    }
+    pub(crate) fn set_watch_pending(&mut self, id: &RootId, pending: bool) -> AtlasResult<()> {
+        let root = self
+            .roots
+            .iter_mut()
+            .find(|root| &root.id == id)
+            .ok_or_else(|| {
+                se_types::SeError::invalid("Atlas watch", "an admitted scheduler root")
+            })?;
+        root.watch_pending = pending;
+        Ok(())
     }
     pub fn enqueue(
         &mut self,
@@ -233,6 +253,7 @@ impl Scheduler {
             r.publication
                 && !r.git_lock
                 && !r.suspended
+                && !r.watch_pending
                 && !r.processing
                 && r.reconcile.is_none()
                 && !self.queue.iter().any(|q| q.root == r.id)
@@ -254,6 +275,10 @@ impl Scheduler {
             if root.suspended {
                 continue;
             }
+            if root.watch_pending {
+                let wait = Duration::from_secs(1);
+                delay = Some(delay.map_or(wait, |old: Duration| old.min(wait)));
+            }
             if root.processing {
                 return NextWork::Ready;
             }
@@ -269,6 +294,7 @@ impl Scheduler {
                 }
             } else if root.publication
                 && !root.git_lock
+                && !root.watch_pending
                 && let Some(first) = root.first
             {
                 let wait = self

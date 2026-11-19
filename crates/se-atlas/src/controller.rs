@@ -94,6 +94,13 @@ impl<R: Runtime> Controller<R> {
     pub fn runtime_mut(&mut self) -> &mut R {
         &mut self.runtime
     }
+    /// Keep unresolved watch records from publishing freshness.
+    pub fn set_watch_pending(&mut self, root: &RootId, pending: bool) -> AtlasResult<()> {
+        self.scheduler.set_watch_pending(root, pending)
+    }
+    pub fn watch_pending(&self, root: &RootId) -> bool {
+        self.scheduler.watch_pending(root)
+    }
     /// Keep a live slot while a finite quantum still owns unfinished source IO.
     pub fn work_pending(&self, root: &RootId) -> bool {
         self.in_flight
@@ -158,6 +165,21 @@ impl<R: Runtime> Controller<R> {
         );
         if !retain_failure && !native_progress && !native_stall {
             summary.state = root.summary.state.clone();
+        }
+        if self.scheduler.watch_pending(id)
+            && matches!(
+                summary.state,
+                IndexState::Current
+                    | IndexState::Partial { .. }
+                    | IndexState::VerificationNeeded { .. }
+                    | IndexState::Updating { .. }
+            )
+        {
+            summary.state = IndexState::Updating {
+                pending_files: 1,
+                pending_change_batches: 1,
+                discovery_complete: false,
+            };
         }
         Ok(summary)
     }
