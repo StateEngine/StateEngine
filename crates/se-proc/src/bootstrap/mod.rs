@@ -68,6 +68,17 @@ impl NativeRuntimeIdentity {
                 RuntimeBootRelation::Unverifiable
             };
         }
+        // Older Windows records name only the boot entry, which every boot of
+        // this install shares. Windows process identity is the absolute
+        // creation clock, which each caller checks next, so the entry alone
+        // keeps a host started by an older release reachable after an upgrade.
+        if let Some(entry) = crate::RebootBoot::legacy_windows_entry(recorded) {
+            return if crate::RebootBoot::windows_entry(&self.boot_id) == Some(entry) {
+                RuntimeBootRelation::Same
+            } else {
+                RuntimeBootRelation::Unverifiable
+            };
+        }
         match (
             crate::RebootBoot::parse(&self.boot_id),
             crate::RebootBoot::parse(recorded),
