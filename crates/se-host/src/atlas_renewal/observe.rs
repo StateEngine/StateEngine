@@ -239,8 +239,8 @@ pub(super) fn eligible_file(
     deadline: Instant,
 ) -> AtlasResult<bool> {
     let parent = path.as_str().rsplit_once('/').map_or("", |p| p.0);
-    let rules = ignore::Rules::load(source, policy, parent, deadline)?;
-    if rules.eligible(path.as_str(), false, policy, deadline)? {
+    let rules = ignore::Rules::load(source, &policy.ignore, parent, deadline)?;
+    if rules.eligible(path.as_str(), false, &policy.ignore, deadline)? {
         file(source, connection, policy, parser, path, mode, deadline)?;
         return Ok(true);
     }

@@ -3,6 +3,9 @@ use se_types::{NativePath, ProjectId};
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
+    #[cfg(all(windows, feature = "listener"))]
+    #[serde(default)]
+    pub git_metadata: Option<GitMetadataRegistration>,
     #[serde(default)]
     pub history_unavailable: Option<se_types::ErrorBody>,
     pub job: AtlasJobId,
@@ -48,6 +51,9 @@ impl Request {
                     .join(self.project.as_str())
                     .join(self.root.as_str()),
             },
+            #[cfg(all(windows, feature = "listener"))]
+            git_metadata: self.git_metadata.clone(),
+            #[cfg(not(all(windows, feature = "listener")))]
             git_metadata: None,
         };
         let source = NativeAtlasSource::open(

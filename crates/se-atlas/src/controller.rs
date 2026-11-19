@@ -50,6 +50,16 @@ pub trait Runtime {
     fn child_custody_pending(&self, _root: &RootId) -> bool {
         false
     }
+    /// A complete cold snapshot can use a watch armed before the child began.
+    fn cold_snapshot_available(&self, _root: &RootId) -> bool {
+        false
+    }
+    fn activate_cold_snapshot(&mut self, _root: &RootId) -> AtlasResult<()> {
+        Ok(())
+    }
+    fn discard_cold_snapshot(&mut self, _root: &RootId) -> AtlasResult<()> {
+        Ok(())
+    }
     fn child_request(&mut self) -> AtlasResult<Option<WorkerRequest>>;
     fn child_event(&mut self, event: WorkerEvent) -> AtlasResult<(RootId, ScheduleReceipt)>;
 }
@@ -511,6 +521,13 @@ impl<R: Runtime> AtlasController for Controller<R> {
         self.runtime.child_request()
     }
     fn child_event(&mut self, event: WorkerEvent) -> AtlasResult<ScheduleReceipt> {
+        let completed = matches!(
+            &event,
+            WorkerEvent::Exited {
+                outcome: WorkerExit::Completed { .. },
+                ..
+            }
+        );
         let failed = match &event {
             WorkerEvent::Exited {
                 outcome: WorkerExit::Failed { error },
@@ -533,8 +550,12 @@ impl<R: Runtime> AtlasController for Controller<R> {
                 ..
             }
         );
+        let exited = matches!(&event, WorkerEvent::Exited { .. });
         let (id, receipt) = self.runtime.child_event(event)?;
         self.root(&id)?;
+        if exited && (!completed || !self.runtime.cold_snapshot_available(&id)) {
+            self.runtime.discard_cold_snapshot(&id)?;
+        }
         if let Some(state) = failed {
             self.scheduler.finished(&id, 0, false);
             if self.in_flight.as_ref().is_some_and(|w| w.root == id) {
@@ -545,7 +566,11 @@ impl<R: Runtime> AtlasController for Controller<R> {
             }
             return Ok(receipt);
         }
-        if matches!(
+        if completed && self.runtime.cold_snapshot_available(&id) {
+            self.scheduler.set_watch_pending(&id, true)?;
+            self.enqueue(id.clone(), SourceHint::ColdSnapshot)?;
+            self.runtime.activate_cold_snapshot(&id)?;
+        } else if matches!(
             receipt,
             ScheduleReceipt::Queued | ScheduleReceipt::ReconciliationRequired
         ) {

@@ -18,6 +18,8 @@ pub enum ReconcileReason {
 }
 #[derive(Clone, Debug)]
 pub enum SourceHint {
+    /// Finish adopting a completely observed cold snapshot and its retained watch.
+    ColdSnapshot,
     FileChanged(RelativePath),
     FileRemoved(RelativePath),
     /// Discover and reconcile only this directory and its descendants.

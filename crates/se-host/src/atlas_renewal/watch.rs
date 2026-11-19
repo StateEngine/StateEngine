@@ -388,20 +388,14 @@ impl NativeRenewal {
                     if basename == ".gitignore"
                         || cfg!(windows) && basename.eq_ignore_ascii_case(".gitignore")
                     {
-                        #[cfg(windows)]
-                        if !parent.is_empty() {
-                            return Ok(Some(vec![SourceHint::DirectoryChanged(
-                                RelativePath::new(parent)?,
-                            )]));
-                        }
                         return Ok(Some(vec![SourceHint::Reconcile(
                             ReconcileReason::IgnoreRulesChanged,
                         )]));
                     }
-                    let rules = ignore::Rules::load(source, policy, parent, deadline)?;
+                    let rules = ignore::Rules::load(source, &policy.ignore, parent, deadline)?;
                     #[cfg(windows)]
-                    if !rules.eligible(path.as_str(), false, policy, deadline)?
-                        && !rules.eligible(path.as_str(), true, policy, deadline)?
+                    if !rules.eligible(path.as_str(), false, &policy.ignore, deadline)?
+                        && !rules.eligible(path.as_str(), true, &policy.ignore, deadline)?
                     {
                         return Ok(None);
                     }
@@ -418,7 +412,7 @@ impl NativeRenewal {
                         event.action,
                         deadline,
                     )?;
-                    if !rules.eligible(path.as_str(), directory_event, policy, deadline)? {
+                    if !rules.eligible(path.as_str(), directory_event, &policy.ignore, deadline)? {
                         return Ok(None);
                     }
                     if directory_event {

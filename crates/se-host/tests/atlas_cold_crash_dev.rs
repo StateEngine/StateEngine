@@ -82,6 +82,8 @@ mod native {
         drop(cache);
         std::fs::write(source.join("good.js"), "export function added(){return 1;}")?;
         let request = Request {
+            #[cfg(all(windows, feature = "listener"))]
+            git_metadata: None,
             history_unavailable: None,
             job: AtlasJobId([46; 16]),
             project,

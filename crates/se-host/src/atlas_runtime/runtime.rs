@@ -331,6 +331,22 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             false
         }
     }
+    fn cold_snapshot_available(&self, id: &RootId) -> bool {
+        self.root(id).is_ok_and(|root| {
+            root.summary.coverage.discovery_complete
+                && !root
+                    .summary
+                    .coverage
+                    .reasons
+                    .contains(&CoverageReason::TimeLimit)
+        }) && self.driver.cold_capture_available(id)
+    }
+    fn activate_cold_snapshot(&mut self, id: &RootId) -> AtlasResult<()> {
+        self.driver.activate_cold_capture(id)
+    }
+    fn discard_cold_snapshot(&mut self, id: &RootId) -> AtlasResult<()> {
+        self.driver.discard_cold_capture(id)
+    }
     fn child_request(&mut self) -> AtlasResult<Option<WorkerRequest>> {
         Ok(self.pending.take())
     }
