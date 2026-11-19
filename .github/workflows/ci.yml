@@ -36,7 +36,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_BUILD_JOBS: '2'
+  # Hosted Linux and Windows runners have 4 vCPUs; macOS jobs override to 3.
+  CARGO_BUILD_JOBS: '4'
   CARGO_INCREMENTAL: '0'
   # Keep debug assertions, but omit symbols to fit private runners and artifacts.
   CARGO_PROFILE_DEV_DEBUG: '0'
@@ -400,6 +401,8 @@ jobs:
     if: ${{ !cancelled() && github.event_name != 'push' && !(github.event_name == 'pull_request' && github.event.pull_request.draft) }}
     runs-on: macos-15
     timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: '3'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -442,6 +445,8 @@ jobs:
     if: ${{ !cancelled() && github.event_name != 'push' && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' }}
     runs-on: macos-15
     timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: '3'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
