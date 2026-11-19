@@ -366,8 +366,10 @@ impl ColdJob {
         }
         let mut candidate = if let Some(history) = self.history.take() {
             drop(candidate);
-            let (generation, unavailable) = history.seed(&cache, &self.request, self.deadline)?;
+            let (generation, unavailable, notes) =
+                history.seed(&cache, &self.request, self.deadline)?;
             summary.generation = Some(generation);
+            summary.coverage.history_commit_notes = notes;
             if let Some(diagnostic) = unavailable {
                 summary.coverage.history_unavailable = Some(diagnostic);
                 if !summary

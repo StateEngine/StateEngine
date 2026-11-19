@@ -52,6 +52,10 @@ pub struct Commit {
     pub author: String,
     pub subject: String,
     pub paths: Vec<RelativePath>,
+    /// Present when the changed-path list was unreadable within bounds;
+    /// paths is empty and the note names the omission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paths_note: Option<String>,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -134,9 +138,15 @@ impl HistoryFeed {
                 || commit.author.contains('\0')
                 || commit.subject.contains('\0')
                 || commit.paths.len() > 256
+                || commit.paths_note.as_ref().is_some_and(|n| n.len() > 512)
             {
                 return Err(cache_error(
                     "Git commit exceeds its complete bounded metadata contract",
+                ));
+            }
+            if commit.paths_note.is_some() && !commit.paths.is_empty() {
+                return Err(cache_error(
+                    "a degraded Git commit retains no changed paths",
                 ));
             }
             if let Some(parent) = &commit.parent {
@@ -157,6 +167,7 @@ impl HistoryFeed {
                     + commit.parent.as_ref().map_or(0, String::capacity)
                     + commit.author.capacity()
                     + commit.subject.capacity()
+                    + commit.paths_note.as_ref().map_or(0, String::len)
                     + commit.paths.capacity() * std::mem::size_of::<RelativePath>()
                     + commit.paths.iter().map(|p| p.as_str().len()).sum::<usize>(),
             );

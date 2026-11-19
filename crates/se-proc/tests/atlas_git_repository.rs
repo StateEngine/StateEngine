@@ -3,6 +3,7 @@
 use se_proc::{NativeSourceRoot, atlas_git::*};
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Mutex,
@@ -103,6 +104,140 @@ fn unborn_is_absent_but_missing_or_linked_head_and_foreign_roots_refuse() -> Che
         .is_err()
     );
     assert!(!f.0.join("control").exists());
+    Ok(())
+}
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one real git fixture per oversized commit, so setup dominates"
+)]
+fn oversized_commit_degrades_only_itself_and_keeps_the_window() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "lock")?;
+    let f = Fixture::new()?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut blob_cmd = f.command();
+    blob_cmd
+        .arg("--git-dir")
+        .arg(f.0.join("git"))
+        .args(["hash-object", "-w", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    let mut child = blob_cmd.spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or("git stdin absent")?
+        .write_all(b"content\n")?;
+    let output = child.wait_with_output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let blob = String::from_utf8(output.stdout)?.trim().to_owned();
+    let small_tree = |f: &Fixture, names: &[&str]| -> Result<String, Box<dyn std::error::Error>> {
+        let mut listing = String::new();
+        for name in names {
+            listing.push_str(&format!("100644 blob {blob}\t{name}\n"));
+        }
+        let mut mktree = f.command();
+        mktree
+            .arg("--git-dir")
+            .arg(f.0.join("git"))
+            .arg("mktree")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        let mut child = mktree.spawn()?;
+        child
+            .stdin
+            .take()
+            .ok_or("git stdin absent")?
+            .write_all(listing.as_bytes())?;
+        let output = child.wait_with_output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    };
+    let small = small_tree(&f, &["one.rs", "two.rs"])?;
+    let mut big_listing = String::new();
+    for i in 0..2400 {
+        big_listing.push_str(&format!(
+            "100644 blob {blob}\tgenerated-files-module-{i:04}-data-part-{i:04}.txt\n"
+        ));
+    }
+    let mut mktree = f.command();
+    mktree
+        .arg("--git-dir")
+        .arg(f.0.join("git"))
+        .arg("mktree")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    let mut child = mktree.spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or("git stdin absent")?
+        .write_all(big_listing.as_bytes())?;
+    let output = child.wait_with_output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let big = String::from_utf8(output.stdout)?.trim().to_owned();
+    let commit = |args: &[&str]| -> Result<String, Box<dyn std::error::Error>> {
+        let mut command = f.command();
+        command
+            .arg("--git-dir")
+            .arg(f.0.join("git"))
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=atlas-fixture.invalid",
+                "commit-tree",
+            ])
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped());
+        let output = command.output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    };
+    let old = commit(&[&small, "-m", "Small commit"])?;
+    let head = commit(&[&big, "-p", &old, "-m", "Oversized commit"])?;
+    fs::write(f.0.join("git/HEAD"), format!("{head}\n"))?;
+    let reader = f.reader()?;
+    let window = reader.window(&head, 2, deadline)?;
+    assert_eq!(window.commits.len(), 2);
+    assert_eq!(window.commits[0].subject, "Oversized commit");
+    assert!(
+        window.commits[0].paths.is_empty(),
+        "a degraded commit retains no paths"
+    );
+    assert!(
+        window.commits[0]
+            .paths_note
+            .as_deref()
+            .is_some_and(|n| n.contains("65536")),
+        "the degradation must say so: {:?}",
+        window.commits[0].paths_note
+    );
+    assert_eq!(window.commits[1].subject, "Small commit");
+    assert_eq!(
+        window.commits[1].paths,
+        vec!["one.rs".to_owned(), "two.rs".to_owned()]
+    );
+    assert!(window.commits[1].paths_note.is_none());
+    assert_eq!(window.limit, HistoryLimit::Complete);
+    reader.close()?;
     Ok(())
 }
 #[test]

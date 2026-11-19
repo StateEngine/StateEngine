@@ -30,7 +30,11 @@ impl Plan {
         cache: &NativeAtlasCache,
         request: &protocol::Request,
         deadline: Instant,
-    ) -> AtlasResult<(Generation, Option<se_types::ErrorBody>)> {
+    ) -> AtlasResult<(
+        Generation,
+        Option<se_types::ErrorBody>,
+        Vec<se_types::code::HistoryCommitNote>,
+    )> {
         if Instant::now() >= deadline {
             return Err(failure("cold job deadline elapsed before Git history"));
         }
@@ -51,10 +55,41 @@ impl Plan {
         )?
         .ok_or_else(|| failure("history candidate disappeared"))?;
         match feed {
-            HistoryRead::Available(Some(feed)) => Ok((
-                se_atlas::history::ingest(&mut db, &feed, sql_deadline().min(deadline))?.generation,
-                None,
-            )),
+            HistoryRead::Available(Some(feed)) => {
+                let notes =
+                    feed.commits
+                        .iter()
+                        .filter_map(|commit| {
+                            commit.paths_note.as_ref().map(|note| {
+                                se_types::code::HistoryCommitNote {
+                                    oid: commit.oid.clone(),
+                                    note: note.clone(),
+                                }
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                let generation =
+                    se_atlas::history::ingest(&mut db, &feed, sql_deadline().min(deadline))?
+                        .generation;
+                // Per-commit omissions replace, never accumulate: they describe
+                // the current history window and clear when it moves on.
+                if !notes.is_empty() {
+                    db.write(131072, sql_deadline().min(deadline), |sql| {
+                        let saved: String = sql
+                            .prepare("SELECT coverage_json FROM meta WHERE singleton=1")?
+                            .query_row([], |r| r.get(0))
+                            .map_err(failure)?;
+                        let mut coverage: Coverage =
+                            serde_json::from_str(&saved).map_err(failure)?;
+                        coverage.history_commit_notes = notes.clone();
+                        sql.prepare("UPDATE meta SET coverage_json=?1 WHERE singleton=1")?
+                            .execute([serde_json::to_string(&coverage).map_err(failure)?])
+                            .map_err(failure)?;
+                        Ok(())
+                    })?;
+                }
+                Ok((generation, None, notes))
+            }
             HistoryRead::Unavailable(error) => {
                 let diagnostic = error.body;
                 db.write(131072, sql_deadline().min(deadline), |sql| {
@@ -83,9 +118,9 @@ impl Plan {
                     .map_err(failure)?;
                     Ok(())
                 })?;
-                Ok((generation(&mut db, deadline)?, Some(diagnostic)))
+                Ok((generation(&mut db, deadline)?, Some(diagnostic), Vec::new()))
             }
-            HistoryRead::Available(None) => Ok((generation(&mut db, deadline)?, None)),
+            HistoryRead::Available(None) => Ok((generation(&mut db, deadline)?, None, Vec::new())),
         }
     }
     // Unavailable enrichment is data. Failed process or private-directory
@@ -169,9 +204,15 @@ fn feed(
         window.limit = se_proc::atlas_git::HistoryLimit::CommitCount;
     }
     if paths > 32 {
-        return Err(failure(
-            "Git history's newest complete commit exceeds 32 changed paths; source index remains available",
-        ));
+        // A single commit outside the writer quantum must not unmake the
+        // window: degrade its paths and say so.
+        let commit = window
+            .commits
+            .first_mut()
+            .ok_or_else(|| failure("history window disappeared"))?;
+        commit.paths.clear();
+        commit.paths_note =
+            Some("changed paths exceed the 32-path writer quantum; paths omitted".into());
     }
     let oldest = window.commits.last().map(|c| c.oid.clone());
     let commits = window
@@ -189,6 +230,7 @@ fn feed(
                     .into_iter()
                     .map(|path| RelativePath::new(&path))
                     .collect::<AtlasResult<_>>()?,
+                paths_note: commit.paths_note,
             })
         })
         .collect::<AtlasResult<Vec<_>>>()?;

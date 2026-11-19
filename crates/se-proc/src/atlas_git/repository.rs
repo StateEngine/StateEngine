@@ -4,6 +4,12 @@ use crate::source_root::NativeSourceRoot;
 use std::{io::Read, path::PathBuf};
 pub const WINDOW_BYTES: usize = 65_536;
 pub const MAX_COMMITS: u16 = 128;
+/// Per-commit degradation notes; user-facing, so they name the omission.
+const NOTE_CHANGED_OVERFLOW: &str =
+    "changed paths could not be read within the bounded Git read; paths omitted";
+const NOTE_PATH_ENCODING: &str = "a changed path is not valid UTF-8; paths omitted";
+const NOTE_PATH_BOUND: &str = "changed paths exceed the 256-path or 1024-byte bound; paths omitted";
+const NOTE_WINDOW: &str = "commit exceeds the 65536-byte history window; paths omitted";
 #[derive(Clone, Debug)]
 pub struct GitRegistration {
     pub git_directory: PathBuf,
@@ -19,6 +25,9 @@ pub struct GitCommit {
     pub author: String,
     pub subject: String,
     pub paths: Vec<String>,
+    /// Present when the changed-path list was unreadable within bounds;
+    /// paths is empty and the note names the omission.
+    pub paths_note: Option<String>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HistoryLimit {
@@ -153,47 +162,52 @@ impl GitRepository {
                 result.limit = HistoryLimit::CommitCount;
                 break;
             }
-            let bytes = self.command(
+            // An oversized or unreadable changed-path list is a bounded data
+            // property of this one commit; degrade it and retain the window.
+            let bytes = match self.command(
                 GitRead::Changed {
                     commit: &commit.oid,
                     parent: commit.parent.as_deref(),
                 },
                 deadline,
-            )?;
-            if !bytes.is_empty() && bytes.last() != Some(&0) {
-                return Err(invalid(
-                    "Git changed paths lack the complete native terminator",
-                ));
-            }
-            for path in bytes
-                .strip_suffix(&[0])
-                .unwrap_or(&[])
-                .split(|b| *b == 0)
-                .filter(|_| !bytes.is_empty())
-            {
-                let path = std::str::from_utf8(path).map_err(|_| {
-                    invalid(
-                        "Git history path encoding is unsupported; source index remains available",
-                    )
-                })?;
-                if path.is_empty() || path.len() > 1024 || commit.paths.len() == 256 {
+            ) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                    degrade(&mut commit, NOTE_CHANGED_OVERFLOW);
+                    None
+                }
+                Err(error) => return Err(error),
+            };
+            if let Some(bytes) = bytes {
+                if !bytes.is_empty() && bytes.last() != Some(&0) {
                     return Err(invalid(
-                        "Git history commit exceeds the complete 256-path/1024-byte path bound; source index remains available",
+                        "Git changed paths lack the complete native terminator",
                     ));
                 }
-                commit.paths.push(path.into());
+                for raw in bytes
+                    .strip_suffix(&[0])
+                    .unwrap_or(&[])
+                    .split(|b| *b == 0)
+                    .filter(|_| !bytes.is_empty())
+                {
+                    let path = match std::str::from_utf8(raw) {
+                        Ok(path) => path,
+                        Err(_) => {
+                            degrade(&mut commit, NOTE_PATH_ENCODING);
+                            break;
+                        }
+                    };
+                    if path.is_empty() || path.len() > 1024 || commit.paths.len() == 256 {
+                        degrade(&mut commit, NOTE_PATH_BOUND);
+                        break;
+                    }
+                    commit.paths.push(path.into());
+                }
             }
-            let cost = std::mem::size_of::<GitCommit>()
-                + commit.oid.capacity()
-                + commit.parent.as_ref().map_or(0, String::capacity)
-                + commit.author.capacity()
-                + commit.subject.capacity()
-                + commit.paths.capacity() * std::mem::size_of::<String>()
-                + commit.paths.iter().map(String::capacity).sum::<usize>();
+            let mut cost = commit_cost(&commit);
             if cost > WINDOW_BYTES {
-                return Err(invalid(
-                    "one Git history commit exceeds the 65536-byte window; source index remains available",
-                ));
+                degrade(&mut commit, NOTE_WINDOW);
+                cost = commit_cost(&commit);
             }
             if used + cost > WINDOW_BYTES {
                 result.next = Some(commit.oid);
@@ -212,6 +226,21 @@ impl GitRepository {
         let _reaped = crate::atlas_worker::lease::Lease::acquire()?;
         self.control.close()
     }
+}
+/// A degraded commit keeps its bounded metadata and names the omission.
+fn degrade(commit: &mut GitCommit, note: &str) {
+    commit.paths = Vec::new();
+    commit.paths_note.get_or_insert(note.to_owned());
+}
+fn commit_cost(commit: &GitCommit) -> usize {
+    std::mem::size_of::<GitCommit>()
+        + commit.oid.capacity()
+        + commit.parent.as_ref().map_or(0, String::capacity)
+        + commit.author.capacity()
+        + commit.subject.capacity()
+        + commit.paths_note.as_ref().map_or(0, String::capacity)
+        + commit.paths.capacity() * std::mem::size_of::<String>()
+        + commit.paths.iter().map(String::capacity).sum::<usize>()
 }
 fn metadata(bytes: &[u8]) -> io::Result<Vec<GitCommit>> {
     let text = std::str::from_utf8(bytes)
@@ -252,6 +281,7 @@ fn metadata(bytes: &[u8]) -> io::Result<Vec<GitCommit>> {
             author: author.into(),
             subject: subject.into(),
             paths: Vec::new(),
+            paths_note: None,
         });
     }
     if result.is_empty() {

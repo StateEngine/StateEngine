@@ -52,6 +52,7 @@ pub(crate) fn empty_coverage() -> Coverage {
         watch_limited_activations: 0,
         history_unavailable: None,
         reasons: Vec::new(),
+        history_commit_notes: Vec::new(),
     }
 }
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]

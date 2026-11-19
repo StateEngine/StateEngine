@@ -237,6 +237,15 @@ pub enum FileCoverage {
         diagnostic: Option<ErrorBody>,
     },
 }
+/// A retained Git commit whose changed paths could not be read within the
+/// bounded reader. The commit metadata is indexed; its paths are omitted.
+#[derive(
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct HistoryCommitNote {
+    pub oid: String,
+    pub note: String,
+}
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -261,6 +270,10 @@ pub struct Coverage {
     /// Optional Git enrichment failed; source coverage remains independently usable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_unavailable: Option<ErrorBody>,
+    /// Bounded per-commit notes from the current Git history window; the rest
+    /// of the history remains indexed and available.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history_commit_notes: Vec<HistoryCommitNote>,
 }
 
 #[derive(

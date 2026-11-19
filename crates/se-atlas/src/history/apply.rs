@@ -93,9 +93,11 @@ pub fn apply(sql: &SqlView<'_>, feed: &HistoryFeed) -> AtlasResult<HistoryReceip
         }
         // No author, subject, touch or mention is derived for secret-only commits.
         // Their traversal position remains explicit without retaining those facts.
-        if paths.is_empty() {
+        if paths.is_empty() && commit.paths_note.is_none() {
             continue;
         }
+        // A degraded commit keeps its bounded metadata row; only its changed
+        // paths are omitted, so it derives no file links.
         let id = upsert(sql, commit)?;
         let oid = object(&commit.oid)?;
         sql.prepare("INSERT OR IGNORE INTO observed_commits VALUES(?1,?2)")?
