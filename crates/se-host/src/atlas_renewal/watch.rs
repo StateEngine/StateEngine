@@ -15,6 +15,16 @@ impl NativeRenewal {
         #[cfg(windows)]
         if !path.is_empty() {
             // Store covered directories without allocating another native watch.
+            if !self
+                .mappings
+                .iter()
+                .any(|mapping| mapping.root == index as u32)
+            {
+                let root = &mut self.roots[index];
+                root.unwatched = root.unwatched.saturating_add(1);
+                reason(root, CoverageReason::PartialWatch);
+                return Ok(());
+            }
             return record_recursive_directory(connection, path, identity, deadline);
         }
         let existing = connection.read(deadline, |sql| {
@@ -79,7 +89,15 @@ impl NativeRenewal {
         let registration = native.watch.subscribe_tree(&native.root);
         let registration = match registration {
             Ok(Some(registration)) => registration,
-            Ok(None) => return Ok(()),
+            Ok(None) => {
+                #[cfg(windows)]
+                {
+                    let root = &mut self.roots[index];
+                    root.unwatched = root.unwatched.saturating_add(1);
+                    reason(root, CoverageReason::PartialWatch);
+                }
+                return Ok(());
+            }
             Err(error) => {
                 let root = &mut self.roots[index];
                 if !root.limited_this_activation {
