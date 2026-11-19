@@ -19,6 +19,7 @@ static INSTALL: Once = Once::new();
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
 static EXTRACTION: AtomicUsize = AtomicUsize::new(0);
+static PEAK: AtomicUsize = AtomicUsize::new(0);
 static LIMIT: AtomicUsize = AtomicUsize::new(0);
 static EXCEEDED: AtomicBool = AtomicBool::new(false);
 
@@ -34,6 +35,7 @@ impl Reservation {
         });
         LIMIT.store(limit as usize, Ordering::Relaxed);
         EXTRACTION.store(0, Ordering::Relaxed);
+        PEAK.store(CURRENT.load(Ordering::Acquire), Ordering::Relaxed);
         EXCEEDED.store(
             CURRENT.load(Ordering::Acquire) > limit as usize,
             Ordering::Relaxed,
@@ -67,6 +69,9 @@ fn charge(size: usize) {
         .fetch_add(size, Ordering::AcqRel)
         .saturating_add(size);
     let total = current.saturating_add(EXTRACTION.load(Ordering::Acquire));
+    if ACTIVE.load(Ordering::Acquire) {
+        PEAK.fetch_max(total, Ordering::AcqRel);
+    }
     if ACTIVE.load(Ordering::Acquire) && total > LIMIT.load(Ordering::Acquire) {
         EXCEEDED.store(true, Ordering::Release);
     }
@@ -81,7 +86,12 @@ pub(super) fn charge_extraction(bytes: usize) -> Result<(), usize> {
         return Err(available);
     }
     EXTRACTION.fetch_add(bytes, Ordering::AcqRel);
+    PEAK.fetch_max(used.saturating_add(bytes), Ordering::AcqRel);
     Ok(())
+}
+
+pub(super) fn diagnostic_peak() -> usize {
+    PEAK.load(Ordering::Acquire)
 }
 
 unsafe fn allocate(size: usize, zeroed: bool) -> *mut c_void {

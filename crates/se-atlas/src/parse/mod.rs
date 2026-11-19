@@ -17,6 +17,11 @@ use crate::{
 pub use budget::{ParserPlacement, ParserProfile};
 use std::{ops::ControlFlow, time::Duration};
 
+/// Diagnostic-only native and extraction allocation high water.
+pub fn diagnostic_peak() -> usize {
+    native_memory::diagnostic_peak()
+}
+
 pub struct SemanticParser {
     scope: Scope,
     profiles: Vec<ParserProfile>,

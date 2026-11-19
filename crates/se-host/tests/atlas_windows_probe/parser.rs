@@ -80,10 +80,13 @@ fn once(
 ) -> Observed<Value> {
     let memory_before = native::memory()?;
     let started = Instant::now();
+    let mut tracked_peak = None;
     let (outcome, while_result) = match fixture.source.read(path, budget)? {
         SourceRead::Bytes(snapshot) => {
             let mut parser = SemanticParser::new(fixture.source.scope.clone(), vec![profile])?;
-            match parser.parse(&snapshot, profile.language, budget) {
+            let parsed = parser.parse(&snapshot, profile.language, budget);
+            tracked_peak = Some(se_atlas::parse::diagnostic_peak());
+            match parsed {
                 Ok(parsed) => {
                     let counters = native::commit()?;
                     let rows = parsed.symbols.len()
@@ -122,6 +125,7 @@ fn once(
     let after_scratch_release = native::memory()?;
     Ok(json!({
         "elapsed_ns": duration_ns,
+        "tracked_peak_bytes": tracked_peak,
         "outcome": outcome,
         "before": memory_before,
         "private_commit_while_result": while_result,
