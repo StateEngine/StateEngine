@@ -14,31 +14,9 @@ pub(super) struct Inventory {
 struct InventoryFile {
     path: PathBuf,
     pin: se_proc::NativeMetadataPin,
-    #[cfg(windows)]
-    guard: Option<File>,
 }
 impl InventoryFile {
-    fn new(path: PathBuf, pin: se_proc::NativeMetadataPin, retain: bool) -> AtlasResult<Self> {
-        #[cfg(windows)]
-        let guard = if retain {
-            pin.hold_no_delete().map_err(fail)?
-        } else {
-            None
-        };
-        #[cfg(not(windows))]
-        let _ = retain;
-        Ok(Self {
-            path,
-            pin,
-            #[cfg(windows)]
-            guard,
-        })
-    }
     fn metadata(&self) -> Option<std::fs::Metadata> {
-        #[cfg(windows)]
-        if let Some(guard) = &self.guard {
-            return guard.metadata().ok();
-        }
         self.pin.metadata().ok()
     }
 }
@@ -114,7 +92,7 @@ fn entries_match(path: &Path, previous: &[(std::ffi::OsString, std::fs::FileType
     seen == previous.len()
 }
 
-pub(super) fn root(files: &NativeStateFiles, retain: bool) -> AtlasResult<(u64, Inventory)> {
+pub(super) fn root(files: &NativeStateFiles) -> AtlasResult<(u64, Inventory)> {
     let mut entries = 0;
     let mut bytes = 0;
     let mut snapshot = Inventory {
@@ -129,7 +107,6 @@ pub(super) fn root(files: &NativeStateFiles, retain: bool) -> AtlasResult<(u64, 
         &mut bytes,
         &mut entries,
         &mut snapshot,
-        retain,
     )?;
     if !snapshot.complete {
         snapshot.files.clear();
@@ -144,7 +121,6 @@ fn walk(
     root: &mut u64,
     entries: &mut u32,
     snapshot: &mut Inventory,
-    retain: bool,
 ) -> AtlasResult<u64> {
     let mut total = 0u64;
     let mut epoch_count = 0;
@@ -193,7 +169,7 @@ fn walk(
                 ));
             }
             let child = NativeStateFiles::open(&path).map_err(fail)?;
-            walk(&child, depth + 1, wanted, root, entries, snapshot, retain)?
+            walk(&child, depth + 1, wanted, root, entries, snapshot)?
         } else {
             let allowed = NativeStateFiles::is_recovery_artifact(&entry.file_name())
                 || match depth {
@@ -213,7 +189,7 @@ fn walk(
                 .ok_or_else(|| fail("Atlas inventory file disappeared"))?;
             let len = pin.metadata().map_err(fail)?.len();
             if snapshot.files.len() < MAX_RETAINED_FILES {
-                snapshot.files.push(InventoryFile::new(path, pin, retain)?);
+                snapshot.files.push(InventoryFile { path, pin });
             } else {
                 snapshot.complete = false;
             }

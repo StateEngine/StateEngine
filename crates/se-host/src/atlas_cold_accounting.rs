@@ -43,11 +43,7 @@ impl NativeAtlasCache {
                 root
             }
             _ => {
-                #[cfg(windows)]
-                let retain = self.cold_accounting.get();
-                #[cfg(not(windows))]
-                let retain = false;
-                let (root, snapshot) = inventory::root(&self.root, retain)?;
+                let (root, snapshot) = inventory::root(&self.root)?;
                 *self.inventory.borrow_mut() = Some(snapshot);
                 root
             }
