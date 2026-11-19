@@ -1,6 +1,7 @@
 //! Development consumer of automatic after-ready composition and record wakes.
 //! The synthetic SQL admission tests behavior, never native memory qualification.
-#![cfg(all(target_os = "linux", not(debug_assertions)))]
+#![cfg(all(any(target_os = "linux", windows), not(debug_assertions)))]
+#[cfg(target_os = "linux")]
 use se_atlas::cache::connection::SqlProfile;
 use se_host::*;
 use se_store::*;
@@ -19,6 +20,13 @@ use fixture::*;
 mod sessions;
 fn positive(n: u32) -> Result<NonZeroU32, Box<dyn std::error::Error>> {
     NonZeroU32::new(n).ok_or_else(|| "zero test bound".into())
+}
+#[cfg(windows)]
+fn expected_history_limitation(error: &Option<se_types::ErrorBody>) -> bool {
+    matches!(error.as_ref().map(|body| body.detail()),
+        Some(se_types::Detail::UsageInvalidValue(detail))
+            if detail.argument == "Atlas cold index"
+                && detail.expected == "Contained Git history is unavailable on this platform; source indexing remains available")
 }
 fn client_options() -> client::ClientOptions {
     client::ClientOptions {
@@ -72,52 +80,107 @@ fn start(f: &Fixture) -> Result<HostStart, Box<dyn std::error::Error>> {
 
 fn setup(f: &Fixture) -> Check {
     let source = f.home.join("source");
-    std::fs::create_dir(&source)?;
-    std::fs::write(source.join("good.js"), "export function good(){return 1;}")?;
-    for name in [
-        ".env",
-        "secrets.py",
-        "config.js",
-        "private.pem",
-        "credentials.json",
-    ] {
-        std::fs::write(
-            source.join(name),
-            "export function DO_NOT_INDEX(){return 'PRIVATE';}",
-        )?;
-    }
-    std::fs::write(
-        source.join(".gitignore"),
-        "!.env\n!secrets.py\n!config.js\n!private.pem\n!credentials.json\n",
-    )?;
-    // The automatic owner must discover this registration itself and seed
-    // history after the real installed parser image has been exactly reaped.
-    for args in [
-        vec!["init", "--initial-branch=main"],
-        vec!["add", "--", "."],
-        vec![
-            "-c",
-            "user.name=History Fixture",
-            "-c",
-            "user.email=atlas-fixture.invalid",
-            "commit",
-            "-m",
-            "automatic_git_seed",
-        ],
-    ] {
-        let output = std::process::Command::new("git")
-            .arg("-C")
+    if let Some(repository) = std::env::var_os("ATLAS_FULL_REPOSITORY") {
+        let result = std::process::Command::new("git")
+            .args(["clone", "--no-hardlinks", "--"])
+            .arg(repository)
             .arg(&source)
-            .args(args)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .output()?;
-        if !output.status.success() {
+        if !result.status.success() {
             return Err(format!(
-                "Git fixture failed: {}",
-                String::from_utf8_lossy(&output.stderr)
+                "full repository clone failed: {}",
+                String::from_utf8_lossy(&result.stderr)
             )
             .into());
+        }
+        let checkout = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args([
+                "checkout",
+                "--detach",
+                "5e55728a8c1df057be179c655a7cebcb99522265",
+            ])
+            .output()?;
+        if !checkout.status.success() {
+            return Err(format!(
+                "diagnostic checkout failed: {}",
+                String::from_utf8_lossy(&checkout.stderr)
+            )
+            .into());
+        }
+        let history = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args(["rev-parse", "--is-shallow-repository"])
+            .output()?;
+        if !history.status.success() || String::from_utf8_lossy(&history.stdout).trim() != "false" {
+            return Err("benchmark source is shallow or history inspection failed".into());
+        }
+        let count = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&source)
+            .args(["rev-list", "--count", "HEAD"])
+            .output()?;
+        if !count.status.success() {
+            return Err("cannot count full repository history".into());
+        }
+        println!(
+            "ATLAS_BENCH_HISTORY {}",
+            String::from_utf8(count.stdout)?.trim()
+        );
+        std::fs::write(source.join("good.js"), "export function good(){return 1;}")?;
+    } else {
+        std::fs::create_dir(&source)?;
+        std::fs::write(source.join("good.js"), "export function good(){return 1;}")?;
+        for name in [
+            ".env",
+            "secrets.py",
+            "config.js",
+            "private.pem",
+            "credentials.json",
+        ] {
+            std::fs::write(
+                source.join(name),
+                "export function DO_NOT_INDEX(){return 'PRIVATE';}",
+            )?;
+        }
+        std::fs::write(
+            source.join(".gitignore"),
+            "!.env\n!secrets.py\n!config.js\n!private.pem\n!credentials.json\n",
+        )?;
+        // The automatic owner must discover this registration itself and seed
+        // history after the real installed parser image has been exactly reaped.
+        for args in [
+            vec!["init", "--initial-branch=main"],
+            vec!["add", "--", "."],
+            vec![
+                "-c",
+                "user.name=History Fixture",
+                "-c",
+                "user.email=atlas-fixture.invalid",
+                "commit",
+                "-m",
+                "automatic_git_seed",
+            ],
+        ] {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&source)
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env(
+                    "GIT_CONFIG_GLOBAL",
+                    if cfg!(windows) { "NUL" } else { "/dev/null" },
+                )
+                .output()?;
+            if !output.status.success() {
+                return Err(format!(
+                    "Git fixture failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )
+                .into());
+            }
         }
     }
     let (mut direct, lease) = f.direct()?;
@@ -273,11 +336,22 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
     else {
         return Err("Atlas query returned a different output family".into());
     };
+    #[cfg(target_os = "linux")]
     assert!(
         matches!(&output.value.answer.data, se_types::Read::Present { value }
         if value.page.items().iter().any(|hit| hit.reason.last_touch_unix_ms.is_some())),
         "real IPC path search did not receive Git-seeded file activity"
     );
+    #[cfg(windows)]
+    {
+        assert!(
+            matches!(&output.value.answer.data, se_types::Read::Present { value } if !value.page.items().is_empty())
+        );
+        assert!(
+            expected_history_limitation(&output.value.answer.index.coverage.history_unavailable),
+            "Windows must report that contained Git history is unavailable"
+        );
+    }
     assert!(
         !output
             .value
@@ -294,8 +368,63 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
         .index
         .memory
         .ok_or("Atlas query omitted the owner memory report")?;
-    assert_eq!(memory.anonymous_ceiling_bytes, 13_000_000);
+    assert_eq!(
+        memory.anonymous_ceiling_bytes,
+        if cfg!(windows) {
+            16_100_000
+        } else {
+            13_000_000
+        }
+    );
     assert!(!memory.joined_qualified && memory.shared_grammar_pages.is_none());
+    if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+        for (offset, (kind, query)) in [
+            ("path", "rs"),
+            ("symbol", "new"),
+            ("text", "fn"),
+            ("all", "state"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let answer = connection.exchange(IpcEnvelope {
+                version: connection.negotiated().version,
+                request_id: 100 + offset as u64,
+                generation: endpoint.generation,
+                authority: None,
+                presence: None,
+                cli_selections: None,
+                request: IpcRequest::Operation(RawOperation {
+                    name: "atlas.find".into(),
+                    arguments: serde_json::json!({"query": query, "kind": kind, "mode": "literal", "limit": 50, "byte_budget": 32768, "format": "json"}),
+                    key: None,
+                }),
+            }, &options).map_err(|error| error.to_string())?;
+            let bytes = serde_json::to_vec(&answer.value)
+                .map_err(|error| error.to_string())?
+                .len();
+            assert!(bytes <= 32768, "query exceeded the requested byte budget");
+            let mut wire = answer.value;
+            wire["schema"] = answer.schema.into();
+            let se_core::ops::AnyOutput::AtlasFind(output) =
+                serde_json::from_value(wire).map_err(|error| error.to_string())?
+            else {
+                return Err("benchmark query returned another output family".into());
+            };
+            let count = match output.value.answer.data {
+                se_types::Read::Present { value } => value.page.items().len(),
+                _ => {
+                    return Err(format!(
+                        "benchmark query {kind} did not return present data"
+                    ));
+                }
+            };
+            if kind == "path" && count == 0 {
+                return Err("benchmark path query returned no hits".into());
+            }
+            println!("ATLAS_BENCH_QUERY {kind} {bytes} {count}");
+        }
+    }
     Ok(())
 }
 async fn caught_up(
@@ -303,6 +432,9 @@ async fn caught_up(
     project: &se_types::ProjectId,
     records: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+        return benchmark_caught_up(context, project, records).await;
+    }
     let end = Instant::now() + Duration::from_secs(30);
     loop {
         let context = context.clone();
@@ -314,7 +446,7 @@ async fn caught_up(
                 let memory = summary.memory.ok_or_else(|| {
                     se_types::SeError::invalid("Atlas status", "memory qualification report")
                 })?;
-                assert_eq!(memory.anonymous_ceiling_bytes, 13_000_000);
+                assert_eq!(memory.anonymous_ceiling_bytes, if cfg!(windows) { 16_100_000 } else { 13_000_000 });
                 assert!(memory.shared_grammar_pages.is_none() && !memory.joined_qualified);
                 let ticket = context.atlas.records.ticket()?;
                 let mut observed = None;
@@ -333,7 +465,10 @@ async fn caught_up(
                                 })?;
                             let commits: i64 = sql.prepare("SELECT count(*) FROM commits WHERE subject='automatic_git_seed'")?
                                 .query_row([], |r| r.get(0)).map_err(|e| se_core::scope::unreadable("development Git seed", &e.to_string()))?;
+                            #[cfg(target_os = "linux")]
                             assert_eq!(commits, 1, "automatic owner omitted its post-reap Git invocation");
+                            #[cfg(windows)]
+                            assert_eq!(commits, 0, "Windows unexpectedly seeded contained Git history");
                             let mut statement = sql.prepare("SELECT path FROM files")?;
                             let mut rows = statement.query([]).map_err(|e| {
                                 se_core::scope::unreadable("development files", &e.to_string())
@@ -350,11 +485,18 @@ async fn caught_up(
                             Ok(())
                         })
                     })?;
-                Ok(observed)
+                Ok(observed.map(|(fresh, count, paths)| (fresh, count, paths, summary.coverage.history_unavailable)))
             })
             .await;
         let last = match result {
-            Ok(Some((true, count, paths))) if count >= records => {
+            Ok(Some((true, count, paths, history_unavailable))) if count >= records => {
+                #[cfg(windows)]
+                assert!(
+                    expected_history_limitation(&history_unavailable),
+                    "Windows must report that contained Git history is unavailable"
+                );
+                #[cfg(target_os = "linux")]
+                let _ = history_unavailable;
                 assert!(paths.iter().any(|p| p == "good.js"));
                 for path in paths {
                     assert!(
@@ -375,6 +517,90 @@ async fn caught_up(
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
+
+async fn benchmark_caught_up(
+    context: &ExecutionContext,
+    project: &se_types::ProjectId,
+    records: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let end = Instant::now() + Duration::from_secs(180);
+    let progress = Arc::new(std::sync::Mutex::new(String::from("starting")));
+    let done = Arc::new(AtomicBool::new(false));
+    let reporter_progress = Arc::clone(&progress);
+    let reporter_done = Arc::clone(&done);
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        loop {
+            std::thread::sleep(Duration::from_secs(10));
+            if reporter_done.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            eprintln!(
+                "ATLAS_PROGRESS elapsed_s={} unix_ms={:?} {}",
+                started.elapsed().as_secs(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis()),
+                reporter_progress.lock().unwrap()
+            );
+        }
+    });
+    loop {
+        let context = context.clone();
+        let project = project.clone();
+        let pool = context.blocking.clone();
+        let current = Arc::clone(&progress);
+        *progress.lock().unwrap() = "waiting for foreground worker".into();
+        let observed = pool.run(BlockingClass::Foreground, &deadline()?, move || {
+            *current.lock().unwrap() = "reading summary".into();
+            let summary = context.atlas.summary(&project, None)?;
+            *current.lock().unwrap() = format!("state={:?} discovery_complete={} discovered={} indexed={} partial={} deferred={} failed={} reasons={:?}", summary.state, summary.coverage.discovery_complete, summary.coverage.discovered_files, summary.coverage.indexed_files, summary.coverage.partial_files, summary.coverage.deferred_files, summary.coverage.failed_files, summary.coverage.reasons);
+            if !summary.coverage.discovery_complete || !matches!(summary.state, se_types::code::IndexState::Current | se_types::code::IndexState::Partial { .. } | se_types::code::IndexState::VerificationNeeded { .. }) {
+                return Ok(None);
+            }
+            let ticket = context.atlas.records.ticket()?;
+            *current.lock().unwrap() = "reading index counts".into();
+            let mut counts = None;
+            context.atlas.with_reader(&project, None, ticket, &mut |cache, _, fresh| {
+                cache.read(Instant::now() + Duration::from_secs(2), |sql| {
+                    let (files, good, records): (i64, i64, i64) = sql.prepare(
+                        "SELECT (SELECT count(*) FROM files), (SELECT count(*) FROM files WHERE path='good.js'), (SELECT count(*) FROM records)"
+                    )?.query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                        .map_err(|error| se_core::scope::unreadable("benchmark index", &error.to_string()))?;
+                    counts = Some((fresh, files, good, records));
+                    Ok(())
+                })
+            })?;
+            Ok(counts)
+        }).await;
+        match &observed {
+            Ok(Some((fresh, files, good, count))) => {
+                *progress.lock().unwrap() =
+                    format!("fresh={fresh} files={files} good={good} records={count}")
+            }
+            Err(error) => *progress.lock().unwrap() = format!("observation error: {error:?}"),
+            Ok(None) => {}
+        }
+        if let Ok(Some((true, files, 1, count))) = observed
+            && files >= 1000
+            && count >= records
+        {
+            if records == 1 {
+                println!("ATLAS_BENCH_INDEXED_FILES {files}");
+            }
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Ok(());
+        }
+        if Instant::now() >= end {
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+            return Err(
+                "full repository diagnostic did not finish indexing within 180 seconds".into(),
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
 #[test]
 fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
     // Embedded hosts deliberately have no native Atlas owner; their refusal
@@ -387,17 +613,26 @@ fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
         .max_blocking_threads(3)
         .build()?;
     runtime.block_on(async {
+        let started = Instant::now();
+        if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+            let (bytes, basis) = se_proc::atlas_worker::memory_usage()?;
+            println!("ATLAS_BENCH_BASELINE {bytes} {basis}");
+        }
         let options = start(&f)?;
         let mut host =
             HostedRuntime::prepare(initialized, options, runtime.handle().clone(), &deadline()?)
                 .await?;
         host.configure(se_config::config_policy::ConfigFile::default())?;
+        #[cfg(windows)]
+        let qualification = NativeAtlasQualification::measured_windows_components()?;
+        #[cfg(target_os = "linux")]
+        let qualification = NativeAtlasQualification {
+            sql: Some(SqlProfile::from_qualified_overhead(1)?),
+            parsers: Vec::new(),
+        };
         host.install_native_atlas(
             std::path::PathBuf::from(env!("CARGO_BIN_EXE_se")).canonicalize()?,
-            NativeAtlasQualification {
-                sql: Some(SqlProfile::from_qualified_overhead(1)?),
-                parsers: Vec::new(),
-            },
+            qualification,
         )?;
         let context = host.execution_context();
         let stop = host.local_stop();
@@ -406,8 +641,17 @@ fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
         let serving = tokio::spawn(host.serve(listener));
         let result = async {
             caught_up(&context, &f.project, 1).await?;
+            if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                println!(
+                    "ATLAS_BENCH_FIRST_INDEX_MS {}",
+                    started.elapsed().as_millis()
+                );
+            }
             tokio::task::spawn_blocking(move || write(&endpoint)).await??;
             caught_up(&context, &f.project, 2).await?;
+            if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
             Ok::<(), Box<dyn std::error::Error>>(())
         }
         .await;

@@ -49,6 +49,16 @@ impl NativeRenewal {
                 || c.reconcile != reconcile
                 || c.subtree != subtree
         }) {
+            if reconcile {
+                eprintln!(
+                    "ATLAS_RECONCILE_ATTEMPT unix_ms={:?} serial={}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| d.as_millis()),
+                    work.serial
+                );
+            }
             let retained_last = connection.read(deadline, |sql| {
                 sql.prepare("SELECT coalesce(max(id),0) FROM files")?
                     .query_row([], |r| r.get::<_, i64>(0))
@@ -104,6 +114,16 @@ impl NativeRenewal {
                 part: 0,
                 coverage: se_atlas::coverage::CoverageScan::default(),
             });
+            if reconcile {
+                eprintln!(
+                    "ATLAS_RECONCILE_START unix_ms={:?} serial={}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| d.as_millis()),
+                    work.serial
+                );
+            }
         }
         let mut cycle = self
             .cycle
@@ -480,6 +500,17 @@ impl NativeRenewal {
         };
         if complete && full_reconcile {
             self.roots[index].requires_reconcile = false;
+        }
+        if complete && reconcile {
+            eprintln!(
+                "ATLAS_RECONCILE_END unix_ms={:?} serial={} files={}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis()),
+                work.serial,
+                cycle.files
+            );
         }
         let report = WorkReport {
             root: work.root.clone(),

@@ -224,6 +224,14 @@ impl NativeRenewal {
         #[cfg(windows)]
         let count = native.watch.read_one(&mut buffer);
         let count = count.map_err(|e| source_error("watch event read", e))?;
+        eprintln!(
+            "ATLAS_EVENT_READ unix_ms={:?} bytes={}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_millis()),
+            count
+        );
         if let Some(metadata) = native.metadata.as_ref() {
             let held = metadata.lock_held()?;
             observe_lock(&mut self.roots[index], held);
@@ -270,6 +278,13 @@ impl NativeRenewal {
                 reason(&mut self.roots[index], CoverageReason::WatchLoss);
                 return Ok(vec![SourceHint::Reconcile(ReconcileReason::WatchFailure)]);
             };
+            eprintln!(
+                "ATLAS_EVENT_LOOKUP_BEGIN unix_ms={:?}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_millis())
+            );
             let directory = connection.read(deadline, |sql| {
                 sql.prepare("SELECT path FROM watch_directories WHERE id=?1 AND descriptor=?2")?
                     .query_row((mapping.directory, mapping.descriptor), |r| {
@@ -280,6 +295,14 @@ impl NativeRenewal {
             let directory = match directory {
                 Ok(path) => path,
                 Err(error) => {
+                    eprintln!(
+                        "ATLAS_EVENT_LOOKUP_ERROR unix_ms={:?} error={}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|d| d.as_millis()),
+                        error
+                    );
                     reason(&mut self.roots[index], CoverageReason::WatchLoss);
                     return Err(error);
                 }
