@@ -763,3 +763,7 @@ fn native_prepared_stream_bindings_keep_custody_through_success_and_refusal() ->
 #[cfg(windows)]
 #[path = "support/original_scope_review.rs"]
 mod original_scope_review;
+
+#[cfg(windows)]
+#[path = "support/foreground_ctrl_c_review.rs"]
+mod foreground_ctrl_c_review;
