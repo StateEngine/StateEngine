@@ -11,7 +11,7 @@ struct Directory<'a> {
     #[cfg(not(all(windows, feature = "listener")))]
     rules: Gitignore,
     #[cfg(all(windows, feature = "listener"))]
-    rules: crate::atlas_renewal::ignore::Rules,
+    rule_mark: (usize, usize),
 }
 pub(super) enum Entry {
     Directory {
@@ -58,6 +58,8 @@ pub(super) fn files(
     let global = global_rules(&root, request)?;
     #[cfg(all(windows, feature = "listener"))]
     let policy = ignore_policy(request);
+    #[cfg(all(windows, feature = "listener"))]
+    let mut rules = crate::atlas_ignore::Rules::load(source, &policy, "", deadline)?;
     let cursor = source
         .open_directory(None)?
         .ok_or_else(|| failure("registered root disappeared"))?;
@@ -68,7 +70,7 @@ pub(super) fn files(
         #[cfg(not(all(windows, feature = "listener")))]
         rules: rules(source, None)?,
         #[cfg(all(windows, feature = "listener"))]
-        rules: crate::atlas_renewal::ignore::Rules::load(source, &policy, "", deadline)?,
+        rule_mark: rules.mark(),
     }];
     let mut directories = 1u32;
     while !stack.is_empty() {
@@ -82,6 +84,8 @@ pub(super) fn files(
             if !stack[last].cursor.validate_path()? {
                 return Err(failure("source directory changed during discovery"));
             }
+            #[cfg(all(windows, feature = "listener"))]
+            rules.rewind(stack[last].rule_mark);
             stack.pop();
             continue;
         };
@@ -118,9 +122,7 @@ pub(super) fn files(
             }
         }
         #[cfg(all(windows, feature = "listener"))]
-        let ignored = !stack[last]
-            .rules
-            .eligible(path.as_str(), directory, &policy, deadline)?;
+        let ignored = !rules.eligible(path.as_str(), directory, &policy, deadline)?;
         if ignored {
             continue;
         }
@@ -136,16 +138,16 @@ pub(super) fn files(
             #[cfg(not(all(windows, feature = "listener")))]
             let rules = rules(source, Some(&path))?;
             #[cfg(all(windows, feature = "listener"))]
-            let rules = crate::atlas_renewal::ignore::Rules::load(
-                source,
-                &policy,
-                path.as_str(),
-                deadline,
-            )?;
+            let rule_mark = rules.mark();
+            #[cfg(all(windows, feature = "listener"))]
+            rules.descend(source, path.as_str(), deadline)?;
             stack.push(Directory {
                 path: Some(path),
                 cursor,
+                #[cfg(not(all(windows, feature = "listener")))]
                 rules,
+                #[cfg(all(windows, feature = "listener"))]
+                rule_mark,
             });
         } else {
             visit(Entry::File(path))?;

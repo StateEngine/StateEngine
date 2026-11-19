@@ -76,6 +76,8 @@ mod atlas_continuity;
 #[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
 mod atlas_git_watch;
 pub mod atlas_hooks;
+#[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
+mod atlas_ignore;
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 mod atlas_parse;
 pub mod atlas_queries;
@@ -84,6 +86,8 @@ pub mod atlas_records;
 pub mod atlas_renewal;
 pub mod atlas_runtime;
 pub mod atlas_source;
+#[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
+mod atlas_watch_error;
 mod session;
 pub mod state_files;
 pub use harness::*;

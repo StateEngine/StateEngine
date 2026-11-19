@@ -14,6 +14,24 @@ pub(crate) struct Rules {
     used: usize,
 }
 impl Rules {
+    #[cfg(windows)]
+    pub(crate) fn mark(&self) -> (usize, usize) {
+        (self.rules.len(), self.used)
+    }
+    #[cfg(windows)]
+    pub(crate) fn descend(
+        &mut self,
+        source: &Source,
+        base: &str,
+        deadline: Instant,
+    ) -> AtlasResult<()> {
+        self.load_file(source, base, deadline)
+    }
+    #[cfg(windows)]
+    pub(crate) fn rewind(&mut self, mark: (usize, usize)) {
+        self.rules.truncate(mark.0);
+        self.used = mark.1;
+    }
     pub(crate) fn load(
         source: &Source,
         policy: &IgnorePolicy,
