@@ -1,5 +1,6 @@
 //! Windows foreground observation for background scope interrupt and stream custody.
 use super::*;
+use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 
 #[test]
@@ -265,8 +266,13 @@ fn exact_windows_console_scope_interrupts_real_tools() -> Check {
     let report = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/judge-diagnostics/original-windows-console");
     fs::create_dir_all(&report)?;
+    let name = if std::env::var_os("SE_JUDGE_OWN_CONSOLE").is_some() {
+        "original-own-console.json"
+    } else {
+        "original.json"
+    };
     fs::write(
-        report.join("original.json"),
+        report.join(name),
         serde_json::to_vec_pretty(&serde_json::json!({
             "os": "nt", "run_id": std::env::var("GITHUB_RUN_ID").ok(),
             "target_ctrl_c": ["powershell", "python"], "foreign_root_live": true,
@@ -275,6 +281,28 @@ fn exact_windows_console_scope_interrupts_real_tools() -> Check {
     )?;
     println!(
         "CTRL_C_EVENT (0) received in both target descendants; foreign scope remained live; arena empty after releases"
+    );
+    Ok(())
+}
+
+#[test]
+fn original_scope_control_from_own_console() -> Check {
+    use windows_sys::Win32::System::Threading::CREATE_NEW_CONSOLE;
+    let output = Command::new(std::env::current_exe()?)
+        .args([
+            "--exact",
+            "original_scope_review::exact_windows_console_scope_interrupts_real_tools",
+            "--nocapture",
+        ])
+        .env("SE_JUDGE_OWN_CONSOLE", "1")
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "isolated driver returned {:?}: {}\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
     Ok(())
 }
