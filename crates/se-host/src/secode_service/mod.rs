@@ -45,6 +45,8 @@ pub(super) struct Service {
     journal: Journal,
     #[cfg(windows)]
     profile_guard: Option<Arc<se_proc::NativeProfileFiles>>,
+    #[cfg(windows)]
+    profile_parent_guard: Option<Arc<se_proc::NativeProfileFiles>>,
     path: PathBuf,
     digest: Option<[u8; 32]>,
     pending_save: Option<PendingSave>,
@@ -95,6 +97,28 @@ async fn lock_service<'a>(
 impl Service {
     fn checked_profile(&self) -> Result<PathBuf> {
         let profile = self.journal.profile.to_local()?;
+        #[cfg(windows)]
+        if self.journal.profile_identity.is_none()
+            && let Some(parent) = &self.profile_parent_guard
+        {
+            let name = profile
+                .file_name()
+                .ok_or_else(|| error("SE Code private profile", "profile name is absent"))?;
+            return Ok(parent
+                .resolved_root()
+                .map_err(|cause| error("SE Code profile parent", cause))?
+                .join(name));
+        }
+        #[cfg(windows)]
+        if self.journal.profile_identity.is_none() && self.journal.bootstrap.is_some() {
+            return Err(error(
+                "SE Code profile parent",
+                format!(
+                    "{}: the initializer's protected parent is unavailable; restore the original parent and restart the host to recover its custody",
+                    profile.display()
+                ),
+            ));
+        }
         #[cfg(windows)]
         if let Some(expected) = self.journal.profile_identity {
             let guard = self.profile_guard.as_ref().ok_or_else(|| {
