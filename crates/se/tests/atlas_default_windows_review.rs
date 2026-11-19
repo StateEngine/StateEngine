@@ -120,7 +120,8 @@ fn windows_default_reports_atlas_unavailable_before_starting_index_work() -> Che
         root.join("sample.js"),
         "export function review_marker() {}\n",
     )?;
-    let image_name = format!("candidate-{}.exe", uuid::Uuid::new_v4());
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let image_name = format!("a{}.exe", &nonce[..8]);
     let image = f.home.join(&image_name);
     let candidate = std::env::var_os("SE_W3_SE_BIN")
         .map(PathBuf::from)
