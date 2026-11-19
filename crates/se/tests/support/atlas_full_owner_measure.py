@@ -34,7 +34,7 @@ kernel.CloseHandle.argtypes = [w.HANDLE]
 log = target / "atlas-full-owner.log"
 with log.open("wb") as out:
     child = subprocess.Popen([executables[0], "--exact", "automatic_owner_indexes_and_catches_committed_records_up", "--nocapture"], env=env, stdout=out, stderr=subprocess.STDOUT)
-    trace_thread = atlas_cold_wpr.start(child, log, target)
+    trace_thread = atlas_cold_wpr.start(child, log, target, root)
     handle = kernel.OpenProcess(0x1000, False, child.pid)
     if not handle:
         raise c.WinError(c.get_last_error())

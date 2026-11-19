@@ -8,7 +8,7 @@ import threading
 import time
 
 
-def start(owner, log, target):
+def start(owner, log, target, root):
     def record():
         report = {"owner_pid": owner.pid, "status": "not_started"}
         trace = target / "atlas-full-owner.etl"
@@ -58,7 +58,7 @@ def start(owner, log, target):
             while time.monotonic() - begin < 60:
                 if owner.poll() is not None:
                     raise RuntimeError("owner exited during trace")
-                time.sleep(min(0.5, 60 - (time.monotonic() - begin)))
+                time.sleep(max(0.0, min(0.5, 60 - (time.monotonic() - begin))))
             after = worker()
             report["worker_after"] = after
             if before.get("ProcessId") != after.get("ProcessId") or before.get("CreationDate") != after.get("CreationDate"):
@@ -75,6 +75,21 @@ def start(owner, log, target):
                 result = run([str(xperf), "-i", str(trace), "-a", action, *args], timeout=180)
                 (target / f"atlas-full-owner.{action}.txt").write_text(result.stdout + "\n" + result.stderr, encoding="utf-8")
                 report[action] = {"returncode": result.returncode}
+            symbol_dirs = [str(root / "target" / "release"), str(root / "target" / "release" / "deps")]
+            symbol_cache = Path(os.environ["RUNNER_TEMP"]) / "atlas-symbol-cache"
+            symbol_env = os.environ.copy()
+            symbol_env["_NT_SYMBOL_PATH"] = ";".join([*symbol_dirs, f"srv*{symbol_cache}*https://msdl.microsoft.com/download/symbols"])
+            symbol_env["_NT_SYMCACHE_PATH"] = str(Path(os.environ["RUNNER_TEMP"]) / "atlas-symcache")
+            pdbs = [str(path) for directory in symbol_dirs for path in Path(directory).glob("se*.pdb")]
+            report["application_pdbs"] = pdbs
+            if not pdbs:
+                raise RuntimeError("release application PDB not found")
+            stack_path = target / "atlas-full-owner.open-stacks.txt"
+            with stack_path.open("w", encoding="utf-8") as stack_output:
+                stack = subprocess.run([str(xperf), "-i", str(trace), "-symbols", "-a", "stack", "-pid", str(before["ProcessId"]), "-event", ".*[Ff]ile.*", "-butterfly", "50"], stdout=stack_output, stderr=subprocess.STDOUT, text=True, env=symbol_env, timeout=600)
+            report["open_stacks"] = {"returncode": stack.returncode, "bytes": stack_path.stat().st_size}
+            if stack.returncode:
+                raise RuntimeError("symbolized open-stack analysis failed")
             dump = target / "wpr-event-dump.txt"
             result = run([str(xperf), "-i", str(trace), "-o", str(dump), "-a", "dumper"], timeout=300)
             report["dump_returncode"] = result.returncode
