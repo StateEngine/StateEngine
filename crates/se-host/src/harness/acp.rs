@@ -161,11 +161,11 @@ impl Harness for AcpHarness {
             }
             environment
                 .retain(|(name, _)| !name.to_string_lossy().eq_ignore_ascii_case("SE_SESSION"));
+            // The ACP child and its subprocesses see only the public handle;
+            // se resolves the secret from the owner-only launch pin.
             environment.push((
                 "SE_SESSION".into(),
-                String::from_utf8(request.launch_credential.expose().to_vec())
-                    .map_err(|_| error("launch capability is not UTF-8"))?
-                    .into(),
+                request.identity.session.as_str().into(),
             ));
             Ok(ProviderInvocation {
                 executable: request.executable.clone(),

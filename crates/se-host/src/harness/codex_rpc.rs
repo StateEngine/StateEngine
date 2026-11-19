@@ -370,17 +370,11 @@ impl Harness for CodexHarness {
             let named = windows_sandbox::selection(request)?;
             #[cfg(not(windows))]
             let named: Option<windows_sandbox::Implementation> = None;
-            let mut invocation = input::invocation_naming(
+            let invocation = input::invocation_naming(
                 &self.plan(request, &resolved, socket.as_deref()),
                 environment,
                 named.map(windows_sandbox::Implementation::key),
             )?;
-            if self.atlas_helper.is_some() {
-                invocation.environment.entries.push((
-                    "SE_SESSION".into(),
-                    request.identity.session.as_str().into(),
-                ));
-            }
             Ok(invocation)
         })
     }
