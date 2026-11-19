@@ -214,3 +214,91 @@ mod directory;
 mod executable;
 use directory::PrivateDirectory;
 use executable::ExecutableCommand;
+
+#[cfg(windows)]
+#[test]
+fn foreground_ctrl_c_releases_the_host() -> Check {
+    use std::os::windows::process::CommandExt;
+
+    const OWN_CONSOLE: &str = "SE_JUDGE_FOREGROUND_OWN_CONSOLE";
+    const CREATE_NEW_CONSOLE: u32 = 0x10;
+    const CTRL_C_EVENT: u32 = 0;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetConsoleCtrlHandler(handler: *const (), add: i32) -> i32;
+        fn GenerateConsoleCtrlEvent(event: u32, group: u32) -> i32;
+        fn GetConsoleProcessList(processes: *mut u32, capacity: u32) -> u32;
+    }
+
+    if std::env::var_os(OWN_CONSOLE).is_none() {
+        let output = Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "foreground_ctrl_c_releases_the_host",
+                "--nocapture",
+            ])
+            .env(OWN_CONSOLE, "1")
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "isolated console returned {}: {}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Ok(());
+    }
+
+    let mut fixture = Fixture::new()?;
+    // SAFETY: NULL registers native Ctrl+C ignore only in this isolated driver.
+    if unsafe { SetConsoleCtrlHandler(std::ptr::null(), 1) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    fixture.spawn()?;
+    let child = fixture.child.as_mut().ok_or("missing foreground child")?;
+    let pid = child.id();
+    let stdout = child.stdout.take().ok_or("missing startup output")?;
+    let (sender, receiver) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let ready: serde_json::Value =
+        serde_json::from_str(&receiver.recv_timeout(Duration::from_secs(30))??)?;
+    assert_eq!(ready["state"], "running");
+    assert_eq!(ready["process"]["pid"], pid);
+
+    let mut attached = [0; 8];
+    // SAFETY: the OS receives a writable array and its exact capacity.
+    let count = unsafe { GetConsoleProcessList(attached.as_mut_ptr(), attached.len() as u32) };
+    assert_eq!(count, 2, "unexpected console membership: {attached:?}");
+    assert!(attached[..2].contains(&pid) && attached[..2].contains(&std::process::id()));
+    // SAFETY: only the test driver and its owned host share this console.
+    if unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let status = fixture.wait()?;
+    assert!(
+        status.success(),
+        "foreground Ctrl+C shutdown returned {status}"
+    );
+    drop(receiver);
+    reader.join().map_err(|_| "startup reader panicked")?;
+    fixture.finish()?;
+
+    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/judge-diagnostics/foreground-ctrl-c");
+    fs::create_dir_all(&directory)?;
+    fs::write(
+        directory.join("foreground.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "os": "windows", "run_id": std::env::var("GITHUB_RUN_ID").ok(),
+            "foreground_joined": true, "endpoint_removed_and_lease_released": true,
+        }))?,
+    )?;
+    Ok(())
+}

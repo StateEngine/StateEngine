@@ -759,3 +759,7 @@ fn native_prepared_stream_bindings_keep_custody_through_success_and_refusal() ->
     }
     Ok(())
 }
+
+#[cfg(windows)]
+#[path = "support/original_scope_review.rs"]
+mod original_scope_review;
