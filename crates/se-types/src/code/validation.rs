@@ -33,19 +33,6 @@ impl AtlasValidation for Validate {
         if matches!(&value, SymbolSelector::Name { line: Some(0), .. }) {
             return Err(SeError::invalid("Atlas symbol line", "a 1-based line"));
         }
-        if matches!(
-            &value,
-            SymbolSelector::Name {
-                line: None,
-                column: Some(_),
-                ..
-            }
-        ) {
-            return Err(SeError::invalid(
-                "Atlas symbol column",
-                "a line to contain the column",
-            ));
-        }
         Ok(value)
     }
 }

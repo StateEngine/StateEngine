@@ -49,7 +49,7 @@ fn targeted(c: Command) -> Command {
                     "EnumVariant",
                     "Macro",
                 ])
-                .conflicts_with_all(["file", "record", "commit", "symbol_id", "line"]),
+                .conflicts_with_all(["file", "record", "commit", "symbol_id"]),
         )
         .arg(value("line").requires("path"))
         .arg(value("column").requires("line").default_value("0"))
@@ -175,6 +175,12 @@ fn target(m: &ArgMatches) -> Result<AtlasTarget> {
             .parse()
             .map_err(|_| SeError::invalid("line", "a positive line number"))?;
         if let Some(name) = text(m, "target") {
+            if m.value_source("column") == Some(clap::parser::ValueSource::CommandLine) {
+                return Err(SeError::invalid(
+                    "an Atlas name with a column",
+                    "a name with only a line, or a position lookup: --path FILE --line N --column C",
+                ));
+            }
             // A name plus a line keeps the symbol name and narrows by the
             // definition's start line, so an indented declaration resolves.
             return Ok(AtlasTarget::Symbol(SymbolSelector::Name {
@@ -183,7 +189,6 @@ fn target(m: &ArgMatches) -> Result<AtlasTarget> {
                 container: text(m, "container").map(QueryText::new).transpose()?,
                 kind: text(m, "kind").map(|s| parse("kind", &s)).transpose()?,
                 line: Some(line),
-                column: explicit_column(m)?,
             }));
         }
         return Ok(AtlasTarget::Symbol(SymbolSelector::At {
@@ -224,19 +229,7 @@ fn target(m: &ArgMatches) -> Result<AtlasTarget> {
         container: text(m, "container").map(QueryText::new).transpose()?,
         kind: text(m, "kind").map(|s| parse("kind", &s)).transpose()?,
         line: None,
-        column: None,
     }))
-}
-/// Only a column the user actually typed constrains the named query; the
-/// default zero stays off the wire and off the resolution.
-fn explicit_column(m: &ArgMatches) -> Result<Option<u32>> {
-    if m.value_source("column") != Some(clap::parser::ValueSource::CommandLine) {
-        return Ok(None);
-    }
-    let column: u32 = required(m, "column")?
-        .parse()
-        .map_err(|_| SeError::invalid("column", "a zero-based byte column"))?;
-    Ok(Some(column))
 }
 pub(super) fn decode(name: &str, m: &ArgMatches, json: bool) -> Result<AnyOp> {
     let options = options(m, json)?;
@@ -351,32 +344,47 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn an_explicit_column_travels_with_the_name()
+    fn an_explicit_column_beside_a_name_refuses() {
+        assert!(
+            matches!(
+                target_from(&[
+                    "refs", "Foo", "--path", "foo.rs", "--line", "1", "--column", "5"
+                ]),
+                Err(refused)
+                    if refused
+                        .to_string()
+                        .contains("position lookup: --path FILE --line N --column C")
+            ),
+            "the refusal must point to the position selector"
+        );
+    }
+    #[test]
+    fn kind_and_line_narrow_the_named_target_together()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let target = target_from(&[
-            "refs", "Foo", "--path", "foo.rs", "--line", "1", "--column", "5",
+            "refs", "Foo", "--path", "foo.rs", "--kind", "Struct", "--line", "1",
         ])?;
         assert!(
             matches!(
                 target,
                 AtlasTarget::Symbol(SymbolSelector::Name {
+                    kind: Some(SymbolKind::Struct),
                     line: Some(1),
-                    column: Some(5),
                     ..
                 })
             ),
-            "an explicit column must constrain the named query: {target:?}"
+            "kind and line must compose on the named target: {target:?}"
         );
         Ok(())
     }
     #[test]
-    fn a_nonnumeric_column_refuses() {
+    fn a_nonnumeric_column_refuses_on_the_position_lookup() {
         assert!(
             target_from(&[
-                "refs", "Foo", "--path", "foo.rs", "--line", "1", "--column", "wide"
+                "refs", "--path", "foo.rs", "--line", "1", "--column", "wide"
             ])
             .is_err(),
-            "main refuses a nonnumeric column"
+            "a nonnumeric column must refuse on the position lookup"
         );
     }
     #[test]
@@ -386,9 +394,9 @@ mod tests {
         assert!(
             matches!(
                 target,
-                AtlasTarget::Symbol(SymbolSelector::Name { column: None, .. })
+                AtlasTarget::Symbol(SymbolSelector::Name { line: Some(1), .. })
             ),
-            "the default column must not constrain the query: {target:?}"
+            "the default column must not change the line filter: {target:?}"
         );
         Ok(())
     }

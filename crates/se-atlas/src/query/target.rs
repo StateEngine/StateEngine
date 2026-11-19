@@ -1,6 +1,5 @@
 use super::*;
-use rusqlite::types::Value;
-use std::collections::HashSet;
+use rusqlite::{params, types::Value};
 pub(super) struct Target {
     pub file: FileRow,
     pub symbol: Option<SymbolRow>,
@@ -23,7 +22,7 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
             "a symbol, path, or path and position",
         ));
     };
-    let (name, path, container, kind, line, column) = match selector {
+    let (name, path, container, kind, line) = match selector {
         SymbolSelector::Id(id) => {
             let found = {
                 let mut stmt = sql.prepare("SELECT id FROM symbols WHERE key=?1")?;
@@ -45,19 +44,24 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
             let Some(file) = file_by_path(sql, path)? else {
                 return Ok(None);
             };
-            let Some(id) =
-                containing_ids(sql, Some(file.rowid), position.line, position.byte_column)?
-                    .into_iter()
-                    .next()
-            else {
-                return Ok(None);
+            let found = {
+                let mut stmt=sql.prepare("SELECT id FROM symbols WHERE file=?1 AND (start_line<?2 OR (start_line=?2 AND start_column<=?3)) AND (end_line>?2 OR (end_line=?2 AND end_column>?3)) ORDER BY (end_byte-start_byte),key LIMIT 1")?;
+                let mut rows = stmt
+                    .query(params![file.rowid, position.line, position.byte_column])
+                    .map_err(cache_error)?;
+                rows.next()
+                    .map_err(cache_error)?
+                    .map(|r| get::<i64>(r, 0))
+                    .transpose()?
             };
-            return symbol_by_id(sql, id)
-                .map(|(symbol, _)| Target {
-                    file,
-                    symbol: Some(symbol),
+            return found
+                .map(|id| {
+                    symbol_by_id(sql, id).map(|(symbol, _)| Target {
+                        file,
+                        symbol: Some(symbol),
+                    })
                 })
-                .map(Some);
+                .transpose();
         }
         SymbolSelector::Name {
             name,
@@ -65,8 +69,7 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
             container,
             kind,
             line,
-            column,
-        } => (name, path, container, kind, line, column),
+        } => (name, path, container, kind, line),
     };
     let file = path.as_ref().map(|p| file_by_path(sql, p)).transpose()?;
     if file.as_ref().is_some_and(Option::is_none) {
@@ -90,18 +93,6 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
             ids.push(get::<i64>(row, 0)?);
         }
         ids
-    };
-    // A name with a line and a column reuses the bare-position containment
-    // rule, so a coordinate inside a multiline span resolves the same as
-    // the bare position selector.
-    let file_rowid = file.as_ref().and_then(Option::as_ref).map(|row| row.rowid);
-    let contained: Option<HashSet<i64>> = match (line, column) {
-        (Some(line), Some(column)) => Some(
-            containing_ids(sql, file_rowid, *line, *column)?
-                .into_iter()
-                .collect(),
-        ),
-        _ => None,
     };
     const TYPE_DECLARATION: &[SymbolKind] = &[
         SymbolKind::Struct,
@@ -132,14 +123,10 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
         {
             continue;
         }
-        if let Some(line) = line {
-            if let Some(contained) = &contained {
-                if !contained.contains(&id) {
-                    continue;
-                }
-            } else if symbol.span.start.line != *line {
-                continue;
-            }
+        if let Some(line) = line
+            && symbol.span.start.line != *line
+        {
+            continue;
         }
         if let Some(container) = container
             && !container_matches(sql, id, container.as_str())?
@@ -194,44 +181,6 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
             candidates: displays,
         }),
     ))
-}
-/// The bare-position containment rule: the span holds the line and column
-/// when it starts on or before the line and ends on or after it, smallest
-/// span first, so a position inside several symbols takes the tightest.
-/// The name plus line and column selector reuses it instead of a second
-/// matching rule.
-fn containing_ids(
-    sql: &SqlView<'_>,
-    file: Option<i64>,
-    line: u32,
-    column: u32,
-) -> AtlasResult<Vec<i64>> {
-    let (statement, values): (&str, Vec<Value>) = match file {
-        Some(rowid) => (
-            "SELECT id FROM symbols WHERE file=?1 AND (start_line<?2 OR (start_line=?2 AND start_column<=?3)) AND (end_line>?2 OR (end_line=?2 AND end_column>?3)) ORDER BY (end_byte-start_byte),key",
-            vec![
-                Value::Integer(rowid),
-                Value::Integer(i64::from(line)),
-                Value::Integer(i64::from(column)),
-            ],
-        ),
-        None => (
-            "SELECT id FROM symbols WHERE (start_line<?1 OR (start_line=?1 AND start_column<=?2)) AND (end_line>?1 OR (end_line=?1 AND end_column>?2)) ORDER BY (end_byte-start_byte),key",
-            vec![
-                Value::Integer(i64::from(line)),
-                Value::Integer(i64::from(column)),
-            ],
-        ),
-    };
-    let mut stmt = sql.prepare(statement)?;
-    let mut rows = stmt
-        .query(rusqlite::params_from_iter(values))
-        .map_err(cache_error)?;
-    let mut ids = Vec::new();
-    while let Some(row) = rows.next().map_err(cache_error)? {
-        ids.push(get::<i64>(row, 0)?);
-    }
-    Ok(ids)
 }
 fn load(sql: &SqlView<'_>, id: i64) -> AtlasResult<Target> {
     let (symbol, file) = symbol_by_id(sql, id)?;
