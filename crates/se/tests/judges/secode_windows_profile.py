@@ -176,6 +176,7 @@ def main():
     if sys.platform != 'win32':
         parser.error('this judge requires native Windows')
     native = json.loads(Path(__file__).with_name('secode_headless_capabilities.json').read_text(encoding='utf-8'))
+    native['service']['shutdown'] = ['Ctrl+C']
     capabilities(native)
     args.output = args.output.resolve()
     state_home(args.output)
