@@ -159,10 +159,6 @@ pub fn reserve_notice<S: MailSnapshot>(
 }
 /// A native consumer may negotiate a smaller IDs-per-notice ceiling. The
 /// committed descriptor remains whole; no adapter truncates it after commit.
-#[expect(
-    clippy::too_many_lines,
-    reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
-)]
 pub fn reserve_notice_bounded<S: MailSnapshot>(
     kernel: &Kernel,
     cx: &mut Cx<'_, S>,
@@ -228,89 +224,7 @@ pub fn reserve_notice_bounded<S: MailSnapshot>(
             "unresolved notice inventory is incomplete; preserve original notice identities and continue its cursor",
         ));
     }
-    let messages = cx
-        .read
-        .mail_pending(request.target.agent.clone(), budget(maximum_ids, 262144)?)
-        .map_err(|error| store_error(&error))?;
-    let window = messages
-        .window()
-        .fields()
-        .ok_or_else(|| scope::unreadable("mail debt", "query has no measured store window"))?;
-    if messages.items().is_empty() {
-        if !messages.window().complete() {
-            return Err(scope::unreadable(
-                "mail debt",
-                "empty incomplete page is not an empty mailbox",
-            ));
-        }
-        return Ok(OpStep::Complete(Read::Absent {
-            checked: "Complete indexed recipient inbox contains no unresolved messages".into(),
-        }));
-    }
-    let info = cx.read.info();
-    let mut notice = MailNotice {
-        version: 1,
-        notice_id: request.notice_id,
-        target_agent: request.target.agent.clone(),
-        session: request.target.session.clone(),
-        epoch: request.target.epoch.clone(),
-        generation: request.target.generation,
-        fingerprint: request.target.fingerprint,
-        ids: messages
-            .items()
-            .iter()
-            .map(|message| message.message.clone())
-            .collect(),
-        through: MailThrough {
-            store: info.id,
-            incarnation: info.incarnation,
-            sequence: window.to.get(),
-        },
-        digest: [0; 32],
-    };
-    loop {
-        notice.digest = notice
-            .expected_digest()
-            .map_err(|error| store_error(&error))?;
-        let size = serde_json::to_vec(&notice)
-            .map_err(|error| scope::unreadable("mail notice encoding", &error.to_string()))?
-            .len();
-        if size <= 8192 {
-            break;
-        }
-        if notice.ids.len() == 1 {
-            return Err(SeError::too_large("complete mail notice", 8192, size));
-        }
-        notice.ids.pop();
-    }
-    notice.validate().map_err(|error| store_error(&error))?;
-    let cause = messages.items()[0].event.clone();
-    let event = kernel.event(
-        EventBody::EffectRequested {
-            principal: Some(Actor::Agent(request.target.agent.clone())),
-            effect: request.effect_id,
-            kind: EffectKind::Bell,
-            intent: EffectIntent::MailNotice(Box::new(notice)),
-            cause,
-            request_key: request.key.clone(),
-        },
-        cx,
-    )?;
-    let batch = kernel.batch(
-        "mail.reserve_notice",
-        request.key.clone(),
-        serde_json::json!({"target":request.target}),
-        event,
-        cx,
-    )?;
-    Ok(OpStep::Commit {
-        batch,
-        then: MailThen {
-            key: request.key,
-            target: request.target,
-            more_pending: false,
-        },
-    })
+    coalesce::reserve_coalesced_bounded(kernel, cx, request, false, Vec::new(), maximum_ids)
 }
 /// The host reopens an admitted recipient snapshot after the actual writer
 /// completes. This function cannot turn an unconfirmed draft into a notice.

@@ -43,8 +43,8 @@ pub trait MailSnapshot: Snapshot {
         deadline: std::time::Duration,
     ) -> StoreResult<se_types::Read<StoredEvent>>;
 
-    /// Indexed, unread and undelivered recipient mail. Delivered-but-unread
-    /// notices retain settlement debt without hiding a newer pending message.
+    /// Unread and undelivered recipient mail, including quiet mail activated by
+    /// a previously committed notice. Fresh quiet mail never causes a wake.
     fn mail_pending(
         &mut self,
         recipient: AgentId,

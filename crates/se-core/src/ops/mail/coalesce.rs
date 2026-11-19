@@ -9,6 +9,17 @@ pub fn reserve_coalesced<S: MailSnapshot>(
     reoffer: bool,
     excluded: Vec<MessageId>,
 ) -> Result<OpStep<Read<Reservation>, MailThen>> {
+    reserve_coalesced_bounded(kernel, cx, request, reoffer, excluded, 32)
+}
+
+pub(super) fn reserve_coalesced_bounded<S: MailSnapshot>(
+    kernel: &Kernel,
+    cx: &mut Cx<'_, S>,
+    request: ReserveNotice,
+    reoffer: bool,
+    excluded: Vec<MessageId>,
+    maximum_ids: u32,
+) -> Result<OpStep<Read<Reservation>, MailThen>> {
     authorize(cx, &request.target)?;
     match cx
         .read
@@ -29,7 +40,9 @@ pub fn reserve_coalesced<S: MailSnapshot>(
             )?;
             let mut seen = excluded;
             seen.extend(reservation.ids.iter().cloned());
-            reservation.more_pending = !select_unread(cx, &target, &seen)?.0.is_empty();
+            reservation.more_pending = !select_unread(cx, &target, &seen, reoffer, maximum_ids)?
+                .0
+                .is_empty();
             return Ok(OpStep::Complete(Read::Present { value: reservation }));
         }
         Read::Absent { .. } => {}
@@ -55,7 +68,8 @@ pub fn reserve_coalesced<S: MailSnapshot>(
             }));
         }
     }
-    let (selected, through, eligible) = select_unread(cx, &request.target, &excluded)?;
+    let (selected, through, eligible) =
+        select_unread(cx, &request.target, &excluded, reoffer, maximum_ids)?;
     if selected.is_empty() {
         return Ok(OpStep::Complete(Read::Absent {
             checked: "No unread mail is waiting".into(),
@@ -86,6 +100,8 @@ fn select_unread<S: MailSnapshot>(
     cx: &mut Cx<'_, S>,
     target: &MailTarget,
     excluded: &[MessageId],
+    reoffer: bool,
+    maximum_ids: u32,
 ) -> Result<(Vec<MessageRecord>, Option<u64>, usize)> {
     let excluded_set: std::collections::HashSet<&MessageId> = excluded.iter().collect();
     let mut groups: [Vec<MessageRecord>; 4] = std::array::from_fn(|_| Vec::new());
@@ -112,7 +128,10 @@ fn select_unread<S: MailSnapshot>(
             .ok_or_else(|| scope::unreadable("mail inbox", "snapshot boundary is unavailable"))?;
         through.get_or_insert(window.to.get());
         for item in page.items() {
-            if item.superseded_by.is_some() || excluded_set.contains(&item.message) {
+            if item.superseded_by.is_some()
+                || (!reoffer && item.delivered.is_some())
+                || excluded_set.contains(&item.message)
+            {
                 continue;
             }
             eligible += 1;
@@ -140,7 +159,11 @@ fn select_unread<S: MailSnapshot>(
             "unread inventory exceeded its bounded scan",
         ));
     }
-    let selected: Vec<MessageRecord> = groups.into_iter().flatten().take(32).collect();
+    let selected: Vec<MessageRecord> = groups
+        .into_iter()
+        .flatten()
+        .take(maximum_ids as usize)
+        .collect();
     Ok((selected, through, eligible))
 }
 

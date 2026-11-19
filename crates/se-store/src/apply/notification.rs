@@ -50,6 +50,14 @@ pub(super) fn reserved(
     notice: &crate::mail::MailNotice,
     seq: i64,
 ) -> StoreResult<()> {
+    if connection::info(c)?.schema_version >= 4 {
+        let project = project_id(c, &h.scope, false)?;
+        let scope = scope_key(c, &h.scope, false)?;
+        let recipient = key(c, "agent", notice.target_agent.as_str(), &scope, false)?;
+        // A committed notice makes older quiet mail eligible for continuation.
+        // Later quiet mail retains its original no-wake intent.
+        c.execute("UPDATE message_deliveries SET wake_event_seq=? WHERE project_id=? AND recipient_id=? AND quiet=1 AND wake_state='quiet' AND wake_event_seq=sent_seq AND delivered_seq IS NULL AND read_seq IS NULL AND dismissed_seq IS NULL AND superseded_by IS NULL AND sent_seq<=?", crate::sql_value::sql_params![seq,project,recipient,notice.through.sequence]).map_err(sql)?;
+    }
     project(c, h, notice, seq, "reserved", None)
 }
 

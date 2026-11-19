@@ -308,13 +308,9 @@ impl SqliteSnapshot {
         );
         if pending {
             if self.info.schema_version >= 4 {
-                // Pending mail always has an explicit recipient and an unread
-                // predicate. Skip quiet rows in the index, before the limit.
-                statement = statement.replace(
-                    "INDEXED BY mail_unread",
-                    "INDEXED BY mail_notification_pending",
-                );
-                statement.push_str(" AND d.quiet=0");
+                // A prior committed notice can activate a quiet backlog. The
+                // unread index includes both that backlog and ordinary mail.
+                statement.push_str(" AND (d.quiet=0 OR d.wake_event_seq!=d.sent_seq)");
             }
             statement.push_str(if self.info.schema_version >= 3 {
                 " AND d.delivered_seq IS NULL"
