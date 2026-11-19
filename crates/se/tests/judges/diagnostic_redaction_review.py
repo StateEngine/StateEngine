@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 
-def state_home(path):
+def state_home(path, *, owner_only=False):
     if os.name != 'nt':
         path.mkdir(mode=0o700)
         return
@@ -23,13 +23,18 @@ $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $acl = [System.Security.AccessControl.DirectorySecurity]::new()
 $acl.SetOwner($sid)
 $acl.SetAccessRuleProtection($true, $false)
-foreach ($principal in @($sid, [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'))) {
+$principals = @($sid)
+if ($env:SE_TEST_OWNER_ONLY -ne '1') {
+    $principals += [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+}
+foreach ($principal in $principals) {
     $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
         $principal, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
 }
 [System.IO.Directory]::CreateDirectory($env:SE_TEST_STATE_HOME, $acl) | Out-Null
 """
-    environment = dict(os.environ, SE_TEST_STATE_HOME=str(path))
+    environment = dict(os.environ, SE_TEST_STATE_HOME=str(path),
+                       SE_TEST_OWNER_ONLY='1' if owner_only else '0')
     subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
                    env=environment, capture_output=True, check=True, timeout=30)
 

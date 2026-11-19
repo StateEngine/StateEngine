@@ -66,13 +66,16 @@ fn main() {
             },
         [verb, flag, profile] if verb=="init-profile" && flag=="--service"
             && directory.join("sandbox-readback.json").exists() => {
-                let mut builder=fs::DirBuilder::new();
-                builder.recursive(true);
-                #[cfg(unix)] {
-                    use std::os::unix::fs::DirBuilderExt;
-                    builder.mode(0o700);
+                let refuse=directory.join("bootstrap-refuse").exists();
+                if !refuse {
+                    let mut builder=fs::DirBuilder::new();
+                    builder.recursive(true);
+                    #[cfg(unix)] {
+                        use std::os::unix::fs::DirBuilderExt;
+                        builder.mode(0o700);
+                    }
+                    builder.create(profile).unwrap();
                 }
-                builder.create(profile).unwrap();
                 if directory.join("bootstrap-gate").exists() {
                     // The fixture releases this finite initializer only after
                     // the host has persisted its exact executable observation.
@@ -85,6 +88,7 @@ fn main() {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                 }
+                if refuse { std::process::exit(81); }
             },
         [verb, ..] if verb=="serve-service"
             && directory.join("sandbox-readback.json").exists() => {
