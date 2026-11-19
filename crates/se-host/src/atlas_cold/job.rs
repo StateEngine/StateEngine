@@ -16,6 +16,7 @@ pub struct ColdJob {
     discovered: u64,
     last_path: Option<RelativePath>,
     last_phase: protocol::Phase,
+    diagnostic_phase_started: Instant,
     pub peak_observed_bytes: u64,
 }
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
@@ -84,6 +85,7 @@ impl ColdJob {
             discovered: 0,
             last_path: None,
             last_phase: protocol::Phase::Startup,
+            diagnostic_phase_started: Instant::now(),
             peak_observed_bytes: 0,
         })
     }
@@ -215,6 +217,15 @@ impl ColdJob {
             let reply: protocol::Reply = serde_json::from_slice(&bytes).map_err(failure)?;
             match reply {
                 protocol::Reply::Working { job, path, phase } => {
+                    let elapsed = self.diagnostic_phase_started.elapsed();
+                    if elapsed >= Duration::from_millis(20) {
+                        eprintln!(
+                            "ATLAS_COLD_PHASE previous={:?} next={phase:?} elapsed_ms={}",
+                            self.last_phase,
+                            elapsed.as_millis()
+                        );
+                    }
+                    self.diagnostic_phase_started = Instant::now();
                     if job != self.request.job {
                         return Err(self.reject("foreign cold phase report"));
                     }
