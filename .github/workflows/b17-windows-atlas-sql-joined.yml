@@ -1,0 +1,30 @@
+name: Windows Atlas joined SQL measurement
+on:
+  push:
+    branches: [probe/windows-atlas-sql-joined-20261119]
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '4'
+      CARGO_INCREMENTAL: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Measure two native SQL connections in fresh processes
+        run: cargo test --release --locked -p se-host --test atlas_windows_probe -- --exact atlas_components_native --nocapture
+      - name: Upload native measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-atlas-joined-sql-measurements
+          path: target/judge-diagnostics/atlas-components-*.json
+          if-no-files-found: warn
