@@ -79,6 +79,8 @@ impl LaunchCoordinator {
                 project: key.0.clone(),
                 agent: key.1.clone(),
                 profile: NativePath::from_local(profile)?,
+                profile_parent_identity: None,
+                profile_identity: None,
                 session: request.identity.session.clone(),
                 vendor_session: session,
                 initial_input: initial,
@@ -106,6 +108,10 @@ impl LaunchCoordinator {
                 key.clone(),
                 Arc::new(tokio::sync::Mutex::new(Service {
                     journal,
+                    #[cfg(windows)]
+                    profile_guard: None,
+                    #[cfg(windows)]
+                    profile_parent_guard: None,
                     path,
                     digest: None,
                     pending_save: None,
@@ -140,7 +146,15 @@ impl LaunchCoordinator {
                 .await?;
         }
         service.persist(self, deadline).await?;
-        let profile = service.journal.profile.to_local()?;
+        #[cfg(windows)]
+        let profile = if service.journal.profile_identity.is_none() {
+            self.qualify_secode_profile_parent(&mut service, deadline)
+                .await?
+        } else {
+            service.checked_profile()?
+        };
+        #[cfg(not(windows))]
+        let profile = service.checked_profile()?;
         let checked_images = images.clone();
         let (resume_supported, server_sha256) = self
             .store
@@ -181,6 +195,7 @@ impl LaunchCoordinator {
                 request.cwd.to_local()?,
                 request.policy.clone(),
                 None,
+                Some(profile.clone()),
                 deadline,
             )
             .await?;
@@ -251,6 +266,28 @@ impl LaunchCoordinator {
                 "the original initializer has no successful native exit; preserve its bounded diagnostics and private profile",
             ));
         }
+        #[cfg(windows)]
+        if let Some(parent) = &service.profile_parent_guard {
+            let resolved = parent
+                .resolved_root()
+                .map_err(|cause| error("SE Code profile parent", cause))?;
+            if profile.parent() != Some(resolved.as_path()) {
+                return Err(error(
+                    "SE Code profile parent",
+                    format!(
+                        "{} changed during initialization; restore the original protected parent and retry",
+                        profile.display()
+                    ),
+                ));
+            }
+        }
+        #[cfg(windows)]
+        self.qualify_secode_profile(&mut service, Some(profile.clone()), deadline)
+            .await?;
+        #[cfg(windows)]
+        {
+            service.profile_parent_guard = None;
+        }
         self.configure_secode(&mut service, request, deadline)
             .await?;
         if service.journal.service.is_none() {
@@ -258,6 +295,7 @@ impl LaunchCoordinator {
             service.journal.server_sha256 = Some(server_sha256);
             service.journal.retired = false;
             service.persist(self, deadline).await?;
+            let profile = service.checked_profile()?;
             let arguments = vec![
                 "serve-service".into(),
                 "--service".into(),
@@ -284,6 +322,7 @@ impl LaunchCoordinator {
                 arguments,
                 request.cwd.to_local()?,
                 request.policy.clone(),
+                None,
                 None,
                 deadline,
             )
@@ -401,6 +440,20 @@ impl LaunchCoordinator {
             service: identity,
             live: service.live.clone(),
             profile: service.journal.profile.clone(),
+            #[cfg(windows)]
+            profile_guard: service.profile_guard.clone().ok_or_else(|| {
+                error(
+                    "SE Code private profile",
+                    "the original profile guard is unavailable",
+                )
+            })?,
+            #[cfg(windows)]
+            profile_identity: service.journal.profile_identity.ok_or_else(|| {
+                error(
+                    "SE Code private profile",
+                    "the original profile identity is unavailable",
+                )
+            })?,
             process: native_record::instance(
                 &service_record.root,
                 service_record.argv_sha256,

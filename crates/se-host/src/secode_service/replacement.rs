@@ -189,7 +189,7 @@ impl LaunchCoordinator {
             }
             // The old session is closed and captured. A new session may now
             // start from the qualified service without rewriting its history.
-            let profile = service.journal.profile.to_local()?;
+            let profile = service.checked_profile()?;
             let registration = self
                 .store
                 .pool

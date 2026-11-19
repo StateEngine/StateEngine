@@ -108,12 +108,28 @@ pub(crate) struct Managed {
     pub service: ServiceIdentity,
     pub live: LiveBinding,
     pub profile: NativePath,
+    #[cfg(windows)]
+    pub profile_guard: Arc<se_proc::NativeProfileFiles>,
+    #[cfg(windows)]
+    pub profile_identity: [u8; 24],
     pub process: se_types::ProcessInstance,
     pub session: String,
     pub initial_input: String,
 }
 impl Managed {
     pub(crate) fn current(&self) -> Result<QualifiedControl> {
+        #[cfg(windows)]
+        if self
+            .profile_guard
+            .identity()
+            .map_err(|e| unreadable("SE Code private profile", e))?
+            != self.profile_identity
+        {
+            return Err(unreadable(
+                "SE Code private profile",
+                "the original profile identity changed",
+            ));
+        }
         self.live
             .resolve(self.control.clone(), self.service.clone())
     }

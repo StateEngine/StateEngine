@@ -62,6 +62,7 @@ impl LaunchCoordinator {
         cwd: PathBuf,
         policy: se_proc::LaunchPolicy,
         input: Option<se_types::Secret>,
+        profile_override: Option<PathBuf>,
         deadline: &Deadline,
     ) -> Result<se_proc::ProcessRecord> {
         if service.journal.auxiliary(auxiliary).is_some() {
@@ -97,11 +98,17 @@ impl LaunchCoordinator {
         service.checkpoint(auxiliary, CheckpointKind::Reservation(reservation.clone()))?;
         service.persist(self, deadline).await?;
         let mut environment = crate::harness::secode_process::provider_environment();
-        let scratch = service
-            .journal
-            .profile
-            .to_local()?
-            .with_extension("scratch");
+        let profile = match profile_override {
+            Some(path) if auxiliary == Auxiliary::Bootstrap => path,
+            Some(_) => {
+                return Err(error(
+                    "SE Code private profile",
+                    "profile override is only valid during initialization",
+                ));
+            }
+            None => service.checked_profile()?,
+        };
+        let scratch = profile.with_extension("scratch");
         let private_scratch = scratch.clone();
         self.store
             .pool
@@ -124,12 +131,7 @@ impl LaunchCoordinator {
         if auxiliary == Auxiliary::Service {
             environment.push((
                 "SECODE_CONFIG".into(),
-                service
-                    .journal
-                    .profile
-                    .to_local()?
-                    .join("host-policy.json")
-                    .into_os_string(),
+                profile.join("host-policy.json").into_os_string(),
             ));
         }
         let image_path = executable.original_path().to_owned();

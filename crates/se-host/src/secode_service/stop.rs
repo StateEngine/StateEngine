@@ -183,21 +183,12 @@ impl LaunchCoordinator {
                         return Err(error("SE Code service retirement", "an original auxiliary checkpoint has no native empty-scope witness; missing retained handles are not absence"));
                     }
                 }
-                self.retire_secode_registration(&mut service, deadline).await?;
-                let profile = service.journal.profile.to_local()?;
-                self.store.pool.run_owned(deadline, move || {
-                    match std::fs::symlink_metadata(&profile) {
-                        Err(cause) if cause.kind()==std::io::ErrorKind::NotFound => return Ok(()),
-                        Err(cause) => return Err(error("SE Code service profile retirement",cause)),
-                        Ok(_) => (),
-                    }
-                    let _files = se_proc::NativeProfileFiles::open(&profile).map_err(|e| error("SE Code service retirement", e))?;
-                    // Registration is non-secret vendor metadata beneath the
-                    // protected private profile; its public file mode need not
-                    // match the host's owner-only credential mode.
-                    if se_proc::NativeSourcePin::open(&profile.join("registration")).map_err(|e| error("SE Code registration retirement", e))?.is_some() { return Err(error("SE Code service retirement", "native processes exited but registration is still present; preserve the private profile for reconciliation")); }
-                    Ok(())
-                }).await?;
+                #[cfg(windows)]
+                if service.journal.bootstrap.is_none() && service.journal.service.is_none() && service.journal.retirement.is_none() {
+                    service.journal.retired = true;
+                    return service.persist(self, deadline).await;
+                }
+                self.finish_secode_profile_retirement(&mut service, deadline).await?;
                 service.live.invalidate()?;
                 service.journal.retired=true;
                 service.persist(self,deadline).await
@@ -210,5 +201,25 @@ impl LaunchCoordinator {
             }
         }
         Ok(pending)
+    }
+
+    async fn finish_secode_profile_retirement(
+        &self,
+        service: &mut Service,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        self.retire_secode_registration(service, deadline).await?;
+        let profile = service.checked_profile()?;
+        self.store.pool.run_owned(deadline, move || {
+            match std::fs::symlink_metadata(&profile) {
+                Err(cause) if cause.kind()==std::io::ErrorKind::NotFound => return Ok(()),
+                Err(cause) => return Err(error("SE Code service profile retirement",cause)),
+                Ok(_) => (),
+            }
+            let _files = se_proc::NativeProfileFiles::open(&profile).map_err(|e| error("SE Code service retirement", e))?;
+            // Registration is non-secret provider metadata, not a credential.
+            if se_proc::NativeSourcePin::open(&profile.join("registration")).map_err(|e| error("SE Code registration retirement", e))?.is_some() { return Err(error("SE Code service retirement", "native processes exited but registration is still present; preserve the private profile for reconciliation")); }
+            Ok(())
+        }).await
     }
 }

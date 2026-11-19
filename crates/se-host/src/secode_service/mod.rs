@@ -16,6 +16,8 @@ mod resume;
 mod retirement;
 mod status;
 mod stop;
+#[cfg(windows)]
+mod windows_profile;
 use super::*;
 use crate::client::lease::Deadline;
 use custody::Journal;
@@ -41,6 +43,10 @@ struct PendingSave {
 }
 pub(super) struct Service {
     journal: Journal,
+    #[cfg(windows)]
+    profile_guard: Option<Arc<se_proc::NativeProfileFiles>>,
+    #[cfg(windows)]
+    profile_parent_guard: Option<Arc<se_proc::NativeProfileFiles>>,
     path: PathBuf,
     digest: Option<[u8; 32]>,
     pending_save: Option<PendingSave>,
@@ -89,7 +95,58 @@ async fn lock_service<'a>(
 }
 
 impl Service {
+    fn checked_profile(&self) -> Result<PathBuf> {
+        let profile = self.journal.profile.to_local()?;
+        #[cfg(windows)]
+        if self.journal.profile_identity.is_none()
+            && let Some(parent) = &self.profile_parent_guard
+        {
+            let name = profile
+                .file_name()
+                .ok_or_else(|| error("SE Code private profile", "profile name is absent"))?;
+            return Ok(parent
+                .resolved_root()
+                .map_err(|cause| error("SE Code profile parent", cause))?
+                .join(name));
+        }
+        #[cfg(windows)]
+        if self.journal.profile_identity.is_none() && self.journal.bootstrap.is_some() {
+            return Err(error(
+                "SE Code profile parent",
+                format!(
+                    "{}: the initializer's protected parent is unavailable; restore the original parent and restart the host to recover its custody",
+                    profile.display()
+                ),
+            ));
+        }
+        #[cfg(windows)]
+        if let Some(expected) = self.journal.profile_identity {
+            let guard = self.profile_guard.as_ref().ok_or_else(|| {
+                error(
+                    "SE Code private profile",
+                    format!("{}: the original profile guard is unavailable; restore the original profile and restart the host to recover its custody", profile.display()),
+                )
+            })?;
+            let actual = guard
+                .identity()
+                .map_err(|cause| error("SE Code private profile", format!("{cause}; restore the original profile and its protected permissions, then retry")))?;
+            if actual != expected {
+                return Err(error(
+                    "SE Code private profile",
+                    format!(
+                        "{}: the original profile identity changed; restore the original profile before retrying",
+                        profile.display()
+                    ),
+                ));
+            }
+            return guard
+                .resolved_root()
+                .map_err(|cause| error("SE Code private profile", cause));
+        }
+        Ok(profile)
+    }
     fn current(&self) -> Result<crate::harness::secode_process::QualifiedControl> {
+        self.checked_profile()?;
         self.live.resolve(
             self.control.clone().ok_or_else(|| {
                 error("SE Code current binding", "authenticated control is absent")
@@ -207,15 +264,6 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<()> {
         use crate::Harness;
-        if cfg!(windows) {
-            return Err(se_types::SeError::new(se_types::Detail::FeatureUnavailable(
-                se_types::details::FeatureUnavailable {
-                    subject: "headless SE Code services on Windows".into(),
-                    reason: "private profile-directory protection is not yet qualified".into(),
-                    next_step: "Run headless SE Code on Linux. On Windows, use a Claude or Codex agent; for a new project, run se init --provider codex after signing in to Codex.".into(),
-                },
-            )));
-        }
         if !plan.input.detach {
             return Err(crate::harness::secode_process::incompatible(
                 "managed SE Code currently requires --detach for its owned headless launch",

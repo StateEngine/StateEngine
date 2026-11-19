@@ -13,6 +13,7 @@ use std::{
 use windows_sys::Win32::{Foundation::*, Security::*, Storage::FileSystem::*};
 
 mod metadata;
+mod profile_ancestry;
 pub(crate) mod security;
 use security::{Layout, descriptor};
 fn validate_component(value: &std::ffi::OsStr, path: &Path) -> Result<()> {
@@ -305,8 +306,15 @@ pub(super) struct Directory {
     identity: Identity,
     resolved_root: PathBuf,
     layout: Layout,
+    profile_ancestry: Vec<profile_ancestry::Pin>,
 }
 impl Directory {
+    pub fn root_identity(&self) -> [u8; 24] {
+        let mut bytes = [0u8; 24];
+        bytes[..8].copy_from_slice(&self.identity.volume.to_be_bytes());
+        bytes[8..].copy_from_slice(&self.identity.index);
+        bytes
+    }
     pub fn identity(&self, file: &File, path: &Path) -> Result<Identity> {
         metadata_for(file, path, false, self.layout)
     }
@@ -331,12 +339,44 @@ impl Directory {
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_with_layout(path, Layout::State)
     }
+    pub fn open_profile_ancestor(path: &Path) -> Result<Self> {
+        let mut directory = Self::open_with_layout(path, Layout::State)?;
+        directory.profile_ancestry = profile_ancestry::pin(path)?;
+        directory.check_name(path)?;
+        Ok(directory)
+    }
     pub fn open_profile(path: &Path) -> Result<Self> {
         Self::open_with_layout(path, Layout::UserPrivate)
+    }
+    pub fn create_profile(path: &Path) -> Result<Self> {
+        let ancestry = profile_ancestry::pin(path)?;
+        let sd = security::descriptor_for(path, true, Layout::UserPrivate)?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd.0,
+            bInheritHandle: 0,
+        };
+        // SAFETY: path and the security descriptor remain valid for the call.
+        if unsafe { CreateDirectoryW(wide(path)?.as_ptr(), &attributes) } == 0 {
+            // SAFETY: this reads the immediately preceding creation error.
+            if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
+                return Err(last("create private profile parent", path));
+            }
+        }
+        profile_ancestry::verify(&ancestry)?;
+        Self::open_profile(path)
+    }
+    pub fn resolved_root(&self) -> &Path {
+        &self.resolved_root
     }
     fn open_with_layout(path: &Path, layout: Layout) -> Result<Self> {
         let file = walk_for(path, false, None, layout)?;
         let identity = metadata_for(&file, path, true, layout)?;
+        let ancestry = if layout == Layout::UserPrivate {
+            profile_ancestry::pin(path)?
+        } else {
+            Vec::new()
+        };
         let mut buffer = vec![0u16; 32768];
         // SAFETY: retained directory handle, writable UTF-16 buffer and explicit
         // capacity. Resolve once from the pinned object, not a caller pathname.
@@ -358,14 +398,20 @@ impl Directory {
             ));
         }
         let resolved_root = std::ffi::OsString::from_wide(&buffer[..length as usize]).into();
-        Ok(Self {
+        let directory = Self {
             file,
             identity,
             resolved_root,
             layout,
-        })
+            profile_ancestry: ancestry,
+        };
+        if layout == Layout::UserPrivate {
+            directory.check_name(path)?;
+        }
+        Ok(directory)
     }
     pub fn check_name(&self, path: &Path) -> Result<()> {
+        profile_ancestry::verify(&self.profile_ancestry)?;
         let found = walk_for(path, false, None, self.layout)?;
         self.same_metadata_root(&found, path)
     }
