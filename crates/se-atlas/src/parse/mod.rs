@@ -152,7 +152,11 @@ impl AtlasParser for SemanticParser {
             ));
         }
         let _lease = budget::Lease::take()?;
-        let memory = native_memory::Reservation::start(profile.parser_reservation_bytes);
+        // Parsing may use the extraction share until extraction starts; the
+        // arena below receives only what remains of the total reservation.
+        let source_bytes = u32::try_from(snapshot.bytes.capacity()).unwrap_or(u32::MAX);
+        let memory =
+            native_memory::Reservation::start(budget.reserved_bytes.saturating_sub(source_bytes));
         if let Some(guard) = self.resource_guard {
             guard()?;
         }
@@ -193,15 +197,24 @@ impl AtlasParser for SemanticParser {
                 "native parser returned no tree".into(),
             ));
         };
-        let arena = budget::Arena::new(
-            profile.extraction_bytes,
-            budget.max_rows.min(profile.max_rows),
-        );
+        let remaining = (budget.reserved_bytes as usize)
+            .saturating_sub(snapshot.bytes.capacity())
+            .saturating_sub(memory.used());
+        let extraction_bytes = profile
+            .extraction_bytes
+            .min(remaining.min(u32::MAX as usize) as u32);
+        let arena = budget::Arena::new(extraction_bytes, budget.max_rows.min(profile.max_rows));
         let result = extract::extract(&self.scope, snapshot, language, &tree, arena);
         // Tree and parser are owned by this call. Neither a failed parse nor a
         // caller forgetting release_scratch can retain them between work quanta.
         drop(tree);
         drop(parser);
+        if extraction_bytes < profile.extraction_bytes
+            && matches!(&result, Err(error) if matches!(error.body.detail(),
+                se_types::Detail::AtlasResourceBudget(detail) if detail.resource == "Atlas extraction arena"))
+        {
+            return Ok(defer(CoverageReason::ParseMemoryLimit));
+        }
         result
     }
     fn release_scratch(&mut self) {}
