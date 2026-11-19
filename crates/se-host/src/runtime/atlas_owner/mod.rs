@@ -42,6 +42,7 @@ pub(super) struct Service {
     owner: HumanId,
     memory: MemoryBudget,
     enabled: bool,
+    unqualified: bool,
     interests: Arc<crate::atlas_runtime::record_fence::RecordFeedFence>,
     work: Arc<ProjectWork>,
     home: PathBuf,
@@ -118,6 +119,8 @@ impl HostedRuntime {
             .atlas
             .enabled;
         let qualification = qualification.with_native_sql()?;
+        let unqualified = cfg!(windows) && enabled && qualification.sql.is_none();
+        let enabled = enabled && !unqualified;
         let home = self.state_directory.join("atlas");
         let work = Arc::new(ProjectWork::new(
             self.state_directory.join("atlas-projects"),
@@ -155,6 +158,7 @@ impl HostedRuntime {
             owner: self.owner.clone(),
             memory,
             enabled,
+            unqualified,
             interests: self.execution.atlas.records.clone(),
             work,
             home,

@@ -103,9 +103,7 @@ impl Service {
             state: IndexState::Opening,
             coverage: crate::atlas_cold::empty_coverage(),
         });
-        if !self.enabled {
-            summary.state = IndexState::Disabled;
-        } else {
+        if !self.mark_unavailable(&mut summary) {
             let source = NativeAtlasSource::open(registration.clone(), CaseMode::Sensitive)?;
             let pointer = NativeAtlasCache::open(&self.home, source.scope.clone())?
                 .map(|cache| cache.read_pointer())
@@ -152,6 +150,21 @@ impl Service {
             summary,
         })
     }
+
+    fn mark_unavailable(&self, summary: &mut IndexSummary) -> bool {
+        if self.unqualified {
+            summary.epoch = None;
+            summary.generation = None;
+            summary.state = IndexState::Suspended {
+                reason: unqualified_reason().body,
+            };
+        } else if !self.enabled {
+            summary.state = IndexState::Disabled;
+        } else {
+            return false;
+        }
+        true
+    }
 }
 impl AtlasReadPort for Service {
     fn is_enabled(&self) -> bool {
@@ -196,6 +209,11 @@ impl AtlasReadPort for Service {
         project: &ProjectId,
         selected: Option<&RootId>,
     ) -> Result<se_types::Read<IndexSummary>> {
+        if self.unqualified {
+            return Ok(se_types::Read::Absent {
+                checked: unqualified_reason().body.message(),
+            });
+        }
         if self.work.roots(project)?.is_empty() {
             return Ok(se_types::Read::Unknown { what: "Atlas has not observed this project's registration yet; a query starts indexing and status shows progress.".into() });
         }
@@ -279,4 +297,14 @@ impl AtlasReadPort for Service {
             },
         )
     }
+}
+
+fn unqualified_reason() -> SeError {
+    SeError::new(se_types::Detail::FeatureUnavailable(
+        se_types::details::FeatureUnavailable {
+            subject: "Atlas on Windows".into(),
+            reason: "not enabled because its native profile is not yet qualified".into(),
+            next_step: "Search the repository text directly.".into(),
+        },
+    ))
 }
