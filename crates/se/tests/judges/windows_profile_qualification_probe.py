@@ -8,6 +8,7 @@ import time
 import uuid
 from pathlib import Path
 from secode_host_guards import Fixture
+from diagnostic_redaction_review import state_home
 
 
 def read_json(path):
@@ -34,7 +35,7 @@ def main():
     capabilities = json.loads(args.capabilities.read_text())
     capabilities['service']['shutdown'] = ['Ctrl+C']
     (images / 'capabilities.json').write_text(json.dumps(capabilities))
-    f = Fixture(args.se, args.root / 'case', cli, 'read-only', 'never')
+    f = Fixture(args.se, args.root / 'case', cli, 'read-only', 'never', home_factory=state_home)
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
             task = pool.submit(f.call, '--key', str(uuid.uuid4()), '--project', f.project,

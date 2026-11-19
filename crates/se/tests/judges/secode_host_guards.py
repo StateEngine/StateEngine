@@ -113,12 +113,15 @@ fn snapshot(directory:&std::path::Path, label:&str) {
 
 
 class Fixture:
-    def __init__(self, se, root, provider, sandbox, approval, *, setup_repo=None):
+    def __init__(self, se, root, provider, sandbox, approval, *, setup_repo=None, home_factory=None):
         self.se, self.root = se.resolve(), root.resolve()
         root.mkdir()
         self.env = environment(root)
         self.home, self.repo = root / 'state', root / 'repo'
-        self.home.mkdir(mode=0o700)
+        if home_factory is None:
+            self.home.mkdir(mode=0o700)
+        else:
+            home_factory(self.home)
         self.repo.mkdir()
         if setup_repo is not None:
             setup_repo(self.repo, self.env)
