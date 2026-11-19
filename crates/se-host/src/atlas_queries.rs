@@ -47,6 +47,7 @@ fn sql_deadline(error: &SeError) -> bool {
         if detail.op.starts_with("Atlas SQL"))
 }
 
+#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 pub(crate) fn open_reader<'a>(
     files: &'a dyn se_atlas::cache::CacheFiles,
     scope: &se_atlas::scope::Scope,
