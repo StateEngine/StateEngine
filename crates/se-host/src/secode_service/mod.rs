@@ -13,6 +13,9 @@ mod readiness;
 #[path = "../rebind/service.rs"]
 mod rebind;
 mod recovery;
+#[cfg(all(test, feature = "listener", any(target_os = "linux", windows)))]
+#[path = "../../tests/support/secode_registered_rebind.rs"]
+mod registered_rebind_test;
 mod replacement;
 #[path = "../rebind/mail.rs"]
 mod restart_mail;
@@ -103,6 +106,11 @@ async fn lock_service<'a>(
 }
 
 impl Service {
+    fn register_image(&mut self, digest: se_types::Sha256, resume_supported: bool) {
+        self.journal.input_free_resume = resume_supported;
+        self.journal.server_sha256 = Some(digest);
+        self.journal.retired = false;
+    }
     fn current(&self) -> Result<crate::harness::secode_process::QualifiedControl> {
         self.live.resolve(
             self.control

@@ -24,6 +24,7 @@ struct State {
     ready: bool,
     held: bool,
 }
+type Request = (String, String, BTreeMap<String, String>, Value);
 fn identity() -> Value {
     json!({"incarnation":"fixture-incarnation","serviceInstance":"fixture-instance","generation":1,"registrationVersion":"fixture-v1"})
 }
@@ -37,9 +38,7 @@ fn save(state: &State) -> Check {
     )?;
     Ok(())
 }
-fn read_request(
-    reader: &mut BufReader<TcpStream>,
-) -> Check<Option<(String, String, BTreeMap<String, String>, Value)>> {
+fn read_request(reader: &mut BufReader<TcpStream>) -> Check<Option<Request>> {
     let mut line = String::new();
     if reader.read_line(&mut line)? == 0 {
         return Ok(None);

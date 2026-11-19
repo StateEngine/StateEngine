@@ -260,9 +260,7 @@ impl LaunchCoordinator {
         self.configure_secode(&mut service, request, deadline)
             .await?;
         if service.journal.service.is_none() {
-            service.journal.input_free_resume = resume_supported;
-            service.journal.server_sha256 = Some(server_sha256);
-            service.journal.retired = false;
+            service.register_image(server_sha256, resume_supported);
             service.persist(self, deadline).await?;
             let arguments = vec![
                 "serve-service".into(),
