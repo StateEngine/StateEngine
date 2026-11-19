@@ -221,7 +221,7 @@ fn ordinary_wake_does_not_repeat_delivered_unread_mail() -> Check {
     let case = Case::new()?;
     let first = case.send("first", false)?;
     let first_notice = present(case.reserve("first-notice")?)?;
-    assert_eq!(first_notice.ids, [first.clone()]);
+    assert_eq!(first_notice.ids, [first]);
     assert!(!first_notice.more_pending);
     case.deliver(&first_notice)?;
     let fresh = case.send("fresh", false)?;
