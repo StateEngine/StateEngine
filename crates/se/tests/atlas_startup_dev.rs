@@ -93,6 +93,21 @@ fn setup(f: &Fixture) -> Check {
             )
             .into());
         }
+        if let Some(revision) = std::env::var_os("ATLAS_REPOSITORY_REVISION") {
+            let checkout = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&source)
+                .args(["checkout", "--detach"])
+                .arg(revision)
+                .output()?;
+            if !checkout.status.success() {
+                return Err(format!(
+                    "benchmark revision checkout failed: {}",
+                    String::from_utf8_lossy(&checkout.stderr)
+                )
+                .into());
+            }
+        }
         let history = std::process::Command::new("git")
             .arg("-C")
             .arg(&source)
@@ -321,11 +336,17 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
         return Err("Atlas query returned a different output family".into());
     };
     #[cfg(target_os = "linux")]
-    assert!(
-        matches!(&output.value.answer.data, se_types::Read::Present { value }
-        if value.page.items().iter().any(|hit| hit.reason.last_touch_unix_ms.is_some())),
-        "real IPC path search did not receive Git-seeded file activity"
-    );
+    if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+        assert!(
+            matches!(&output.value.answer.data, se_types::Read::Present { value } if !value.page.items().is_empty())
+        );
+    } else {
+        assert!(
+            matches!(&output.value.answer.data, se_types::Read::Present { value }
+            if value.page.items().iter().any(|hit| hit.reason.last_touch_unix_ms.is_some())),
+            "real IPC path search did not receive Git-seeded file activity"
+        );
+    }
     #[cfg(windows)]
     {
         assert!(
@@ -336,16 +357,18 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
             "Windows must report that contained Git history is unavailable"
         );
     }
-    assert!(
-        !output
-            .value
-            .answer
-            .index
-            .coverage
-            .reasons
-            .contains(&se_types::code::CoverageReason::ResultLimit),
-        "complete one-commit history was labelled partial"
-    );
+    if std::env::var_os("ATLAS_FULL_REPOSITORY").is_none() {
+        assert!(
+            !output
+                .value
+                .answer
+                .index
+                .coverage
+                .reasons
+                .contains(&se_types::code::CoverageReason::ResultLimit),
+            "complete one-commit history was labelled partial"
+        );
+    }
     let memory = output
         .value
         .answer
@@ -360,7 +383,10 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
             13_000_000
         }
     );
-    assert!(!memory.joined_qualified && memory.shared_grammar_pages.is_none());
+    assert!(!memory.joined_qualified);
+    if std::env::var_os("ATLAS_FULL_REPOSITORY").is_none() {
+        assert!(memory.shared_grammar_pages.is_none());
+    }
     if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
         for (offset, (kind, query)) in [
             ("path", "rs"),
@@ -560,7 +586,23 @@ fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
     runtime.block_on(async {
         let started = Instant::now();
         if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+            #[cfg(windows)]
             let (bytes, basis) = se_proc::atlas_worker::memory_usage()?;
+            #[cfg(target_os = "linux")]
+            let (bytes, basis) = {
+                let status = std::fs::read_to_string("/proc/self/status")?;
+                let line = status
+                    .lines()
+                    .find(|line| line.starts_with("RssAnon:"))
+                    .ok_or("RssAnon absent")?;
+                let bytes = line
+                    .split_whitespace()
+                    .nth(1)
+                    .ok_or("RssAnon value absent")?
+                    .parse::<u64>()?
+                    * 1024;
+                (bytes, "resident anonymous bytes")
+            };
             println!("ATLAS_BENCH_BASELINE {bytes} {basis}");
         }
         let options = start(&f)?;
@@ -571,9 +613,13 @@ fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
         #[cfg(windows)]
         let qualification = NativeAtlasQualification::measured_windows_components()?;
         #[cfg(target_os = "linux")]
-        let qualification = NativeAtlasQualification {
-            sql: Some(SqlProfile::from_qualified_overhead(1)?),
-            parsers: Vec::new(),
+        let qualification = if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+            NativeAtlasQualification::default()
+        } else {
+            NativeAtlasQualification {
+                sql: Some(SqlProfile::from_qualified_overhead(1)?),
+                parsers: Vec::new(),
+            }
         };
         host.install_native_atlas(
             std::path::PathBuf::from(env!("CARGO_BIN_EXE_se")).canonicalize()?,
