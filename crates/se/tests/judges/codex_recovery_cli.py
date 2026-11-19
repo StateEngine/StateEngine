@@ -180,6 +180,10 @@ class Judge:
             if slow:
                 session = (self.ok("--project", self.project, "status")
                            ["agents"]["items"][0]["session"])
+                # A status read can outlast the ceiling on a loaded box;
+                # recheck it before acting on the read.
+                if time.monotonic() >= end:
+                    break
                 if (session["state"] == "recovery-pending"
                         and session["process_state"]["value"] == "stop-unproved"):
                     self.result["slow_conclusion"] = {
