@@ -116,7 +116,9 @@ mod linux_native;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod platform;
 #[cfg(windows)]
-pub use platform::{CONSOLE_INTERRUPT_ENTRY, console_interrupt_entry};
+pub use platform::{
+    CONSOLE_INTERRUPT_ENTRY, console_interrupt_entry, initialize_host_console_policy,
+};
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod runtime;
 mod support;
