@@ -23,6 +23,10 @@ def wait_for(probe, name, seconds=20):
 
 def interrupted(binary, root):
     f = Fixture(binary, root, provider_helper=Path(__file__).with_name('launch_startup_provider.py'), log_directory='calls')
+    # The ready provider dies only in the force phase, so the final stop
+    # would otherwise wait out the full 5 s default graceful window; the
+    # force join of the idle startup is unaffected.
+    f.env['SE_PROVIDER_STOP_GRACE_MS'] = '500'
     (f.repo / 'startup-mode').write_text('idle')
     up = f.ok('up')
     identities = [pin(up['process']['pid'])]
@@ -71,6 +75,10 @@ def interrupted(binary, root):
 def managed(binary, root):
     # No detached/escaped work in this fixture: all jobs must close with the scope.
     f = Fixture(binary, root, provider_helper=Path(__file__).with_name('force_relaunch_provider.py'), log_directory='calls')
+    # The fixture provider dies only in the force phase, so the takeover
+    # and close stops would otherwise wait out the full 5 s default
+    # graceful window; the witnessed job inventory and exits are unaffected.
+    f.env['SE_PROVIDER_STOP_GRACE_MS'] = '500'
     identities = []
     failure = None
     try:
