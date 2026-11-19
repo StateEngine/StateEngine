@@ -120,6 +120,13 @@ fn exact_windows_console_scope_interrupts_real_tools() -> Check {
         }
         return Ok(());
     }
+    se_proc::initialize_host_console_policy().map_err(error)?;
+    use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_C_EVENT};
+    if unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    println!("host survived Ctrl+C on its own console");
     let machine=MachineId::new("windows-console-scope-review")?;
     let bytes:[u8;16]=random_secret()?.expose()[..16].try_into()?;
     let host=HostInstanceId(bytes);

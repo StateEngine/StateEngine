@@ -20,7 +20,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 174c907f41dee2cbaded6bf3c98f47c5669ae629
+          ref: e259704bb36e343263c66c7333beaf3fc479829b
           path: candidate
       - name: Prepare independent process-scope control
         shell: pwsh
