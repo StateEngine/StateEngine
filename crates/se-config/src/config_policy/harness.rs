@@ -108,6 +108,7 @@ pub(super) fn validate_registry(values: &BTreeMap<String, HarnessDescriptor>) ->
                 harness: None,
                 arguments,
                 environment,
+                unadvertised_http_mcp: false,
                 mode: choice.mode.clone(),
             }
             .validate()?;

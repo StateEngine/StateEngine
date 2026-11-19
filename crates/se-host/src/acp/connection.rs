@@ -130,6 +130,27 @@ impl Connection {
             .clone())
     }
 
+    /// Wait, within a bound, for the stdout drain task to settle: a provider
+    /// that just exited may not have marked terminality yet when a failed
+    /// write is returned, and the exit class must not be misread before
+    /// that task lands.
+    pub async fn stdout_terminal_settled(&self, bound: std::time::Duration) -> Result<bool> {
+        let mut changed = self.subscribe();
+        let until = tokio::time::Instant::now() + bound;
+        loop {
+            let current = self.diagnostics()?;
+            if current.stdout_terminal || current.failure.is_some() {
+                return Ok(current.stdout_terminal);
+            }
+            if tokio::time::timeout_at(until, changed.changed())
+                .await
+                .is_err()
+            {
+                return Ok(self.diagnostics()?.stdout_terminal);
+            }
+        }
+    }
+
     pub async fn request(
         self: &Arc<Self>,
         method: &'static str,

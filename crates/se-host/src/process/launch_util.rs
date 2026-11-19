@@ -429,6 +429,32 @@ pub(super) fn view(
         machine_id: root.machine.to_string(),
     })
 }
+/// Pin the provider's birth at launch. A provider that already exited is
+/// witnessed as exited, not as an unreadable identity: its harness owns the
+/// user-facing diagnosis for that class of failure.
+pub(super) fn view_at_launch(
+    root: &se_proc::ProcessIdentity,
+    deadline: std::time::Instant,
+) -> Result<Option<se_core::ops::ProcessView>> {
+    match se_proc::observe_process_birth(root, deadline) {
+        Ok(born) => Ok(Some(se_core::ops::ProcessView {
+            pid: root.pid.0,
+            started_at: se_core::ops::receipt::timestamp(born.unix_micros())?,
+            exe: root.image.to_string_lossy().into_owned(),
+            machine_id: root.machine.to_string(),
+        })),
+        Err(cause)
+            if cause.code == se_proc::ProcErrorCode::IdentityChanged
+                && matches!(
+                    *cause.detail,
+                    se_proc::ProcErrorDetail::Identity { found: None, .. }
+                ) =>
+        {
+            Ok(None)
+        }
+        Err(cause) => Err(error("provider process birth", cause)),
+    }
+}
 
 #[cfg(test)]
 mod temporary_environment_tests {

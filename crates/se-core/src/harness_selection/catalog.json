@@ -61,5 +61,30 @@
       }
     },
     "package": null
+  },
+  "hermes": {
+    "title": "Hermes",
+    "setup_url": "https://hermes-agent.nousresearch.com/docs/getting-started/installation",
+    "descriptor": {
+      "driver": "acp-stdio",
+      "command": "hermes",
+      "arguments": [
+        "acp"
+      ],
+      "environment": [
+        "HERMES_HOME",
+        "HERMES_MODEL"
+      ],
+      "model_environment": "HERMES_MODEL",
+      "unadvertised_http_mcp": true,
+      "permissions": {
+        "default": {
+          "arguments": [],
+          "environment": {},
+          "mode": ""
+        }
+      }
+    },
+    "package": null
   }
 }

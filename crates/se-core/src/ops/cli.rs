@@ -296,7 +296,7 @@ fn input_command(name: &str, c: Command) -> Command {
                 .help("Exact registered operation name, e.g. project.status; omit it for the full catalogue"),
         ),
         "project.init" => c
-            .arg(value("harness").help("Choose claude, codex, secode, qwen-code, goose or a configured protocol harness"))
+            .arg(value("harness").help("Choose claude, codex, secode, qwen-code, goose, hermes or a configured protocol harness"))
             .arg(value("repo").help("Existing repository folder to register as this project"))
             .arg(value("name").help("Project name shown in status and listings"))
             .arg(value("agent").default_value("main").help("Name for your first saved agent"))

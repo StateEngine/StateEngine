@@ -151,9 +151,28 @@ impl Session {
             }
             state.initializing = true;
         }
-        self.connection.request("initialize", json!({"protocolVersion":1,
-            "clientInfo":{"name":"stateengine","version":env!("CARGO_PKG_VERSION")},
-            "clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}),remaining(&cx,until)?).await?;
+        let handshake = self
+            .connection
+            .request(
+                "initialize",
+                json!({"protocolVersion":1,
+                    "clientInfo":{"name":"stateengine","version":env!("CARGO_PKG_VERSION")},
+                    "clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}}),
+                remaining(&cx, until)?,
+            )
+            .await;
+        if handshake.is_err() {
+            let settle = until
+                .saturating_duration_since(tokio::time::Instant::now())
+                .min(std::time::Duration::from_millis(500));
+            if self.connection.stdout_terminal_settled(settle).await? {
+                return Err(failure(
+                    "ACP initialization",
+                    "The provider exited before answering the protocol handshake. Its native entrypoint may have failed to start, often from a broken or incomplete first-run install or dependency setup. Reinstall or repair the harness, then retry launch with the same selection.",
+                ));
+            }
+        }
+        handshake?;
         self.synchronize(until).await?;
         ready(&*self.lock()?)?;
         Ok(())

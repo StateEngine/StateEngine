@@ -277,7 +277,14 @@ async fn open_with_mode(
     let context = cx()?;
     let run = tokio::spawn(async move {
         session
-            .open("/synthetic/workspace", vec![], None, required, false, context)
+            .open(
+                "/synthetic/workspace",
+                vec![],
+                None,
+                required,
+                false,
+                context,
+            )
             .await
     });
     let request = f.write(index).await?;

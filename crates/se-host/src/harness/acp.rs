@@ -248,12 +248,10 @@ impl Harness for AcpHarness {
                 Read::Unreadable { reason, .. } => return Err(error(reason)),
                 Read::Unknown { what } => return Err(error(what)),
             };
-            let settings = self
-                .configuration
-                .acp_settings(
-                    request.profile.harness.as_deref(),
-                    &request.profile.named_profile,
-                )?;
+            let settings = self.configuration.acp_settings(
+                request.profile.harness.as_deref(),
+                &request.profile.named_profile,
+            )?;
             let conversation = binding
                 .session
                 .open(

@@ -564,12 +564,13 @@ impl LaunchCoordinator {
         .await?;
         let root = record.root.clone();
         let bound = deadline.at();
-        work.process_view = Some(
-            self.store
-                .pool
-                .run_owned(deadline, move || super::launch_util::view(&root, bound))
-                .await?,
-        );
+        work.process_view = self
+            .store
+            .pool
+            .run_owned(deadline, move || {
+                super::launch_util::view_at_launch(&root, bound)
+            })
+            .await?;
         self.attach(
             work,
             request,
