@@ -1,6 +1,6 @@
 //! Development consumer of automatic after-ready composition and record wakes.
 //! The synthetic SQL admission tests behavior, never native memory qualification.
-#![cfg(all(target_os = "linux", not(debug_assertions)))]
+#![cfg(all(any(target_os = "linux", windows), not(debug_assertions)))]
 use se_atlas::cache::connection::SqlProfile;
 use se_host::*;
 use se_store::*;
@@ -110,7 +110,10 @@ fn setup(f: &Fixture) -> Check {
             .arg(&source)
             .args(args)
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env(
+                "GIT_CONFIG_GLOBAL",
+                if cfg!(windows) { "NUL" } else { "/dev/null" },
+            )
             .output()?;
         if !output.status.success() {
             return Err(format!(
@@ -294,7 +297,14 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
         .index
         .memory
         .ok_or("Atlas query omitted the owner memory report")?;
-    assert_eq!(memory.anonymous_ceiling_bytes, 13_000_000);
+    assert_eq!(
+        memory.anonymous_ceiling_bytes,
+        if cfg!(windows) {
+            16_000_000
+        } else {
+            13_000_000
+        }
+    );
     assert!(!memory.joined_qualified && memory.shared_grammar_pages.is_none());
     Ok(())
 }
@@ -314,7 +324,7 @@ async fn caught_up(
                 let memory = summary.memory.ok_or_else(|| {
                     se_types::SeError::invalid("Atlas status", "memory qualification report")
                 })?;
-                assert_eq!(memory.anonymous_ceiling_bytes, 13_000_000);
+                assert_eq!(memory.anonymous_ceiling_bytes, if cfg!(windows) { 16_000_000 } else { 13_000_000 });
                 assert!(memory.shared_grammar_pages.is_none() && !memory.joined_qualified);
                 let ticket = context.atlas.records.ticket()?;
                 let mut observed = None;
