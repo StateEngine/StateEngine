@@ -103,7 +103,11 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
         SymbolKind::TypeAlias,
     ];
     let limited = ids.len() > 512;
-    let mut matches = Vec::new();
+    // Selected candidates are kept as ids and declaration flags; display
+    // strings are bounded to the first twenty, so the resolver never holds
+    // the full rows it walks for filtering.
+    let mut candidates: Vec<(i64, bool)> = Vec::new();
+    let mut displays = Vec::new();
     for id in ids.into_iter().take(512) {
         let target = load(sql, id)?;
         if crate::policy::built_in_denied(&target.file.pointer.path) {
@@ -129,7 +133,16 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
         {
             continue;
         }
-        matches.push(target);
+        candidates.push((id, TYPE_DECLARATION.contains(&symbol.kind)));
+        if displays.len() < 20 {
+            displays.push(format!(
+                "{:?} {}:{} {}",
+                symbol.kind,
+                target.file.pointer.path.as_str(),
+                symbol.span.start.line,
+                symbol.name
+            ));
+        }
     }
     if limited {
         return Err(capacity(
@@ -138,75 +151,36 @@ fn resolve_inner(sql: &SqlView<'_>, target: &AtlasTarget) -> AtlasResult<Option<
             512,
         ));
     }
-    if matches.is_empty() {
+    if candidates.is_empty() {
         return Ok(None);
     }
-    if matches.len() > 1 {
-        // Without an explicit kind or line filter, a lone type declaration
-        // wins over same-named non-declaration symbols, such as a Rust impl
-        // block named after its type; anything else stays ambiguous.
-        let declared = if kind.is_none() && line.is_none() {
-            matches
-                .iter()
-                .map(|target| {
-                    let symbol = &target
-                        .symbol
-                        .as_ref()
-                        .ok_or_else(|| cache_error("missing resolved symbol"))?
-                        .value;
-                    Ok(TYPE_DECLARATION.contains(&symbol.kind))
-                })
-                .collect::<AtlasResult<Vec<_>>>()?
-                .into_iter()
-                .filter(|is_declaration| *is_declaration)
-                .count()
-        } else {
-            0
-        };
-        if declared == 1 {
-            let mut chosen = None;
-            for target in matches {
-                let symbol = target
-                    .symbol
-                    .as_ref()
-                    .ok_or_else(|| cache_error("missing resolved symbol"))?;
-                if TYPE_DECLARATION.contains(&symbol.value.kind) {
-                    chosen = Some(target);
-                }
-            }
-            return Ok(chosen);
-        }
-        let candidates = matches
-            .iter()
-            .take(20)
-            .map(|target| {
-                let symbol = &target
-                    .symbol
-                    .as_ref()
-                    .ok_or_else(|| cache_error("missing resolved symbol"))?
-                    .value;
-                Ok(format!(
-                    "{:?} {}:{} {}",
-                    symbol.kind,
-                    target.file.pointer.path.as_str(),
-                    symbol.span.start.line,
-                    symbol.name
-                ))
-            })
-            .collect::<AtlasResult<Vec<_>>>()?;
-        return Err(se_types::SeError::new(
-            se_types::Detail::AtlasSymbolAmbiguous(se_types::details::AtlasSymbolAmbiguous {
-                symbol: format!(
-                    "{} ({} candidates; {} omitted)",
-                    name.as_str(),
-                    matches.len(),
-                    matches.len().saturating_sub(20)
-                ),
-                candidates,
-            }),
-        ));
+    if candidates.len() == 1 {
+        return Ok(Some(load(sql, candidates[0].0)?));
     }
-    Ok(matches.pop())
+    // Without an explicit kind or line filter, a lone type declaration wins
+    // over same-named non-declaration symbols, such as a Rust impl block
+    // named after its type; anything else stays ambiguous.
+    if kind.is_none() && line.is_none() {
+        let declarations = candidates.iter().filter(|(_, declaration)| *declaration);
+        if declarations.count() == 1 {
+            let (id, _) = candidates
+                .iter()
+                .find(|(_, declaration)| *declaration)
+                .ok_or_else(|| cache_error("missing declaration candidate"))?;
+            return Ok(Some(load(sql, *id)?));
+        }
+    }
+    Err(se_types::SeError::new(
+        se_types::Detail::AtlasSymbolAmbiguous(se_types::details::AtlasSymbolAmbiguous {
+            symbol: format!(
+                "{} ({} candidates; {} omitted)",
+                name.as_str(),
+                candidates.len(),
+                candidates.len().saturating_sub(20)
+            ),
+            candidates: displays,
+        }),
+    ))
 }
 fn load(sql: &SqlView<'_>, id: i64) -> AtlasResult<Target> {
     let (symbol, file) = symbol_by_id(sql, id)?;

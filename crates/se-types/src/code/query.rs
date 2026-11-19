@@ -86,10 +86,11 @@ pub enum SymbolSelector {
         container: Option<QueryText>,
         /// Optional kind filter; a lone type declaration wins over
         /// same-named non-declaration symbols when no kind or line is set.
-        #[serde(default)]
+        /// Absent filters omit from the wire so old cursors keep matching.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<SymbolKind>,
         /// Optional 1-based start line of the symbol definition.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         line: Option<u32>,
     },
 }
@@ -215,5 +216,46 @@ impl TryFrom<ScopeWire> for SearchScope {
         };
         scope.validate()?;
         Ok(scope)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn absent_selector_filters_keep_the_pre_change_wire_shape() {
+        let selector = SymbolSelector::Name {
+            name: QueryText::new("Foo").unwrap(),
+            path: None,
+            container: None,
+            kind: None,
+            line: None,
+        };
+        // The exact bytes the pre-change selector emitted for the same query.
+        let old_shape = br#"{"Name":{"name":"Foo","path":null,"container":null}}"#;
+        let wire = serde_json::to_vec(&selector).unwrap();
+        assert_eq!(
+            &wire[..],
+            old_shape,
+            "absent filters must omit from the wire so old refs and impact cursor digests keep matching"
+        );
+        let decoded: SymbolSelector = serde_json::from_slice(old_shape).unwrap();
+        assert_eq!(selector, decoded, "an old cursor's query must still decode");
+    }
+    #[test]
+    fn set_selector_filters_round_trip() {
+        let selector = SymbolSelector::Name {
+            name: QueryText::new("Foo").unwrap(),
+            path: Some(RelativePath::new("foo.rs").unwrap()),
+            container: None,
+            kind: Some(SymbolKind::Struct),
+            line: Some(12),
+        };
+        let wire = serde_json::to_value(&selector).unwrap();
+        assert_eq!(wire["Name"]["kind"], "Struct");
+        assert_eq!(wire["Name"]["line"], 12);
+        assert_eq!(wire["Name"]["container"], serde_json::Value::Null);
+        let decoded: SymbolSelector = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded, selector);
     }
 }

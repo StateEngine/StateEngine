@@ -171,12 +171,24 @@ fn oid(text: &str) -> Result<GitObjectId> {
 }
 fn target(m: &ArgMatches) -> Result<AtlasTarget> {
     if let Some(line) = text(m, "line") {
+        let line: u32 = line
+            .parse()
+            .map_err(|_| SeError::invalid("line", "a positive line number"))?;
+        if let Some(name) = text(m, "target") {
+            // A name plus a line keeps the symbol name and narrows by the
+            // definition's start line, so an indented declaration resolves.
+            return Ok(AtlasTarget::Symbol(SymbolSelector::Name {
+                name: QueryText::new(name)?,
+                path: Some(RelativePath::new(required(m, "path")?)?),
+                container: text(m, "container").map(QueryText::new).transpose()?,
+                kind: text(m, "kind").map(|s| parse("kind", &s)).transpose()?,
+                line: Some(line),
+            }));
+        }
         return Ok(AtlasTarget::Symbol(SymbolSelector::At {
             path: RelativePath::new(required(m, "path")?)?,
             position: Position {
-                line: line
-                    .parse()
-                    .map_err(|_| SeError::invalid("line", "a positive line number"))?,
+                line,
                 byte_column: required(m, "column")?
                     .parse()
                     .map_err(|_| SeError::invalid("column", "a zero-based byte column"))?,
@@ -286,4 +298,51 @@ pub(super) fn decode(name: &str, m: &ArgMatches, json: bool) -> Result<AnyOp> {
     };
     op.validate()?;
     Ok(op)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn target_from(args: &[&str]) -> Result<AtlasTarget> {
+        let command = command("atlas.refs", Command::new("refs"));
+        target(&command.try_get_matches_from(args).unwrap())
+    }
+    #[test]
+    fn a_named_target_with_a_line_keeps_the_name() {
+        let target = target_from(&["refs", "Foo", "--path", "foo.rs", "--line", "1"]).unwrap();
+        assert!(
+            matches!(
+                target,
+                AtlasTarget::Symbol(SymbolSelector::Name {
+                    line: Some(1),
+                    path: Some(_),
+                    ..
+                })
+            ),
+            "the line remedy must keep the symbol name: {target:?}"
+        );
+    }
+    #[test]
+    fn a_line_without_a_name_keeps_the_positional_lookup() {
+        let target = target_from(&["refs", "--path", "foo.rs", "--line", "1"]).unwrap();
+        assert!(
+            matches!(target, AtlasTarget::Symbol(SymbolSelector::At { .. })),
+            "a bare position must stay a position lookup: {target:?}"
+        );
+    }
+    #[test]
+    fn a_named_target_without_a_line_stays_plain() {
+        let target = target_from(&["refs", "Foo", "--path", "foo.rs"]).unwrap();
+        assert!(
+            matches!(
+                target,
+                AtlasTarget::Symbol(SymbolSelector::Name {
+                    line: None,
+                    path: Some(_),
+                    ..
+                })
+            ),
+            "no line means no line filter: {target:?}"
+        );
+    }
 }

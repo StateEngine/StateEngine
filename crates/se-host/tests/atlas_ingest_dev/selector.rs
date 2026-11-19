@@ -110,7 +110,7 @@ fn name_selector_prefers_the_type_definition_over_its_impl_block() -> Check {
         ignore_digest: ContentHash([0; 32]),
         coverage,
         state: IndexState::Updating {
-            pending_files: 3,
+            pending_files: 4,
             pending_change_batches: 0,
             discovery_complete: false,
         },
@@ -152,6 +152,10 @@ fn name_selector_prefers_the_type_definition_over_its_impl_block() -> Check {
     )?;
     fs::write(dir.join("a.rs"), "pub fn helper() {}\n")?;
     fs::write(dir.join("b.rs"), "pub fn helper() {}\n")?;
+    fs::write(
+        dir.join("e.rs"),
+        "pub mod math {\n    pub fn answer() -> u32 {\n        42\n    }\n}\n\npub fn caller() -> u32 {\n    math::answer()\n}\n",
+    )?;
     ingest(
         &source,
         &mut db,
@@ -178,6 +182,15 @@ fn name_selector_prefers_the_type_definition_over_its_impl_block() -> Check {
         Language::Rust,
         false,
         3,
+    )?;
+    ingest(
+        &source,
+        &mut db,
+        &mut parser,
+        &RelativePath::new("e.rs")?,
+        Language::Rust,
+        false,
+        4,
     )?;
     let viewer = AtlasPrincipal::Human(se_types::HumanId::from_parts(1, [22; 10])?);
     let records = NoRecords;
@@ -231,6 +244,13 @@ fn name_selector_prefers_the_type_definition_over_its_impl_block() -> Check {
         Some(SymbolKind::Namespace),
         None,
     )?;
+    // The line filter matches the declaration start line, so an indented
+    // definition resolves by name plus line; the caller's site witnesses it.
+    let indented = run_refs(&mut reader, budget, "answer", Some("e.rs"), None, Some(2))?;
+    assert!(
+        !indented.items().is_empty(),
+        "the indented declaration must resolve through the line filter"
+    );
     // Two same-kind functions stay ambiguous, and the refusal lists the
     // kind, path and line of every candidate.
     let refused = match run_refs(&mut reader, budget, "helper", None, None, None) {
