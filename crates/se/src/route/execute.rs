@@ -214,7 +214,7 @@ fn daemon_observation_start(request: Result<super::hosted::StatusRequest>) -> Da
 }
 
 impl DaemonObservation {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn early(&self, timeout: Duration) -> Option<Result<AnyOutput>> {
         if self.start_failure.is_some() {
             return None;
@@ -268,13 +268,13 @@ fn merge_status_pending(
     operation: &AnyOp,
 ) {
     for pending in incoming {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if matches!(operation, AnyOp::ProjectStatus(input) if input.fresh)
             && pending.what == "repository watch"
         {
             continue;
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let _ = operation;
         if !target.iter().any(|known| {
             known.what == pending.what
@@ -286,7 +286,7 @@ fn merge_status_pending(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn early_status(
     pending: &Option<DaemonObservation>,
     op: &AnyOp,
@@ -301,7 +301,7 @@ fn early_status(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn complete_deferred_status(
     cx: &Bootstrap,
     files: &Files,
@@ -315,7 +315,7 @@ fn complete_deferred_status(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn finish_status_observation(
     pending: Option<DaemonObservation>,
     early: Option<Result<AnyOutput>>,
@@ -444,10 +444,10 @@ fn dispatch_with_cold_recovery(
                 &selections,
             ))
         });
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         let defer_git =
             pending.is_some() && matches!(&op, AnyOp::ProjectStatus(input) if !input.fresh);
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let defer_git = false;
         let result = super::status::observe_snapshot_watched(
             cx,
@@ -458,12 +458,12 @@ fn dispatch_with_cold_recovery(
             None,
             defer_git,
         );
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         let early = early_status(&pending, &op, defer_git && result.is_ok());
         let result = result.and_then(|mut output| {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             complete_deferred_status(cx, &files, &mut output, &early, defer_git);
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "macos")))]
             let _ = &mut output;
             super::session_observation::prepare(
                 output,
@@ -477,9 +477,9 @@ fn dispatch_with_cold_recovery(
         // None means nothing was asked, so there is nothing to merge and no
         // invented error: a read that never needs the host behaves exactly as it
         // did before this overlap existed.
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         let observed = finish_status_observation(pending, early, cx, &output)?;
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         let observed = pending
             .map(|pending| pending.finish(daemon_answer_is_used(cx, &output)))
             .transpose()?

@@ -22,13 +22,13 @@ mod windows_entries;
 use unix_entries as entries;
 #[cfg(windows)]
 use windows_entries as entries;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod watch_shared;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use watch_shared::{NativeWatchAction, NativeWatchEvent, NativeWatchRegistration};
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod watch_directory;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use watch_directory::NativeWatchDirectory;
 #[cfg(target_os = "linux")]
 mod watch_linux;
@@ -38,6 +38,11 @@ pub use watch_linux::{NativeSourceWatch, NativeWatchEvents};
 mod watch_windows;
 #[cfg(windows)]
 pub use watch_windows::{NativeSourceWatch, NativeWatchEvents};
+
+#[cfg(target_os = "macos")]
+mod watch_macos;
+#[cfg(target_os = "macos")]
+pub use watch_macos::{NativeSourceWatch, NativeWatchEvents};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeSourceKind {
