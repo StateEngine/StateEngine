@@ -424,7 +424,7 @@ pub fn forwarder_invocation(
     validate(launch)?;
     let downstream: OsString = match launch.socket {
         Some(socket) => socket.as_os_str().to_owned(),
-        None => super::codex_rpc::forward::STDIO.into(),
+        None => crate::codex_forward::STDIO.into(),
     };
     environment.retain(|(name, _)| {
         let name = name.to_string_lossy().to_ascii_uppercase();
@@ -433,7 +433,7 @@ pub fn forwarder_invocation(
     Ok(ProviderInvocation {
         executable: NativePath::from_local(forwarder.to_owned())?,
         arguments: vec![
-            super::codex_rpc::forward::ENTRY.into(),
+            crate::codex_forward::ENTRY.into(),
             downstream,
             control.as_os_str().to_owned(),
         ],
