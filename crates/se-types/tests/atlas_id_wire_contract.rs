@@ -14,20 +14,17 @@ type Check = Result<(), Box<dyn Error>>;
 fn atlas_ids_serialize_as_lowercase_hex_strings() -> Check {
     for (value, expected) in [
         (
-            serde_json::to_value(&AtlasJobId([0x01; 16]))?,
+            serde_json::to_value(AtlasJobId([0x01; 16]))?,
             "01".repeat(16),
         ),
-        (serde_json::to_value(&FileId([0xab; 16]))?, "ab".repeat(16)),
+        (serde_json::to_value(FileId([0xab; 16]))?, "ab".repeat(16)),
+        (serde_json::to_value(SymbolId([0xcd; 32]))?, "cd".repeat(32)),
         (
-            serde_json::to_value(&SymbolId([0xcd; 32]))?,
-            "cd".repeat(32),
-        ),
-        (
-            serde_json::to_value(&ContentHash([0xef; 32]))?,
+            serde_json::to_value(ContentHash([0xef; 32]))?,
             "ef".repeat(32),
         ),
         (
-            serde_json::to_value(&ResumeOfferId([0x7f; 16]))?,
+            serde_json::to_value(ResumeOfferId([0x7f; 16]))?,
             "7f".repeat(16),
         ),
     ] {
