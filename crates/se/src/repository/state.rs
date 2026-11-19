@@ -78,6 +78,20 @@ fn observe_using(
     if !root.is_dir() {
         return Ok(None);
     }
+    #[cfg(windows)]
+    if let Some(view) = watched.filter(|view| {
+        view.uncommitted.is_some()
+            && view
+                .observation
+                .as_ref()
+                .is_some_and(|value| value.basis == "watched")
+            && view.watch_ticket.is_some()
+            && library::watch_environment().is_ok()
+    }) {
+        let mut result = view.clone();
+        result.watch_ticket = None;
+        return Ok(Some(result));
+    }
     let mut candidate = Some(root);
     let mut registered = None;
     while let Some(path) = candidate {
@@ -101,36 +115,12 @@ fn observe_using(
     };
     // Header and dirtiness come from the fresh native observer, or one bounded
     // `status --porcelain=v2 --branch` fallback. History counting is separate.
-    #[cfg(windows)]
-    let watched = watched.filter(|view| {
-        view.uncommitted.is_some()
-            && view
-                .observation
-                .as_ref()
-                .is_some_and(|value| value.basis == "watched")
-            && view.watch_ticket.as_ref().is_some_and(|expected| {
-                library::watch_ticket(root).is_ok_and(|actual| &actual == expected)
-            })
-    });
     #[cfg(not(windows))]
-    let watched: Option<&GitView> = {
-        let _ = watched;
-        None
-    };
+    let _ = watched;
     let StatusRead::Known {
         header,
         dirty: observed_dirty,
-    } = (if let Some(view) = watched {
-        StatusRead::Known {
-            header: StatusHeader {
-                head: view.head.clone(),
-                branch: view.branch.clone(),
-            },
-            dirty: view.uncommitted,
-        }
-    } else {
-        status_within(root, deadline)?
-    })
+    } = status_within(root, deadline)?
     else {
         // Git metadata is present but this machine has no Git binary: the
         // state is absent to this machine, not unreadable.
@@ -174,7 +164,7 @@ fn observe_using(
         branch: header.branch,
         commits,
         uncommitted,
-        observation: watched.and_then(|view| view.observation.clone()),
+        observation: None,
         watch_ticket: None,
     }))
 }

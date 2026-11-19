@@ -21,6 +21,7 @@ const MAX_EVENTS: usize = 128;
 #[derive(Clone, Debug)]
 pub struct WatchedFacts {
     pub facts: Facts,
+    pub commits: Option<u64>,
     pub reconciled_at_us: u64,
     pub last_notification_at_us: Option<u64>,
     pub ticket: String,
@@ -103,6 +104,7 @@ struct Armed {
     git_descriptor: u32,
     common_descriptor: Option<u32>,
     prepared: Prepared,
+    commits: Option<u64>,
     changed: HashSet<String>,
     changed_bytes: usize,
     revision: u64,
@@ -239,6 +241,7 @@ impl Worker {
         let before = self.serial.load(Ordering::Acquire);
         let _flight = Flight::reserve(prepared.key().to_owned())?;
         let changed = prepared.inventory()?;
+        let commits = prepared.commit_count();
         let reconciled_at_us = now_us().ok_or("system clock unavailable")?;
         watch
             .synchronize(Duration::from_millis(100))
@@ -268,6 +271,7 @@ impl Worker {
             git_descriptor,
             common_descriptor,
             prepared,
+            commits,
             changed,
             changed_bytes,
             revision: before,
@@ -394,6 +398,7 @@ impl Worker {
         };
         Ok(WatchedFacts {
             facts,
+            commits: armed.commits,
             reconciled_at_us: armed.reconciled_at_us,
             last_notification_at_us,
             ticket,

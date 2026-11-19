@@ -163,30 +163,7 @@ impl Prepared {
     }
     #[cfg(windows)]
     pub(super) fn watchable(&self) -> Result<(), String> {
-        if std::env::vars_os().any(|(name, _)| {
-            name.as_encoded_bytes()
-                .get(..4)
-                .is_some_and(|v| v.eq_ignore_ascii_case(b"GIT_"))
-                || name
-                    .as_encoded_bytes()
-                    .eq_ignore_ascii_case(b"XDG_CONFIG_HOME")
-        }) {
-            return Err("Git environment overrides require a fresh observation".into());
-        }
-        let claim = se_proc::installation_claim_path().map_err(|e| e.to_string())?;
-        let profile = claim
-            .parent()
-            .ok_or("native user profile has no directory")?;
-        let expected = se_proc::canonicalize_path(profile).map_err(|e| e.to_string())?;
-        for key in ["HOME", "USERPROFILE"] {
-            if let Some(value) = std::env::var_os(key) {
-                let actual =
-                    se_proc::canonicalize_path(Path::new(&value)).map_err(|e| e.to_string())?;
-                if actual != expected {
-                    return Err("Git user profile differs from the native account".into());
-                }
-            }
-        }
+        let profile = watch_environment()?;
         let config = self.repository.config().map_err(describe)?;
         match config.get_bool("core.ignorecase") {
             Ok(true) => (),
@@ -213,6 +190,38 @@ impl Prepared {
             }
         }
         Ok(())
+    }
+    /// Count reachable commits once per watched baseline, or retain unknown.
+    #[cfg(windows)]
+    pub(super) fn commit_count(&self) -> Option<u64> {
+        let head = self.facts.head.as_deref()?;
+        for directory in [self.repository.path(), self.repository.commondir()] {
+            match std::fs::symlink_metadata(directory.join("info/grafts")) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                _ => return None,
+            }
+        }
+        if self
+            .repository
+            .references_glob("refs/replace/*")
+            .ok()?
+            .next()
+            .is_some()
+        {
+            return None;
+        }
+        let mut walk = self.repository.revwalk().ok()?;
+        walk.push(git2::Oid::from_str(head).ok()?).ok()?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+        let mut count = 0u64;
+        for commit in walk {
+            commit.ok()?;
+            count = count.checked_add(1)?;
+            if count > 100_000 || std::time::Instant::now() >= deadline {
+                return None;
+            }
+        }
+        Some(count)
     }
     #[cfg(windows)]
     pub(super) fn inventory(&self) -> Result<std::collections::HashSet<String>, String> {
@@ -363,6 +372,35 @@ impl Prepared {
         }
         Ok(dirty)
     }
+}
+
+#[cfg(windows)]
+pub(super) fn watch_environment() -> Result<PathBuf, String> {
+    if std::env::vars_os().any(|(name, _)| {
+        name.as_encoded_bytes()
+            .get(..4)
+            .is_some_and(|v| v.eq_ignore_ascii_case(b"GIT_"))
+            || name
+                .as_encoded_bytes()
+                .eq_ignore_ascii_case(b"XDG_CONFIG_HOME")
+    }) {
+        return Err("Git environment overrides require a fresh observation".into());
+    }
+    let claim = se_proc::installation_claim_path().map_err(|e| e.to_string())?;
+    let profile = claim
+        .parent()
+        .ok_or("native user profile has no directory")?;
+    let expected = se_proc::canonicalize_path(profile).map_err(|e| e.to_string())?;
+    for key in ["HOME", "USERPROFILE"] {
+        if let Some(value) = std::env::var_os(key) {
+            let actual =
+                se_proc::canonicalize_path(Path::new(&value)).map_err(|e| e.to_string())?;
+            if actual != expected {
+                return Err("Git user profile differs from the native account".into());
+            }
+        }
+    }
+    Ok(profile.to_owned())
 }
 
 #[cfg(windows)]

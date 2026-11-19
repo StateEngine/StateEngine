@@ -130,7 +130,7 @@ fn watched_view(value: se_repository::WatchedFacts, include_ticket: bool) -> Res
     Ok(GitView {
         head: value.facts.head,
         branch: value.facts.branch,
-        commits: None,
+        commits: value.commits,
         uncommitted: value.facts.dirty,
         observation: Some(GitObservation {
             basis: "watched".into(),
