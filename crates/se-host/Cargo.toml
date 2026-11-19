@@ -39,8 +39,7 @@ uuid = { workspace = true, features = ["v4"] }
 zeroize.workspace = true
 serde_ignored = "0.1.14"
 tokio = { workspace = true, optional = true }
-# The same server-only HTTP/1 stack the shipping SE Code server resolves
-# (hyper 1.11, hyper-util 0.1.20, http-body-util 0.1.5); no client or TLS.
+# HTTP/1 server plus the verified loopback control client; no TLS.
 hyper = { version = "1.11", default-features = false, features = ["server", "client", "http1"], optional = true }
 hyper-util = { version = "0.1.20", default-features = false, features = ["tokio"], optional = true }
 http-body-util = { version = "0.1.5", optional = true }
