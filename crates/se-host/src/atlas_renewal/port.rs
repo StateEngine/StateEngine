@@ -1,3 +1,4 @@
+use super::schedule::sync_locks;
 use super::*;
 impl crate::atlas_runtime::RenewalDriver for NativeRenewal {
     fn bind_parser_image(&mut self, image: &std::path::Path) -> AtlasResult<()> {
@@ -141,32 +142,4 @@ fn retain_failure(primary: SeError, other: SeError) -> SeError {
         .map_or_else(String::new, ToString::to_string);
     let cause = std::io::Error::other(format!("{primary}; {native}; earlier failure: {other}"));
     primary.with_cause(cause)
-}
-
-/// Run source work and transfer newly observed checkout-lock state to the same
-/// scheduler before it can publish. Callers pair this with `drive_events`.
-pub fn drive_quantum(
-    controller: &mut crate::atlas_runtime::NativeController<NativeRenewal>,
-    duration: Duration,
-) -> AtlasResult<Option<WorkReport>> {
-    sync_locks(controller)?;
-    let result = controller.work_quantum(duration);
-    sync_locks(controller)?;
-    result
-}
-fn sync_locks(
-    controller: &mut crate::atlas_runtime::NativeController<NativeRenewal>,
-) -> AtlasResult<usize> {
-    let changes: Vec<_> = controller
-        .runtime_mut()
-        .driver_mut()
-        .roots
-        .iter_mut()
-        .filter_map(|root| root.pending_lock.take().map(|held| (root.id.clone(), held)))
-        .collect();
-    let count = changes.len();
-    for (root, held) in changes {
-        controller.git_lock(&root, held)?;
-    }
-    Ok(count)
 }
