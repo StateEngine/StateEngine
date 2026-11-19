@@ -18,6 +18,7 @@ struct Header {
 static INSTALL: Once = Once::new();
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
+static EXTRACTION: AtomicUsize = AtomicUsize::new(0);
 static LIMIT: AtomicUsize = AtomicUsize::new(0);
 static EXCEEDED: AtomicBool = AtomicBool::new(false);
 
@@ -32,6 +33,7 @@ impl Reservation {
             };
         });
         LIMIT.store(limit as usize, Ordering::Relaxed);
+        EXTRACTION.store(0, Ordering::Relaxed);
         EXCEEDED.store(
             CURRENT.load(Ordering::Acquire) > limit as usize,
             Ordering::Relaxed,
@@ -64,9 +66,22 @@ fn charge(size: usize) {
     let current = CURRENT
         .fetch_add(size, Ordering::AcqRel)
         .saturating_add(size);
-    if ACTIVE.load(Ordering::Acquire) && current > LIMIT.load(Ordering::Acquire) {
+    let total = current.saturating_add(EXTRACTION.load(Ordering::Acquire));
+    if ACTIVE.load(Ordering::Acquire) && total > LIMIT.load(Ordering::Acquire) {
         EXCEEDED.store(true, Ordering::Release);
     }
+}
+
+pub(super) fn charge_extraction(bytes: usize) -> Result<(), usize> {
+    let used = CURRENT
+        .load(Ordering::Acquire)
+        .saturating_add(EXTRACTION.load(Ordering::Acquire));
+    let available = LIMIT.load(Ordering::Acquire).saturating_sub(used);
+    if bytes > available {
+        return Err(available);
+    }
+    EXTRACTION.fetch_add(bytes, Ordering::AcqRel);
+    Ok(())
 }
 
 unsafe fn allocate(size: usize, zeroed: bool) -> *mut c_void {
