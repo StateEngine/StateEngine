@@ -28,7 +28,7 @@ impl SqliteSnapshot {
         query: MessageQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<MessageRecord>> {
-        self.read_messages_with_delivery(query, budget, false)
+        self.read_messages_with_delivery(query, budget, false, false)
     }
     #[expect(
         clippy::too_many_lines,
@@ -39,6 +39,7 @@ impl SqliteSnapshot {
         query: MessageQuery,
         budget: ReadBudget,
         pending: bool,
+        skip_count: bool,
     ) -> StoreResult<Page<MessageRecord>> {
         self.mail_source()?;
         let p = self.project_bytes()?;
@@ -229,6 +230,7 @@ impl SqliteSnapshot {
             items.push(message);
         }
         let remaining = if !pending
+            && !skip_count
             && after == 0
             && query.unread_only
             && query.kind.is_none()

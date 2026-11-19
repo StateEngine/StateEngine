@@ -113,29 +113,22 @@ impl LaunchCoordinator {
                 })
                 .await?;
             if let Some(event) = captured {
-                for message in &flight.reservation.ids {
-                    let request = core::InputAccepted {
-                        target: target.clone(),
-                        effect: flight.reservation.effect_id,
-                        message: message.clone(),
-                        evidence: event.clone(),
-                        accepted_text_sha256: expected,
-                        key: IdempotencyKey::new(format!(
-                            "mail.delivered.{}.{}",
-                            se_types::hex_lower(flight.reservation.effect_id.as_bytes()),
-                            message.as_str()
-                        ))?,
-                    };
-                    commit::step(
-                        &self.store,
-                        admission(target),
-                        deadline,
-                        move |kernel, cx| core::confirm_delivery(kernel, cx, request),
-                        core::observation_committed,
-                    )
+                self.confirm_captured(target, flight, &event, deadline)
                     .await?;
-                }
+                let more = flight.reservation.more_pending;
+                let captured_ids = flight.reservation.ids.clone();
                 work.mail.flight = None;
+                if more {
+                    for id in captured_ids {
+                        if !work.mail.seen.contains(&id) {
+                            work.mail.seen.push(id);
+                        }
+                    }
+                    work.mail.backlog = true;
+                } else {
+                    work.mail.backlog = false;
+                    work.mail.seen.clear();
+                }
             }
         }
         if let Some(notice) = previous
@@ -145,6 +138,57 @@ impl LaunchCoordinator {
             self.retire_secode_notice(work, &notice, deadline).await?;
         }
         self.settle_mail(target, deadline).await
+    }
+
+    async fn confirm_captured(
+        &self,
+        target: &core::MailTarget,
+        flight: &Flight,
+        event: &se_types::EventId,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let expected = flight.text_sha256;
+        let ids = flight.reservation.ids.clone();
+        let undelivered = self
+            .store
+            .read(admission(target), deadline, move |cx| {
+                let mut result = Vec::new();
+                for id in ids {
+                    let message = scope::require_present(
+                        cx.read.message(id.clone()).map_err(|e| store_error(&e))?,
+                        "reserved mail",
+                        scope::COMMITTED_READ_RECOVERY,
+                    )?;
+                    if message.delivered.is_none() {
+                        result.push(id);
+                    }
+                }
+                Ok(result)
+            })
+            .await?;
+        for message in &undelivered {
+            let request = core::InputAccepted {
+                target: target.clone(),
+                effect: flight.reservation.effect_id,
+                message: message.clone(),
+                evidence: event.clone(),
+                accepted_text_sha256: expected,
+                key: IdempotencyKey::new(format!(
+                    "mail.delivered.{}.{}",
+                    se_types::hex_lower(flight.reservation.effect_id.as_bytes()),
+                    message.as_str()
+                ))?,
+            };
+            commit::step(
+                &self.store,
+                admission(target),
+                deadline,
+                move |kernel, cx| core::confirm_delivery(kernel, cx, request),
+                core::observation_committed,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn settle_mail(&self, target: &core::MailTarget, deadline: &Deadline) -> Result<()> {

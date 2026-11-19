@@ -148,7 +148,21 @@ impl LaunchCoordinator {
                             && job.mail_pending.swap(false, Ordering::AcqRel)
                         {
                             let result = match deadline.stage(Duration::from_secs(10)) {
-                                Ok(bound) => self.deliver_mail(&mut state, &bound).await,
+                                Ok(bound) => {
+                                    let reoffer = if (state.mail.idle || state.secode.is_some())
+                                        && state.mail.flight.is_none()
+                                    {
+                                        job.mail_reoffer.swap(false, Ordering::AcqRel)
+                                    } else {
+                                        false
+                                    };
+                                    let result =
+                                        self.deliver_mail(&mut state, reoffer, &bound).await;
+                                    if result.is_err() && reoffer {
+                                        job.mail_reoffer.store(true, Ordering::Release);
+                                    }
+                                    result
+                                }
                                 Err(error) => Err(error),
                             };
                             if let Err(error) = result {

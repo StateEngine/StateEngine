@@ -107,11 +107,11 @@ fn project(
     let recipient = key(c, "agent", notice.target_agent.as_str(), &s, false)?;
     for message in &notice.ids {
         let id = key(c, "message", message.as_str(), &s, false)?;
-        let n=c.execute("UPDATE message_deliveries SET wake_state=?,wake_event_seq=?,wake_code=? WHERE project_id=? AND message_id=? AND recipient_id=? AND quiet=0 AND (wake_event_seq IS NULL OR wake_event_seq<?)",crate::sql_value::sql_params![state,seq,code,p,id,recipient,seq]).map_err(sql)?;
+        let n=c.execute("UPDATE message_deliveries SET wake_state=CASE WHEN quiet=0 THEN ? ELSE wake_state END,wake_event_seq=CASE WHEN quiet=0 THEN ? ELSE wake_event_seq END,wake_code=CASE WHEN quiet=0 THEN ? ELSE wake_code END WHERE project_id=? AND message_id=? AND recipient_id=? AND (quiet=1 OR wake_event_seq IS NULL OR wake_event_seq<?)",crate::sql_value::sql_params![state,seq,code,p,id,recipient,seq]).map_err(sql)?;
         if n != 1 {
             return Err(fail(
                 StoreErrorCode::ProjectionInconsistent,
-                "notice names missing or quiet recipient notification",
+                "notice names a missing or stale recipient notification",
             ));
         }
     }

@@ -33,17 +33,14 @@ impl CodexHarness {
                     "Retry after the current serialized input finishes.",
                 ))
             })?;
-        let active = binding.active_turn().map_err(unsent)?;
-        let (method, mut params) = match active {
-            Some(turn) => (
-                "turn/steer",
-                input::steer(conversation, &turn, text).map_err(unsent)?,
-            ),
-            None => (
-                "turn/start",
-                json!({"threadId":conversation.as_str(),"input":[{"type":"text","text":text.as_str()}]}),
-            ),
-        };
+        if binding.active_turn().map_err(unsent)?.is_some() {
+            return Err(unsent(incompatible(
+                "a provider turn is active",
+                "Wait for the current turn to finish before offering pending mail.",
+            )));
+        }
+        let method = "turn/start";
+        let mut params = json!({"threadId":conversation.as_str(),"input":[{"type":"text","text":text.as_str()}]});
         params["clientUserMessageId"] = json!(format!(
             "se-{}",
             se_types::hex_lower(&Sha256::digest(key.as_bytes()))

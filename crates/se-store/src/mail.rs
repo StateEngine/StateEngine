@@ -51,6 +51,13 @@ pub trait MailSnapshot: Snapshot {
         budget: ReadBudget,
     ) -> StoreResult<Page<MessageRecord>>;
 
+    /// Unread recipient mail without requiring the maintained count projection.
+    fn mail_unread(
+        &mut self,
+        recipient: AgentId,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<MessageRecord>>;
+
     /// Read only a committed recipient read or dismiss
     /// concerning this verified recipient, without broad event visibility.
     fn mail_disposition(

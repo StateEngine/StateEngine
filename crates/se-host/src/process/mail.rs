@@ -16,6 +16,9 @@ mod reconcile;
 pub(super) struct State {
     pub idle: bool,
     pub flight: Option<Flight>,
+    pub seen: Vec<se_types::MessageId>,
+    pub backlog: bool,
+    pub reoffer: bool,
 }
 pub(super) struct Flight {
     reservation: core::Reservation,
@@ -81,6 +84,7 @@ impl LaunchCoordinator {
     pub(super) async fn deliver_mail(
         &self,
         work: &mut owned::Work,
+        reoffer: bool,
         deadline: &Deadline,
     ) -> Result<()> {
         if !work.active
@@ -91,6 +95,7 @@ impl LaunchCoordinator {
         {
             return Ok(());
         }
+        work.mail.reoffer |= reoffer;
         self.reconcile_recovered_secode_notice(work, deadline)
             .await?;
         let target = core::MailTarget {
@@ -124,9 +129,24 @@ impl LaunchCoordinator {
             // fabricate a console write or record its notification as a read.
             return Ok(());
         }
-        if (!codex && !secode && !work.mail.idle) || work.mail.flight.is_some() {
+        if (!secode && !work.mail.idle) || work.mail.flight.is_some() {
             return Ok(());
         }
+        if let Some(managed) = &work.secode
+            && !managed.current()?.control.is_idle(deadline).await?
+        {
+            return Ok(());
+        }
+        let reoffer = work.mail.reoffer;
+        if reoffer {
+            work.mail.seen.clear();
+            work.mail.backlog = false;
+        }
+        let excluded = if work.mail.backlog {
+            work.mail.seen.clone()
+        } else {
+            Vec::new()
+        };
         let notice = id()?;
         let effect = id()?;
         let request = core::ReserveNotice {
@@ -142,15 +162,20 @@ impl LaunchCoordinator {
             &self.store,
             admission(&target),
             deadline,
-            move |kernel, cx| core::reserve_notice(kernel, cx, request),
+            move |kernel, cx| core::reserve_coalesced(kernel, cx, request, reoffer, excluded),
             |kernel, cx, then, receipt| {
                 core::committed(kernel, cx, then, receipt).map(|value| Read::Present { value })
             },
         )
         .await?;
+        work.mail.reoffer = false;
         let reserved = match reserved {
             Read::Present { value } => value,
-            Read::Absent { .. } => return Ok(()),
+            Read::Absent { .. } => {
+                work.mail.backlog = false;
+                work.mail.seen.clear();
+                return Ok(());
+            }
             Read::Unknown { what } => return Err(scope::unreadable("mail reservation", &what)),
             Read::Unreadable { source, reason, .. } => {
                 return Err(scope::unreadable(&source, &reason));
