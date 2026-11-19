@@ -134,7 +134,7 @@ fn open_link(path: &Path, share: u32) -> Result<File> {
     Ok(unsafe { File::from_raw_handle(raw) })
 }
 
-fn open_follow(path: &Path) -> Result<File> {
+pub(super) fn open_follow(path: &Path) -> Result<File> {
     let path_wide = wide(path)?;
     // SAFETY: the terminated path and query-only directory flags live through the call.
     let raw = unsafe {
