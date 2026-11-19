@@ -146,7 +146,7 @@ fn expired_sql_is_not_started_and_live_submillisecond_budget_is_positive()
     let mut db = Connection::open_in_memory()?;
     let entered = Cell::new(false);
     assert!(
-        finite(&mut db, crate::clock::now(), |_, _| {
+        finite(&mut db, crate::clock::now(), "test", |_, _| {
             entered.set(true);
             Ok(())
         })
@@ -171,6 +171,7 @@ fn expired_sql_is_not_started_and_live_submillisecond_budget_is_positive()
     finite(
         &mut db,
         crate::clock::now() + Duration::from_micros(500),
+        "test",
         |_, budget| {
             assert_eq!(budget, 1, "live submillisecond work must round up");
             entered.set(true);

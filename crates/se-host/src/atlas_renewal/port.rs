@@ -63,7 +63,7 @@ pub fn drive_events(
         now + std::time::Duration::from_secs(5),
         Some(budget),
     ) {
-        Ok(hints) => hints,
+        Ok((hints, _)) => hints,
         Err(crate::atlas_runtime::PollEventsFailure::Admission(error)) => return Err(error),
         Err(crate::atlas_runtime::PollEventsFailure::Driver(error)) => {
             let watch_died = matches!(error.body.detail(), Detail::AtlasSourceUnreadable(detail)
