@@ -22,8 +22,7 @@ Run se status to see setup, agent and runtime facts. If selection is ambiguous,
 use se --project PROJECT status with a saved project name or ID. --home DIR
 selects a StateEngine data directory, not a repository or an agent identity.
 
-Managed launches run on Linux and Windows. This alpha's macOS package supports
-saved-state inspection; managed launches and the background host are unavailable.
+Managed launches run on Linux, macOS and Windows.
 Run se help init or se help launch for the installed command options.
 "#,
     },

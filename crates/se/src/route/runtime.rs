@@ -261,9 +261,9 @@ pub fn up(
 ) -> Result<AnyOutput> {
     Err(SeError::new(se_types::Detail::FeatureUnavailable(
         se_types::details::FeatureUnavailable {
-            subject: "detached runtime startup on macOS".into(),
-            reason: "this build implements detached host and process supervision only on Linux and Windows".into(),
-            next_step: "Use se init, se status and direct saved-state operations on macOS; use a Linux or Windows installation for se up and hosted agent work".into(),
+            subject: "detached runtime startup".into(),
+            reason: "this build implements detached host and process supervision only on Linux, macOS and Windows".into(),
+            next_step: "Use a Linux, macOS or Windows installation for se up and hosted agent work".into(),
         },
     )))
 }
