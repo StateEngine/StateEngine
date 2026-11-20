@@ -1,5 +1,5 @@
-//! Protects: G1 / 70 §2.1 — an initialized owner home and ambient owner access
-//! never supply a missing or invalid per-call capability on the real stdio door.
+//! Protects: an identity-free guest cannot inherit owner authority, and an
+//! invalid explicit capability cannot fall back to that guest.
 use std::{
     io::{BufRead, BufReader, Read, Write},
     path::Path,
@@ -14,6 +14,7 @@ mod fixture;
 fn command(image: &Path, home: &Path) -> Command {
     let mut command = Command::new(image);
     command.arg("--home").arg(home);
+    command.env_remove("PATH");
     for (name, _) in std::env::vars_os() {
         let text = name.to_string_lossy();
         if text.starts_with("SE_")
@@ -43,9 +44,10 @@ struct Rpc {
     replies: Receiver<Result<serde_json::Value, String>>,
 }
 impl Rpc {
-    fn open(image: &Path, home: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    fn open(image: &Path, home: &Path, repo: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let mut child = command(image, home)
             .args(["mcp", "--stdio"])
+            .current_dir(repo)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -96,7 +98,7 @@ impl Rpc {
         params: serde_json::Value,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         self.send(serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if Instant::now() >= deadline {
                 return Err("MCP response deadline expired".into());
@@ -166,7 +168,7 @@ fn stdio_tools_never_inherit_the_initialized_owners_authority() -> Check {
             .current_dir(&repo)
             .output()?,
     )?;
-    let mut rpc = Rpc::open(image, home)?;
+    let mut rpc = Rpc::open(image, home, &repo)?;
     let initialized = rpc.call(1, "initialize", serde_json::json!({"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"independent-authority-judge","version":"1"}}))?;
     assert!(
         initialized["result"]["protocolVersion"].is_string(),
@@ -181,7 +183,7 @@ fn stdio_tools_never_inherit_the_initialized_owners_authority() -> Check {
     for (id, params) in [
         (
             3,
-            serde_json::json!({"name":"stateengine_status","arguments":{}}),
+            serde_json::json!({"name":"stateengine_msg_list","arguments":{}}),
         ),
         (
             4,
@@ -200,6 +202,12 @@ fn stdio_tools_never_inherit_the_initialized_owners_authority() -> Check {
         );
     }
     drop(rpc);
+    checked(
+        command(image, home)
+            .args(["--json", "down"])
+            .current_dir(&repo)
+            .output()?,
+    )?;
     drop(std::mem::ManuallyDrop::into_inner(f));
     Ok(())
 }

@@ -9,12 +9,29 @@ const LIMIT: u64 = 65_536;
 pub fn configure(
     root: &Path,
     configuration: &se_config::config_policy::ConfigFile,
+    alternate_home: Option<&Path>,
 ) -> Result<Vec<String>> {
+    let home = alternate_home
+        .map(|path| {
+            se_core::ops::AgentCommand::home_argument(path)
+                .ok_or_else(|| failure(se_core::ops::AgentCommand::HOME_UNAVAILABLE))
+        })
+        .transpose()?;
+    let args = home.map_or_else(|| vec!["mcp"], |home| vec!["--home", home, "mcp"]);
     let mut changed = Vec::new();
     for kind in Kind::ALL {
+        let command = configuration.provider_command(kind.provider().into());
+        let path = Path::new(command);
+        if !path.is_absolute()
+            && path.components().count() == 1
+            && std::env::var_os("PATH").is_none()
+        {
+            changed.push(missing(kind, &args)?);
+            continue;
+        }
         match crate::resolve_provider_executable(configuration, kind.provider().into(), None, None)
         {
-            Ok(executable) if install(root, &executable, kind)? => {
+            Ok(executable) if install(root, &executable, kind, &args)? => {
                 changed.push(format!("configured {} MCP", kind.label()));
             }
             Ok(_) => (),
@@ -24,11 +41,7 @@ pub fn configure(
                     se_types::Detail::ProviderCliNotFound(_)
                 ) =>
             {
-                let command = match kind {
-                    Kind::Claude => "claude mcp add --scope local stateengine -- se mcp",
-                    Kind::Codex => "codex mcp add stateengine -- se mcp",
-                };
-                changed.push(format!("Install {}, then run: {command}", kind.label()));
+                changed.push(missing(kind, &args)?);
             }
             Err(error) => return Err(error),
         }
@@ -36,42 +49,59 @@ pub fn configure(
     Ok(changed)
 }
 
-pub fn install(root: &Path, executable: &Path, kind: Kind) -> Result<bool> {
+fn missing(kind: Kind, args: &[&str]) -> Result<String> {
+    let prefix = match kind {
+        Kind::Claude => "claude mcp add --scope local stateengine -- se",
+        Kind::Codex => "codex mcp add stateengine -- se",
+    };
+    let words = args
+        .iter()
+        .map(|arg| {
+            se_core::ops::AgentCommand::quoted_word(arg).ok_or_else(|| {
+                failure("the selected home cannot be represented in a setup command")
+            })
+        })
+        .collect::<Result<Vec<_>>>()?
+        .join(" ");
+    let prompt = if cfg!(windows) {
+        "in PowerShell run"
+    } else {
+        "run"
+    };
+    Ok(format!(
+        "Install {}, then {prompt}: {prefix} {words}",
+        kind.label()
+    ))
+}
+
+pub fn install(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Result<bool> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| failure(&format!("could not start the setup runtime: {error}")))?;
     runtime.block_on(async {
-        if configured(root, executable, kind).await? {
+        if configured(root, executable, kind, entry).await? {
             return Ok(false);
         }
-        let args: &[&str] = match kind {
-            Kind::Claude => &[
-                "mcp",
-                "add",
-                "--scope",
-                "local",
-                "stateengine",
-                "--",
-                "se",
-                "mcp",
-            ],
-            Kind::Codex => &["mcp", "add", "stateengine", "--", "se", "mcp"],
+        let mut args: Vec<&str> = match kind {
+            Kind::Claude => vec!["mcp", "add", "--scope", "local", "stateengine", "--", "se"],
+            Kind::Codex => vec!["mcp", "add", "stateengine", "--", "se"],
         };
-        let output = run(root, executable, args).await?;
+        args.extend_from_slice(entry);
+        let output = run(root, executable, &args).await?;
         if !output.status.success() {
             return Err(failure(
                 "the harness did not save the MCP entry; check its configuration and retry",
             ));
         }
-        if !configured(root, executable, kind).await? {
+        if !configured(root, executable, kind, entry).await? {
             return Err(failure("the harness did not confirm the saved MCP entry"));
         }
         Ok(true)
     })
 }
 
-async fn configured(root: &Path, executable: &Path, kind: Kind) -> Result<bool> {
+async fn configured(root: &Path, executable: &Path, kind: Kind, entry: &[&str]) -> Result<bool> {
     match kind {
         Kind::Claude => {
             let output = run(root, executable, &["mcp", "get", "stateengine"]).await?;
@@ -100,7 +130,7 @@ async fn configured(root: &Path, executable: &Path, kind: Kind) -> Result<bool> 
             }
             if field("Type: ") != Some("stdio")
                 || field("Command: ") != Some("se")
-                || field("Args: ") != Some("mcp")
+                || field("Args: ") != Some(entry.join(" ").as_str())
             {
                 return Err(failure(
                     "a different stateengine MCP entry already exists; preserve or remove it before retrying",
@@ -145,7 +175,7 @@ async fn configured(root: &Path, executable: &Path, kind: Kind) -> Result<bool> 
                 || row["enabled"] != true
                 || transport["type"] != "stdio"
                 || transport["command"] != "se"
-                || transport["args"] != serde_json::json!(["mcp"])
+                || transport["args"] != serde_json::json!(entry)
                 || !transport["cwd"].is_null()
                 || !transport["env"].is_null()
                 || !(transport["env_vars"].is_null()
