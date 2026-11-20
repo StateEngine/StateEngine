@@ -137,6 +137,9 @@ pub fn drive_events(
             if !watch_died && (retryable || !consumed) {
                 return Err(error);
             }
+            if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                eprintln!("ATLAS_WATCH_RECONCILE driver_error {error:?}");
+            }
             let driver = controller.runtime_mut().driver_mut();
             let mut retirement_error = None;
             if let Some(index) = driver.roots.iter().position(|r| &r.id == root) {
@@ -250,6 +253,9 @@ fn finish_catchup(
     if let Err(error) = caught {
         if se_atlas::controller::quantum_expired(&error) {
             return Err(error);
+        }
+        if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+            eprintln!("ATLAS_WATCH_RECONCILE catchup_error {error:?}");
         }
         let driver = controller.runtime_mut().driver_mut();
         let retirement = driver

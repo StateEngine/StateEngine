@@ -269,6 +269,9 @@ impl NativeRenewal {
                     let event = match event {
                         Ok(event) => event,
                         Err(error) => {
+                            if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                                eprintln!("ATLAS_WATCH_RECONCILE malformed_event {error}");
+                            }
                             self.roots[index].limit_error = Some(error.to_string());
                             reason(&mut self.roots[index], CoverageReason::WatchLoss);
                             return Ok(Some(vec![SourceHint::Reconcile(
@@ -277,6 +280,9 @@ impl NativeRenewal {
                         }
                     };
                     if event.action == NativeWatchAction::Overflow {
+                        if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                            eprintln!("ATLAS_WATCH_RECONCILE overflow");
+                        }
                         reason(&mut self.roots[index], CoverageReason::WatchLoss);
                         return Ok(Some(vec![SourceHint::Reconcile(
                             ReconcileReason::WatchOverflow,
@@ -289,6 +295,11 @@ impl NativeRenewal {
                         && metadata.handles(event.descriptor)
                     {
                         if let Some(hint) = metadata.hint(&event)? {
+                            if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                                if let SourceHint::Reconcile(reason) = &hint {
+                                    eprintln!("ATLAS_WATCH_RECONCILE metadata {reason:?}");
+                                }
+                            }
                             return Ok(Some(vec![hint]));
                         }
                         return Ok(None);
@@ -302,12 +313,18 @@ impl NativeRenewal {
                         if event.watch_removed {
                             return Ok(None);
                         }
+                        if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                            eprintln!("ATLAS_WATCH_RECONCILE missing_mapping");
+                        }
                         reason(&mut self.roots[index], CoverageReason::WatchLoss);
                         return Ok(Some(vec![SourceHint::Reconcile(
                             ReconcileReason::WatchFailure,
                         )]));
                     };
                     if event.action == NativeWatchAction::Invalidated {
+                        if std::env::var_os("ATLAS_FULL_REPOSITORY").is_some() {
+                            eprintln!("ATLAS_WATCH_RECONCILE invalidated");
+                        }
                         connection.write(65536, deadline, |sql| {
                             sql.prepare("DELETE FROM watch_directories WHERE id=?1")?
                                 .execute([mapping.directory])

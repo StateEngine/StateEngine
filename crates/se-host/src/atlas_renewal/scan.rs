@@ -62,6 +62,12 @@ impl NativeRenewal {
                     "ATLAS_RENEWAL_NEW serial={} hint={hint} full_reconcile={full_reconcile}",
                     work.serial
                 );
+                if let SourceHint::Reconcile(reason) = &work.hint {
+                    eprintln!(
+                        "ATLAS_RENEWAL_REASON serial={} reason={reason:?}",
+                        work.serial
+                    );
+                }
             }
             let retained_last = connection.read(deadline, |sql| {
                 sql.prepare("SELECT coalesce(max(id),0) FROM files")?
