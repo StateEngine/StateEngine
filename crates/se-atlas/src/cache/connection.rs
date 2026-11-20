@@ -632,12 +632,30 @@ fn configure_limits(
             ));
         }
     }
-    db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA temp_store=FILE; PRAGMA mmap_size=0; PRAGMA cache_size=16;").map_err(cache_error)?;
+    let (cache, temp) = probe_settings(role);
+    db.execute_batch(&format!("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA temp_store={temp}; PRAGMA mmap_size=0; PRAGMA cache_size={cache};")).map_err(cache_error)?;
     if role == ConnectionRole::ColdWriter {
         db.execute_batch("PRAGMA cache_size=488")
             .map_err(cache_error)?;
     }
     Ok(())
+}
+/// Probe only: SE_ATLAS_PROBE_CACHE (pages) and SE_ATLAS_PROBE_TEMP (1 file, 2 memory)
+/// for the query reader.
+fn probe_settings(role: ConnectionRole) -> (i64, i64) {
+    if role != ConnectionRole::QueryReader {
+        return (16, 1);
+    }
+    let read = |name: &str, default: i64| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
+    (
+        read("SE_ATLAS_PROBE_CACHE", 16),
+        read("SE_ATLAS_PROBE_TEMP", 1),
+    )
 }
 fn configure_access(db: &Connection, role: ConnectionRole) -> AtlasResult<()> {
     if role.writable() {
@@ -659,11 +677,11 @@ fn configure_access(db: &Connection, role: ConnectionRole) -> AtlasResult<()> {
             if role == ConnectionRole::ColdWriter {
                 488
             } else {
-                16
+                probe_settings(role).0
             },
         ),
         ("foreign_keys", 1),
-        ("temp_store", 1),
+        ("temp_store", probe_settings(role).1),
         ("mmap_size", 0),
     ] {
         let actual: i64 = db
