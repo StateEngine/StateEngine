@@ -1,16 +1,18 @@
-//! One transport connection. WebSocket framing runs over a private Unix socket;
-//! Windows uses the documented stock stdio baseline, never a TCP fallback.
+//! One transport connection. WebSocket framing runs over the agent's private
+//! local socket (AF_UNIX on Windows too), or over stdio; never a TCP fallback.
 use super::*;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use futures_util::{SinkExt, StreamExt};
 use std::num::NonZeroU32;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio_tungstenite::{
     WebSocketStream,
     tungstenite::{Message as WsMessage, protocol::WebSocketConfig},
 };
 #[cfg(unix)]
 type Socket = WebSocketStream<tokio::net::UnixStream>;
+#[cfg(windows)]
+type Socket = WebSocketStream<tokio::io::DuplexStream>;
 
 pub(super) enum Sender {
     Closed,
@@ -18,7 +20,7 @@ pub(super) enum Sender {
         io: Arc<dyn ProviderIoPlatform>,
         port: Arc<ProviderTransport>,
     },
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Socket(futures_util::stream::SplitSink<Socket, WsMessage>),
 }
 pub(super) enum Receiver {
@@ -27,7 +29,7 @@ pub(super) enum Receiver {
         port: Arc<ProviderTransport>,
         reader: transport::Reader,
     },
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     Socket(futures_util::stream::SplitStream<Socket>),
 }
 pub(super) async fn open(
@@ -36,17 +38,18 @@ pub(super) async fn open(
     socket: Option<&Path>,
     cx: &CallContext,
 ) -> Result<(Sender, Receiver)> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     if let Some(path) = socket {
         let until = tokio::time::Instant::now() + cx.timeout;
         let stream = loop {
-            match tokio::net::UnixStream::connect(path).await {
+            match connect_stream(path).await {
                 Ok(stream) => break stream,
+                // Not listening yet; Windows reports that as WSAENETDOWN.
                 Err(error)
                     if matches!(
                         error.kind(),
                         std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-                    ) =>
+                    ) || (cfg!(windows) && error.raw_os_error() == Some(10050)) =>
                 {
                     if tokio::time::Instant::now() >= until {
                         return Err(se_core::scope::unreadable(
@@ -88,7 +91,7 @@ pub(super) async fn open(
         let (write, read) = socket.split();
         return Ok((Sender::Socket(write), Receiver::Socket(read)));
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let _ = (socket, cx);
     Ok((
         Sender::Stdio {
@@ -110,7 +113,7 @@ impl Sender {
                 "the retained open connection",
             )),
             Self::Stdio { io, port } => transport::write(io.as_ref(), port, bytes, cx).await,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Socket(socket) => {
                 let text = std::str::from_utf8(bytes.strip_suffix(b"\n").unwrap_or(&bytes))
                     .map_err(|_| SeError::invalid("Codex request", "a UTF-8 JSON frame"))?;
@@ -135,7 +138,7 @@ impl Sender {
         match self {
             Self::Closed => Ok(()),
             Self::Stdio { io, port } => io.finish_input(port, cx).await,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Socket(socket) => tokio::time::timeout(cx.timeout, socket.close())
                 .await
                 .map_err(|_| {
@@ -158,7 +161,7 @@ impl Receiver {
                 Some(message) => Ok(Some((message, reader.observed_at()?))),
                 None => Ok(None),
             },
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             Self::Socket(socket) => loop {
                 match tokio::time::timeout(cx.timeout, socket.next())
                     .await
@@ -210,4 +213,55 @@ pub(super) async fn drain(
             _ => return,
         }
     }
+}
+
+#[cfg(unix)]
+async fn connect_stream(path: &Path) -> std::io::Result<tokio::net::UnixStream> {
+    tokio::net::UnixStream::connect(path).await
+}
+
+/// tokio has no Windows AF_UNIX stream, so a blocking connection is bridged to
+/// an in-process duplex by two threads. Dropping the binding's end ends both.
+#[cfg(windows)]
+async fn connect_stream(path: &Path) -> std::io::Result<tokio::io::DuplexStream> {
+    let path = path.to_owned();
+    let stream = tokio::task::spawn_blocking(move || uds_windows::UnixStream::connect(path))
+        .await
+        .map_err(std::io::Error::other)??;
+    let (ours, theirs) = tokio::io::duplex(64 * 1024);
+    let (mut from_host, mut to_host) = tokio::io::split(theirs);
+    let mut reader = stream.try_clone()?;
+    let mut writer = stream;
+    let inbound = tokio::runtime::Handle::current();
+    let outbound = inbound.clone();
+    std::thread::Builder::new()
+        .name("se-codex-socket-in".into())
+        .spawn(move || {
+            use std::io::Read;
+            use tokio::io::AsyncWriteExt;
+            let mut buffer = vec![0_u8; 64 * 1024];
+            while let Ok(read @ 1..) = reader.read(&mut buffer) {
+                if inbound
+                    .block_on(to_host.write_all(&buffer[..read]))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            let _ = inbound.block_on(to_host.shutdown());
+        })?;
+    std::thread::Builder::new()
+        .name("se-codex-socket-out".into())
+        .spawn(move || {
+            use std::io::Write;
+            use tokio::io::AsyncReadExt;
+            let mut buffer = vec![0_u8; 64 * 1024];
+            while let Ok(read @ 1..) = outbound.block_on(from_host.read(&mut buffer)) {
+                if writer.write_all(&buffer[..read]).is_err() {
+                    break;
+                }
+            }
+            let _ = writer.shutdown(std::net::Shutdown::Both);
+        })?;
+    Ok(ours)
 }
