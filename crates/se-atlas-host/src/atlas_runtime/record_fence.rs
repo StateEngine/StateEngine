@@ -51,28 +51,28 @@ pub struct RecordFeedFence {
 #[derive(Clone, Copy)]
 pub struct RecordFeedTicket(u64);
 #[cfg(any(feature = "listener", test))]
-pub(crate) struct RecordFeedWrite {
+pub struct RecordFeedWrite {
     fence: Arc<RecordFeedFence>,
     release: bool,
 }
 #[cfg(any(feature = "listener", test))]
 impl RecordFeedWrite {
     /// An unknown commit outcome holds freshness false for this owner lifetime.
-    pub(crate) fn uncertain(mut self) {
+    pub fn uncertain(mut self) {
         self.release = false;
     }
 }
 impl RecordFeedFence {
     #[cfg(all(feature = "listener", any(target_os = "linux", windows, test)))]
-    pub(crate) async fn changed(&self) {
+    pub async fn changed(&self) {
         self.changed.notified().await;
     }
     #[cfg(all(feature = "listener", any(target_os = "linux", windows, test)))]
-    pub(crate) fn interests(&self) -> Result<Vec<se_types::ProjectId>> {
+    pub fn interests(&self) -> Result<Vec<se_types::ProjectId>> {
         Ok(self.lock()?.interests.clone())
     }
     #[cfg(feature = "listener")]
-    pub(crate) fn before_scoped_write(
+    pub fn before_scoped_write(
         self: &Arc<Self>,
         scope: &se_store::Scope,
     ) -> Result<RecordFeedWrite> {
@@ -178,7 +178,7 @@ impl RecordFeedFence {
         }))
     }
     #[cfg(any(feature = "listener", test))]
-    pub(crate) fn before_write(self: &Arc<Self>) -> Result<RecordFeedWrite> {
+    pub fn before_write(self: &Arc<Self>) -> Result<RecordFeedWrite> {
         let mut state = self.lock()?;
         state.current.clear();
         let serial = state.serial.checked_add(1).ok_or_else(|| {

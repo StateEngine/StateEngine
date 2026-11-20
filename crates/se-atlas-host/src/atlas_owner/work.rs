@@ -7,7 +7,7 @@ impl State {
     )]
     pub(super) fn work(
         &mut self,
-        context: &ExecutionContext,
+        context: &dyn AtlasHost,
         owner: &HumanId,
         wake: Wake,
     ) -> Result<Plan> {
@@ -34,7 +34,7 @@ impl State {
             }
         }
         let mut again = false;
-        if let Some(activity) = context.atlas.records.take_activity()? {
+        if let Some(activity) = context.records().take_activity()? {
             if self.enabled {
                 // Revalidate only the bounded live pool on committed activity.
                 // Root removal/replacement can cancel its own native custody;
@@ -221,7 +221,7 @@ impl State {
                     {
                         Ok(true) => root.feed_pending = false,
                         Ok(false) => {
-                            again |= context.atlas.records.ticket()?.is_some();
+                            again |= context.records().ticket()?.is_some();
                         }
                         Err(error) => {
                             root.feed_stalled = true;
@@ -334,7 +334,7 @@ impl State {
             fds,
         }))
     }
-    fn advance_project(&mut self, context: &ExecutionContext, owner: &HumanId) -> Result<bool> {
+    fn advance_project(&mut self, context: &dyn AtlasHost, owner: &HumanId) -> Result<bool> {
         if self.active_project.is_none() {
             if self.queue_scan.is_none() {
                 self.queue_scan = self.work.scan()?;
@@ -391,7 +391,7 @@ impl State {
                 .filter(|root| root.registration.root != id)
                 .map(|root| root.registration.clone())
                 .collect();
-            let interests = context.atlas.records.interests()?;
+            let interests = context.records().interests()?;
             selected.sort_by_key(|root| {
                 interests
                     .iter()
@@ -435,19 +435,19 @@ impl State {
     }
     fn registrations(
         &self,
-        context: &ExecutionContext,
+        context: &dyn AtlasHost,
         owner: &HumanId,
         project: &ProjectId,
     ) -> Result<Vec<RootRegistration>> {
         let admitted = admission(context, owner, Scope::Project(project.clone()));
-        let phase = executor::checked_pooled_phase(&context.reads, context.generation)?;
+        let phase = context.checked_read_phase()?;
         let mut snapshot = phase
             .into_snapshot(se_core::admission::read_scope(&admitted))
             .map_err(|error| store_error(&error))?;
         let read = snapshot
             .project(project.clone())
             .map_err(|error| store_error(&error));
-        let read = executor::close_read(read, snapshot.close())?;
+        let read = close_read(read, snapshot.close())?;
         let registrations = match read {
             se_types::Read::Present { value } => match value.current.body {
                 se_store::EventBody::ProjectRegistered { project, roots, .. }

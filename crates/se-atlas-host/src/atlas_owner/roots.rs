@@ -19,13 +19,13 @@ impl Scan {
     /// becomes an in-memory registration or a native watch admission limit.
     pub(super) fn page(
         &mut self,
-        context: &ExecutionContext,
+        host: &dyn AtlasHost,
         owner: &HumanId,
         home: &std::path::Path,
         work: &ProjectWork,
     ) -> Result<bool> {
-        let admitted = admission(context, owner, Scope::Registry);
-        let phase = executor::checked_pooled_phase(&context.reads, context.generation)?;
+        let admitted = admission(host, owner, Scope::Registry);
+        let phase = host.checked_read_phase()?;
         let mut snapshot = phase
             .into_snapshot(read_scope(&admitted))
             .map_err(|e| store_error(&e))?;
@@ -41,7 +41,7 @@ impl Scan {
                 deadline: Duration::from_millis(100),
             })
             .map_err(|e| store_error(&e));
-        let page = executor::close_read(read, snapshot.close())?;
+        let page = close_read(read, snapshot.close())?;
         let complete = page.window().complete();
         self.after = page.next().cloned();
         if !complete && self.after.is_none() {

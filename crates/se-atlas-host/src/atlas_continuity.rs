@@ -133,7 +133,7 @@ fn failed(error: &SeError) -> ResumeCodeState {
         ResumeCodeState::Unreadable
     }
 }
-pub(crate) fn attach(
+pub fn attach(
     owner: &AtlasOwnerPort,
     ticket: Option<RecordFeedTicket>,
     read: &mut SqliteSnapshot,
@@ -153,13 +153,7 @@ pub(crate) fn attach(
     ) {
         return Ok(());
     }
-    let source = source(
-        owner,
-        ticket,
-        read,
-        admission,
-        crate::runtime::start::now_unix_micros()? / 1000,
-    );
+    let source = source(owner, ticket, read, admission, now_unix_ms()?);
     match output {
         se_core::ops::AnyOutput::Resume(value) => match source {
             Ok(source) => {
@@ -202,8 +196,7 @@ pub(crate) fn attach(
     Ok(())
 }
 
-#[cfg(feature = "secode")]
-pub(crate) fn attach_model(
+pub fn attach_model(
     owner: &AtlasOwnerPort,
     ticket: Option<RecordFeedTicket>,
     read: &mut SqliteSnapshot,
@@ -218,18 +211,20 @@ pub(crate) fn attach_model(
             "one bound project and agent",
         ));
     };
-    let source = source(
-        owner,
-        ticket,
-        read,
-        admission,
-        crate::runtime::start::now_unix_micros()? / 1000,
-    )
-    .map_err(|error| failed(&error));
+    let source =
+        source(owner, ticket, read, admission, now_unix_ms()?).map_err(|error| failed(&error));
     // The current linked consumer has no acknowledgement for this section.
     // Preserve its cursor instead of equating returning a future with delivery.
     drop(se_core::atlas_resume::attach_model_input(
         text, source, project, viewer, maximum, 600,
     )?);
     Ok(())
+}
+
+fn now_unix_ms() -> Result<i64> {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| se_core::scope::unreadable("system clock", &e.to_string()))?;
+    i64::try_from(elapsed.as_millis())
+        .map_err(|_| SeError::invalid("system clock", "representable milliseconds"))
 }

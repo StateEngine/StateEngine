@@ -5,20 +5,20 @@ use se_core::admission::read_scope;
 /// One authoritative record per chunk. The ticket predates the core snapshot;
 /// only an exhausted, committed feed can certify this exact root and epoch.
 pub(super) fn chunk(
-    context: &ExecutionContext,
+    host: &dyn AtlasHost,
     owner: &HumanId,
     controller: &NativeController<NativeRenewal>,
     root: &RootId,
 ) -> Result<bool> {
-    let Some(ticket) = context.atlas.records.ticket()? else {
+    let Some(ticket) = host.records().ticket()? else {
         return Ok(false);
     };
     let admitted = admission(
-        context,
+        host,
         owner,
         Scope::Project(controller.summary(root)?.project),
     );
-    let phase = executor::checked_pooled_phase(&context.reads, context.generation)?;
+    let phase = host.checked_read_phase()?;
     let mut snapshot = phase
         .into_snapshot(read_scope(&admitted))
         .map_err(|e| store_error(&e))?;
@@ -40,15 +40,14 @@ pub(super) fn chunk(
                 None => true,
             };
             if complete {
-                return context
-                    .atlas
-                    .records
+                return host
+                    .records()
                     .mark_current(RecordFeedScope::from(cache.identity()), ticket);
             }
             Ok(false)
         },
     );
-    executor::close_read(result, snapshot.close())
+    close_read(result, snapshot.close())
 }
 fn cursor(cache: &mut CacheConnection<'_>) -> Result<Option<se_types::EventId>> {
     cache.read(Instant::now() + Duration::from_millis(100), |sql| {
