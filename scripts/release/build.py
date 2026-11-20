@@ -452,6 +452,7 @@ def main():
             "--package", inputs["package"], *features_selected, "--target", args.target,
             "--jobs", "1", "--message-format=json-render-diagnostics"]
     name = "se.exe" if "windows" in args.target else "se"
+    worker_name = "se-atlas-worker.exe" if "windows" in args.target else "se-atlas-worker"
     # Never copy a cached Cargo artifact as an independent rebuild. Both source
     # and scratch prefixes are normalized before compilation, not after hashing.
     if args.target_dir is not None:
@@ -484,6 +485,11 @@ def main():
         out.mkdir(parents=True)
         shutil.copyfile(binary[0]["executable"], out / name)
         stripping = strip_binary(out / name, args.target, sysroot, binary[0]["executable"])
+        worker = [a for a in artifacts if a.get("executable") and a["target"]["name"] == "se-atlas-worker"]
+        if len(worker) != 1:
+            raise ValueError("Cargo did not report exactly one se-atlas-worker executable")
+        shutil.copyfile(worker[0]["executable"], out / worker_name)
+        worker_stripping = strip_binary(out / worker_name, args.target, sysroot, worker[0]["executable"])
         units = build_units(artifacts, metadata)
         seed_published = None
         seed_publication = None
@@ -552,6 +558,7 @@ def main():
         "cargo_config_overrides": overrides,
         "path_remap": dict(REMAPPED),
         "native_requirements": requirements, "version_stdout": version, "stripping": stripping,
+        "worker_stripping": worker_stripping,
         "default_features": False, "offline": args.offline,
         "features": inputs["features"], "compiled_features": features,
         "cargo_lock_sha256": seed_key["cargo_lock_sha256"],

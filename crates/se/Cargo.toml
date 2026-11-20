@@ -47,6 +47,10 @@ se-atlas = { path = "../se-atlas" }
 rusqlite = { version = "0.41", features = ["bundled"] }
 
 [[bin]]
+name = "se-atlas-worker"
+path = "src/bin/atlas_worker.rs"
+
+[[bin]]
 name = "secode-rebind-fixture"
 path = "tests/support/secode_rebind_fixture/main.rs"
 test = false

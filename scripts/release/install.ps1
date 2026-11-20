@@ -255,6 +255,7 @@ try {
     $root = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'StateEngine'))
     $bin = Join-Path $root 'bin'
     $binary = Join-Path $bin 'se.exe'
+    $worker = Join-Path $bin 'se-atlas-worker.exe'
     $assets = Join-Path $root 'installation'
     if ($env:SE_HOME -and -not [IO.Path]::IsPathRooted($env:SE_HOME)) { throw 'SE_HOME must be absolute' }
     $data = if ($env:SE_HOME) { [IO.Path]::GetFullPath($env:SE_HOME) } else { $root }
@@ -273,7 +274,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying' }
         exit 0
     }
-    foreach ($path in @($binary, $assets, $record)) {
+    foreach ($path in @($binary, $worker, $assets, $record)) {
         if (-not $Recover -and (Test-Path -LiteralPath $path)) { throw "existing installation path is preserved; run se uninstall before reinstalling: $path" }
     }
     $collision = Get-Command se -ErrorAction SilentlyContinue
@@ -288,7 +289,9 @@ try {
     $currentAlreadyPresent = $alreadyPresent
     $after = if ($alreadyPresent) { [string]$before } elseif ([string]::IsNullOrEmpty($before)) { $bin } else { [string]$before + ';' + $bin }
     $files = @(@{path = $binary; sha256 = Get-Digest (Join-Path $bundle 'se.exe')})
+    $files += @{path = $worker; sha256 = Get-Digest (Join-Path $bundle 'se-atlas-worker.exe')}
     $copies = @(@{from = (Join-Path $bundle 'se.exe'); to = $binary})
+    $copies += @{from = (Join-Path $bundle 'se-atlas-worker.exe'); to = $worker}
     foreach ($path in $archiveFiles) {
         $relative = $path.Substring($bundle.Length + 1).Replace('\', '/')
         if ($relative -in @('manifest.json', 'build.json', 'NOTICE.txt', 'notices.tar', 'uninstall.ps1') -or $relative.StartsWith('notices/') -or $relative.StartsWith('remote-images/')) {

@@ -83,7 +83,7 @@ if [ "$recover" -eq 0 ] && [ "$native_held" -eq 0 ] && [ -e "$record" ]; then
     "$bundle/se" __install-replace "$data" || fail 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying'
     exit 0
 fi
-for destination in "$bin/se" "$assets" "$record"; do
+for destination in "$bin/se" "$bin/se-atlas-worker" "$assets" "$record"; do
     plain_path "$destination"
     if [ "$recover" -eq 1 ]; then
         : # The protected journal and original archive are checked under the native claim.
@@ -338,6 +338,8 @@ fi
     printf '{\n  "schema": "stateengine-install/v1",\n  "owner": '; json_string "$owner"
     checksum=$(file_digest "$bundle/se")
     printf ',\n  "files": [\n    {"path": '; json_string "$bin/se"; printf ', "sha256": "%s"}' "$checksum"
+    checksum=$(file_digest "$bundle/se-atlas-worker")
+    printf ',\n    {"path": '; json_string "$bin/se-atlas-worker"; printf ', "sha256": "%s"}' "$checksum"
     for relative in $asset_files; do
         checksum=$(file_digest "$bundle/$relative")
         printf ',\n    {"path": '; json_string "$(asset_destination "$relative")"; printf ', "sha256": "%s"}' "$checksum"
@@ -388,6 +390,7 @@ for relative in $asset_files; do
     publish_file "$bundle/$relative" "$(asset_destination "$relative")" "$mode"
 done
 publish_file "$bundle/se" "$bin/se" 755
+publish_file "$bundle/se-atlas-worker" "$bin/se-atlas-worker" 755
 if [ -n "$fish_file" ]; then
     publish_file "$stage/fish-config" "$fish_file" 600
 fi
@@ -405,7 +408,8 @@ for name in $profiles; do
 done
 for relative in $asset_files; do cmp -s "$(asset_destination "$relative")" "$bundle/$relative" || fail "installed asset readback failed: $relative"; done
 cmp -s "$bin/se" "$bundle/se" || fail 'installed binary readback failed'
-set -- "$bundle/se" __install-files-check "$bin/se"
+cmp -s "$bin/se-atlas-worker" "$bundle/se-atlas-worker" || fail 'installed worker readback failed'
+set -- "$bundle/se" __install-files-check "$bin/se" "$bin/se-atlas-worker"
 for relative in $asset_files; do set -- "$@" "$(asset_destination "$relative")"; done
 "$@" || fail 'native installed-file ownership readback failed'
 publish_file "$stage/install.json" "$record" 600

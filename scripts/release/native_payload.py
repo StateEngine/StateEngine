@@ -20,10 +20,11 @@ def publish(root, metadata, destination):
         raise ValueError("native payload output already exists; choose a new directory")
     destination.parent.mkdir(parents=True, exist_ok=True)
     binary = "se.exe" if metadata["target"].endswith("windows-msvc") else "se"
+    worker = "se-atlas-worker.exe" if metadata["target"].endswith("windows-msvc") else "se-atlas-worker"
     with tempfile.TemporaryDirectory(prefix=".se-payload-", dir=destination.parent) as scratch:
         staged = Path(scratch) / "payload"
         staged.mkdir()
-        for name in (binary, "build.json", "notices.tar", "NOTICE.txt"):
+        for name in (binary, worker, "build.json", "notices.tar", "NOTICE.txt"):
             shutil.copyfile(root / name, staged / name)
         with tarfile.open(root / "notices.tar") as notices:
             with notices.extractfile("notices/stateengine/LICENSE") as license_file:
@@ -32,6 +33,7 @@ def publish(root, metadata, destination):
             shutil.copytree(root / "remote-images", staged / "remote-images")
         if binary == "se":
             (staged / binary).chmod(0o755)
+            (staged / worker).chmod(0o755)
         files = {path.relative_to(staged).as_posix(): fingerprint(path)
                  for path in sorted(staged.rglob("*")) if path.is_file()}
         document = {"schema": "stateengine.native-payload/v1", "name": "stateengine",
