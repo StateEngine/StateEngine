@@ -49,7 +49,7 @@ fn read_phase(v: &Value) -> StoreResult<RuntimeHandoverPhase> {
         _ => Err(invalid("unknown handover phase")),
     }
 }
-pub(super) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
+pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
     use EventBody::*;
     Ok(match body {
         RuntimeOwnerEstablished {
@@ -145,16 +145,15 @@ pub(super) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
     clippy::too_many_lines,
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
-pub(super) fn body(c: &Connection, seq: i64, kind: &str) -> StoreResult<EventBody<StoredText>> {
+pub fn decode(kind: &str, v: &Value, text: Text<'_>) -> StoreResult<EventBody<StoredText>> {
     use EventBody::*;
-    let v = facts(c, seq)?;
     Ok(match kind {
         "runtime.owner" => RuntimeOwnerEstablished {
-            epoch: field(&v, "epoch")?,
-            generation: field(&v, "generation")?,
-            expected_owner_generation: field(&v, "expected_owner_generation")?,
-            expected: field(&v, "expected")?,
-            witnesses: field(&v, "witnesses")?,
+            epoch: field(v, "epoch")?,
+            generation: field(v, "generation")?,
+            expected_owner_generation: field(v, "expected_owner_generation")?,
+            expected: field(v, "expected")?,
+            witnesses: field(v, "witnesses")?,
             recovered: v
                 .get("recovered")
                 .filter(|v| !v.is_null())
@@ -195,38 +194,38 @@ pub(super) fn body(c: &Connection, seq: i64, kind: &str) -> StoreResult<EventBod
                     deadline_at: field(r, "deadline_at")?,
                     completion,
                 }),
-                expected: field(&v, "expected")?,
-                witnesses: field(&v, "witnesses")?,
+                expected: field(v, "expected")?,
+                witnesses: field(v, "witnesses")?,
             }
         }
         "backup.recorded" => BackupRecorded {
-            generation: field(&v, "generation")?,
-            through: pos_field(&v, "through")?,
-            bytes: field(&v, "bytes")?,
-            sha256: field(&v, "sha256")?,
-            schema_version: field(&v, "schema_version")?,
-            witness: field(&v, "witness")?,
+            generation: field(v, "generation")?,
+            through: pos_field(v, "through")?,
+            bytes: field(v, "bytes")?,
+            sha256: field(v, "sha256")?,
+            schema_version: field(v, "schema_version")?,
+            witness: field(v, "witness")?,
         },
         "turn.erased" => TurnErased {
-            target: field(&v, "target")?,
-            erasure: field(&v, "erasure")?,
-            original_bytes: field(&v, "original_bytes")?,
-            by: field(&v, "by")?,
+            target: field(v, "target")?,
+            erasure: field(v, "erasure")?,
+            original_bytes: field(v, "original_bytes")?,
+            by: field(v, "by")?,
         },
         "message.erased" => MessageErased {
-            target: field(&v, "target")?,
-            erasure: field(&v, "erasure")?,
-            original_bytes: field(&v, "original_bytes")?,
-            by: field(&v, "by")?,
+            target: field(v, "target")?,
+            erasure: field(v, "erasure")?,
+            original_bytes: field(v, "original_bytes")?,
+            by: field(v, "by")?,
         },
         "erasure.requested" => {
-            let targets: Vec<Value> = field(&v, "targets")?;
-            let residuals: Vec<Value> = field(&v, "residuals")?;
+            let targets: Vec<Value> = field(v, "targets")?;
+            let residuals: Vec<Value> = field(v, "residuals")?;
             if targets.len() > 60 || residuals.len() > 64 {
                 return Err(invalid("stored erasure inventory exceeds bounds"));
             }
             ErasureRequested {
-                erasure: field(&v, "erasure")?,
+                erasure: field(v, "erasure")?,
                 targets: targets
                     .iter()
                     .map(|v| -> StoreResult<_> {
@@ -249,25 +248,25 @@ pub(super) fn body(c: &Connection, seq: i64, kind: &str) -> StoreResult<EventBod
             }
         }
         "erasure.completed" => ErasureCompleted {
-            erasure: field(&v, "erasure")?,
-            manifest_sha256: field(&v, "manifest_sha256")?,
-            incarnation: field(&v, "incarnation")?,
-            witnesses: field(&v, "witnesses")?,
+            erasure: field(v, "erasure")?,
+            manifest_sha256: field(v, "manifest_sha256")?,
+            incarnation: field(v, "incarnation")?,
+            witnesses: field(v, "witnesses")?,
         },
         "recovery.recorded" => {
             let loss = v
                 .get("loss")
                 .ok_or_else(|| invalid("recovery loss bounds missing"))?;
             RecoveryRecorded {
-                recovery: field(&v, "recovery")?,
-                request_key: field(&v, "request_key")?,
-                source: field(&v, "source")?,
-                source_incarnation: field(&v, "source_incarnation")?,
-                source_artifact: field(&v, "source_artifact")?,
-                target: field(&v, "target")?,
-                target_incarnation: field(&v, "target_incarnation")?,
-                backup: field(&v, "backup")?,
-                restored_through: pos_field(&v, "restored_through")?,
+                recovery: field(v, "recovery")?,
+                request_key: field(v, "request_key")?,
+                source: field(v, "source")?,
+                source_incarnation: field(v, "source_incarnation")?,
+                source_artifact: field(v, "source_artifact")?,
+                target: field(v, "target")?,
+                target_incarnation: field(v, "target_incarnation")?,
+                backup: field(v, "backup")?,
+                restored_through: pos_field(v, "restored_through")?,
                 loss: RestoreLoss {
                     after: pos_field(loss, "after")?,
                     prior_head: loss
@@ -276,9 +275,9 @@ pub(super) fn body(c: &Connection, seq: i64, kind: &str) -> StoreResult<EventBod
                         .map(read_position)
                         .transpose()?,
                 },
-                schema_version: field(&v, "schema_version")?,
-                witnesses: field(&v, "witnesses")?,
-                receipt: stored_text(c, seq, "restore-receipt")?,
+                schema_version: field(v, "schema_version")?,
+                witnesses: field(v, "witnesses")?,
+                receipt: text("restore-receipt")?,
             }
         }
         _ => return Err(invalid("maintenance decode dispatch")),

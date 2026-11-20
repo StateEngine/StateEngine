@@ -1789,6 +1789,7 @@ version = "0.0.1-alpha.1"
 dependencies = [
  "rusqlite",
  "se-proc",
+ "se-store-codec",
  "se-store-contract",
  "se-trusted-path",
  "se-types",
@@ -1796,6 +1797,17 @@ dependencies = [
  "serde_json",
  "sha2",
  "uuid",
+]
+
+[[package]]
+name = "se-store-codec"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-store-contract",
+ "se-types",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

@@ -19,6 +19,7 @@
   "se-remote": 3100,
   "se-repository": 1162,
   "se-store-contract": 2810,
+  "se-store-codec": 991,
   "se-core": 24310,
   "se": 24128,
   "se-atlas": 16453,
