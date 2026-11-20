@@ -307,7 +307,9 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                     .clone()
                     .ok_or_else(|| atlas_cold::failure("completed native epoch absent"))?;
                 // ColdJob independently reopens, integrity-checks and reads
-                // back the exact candidate after reaping its child.
+                // back the exact candidate after reaping its child. The kept
+                // query reader closes first: Windows keeps an open epoch's files.
+                se_atlas::reader::release();
                 root.checked_epoch = Some(epoch.clone());
                 self.child.take();
                 Ok(Some(WorkerEvent::Exited {

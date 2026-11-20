@@ -47,25 +47,6 @@ fn sql_deadline(error: &SeError) -> bool {
         if detail.op.starts_with("Atlas SQL"))
 }
 
-#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
-pub(crate) fn open_reader<'a>(
-    files: &'a dyn se_atlas::cache::CacheFiles,
-    scope: &se_atlas::scope::Scope,
-    profile: &se_atlas::cache::connection::SqlProfile,
-) -> AtlasResult<Option<se_atlas::cache::pointer::DiscoveredEpoch<'a>>> {
-    let started = std::time::Instant::now();
-    let deadline = started + std::time::Duration::from_secs(5);
-    se_atlas::cache::pointer::open_current(
-        files, scope, se_atlas::cache::connection::ConnectionRole::QueryReader, profile, deadline,
-    ).map_err(|error| {
-        if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail) if detail.op == "Atlas SQL") {
-            se_atlas::cache::connection::timeout_phase("reader connection admission", deadline - started, started.elapsed())
-        } else {
-            error
-        }
-    })
-}
-
 fn execute_once(
     reader: &mut QueryReader<'_, '_, '_>,
     request: &se_core::ops::AtlasRead,

@@ -274,23 +274,29 @@ impl AtlasReadPort for Service {
         let cache = NativeAtlasCache::open(home, source.scope.clone())?.ok_or_else(|| {
             se_core::scope::unreadable("Atlas cache", "the published root cache is absent")
         })?;
-        let mut current = crate::atlas_queries::open_reader(&cache, &source.scope, profile)?
-            .ok_or_else(|| {
-                se_core::scope::unreadable(
-                    "Atlas pointer",
-                    "the registered root has no published epoch",
-                )
-            })?;
-        let observed = self.reader_root(project, Some(&source.scope.registration.root))?;
-        read(
-            &mut current.connection,
-            &source,
-            AtlasReadObservation {
-                summary: observed.summary,
-                epoch_retired: current.epoch_retired,
-                record_feed_current: false,
+        // Reuse the query reader while it serves this root's epoch (released on adoption).
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        se_atlas::reader::with_retained(
+            &source.scope,
+            profile,
+            deadline,
+            &cache,
+            |sql, retired| {
+                let observed = self.reader_root(project, Some(&source.scope.registration.root))?;
+                let observation = AtlasReadObservation {
+                    summary: observed.summary,
+                    epoch_retired: retired,
+                    record_feed_current: false,
+                };
+                read(sql, &source, observation)
             },
-        )
+        )?
+        .ok_or_else(|| {
+            se_core::scope::unreadable(
+                "Atlas pointer",
+                "the registered root has no published epoch",
+            )
+        })
     }
 }
 

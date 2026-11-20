@@ -99,29 +99,65 @@ impl SqlProfile {
         }
     }
 }
+/// The SQLite handle. A role that opened inside the arena closes inside it if it is
+/// free within the latest caller budget (else one try): `closing` is taken in Drop and
+/// released after `connection` closes. Missing it is safe: the host sets
+/// NO_CKPT_ON_CLOSE on these roles (native_sql::retain_wal), so no close checkpoints.
+struct Db {
+    connection: Connection,
+    arena_reader: Option<bool>,
+    until: Instant,
+    closing: Option<Reservation>,
+}
+impl Drop for Db {
+    fn drop(&mut self) {
+        if let Some(reader) = self.arena_reader {
+            let free = Reservation::acquire(reader, self.until).ok();
+            self.closing = free.or_else(|| Reservation::try_now(reader));
+        }
+    }
+}
+impl Deref for Db {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        &self.connection
+    }
+}
+impl std::ops::DerefMut for Db {
+    fn deref_mut(&mut self) -> &mut Connection {
+        &mut self.connection
+    }
+}
+/// A cold writer releases its native accounting guards before SQLite closes, so this
+/// is the connection's first field.
+struct ColdRelease<'a>(&'a dyn CacheFiles);
+impl Drop for ColdRelease<'_> {
+    fn drop(&mut self) {
+        self.0.release_cold_observations();
+    }
+}
 pub struct CacheConnection<'a> {
-    db: Connection,
+    _cold: Option<ColdRelease<'a>>,
+    db: Db,
     files: &'a dyn CacheFiles,
     pin: DatabasePin,
     identity: CacheIdentity,
     role: ConnectionRole,
-    arena: Option<Reservation>,
     _slot: Slot,
-    until: Instant, // The latest caller budget; closing waits for the arena no longer.
+    /// A reattached reader whose epoch its caller just confirmed: its read
+    /// transactions skip revalidating the pinned file.
+    current: bool,
 }
-impl Drop for CacheConnection<'_> {
-    fn drop(&mut self) {
-        if self.role == ConnectionRole::ColdWriter {
-            self.files.release_cold_observations();
-        }
-        // Close in the arena if free within the last budget, else one try; `db` closes
-        // first. Missing it is safe: the host sets NO_CKPT_ON_CLOSE on these roles
-        // (native_sql::retain_wal), so this close never checkpoints the WAL.
-        if self.role.opens_in_arena() {
-            let reader = self.role == ConnectionRole::QueryReader;
-            let free = Reservation::acquire(reader, self.until).ok();
-            self.arena = free.or_else(|| Reservation::try_now(reader));
-        }
+/// A query reader's open connection without its cache files, kept between queries.
+pub struct Detached {
+    db: Db,
+    pin: DatabasePin,
+    identity: CacheIdentity,
+    slot: Slot,
+}
+impl Detached {
+    pub fn identity(&self) -> &CacheIdentity {
+        &self.identity
     }
 }
 impl<'a> CacheConnection<'a> {
@@ -163,14 +199,21 @@ impl<'a> CacheConnection<'a> {
         }
         files.validate_database(&pin)?;
         Ok(Some(Self {
-            db,
+            _cold: (role == ConnectionRole::ColdWriter).then_some(ColdRelease(files)),
+            db: Db {
+                connection: db,
+                arena_reader: role
+                    .opens_in_arena()
+                    .then_some(role == ConnectionRole::QueryReader),
+                until: deadline,
+                closing: None,
+            },
             files,
             pin,
             identity: id,
             role,
-            arena: None,
             _slot: slot,
-            until: deadline,
+            current: false,
         }))
     }
     /// Only an exclusive runtime/cache writer may reserve a fresh epoch. No
@@ -231,14 +274,19 @@ impl<'a> CacheConnection<'a> {
             }
         };
         Ok(Self {
-            db,
+            _cold: (role == ConnectionRole::ColdWriter).then_some(ColdRelease(files)),
+            db: Db {
+                connection: db,
+                arena_reader: None,
+                until: deadline,
+                closing: None,
+            },
             files,
             pin,
             identity: seed.identity.clone(),
             role,
-            arena: None,
             _slot: slot,
-            until: deadline,
+            current: false,
         })
     }
     pub fn validate(&mut self, deadline: Instant) -> AtlasResult<()> {
@@ -249,6 +297,47 @@ impl<'a> CacheConnection<'a> {
     }
     pub fn identity(&self) -> &CacheIdentity {
         &self.identity
+    }
+    /// Keep a query reader open without its cache files.
+    pub fn detach(self) -> AtlasResult<Detached> {
+        if self.role != ConnectionRole::QueryReader {
+            return Err(cache_error(
+                "only a query reader stays open between queries",
+            ));
+        }
+        let CacheConnection {
+            db,
+            pin,
+            identity,
+            _slot,
+            ..
+        } = self;
+        Ok(Detached {
+            db,
+            pin,
+            identity,
+            slot: _slot,
+        })
+    }
+    /// Reattach a kept query reader whose epoch the caller has just confirmed is
+    /// still current: its reads skip revalidating the pinned file until it changes.
+    pub fn attach(detached: Detached, files: &'a dyn CacheFiles) -> Self {
+        let Detached {
+            db,
+            pin,
+            identity,
+            slot,
+        } = detached;
+        Self {
+            _cold: None,
+            db,
+            files,
+            pin,
+            identity,
+            role: ConnectionRole::QueryReader,
+            _slot: slot,
+            current: true,
+        }
     }
     /// A finite snapshot ends at response completion, including error paths.
     /// Output allocations belong to the host's single 98304-byte query arena.
@@ -280,14 +369,13 @@ impl<'a> CacheConnection<'a> {
         deadline: Instant,
         work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
     ) -> AtlasResult<T> {
-        self.until = deadline;
-        let _arena = if self.arena.is_none()
-            && matches!(
-                self.role,
-                ConnectionRole::HostReader
-                    | ConnectionRole::HostWriter
-                    | ConnectionRole::MaintenanceWriter
-            ) {
+        self.db.until = deadline;
+        let _arena = if matches!(
+            self.role,
+            ConnectionRole::HostReader
+                | ConnectionRole::HostWriter
+                | ConnectionRole::MaintenanceWriter
+        ) {
             Some(Reservation::acquire(
                 self.role == ConnectionRole::HostReader,
                 deadline,
@@ -295,7 +383,9 @@ impl<'a> CacheConnection<'a> {
         } else {
             None
         };
-        self.files.validate_database(&self.pin)?;
+        if write || !self.current {
+            self.files.validate_database(&self.pin)?;
+        }
         if write {
             let mut wal = self.files.wal_bytes(&self.pin)?;
             if growth <= WAL_STOP && wal.saturating_add(growth) > WAL_STOP {
