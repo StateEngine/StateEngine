@@ -1,28 +1,17 @@
 //! One writer/reader globally, finite transactions and a separately qualified SQL share.
 use super::*;
+use crate::admission::{Reservation, Slot};
 use crate::errors::{cache_error, capacity};
 use rusqlite::{Connection, OpenFlags, Statement, StatementStatus, limits::Limit};
 use std::{
     cell::Cell,
     ops::Deref,
-    sync::{
-        Condvar, Mutex,
-        atomic::{AtomicU8, Ordering},
-    },
     time::{Duration, Instant},
 };
-#[path = "query_arena.rs"]
-mod query_arena;
-use query_arena::Reservation;
 #[path = "statement.rs"]
 mod statement;
 pub use statement::{BudgetStatement, SqlView};
 pub type NativeSqlConnection = rusqlite::Connection;
-static SLOTS: AtomicU8 = AtomicU8::new(0);
-static READER_WAIT: Mutex<()> = Mutex::new(());
-static READER_READY: Condvar = Condvar::new();
-const READER_SLOT: u8 = 1;
-const WRITER_SLOT: u8 = 2;
 const PAGE_BYTES: u64 = 4096;
 const WAL_STOP: u64 = 8_000_000;
 const STATEMENT_BYTES: usize = 16_384;
@@ -107,61 +96,6 @@ impl SqlProfile {
         Self {
             overhead: None,
             cold_only: true,
-        }
-    }
-}
-struct Slot(u8);
-impl Slot {
-    fn take(role: ConnectionRole, deadline: Instant) -> AtlasResult<Self> {
-        let bit = match role {
-            ConnectionRole::HostReader
-            | ConnectionRole::QueryReader
-            | ConnectionRole::CandidateReader => READER_SLOT,
-            ConnectionRole::HostWriter
-            | ConnectionRole::MaintenanceWriter
-            | ConnectionRole::CandidateWriter => WRITER_SLOT,
-            _ => 0,
-        };
-        if bit == READER_SLOT {
-            let started = Instant::now();
-            let deadline = crate::clock::wait_deadline(deadline);
-            let budget = deadline.saturating_duration_since(started);
-            let mut guard = READER_WAIT
-                .lock()
-                .map_err(|_| cache_error("Atlas reader slot lock poisoned"))?;
-            while SLOTS.load(Ordering::Acquire) & bit != 0 {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    return Err(if role != ConnectionRole::QueryReader || budget.is_zero() {
-                        stage_timeout("reader slot admission", 0)
-                    } else {
-                        timeout_phase("reader slot admission", budget, started.elapsed())
-                    });
-                }
-                guard = READER_READY
-                    .wait_timeout(guard, remaining)
-                    .map_err(|_| cache_error("Atlas reader slot wait poisoned"))?
-                    .0;
-            }
-            SLOTS.fetch_or(bit, Ordering::AcqRel);
-            return Ok(Self(bit));
-        }
-        if bit != 0 && SLOTS.fetch_or(bit, Ordering::AcqRel) & bit != 0 {
-            return Err(capacity("Atlas global SQL reader/writer slot", 1, 0));
-        }
-        Ok(Self(bit))
-    }
-}
-impl Drop for Slot {
-    fn drop(&mut self) {
-        let _guard = (self.0 == READER_SLOT).then(|| {
-            READER_WAIT
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-        });
-        SLOTS.fetch_and(!self.0, Ordering::Release);
-        if self.0 == READER_SLOT {
-            READER_READY.notify_all();
         }
     }
 }
