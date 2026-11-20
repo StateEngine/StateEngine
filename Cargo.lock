@@ -1779,6 +1779,7 @@ dependencies = [
  "se-config",
  "se-core",
  "se-host",
+ "se-mcp",
  "se-store",
  "se-types",
  "serde",

@@ -13,6 +13,7 @@ import = ["se-core/import", "se-host/import"]
 se-config = { path = "../se-config" }
 se-core = { path = "../se-core" }
 se-host = { path = "../se-host" }
+se-mcp = { path = "../se-mcp" }
 se-store = { path = "../se-store" }
 se-types = { path = "../se-types" }
 serde_json.workspace = true
