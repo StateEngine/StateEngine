@@ -154,8 +154,8 @@ fn selector_serialization_stays_byte_identical_with_the_base() -> Check {
     });
     let base = json!({
         "kind": "file",
-        "file": [0x5a_u8; 16],
-        "symbol": [0x3c_u8; 32]
+        "file": vec![0x5au8; 16],
+        "symbol": vec![0x3cu8; 32]
     });
     assert_eq!(serde_json::to_vec(&selector)?, serde_json::to_vec(&base)?);
     Ok(())
