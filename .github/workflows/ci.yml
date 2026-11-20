@@ -324,8 +324,9 @@ jobs:
   # The nightly run on main also warms the native Windows build cache.
   windows-archive:
     name: Windows archive
-    needs: [changes, linux-box, windows-clippy]
-    if: ${{ always() && !cancelled() && github.event_name != 'push' && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && (needs.windows-clippy.result == 'success' || (needs.windows-clippy.result == 'skipped' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed')) }}
+    # Compiles alongside Windows Clippy; the tests below still wait for Clippy to pass.
+    needs: [changes, linux-box]
+    if: ${{ always() && !cancelled() && github.event_name != 'push' && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' }}
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
