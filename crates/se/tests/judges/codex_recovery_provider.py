@@ -172,6 +172,46 @@ def connection(stream, number, codex_home, saved):
         stream.close()
 
 
+def windows_unix_listener(path):
+    """Use native address handling when Windows Python omits AF_UNIX."""
+    import ctypes
+
+    class UnixAddress(ctypes.Structure):
+        _fields_ = [('family', ctypes.c_ushort), ('path', ctypes.c_char * 108)]
+
+    family = 1  # Winsock AF_UNIX.
+    encoded = os.fsencode(path)
+    if len(encoded) >= 108:
+        raise ValueError('fixture control socket path is too long')
+    address = UnixAddress(family, encoded)
+    winsock = ctypes.WinDLL('Ws2_32')
+    winsock.bind.argtypes = [ctypes.c_size_t, ctypes.POINTER(UnixAddress), ctypes.c_int]
+    winsock.bind.restype = ctypes.c_int
+    winsock.accept.argtypes = [ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]
+    winsock.accept.restype = ctypes.c_size_t
+    winsock.WSAGetLastError.argtypes = []
+    winsock.WSAGetLastError.restype = ctypes.c_int
+    listener = socket.socket(family, socket.SOCK_STREAM, 0)
+    if winsock.bind(listener.fileno(), ctypes.byref(address), ctypes.sizeof(address)) != 0:
+        error = ctypes.WinError(winsock.WSAGetLastError())
+        listener.close()
+        raise error
+
+    def accept():
+        # No peer address is needed. Python handles byte I/O on the accepted
+        # Winsock handle without decoding a sockaddr_un.
+        handle = winsock.accept(listener.fileno(), None, None)
+        if handle == ctypes.c_size_t(-1).value:
+            raise ctypes.WinError(winsock.WSAGetLastError())
+        try:
+            return socket.socket(family, socket.SOCK_STREAM, 0, fileno=handle)
+        except Exception:
+            socket.close(handle)
+            raise
+
+    return listener, accept
+
+
 def main():
     listen = sys.argv[sys.argv.index('--listen') + 1]
     if not listen.startswith('unix://'):
@@ -185,15 +225,22 @@ def main():
         path.parent.mkdir(mode=0o700, exist_ok=True)
         if path.is_socket():
             path.unlink()
-    server = socket.socket(socket.AF_UNIX)
-    server.bind(str(path))
+    if os.name == 'nt' and not hasattr(socket, 'AF_UNIX'):
+        server, accept = windows_unix_listener(path)
+    else:
+        server = socket.socket(socket.AF_UNIX)
+        server.bind(str(path))
+
+        def accept():
+            stream, _ = server.accept()
+            return stream
     if os.name != 'nt':
         path.chmod(0o600)
     server.listen()
     number = 0
     saved = {'lock': threading.Lock(), 'threads': {}}
     while True:
-        stream, _ = server.accept()
+        stream = accept()
         number += 1
         threading.Thread(target=connection, args=(stream, number, codex_home, saved), daemon=True).start()
 
