@@ -103,6 +103,37 @@ fn walk_with_private_root(
 ) -> Result<File> {
     walk_with_parent(path, create, private_root, sticky_final, false).map(|(file, _)| file)
 }
+/// Create one missing directory component; true when this call created it.
+fn create_component(
+    parent: &File,
+    component: &CString,
+    traversed: &Path,
+    path: &Path,
+) -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (parent, component, path);
+        // Clear inheritance on an exclusively named staging directory,
+        // before publishing it. Never clear an incumbent opened later.
+        let mut custody = Vec::new();
+        effects::prepare_created_directory(traversed, &mut custody)?;
+        Ok(!custody.is_empty())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = traversed;
+        // SAFETY: single literal component relative to the held parent FD.
+        let rc = unsafe { libc::mkdirat(parent.as_raw_fd(), component.as_ptr(), 0o700) };
+        if rc != 0 && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
+            return Err(io_error(
+                "create private directory",
+                path,
+                io::Error::last_os_error(),
+            ));
+        }
+        Ok(rc == 0)
+    }
+}
 fn walk_with_parent(
     path: &Path,
     create: bool,
@@ -139,30 +170,7 @@ fn walk_with_parent(
         }
         traversed.push(value);
         let component = name(value, path)?;
-        let mut created = false;
-        if create {
-            #[cfg(target_os = "macos")]
-            {
-                // Clear inheritance on an exclusively named staging directory,
-                // before publishing it. Never clear an incumbent opened later.
-                let mut custody = Vec::new();
-                effects::prepare_created_directory(&traversed, &mut custody)?;
-                created = !custody.is_empty();
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                // SAFETY: single literal component relative to the held parent FD.
-                let rc = unsafe { libc::mkdirat(parent.as_raw_fd(), component.as_ptr(), 0o700) };
-                created = rc == 0;
-                if !created && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
-                    return Err(io_error(
-                        "create private directory",
-                        path,
-                        io::Error::last_os_error(),
-                    ));
-                }
-            }
-        }
+        let created = create && create_component(&parent, &component, &traversed, path)?;
         private |= created || (private_root && index + 1 == parts.len());
         // SAFETY: initialized writable stat output and held parent/component.
         let mut link: libc::stat = unsafe { std::mem::zeroed() };

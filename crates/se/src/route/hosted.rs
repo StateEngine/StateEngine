@@ -68,8 +68,13 @@ fn forward_once<R: se_store::ReadStore>(
     } else {
         bound
     };
-    restore_forward_image_with_files(files, &target, cx.session.is_none(), &bound.native_bound())
-        .map_err(|error| {
+    se_proc::native_ipc::restore_image_hint(
+        &files.0,
+        target.image_sha256,
+        cx.session.is_none().then_some(&target.epoch.owner),
+        &bound.native_bound(),
+    )
+    .map_err(|error| {
         scope::unreadable("protected executable cache", &error.to_string()).with_cause(error)
     })?;
     let remove_all = matches!(&operation, AnyOp::ProjectRemove(input) if input.all);
@@ -169,10 +174,11 @@ impl StatusRequest {
     /// so the worker holds no shared state the local path needs.
     pub(super) fn run(self) -> Result<AnyOutput> {
         let bound = Deadline::from_options(&self.options)?;
-        restore_forward_image(
+        se_proc::native_ipc::restore_image_hint_at(
             &self.home,
-            &self.endpoint,
-            matches!(&self.credential, ClientCredential::Machine(_)),
+            self.endpoint.image_sha256,
+            matches!(&self.credential, ClientCredential::Machine(_))
+                .then_some(&self.endpoint.epoch.owner),
             &bound.native_bound(),
         )
         .map_err(|error| {
@@ -262,40 +268,4 @@ pub fn forward<R: se_store::ReadStore>(
         selections,
         diagnostic,
     )
-}
-
-pub(super) fn restore_forward_image_with_files(
-    files: &Files,
-    endpoint: &se_host::EndpointRecord,
-    owner: bool,
-    bound: &se_proc::native_ipc::IpcIoBound,
-) -> se_proc::native_ipc::IpcNativeResult<se_proc::native_ipc::ImageCacheRead> {
-    if owner {
-        se_proc::native_ipc::restore_cli_image_cache_with_files(
-            &files.0,
-            endpoint.image_sha256,
-            &endpoint.epoch.owner,
-            bound,
-        )
-    } else {
-        se_proc::native_ipc::restore_image_cache_with_files(&files.0, endpoint.image_sha256, bound)
-    }
-}
-
-pub(super) fn restore_forward_image(
-    home: &std::path::Path,
-    endpoint: &se_host::EndpointRecord,
-    owner: bool,
-    bound: &se_proc::native_ipc::IpcIoBound,
-) -> se_proc::native_ipc::IpcNativeResult<se_proc::native_ipc::ImageCacheRead> {
-    if owner {
-        se_proc::native_ipc::restore_cli_image_cache(
-            home,
-            endpoint.image_sha256,
-            &endpoint.epoch.owner,
-            bound,
-        )
-    } else {
-        se_proc::native_ipc::restore_image_cache(home, endpoint.image_sha256, bound)
-    }
 }

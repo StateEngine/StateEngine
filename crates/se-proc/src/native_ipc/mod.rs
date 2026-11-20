@@ -22,8 +22,7 @@ mod image_cache;
 pub use adoption_cache::{prepare_adoption_image_cache, restore_adoption_provider_cache};
 pub use image_cache::{
     ImageCacheRead, publish_image_cache, publish_remote_image_cache, restore_cli_image_cache,
-    restore_cli_image_cache_with_files, restore_image_cache, restore_image_cache_with_files,
-    restore_remote_image_cache,
+    restore_image_cache, restore_image_hint, restore_image_hint_at, restore_remote_image_cache,
 };
 #[cfg(target_os = "linux")]
 mod linux;

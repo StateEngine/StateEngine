@@ -192,22 +192,23 @@ pub fn restore_cli_image_cache(
 ) -> IpcNativeResult<ImageCacheRead> {
     restore(root, NAME, expected, Some(peer), bound)
 }
-/// Reuse a caller's verified state root for a local CLI image hint.
-pub fn restore_cli_image_cache_with_files(
-    files: &NativeStateFiles,
+/// The image hint under `root`; a peer selects the local CLI form.
+pub fn restore_image_hint_at(
+    root: &Path,
     expected: Sha256,
-    peer: &ProcessInstance,
+    peer: Option<&ProcessInstance>,
     bound: &IpcIoBound,
 ) -> IpcNativeResult<ImageCacheRead> {
-    restore_from_files(files, NAME, expected, Some(peer), bound)
+    restore(root, NAME, expected, peer, bound)
 }
-/// Reuse a caller's verified state root for an image hint.
-pub fn restore_image_cache_with_files(
+/// The image hint from a caller's already verified state root.
+pub fn restore_image_hint(
     files: &NativeStateFiles,
     expected: Sha256,
+    peer: Option<&ProcessInstance>,
     bound: &IpcIoBound,
 ) -> IpcNativeResult<ImageCacheRead> {
-    restore_from_files(files, NAME, expected, None, bound)
+    restore_from_files(files, NAME, expected, peer, bound)
 }
 /// Restore only the separate uploaded-image hint. A changed native file key
 /// misses exactly as for the host hint; callers must still authenticate IPC.
