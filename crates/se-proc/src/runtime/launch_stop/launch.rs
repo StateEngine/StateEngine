@@ -278,6 +278,7 @@ impl NativeProcessRuntime {
                     let root = RootCheckpoint {
                         scope: checkpoint,
                         pre_exec,
+                        macos_boot_session: self.inner.macos_boot_session.clone(),
                         intended_executable,
                     };
                     s.root_checkpoint = Some(root.clone());
@@ -294,6 +295,7 @@ impl NativeProcessRuntime {
                         owner: self.inner.owner.clone(),
                         generation: s.generation,
                         root,
+                        macos_boot_session: self.inner.macos_boot_session.clone(),
                         scope,
                         tracked_obligations: None,
                         guarantee,

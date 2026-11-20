@@ -185,7 +185,7 @@ pub fn execute(cx: &Bootstrap, mut input: ProjectInit) -> Result<AnyOutput> {
                     // Explicit init can establish a fresh key after Remove --all,
                     // only with no projects, host or direct writer. Automatic
                     // startup still requires the original key and never repairs it.
-                    super::empty_home::verify(reader, &admitted, Duration::from_secs(5))?;
+                    super::empty_home::verify(files, reader, &admitted, Duration::from_secs(5))?;
                     super::credential::initialize(files)?;
                 }
                 Read::Present { .. } => (),

@@ -1,5 +1,6 @@
 //! Outside, exact-birth native readback. A stored activation is never liveness.
 use super::*;
+use se_core::ops::process_commit::ENDED_BY_REBOOT;
 use se_proc::{CheckpointKind, CheckpointPrincipal, CheckpointSource, NativeState, ProcessRead};
 use se_store::{Actor, RecordedIdentity};
 
@@ -13,6 +14,7 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
         .as_ref()
         .ok_or_else(|| invalid("a launched session target"))?;
     plan.row.session.process = None;
+    plan.row.session.end_reason = None;
     plan.row.session.observed_at = None;
     plan.row.session.state = if plan.row.session.recorded_state.as_deref() == Some("prepared") {
         "starting"
@@ -40,6 +42,34 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
                 "matching native and recorded lifecycle/project/agent/session",
             ));
         }
+        let RecordedIdentity::Present(instance) = &identity.instance else {
+            return Err(invalid("the original recorded native process identity"));
+        };
+        if matches!(plan.recorded_exit, RecordedExit::Reboot) {
+            bound(deadline)?;
+            if !matches!(&checkpoint.checkpoint, CheckpointKind::Exit { witness, .. } if witness.ended_by_reboot())
+            {
+                return Err(invalid("a retained reboot exit witness for this lifecycle"));
+            }
+            let home = plan
+                .command_home
+                .as_ref()
+                .ok_or_else(|| invalid("the local protected machine identity"))?;
+            let files =
+                crate::state_files::Files::open(home).map_err(|e| invalid(&e.to_string()))?;
+            let machine = crate::state_files::machine_identity(&files)?;
+            let current =
+                se_proc::observe_reboot_boot(machine).map_err(|e| invalid(&format!("{e:?}")))?;
+            let proof = se_proc::prove_reboot(&checkpoint, instance, &current);
+            bound(deadline)?;
+            return match proof {
+                se_proc::RebootProof::Proven(_) => Ok(None),
+                se_proc::RebootProof::NotProven => {
+                    Err(invalid("a proven reboot for the recorded root"))
+                }
+                se_proc::RebootProof::Unreadable(reason) => Err(invalid(&reason)),
+            };
+        }
         let record = match checkpoint.checkpoint {
             CheckpointKind::Process(record) => record,
             CheckpointKind::Exit { source, .. } => match *source {
@@ -56,52 +86,23 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
                 ));
             }
         };
-        let RecordedIdentity::Present(instance) = &identity.instance else {
-            return Err(invalid("the original recorded native process identity"));
-        };
-        let fields = instance.fields();
-        let same_start = match (&record.root.start, &fields.started) {
-            (
-                se_proc::StartIdentity::Linux { start_ticks: a },
-                se_types::StartIdentity::Linux { start_ticks: b },
-            ) => a == b,
-            (
-                se_proc::StartIdentity::Windows {
-                    creation_filetime: a,
-                },
-                se_types::StartIdentity::Windows {
-                    creation_filetime: b,
-                },
-            ) => *a == b.get(),
-            (
-                se_proc::StartIdentity::MacOs {
-                    seconds: a,
-                    microseconds: b,
-                },
-                se_types::StartIdentity::Macos {
-                    start_seconds: c,
-                    start_micros: d,
-                },
-            ) => a == c && b == d,
-            _ => false,
-        };
-        if !same_start
-            || record.root.machine != fields.machine
-            || record.root.pid.0 != fields.pid.get()
-            || record.root.image != fields.executable.to_local()?
-            || record.argv_sha256 != *fields.argv_sha256.as_bytes()
-        {
-            return Err(invalid(
-                "the checkpoint's exact machine, PID, birth, image and recorded argv digest",
-            ));
-        }
+        se_proc::match_recorded_root(&record.root, Some(record.argv_sha256), instance)
+            .map_err(|reason| invalid(&reason))?;
         bound(deadline)?;
         let observation = se_proc::read_process(record.root.machine.clone(), record.root.pid)
             .map_err(|e| invalid(&format!("readable native process identity: {e:?}")))?;
-        Ok((record, observation))
+        Ok(Some((record, observation)))
     })();
     let (record, observation) = match checked {
-        Ok(value) => value,
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            plan.row.session.state = "stopped".into();
+            plan.row.session.end_reason = Some(ENDED_BY_REBOOT.into());
+            plan.row.session.liveness = Read::Present {
+                value: "exited".into(),
+            };
+            return Ok(());
+        }
         Err(error) => {
             plan.row.session.state = "unknown".into();
             plan.row.session.liveness = unreadable("native process identity", error);

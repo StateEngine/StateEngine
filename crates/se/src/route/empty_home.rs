@@ -28,12 +28,17 @@ pub fn lock<R: ReadStore>(
             &format!("runtime or direct writer is active: {error}"),
         )
     })?;
-    verify(reader, admission, bound.remaining()?)?;
+    verify(files, reader, admission, bound.remaining()?)?;
     Ok(lock)
 }
 /// Caller already retains the exclusive runtime lock, as setup does while
 /// creating credentials and committing its registration.
-pub fn verify<R: ReadStore>(reader: &R, admission: &Admission, timeout: Duration) -> Result<()> {
+pub fn verify<R: ReadStore>(
+    files: &Files,
+    reader: &R,
+    admission: &Admission,
+    timeout: Duration,
+) -> Result<()> {
     let mut options = super::execute::options();
     options.timeout = timeout;
     let bound = se_host::client::lease::Deadline::from_options(&options)?;
@@ -65,7 +70,7 @@ pub fn verify<R: ReadStore>(reader: &R, admission: &Admission, timeout: Duration
     }
     match reader.runtime_owner().map_err(|e| store_error(&e))? {
         se_types::Read::Present { value } => {
-            super::process::witness_exit(&value.epoch.owner, &bound)?
+            super::process::witness_exit(files, &value.epoch.owner, &bound)?
         }
         se_types::Read::Absent { .. } => (),
         other => {

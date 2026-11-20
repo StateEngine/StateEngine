@@ -3,6 +3,19 @@ use super::*;
 use se_core::{ops::process_commit, scope, store_error::store_error};
 use se_store::{Actor, Consent, EventBody, Snapshot, StoredText};
 
+impl RecordedExit {
+    pub(crate) fn from_event(event: &EventBody<StoredText>) -> Self {
+        match event {
+            EventBody::ProcessTransition {
+                to: se_store::ProcessState::Exited,
+                outcome,
+                ..
+            } if outcome == process_commit::ENDED_BY_REBOOT => Self::Reboot,
+            _ => Self::Other,
+        }
+    }
+}
+
 pub fn prepare_agent_observation<S: Snapshot>(
     project: &ProjectId,
     row: &AgentRow,
@@ -27,6 +40,7 @@ pub fn prepare_agent_observation<S: Snapshot>(
                     }),
                 row,
                 process: unreadable("agent session preparation", &error),
+                recorded_exit: RecordedExit::Other,
                 capture: unreadable("agent session preparation", &error),
                 control_failure: None,
                 status_attention: false,
@@ -54,6 +68,7 @@ fn prepare<S: Snapshot>(
             process: Read::Absent {
                 checked: "this saved agent has never launched a session".into(),
             },
+            recorded_exit: RecordedExit::Other,
             capture: Read::Absent {
                 checked: "no launched conversation to verify".into(),
             },
@@ -106,8 +121,10 @@ fn prepare<S: Snapshot>(
         },
     };
     let mut control_failure = None;
+    let mut recorded_exit = RecordedExit::Other;
     let process = match process {
         Read::Present { value } => {
+            let exit = RecordedExit::from_event(&value.current.body);
             let failure = match &value.current.body {
                 EventBody::ProcessTransition {
                     to: se_store::ProcessState::StopUnproved | se_store::ProcessState::Lost,
@@ -131,6 +148,7 @@ fn prepare<S: Snapshot>(
                 ));
             } else {
                 control_failure = failure;
+                recorded_exit = exit;
                 Read::Present { value: identity }
             }
         }
@@ -154,6 +172,7 @@ fn prepare<S: Snapshot>(
         }),
         row: row.clone(),
         process,
+        recorded_exit,
         capture,
         control_failure,
         status_attention: false,

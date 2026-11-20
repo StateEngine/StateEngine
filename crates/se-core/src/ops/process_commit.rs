@@ -23,6 +23,7 @@ use se_types::{EventId, IdempotencyKey, Result};
 use sha2::{Digest, Sha256};
 use std::num::NonZeroU64;
 
+pub const ENDED_BY_REBOOT: &str = "ended-by-reboot";
 pub fn credential_id(plan: &LaunchPlan, purpose: &str) -> Result<RecordId> {
     session_credential_id(&plan.session, purpose)
 }

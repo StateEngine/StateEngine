@@ -17,6 +17,7 @@ pub mod channels;
 #[cfg(feature = "listener")]
 mod child_io;
 pub mod client;
+pub mod host_process;
 pub mod remote;
 #[cfg(feature = "remote")]
 mod return_mail;

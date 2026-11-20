@@ -50,10 +50,10 @@ pub(super) fn witness(
     let fields = endpoint.epoch.owner.fields();
     let current = se_proc::current_runtime_identity(fields.machine.clone())
         .map_err(|e| scope::unreadable("shutdown native boot", &format!("{e:?}")))?;
-    if current.boot_id != fields.boot {
+    if current.boot_relation(&fields.boot) != se_proc::RuntimeBootRelation::Same {
         return Err(scope::unreadable(
             "shutdown native boot",
-            "native boot changed since authenticated stop admission",
+            "native boot does not match or cannot be compared to authenticated stop admission",
         ));
     }
     let lock = scope::require_present(
@@ -117,10 +117,10 @@ fn exited(endpoint: &EndpointRecord, bound: &Deadline) -> Result<bool> {
     let fields = endpoint.epoch.owner.fields();
     let current = se_proc::current_runtime_identity(fields.machine.clone())
         .map_err(|e| scope::unreadable("shutdown native boot", &format!("{e:?}")))?;
-    if current.boot_id != fields.boot {
+    if current.boot_relation(&fields.boot) != se_proc::RuntimeBootRelation::Same {
         return Err(scope::unreadable(
             "shutdown native boot",
-            "native boot changed since authenticated stop admission",
+            "native boot does not match or cannot be compared to authenticated stop admission",
         ));
     }
     let mut last_read_failure = None;

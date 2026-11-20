@@ -15,6 +15,7 @@ pub struct SecurityStore {
     pub(crate) info: StoreInfo,
     pub(crate) generation: u64,
     pub(crate) owner: HumanId,
+    pub(crate) home: Option<std::path::PathBuf>,
     owner_fault: Option<std::sync::Arc<crate::runtime::tasks::OwnershipFault>>,
 }
 impl SecurityStore {
@@ -38,8 +39,13 @@ impl SecurityStore {
             info,
             generation,
             owner,
+            home: None,
             owner_fault: None,
         })
+    }
+    pub(crate) fn with_home(mut self, home: std::path::PathBuf) -> Self {
+        self.home = Some(home);
+        self
     }
     pub(crate) fn with_reads(mut self, reads: se_store::ReadPhasePool) -> Self {
         self.reads = Some(reads);

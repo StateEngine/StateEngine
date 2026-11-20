@@ -9,6 +9,8 @@ pub struct SessionView {
     pub state: String,
     /// Immutable session projection state, separate from current native life.
     pub recorded_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_reason: Option<String>,
     #[serde(default = "unobserved_session_process")]
     pub process_state: Read<String>,
     #[serde(default = "unobserved_session_process")]

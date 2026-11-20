@@ -196,11 +196,24 @@ pub(super) fn prepared(value: &ScopeCheckpoint, lifecycle: &LifecycleId) -> Resu
 pub(super) fn root(value: &RootCheckpoint, lifecycle: &LifecycleId) -> Result<()> {
     prepared(&value.scope, lifecycle)?;
     identity(&value.pre_exec)?;
+    validate_macos_boot(&value.pre_exec, value.macos_boot_session.as_ref())?;
     require(
         value.intended_executable.is_absolute()
             && value.pre_exec.machine == value.scope.reservation.owner.machine
             && value.pre_exec.boot == value.scope.reservation.owner.boot,
         "root checkpoint machine or executable mismatch",
+    )
+}
+fn validate_macos_boot(root: &ProcessIdentity, boot: Option<&se_types::BootId>) -> Result<()> {
+    require(
+        boot.is_none_or(|boot| {
+            matches!(root.boot, BootIdentity::MacOs { .. })
+                && matches!(
+                    crate::RebootBoot::parse(boot),
+                    Some(crate::RebootBoot::MacOs(_))
+                )
+        }),
+        "invalid Darwin boot session for the checkpoint root",
     )
 }
 fn remaining(value: &RemainingScope) -> Result<()> {
@@ -224,6 +237,7 @@ pub(super) fn process(value: &ProcessRecord, lifecycle: &LifecycleId) -> Result<
     )?;
     identity(&value.owner)?;
     identity(&value.root)?;
+    validate_macos_boot(&value.root, value.macos_boot_session.as_ref())?;
     if let Some(history) = &value.tracked_obligations {
         require(
             matches!(value.scope, ScopeIdentity::MacOsTracked { .. })
@@ -443,6 +457,12 @@ pub(super) fn checkpoint(value: &Checkpoint) -> Result<()> {
                     "exit witness differs from retained scope",
                 )?;
             }
+            let reboot = matches!(&witness.root, RootWitness::Identified { evidence, .. }
+                if matches!(evidence.as_ref(), ExitEvidence::BootChanged { .. }));
+            require(
+                reboot == witness.ended_by_reboot(),
+                "boot change must prove both the root exit and the scope closure",
+            )?;
             match &witness.root {
                 RootWitness::NoChildCreated => {
                     require(
@@ -484,6 +504,9 @@ pub(super) fn checkpoint(value: &Checkpoint) -> Result<()> {
                                 "invalid replaced-process evidence",
                             )?;
                         }
+                        ExitEvidence::BootChanged { previous, observed } => {
+                            validate_reboot(retained, expected, previous, observed)?;
+                        }
                         _ => {}
                     }
                     RootPublication::Identified
@@ -519,5 +542,16 @@ pub(super) fn checkpoint(value: &Checkpoint) -> Result<()> {
     require(
         value.root_identity == expected_root,
         "indexed root publication state differs from checkpoint",
+    )
+}
+fn validate_reboot(
+    retained: &CheckpointSource,
+    expected: &ProcessIdentity,
+    previous: &se_types::BootId,
+    observed: &se_types::BootId,
+) -> Result<()> {
+    require(
+        crate::reboot_proof::valid_witness_boots(retained, expected, previous, observed),
+        "boot change must identify two distinct boots of the recorded platform",
     )
 }

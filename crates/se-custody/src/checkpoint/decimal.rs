@@ -10,7 +10,7 @@ fn canonical(value: &str) -> bool {
 }
 macro_rules! decimal {
     ($name:ident, $integer:ty, $limit:expr) => {
-        pub(crate) mod $name {
+        pub mod $name {
             use super::*;
             pub fn serialize<S: Serializer>(
                 value: &$integer,

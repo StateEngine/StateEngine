@@ -1,7 +1,7 @@
 use se_types::PathEncoding;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-pub(crate) fn encoded(path: &Path) -> Result<PathEncoding, &'static str> {
+pub fn encoded(path: &Path) -> Result<PathEncoding, &'static str> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
@@ -21,7 +21,7 @@ pub(crate) fn encoded(path: &Path) -> Result<PathEncoding, &'static str> {
         Ok(PathEncoding::WindowsUtf16(units))
     }
 }
-pub(super) fn local(value: PathEncoding) -> Result<PathBuf, &'static str> {
+pub fn local(value: PathEncoding) -> Result<PathBuf, &'static str> {
     let path = match value {
         #[cfg(unix)]
         PathEncoding::UnixBytes(bytes) => {
