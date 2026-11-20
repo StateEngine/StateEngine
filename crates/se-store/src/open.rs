@@ -83,7 +83,9 @@ impl SqliteReader {
         );
         Ok(())
     }
-    pub(crate) fn validate_identity(&self) -> StoreResult<()> {
+    /// Recheck that the named database is still the one this reader opened.
+    /// This observes native identity only; it does not refresh store contents.
+    pub fn validate_identity(&self) -> StoreResult<()> {
         let named = se_proc::NativeFileIdentity::observe(&self.path)
             .map_err(|e| self.identity_observation_error(e))?;
         self.require_identity(named)

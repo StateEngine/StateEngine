@@ -15,7 +15,7 @@ use se_core::{
 };
 use se_host::client::{ClientOptions, lease::ClientCredential};
 use se_store::{
-    DirectStore, LeaseIdentity, LeaseMode, ReadStore, Snapshot, SqliteFactory, StateFiles,
+    DirectStore, LeaseIdentity, LeaseMode, Snapshot, SqliteFactory, StateFiles,
     StoreFactory, StoreOptions,
 };
 use se_types::{AgentId, EventId, MessageId, Read, Result, SeError, Secret};
@@ -592,6 +592,7 @@ fn dispatch_with_cold_recovery(
         }
         return super::status::finish(cx, &reader, output, &caller.admission);
     }
+    let store_id = snapshot.info().id;
     // End the finite auth/selection pin before stdin, IPC, writer or custody work.
     snapshot.close().map_err(|e| store_error(&e))?;
     se_core::admission::authorize(op.meta(), &caller.admission)?;
@@ -620,8 +621,9 @@ fn dispatch_with_cold_recovery(
         return super::hosted::forward(cx, &files, &reader, &caller, op, &selections, diagnostic)
             .map_err(|error| retry.attach(error));
     }
+    reader.validate_identity().map_err(|e| store_error(&e))?;
     let identity = LeaseIdentity {
-        store: Some(reader.info().map_err(|e| store_error(&e))?.id),
+        store: Some(store_id),
         generation: caller.admission.generation,
         mode: LeaseMode::DirectClient,
     };
