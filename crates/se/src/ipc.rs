@@ -108,6 +108,7 @@ pub(crate) fn exchange_output(
             .key()
             .map(|key| ("remote authority control".into(), key.clone())),
     };
+    crate::ipc_trace::stamp(crate::ipc_trace::Point::ConnectStart);
     let started = Instant::now();
     let mut connection = BlockingIpcClient::connect_authenticated(
         endpoint,
@@ -115,6 +116,7 @@ pub(crate) fn exchange_output(
         NonZeroU32::new(DEFAULT_REPLY_BYTES).ok_or_else(|| invalid("nonzero reply budget"))?,
         options,
     )?;
+    crate::ipc_trace::stamp(crate::ipc_trace::Point::ConnectEnd);
     // Authentication and exchange consume one caller budget after any separate
     // runtime bootstrap. A new connection never renews that request budget.
     let remaining = options
@@ -134,6 +136,7 @@ pub(crate) fn exchange_output(
         cancelled: options.cancelled.clone(),
     };
     let mut progress = ExchangeProgress::NotSent;
+    crate::ipc_trace::stamp(crate::ipc_trace::Point::ExchangeStart);
     let output = connection
         .exchange_with_progress(call, &exchange_options, &mut progress)
         .map_err(|error| {
@@ -145,6 +148,7 @@ pub(crate) fn exchange_output(
                 error
             }
         })?;
+    crate::ipc_trace::stamp(crate::ipc_trace::Point::ExchangeEnd);
     Ok(output)
 }
 

@@ -239,16 +239,40 @@ fn restore(
     // digest. The stored native key must still match the held volume/file ID,
     // size, write time and any journal revision; a pathname is never a key.
     #[cfg(windows)]
-    if !entry.image.reusable()
-        && let Some(file) = peer.and_then(super::windows_peer::shared_mapped_image)
-        && let Ok(metadata) = file.metadata()
-        && key(&file, &metadata).ok().as_ref() == Some(&entry.image)
     {
-        bound
-            .remaining()
-            .map_err(|e| error("finish executable cache restore", e))?;
-        super::image::remember_held(entry.image, entry.digest, Some(file))?;
-        return Ok(ImageCacheRead::Current);
+        let started =
+            std::env::var_os("IPC_CONNECT_TRACE").and_then(|_| crate::monotonic_micros().ok());
+        let reusable = entry.image.reusable();
+        let file = if !reusable {
+            peer.and_then(super::windows_peer::shared_mapped_image)
+        } else {
+            None
+        };
+        let mapped = file.is_some();
+        let matching = file.as_ref().is_some_and(|file| {
+            file.metadata()
+                .ok()
+                .and_then(|metadata| key(file, &metadata).ok())
+                .as_ref()
+                == Some(&entry.image)
+        });
+        if let Some(started) = started {
+            let ended = crate::monotonic_micros().unwrap_or_default();
+            eprintln!(
+                "IPC_CACHE {started} {ended} {} {} {} {}",
+                u8::from(peer.is_some()),
+                u8::from(reusable),
+                u8::from(mapped),
+                u8::from(matching)
+            );
+        }
+        if matching {
+            bound
+                .remaining()
+                .map_err(|e| error("finish executable cache restore", e))?;
+            super::image::remember_held(entry.image, entry.digest, file)?;
+            return Ok(ImageCacheRead::Current);
+        }
     }
     #[cfg(not(windows))]
     let _ = peer;

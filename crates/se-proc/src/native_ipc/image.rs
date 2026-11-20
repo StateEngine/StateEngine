@@ -119,6 +119,9 @@ const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
     reason = "pre-existing at guardrail establishment; delete this expect when the lint is fixed"
 )]
 pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeResult<Sha256> {
+    let ipc_start = std::env::var_os("IPC_CONNECT_TRACE")
+        .and_then(|_| crate::monotonic_micros().ok())
+        .unwrap_or_default();
     #[cfg(windows)]
     let (mut file, guarded) = match windows::pin(&file) {
         Some(pin) => (pin, true),
@@ -172,8 +175,14 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
                 "executable changed during cached proof; rediscover and retry the original key",
             ));
         }
+        if ipc_start != 0 {
+            let end = crate::monotonic_micros().unwrap_or_default();
+            eprintln!("IPC_HASH hit {} {ipc_start} {end} 0 0", before.len());
+        }
         return Ok(digest);
     }
+    let mut ipc_read_us = 0_u64;
+    let mut ipc_digest_us = 0_u64;
     let mut read = 0u64;
     let mut hasher = Hasher::new();
     let mut buffer = [0; 64 * 1024];
@@ -181,9 +190,14 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
         bound
             .remaining()
             .map_err(|e| error("peer executable proof deadline", e))?;
+        let clock = || (ipc_start != 0).then(|| crate::monotonic_micros().unwrap_or_default());
+        let reading = clock();
         let count = file
             .read(&mut buffer)
             .map_err(|e| error("read pinned peer executable", e))?;
+        if let (Some(begin), Some(end)) = (reading, clock()) {
+            ipc_read_us += end.saturating_sub(begin);
+        }
         if count == 0 {
             break;
         }
@@ -194,7 +208,11 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
                 "peer executable grew beyond proof byte cap",
             ));
         }
+        let hashing = clock();
         hasher.update(&buffer[..count]);
+        if let (Some(begin), Some(end)) = (hashing, clock()) {
+            ipc_digest_us += end.saturating_sub(begin);
+        }
     }
     bound
         .remaining()
@@ -230,6 +248,10 @@ pub(super) fn hash_image(file: std::fs::File, bound: &IpcIoBound) -> IpcNativeRe
     let held = None;
     if reusable {
         remember_held(stamp, digest, held)?;
+    }
+    if ipc_start != 0 {
+        let end = crate::monotonic_micros().unwrap_or_default();
+        eprintln!("IPC_HASH full {read} {ipc_start} {end} {ipc_read_us} {ipc_digest_us}");
     }
     Ok(digest)
 }

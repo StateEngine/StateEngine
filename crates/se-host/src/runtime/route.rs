@@ -63,6 +63,7 @@ pub struct AdmittedExchange {
     owner: Option<crate::remote::OwnerCall>,
     admission: Option<se_core::ops::HostPhaseSpan>,
     admitted_at: Instant,
+    ipc_admitted: Option<u64>,
 }
 #[derive(Clone)]
 pub struct HostedRouter {
@@ -243,6 +244,8 @@ impl HostedRouter {
         wire: crate::IpcEnvelope,
         deadline: &Deadline,
     ) -> Result<Option<AdmittedExchange>> {
+        let ipc_admitted =
+            std::env::var_os("IPC_PHASE_TRACE").and_then(|_| se_proc::monotonic_micros().ok());
         let admitted_at = Instant::now();
         let request_id = wire.request_id;
         self.check_open()?;
@@ -294,6 +297,7 @@ impl HostedRouter {
                     owner,
                     admission: None,
                     admitted_at,
+                    ipc_admitted,
                 }))
             })
             .await?;
@@ -400,8 +404,12 @@ impl AdmittedExchange {
             .flat_map(|completed| &completed.capture_commits)
             .map(|commit| commit.event_id.clone())
             .collect();
+        let mut ipc_encode = None;
         let result = match output {
             Ok(mut completed) => {
+                ipc_encode = self
+                    .ipc_admitted
+                    .and_then(|_| se_proc::monotonic_micros().ok());
                 completed.host_phases.admission = self.admission;
                 completed.host_phases.admitted_to_encode_us =
                     Some(timings::micros(self.admitted_at.elapsed()));
@@ -447,7 +455,18 @@ impl AdmittedExchange {
         ) {
             response.result = IpcResult::Error(envelope(&response_error(error))?);
         }
+        let ipc_write = ipc_encode.and_then(|_| se_proc::monotonic_micros().ok());
         connection.connection.reply(&response, deadline).await?;
+        if let (Some(admitted), Some(encode), Some(write), IpcResult::Output(output)) =
+            (self.ipc_admitted, ipc_encode, ipc_write, &response.result)
+            && output.schema == "se.message-receipt/v1"
+            && let Some(id) = output
+                .value
+                .get("message_id")
+                .and_then(serde_json::Value::as_str)
+        {
+            eprintln!("IPC_HOST {id} {admitted} {encode} {write}");
+        }
         Ok(connection)
     }
 }

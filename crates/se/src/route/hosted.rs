@@ -68,6 +68,7 @@ fn forward_once<R: se_store::ReadStore>(
     } else {
         bound
     };
+    crate::ipc_trace::stamp(crate::ipc_trace::Point::RestoreStart);
     execute::restore_forward_image(
         &cx.home,
         &target,
@@ -77,6 +78,7 @@ fn forward_once<R: se_store::ReadStore>(
     .map_err(|error| {
         scope::unreadable("protected executable cache", &error.to_string()).with_cause(error)
     })?;
+    crate::ipc_trace::stamp(crate::ipc_trace::Point::RestoreEnd);
     let remove_all = matches!(&operation, AnyOp::ProjectRemove(input) if input.all);
     let output = crate::ipc::forward(
         &target,
