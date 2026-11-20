@@ -126,7 +126,16 @@ impl CodexHarness {
     ) -> Result<ProviderSessionId> {
         let resolved = self.resolved(request)?;
         let plan = self.plan(request, &resolved, socket);
-        let (method, params) = self.thread(&plan)?;
+        let (method, mut params) = self.thread(&plan)?;
+        // The thread's StateEngine server must not meet the user's own servers:
+        // the login's registration is switched off, and the host's takes a free name.
+        let read = json!({"cwd": params["cwd"].clone()});
+        match binding.request_classified("config/read", read, cx).await {
+            Ok(effective) => se_mcp::client::codex_fit(&effective, &mut params["config"])?,
+            // Older Codex cannot report its configuration; keep the default name.
+            Err(failure) if failure.code == Some(-32601) => {}
+            Err(failure) => return Err(failure.error),
+        }
         let response = binding.request(method, params, cx).await?;
         let conversation = input::verify_thread(&plan, &response)?;
         binding.state.lock().map_err(|_| poisoned())?.conversation = Some(conversation.clone());

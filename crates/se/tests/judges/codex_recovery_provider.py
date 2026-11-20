@@ -64,7 +64,12 @@ def send(stream, body, opcode=1):
 
 
 def discover(params):
-    server = params['config']['mcp_servers.stateengine']
+    servers = [entry for key, entry in params['config'].items()
+               if key.startswith('mcp_servers.') and isinstance(entry, dict)
+               and isinstance(entry.get('url'), str)]
+    if len(servers) != 1:
+        raise ValueError('expected one thread MCP URL entry')
+    server = servers[0]
     request = urllib.request.Request(server['url'],
         data=json.dumps({'jsonrpc':'2.0', 'id':1, 'method':'tools/list'}).encode(),
         headers={**server['http_headers'], 'Content-Type':'application/json'})

@@ -98,7 +98,16 @@ fn warm_version_does_not_reuse_session_credentials_or_launch_configuration() -> 
         };
         let (method, params) = codex_input::thread(&plan)?;
         assert_eq!(method, "thread/start");
-        let headers = &params["config"]["mcp_servers.stateengine"]["http_headers"];
+        let config = params["config"].as_object().ok_or("thread config absent")?;
+        let mut servers = config
+            .iter()
+            .filter(|(key, entry)| key.starts_with("mcp_servers.") && entry["url"].is_string());
+        let (_, server) = servers.next().ok_or("thread MCP URL entry absent")?;
+        assert!(
+            servers.next().is_none(),
+            "expected one thread MCP URL entry"
+        );
+        let headers = &server["http_headers"];
         assert_eq!(
             headers["Authorization"],
             format!("Bearer sels-synthetic-fixture-bearer-{sequence}")

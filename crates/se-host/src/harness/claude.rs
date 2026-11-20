@@ -20,7 +20,7 @@ use std::{
 pub mod bell;
 
 /// The MCP server name Claude prefixes onto tool names (mcp__stateengine__*).
-pub const MCP_SERVER: &str = "stateengine";
+pub const MCP_SERVER: &str = se_mcp::client::SERVER;
 const SETTINGS_FILE: &str = "claude-settings.json";
 const MCP_FILE: &str = "claude-mcp.json";
 
@@ -62,19 +62,7 @@ pub fn configuration_with_hooks(
     if let Some(hooks) = augmentation {
         settings["hooks"]["PreToolUse"] = hooks["PreToolUse"].clone();
     }
-    let mut bearer = b"Bearer ".to_vec();
-    bearer.extend_from_slice(launch.request.mcp_bearer.expose());
-    let bearer = String::from_utf8(bearer)
-        .map_err(|_| SeError::invalid("session credential", "printable bearer bytes"))?;
-    let mcp = json!({
-        "mcpServers": {
-            MCP_SERVER: {
-                "type": "http",
-                "url": format!("http://127.0.0.1:{}/mcp", launch.mcp_port),
-                "headers": {"Authorization": bearer},
-            }
-        }
-    });
+    let mcp = se_mcp::client::claude_config(launch.mcp_port, &launch.request.mcp_bearer)?;
     Ok(ConfigPlan {
         edits: Vec::new(),
         ephemeral_files: vec![
