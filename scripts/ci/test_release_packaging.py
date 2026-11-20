@@ -56,6 +56,8 @@ class ArchiveAssembly(unittest.TestCase):
             directory.mkdir()
             executable = "se.exe" if target.endswith("windows-msvc") else "se"
             (directory / executable).write_bytes(header(target))
+            worker = "se-atlas-worker.exe" if target.endswith("windows-msvc") else "se-atlas-worker"
+            (directory / worker).write_bytes(header(target))
             notices = directory / "notices"
             notices.mkdir()
             (notices / "fixture.txt").write_text("Synthetic package notice.\n")
