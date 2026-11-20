@@ -317,7 +317,9 @@ pub(crate) fn expired() -> SeError {
         deadline_ms: 500,
     }))
 }
-pub(crate) use se_atlas_cold::deadline::{cleanup_error, cpu_expired, stall};
+pub(crate) use se_atlas_cold::deadline::stall;
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) use se_atlas_cold::deadline::{cleanup_error, cpu_expired};
 
 #[cfg(any(target_os = "linux", windows))]
 // A completed cancellation is a finite file refusal, not an endless retry of
