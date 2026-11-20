@@ -276,14 +276,9 @@ mod served {
         Ok(tools.clone())
     }
 
-    #[test]
-    fn guest_catalogue_equals_the_host_served_catalogue() -> Check {
-        let initialized = initialize_host_process()?;
-        let f = Fixture::new()?;
-        seed(&f)?;
-        let (mut writer, lease) = direct(&f)?;
-        let session = support::session::session()?;
-        let capability = format!("sec1.{session}.{}", "A".repeat(43));
+    /// Seed one active session with a synthetic capability and close the writer.
+    fn seed_session(f: &Fixture, session: &se_types::SessionId, capability: &str) -> Check {
+        let (mut writer, lease) = direct(f)?;
         let now = now()?;
         let mut events = vec![
             EventBody::ProfileSaved {
@@ -299,13 +294,13 @@ mod served {
                 },
                 expected: Expected::Absent,
             },
-            support::session::prepared(&f, &session, &f.b),
-            support::session::activated(&session)?,
+            support::session::prepared(f, session, &f.b),
+            support::session::activated(session)?,
         ];
         let issued = credential(
-            &session,
+            session,
             "session",
-            capability.as_str(),
+            capability,
             now + 300_000_000,
             now + 60_000_000,
         )?;
@@ -320,73 +315,77 @@ mod served {
             expected: revision(1)?,
             first_request: support::session::record()?,
         });
-        writer.append(
-            f.batch(
-                f.owner_project(),
-                Some(fixture::request("guest-pin-fixture")?),
-                events,
-            )?,
-            &*lease,
-        )?;
+        let request = Some(fixture::request("guest-pin-fixture")?);
+        writer.append(f.batch(f.owner_project(), request, events)?, &*lease)?;
         writer.close()?;
-        drop(lease);
+        Ok(())
+    }
+
+    /// Both catalogues, fetched against the running host, must be identical.
+    async fn compare(home: &Path, capability: &str) -> Check {
+        // Served by the running host for an authenticated session.
+        let served = catalogue(&stdio_list(home, Some(capability)).await?)?;
+        // Answered by a guest with no session: must be identical.
+        let guest = catalogue(&stdio_list(home, None).await?)?;
+        require(
+            guest == served,
+            "host-less guest catalogue differs from the host-served catalogue",
+        )
+    }
+
+    async fn run_host(
+        initialized: HostProcessInitialization,
+        f: &Fixture,
+        handle: tokio::runtime::Handle,
+        capability: &str,
+    ) -> Check {
+        let mut host =
+            HostedRuntime::prepare(initialized, start(f)?, handle.clone(), &bound()?).await?;
+        host.configure(se_config::config_policy::ConfigFile::default())?;
+        let se = Path::new(env!("CARGO_BIN_EXE_se")).to_path_buf();
+        host.install_native_atlas(se.clone(), NativeAtlasQualification::default())?;
+        let options = ProcessOptions {
+            helper_executable: se_types::NativePath::from_local(se)?,
+            linux_delegation: se_proc::LinuxDelegation::CurrentScope,
+            maximum_sessions: 2,
+            restore_deadline_ms: ProcessOptions::DEFAULT_RESTORE_DEADLINE_MS,
+            stop_grace_ms: None,
+        };
+        let (_coordinator, reconciliation) =
+            LaunchCoordinator::install(&mut host, options, &bound()?).await?;
+        require(
+            reconciliation.unproved.is_empty(),
+            "native reconciliation debt",
+        )?;
+        let listener = host.listen(handle, &bound()?).await?;
+        let stop = host.local_stop();
+        let client = async {
+            let result = compare(&f.options.state_directory, capability).await;
+            stop.request();
+            result
+        };
+        let (exit, result) = join(host.serve(listener), client).await;
+        let _ = exit.finish(&bound()?).await;
+        result
+    }
+
+    #[test]
+    fn guest_catalogue_equals_the_host_served_catalogue() -> Check {
+        let initialized = initialize_host_process()?;
+        let f = Fixture::new()?;
+        seed(&f)?;
+        let session = support::session::session()?;
+        let capability = format!("sec1.{session}.{}", "A".repeat(43));
+        seed_session(&f, &session, &capability)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .max_blocking_threads(2)
             .build()?;
-        runtime.block_on(async {
-            let mut host = HostedRuntime::prepare(
-                initialized,
-                start(&f)?,
-                runtime.handle().clone(),
-                &bound()?,
-            )
-            .await?;
-            host.configure(se_config::config_policy::ConfigFile::default())?;
-            host.install_native_atlas(
-                Path::new(env!("CARGO_BIN_EXE_se")).to_path_buf(),
-                NativeAtlasQualification::default(),
-            )?;
-            let (_coordinator, reconciliation) = LaunchCoordinator::install(
-                &mut host,
-                ProcessOptions {
-                    helper_executable: se_types::NativePath::from_local(
-                        Path::new(env!("CARGO_BIN_EXE_se")).to_path_buf(),
-                    )?,
-                    linux_delegation: se_proc::LinuxDelegation::CurrentScope,
-                    maximum_sessions: 2,
-                    restore_deadline_ms: ProcessOptions::DEFAULT_RESTORE_DEADLINE_MS,
-                    stop_grace_ms: None,
-                },
-                &bound()?,
-            )
-            .await?;
-            require(
-                reconciliation.unproved.is_empty(),
-                "native reconciliation debt",
-            )?;
-            let listener = host.listen(runtime.handle().clone(), &bound()?).await?;
-            let stop = host.local_stop();
-            let client = async {
-                let result: Check = async {
-                    let home = &f.options.state_directory;
-                    // Served by the running host for an authenticated session.
-                    let served = catalogue(&stdio_list(home, Some(&capability)).await?)?;
-                    // Answered by a guest with no session: must be identical.
-                    let guest = catalogue(&stdio_list(home, None).await?)?;
-                    require(
-                        guest == served,
-                        "host-less guest catalogue differs from the host-served catalogue",
-                    )?;
-                    Ok(())
-                }
-                .await;
-                stop.request();
-                result
-            };
-            let (exit, result) = join(host.serve(listener), client).await;
-            let _ = exit.finish(&bound()?).await;
-            result
-        })
+        runtime.block_on(run_host(
+            initialized,
+            &f,
+            runtime.handle().clone(),
+            &capability,
+        ))
     }
 }
