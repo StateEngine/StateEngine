@@ -29,8 +29,8 @@ const STATEMENT_BYTES: usize = 16_384;
 pub enum ConnectionRole {
     HostReader,
     /// A synchronous foreground query queues before opening SQLite and before
-    /// creating its short execution deadline. It owns the shared result arena
-    /// through connection close, including WAL startup and teardown.
+    /// creating its short execution deadline. It opens and closes inside the
+    /// shared arena; its queries read their own WAL snapshot outside it.
     QueryReader,
     HostWriter,
     /// The native owner already integrity-checked this exact epoch at activation
@@ -174,6 +174,16 @@ impl Drop for CacheConnection<'_> {
         if self.role == ConnectionRole::ColdWriter {
             self.files.release_cold_observations();
         }
+        // These roles close inside the arena, as they opened: `db` is the first
+        // field, so it closes while this reservation is still held.
+        if matches!(
+            self.role,
+            ConnectionRole::QueryReader | ConnectionRole::MaintenanceWriter
+        ) {
+            let close = Instant::now() + Duration::from_millis(250);
+            let reader = self.role == ConnectionRole::QueryReader;
+            self.arena = query_arena::Reservation::acquire(reader, close).ok();
+        }
     }
 }
 impl<'a> CacheConnection<'a> {
@@ -188,20 +198,17 @@ impl<'a> CacheConnection<'a> {
             return Ok(None);
         };
         let slot = Slot::take(role, deadline)?;
-        // The native work/query adapters close their handles before returning.
-        // Include open and close in the same arena: WAL startup/checkpoint locks
-        // can otherwise race even when SQL transactions are serialized.
-        let arena = if matches!(
+        // The native work/query adapters open and close inside the arena: WAL
+        // startup/checkpoint locks can otherwise race. Between those, a query
+        // reads its own WAL snapshot beside the writer, and the maintenance
+        // writer takes the arena per transaction, so neither waits on the
+        // other's whole connection.
+        let _opening = matches!(
             role,
             ConnectionRole::QueryReader | ConnectionRole::MaintenanceWriter
-        ) {
-            Some(query_arena::Reservation::acquire(
-                role == ConnectionRole::QueryReader,
-                deadline,
-            )?)
-        } else {
-            None
-        };
+        )
+        .then(|| query_arena::Reservation::acquire(role == ConnectionRole::QueryReader, deadline))
+        .transpose()?;
         files.validate_database(&pin)?;
         let mut db = open(&pin, role, deadline)?;
         files.configure_connection_role(&mut db, role)?;
@@ -226,7 +233,7 @@ impl<'a> CacheConnection<'a> {
             pin,
             identity: id,
             role,
-            arena,
+            arena: None,
             _slot: slot,
         }))
     }
@@ -340,15 +347,11 @@ impl<'a> CacheConnection<'a> {
             && matches!(
                 self.role,
                 ConnectionRole::HostReader
-                    | ConnectionRole::QueryReader
                     | ConnectionRole::HostWriter
                     | ConnectionRole::MaintenanceWriter
             ) {
             Some(query_arena::Reservation::acquire(
-                matches!(
-                    self.role,
-                    ConnectionRole::HostReader | ConnectionRole::QueryReader
-                ),
+                self.role == ConnectionRole::HostReader,
                 deadline,
             )?)
         } else {
@@ -361,7 +364,11 @@ impl<'a> CacheConnection<'a> {
                 // One renewal quantum can commit several transactions on the
                 // same connection. Reclaim earlier commits before refusing the
                 // next one; pinned readers still have to pass the size check.
-                self.checkpoint(deadline)?;
+                if !self.checkpoint_held(deadline)? {
+                    // A query's open snapshot outlasted the checkpoint's busy
+                    // wait: yield this slice, and the next admission retries.
+                    return Err(stage_timeout("WAL checkpoint behind a query", 0));
+                }
                 wal = self.files.wal_bytes(&self.pin)?;
             }
             if growth > WAL_STOP || wal.checked_add(growth).is_none_or(|v| v > WAL_STOP) {
@@ -432,7 +439,14 @@ impl<'a> CacheConnection<'a> {
     }
     /// Event/commit/drain driven only. External pinned snapshots keep writes
     /// suspended; no timer or forced reader expiry is introduced.
+    /// TRUNCATE checkpoint once the WAL reaches 4 MB, inside the arena. A
+    /// query's open snapshot makes it wait at most the 25 ms busy timeout and
+    /// return `false`; the WAL stays over 4 MB, so the next write retries.
     pub fn checkpoint(&mut self, deadline: Instant) -> AtlasResult<bool> {
+        let _arena = query_arena::Reservation::acquire(false, deadline)?;
+        self.checkpoint_held(deadline)
+    }
+    fn checkpoint_held(&mut self, deadline: Instant) -> AtlasResult<bool> {
         if !self.role.writable() {
             return Err(cache_error("reader cannot checkpoint"));
         }
