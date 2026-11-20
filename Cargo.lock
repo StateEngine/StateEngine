@@ -1612,6 +1612,7 @@ dependencies = [
  "se-atlas",
  "se-config",
  "se-core",
+ "se-mcp",
  "se-proc",
  "se-remote",
  "se-repository",
@@ -1619,7 +1620,6 @@ dependencies = [
  "se-types",
  "secode-stateengine-api",
  "serde",
- "serde_ignored",
  "serde_json",
  "sha2",
  "shlex",
@@ -1636,6 +1636,19 @@ dependencies = [
 [[package]]
 name = "se-identifiers"
 version = "0.0.1-alpha.1"
+
+[[package]]
+name = "se-mcp"
+version = "0.0.1-alpha.1"
+dependencies = [
+ "se-atlas",
+ "se-core",
+ "se-types",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "se-proc"

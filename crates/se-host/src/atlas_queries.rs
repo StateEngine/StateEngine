@@ -163,28 +163,7 @@ where
 }
 
 /// One presentation path for CLI and MCP. JSON remains the typed wire family.
-pub fn compact(
-    output: &se_core::ops::AnyOutput,
-    max_bytes: usize,
-    explain: bool,
-) -> AtlasResult<Option<String>> {
-    use se_core::ops::AnyOutput;
-    let text = match output {
-        AnyOutput::AtlasFind(value) => {
-            se_atlas::render::search(&value.value.answer, max_bytes, explain)?
-        }
-        AnyOutput::AtlasRefs(value) => se_atlas::render::refs(&value.value.answer, max_bytes)?,
-        AnyOutput::AtlasImpact(value) => se_atlas::render::impact(&value.value.answer, max_bytes)?,
-        AnyOutput::AtlasChanges(value) => {
-            se_atlas::render::changes(&value.value.answer, max_bytes)?
-        }
-        AnyOutput::AtlasOutline(value) => {
-            se_atlas::render::outline(&value.value.answer, max_bytes)?
-        }
-        _ => return Ok(None),
-    };
-    Ok(Some(text))
-}
+pub use se_mcp::compact;
 
 /// Execute inside the existing admitted core read phase, lending the owner's
 /// cache/source for the duration. No read lease or borrowed handle survives.

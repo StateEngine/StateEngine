@@ -20,6 +20,7 @@ secode-stateengine-api = { version = "=2.0.0", optional = true }
 se-types = { path = "../se-types" }
 se-remote = { path = "../se-remote" }
 se-core = { path = "../se-core" }
+se-mcp = { path = "../se-mcp" }
 se-store = { path = "../se-store" }
 se-proc = { path = "../se-proc" }
 se-repository = { path = "../se-repository" }
@@ -37,7 +38,6 @@ sha2.workspace = true
 ignore = "=0.4.33"
 uuid = { workspace = true, features = ["v4"] }
 zeroize.workspace = true
-serde_ignored = "0.1.14"
 tokio = { workspace = true, optional = true }
 # HTTP/1 server plus the verified loopback control client; no TLS.
 hyper = { version = "1.11", default-features = false, features = ["server", "client", "http1"], optional = true }
