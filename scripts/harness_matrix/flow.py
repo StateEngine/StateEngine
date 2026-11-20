@@ -40,9 +40,9 @@ def stop_closed(row):
 
 
 class Smoke:
-    def __init__(self, output, package, entry, settings, inherited, baseline_rows=None):
+    def __init__(self, output, package, entry, settings, inherited, baseline_rows=None, home=None):
         self.output, self.package, self.entry, self.settings = output, package, entry, settings
-        self.home = output / 'home'
+        self.home = output / 'home' if home is None else home
         self.home.mkdir(mode=0o700)
         self.state = self.home / 'state'
         self.repository = self.home / 'repository'
