@@ -115,6 +115,22 @@ fn over_budget(
     problems
 }
 
+/// Every crate carries its own entry: falling back to the default would let a
+/// new crate grow unreviewed to the default ceiling.
+fn unbudgeted_crates(
+    now: &BTreeMap<String, usize>,
+    limits: &BTreeMap<String, usize>,
+) -> Vec<String> {
+    now.iter()
+        .filter(|(name, _)| !limits.contains_key(*name))
+        .map(|(name, lines)| {
+            format!(
+                "crate {name} has {lines} lines and no entry in {BUDGETS_PATH}; add \"{name}\": {lines} to its crates"
+            )
+        })
+        .collect()
+}
+
 fn over_file_budget(
     now: &BTreeMap<String, usize>,
     limits: &BTreeMap<String, usize>,
@@ -143,13 +159,14 @@ fn crates_and_source_directories_stay_within_their_budgets() -> Result<(), Box<d
     let files = file_budgets(FILES)?;
     let inventory = rust_source_inventory(&workspace_root())?;
     let (crates, directories, file_counts) = measured(&inventory);
-    let mut problems = over_budget(
+    let mut problems = unbudgeted_crates(&crates, &budgets.crates);
+    problems.extend(over_budget(
         "crate",
         &crates,
         &budgets.crates,
         budgets.default_crate,
         BUDGETS_PATH,
-    );
+    ));
     problems.extend(over_budget(
         "directory",
         &directories,
