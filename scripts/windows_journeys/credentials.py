@@ -215,12 +215,13 @@ class Credentials:
         directory.mkdir(mode=0o700, exist_ok=True)
         protect(directory)
         if self.provider == 'codex':
-            self.target = directory / 'auth.json'
             # Native TokenData requires a string field, even without renewal authority.
             credential = self.value['credential']
             if isinstance(credential.get('tokens'), dict):
                 credential = {**credential, 'tokens': {**credential['tokens'], 'refresh_token': ''}}
-            descriptor = os.open(self.target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            target = directory / 'auth.json'
+            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            self.target = target
             with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
                 if sys.platform == 'darwin':
                     require_private_acl(stream.fileno())
@@ -238,12 +239,12 @@ class Credentials:
             temporary.replace(config)
 
     def close(self):
-        current = plain(self.path)
-        require((current.st_dev, current.st_ino) == (self.identity.st_dev, self.identity.st_ino)
-                and digest(self.path) == self.sha256, 'Private seed was changed during the run')
         if self.target is not None and present(self.target):
             plain(self.target)
             self.target.unlink()
+        current = plain(self.path)
+        require((current.st_dev, current.st_ino) == (self.identity.st_dev, self.identity.st_ino)
+                and digest(self.path) == self.sha256, 'Private seed was changed during the run')
         return dict(seed_identity_unchanged=True, seed_bytes_unchanged=True,
                     private_copy_absent=self.target is None or not present(self.target),
                     refresh_tokens_copied=False,

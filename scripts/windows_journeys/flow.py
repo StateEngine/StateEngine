@@ -164,11 +164,11 @@ class Journeys(Smoke):
         require(digest(config) == self.settings['configuration']['sha256'], 'Native configuration changed')
         self.state.mkdir(exist_ok=True)
         (self.state / 'config.toml').write_bytes(config.read_bytes())
+        version = self.commands.run(self.settings['version_command'], 'native-provider-version')
+        require(version.strip() == self.settings['version_stdout'], 'Native provider version differs')
         # The private provider sign-in precedes init and its MCP registration.
         self.commands.environment.update(self.credentials.environment())
         self.credentials.install(self.home, self.commands.environment)
-        version = self.commands.run(self.settings['version_command'], 'native-provider-version')
-        require(version.strip() == self.settings['version_stdout'], 'Native provider version differs')
         self.initialization_attempted = True
         initialized = self.call(['init', '--repo', self.repository, '--agent', 'main',
                                  '--provider', self.settings['provider']], 'adopt', terminal=True, project=False)
@@ -294,14 +294,19 @@ class Journeys(Smoke):
                 if not self.removed:
                     self.cleanup(retain_home=True)
                     self.observe_runtime_exit()
-                if self.record.get('process_closure') == [] or self.removed:
-                    self.record['credential_closure'] = self.credentials.close()
-                    self.commands.environment.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
-                    self.commands.environment.pop('ANTHROPIC_API_KEY', None)
             except Exception as error:
                 self.record['cleanup_error'] = str(error)
+            finally:
+                self.commands.environment.pop('CLAUDE_CODE_OAUTH_TOKEN', None)
+                self.commands.environment.pop('ANTHROPIC_API_KEY', None)
+                # The private copy belongs to the fixture even when process closure is unknown.
+                try:
+                    self.record['credential_closure'] = self.credentials.close()
+                except Exception as error:
+                    self.record['credential_cleanup_error'] = str(error)
             passed = all(row['result'] == 'PASS' and row.get('tokens', {}).get('state') != 'unavailable'
-                         for row in self.record['phases'].values()) and not self.record.get('cleanup_error')
+                         for row in self.record['phases'].values())
+            passed = passed and not any(key in self.record for key in ('cleanup_error', 'credential_cleanup_error'))
             passed = passed and (self.foreground is None or self.foreground.complete())
             missing_usage = any(row.get('tokens', {}).get('state') == 'unavailable'
                                 for row in self.record['phases'].values())
