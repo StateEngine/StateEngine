@@ -5,7 +5,7 @@
  "default_directory_lines": 10000,
  "crates": {
   "se-host": 101797,
-  "se-proc": 41328,
+  "se-proc": 41332,
   "se-store": 25799,
   "se-core": 24294,
   "se": 24060,
@@ -52,7 +52,7 @@
   "crates/se-host/src/remote/control": 1917,
   "crates/se-proc/src/platform/macos": 1860,
   "crates/se-core/src/ops/continuity": 1856,
-  "crates/se-host/src/atlas_cold": 1744,
+  "crates/se-host/src/atlas_cold": 1788,
   "crates/se-core/src/ops/cli": 1721,
   "crates/se-proc/src/uninstall": 2130,
   "crates/se-host/src/runtime/atlas_owner": 1701,
