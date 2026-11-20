@@ -34,17 +34,40 @@ for name in ('claude', 'codex'):
         found.append(str(exe))
     candidates[name] = sorted(set(found))
 print('candidates', json.dumps(candidates, indent=1), flush=True)
-commands = {'claude': [['mcp', 'get', 'stateengine'], ['--version']],
-            'codex': [['mcp', 'list', '--json'], ['--version']]}
-for name, paths in candidates.items():
-    for path in paths:
-        for args in commands[name]:
-            try:
-                r = subprocess.run([path, *args], cwd=home / 'repository', env=env, capture_output=True,
-                                   timeout=90, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-                print('MCP_PROBE', json.dumps({'exe': path, 'args': args, 'exit': r.returncode,
-                      'stdout': r.stdout.decode('utf-8', 'replace')[:1500],
-                      'stderr': r.stderr.decode('utf-8', 'replace')[:1500]}), flush=True)
-            except Exception as error:
-                print('MCP_PROBE', json.dumps({'exe': path, 'args': args, 'error': repr(error)}), flush=True)
+def run(path, args, env, cwd):
+    try:
+        r = subprocess.run([path, *args], cwd=cwd, env=env, capture_output=True, timeout=120,
+                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        return {'exit': r.returncode, 'stdout': r.stdout.decode('utf-8', 'replace')[:1500],
+                'stderr': r.stderr.decode('utf-8', 'replace')[:1500]}
+    except Exception as error:
+        return {'error': repr(error)}
+
+stub_dir = root / 'stub'
+stub_dir.mkdir()
+(stub_dir / 'se.cmd').write_text('@echo off\r\nexit /b 0\r\n')
+sequences = {'claude': [['mcp', 'get', 'stateengine'], ['mcp', 'add', '--scope', 'local', 'stateengine', '--', 'se', '--home', 'HOMESTATE', 'mcp'],
+                        ['mcp', 'get', 'stateengine'], ['mcp', 'list']],
+             'codex': [['mcp', 'list', '--json'], ['mcp', 'add', 'stateengine', '--', 'se', '--home', 'HOMESTATE', 'mcp'],
+                       ['mcp', 'list', '--json']]}
+for variant in ('no-se-on-path', 'stub-se-on-path'):
+    for name, paths in candidates.items():
+        native = [p for p in paths if p.lower().endswith('.exe')]
+        if not native:
+            continue
+        path = native[-1]
+        vhome = root / f'{variant}-{name}'
+        for d in ['AppData/Roaming', 'AppData/Local', '.codex', 'tmp', 'repository']:
+            (vhome / d).mkdir(parents=True, exist_ok=True)
+        subprocess.run(['git', 'init', '-q', str(vhome / 'repository')], check=False)
+        venv = dict(env)
+        venv.update(HOME=str(vhome), USERPROFILE=str(vhome), APPDATA=str(vhome / 'AppData/Roaming'),
+                    LOCALAPPDATA=str(vhome / 'AppData/Local'), CODEX_HOME=str(vhome / '.codex'),
+                    TMP=str(vhome / 'tmp'), TEMP=str(vhome / 'tmp'), TMPDIR=str(vhome / 'tmp'))
+        if variant == 'stub-se-on-path':
+            venv['PATH'] = str(stub_dir) + os.pathsep + venv['PATH']
+        for args in sequences[name]:
+            args = [str(vhome / 'state') if a == 'HOMESTATE' else a for a in args]
+            print('MCP_SEQ', json.dumps({'variant': variant, 'exe': path, 'args': args,
+                  **run(path, args, venv, vhome / 'repository')}), flush=True)
 sys.exit(0)
