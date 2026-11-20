@@ -216,9 +216,10 @@ impl Harness for ClaudeHarness {
         Box::pin(async move {
             let directory = self.launch_directory(request)?;
             let conversation = claude::conversation(request)?;
-            let environment = claude::provider_environment();
+            let environment = claude::launch_environment(request.sign_in.as_ref());
             let command = request.executable.to_local()?;
-            io::authentication(&command, &environment, cx.timeout).await?;
+            let signed_in = io::authentication(&command, &environment, cx.timeout).await;
+            signed_in.map_err(|error| io::without_terminal(error, request.sign_in.is_none()))?;
             let fallback = request.mode.is_headless()
                 && request.profile.named_profile == "default"
                 && request.profile.permission == se_store::PermissionProfile::WorkspaceWrite

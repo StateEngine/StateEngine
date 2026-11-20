@@ -4,12 +4,17 @@
 pub mod bundle;
 mod images;
 pub use images::Images;
+#[cfg(test)]
+mod image_fixture;
+#[cfg(test)]
+#[path = "../../test-support/directory.rs"]
+mod test_directory;
 
 fn unreadable(subject: &str, reason: impl std::fmt::Display) -> se_types::SeError {
     se_core::scope::unreadable(subject, &reason.to_string())
 }
 
-pub(crate) fn incompatible(reason: impl Into<String>) -> se_types::SeError {
+pub fn incompatible(reason: impl Into<String>) -> se_types::SeError {
     se_types::SeError::new(se_types::Detail::ProviderIncompatible(
         se_types::details::ProviderIncompatible {
             subject: "SE Code external-host contract".into(),

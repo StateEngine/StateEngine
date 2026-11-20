@@ -28,7 +28,7 @@ impl Package {
             "secode-server"
         });
         for path in [&cli, &server] {
-            fs::write(path, crate::harness::secode_image_fixture::image_bytes())?;
+            fs::write(path, crate::image_fixture::image_bytes())?;
         }
         Ok(Self {
             root,

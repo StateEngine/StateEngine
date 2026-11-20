@@ -34,7 +34,6 @@
   "crates/se-host/src/atlas_renewal": 12,
   "crates/se-host/src/client": 12,
   "crates/se-host/src/harness/secode_process": 10,
-  "crates/se-host/src/harness/secode_image": 7,
   "crates/se-store/src/remote": 12,
   "crates/se-host/src/acp": 11,
   "crates/se-host/src/atlas_cold": 11,

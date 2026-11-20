@@ -76,9 +76,7 @@ pub(crate) mod progress;
 #[cfg(feature = "secode")]
 pub(crate) mod secode;
 #[cfg(feature = "listener")]
-pub mod secode_image;
-#[cfg(all(feature = "listener", test))]
-mod secode_image_fixture;
+pub use se_secode_image as secode_image;
 #[cfg(feature = "listener")]
 pub mod secode_process;
 #[cfg(feature = "listener")]
@@ -136,6 +134,9 @@ pub struct HarnessRequest {
     /// into the protected per-launch MCP config.
     pub mcp_bearer: Secret,
     pub key: IdempotencyKey,
+    /// The launching owner terminal's provider sign-in, laid over the host's own
+    /// for this launch only; `None` when no terminal launched it (restore, MCP).
+    pub sign_in: Option<crate::launch_sign_in::SignIn>,
 }
 /// Credential purpose the loopback HTTP route accepts, and only it.
 pub const MCP_BEARER_PURPOSE: &str = "http";
