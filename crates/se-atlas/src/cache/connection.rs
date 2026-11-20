@@ -174,8 +174,7 @@ impl Drop for CacheConnection<'_> {
         if self.role == ConnectionRole::ColdWriter {
             self.files.release_cold_observations();
         }
-        // These roles close inside the arena, as they opened: `db` is the first
-        // field, so it closes while this reservation is still held.
+        // Close inside the arena, as opened: `db`, the first field, closes first.
         if matches!(
             self.role,
             ConnectionRole::QueryReader | ConnectionRole::MaintenanceWriter
@@ -198,11 +197,9 @@ impl<'a> CacheConnection<'a> {
             return Ok(None);
         };
         let slot = Slot::take(role, deadline)?;
-        // The native work/query adapters open and close inside the arena: WAL
-        // startup/checkpoint locks can otherwise race. Between those, a query
-        // reads its own WAL snapshot beside the writer, and the maintenance
-        // writer takes the arena per transaction, so neither waits on the
-        // other's whole connection.
+        // Native adapters open and close inside the arena (WAL startup and
+        // checkpoint locks race otherwise). Queries then read their snapshot
+        // outside it; the maintenance writer takes it per transaction.
         let _opening = matches!(
             role,
             ConnectionRole::QueryReader | ConnectionRole::MaintenanceWriter
@@ -365,8 +362,7 @@ impl<'a> CacheConnection<'a> {
                 // same connection. Reclaim earlier commits before refusing the
                 // next one; pinned readers still have to pass the size check.
                 if !self.checkpoint_held(deadline)? {
-                    // A query's open snapshot outlasted the checkpoint's busy
-                    // wait: yield this slice, and the next admission retries.
+                    // A query snapshot outlasted the busy wait: yield; the next admission retries.
                     return Err(stage_timeout("WAL checkpoint behind a query", 0));
                 }
                 wal = self.files.wal_bytes(&self.pin)?;
@@ -439,9 +435,8 @@ impl<'a> CacheConnection<'a> {
     }
     /// Event/commit/drain driven only. External pinned snapshots keep writes
     /// suspended; no timer or forced reader expiry is introduced.
-    /// TRUNCATE checkpoint once the WAL reaches 4 MB, inside the arena. A
-    /// query's open snapshot makes it wait at most the 25 ms busy timeout and
-    /// return `false`; the WAL stays over 4 MB, so the next write retries.
+    /// TRUNCATE checkpoint at 4 MB of WAL, inside the arena. An open query snapshot
+    /// makes it return `false` after the 25 ms busy wait; the next write retries.
     pub fn checkpoint(&mut self, deadline: Instant) -> AtlasResult<bool> {
         let _arena = query_arena::Reservation::acquire(false, deadline)?;
         self.checkpoint_held(deadline)
