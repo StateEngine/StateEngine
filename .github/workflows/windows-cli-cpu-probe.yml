@@ -1,0 +1,53 @@
+name: windows-cli-cpu-probe
+on:
+  push:
+    branches: [probe/windows-cli-cpu-states-20261120]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  measure:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Build product, minimal and observer
+        run: |
+          set -euo pipefail
+          obs=scripts/windows_cli_startup_observer
+          bin="$RUNNER_TEMP/bin"; mkdir -p "$bin" "$RUNNER_TEMP/out/symbols"
+          cargo build --release --locked -p se --bin se
+          cp target/release/se.exe "$bin/product.exe"
+          cp target/release/se.exe target/release/se.pdb "$RUNNER_TEMP/out/symbols/"
+          echo "CARGO_PROFILE_RELEASE_DEBUG=$CARGO_PROFILE_RELEASE_DEBUG" > "$RUNNER_TEMP/out/build-setting.txt"
+          rustc --edition 2024 -C opt-level=3 "$obs/minimal.rs" -o "$bin/minimal.exe"
+          dotnet restore "$obs/SyncTrace.csproj" --locked-mode
+          dotnet build "$obs/SyncTrace.csproj" -c Release --no-restore -o "$RUNNER_TEMP/observer"
+      - name: Drivers without tracing
+        if: ${{ always() }}
+        run: |
+          node scripts/windows_ipc_phase_measure.mjs "$RUNNER_TEMP/bin/product.exe" "$RUNNER_TEMP/out/plain-product" 200
+          node scripts/windows_cli_startup_observer/minimal.mjs "$RUNNER_TEMP/bin/minimal.exe" "$RUNNER_TEMP/out/plain-minimal" 200
+      - name: Traced scheduler and CPU
+        if: ${{ always() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/etw-temp"
+          "$RUNNER_TEMP/observer/SyncTrace.exe" "$(command -v node)" scripts/windows_ipc_phase_measure.mjs "$RUNNER_TEMP/bin/product.exe" scripts/windows_cli_startup_observer/minimal.mjs "$RUNNER_TEMP/bin/minimal.exe" "$RUNNER_TEMP/out/etw" "$RUNNER_TEMP/etw-temp"
+      - name: Analyze
+        if: ${{ always() }}
+        run: |
+          python -I scripts/windows_cli_startup_observer/analyze.py "$RUNNER_TEMP/out/etw" > "$RUNNER_TEMP/out/analysis.json" 2>&1 || true
+          python -I scripts/windows_cli_startup_observer/analyze_cpu.py "$RUNNER_TEMP/out/etw" > "$RUNNER_TEMP/out/analysis-cpu.json" 2>&1 || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: windows-cli-cpu
+          path: ${{ runner.temp }}/out
+          retention-days: 7
