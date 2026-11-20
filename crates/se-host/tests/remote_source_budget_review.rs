@@ -11,6 +11,9 @@ mod support;
 use support::*;
 
 const BUDGET: u64 = 4096;
+/// Each refused source is distinct, so any refusal that consumed capacity
+/// would make the full in-scope budget below fail.
+const OUT_OF_SCOPE: u64 = 8;
 type R<T> = Result<T, Box<dyn std::error::Error>>;
 
 struct Identity;
@@ -145,7 +148,7 @@ fn flood_out_of_scope(
     devices: &[auth::AuthenticatedDevice],
     f: &Fixture,
 ) -> Check {
-    for i in 0..BUDGET + 8 {
+    for i in 0..OUT_OF_SCOPE {
         let refused = security.authorize_invocation(
             &devices[0],
             invocation(f, 28, i, &agent(1_000_000 + i)?, &f.b)?,
