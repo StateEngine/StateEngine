@@ -367,6 +367,10 @@ pub fn from_matches_with_key(
             target_agent_id: None,
             owner_agent: Some(required(m, "agent")?),
         }),
+        "store.restore" => AnyOp::StoreRestore(StoreRestore {
+            yes: flag(m, "yes"),
+            idempotency_key: key()?,
+        }),
         "store.forget" => AnyOp::StoreForget(StoreForget {
             events: m
                 .get_many::<String>("event")

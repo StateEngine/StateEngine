@@ -527,6 +527,12 @@ impl Kernel {
                     "the installed owner CLI; home-wide observations are not a project-session tool",
                 ));
             }
+            AnyOp::StoreRestore(_) => {
+                return Err(SeError::invalid(
+                    "restore adapter",
+                    "the installed owner CLI holding the exclusive runtime lock",
+                ));
+            }
             AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_) => {
                 return Err(SeError::invalid(
                     "doctor adapter",
