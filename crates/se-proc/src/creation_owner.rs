@@ -31,6 +31,19 @@ pub fn initialize_file_creation_owner() -> Result<FileOwnerInitialization, FileO
     }
 }
 
+/// The shared user-facing refusal for a refused file-owner initialization;
+/// the CLI entry and the dedicated worker image report it identically.
+pub fn file_owner_error(error: FileOwnerError) -> se_types::SeError {
+    se_types::SeError::new(se_types::Detail::SourceUnreadable(
+        se_types::details::SourceUnreadable {
+            subject: "process default file owner".into(),
+            reason: error.to_string(),
+            next_step: "Restore access to the current process token and retry the command; no store or configuration file has been opened".into(),
+        },
+    ))
+    .with_cause(error)
+}
+
 #[cfg(windows)]
 mod windows {
     use super::*;

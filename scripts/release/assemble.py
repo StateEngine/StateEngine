@@ -96,6 +96,7 @@ def main():
             parser.error(f"release asset differs from the pinned build source: {name}")
     windows = metadata["target"].endswith("windows-msvc")
     binary = "se.exe" if windows else "se"
+    worker = "se-atlas-worker.exe" if windows else "se-atlas-worker"
     expected = set(metadata["files"]) | {"build.json"}
     actual = set()
     for path in build.rglob("*"):
@@ -108,11 +109,12 @@ def main():
     for name, checksum in metadata["files"].items():
         path = PurePosixPath(name)
         if (not re.fullmatch(r"[A-Za-z0-9_./+-]+", name) or path.is_absolute() or ".." in path.parts
-                or (name != binary and not name.startswith(("notices/", "symbols/")))):
+                or (name not in (binary, worker) and not name.startswith(("notices/", "symbols/")))):
             raise ValueError(f"unexpected payload path: {name}")
         if digest(build / name) != checksum:
             raise ValueError(f"build checksum mismatch: {name}")
     native_binary(build / binary, windows, metadata["target"])
+    native_binary(build / worker, windows, metadata["target"])
     companions = {}
     for directory in args.remote_build:
         directory = directory.resolve()
@@ -124,6 +126,7 @@ def main():
             if companion.get(key) != metadata.get(key):
                 raise ValueError(f"remote build differs in {key}")
         executable = "se.exe" if target.endswith("windows-msvc") else "se"
+        companion_worker = "se-atlas-worker.exe" if target.endswith("windows-msvc") else "se-atlas-worker"
         inventory = companion["files"]
         actual = set()
         for path in directory.rglob("*"):
@@ -136,11 +139,13 @@ def main():
         for name, checksum in inventory.items():
             path = PurePosixPath(name)
             if (not re.fullmatch(r"[A-Za-z0-9_./+-]+", name) or path.is_absolute() or ".." in path.parts
-                    or (name != executable and not name.startswith(("notices/", "symbols/")))):
+                    or (name not in (executable, companion_worker)
+                        and not name.startswith(("notices/", "symbols/")))):
                 raise ValueError("unexpected remote payload path")
             if digest(directory / name) != checksum:
                 raise ValueError("remote build checksum mismatch")
         native_binary(directory / executable, executable == "se.exe", target)
+        native_binary(directory / companion_worker, companion_worker.endswith(".exe"), target)
         companions[target] = (directory, companion, executable)
     if ("remote" in inputs["features"] and not args.native_only
             and set(companions) != set(inputs["targets"]) - {metadata["target"]}):

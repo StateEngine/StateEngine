@@ -1,4 +1,7 @@
-// Canonical typed error declarations for section 50; like-class failures share a code while preserving cause and legal remedy in detail.
+//! Canonical typed error declarations for section 50; like-class failures
+//! share a code while preserving cause and legal remedy in detail.
+use super::*;
+
 codes! {
     MessagingChannelRefused => ("messaging-channel-refused", Refused) {reason: MessagingChannelError, next_step:String} => "Messaging channel: {reason}", "{next_step}";
     AtlasSymbolAmbiguous => ("atlas-symbol-ambiguous", Usage) { symbol: String, candidates: Vec<String> } => "`{symbol}` names {candidates.len} symbols", "narrow with `--path FILE`, `--kind KIND`, or `--path FILE --line N`; the candidates list the kind";
@@ -92,6 +95,7 @@ codes! {
     StopUnwitnessed => ("stop-unwitnessed", Incomplete) { scope: String, reason: String, remaining: Vec<String> } => "Stop of {scope} is unconfirmed: {reason}; named remaining {remaining}", "Read `se status` and retry the same keyed stop; for an uncontained group after a stop that could not be proved (StopUnproved only), owner-human `se stop AGENT --release` relinquishes ownership without signalling or proving exit";
     TranscriptTruncated => ("transcript-truncated", Incomplete) { path: String, offset: u64, size: u64 } => "{path} shrank below the read offset", "captured turns stay; → `se status`";
     AtlasResourceBudget => ("atlas-resource-budget", Unavailable) { resource: String, requested: u64, available: u64 } => "Atlas can't index right now: {resource} needs {requested}, {available} available", "Wait for memory pressure to ease, or search the repository text directly.";
+    AtlasWorkerMissing => ("atlas-worker-missing", Unavailable) { binary: String, requested: u64, available: u64 } => "Atlas can't index: the {binary} companion beside the se command is missing or unusable, and this image needs {requested} of the {available} cold memory budget. Reinstall StateEngine to restore the companion, then retry", "Reinstall StateEngine to restore the companion, then retry";
     DeadlineExceeded => ("deadline-exceeded", Unavailable) { op: String, deadline_ms: u64 } => "`{op}` didn't finish in {deadline_ms} ms", "retry";
     IpcUnavailable => ("ipc-unavailable", Unavailable) { endpoint: String, reason: String } => "can't reach the runtime: {reason}", "Use `se status`";
     RuntimeHandoverInProgress => ("runtime-handover-in-progress", Unavailable) { generation: String } => "the runtime is changing hosts", "retry (`WhenRuntimeReady`)";

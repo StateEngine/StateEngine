@@ -178,14 +178,14 @@ def strip_binary(path, target, sysroot, cargo_artifact):
 
     if target.endswith("linux-gnu"):
         symbols = path.parent / "symbols" / (path.name + ".debug")
-        symbols.parent.mkdir()
+        symbols.parent.mkdir(exist_ok=True)
         objcopy("--only-keep-debug", path, symbols)
         retained.append(symbols.relative_to(path.parent).as_posix())
     elif windows:
         pdb = Path(cargo_artifact).with_suffix(".pdb")
         if pdb.is_file():
             symbols = path.parent / "symbols" / pdb.name
-            symbols.parent.mkdir()
+            symbols.parent.mkdir(exist_ok=True)
             shutil.copyfile(pdb, symbols)
             retained.append(symbols.relative_to(path.parent).as_posix())
     objcopy("--strip-all", path)
@@ -452,6 +452,7 @@ def main():
             "--package", inputs["package"], *features_selected, "--target", args.target,
             "--jobs", "1", "--message-format=json-render-diagnostics"]
     name = "se.exe" if "windows" in args.target else "se"
+    worker_name = "se-atlas-worker.exe" if "windows" in args.target else "se-atlas-worker"
     # Never copy a cached Cargo artifact as an independent rebuild. Both source
     # and scratch prefixes are normalized before compilation, not after hashing.
     if args.target_dir is not None:
@@ -484,6 +485,21 @@ def main():
         out.mkdir(parents=True)
         shutil.copyfile(binary[0]["executable"], out / name)
         stripping = strip_binary(out / name, args.target, sysroot, binary[0]["executable"])
+        worker = [a for a in artifacts if a.get("executable") and a["target"]["name"] == "se-atlas-worker"]
+        if len(worker) != 1:
+            raise ValueError("Cargo did not report exactly one se-atlas-worker executable")
+        shutil.copyfile(worker[0]["executable"], out / worker_name)
+        worker_stripping = strip_binary(out / worker_name, args.target, sysroot, worker[0]["executable"])
+        worker_bytes = (out / worker_name).stat().st_size
+        # The stripped worker maps this much virtual address space before its
+        # parser/SQL allocations; the 96 MB cold ceiling
+        # (se_proc::atlas_worker::ADDRESS_SPACE_BYTES) must keep headroom for
+        # them, so the image stays far below it instead of regressing silently.
+        worker_image_max_bytes = 24 * 1024 * 1024
+        if worker_bytes > worker_image_max_bytes:
+            raise ValueError(
+                f"se-atlas-worker is {worker_bytes} bytes after strip; keep it under "
+                f"{worker_image_max_bytes} for the 96 MB cold address-space ceiling")
         units = build_units(artifacts, metadata)
         seed_published = None
         seed_publication = None
@@ -552,6 +568,7 @@ def main():
         "cargo_config_overrides": overrides,
         "path_remap": dict(REMAPPED),
         "native_requirements": requirements, "version_stdout": version, "stripping": stripping,
+        "worker_stripping": worker_stripping,
         "default_features": False, "offline": args.offline,
         "features": inputs["features"], "compiled_features": features,
         "cargo_lock_sha256": seed_key["cargo_lock_sha256"],

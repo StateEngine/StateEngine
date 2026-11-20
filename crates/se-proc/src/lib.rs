@@ -132,7 +132,9 @@ mod macos_process;
 #[cfg(target_os = "macos")]
 pub use platform::process_attach_entry;
 mod creation_owner;
-pub use creation_owner::{FileOwnerError, FileOwnerInitialization, initialize_file_creation_owner};
+pub use creation_owner::{
+    FileOwnerError, FileOwnerInitialization, file_owner_error, initialize_file_creation_owner,
+};
 
 pub use executable::{NativeExecutableCreation, NativeExecutableInvocation, NativeExecutablePin};
 pub use state_files::NativeMetadataPin;

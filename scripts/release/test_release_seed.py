@@ -62,7 +62,13 @@ license.workspace = true
 
 [dependencies]
 fixture-dep = { path = "../../../dep" }
+
+[[bin]]
+name = "se-atlas-worker"
+path = "src/bin/atlas_worker.rs"
 """
+
+FIXTURE_WORKER_MAIN = "fn main() {}\n"
 
 FIXTURE_DEP_CARGO = """\
 [package]
@@ -132,6 +138,8 @@ class SeedBuild(unittest.TestCase):
         (se / "src").mkdir(parents=True)
         (se / "Cargo.toml").write_text(FIXTURE_SE_CARGO)
         (se / "src/main.rs").write_text(FIXTURE_MAIN)
+        (se / "src/bin").mkdir()
+        (se / "src/bin/atlas_worker.rs").write_text(FIXTURE_WORKER_MAIN)
         dep = self.work / "dep"
         (dep / "src").mkdir(parents=True)
         (dep / "Cargo.toml").write_text(FIXTURE_DEP_CARGO)

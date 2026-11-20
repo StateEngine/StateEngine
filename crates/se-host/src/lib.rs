@@ -97,6 +97,7 @@ pub mod atlas_runtime;
 pub use se_atlas_cold::atlas_source;
 #[cfg(any(target_os = "linux", all(windows, feature = "listener")))]
 use se_atlas_cold::atlas_watch_error;
+pub mod atlas_worker;
 pub mod codex_forward;
 mod session;
 pub mod state_files;

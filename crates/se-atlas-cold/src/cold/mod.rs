@@ -84,6 +84,15 @@ pub fn parser_memory_guard() -> AtlasResult<()> {
     #[cfg(any(windows, target_os = "macos"))]
     let ceiling = se_proc::atlas_worker::MEMORY_BYTES;
     if requested > ceiling {
+        if cli_covering_for_companion() {
+            return Err(SeError::new(se_types::Detail::AtlasWorkerMissing(
+                se_types::details::AtlasWorkerMissing {
+                    binary: se_proc::atlas_worker::worker_binary_name().into(),
+                    requested,
+                    available: ceiling,
+                },
+            )));
+        }
         return Err(SeError::new(se_types::Detail::AtlasResourceBudget(
             se_types::details::AtlasResourceBudget {
                 resource: format!(
@@ -95,6 +104,17 @@ pub fn parser_memory_guard() -> AtlasResult<()> {
         )));
     }
     Ok(())
+}
+
+/// True when the running image is the verified CLI, not the named companion.
+#[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+fn cli_covering_for_companion() -> bool {
+    std::env::current_exe().is_ok_and(|executable| {
+        matches!(
+            executable.file_name().and_then(|name| name.to_str()),
+            Some("se") | Some("se.exe")
+        )
+    })
 }
 
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]

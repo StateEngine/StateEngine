@@ -10,6 +10,10 @@ use std::{
     path::{Path, PathBuf},
 };
 const MAX_MANIFEST: usize = 2 * 1024 * 1024;
+#[cfg(windows)]
+const WORKER_BINARY: &str = "se-atlas-worker.exe";
+#[cfg(not(windows))]
+const WORKER_BINARY: &str = "se-atlas-worker";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
@@ -135,9 +139,12 @@ pub(super) fn verify() -> Result<BTreeSet<(bool, PathBuf)>> {
     }
     let binary = if cfg!(windows) { "se.exe" } else { "se" };
     if !manifest.files.contains_key(binary)
+        || !manifest.files.contains_key(WORKER_BINARY)
         || executable.file_name() != Some(std::ffi::OsStr::new(binary))
     {
-        return Err(invalid("the manifest's running archive binary"));
+        return Err(invalid(
+            "the manifest's running archive binary and its Atlas cold worker image",
+        ));
     }
     let mut directories = BTreeSet::new();
     let mut names = BTreeSet::new();

@@ -87,9 +87,13 @@ name = "se"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+[[bin]]
+name = "se-atlas-worker"
+path = "src/bin/atlas_worker.rs"
 [dependencies]
 independent-dependency = { path = "../../../dependency" }
 ''',
+            "crates/se/src/bin/atlas_worker.rs": "fn main() {}\n",
             "crates/se/src/main.rs": '''fn main() {
     if std::env::args().any(|arg| arg == "--version") {
         println!("se 0.0.1");

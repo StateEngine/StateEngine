@@ -88,12 +88,13 @@ macro_rules! codes {
         impl Detail{
             pub const fn code(&self)->Code{match self{$(Self::$variant(_)=>Code::$variant,)+}}
             pub fn message(&self)->String{match self{$(Self::$variant(_)=>render($message,self,None),)+}}
-            fn message_in(&self,cx:&RenderCx<'_>)->String{match self{$(Self::$variant(_)=>render($message,self,Some(cx)),)+}}
-            fn fields(&self)->Vec<(&'static str,String,Option<usize>)>{match self{$(Self::$variant(value)=>vec![$((stringify!($field),value.$field.human(),value.$field.count()),)*],)+}}
+            pub(crate) fn message_in(&self,cx:&RenderCx<'_>)->String{match self{$(Self::$variant(_)=>render($message,self,Some(cx)),)+}}
+            pub(crate) fn fields(&self)->Vec<(&'static str,String,Option<usize>)>{match self{$(Self::$variant(value)=>vec![$((stringify!($field),value.$field.human(),value.$field.count()),)*],)+}}
         }
     };
 }
-include!("error/catalog.rs");
+mod catalog;
+pub use catalog::{Code, Detail, details};
 
 trait HumanValue {
     fn human(&self) -> String;
