@@ -55,7 +55,7 @@ pub mod event;
 mod guide;
 pub mod history;
 pub use guide::{GuideOutput, GuideTopicSummary, MetaGuide};
-pub use history::{HistoryList, HistoryPage};
+pub use history::{HistoryList, HistoryPage, HistorySearch, SearchHit, SearchPage};
 pub mod identity;
 pub use identity::{
     IdentityWhoami, PrincipalAgent, PrincipalBinding, PrincipalOutput, PrincipalProject,
@@ -242,6 +242,7 @@ ops! {
     ProjectStatus => ProjectStatus, StatusOutput, ("project.status",leaf(&["status"]),tool("stateengine_status","Project status","Read project setup, agents and runtime facts."),Either,false,Never,Read,ProjectOrAll,None,"se.status",Status,&["J1","J2"]);
     EventRead => EventRead, EventOutput, ("history.event_read",CliExposure::Leaf {path:&["history"],hidden:false,select:Selector::Flag("event")},tool("stateengine_event_read","Read a committed event","Read one committed project event and its provenance."),Either,false,Never,Read,Project,None,"se.event",Event,&["E3","J3","J4"]);
     HistoryList => HistoryList, HistoryPage, ("history.list",leaf(&["history"]),no_mcp("Sessions use event_read for exact public records; owner CLI history is read-only inspection."),Either,false,Never,Read,Project,None,"se.history-page",HistoryPage,&["J3"]);
+    HistorySearch => HistorySearch, SearchPage, ("history.search",leaf(&["search"]),tool("stateengine_search","Search history","Search authorized project history case-insensitively with bounded candidate scanning and erasure awareness."),Either,false,Never,Read,Project,None,"se.search-page",SearchPage,&["J3","J4"]);
     MessageSend => MessageSend, MessageOutput, ("message.send",leaf(&["msg","send"]),tool("stateengine_msg_send","Send a message","Send direct or floor mail. Crew questions, blockers and done reports can omit to for the captain. Floor requires work.action/addressees. quiet suppresses notification, not unread state."),Either,false,Never,Write,Project,HostForWrites,"se.message-receipt",MessageReceipt,&["J4"]);
     MessageRead => MessageRead, MessageReadOutput, ("message.read",leaf(&["msg","read"]),tool("stateengine_msg_read","Read one complete message","Read a complete message and mark it read as recipient. msg_id aliases message_id. If a reply is needed, use stateengine_msg_send to the verified from.id with reply_to the original message ID; follow channel_reply or remote_reply when present. Final conversation text alone does not reach the sender."),Either,false,Never,Write,Project,HostForWrites,"se.message-read",MessagePage,&["J4"]);
     MessageAck => MessageAck, DispositionReceipt, ("message.ack",leaf(&["msg","ack"]),tool("stateengine_msg_ack","Acknowledge a message","Mark your message read without its body. msg_id aliases message_id."),Either,false,Never,Write,Project,HostForWrites,"se.disposition-receipt",MessageReceipt,&["J4"]);
@@ -419,6 +420,7 @@ impl AnyOutput {
             Self::SessionContext(v) if v.value.truncated || !v.value.failures.is_empty() => 2,
             Self::AgentList(v) => v.value.page.window().exit_code(false),
             Self::HistoryList(v) => v.value.page.window().exit_code(false),
+            Self::HistorySearch(v) => v.value.page.window().exit_code(false),
             Self::ProjectStatus(v) => {
                 let project = v.value.project.exit_code();
                 if project != 0 {

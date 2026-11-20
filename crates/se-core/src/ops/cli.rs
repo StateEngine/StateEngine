@@ -42,12 +42,11 @@ impl CommonArgs {
                 status_all: !path.is_empty() && flag(m, "all"),
                 ..CliSelections::default()
             },
-            "working_state.get" | "working_state.set" | "agent.show" | "history.list" => {
-                CliSelections {
-                    agent: text(m, "agent"),
-                    ..CliSelections::default()
-                }
-            }
+            "working_state.get" | "working_state.set" | "agent.show" | "history.list"
+            | "history.search" => CliSelections {
+                agent: text(m, "agent"),
+                ..CliSelections::default()
+            },
             "agent.launch" => CliSelections {
                 agent: text(m, "agent"),
                 launch_provider: text(m, "provider")
@@ -367,6 +366,19 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("limit").default_value("20").help("Maximum events in this page"))
             .arg(value("cursor").help("Cursor from a previous page of this same read"))
             .arg(toggle("newest").help("Read the page newest-first; the cursor continues toward the oldest event")),
+        "history.search" => c
+            .arg(positional("query", 1, true).help("Text to search for across authorized history (case-insensitive)"))
+            .arg(value("agent").help("Saved agent name or ID to filter on"))
+            .arg(value("session").help("Session ID to filter on"))
+            .arg(value("kind").action(ArgAction::Append).help("Event kind to include; repeat for several"))
+            .arg(
+                value("position")
+                    .help("An opaque history position cursor, the position value from se history --event, scoped to this caller and project; not a time"),
+            )
+            .arg(value("limit").default_value("20").help("Maximum candidate events scanned in this page (1..100)"))
+            .arg(value("budget").default_value("196608").help("Maximum UTF-8 bytes scanned in this page (1024..1048576)"))
+            .arg(value("cursor").help("Cursor from a previous page of this same search"))
+            .arg(toggle("newest").help("Scan newest-first; the cursor continues toward older events")),
         "message.read" => c
             .arg(positional("msg_id", 1, true).help("Message ID from se msg list or inbox"))
             .arg(value("budget").default_value("262144").help("Maximum serialized reply bytes, checked before marking read")),

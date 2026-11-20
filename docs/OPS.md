@@ -264,7 +264,7 @@ Crew can omit the recipient for a `question`, `blocker`, or `done` message to se
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 56 operations (50 core, 6 Atlas), 28 MCP tools (23 core, 5 Atlas). Planned: 9 operations, 3 MCP tools.
+Registered: 57 operations (51 core, 6 Atlas), 29 MCP tools (24 core, 5 Atlas). Planned: 8 operations, 2 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -299,6 +299,7 @@ Registered: 56 operations (50 core, 6 Atlas), 28 MCP tools (23 core, 5 Atlas). P
 | `project.status` | status | `stateengine_status` | either | read |
 | `history.event_read` | history --event | `stateengine_event_read` | either | read |
 | `history.list` | history | none | either | read |
+| `history.search` | search | `stateengine_search` | either | read |
 | `message.send` | msg send | `stateengine_msg_send` | either | write |
 | `message.read` | msg read | `stateengine_msg_read` | either | write |
 | `message.ack` | msg ack | `stateengine_msg_ack` | either | write |
@@ -325,9 +326,9 @@ Registered: 56 operations (50 core, 6 Atlas), 28 MCP tools (23 core, 5 Atlas). P
 | `config.set` | config set | none | owner | write |
 | `config.list` | config list | none | owner | read |
 
-Planned operations (design tables, not yet registered): `credential.rotate`, `history.search`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
+Planned operations (design tables, not yet registered): `credential.rotate`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
 
-Planned MCP tools: `stateengine_agent_status`, `stateengine_search`, `stateengine_session_turn`
+Planned MCP tools: `stateengine_agent_status`, `stateengine_session_turn`
 
 Registered without a design-table row: `atlas.augment` (no CLI or MCP exposure), `remote.prepare_send` (no CLI or MCP exposure), `remote.launch` (CLI `remote launch`), `captain.set` (CLI `captain set`), `captain.clear` (CLI `captain clear`), `assignment.write` (CLI `assignment write`), `assignment.list` (CLI `assignment list`), `captain.show` (CLI `captain show`), `project.move` (CLI `project move`)
 

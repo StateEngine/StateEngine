@@ -163,7 +163,8 @@ impl CliSelections {
                 AnyOp::WorkingStateGet(_)
                 | AnyOp::WorkingStateSet(_)
                 | AnyOp::AgentShow(_)
-                | AnyOp::HistoryList(_) => {
+                | AnyOp::HistoryList(_)
+                | AnyOp::HistorySearch(_) => {
                     let actor = crate::scope::selected_actor(cx, selector)?;
                     let se_store::Actor::Agent(agent) = actor else {
                         return Err(SeError::invalid("agent", "a project agent, not the owner"));
@@ -172,6 +173,7 @@ impl CliSelections {
                     match op {
                         AnyOp::AgentShow(input) => input.target_agent_id = Some(agent),
                         AnyOp::HistoryList(input) => input.owner_agent = Some(agent),
+                        AnyOp::HistorySearch(input) => input.owner_agent = Some(agent),
                         AnyOp::WorkingStateGet(input) => input.owner_agent = Some(agent),
                         AnyOp::WorkingStateSet(input) => input.owner_agent = Some(agent),
                         _ => (),
