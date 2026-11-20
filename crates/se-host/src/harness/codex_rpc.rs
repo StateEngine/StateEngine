@@ -640,47 +640,47 @@ impl AdapterBinding for Arc<Binding> {
 pub(crate) struct Adoption;
 pub(crate) static ADOPTION: Adoption = Adoption;
 pub(crate) use first_setup::FirstSetup;
+/// Provider adoption (first setup), the only code that can present
+/// `FirstSetup` and so the only setup path that reads the host's login.
 mod first_setup {
-    /// Proof that first setup (provider adoption) is choosing the login to
-    /// prepare. Its private field means only this module can make one.
+    use super::*;
+    /// Proof that first setup is choosing the login to prepare. Its private
+    /// field means only this module can make one.
     pub(crate) struct FirstSetup(());
-    #[cfg(any(target_os = "linux", windows))]
-    pub(super) fn login() -> se_types::Result<std::path::PathBuf> {
-        crate::process::codex_server::setup_codex_login(&FirstSetup(()))
-    }
-}
-impl crate::adoption::Adapter for Adoption {
-    #[cfg(any(target_os = "linux", windows))]
-    fn prepare(&self, command: &std::path::Path) -> Result<crate::adoption::ProviderSetup> {
-        let executable = crate::adoption::codex::native_executable(command)?;
-        let home = first_setup::login()?;
-        crate::adoption::settings::prepare(
-            &home,
-            &home.join(crate::adoption::Kind::Codex.settings()),
-        )?;
-        crate::adoption::codex::qualify(&executable)?;
-        Ok(crate::adoption::ProviderSetup {
-            executable,
-            config_home: home,
-        })
-    }
-    #[cfg(any(target_os = "linux", windows))]
-    fn hooks(
-        &self,
-        executable: &std::path::Path,
-        home: &std::path::Path,
-    ) -> Result<Vec<(String, serde_json::Value)>> {
-        crate::adoption::codex::hooks(executable, home)
-    }
-    fn discover(
-        &self,
-        home: &std::path::Path,
-        saved: &mut crate::adoption::Registration,
-        root: &std::path::Path,
-    ) -> Result<()> {
-        crate::adoption::codex::trust(home, saved, root)
-    }
-    fn active(&self, home: &std::path::Path, project: &se_types::ProjectId) -> Result<bool> {
-        crate::adoption::status::witnessed(home, crate::adoption::Kind::Codex, project)
+    impl crate::adoption::Adapter for Adoption {
+        #[cfg(any(target_os = "linux", windows))]
+        fn prepare(&self, command: &std::path::Path) -> Result<crate::adoption::ProviderSetup> {
+            let executable = crate::adoption::codex::native_executable(command)?;
+            // First setup is the one place that may choose the login to prepare.
+            let home = crate::process::codex_server::setup_codex_login(&FirstSetup(()))?;
+            crate::adoption::settings::prepare(
+                &home,
+                &home.join(crate::adoption::Kind::Codex.settings()),
+            )?;
+            crate::adoption::codex::qualify(&executable)?;
+            Ok(crate::adoption::ProviderSetup {
+                executable,
+                config_home: home,
+            })
+        }
+        #[cfg(any(target_os = "linux", windows))]
+        fn hooks(
+            &self,
+            executable: &std::path::Path,
+            home: &std::path::Path,
+        ) -> Result<Vec<(String, serde_json::Value)>> {
+            crate::adoption::codex::hooks(executable, home)
+        }
+        fn discover(
+            &self,
+            home: &std::path::Path,
+            saved: &mut crate::adoption::Registration,
+            root: &std::path::Path,
+        ) -> Result<()> {
+            crate::adoption::codex::trust(home, saved, root)
+        }
+        fn active(&self, home: &std::path::Path, project: &se_types::ProjectId) -> Result<bool> {
+            crate::adoption::status::witnessed(home, crate::adoption::Kind::Codex, project)
+        }
     }
 }
