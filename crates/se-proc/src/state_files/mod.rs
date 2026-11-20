@@ -128,9 +128,31 @@ pub struct ProtectedStateStaging {
     pub path: PathBuf,
     pub file: File,
 }
-// Long-running requests fall back to fresh ancestry checks; only the brief
-// initial CLI window may rely on the retained verified parent.
-const SHORT_CLI_ANCESTRY_AGE: std::time::Duration = std::time::Duration::from_secs(1);
+// A retained parent spares repeated full walks; the next check after this age
+// walks the full ancestry again and retains the parent that walk verified.
+const RETAINED_ANCESTRY_AGE: std::time::Duration = std::time::Duration::from_secs(1);
+/// The verified parent of a state root, refreshed by a full walk once stale.
+pub(super) struct RetainedParent(std::sync::Mutex<(File, std::time::Instant)>);
+impl RetainedParent {
+    fn new(parent: File) -> Self {
+        Self(std::sync::Mutex::new((parent, std::time::Instant::now())))
+    }
+    /// Runs `check` on the parent while it is fresh; `None` means a full walk is due.
+    fn fresh<T>(&self, check: impl FnOnce(&File) -> T) -> Option<T> {
+        let held = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (held.1.elapsed() <= RETAINED_ANCESTRY_AGE).then(|| check(&held.0))
+    }
+    fn refresh(&self, parent: File) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            (parent, std::time::Instant::now());
+    }
+}
 pub struct NativeStateFiles {
     root: PathBuf,
     directory: os::Directory,
@@ -163,15 +185,23 @@ impl NativeStateFiles {
             directory,
         })
     }
-    /// Retains the verified parent for one short CLI operation. Ancestors are
-    /// verified on open; subsequent checks revalidate the named root and its
-    /// protection relative to that retained parent.
-    pub fn open_short_cli(root: &Path) -> Result<Self> {
-        let directory = os::Directory::open_short_cli(root)?;
+    /// Retains the verified parent of the root. Each check revalidates the
+    /// named root and its protection relative to that parent, and walks the
+    /// full ancestry again once the parent is older than one second.
+    pub fn open_retained(root: &Path) -> Result<Self> {
+        let directory = os::Directory::open_retained(root)?;
         Ok(Self {
             root: root.to_owned(),
             directory,
         })
+    }
+    /// Opens the same root again, retaining its parent when this handle does.
+    fn reopen(&self) -> Result<Self> {
+        if self.directory.is_retained() {
+            Self::open_retained(&self.root)
+        } else {
+            Self::open(&self.root)
+        }
     }
     /// Explicit init only: creates absent directory components with native
     /// owner-only protection, and refuses an existing unsafe final directory.

@@ -22,7 +22,7 @@ pub(crate) fn pin(path: &Path) -> StoreResult<Box<dyn ReadConnectionIdentity>> {
             retry: se_types::Retry::Never,
         })
     })?;
-    let pin = se_proc::NativeStateFiles::open(parent)
+    let pin = se_proc::NativeStateFiles::open_retained(parent)
         .and_then(|files| files.pin_metadata(path))
         .map_err(crate::state_files::native_error)?
         .ok_or_else(|| Box::new(StoreError {

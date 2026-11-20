@@ -64,7 +64,7 @@ fn refused(
 #[test]
 fn a_replaced_root_is_refused_inside_the_short_window() -> Check {
     let home = Home::new()?;
-    let files = NativeStateFiles::open_short_cli(&home.root())?;
+    let files = NativeStateFiles::open_retained(&home.root())?;
     require(files.readback(&home.file())?.is_some(), "first readback")?;
     fs::rename(home.root(), home.0.join("moved"))?;
     fs::create_dir(home.root())?;
@@ -81,7 +81,7 @@ fn a_replaced_root_is_refused_inside_the_short_window() -> Check {
 #[test]
 fn a_loosened_root_is_refused_inside_the_short_window() -> Check {
     let home = Home::new()?;
-    let files = NativeStateFiles::open_short_cli(&home.root())?;
+    let files = NativeStateFiles::open_retained(&home.root())?;
     require(files.readback(&home.file())?.is_some(), "first readback")?;
     mode(&home.root(), 0o755)?;
     refused(files.readback(&home.file()))?;
@@ -91,7 +91,7 @@ fn a_loosened_root_is_refused_inside_the_short_window() -> Check {
 #[test]
 fn an_unsafe_ancestor_is_refused_once_the_short_window_ends() -> Check {
     let home = Home::new()?;
-    let files = NativeStateFiles::open_short_cli(&home.root())?;
+    let files = NativeStateFiles::open_retained(&home.root())?;
     require(files.readback(&home.file())?.is_some(), "first readback")?;
     // A non-sticky world-writable ancestor lets another user swap the root.
     mode(&home.0, 0o777)?;
@@ -101,6 +101,32 @@ fn an_unsafe_ancestor_is_refused_once_the_short_window_ends() -> Check {
     // The full walk refuses the same ancestor for an ordinary open.
     let full = NativeStateFiles::open(&home.root());
     require(full.is_err(), "full walk accepted the unsafe ancestor")
+}
+
+#[test]
+fn a_refreshed_parent_still_expires_and_refuses_a_later_unsafe_ancestor() -> Check {
+    let home = Home::new()?;
+    let files = NativeStateFiles::open_retained(&home.root())?;
+    // The first expiry walks the full ancestry and retains a new parent.
+    std::thread::sleep(Duration::from_millis(1_200));
+    require(
+        files.readback(&home.file())?.is_some(),
+        "refreshing readback",
+    )?;
+    mode(&home.0, 0o777)?;
+    // Steady use must not keep the parent fresh: within a few windows of the
+    // change, some access walks the full ancestry and refuses.
+    let deadline = std::time::Instant::now() + Duration::from_millis(2_500);
+    while std::time::Instant::now() < deadline {
+        if let Err(error) = files.readback(&home.file()) {
+            return require(
+                error.code == StateFileErrorCode::LocationUnsafe,
+                "ancestor code",
+            );
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    Err("the retained parent never expired under steady use".into())
 }
 
 fn require(ok: bool, what: &str) -> Check {

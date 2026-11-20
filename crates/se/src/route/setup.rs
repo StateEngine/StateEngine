@@ -61,7 +61,7 @@ pub fn inspect_phase(home: &Path, generated_at: String) -> Result<Phase> {
 }
 /// A bounded CLI request reuses its verified state root for a short interval.
 pub(super) fn inspect_short(home: &Path, generated_at: String) -> Result<Phase> {
-    phase(home, generated_at, Files::open_short_cli)
+    phase(home, generated_at, Files::open_retained)
 }
 fn phase(home: &Path, at: String, files: fn(&Path) -> StoreResult<Files>) -> Result<Phase> {
     inspect_with(home, at, SqliteFactory::open_reader_with_phase, None, files)

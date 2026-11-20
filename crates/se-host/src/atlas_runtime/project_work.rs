@@ -364,7 +364,7 @@ fn existing_or_create(path: &Path) -> Result<NativeStateFiles> {
     }
 }
 fn open(path: &Path) -> Result<Option<NativeStateFiles>> {
-    match NativeStateFiles::open(path) {
+    match NativeStateFiles::open_retained(path) {
         Ok(files) => Ok(Some(files)),
         Err(error)
             if error
