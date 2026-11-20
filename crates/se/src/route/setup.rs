@@ -4,7 +4,7 @@ use se_core::{
     ops::{StatusOutput, status},
     store_error::store_error,
 };
-use se_store::{ReadPhase, SqliteFactory, SqliteReader, StoreFactory, StoreOptions};
+use se_store::{ReadPhase, SqliteFactory, SqliteReader, StoreFactory, StoreOptions, StoreResult};
 use se_types::{Read, Result};
 use std::{path::Path, time::Duration};
 #[path = "setup/recovery.rs"]
@@ -48,44 +48,30 @@ fn inspect_home(home: &Path, generated_at: String, pending_init: Option<bool>) -
             generated_at,
             SqliteFactory::open_reader,
             pending_init,
-            false,
+            Files::open,
         )? {
             Setup::Absent(output) => Setup::Absent(output),
             Setup::Present((_, reader)) => Setup::Present(reader),
         },
     )
 }
-pub fn inspect_phase(
-    home: &Path,
-    generated_at: String,
-) -> Result<Setup<(Files, (SqliteReader, ReadPhase))>> {
-    inspect_phase_for(home, generated_at, false)
+type Phase = Setup<(Files, (SqliteReader, ReadPhase))>;
+pub fn inspect_phase(home: &Path, generated_at: String) -> Result<Phase> {
+    phase(home, generated_at, Files::open)
 }
-pub(super) fn inspect_short_cli_phase(
-    home: &Path,
-    generated_at: String,
-) -> Result<Setup<(Files, (SqliteReader, ReadPhase))>> {
-    inspect_phase_for(home, generated_at, true)
+/// A bounded CLI request reuses its verified state root for a short interval.
+pub(super) fn inspect_short(home: &Path, generated_at: String) -> Result<Phase> {
+    phase(home, generated_at, Files::open_short_cli)
 }
-fn inspect_phase_for(
-    home: &Path,
-    generated_at: String,
-    short_cli: bool,
-) -> Result<Setup<(Files, (SqliteReader, ReadPhase))>> {
-    inspect_with(
-        home,
-        generated_at,
-        SqliteFactory::open_reader_with_phase,
-        None,
-        short_cli,
-    )
+fn phase(home: &Path, at: String, files: fn(&Path) -> StoreResult<Files>) -> Result<Phase> {
+    inspect_with(home, at, SqliteFactory::open_reader_with_phase, None, files)
 }
 fn inspect_with<T>(
     home: &Path,
     generated_at: String,
-    open: impl FnOnce(&StoreOptions) -> se_store::StoreResult<Read<T>>,
+    open: impl FnOnce(&StoreOptions) -> StoreResult<Read<T>>,
     pending_init: Option<bool>,
-    short_cli: bool,
+    files: fn(&Path) -> StoreResult<Files>,
 ) -> Result<Setup<(Files, T)>> {
     match std::fs::symlink_metadata(home) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -107,12 +93,7 @@ fn inspect_with<T>(
     // Protection and directory identity are native facts, independent of DB bytes.
     // A lock or config alone does not establish initialization. Surviving
     // identity/state records prevent an absent DB becoming first-time setup.
-    let files = if short_cli {
-        Files::open_short_cli(home)
-    } else {
-        Files::open(home)
-    }
-    .map_err(|e| store_error(&e))?;
+    let files = files(home).map_err(|e| store_error(&e))?;
     match open(&StoreOptions {
         state_directory: home.to_owned(),
         busy_timeout: Duration::from_millis(250),

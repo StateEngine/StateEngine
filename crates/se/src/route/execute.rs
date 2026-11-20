@@ -67,10 +67,10 @@ fn forwarding_options(
     let mut options = options();
     let started = std::time::Instant::now();
     let bound = se_host::client::lease::Deadline::from_options(&options)?;
-    super::hosted::restore_forward_image_with_files(
-        files,
-        endpoint,
-        cx.session.is_none(),
+    se_proc::native_ipc::restore_image_hint(
+        &files.0,
+        endpoint.image_sha256,
+        cx.session.is_none().then_some(&endpoint.epoch.owner),
         &bound.native_bound(),
     )
     .map_err(|error| scope::unreadable("protected executable cache", &error.to_string()))?;
@@ -372,23 +372,21 @@ fn dispatch_with_cold_recovery(
     {
         return Ok(output);
     }
-    let (files, (reader, mut phase)) = match setup::inspect_short_cli_phase(
-        &cx.home,
-        se_core::ops::receipt::timestamp(now_us()?)?,
-    )? {
-        setup::Setup::Absent(output) if matches!(op, AnyOp::ProjectStatus(_)) => {
-            return Ok((*output).into());
-        }
-        setup::Setup::Absent(_)
-            if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_)) =>
-        {
-            return super::doctor::uninitialized(cx, &op);
-        }
-        setup::Setup::Absent(_) => {
-            return Err(setup::required(cx));
-        }
-        setup::Setup::Present(reader) => reader,
-    };
+    let (files, (reader, mut phase)) =
+        match setup::inspect_short(&cx.home, se_core::ops::receipt::timestamp(now_us()?)?)? {
+            setup::Setup::Absent(output) if matches!(op, AnyOp::ProjectStatus(_)) => {
+                return Ok((*output).into());
+            }
+            setup::Setup::Absent(_)
+                if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_)) =>
+            {
+                return super::doctor::uninitialized(cx, &op);
+            }
+            setup::Setup::Absent(_) => {
+                return Err(setup::required(cx));
+            }
+            setup::Setup::Present(reader) => reader,
+        };
     // The host verifier admits a prepared launch's first fixed hook after C3.
     // End this finite read pin before stdin or forwarding; ordinary operations
     // still require active-session admission below.
