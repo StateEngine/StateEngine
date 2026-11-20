@@ -31,13 +31,13 @@ pub fn compact_ids(value: &mut Value) {
     match value {
         Value::Object(members) => {
             for (name, field) in members.iter_mut() {
-                if ID_FIELDS.binary_search(&name.as_str()).is_ok() {
-                    if let Value::Array(bytes) = field {
-                        let bytes = bytes.clone();
-                        if let Some(hex) = hex_if_id_bytes(&bytes) {
-                            *field = Value::String(hex);
-                            continue;
-                        }
+                if ID_FIELDS.binary_search(&name.as_str()).is_ok()
+                    && let Value::Array(bytes) = field
+                {
+                    let bytes = bytes.clone();
+                    if let Some(hex) = hex_if_id_bytes(&bytes) {
+                        *field = Value::String(hex);
+                        continue;
                     }
                 }
                 compact_ids(field);
