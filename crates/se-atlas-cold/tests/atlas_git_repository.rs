@@ -382,9 +382,9 @@ fn oversized_denied_first_commit_is_withheld_for_size() -> Check {
     let deadline = Instant::now() + Duration::from_secs(30);
     let small = f.make_tree(&["one.rs".to_owned(), "two.rs".to_owned()])?;
     // 257 denied paths (id_ prefix) sort before the one allowed path: the
-    // reader stops at the 256-path bound having proven no allowed path, so
-    // the entry is withheld for size even though an allowed path exists past
-    // the bound.
+    // reader stops at the 256-path bound having counted no allowed path in
+    // the prefix it held, so the entry is withheld for size even though an
+    // allowed path exists past the bound.
     let mixed: Vec<String> = (0..257)
         .map(|i| format!("id_data-{i:04}"))
         .chain(std::iter::once("kept-module.rs".to_owned()))

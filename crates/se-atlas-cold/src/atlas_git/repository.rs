@@ -273,7 +273,7 @@ fn degrade(commit: &mut GitCommit, reason: &str) {
     );
     commit.paths = Vec::new();
     commit.paths_note.get_or_insert(note);
-    commit.allowed_paths = Some(allowed);
+    commit.allowed_paths.get_or_insert(allowed);
 }
 fn commit_cost(commit: &GitCommit) -> usize {
     std::mem::size_of::<GitCommit>()

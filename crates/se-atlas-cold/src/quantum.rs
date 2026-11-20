@@ -3,7 +3,7 @@ use se_atlas::history::HistoryLimit;
 use se_atlas::policy::{WRITER_QUANTUM_PATHS, writer_quantum_allowed};
 /// A bounded first-parent commit whose changed paths are still native
 /// strings, so the writer quantum fits before portability validation.
-pub trait WriterQuantumCommit {
+pub(crate) trait WriterQuantumCommit {
     fn quantum_oid(&self) -> &str;
     fn quantum_native_paths(&self) -> &[String];
     /// Withhold the changed paths behind the omission note and count.
@@ -13,7 +13,7 @@ pub trait WriterQuantumCommit {
 /// dropping oldest commits until the path budget holds, then degrading a
 /// final oversized commit. Portability validation then runs once, on
 /// retained paths only, and a degraded commit counts proven allowed paths.
-pub fn fit_writer_quantum<C: WriterQuantumCommit>(
+pub(crate) fn fit_writer_quantum<C: WriterQuantumCommit>(
     mut commits: Vec<C>,
     mut next: Option<String>,
     mut limit: HistoryLimit,

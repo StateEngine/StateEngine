@@ -1,10 +1,12 @@
 //! Atomic cache-only ingestion; denied paths are discarded before derivation.
 use rusqlite::{OptionalExtension, params};
+#[cfg(target_os = "linux")]
+use se_atlas::model::{Coverage, CoverageReason, IndexState};
 use se_atlas::{
     cache::connection::{CacheConnection, SqlView},
     errors::{AtlasResult, cache_error},
     history::{Commit, HistoryBound, HistoryFeed, HistoryReceipt, object},
-    model::{Coverage, CoverageReason, Generation, IndexState},
+    model::Generation,
     policy::built_in_denied,
 };
 use se_types::code::AtlasText;
@@ -24,7 +26,8 @@ pub fn ingest(
     cache.write(4_000_000, deadline, |sql| apply(sql, feed))
 }
 /// Publish a fitted window's notes and unavailability into coverage; notes replace, not accumulate.
-pub fn publish_coverage(
+#[cfg(target_os = "linux")]
+pub(crate) fn publish_coverage(
     cache: &mut CacheConnection<'_>,
     deadline: Instant,
     notes: &[se_types::code::HistoryCommitNote],
