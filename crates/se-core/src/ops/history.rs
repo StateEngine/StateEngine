@@ -10,7 +10,7 @@ use se_types::{AgentId, Cursor, EventId, Page, PageRequest, Result, SeError, Ses
 use serde::{Deserialize, Serialize};
 use std::{num::NonZeroU32, time::Duration};
 
-const DEFAULT_SEARCH_BUDGET: u32 = 192 * 1024;
+const DEFAULT_PAGE_BUDGET: u32 = 192 * 1024;
 const MIN_SEARCH_BUDGET: u32 = 1024;
 const MAX_SEARCH_BUDGET: u32 = 1_048_576;
 
@@ -64,7 +64,7 @@ fn default_limit() -> u16 {
     20
 }
 fn default_search_budget() -> u32 {
-    DEFAULT_SEARCH_BUDGET
+    DEFAULT_PAGE_BUDGET
 }
 pub fn position_cursor(value: String) -> Result<Cursor> {
     if looks_like_time(&value) {
@@ -217,7 +217,7 @@ pub fn list<R: Snapshot>(input: HistoryList, cx: &mut Cx<'_, R>) -> Result<Histo
                     after: input.cursor,
                     limit: NonZeroU32::new(u32::from(input.limit))
                         .ok_or_else(|| SeError::invalid("history limit", "positive"))?,
-                    max_bytes: NonZeroU32::new(DEFAULT_SEARCH_BUDGET)
+                    max_bytes: NonZeroU32::new(DEFAULT_PAGE_BUDGET)
                         .ok_or_else(|| SeError::invalid("history bytes", "positive"))?,
                 },
                 deadline: Duration::from_secs(5),
