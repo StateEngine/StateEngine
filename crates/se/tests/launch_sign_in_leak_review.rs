@@ -1,5 +1,5 @@
 //! A terminal's provider sign-in must serve only the launch that carried it.
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", windows))]
 #[path = "../../test-support/directory.rs"]
 mod directory;
 
@@ -10,7 +10,8 @@ fn terminal_sign_in_serves_one_launch_and_leaves_no_trace() -> Result<(), Box<dy
 {
     let parent = directory::private_directory()?;
     let root = parent.join("output");
-    let output = std::process::Command::new("python3")
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let output = std::process::Command::new(python)
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

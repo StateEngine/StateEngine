@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 sys.dont_write_bytecode = True
 from mail_cli import Fixture
@@ -41,16 +42,78 @@ def child_lines(fixture):
     return path.read_text().splitlines() if path.exists() else []
 
 
-def files_with_token(fixture):
+def files_with_token(fixture, locked=None):
+    """Files holding the token. A running Windows host locks some of its files;
+    with `locked` given they are listed there instead of read, and only the
+    after-shutdown scan, which reads everything, may call the home clean."""
     roots = [fixture.home, *fixture.root.glob("call-*")]
     found = []
     for root in roots:
         paths = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file() and not p.is_symlink()]
-        found += [str(p) for p in paths if TOKEN.encode() in p.read_bytes()]
+        for path in paths:
+            try:
+                data = path.read_bytes()
+            except PermissionError:
+                if locked is None:
+                    raise
+                locked.append(str(path))
+                continue
+            if TOKEN.encode() in data:
+                found.append(str(path))
     return found
 
 
+def windows_environment(pid):
+    """Read another process's environment block from its PEB (x64 layout)."""
+    import ctypes
+    from ctypes import wintypes as w
+    kernel, ntdll = ctypes.WinDLL("kernel32", use_last_error=True), ctypes.WinDLL("ntdll")
+    kernel.OpenProcess.restype = w.HANDLE
+    kernel.ReadProcessMemory.argtypes = [w.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+    handle = kernel.OpenProcess(0x0400 | 0x0010, False, pid)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        info = (ctypes.c_void_p * 6)()
+        status = ntdll.NtQueryInformationProcess(w.HANDLE(handle), 0, info, ctypes.sizeof(info), None)
+        assert status == 0, f"NtQueryInformationProcess {status:#x}"
+        def read(address, size):
+            buffer = ctypes.create_string_buffer(size)
+            ok = kernel.ReadProcessMemory(handle, ctypes.c_void_p(address), buffer, size, None)
+            if not ok:
+                raise ctypes.WinError(ctypes.get_last_error())
+            return buffer.raw
+        peb = info[1]
+        parameters = int.from_bytes(read(peb + 0x20, 8), "little")
+        environment = int.from_bytes(read(parameters + 0x80, 8), "little")
+        size = int.from_bytes(read(parameters + 0x3F0, 8), "little")
+        return read(environment, size).decode("utf-16-le", errors="replace").split("\0")
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def windows_host_environments_with_token(fixture):
+    query = ("Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq '"
+             + str(fixture.se).replace("'", "''") + "' } | ForEach-Object { $_.ProcessId }")
+    listed = subprocess.run(["powershell", "-NoProfile", "-Command", query],
+                            capture_output=True, text=True, check=True, timeout=60)
+    owner = str(fixture.root / "owner").lower()
+    seen, leaked = 0, []
+    for pid in (int(line) for line in listed.stdout.split() if line.strip().isdecimal()):
+        try:
+            environment = windows_environment(pid)
+        except OSError:
+            continue
+        if any(owner in entry.lower() for entry in environment):
+            seen += 1
+            if any(TOKEN in entry for entry in environment):
+                leaked.append(str(pid))
+    return seen, leaked
+
+
 def host_environments_with_token(fixture):
+    if os.name == "nt":
+        return windows_host_environments_with_token(fixture)
     owner = f"HOME={fixture.root / 'owner'}".encode()
     seen, leaked = 0, []
     for entry in Path("/proc").iterdir():
@@ -70,10 +133,31 @@ def host_environments_with_token(fixture):
 
 
 def run(image, output):
+    if os.name == "nt":
+        # Cargo hard-links its outputs on Windows; the runtime pins only a
+        # single-link file, so launch a private copy as an installed image is.
+        import shutil
+        single = output.parent / "image" / image.name
+        single.parent.mkdir()
+        shutil.copyfile(image, single)
+        image = single
     fixture = Fixture(image, output)
     install_double(fixture)
+    host = None
     try:
-        fixture.ok("up")
+        if os.name == "nt":
+            # Hosted Windows runners may refuse job breakaway, so own the host in
+            # the foreground as the other Windows fixtures do.
+            log = (fixture.root / "host.log").open("wb")
+            host = subprocess.Popen([str(fixture.se), "--json", "--home", str(fixture.home), "up", "--foreground"],
+                                    env=fixture.env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+            deadline = time.monotonic() + 120
+            while fixture.ok("status")["runtime"]["state"] != "running":
+                assert host.poll() is None and time.monotonic() < deadline, (
+                    "foreground host did not start", (fixture.root / "host.log").read_text(errors="replace"))
+                time.sleep(0.5)
+        else:
+            fixture.ok("up")
         fixture.env[ENVIRONMENT] = TOKEN
         try:
             fixture.launch()
@@ -92,13 +176,19 @@ def run(image, output):
         assert "child_has_token=true" not in child_lines(fixture)[before:], "the token outlived its launch"
         print("ok 2 - the next launch without the token is refused as signed out", flush=True)
 
-        leaks = files_with_token(fixture)
+        locked = [] if os.name == "nt" else None
+        leaks = files_with_token(fixture, locked)
         assert not leaks, ("token found in", leaks)
+        if locked:
+            print(f"# {len(locked)} files held open by the running host are read after shutdown", flush=True)
         hosts, leaked = host_environments_with_token(fixture)
         assert not leaked, ("host process environment holds the token", leaked)
+        assert hosts > 0, "no running host environment was inspected"
         print(f"ok 3 - token absent from data home, call output and {hosts} host environments", flush=True)
     finally:
         fixture.call("down")
+        if host is not None:
+            host.wait(timeout=60)
     assert not files_with_token(fixture), "token appeared during shutdown"
     print("ok 4 - token absent after shutdown", flush=True)
 
