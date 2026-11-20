@@ -30,7 +30,7 @@ pub(super) async fn call(
             if output.family() == expected {
                 let text = if format == AtlasFormat::Json {
                     let mut presented = value.clone();
-                    se_types::code::compact_ids(&mut presented);
+                    crate::presentation::compact_ids(&mut presented);
                     Ok(presented.to_string())
                 } else {
                     crate::compact(&output, limit.saturating_sub(256), explain).and_then(|text| {

@@ -61,5 +61,5 @@ fn hex_if_id_bytes(bytes: &[Value]) -> Option<String> {
     for (slot, byte) in raw.iter_mut().take(len).zip(bytes) {
         *slot = byte.as_u64().and_then(|value| u8::try_from(value).ok())?;
     }
-    Some(crate::hex_lower(&raw[..len]))
+    Some(se_types::hex_lower(&raw[..len]))
 }

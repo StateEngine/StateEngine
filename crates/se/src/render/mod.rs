@@ -74,7 +74,7 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
                 | AnyOutput::Resume(_)
         ) {
             let mut presented = serde_json::to_value(value).map_err(io::Error::other)?;
-            se_types::code::compact_ids(&mut presented);
+            se_mcp::presentation::compact_ids(&mut presented);
             serde_json::to_writer(&mut *out, &presented).map_err(io::Error::other)?;
         } else {
             serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;

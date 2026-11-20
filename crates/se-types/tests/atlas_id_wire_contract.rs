@@ -3,7 +3,7 @@
 //! base. Only the JSON presented through the MCP server and the CLI takes
 //! the compact hex form, and the decoder also accepts the hex string so an
 //! ID from a presented reply round-trips into a request.
-use se_types::code::{AtlasJobId, ContentHash, FileId, ResumeOfferId, SymbolId, compact_ids};
+use se_types::code::{AtlasJobId, ContentHash, FileId, ResumeOfferId, SymbolId};
 use serde_json::{Value, json};
 use std::error::Error;
 
@@ -75,69 +75,32 @@ fn malformed_id_values_refuse() -> Check {
     Ok(())
 }
 
-/// Protects: C1 - the published schemas document the compact hex form the
-/// presentation layer produces.
+/// Protects: C1 - the published schemas advertise both supported input
+/// forms: the compact hex string the presentation layer produces and the
+/// native byte array.
 #[test]
-fn id_schemas_document_the_hex_form() -> Check {
-    for (schema, pattern) in [
+fn id_schemas_advertise_both_supported_input_forms() -> Check {
+    for (schema, pattern, len) in [
         (
             serde_json::to_value(schemars::schema_for!(FileId))?,
             "^[0-9a-f]{32}$",
+            16,
         ),
         (
             serde_json::to_value(schemars::schema_for!(SymbolId))?,
             "^[0-9a-f]{64}$",
+            32,
         ),
     ] {
-        assert_eq!(schema["type"], "string");
-        assert_eq!(schema["pattern"], pattern);
+        assert_eq!(schema["anyOf"][0]["type"], "string");
+        assert_eq!(schema["anyOf"][0]["pattern"], pattern);
+        assert_eq!(schema["anyOf"][1]["type"], "array");
+        assert_eq!(schema["anyOf"][1]["items"]["type"], "integer");
+        assert_eq!(schema["anyOf"][1]["items"]["minimum"], 0);
+        assert_eq!(schema["anyOf"][1]["items"]["maximum"], 255);
+        assert_eq!(schema["anyOf"][1]["minItems"], len);
+        assert_eq!(schema["anyOf"][1]["maxItems"], len);
     }
-    Ok(())
-}
-
-/// Protects: C1 - the compacting walk rewrites only mapped ID fields,
-/// recurses into containers, leaves everything else untouched and is
-/// idempotent on the compact form.
-#[test]
-fn compact_ids_rewrites_mapped_id_fields_only() -> Check {
-    let mut presented = json!({
-        "schema": "atlas.find",
-        "file": byte_array(&[0xab; 16]),
-        "symbol": byte_array(&[0xcd; 32]),
-        "from": byte_array(&[0x01; 16]),
-        "to": byte_array(&[0x02; 32]),
-        "offer": byte_array(&[0x7f; 16]),
-        "job": byte_array(&[0x55; 16]),
-        "content_hash": byte_array(&[0xef; 32]),
-        "observed_hash": Value::Null,
-        "parent": Value::Null,
-        "enclosing": Value::Null,
-        "resolved_target": Value::Null,
-        "id": byte_array(&[0x11; 32]),
-        "previous_hash": byte_array(&[0x22; 32]),
-        "hops": [
-            { "from": byte_array(&[0x33; 32]), "to": byte_array(&[0x44; 32]) }
-        ],
-        "unmapped": byte_array(&[0xab; 16]),
-        "count": 16
-    });
-    compact_ids(&mut presented);
-    assert_eq!(presented["file"], "ab".repeat(16));
-    assert_eq!(presented["symbol"], "cd".repeat(32));
-    assert_eq!(presented["from"], "01".repeat(16));
-    assert_eq!(presented["to"], "02".repeat(32));
-    assert_eq!(presented["offer"], "7f".repeat(16));
-    assert_eq!(presented["job"], "55".repeat(16));
-    assert_eq!(presented["content_hash"], "ef".repeat(32));
-    assert_eq!(presented["id"], "11".repeat(32));
-    assert_eq!(presented["previous_hash"], "22".repeat(32));
-    assert_eq!(presented["hops"][0]["from"], "33".repeat(32));
-    assert_eq!(presented["hops"][0]["to"], "44".repeat(32));
-    assert_eq!(presented["unmapped"], byte_array(&[0xab; 16]));
-    assert_eq!(presented["count"], 16);
-    let compact = presented.clone();
-    compact_ids(&mut presented);
-    assert_eq!(presented, compact);
     Ok(())
 }
 

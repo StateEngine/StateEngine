@@ -9,6 +9,7 @@ use std::{future::Future, sync::Arc};
 mod arguments;
 mod atlas;
 pub mod client;
+pub mod presentation;
 mod resume;
 pub mod wire;
 

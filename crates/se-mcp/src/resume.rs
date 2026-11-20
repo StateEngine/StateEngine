@@ -128,7 +128,7 @@ fn wire_refusal(
 }
 
 fn measured(id: Value, mut output: Value, limit: usize) -> Result<(Value, usize)> {
-    se_types::code::compact_ids(&mut output);
+    crate::presentation::compact_ids(&mut output);
     let mut used = 0;
     for _ in 0..8 {
         if let Some(budget) = output.get_mut("budget").and_then(Value::as_object_mut) {

@@ -17,6 +17,7 @@ se-remote-cli = { path = "../se-remote-cli", optional = true }
 se-host = { path = "../se-host" }
 se-store = { path = "../se-store" }
 se-core = { path = "../se-core" }
+se-mcp = { path = "../se-mcp" }
 se-types = { path = "../se-types" }
 se-proc = { path = "../se-proc" }
 se-repository = { path = "../se-repository" }

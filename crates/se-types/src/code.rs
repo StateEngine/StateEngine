@@ -4,20 +4,15 @@
 use crate::{AgentId, ErrorBody, EventId, ProjectId};
 pub use crate::{AtlasRootId as RootId, IndexEpochId as CacheEpoch};
 use std::time::Duration;
-mod presentation;
 mod resources;
-pub use presentation::compact_ids;
 pub use resources::{GrammarPages, MemoryBudget};
 
-/// Lenient decoder for this module's byte-array IDs. The native wire form
-/// stays the byte array; the decoder also accepts the compact hex string so
-/// an ID from a presented reply round-trips into a request.
+/// Lenient decoder for this module's byte-array IDs: the native wire form
+/// stays the byte array, also accepting the presented compact hex string.
 mod id_encoding {
-    use std::fmt;
-    use std::marker::PhantomData;
+    use std::{fmt, marker::PhantomData};
 
-    use serde::Deserializer;
-    use serde::de::{Error, SeqAccess, Visitor};
+    use serde::de::{Deserializer, Error, SeqAccess, Visitor};
 
     struct Bytes<const N: usize>(PhantomData<[u8; N]>);
 
@@ -59,18 +54,20 @@ mod id_encoding {
 }
 
 macro_rules! wire_id {
-    ($name:ident, $pattern:literal) => {
+    ($name:ident, $len:literal, $pattern:literal) => {
         impl<'de> serde::Deserialize<'de> for $name {
             fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
                 id_encoding::decode(deserializer).map(Self)
             }
         }
         impl schemars::JsonSchema for $name {
-            fn schema_name() -> std::borrow::Cow<'static, str> {
-                stringify!($name).into()
-            }
+            fn schema_name() -> std::borrow::Cow<'static, str> { stringify!($name).into() }
             fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-                schemars::json_schema!({"type":"string","pattern":$pattern})
+                schemars::json_schema!({"anyOf": [
+                    {"type": "string", "pattern": $pattern},
+                    {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255},
+                     "minItems": $len, "maxItems": $len}
+                ]})
             }
         }
     };
@@ -78,7 +75,7 @@ macro_rules! wire_id {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub struct AtlasJobId(pub [u8; 16]);
-wire_id!(AtlasJobId, "^[0-9a-f]{32}$");
+wire_id!(AtlasJobId, 16, "^[0-9a-f]{32}$");
 #[derive(
     Clone,
     Copy,
@@ -108,13 +105,13 @@ pub struct ChangeId {
 }
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub struct FileId(pub [u8; 16]);
-wire_id!(FileId, "^[0-9a-f]{32}$");
+wire_id!(FileId, 16, "^[0-9a-f]{32}$");
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub struct SymbolId(pub [u8; 32]);
-wire_id!(SymbolId, "^[0-9a-f]{64}$");
+wire_id!(SymbolId, 32, "^[0-9a-f]{64}$");
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub struct ContentHash(pub [u8; 32]);
-wire_id!(ContentHash, "^[0-9a-f]{64}$");
+wire_id!(ContentHash, 32, "^[0-9a-f]{64}$");
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -555,7 +552,7 @@ pub enum ResumeCodeState {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct ResumeOfferId(pub [u8; 16]);
-wire_id!(ResumeOfferId, "^[0-9a-f]{32}$");
+wire_id!(ResumeOfferId, 16, "^[0-9a-f]{32}$");
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
