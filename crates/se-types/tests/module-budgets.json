@@ -10,7 +10,7 @@
   "se-trusted-path": 312,
   "se-core": 24310,
   "se": 24128,
-  "se-atlas": 16453,
+  "se-atlas": 16624,
   "se-types": 5427
  },
  "directories": {
@@ -48,7 +48,7 @@
   "crates/se-host/src/harness/secode_image": 879,
   "crates/se-host/src/atlas_runtime": 2080,
   "crates/se-host/src/http": 2048,
-  "crates/se-atlas/src/cache": 1979,
+  "crates/se-atlas/src/cache": 2081,
   "crates/se-atlas/src/parse": 1960,
   "crates/se-host/src/remote/control": 1917,
   "crates/se-proc/src/platform/macos": 1860,
