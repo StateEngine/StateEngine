@@ -3,7 +3,6 @@
 //! the core decodes them; it lives for the one awaited call in a task local and is
 //! never logged, persisted, echoed in an error or put in a receipt. A launch no
 //! owner terminal started carries none.
-use se_types::{Result, SeError};
 use serde_json::Value;
 use zeroize::Zeroize;
 
@@ -33,6 +32,7 @@ impl Drop for SignIn {
     }
 }
 
+#[cfg(feature = "listener")]
 tokio::task_local! {
     static CURRENT: Option<SignIn>;
 }
@@ -52,14 +52,15 @@ pub(crate) fn attach(selections: &mut Value) {
     }
 }
 
+#[cfg(feature = "listener")]
 /// Host: take a launch's sign-in off its selections before the core decodes them,
 /// keeping it only when the owner's own connection presents the call.
 pub(crate) fn take(
     connection: &crate::PresentedAuthority,
     wire: &mut crate::IpcEnvelope,
-) -> Result<Option<SignIn>> {
+) -> se_types::Result<Option<SignIn>> {
     let refused = || {
-        SeError::invalid(
+        se_types::SeError::invalid(
             "launch sign-in",
             "Claude sign-in variable names mapped to text",
         )
@@ -83,16 +84,18 @@ pub(crate) fn take(
     };
     map.into_iter()
         .map(named)
-        .collect::<Result<_>>()
+        .collect::<se_types::Result<_>>()
         .map(|values| Some(SignIn(values)))
 }
 
 /// Run one call with its launching terminal's sign-in in scope.
+#[cfg(feature = "listener")]
 pub(crate) async fn scope<F: std::future::Future>(sign_in: Option<SignIn>, work: F) -> F::Output {
     CURRENT.scope(sign_in, work).await
 }
 
 /// The sign-in of the terminal launching this call; `None` when no terminal did.
+#[cfg(feature = "listener")]
 pub(crate) fn current() -> Option<SignIn> {
     CURRENT.try_with(Clone::clone).ok().flatten()
 }

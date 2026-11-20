@@ -30,7 +30,6 @@ pub fn operation(
         cli_selections: Some({
             let mut encoded = serde_json::to_value(selections)
                 .map_err(|_| invalid("serializable CLI routing metadata"))?;
-            #[cfg(feature = "listener")]
             if launch {
                 crate::launch_sign_in::attach(&mut encoded);
             }
