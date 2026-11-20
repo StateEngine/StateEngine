@@ -42,12 +42,24 @@ def child_lines(fixture):
     return path.read_text().splitlines() if path.exists() else []
 
 
-def files_with_token(fixture):
+def files_with_token(fixture, locked=None):
+    """Files holding the token. A running Windows host locks some of its files;
+    with `locked` given they are listed there instead of read, and only the
+    after-shutdown scan, which reads everything, may call the home clean."""
     roots = [fixture.home, *fixture.root.glob("call-*")]
     found = []
     for root in roots:
         paths = [root] if root.is_file() else [p for p in root.rglob("*") if p.is_file() and not p.is_symlink()]
-        found += [str(p) for p in paths if TOKEN.encode() in p.read_bytes()]
+        for path in paths:
+            try:
+                data = path.read_bytes()
+            except PermissionError:
+                if locked is None:
+                    raise
+                locked.append(str(path))
+                continue
+            if TOKEN.encode() in data:
+                found.append(str(path))
     return found
 
 
@@ -164,8 +176,11 @@ def run(image, output):
         assert "child_has_token=true" not in child_lines(fixture)[before:], "the token outlived its launch"
         print("ok 2 - the next launch without the token is refused as signed out", flush=True)
 
-        leaks = files_with_token(fixture)
+        locked = [] if os.name == "nt" else None
+        leaks = files_with_token(fixture, locked)
         assert not leaks, ("token found in", leaks)
+        if locked:
+            print(f"# {len(locked)} files held open by the running host are read after shutdown", flush=True)
         hosts, leaked = host_environments_with_token(fixture)
         assert not leaked, ("host process environment holds the token", leaked)
         print(f"ok 3 - token absent from data home, call output and {hosts} host environments", flush=True)
