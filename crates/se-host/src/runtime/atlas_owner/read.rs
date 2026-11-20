@@ -241,7 +241,7 @@ impl AtlasReadPort for Service {
         selected: Option<&RootId>,
         read: &mut AtlasObservedReadCallback<'_>,
     ) -> Result<()> {
-        let trace = std::env::var_os("SE_ATLAS_PHASE_TRACE").is_some();
+        let trace = std::env::var_os("SE_ATLAS_PHASE_TRACE").is_none_or(|value| value != "0");
         let mut mark = std::time::Instant::now();
         let mut lap = || {
             let now = std::time::Instant::now();
