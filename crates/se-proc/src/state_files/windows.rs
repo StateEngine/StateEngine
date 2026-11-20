@@ -137,7 +137,7 @@ fn open_with_layout(
     };
     let attributes = descriptor.as_ref().map(|s| SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: s.0,
+        lpSecurityDescriptor: s.as_ptr(),
         bInheritHandle: 0,
     });
     let flags = FILE_FLAG_OPEN_REPARSE_POINT
@@ -212,7 +212,7 @@ fn walk_with_ancestry(
                     let sd = descriptor(&prefix, true)?;
                     let sa = SECURITY_ATTRIBUTES {
                         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-                        lpSecurityDescriptor: sd.0,
+                        lpSecurityDescriptor: sd.as_ptr(),
                         bInheritHandle: 0,
                     };
                     // SAFETY: valid descriptor and terminated native path outlive creation.
@@ -403,7 +403,7 @@ impl Directory {
         let descriptor = security::descriptor_for(path, true, self.layout)?;
         let attributes = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: descriptor.0,
+            lpSecurityDescriptor: descriptor.as_ptr(),
             bInheritHandle: 0,
         };
         // SAFETY: resolved held-root descendant, retained parent and descriptor;

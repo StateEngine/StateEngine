@@ -43,7 +43,7 @@ fn create(name: &OsStr) -> IpcNativeResult<OwnedHandle> {
     let descriptor = security::descriptor()?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor.0,
+        lpSecurityDescriptor: descriptor.as_ptr(),
         bInheritHandle: 0,
     };
     let flags = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE;
@@ -104,7 +104,7 @@ impl NativePipeStream {
         let descriptor = security::descriptor()?;
         let attributes = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: descriptor.0,
+            lpSecurityDescriptor: descriptor.as_ptr(),
             bInheritHandle: 1,
         };
         let (mut reader, mut writer) = (ptr::null_mut(), ptr::null_mut());

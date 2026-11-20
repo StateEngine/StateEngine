@@ -48,24 +48,28 @@ impl Security {
             ));
         }
         Ok(Self {
-            descriptor: Allocation(descriptor),
+            // SAFETY: the native API returned a unique LocalFree allocation.
+            descriptor: unsafe { Allocation::from_raw(descriptor) },
         })
     }
     pub fn attributes(&self) -> SECURITY_ATTRIBUTES {
         // SAFETY: SECURITY_ATTRIBUTES is native POD whose optional fields may be zero.
         let mut attributes: SECURITY_ATTRIBUTES = unsafe { zeroed() };
         attributes.nLength = size_of::<SECURITY_ATTRIBUTES>() as u32;
-        attributes.lpSecurityDescriptor = self.descriptor.0;
+        attributes.lpSecurityDescriptor = self.descriptor.as_ptr();
         attributes.bInheritHandle = 0;
         attributes
     }
 }
 pub(super) fn verify_job(job: &Handle) -> ProcResult<()> {
-    let descriptor = crate::windows_native::acl::SecurityDescriptor::query(
-        job.0,
-        SE_KERNEL_OBJECT,
-        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-    )
+    // SAFETY: the caller retains the native handle throughout this query.
+    let descriptor = unsafe {
+        crate::windows_native::acl::SecurityDescriptor::query(
+            job.0,
+            SE_KERNEL_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        )
+    }
     .map_err(|e| {
         native(
             ProcErrorCode::RecoveryUnproved,

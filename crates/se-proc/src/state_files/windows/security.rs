@@ -178,7 +178,8 @@ pub(in crate::state_files) fn descriptor_for(
     {
         return Err(last("create protected owner DACL", path));
     }
-    Ok(Allocation(raw))
+    // SAFETY: the native API returned a unique LocalFree allocation.
+    Ok(unsafe { Allocation::from_raw(raw) })
 }
 pub(in crate::state_files) fn current_owner_sid(path: &Path) -> Result<String> {
     User::current(path)?.text(path)
@@ -215,7 +216,7 @@ fn set_protected_dacl(
         windows_sys::Wdk::Storage::FileSystem::NtSetSecurityObject(
             file.as_raw_handle(),
             DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            descriptor.0,
+            descriptor.as_ptr(),
         )
     };
     if status < 0 {
@@ -236,7 +237,8 @@ fn sid(text: &str, path: &Path) -> Result<Allocation> {
     if unsafe { ConvertStringSidToSidW(text.as_ptr(), &mut raw) } == 0 {
         return Err(last("construct native SID", path));
     }
-    Ok(Allocation(raw))
+    // SAFETY: the native API returned a unique LocalFree allocation.
+    Ok(unsafe { Allocation::from_raw(raw) })
 }
 fn equal(left: PSID, right: PSID) -> bool {
     // SAFETY: callers supply retained native descriptor/token/allocated SID pointers.
@@ -247,11 +249,14 @@ fn security(
     path: &Path,
     dacl: bool,
 ) -> Result<crate::windows_native::acl::SecurityDescriptor> {
-    crate::windows_native::acl::SecurityDescriptor::query(
-        file.as_raw_handle(),
-        SE_FILE_OBJECT,
-        OWNER_SECURITY_INFORMATION | if dacl { DACL_SECURITY_INFORMATION } else { 0 },
-    )
+    // SAFETY: the caller retains the native handle throughout this query.
+    unsafe {
+        crate::windows_native::acl::SecurityDescriptor::query(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | if dacl { DACL_SECURITY_INFORMATION } else { 0 },
+        )
+    }
     .map_err(|e| io_error("read file security", path, e))
 }
 pub(super) fn verify_system_ancestor(file: &File, path: &Path) -> Result<()> {
@@ -260,7 +265,10 @@ pub(super) fn verify_system_ancestor(file: &File, path: &Path) -> Result<()> {
     let owner = descriptor.owner;
     let system = sid("S-1-5-18", path)?;
     let administrators = sid("S-1-5-32-544", path)?;
-    if !equal(owner, user.sid()) && !equal(owner, system.0) && !equal(owner, administrators.0) {
+    if !equal(owner, user.sid())
+        && !equal(owner, system.as_ptr())
+        && !equal(owner, administrators.as_ptr())
+    {
         return Err(unsafe_path(
             "reparse ancestor owner must be user or system administrator",
             path,
@@ -279,7 +287,7 @@ pub(in crate::state_files) fn verify_owner(file: &File, path: &Path) -> Result<(
     // must be enabled in this process token; filtered/deny-only membership grants
     // no ownership authority. Other groups and SYSTEM never qualify here.
     let administrators = sid("S-1-5-32-544", path)?;
-    if equal(owner, administrators.0) && user.enabled_group(administrators.0, path)? {
+    if equal(owner, administrators.as_ptr()) && user.enabled_group(administrators.as_ptr(), path)? {
         return Ok(());
     }
     Err(unsafe_path(
@@ -350,7 +358,7 @@ pub(in crate::state_files) fn verify_for(
             ));
         }
         let is_user = equal(principal, user.sid());
-        let is_system = equal(principal, system.0);
+        let is_system = equal(principal, system.as_ptr());
         if !is_user && (layout == Layout::UserPrivate || !is_system) {
             return Err(unsafe_path("DACL grants another principal access", path));
         }
@@ -423,7 +431,10 @@ pub(in crate::state_files) fn verify_no_foreign_writer(file: &File, path: &Path)
             | windows_sys::Win32::Storage::FileSystem::FILE_WRITE_EA
             | windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES
             | windows_sys::Win32::Storage::FileSystem::FILE_DELETE_CHILD;
-        if !equal(principal, user.sid()) && !equal(principal, system.0) && ace.Mask & MUTATE != 0 {
+        if !equal(principal, user.sid())
+            && !equal(principal, system.as_ptr())
+            && ace.Mask & MUTATE != 0
+        {
             return Err(unsafe_path(
                 "installation DACL permits another native writer",
                 path,

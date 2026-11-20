@@ -1,9 +1,8 @@
-//! Native state-path traversal and protected-path error facts.
-mod resolve;
-pub use resolve::resolve;
-mod state_error;
+//! Operating-system primitives for native path consumers.
 #[cfg(unix)]
-pub use state_error::unsafe_path_observed;
-pub use state_error::{Result, StateFileError, StateFileErrorCode, failure, io_error, unsafe_path};
-#[cfg(unix)]
-pub mod ancestors;
+pub fn effective_user_id() -> libc::uid_t {
+    // SAFETY: geteuid observes the current process and has no side effects.
+    unsafe { libc::geteuid() }
+}
+#[cfg(windows)]
+pub mod windows;

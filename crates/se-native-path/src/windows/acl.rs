@@ -7,7 +7,7 @@ use windows_sys::Win32::{
     System::SystemServices::{ACCESS_ALLOWED_ACE_TYPE, SYSTEM_MANDATORY_LABEL_ACE_TYPE},
 };
 
-pub(crate) struct SecurityDescriptor {
+pub struct SecurityDescriptor {
     allocation: Allocation,
     pub owner: PSID,
     dacl: *mut ACL,
@@ -15,7 +15,13 @@ pub(crate) struct SecurityDescriptor {
 }
 
 impl SecurityDescriptor {
-    pub fn query(handle: HANDLE, kind: SE_OBJECT_TYPE, information: u32) -> io::Result<Self> {
+    /// # Safety
+    /// `handle` must remain a valid native handle throughout the query.
+    pub unsafe fn query(
+        handle: HANDLE,
+        kind: SE_OBJECT_TYPE,
+        information: u32,
+    ) -> io::Result<Self> {
         let (mut owner, mut dacl, mut sacl, mut raw) = (
             ptr::null_mut(),
             ptr::null_mut(),
@@ -47,7 +53,8 @@ impl SecurityDescriptor {
                 &mut raw,
             )
         };
-        let allocation = Allocation(raw);
+        // SAFETY: GetSecurityInfo returned this unique LocalFree allocation or null.
+        let allocation = unsafe { Allocation::from_raw(raw) };
         if status != ERROR_SUCCESS {
             return Err(io::Error::from_raw_os_error(status as i32));
         }
@@ -59,7 +66,9 @@ impl SecurityDescriptor {
         })
     }
 
-    pub fn named_owner(name: &[u16]) -> io::Result<Self> {
+    /// # Safety
+    /// `name` must contain a terminating NUL for the native name query.
+    pub unsafe fn named_owner(name: &[u16]) -> io::Result<Self> {
         let (mut owner, mut raw) = (ptr::null_mut(), ptr::null_mut());
         // SAFETY: caller supplies a retained terminated native name; only owner is requested.
         let status = unsafe {
@@ -74,7 +83,8 @@ impl SecurityDescriptor {
                 &mut raw,
             )
         };
-        let allocation = Allocation(raw);
+        // SAFETY: GetNamedSecurityInfoW returned this unique LocalFree allocation or null.
+        let allocation = unsafe { Allocation::from_raw(raw) };
         if status != ERROR_SUCCESS {
             return Err(io::Error::from_raw_os_error(status as i32));
         }
@@ -89,8 +99,9 @@ impl SecurityDescriptor {
     pub fn control(&self) -> io::Result<u16> {
         let (mut control, mut revision) = (0, 0);
         // SAFETY: successful native descriptor remains owned through this query.
-        if unsafe { GetSecurityDescriptorControl(self.allocation.0, &mut control, &mut revision) }
-            == 0
+        if unsafe {
+            GetSecurityDescriptorControl(self.allocation.as_ptr(), &mut control, &mut revision)
+        } == 0
         {
             return Err(io::Error::last_os_error());
         }
@@ -103,7 +114,7 @@ impl SecurityDescriptor {
         // output; the API reports the UTF-16 extent including its terminating NUL.
         if unsafe {
             ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                self.allocation.0,
+                self.allocation.as_ptr(),
                 SDDL_REVISION_1,
                 information,
                 &mut raw,
@@ -113,8 +124,9 @@ impl SecurityDescriptor {
         {
             return Err(io::Error::last_os_error());
         }
-        let allocation = Allocation(raw.cast());
-        if length == 0 || length > 65536 || allocation.0.is_null() {
+        // SAFETY: successful conversion transferred this LocalFree allocation.
+        let allocation = unsafe { Allocation::from_raw(raw.cast()) };
+        if length == 0 || length > 65536 || allocation.as_ptr().is_null() {
             return Err(io::Error::other("native security text has invalid length"));
         }
         // SAFETY: successful native conversion owns exactly length initialized
@@ -143,7 +155,7 @@ impl SecurityDescriptor {
     }
 }
 
-pub(crate) struct Acl<'a> {
+pub struct Acl<'a> {
     raw: *mut ACL,
     _descriptor: PhantomData<&'a SecurityDescriptor>,
 }
@@ -151,6 +163,9 @@ impl Acl<'_> {
     pub fn len(&self) -> u16 {
         // SAFETY: construction validated the ACL and the descriptor borrow keeps it alive.
         unsafe { (*self.raw).AceCount }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
     pub fn ace(&self, index: u16) -> io::Result<Ace<'_>> {
         let mut raw = ptr::null_mut();
@@ -164,7 +179,7 @@ impl Acl<'_> {
         })
     }
 }
-pub(crate) struct Ace<'a> {
+pub struct Ace<'a> {
     raw: *mut std::ffi::c_void,
     _acl: PhantomData<&'a ACL>,
 }

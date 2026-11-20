@@ -89,11 +89,14 @@ pub(super) fn directory_id(file: &File) -> Result<FileId> {
     })
 }
 pub(super) fn verify_high(file: &File, directory: bool) -> Result<()> {
-    let descriptor = crate::windows_native::acl::SecurityDescriptor::query(
-        file.as_raw_handle(),
-        SE_FILE_OBJECT,
-        LABEL_SECURITY_INFORMATION,
-    )
+    // SAFETY: the caller retains the native handle throughout this query.
+    let descriptor = unsafe {
+        crate::windows_native::acl::SecurityDescriptor::query(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+        )
+    }
     .map_err(|e| error("read mandatory uninstall label", e))?;
     let sacl = descriptor.sacl().ok_or_else(|| {
         refuse(
@@ -160,10 +163,11 @@ impl Staging {
         {
             return Err(native::last("create High uninstall security descriptor"));
         }
-        let descriptor = Allocation(raw);
+        // SAFETY: the native API returned a unique LocalFree allocation.
+        let descriptor = unsafe { Allocation::from_raw(raw) };
         let attributes = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: descriptor.0,
+            lpSecurityDescriptor: descriptor.as_ptr(),
             bInheritHandle: 0,
         };
         let mut nonce = [0; 16];
