@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 import uuid
-from provider_home import isolate, verify
+from provider_home import isolate, run_provider_command
 
 
 def check(se, root, hosted):
@@ -22,10 +22,9 @@ def check(se, root, hosted):
 
     def call(*args, success=True):
         nonlocal calls
-        verify(environment, root)
         calls += 1
-        result = subprocess.run([str(se), '--home', str(home), '--json', *args],
-                                cwd=repo, env=environment, stdin=subprocess.DEVNULL,
+        result = run_provider_command(subprocess.run, [str(se), '--home', str(home), '--json', *args],
+                                cwd=repo, environment=environment, fixture=root, stdin=subprocess.DEVNULL,
                                 capture_output=True, timeout=60)
         (root / f'{calls:02}.stdout').write_bytes(result.stdout)
         (root / f'{calls:02}.stderr').write_bytes(result.stderr)

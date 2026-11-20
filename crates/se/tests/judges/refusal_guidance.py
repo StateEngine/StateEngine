@@ -10,7 +10,7 @@ from pathlib import Path
 import shlex
 import subprocess
 from fixture_paths import private_runtime_directory
-from provider_home import isolate, verify
+from provider_home import isolate, run_provider_command
 
 
 class Judge:
@@ -51,9 +51,8 @@ class Judge:
 
     def raw(self, argv, extra=None):
         environment = {**self.env, **(extra or {})}
-        verify(environment, self.root)
-        result = subprocess.run([str(self.image), *argv], cwd=self.repo,
-                                env=environment, stdin=subprocess.DEVNULL,
+        result = run_provider_command(subprocess.run, [str(self.image), *argv], cwd=self.repo,
+                                environment=environment, fixture=self.root, stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, timeout=45)
         row = dict(argv=argv, exit=result.returncode, stdout=result.stdout, stderr=result.stderr)
         self.calls.append(row)

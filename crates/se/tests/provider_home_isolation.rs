@@ -17,7 +17,14 @@ fn every_provider_home_must_be_set_inside_the_fixture() -> Check {
     provider_home::isolate(&mut child, &fixture);
     assert!(fixture.join("user-home/.codex").is_dir());
     assert!(fixture.join("user-home/.claude").is_dir());
-    for key in ["HOME", "USERPROFILE", "CODEX_HOME", "CLAUDE_CONFIG_DIR"] {
+    for key in [
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+    ] {
         child.env_remove(key);
         assert!(provider_home::assert_isolated(&child, &fixture).is_err());
         child.env(key, unrelated.join("outside"));

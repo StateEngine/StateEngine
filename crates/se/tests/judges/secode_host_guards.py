@@ -14,7 +14,7 @@ import time
 import uuid
 
 from secode_external import PIN, capabilities, environment, image_hash, package
-from provider_home import verify
+from provider_home import run_provider_command
 
 
 def native_probe(root, value, *, policy=None):
@@ -142,10 +142,9 @@ class Fixture:
         self.ok('up')
 
     def call(self, *args):
-        verify(self.env, self.root)
         self.calls += 1
-        result = subprocess.run([str(self.se), '--json', '--home', str(self.home), *args],
-                                cwd=self.repo, env=self.env, stdin=subprocess.DEVNULL,
+        result = run_provider_command(subprocess.run, [str(self.se), '--json', '--home', str(self.home), *args],
+                                cwd=self.repo, environment=self.env, fixture=self.root, stdin=subprocess.DEVNULL,
                                 capture_output=True, timeout=90)
         base = self.root / f'call-{self.calls:02}'
         base.with_suffix('.stdout').write_bytes(result.stdout)

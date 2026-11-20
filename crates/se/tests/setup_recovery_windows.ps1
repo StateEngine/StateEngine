@@ -7,13 +7,25 @@ if (Test-Path -LiteralPath $OutputRoot) { throw 'OutputRoot must not exist' }
 $OutputRoot = (Resolve-Path -LiteralPath $OutputRoot).Path
 $script:Calls = 0
 $homes = [System.Collections.Generic.List[string]]::new()
+$script:Python = (Get-Command python -CommandType Application).Source
+$script:ProviderLauncher = Join-Path $PSScriptRoot 'judges/provider_home.py'
+function Invoke-ProviderFixture([string]$StateHome, [string[]]$Words) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes([System.IO.Path]::GetFullPath($StateHome))
+        $key = [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '')
+    } finally { $sha.Dispose() }
+    $account = Join-Path $OutputRoot ('provider-' + $key.Substring(0, 20))
+    & $script:Python -B $script:ProviderLauncher --fixture $OutputRoot --home $account -- $script:Binary @Words
+    $script:ProviderExit = $LASTEXITCODE
+}
 function Invoke-Se([string]$StateHome, [string[]]$Words) {
     $script:Calls++
     $prefix = Join-Path $OutputRoot ('call-{0:d3}' -f $script:Calls)
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $stdout = & $script:Binary --home $StateHome --json @Words 2> ($prefix + '.stderr')
-    $code = $LASTEXITCODE
+    $stdout = Invoke-ProviderFixture -StateHome $StateHome -Words (@('--home', $StateHome, '--json') + $Words) 2> ($prefix + '.stderr')
+    $code = $script:ProviderExit
     $ErrorActionPreference = $previous
     $text = $stdout -join "`n"
     [System.IO.File]::WriteAllText($prefix + '.stdout', $text)
@@ -31,8 +43,11 @@ function Block([string]$Text, [string]$Name) {
 }
 function Read-Host([string]$Prompt) { return $script:RetainedCopy }
 function se {
-    & $script:Binary @args
-    if ($LASTEXITCODE -ne 0) { throw "Printed se command failed: $LASTEXITCODE" }
+    $words = @($args)
+    $at = [Array]::IndexOf($words, '--home')
+    if ($at -lt 0 -or $at + 1 -ge $words.Length) { throw 'Printed se command did not select a fixture home' }
+    Invoke-ProviderFixture -StateHome $words[$at + 1] -Words $words
+    if ($script:ProviderExit -ne 0) { throw "Printed se command failed: $script:ProviderExit" }
 }
 $passed = 0
 try {

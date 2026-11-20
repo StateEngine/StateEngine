@@ -24,9 +24,23 @@ def require(condition, reason):
 PROVIDER_HOME_FILES = {
     'HOME': ('.claude.json',),
     'USERPROFILE': ('.claude.json',),
+    'APPDATA': (),
+    'LOCALAPPDATA': (),
     'CODEX_HOME': ('config.toml', 'auth.json'),
     'CLAUDE_CONFIG_DIR': ('.claude.json', 'settings.json', '.credentials.json'),
 }
+
+
+def provider_home_environment(home, *, codex=None, claude=None):
+    home = Path(home)
+    return {
+        'HOME': str(home),
+        'USERPROFILE': str(home),
+        'APPDATA': str(home / 'AppData/Roaming'),
+        'LOCALAPPDATA': str(home / 'AppData/Local'),
+        'CODEX_HOME': str(codex or home / '.codex'),
+        'CLAUDE_CONFIG_DIR': str(claude or home / '.claude'),
+    }
 
 
 def prepare_provider_home(environment, home):
@@ -37,7 +51,8 @@ def prepare_provider_home(environment, home):
 
 def verify_provider_home(environment, home):
     root, account = Path(home).resolve(strict=True), Path.home().resolve()
-    require(root.is_dir() and root != account, 'The provider fixture must have a private account home')
+    require(root.is_dir() and not account.is_relative_to(root),
+            'The provider fixture must have a private account home')
     for key, names in PROVIDER_HOME_FILES.items():
         value = environment.get(key)
         path = Path(value) if value else None
@@ -45,12 +60,21 @@ def verify_provider_home(environment, home):
                 key + ' must be set to a private fixture path')
         resolved = path.resolve()
         inherited = os.environ.get(key)
-        require(resolved.is_relative_to(root) and resolved != account
-                and (not inherited or resolved != Path(inherited).resolve()),
+        real = Path(inherited).resolve() if inherited else None
+        require(resolved.is_relative_to(root) and resolved != account,
                 key + ' escapes the provider fixture')
+        require(real is None or not real.is_relative_to(root),
+                key + ' points into the real account')
+        if real is not None and key in ('CODEX_HOME', 'CLAUDE_CONFIG_DIR'):
+            require(not root.is_relative_to(real), key + ' uses the real configuration directory')
         for name in names:
             require((path / name).resolve().is_relative_to(root),
                     key + ' contains a settings file outside the provider fixture')
+
+
+def run_provider_command(spawn, argv, environment, fixture, **options):
+    verify_provider_home(environment, fixture)
+    return spawn(argv, env=environment, **options)
 
 
 def digest(path):
@@ -202,7 +226,6 @@ class Commands:
                 stderr_file=prefix.name + '.stderr'))
 
     def run(self, argv, label, terminal=False, timeout=180):
-        verify_provider_home(self.environment, self.home)
         argv = list(map(str, argv))
         actual = argv
         if terminal:
@@ -217,8 +240,9 @@ class Commands:
         started = time.monotonic()
         code, failure = None, None
         with prefix.with_suffix('.stdout').open('xb') as out, prefix.with_suffix('.stderr').open('xb') as err:
-            child = subprocess.Popen(actual, cwd=self.repository, env=self.environment,
-                                     stdin=subprocess.DEVNULL, stdout=out, stderr=err)
+            child = run_provider_command(subprocess.Popen, actual, self.environment, self.home,
+                                         cwd=self.repository, stdin=subprocess.DEVNULL,
+                                         stdout=out, stderr=err)
             identity = None
             if child.poll() is None:
                 identity = next((row for row in census(self.observer.baseline) if row['pid'] == child.pid), None)

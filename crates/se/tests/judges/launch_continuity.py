@@ -21,6 +21,7 @@ from fixture_paths import private_runtime_directory
 from agent_create_cli import owner_grant
 from launch_continuity_provider import MARKERS
 from mail_cli import Fixture
+from provider_home import isolate
 
 
 def run(options):
@@ -36,9 +37,9 @@ def run(options):
         wrapper.write_text(wrapper.read_text().replace('2.1.287', '2.1.318'))
         subprocess.run(['rustc', '--edition=2024', str(wrapper), '-o', str(fixture.root / 'provider')],
                        capture_output=True, check=True, timeout=60)
-        fixture.env = {'PATH': os.environ['PATH'], 'HOME': str(fixture.root / 'owner'),
-                       'USERPROFILE': str(fixture.root / 'owner'), 'LANG': 'C.UTF-8',
-                       'XDG_RUNTIME_DIR': str(runtime)}
+        fixture.env = {'PATH': os.environ['PATH'], 'LANG': 'C.UTF-8',
+                   'XDG_RUNTIME_DIR': str(runtime)}
+        isolate(fixture.env, fixture.root, fixture.root / 'owner')
         for key in ['XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME']:
             path = fixture.root / key.lower()
             path.mkdir()

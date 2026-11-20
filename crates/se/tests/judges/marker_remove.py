@@ -15,7 +15,7 @@ import stat
 import subprocess
 import sys
 import uuid
-from provider_home import isolate, verify
+from provider_home import isolate, run_provider_command
 
 
 def snapshot(root):
@@ -110,8 +110,7 @@ class Case:
             argv = [sys.executable, str(helper), str(self.image), str(self.home), "30000", *args]
         else:
             argv = [str(self.image), "--home", str(self.home), "--json", *args]
-        verify(self.env, self.root)
-        result = subprocess.run(argv, cwd=self.repo, env=self.env,
+        result = run_provider_command(subprocess.run, argv, cwd=self.repo, environment=self.env, fixture=self.root,
                                 capture_output=True, timeout=40, input=b"")
         base = self.root / f"{self.calls:02}-{label}"
         base.with_suffix(".stdout").write_bytes(result.stdout)

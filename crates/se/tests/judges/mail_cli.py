@@ -11,7 +11,7 @@ import sys
 import time
 import uuid
 from judge_records import wait_json
-from provider_home import isolate, verify
+from provider_home import isolate, run_provider_command
 
 
 def provider_bootstrap():
@@ -69,9 +69,8 @@ std::process::exit(s.code().unwrap_or(1));}'''.replace("PYTHON", json.dumps(sys.
         if recipient:
             assert self.session
             environment["SE_SESSION"] = self.session
-        verify(environment, self.root)
-        result = subprocess.run([str(self.se), "--json", "--home", str(self.home), *args],
-                                stdin=subprocess.DEVNULL, env=environment, capture_output=True, timeout=90)
+        result = run_provider_command(subprocess.run, [str(self.se), "--json", "--home", str(self.home), *args],
+                                stdin=subprocess.DEVNULL, environment=environment, fixture=self.root, capture_output=True, timeout=90)
         base = self.log_root / f"call-{self.calls:02}"
         base.with_suffix(".stdout").write_bytes(result.stdout)
         base.with_suffix(".stderr").write_bytes(result.stderr)

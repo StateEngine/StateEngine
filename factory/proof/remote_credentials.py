@@ -112,13 +112,23 @@ print(json.dumps({'credential_files_absent':all(absent.values()),'files':absent}
         # The only secret transport is stdin. argv and raw command metadata never
         # carry the token, and the destination wrapper writes no credential file.
         program = '''import json,os,sys
+from pathlib import Path
 request=json.load(sys.stdin)
-os.environ['CLAUDE_CODE_OAUTH_TOKEN']=request['token']
-os.execv(request['argv'][0],request['argv'])
+fixture=Path(request['fixture'])
+sys.path.insert(0,str(fixture))
+from provider_fixture import prepare_provider_home,provider_home_environment
+environment=dict(os.environ)
+state=Path(environment.get('XDG_STATE_HOME',Path.home()/'.local/state'))/'stateengine'
+environment.setdefault('SE_HOME',str(state))
+environment.update(provider_home_environment(fixture/'user'))
+prepare_provider_home(environment,fixture)
+environment['CLAUDE_CODE_OAUTH_TOKEN']=request['token']
+os.execve(request['argv'][0],request['argv'],environment)
 '''
         return self.journey.command(self.journey.ssh("PATH=" +
             shlex.quote(self.journey.remote_root + "/bin") + ':"$PATH" python3 -c ' + shlex.quote(program)),
-            json.dumps({"argv": [str(v) for v in argv], "token": self.token()}).encode())
+            json.dumps({"argv": [str(v) for v in argv], "fixture": self.journey.remote_root,
+                        "token": self.token()}).encode())
 
     def close(self):
         if not self.journey.custody_safe or self.journey.remote_runtime:

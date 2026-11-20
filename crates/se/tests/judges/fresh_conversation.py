@@ -14,6 +14,7 @@ import uuid
 from agent_create_cli import owner_grant
 from fixture_paths import private_runtime_directory
 from mail_cli import Fixture
+from provider_home import isolate
 
 
 def private_bytes(pid):
@@ -44,9 +45,9 @@ def run(args):
         wrapper.write_text(wrapper.read_text().replace('2.1.287', '2.1.318'))
         subprocess.run(['rustc', '--edition=2024', str(wrapper), '-o', str(f.root / 'provider')],
                        capture_output=True, check=True, timeout=60)
-        f.env = {'PATH': os.environ['PATH'], 'HOME': str(f.root / 'owner'),
-                 'USERPROFILE': str(f.root / 'owner'), 'LANG': 'C.UTF-8',
-                 'XDG_RUNTIME_DIR': str(runtime)}
+        f.env = {'PATH': os.environ['PATH'], 'LANG': 'C.UTF-8',
+                   'XDG_RUNTIME_DIR': str(runtime)}
+        isolate(f.env, f.root, f.root / 'owner')
         for name in ('XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME'):
             path = f.root / name.lower()
             path.mkdir()

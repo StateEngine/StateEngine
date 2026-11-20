@@ -9,7 +9,7 @@ import subprocess
 import time
 import uuid
 from judge_records import wait_json
-from provider_home import isolate, verify
+from provider_home import isolate, run_provider_command
 
 
 def observe(pid):
@@ -93,10 +93,9 @@ class Judge:
                        "provider": str(args.codex.resolve()), "root": str(self.root)}
 
     def call(self, *args, timeout=100):
-        verify(self.env, self.root)
         self.calls += 1
-        r = subprocess.run([str(self.args.se.resolve()), "--home", str(self.home), "--json", *args],
-                           env=self.env, cwd=self.root / "repo", stdin=subprocess.DEVNULL,
+        r = run_provider_command(subprocess.run, [str(self.args.se.resolve()), "--home", str(self.home), "--json", *args],
+                           environment=self.env, fixture=self.root, cwd=self.root / "repo", stdin=subprocess.DEVNULL,
                            capture_output=True, timeout=timeout)
         prefix = self.root / f"call-{self.calls:02}"
         prefix.with_suffix(".stdout").write_bytes(r.stdout)

@@ -41,14 +41,18 @@ pub fn isolate(command: &mut Command, fixture: &Path) {
 }
 
 pub fn isolate_at(command: &mut Command, fixture: &Path, home: &Path, codex: &Path, claude: &Path) {
+    let roaming = home.join("AppData/Roaming");
+    let local = home.join("AppData/Local");
     command.envs([
         ("HOME", home),
         ("USERPROFILE", home),
+        ("APPDATA", &roaming),
+        ("LOCALAPPDATA", &local),
         ("CODEX_HOME", codex),
         ("CLAUDE_CONFIG_DIR", claude),
     ]);
     assert_isolated(command, fixture).unwrap_or_else(|error| panic!("{error}"));
-    for directory in [home, codex, claude] {
+    for directory in [home, &roaming, &local, codex, claude] {
         fs::create_dir_all(directory).unwrap_or_else(|error| {
             panic!(
                 "could not create provider fixture directory {}: {error}",
@@ -63,21 +67,11 @@ pub fn assert_isolated(command: &Command, fixture: &Path) -> io::Result<()> {
     if !fixture.is_absolute() || !root.is_dir() {
         return Err(outside("fixture root", fixture));
     }
-    let under = |scratch: &Path| {
-        scratch
-            .canonicalize()
-            .is_ok_and(|temp| root != temp && root.starts_with(temp))
-    };
-    let in_scratch = under(&env::temp_dir());
-    #[cfg(unix)]
-    let in_scratch = in_scratch || under(Path::new("/tmp"));
-    if !in_scratch {
-        return Err(outside("fixture root", fixture));
-    }
-
     for (key, files) in [
         ("HOME", &[".claude.json"][..]),
         ("USERPROFILE", &[".claude.json"]),
+        ("APPDATA", &[]),
+        ("LOCALAPPDATA", &[]),
         ("CODEX_HOME", &["config.toml", "auth.json"]),
         (
             "CLAUDE_CONFIG_DIR",
@@ -112,12 +106,9 @@ pub fn assert_isolated(command: &Command, fixture: &Path) -> io::Result<()> {
         }
         if env::var_os(key).is_some_and(|inherited| {
             let inherited = PathBuf::from(inherited);
-            path == inherited
-                || path
-                    .canonicalize()
-                    .ok()
-                    .zip(inherited.canonicalize().ok())
-                    .is_some_and(|(fixture, account)| fixture == account)
+            let account = inherited.canonicalize().unwrap_or(inherited);
+            account.starts_with(&root)
+                || (matches!(key, "CODEX_HOME" | "CLAUDE_CONFIG_DIR") && root.starts_with(&account))
         }) {
             return Err(outside(key, path));
         }

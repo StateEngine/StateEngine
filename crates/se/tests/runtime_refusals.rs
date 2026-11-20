@@ -2,7 +2,6 @@
     dead_code,
     reason = "The real native fixture is shared with store consumers."
 )]
-#[cfg(any(target_os = "linux", windows))]
 #[path = "../../test-support/provider_home.rs"]
 mod provider_home;
 use se_types::Read;

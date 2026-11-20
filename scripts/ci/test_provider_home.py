@@ -1,12 +1,14 @@
+import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / 'scripts'), str(ROOT / 'crates/se/tests/judges')]
-from provider_home import KEYS, isolate, verify
+from provider_home import KEYS, isolate, run_provider_command, verify
 
 
 class ProviderHomeTests(unittest.TestCase):
@@ -25,7 +27,28 @@ class ProviderHomeTests(unittest.TestCase):
                         else:
                             invalid[key] = bad
                         with self.assertRaises(RuntimeError):
-                            verify(invalid, fixture)
+                            run_provider_command(self.fail, ["never spawn"], invalid, fixture)
+
+    def test_native_launcher_confines_child_and_preserves_exit_code(self):
+        launcher = ROOT / 'crates/se/tests/judges/provider_home.py'
+        with tempfile.TemporaryDirectory() as scratch:
+            fixture = Path(scratch) / 'fixture'
+            fixture.mkdir()
+            words = [sys.executable, '-c', 'import json,os,sys; '
+                     f'print(json.dumps({{key: os.environ[key] for key in {KEYS!r}}})); sys.exit(23)']
+            command = [sys.executable, '-B', launcher, '--fixture', fixture, '--home']
+            output = subprocess.run([*command, fixture / 'user', '--', *words],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(output.returncode, 23, output.stderr)
+            for key, directory in json.loads(output.stdout).items():
+                with self.subTest(key=key):
+                    self.assertTrue(Path(directory).resolve().is_relative_to(fixture.resolve()))
+                    self.assertTrue(Path(directory).is_dir())
+            refused = subprocess.run([*command, Path(scratch) / 'outside', '--', *words],
+                                     capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(refused.returncode, 23)
+            self.assertEqual(refused.stdout, '')
+            self.assertFalse((Path(scratch) / 'outside').exists())
 
     @unittest.skipIf(os.name == 'nt', 'Directory symlinks may require administrator rights')
     def test_resolved_config_directory_must_remain_in_the_fixture(self):

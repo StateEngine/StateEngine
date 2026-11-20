@@ -104,7 +104,7 @@ def run_case(args, library, case):
     gate.mkdir()
     f.env.update(TMPDIR=str(runtime), XDG_RUNTIME_DIR=str(runtime),
                  LD_PRELOAD=str(library), STATUS_STOP_GATE=str(gate))
-    for name in ["CODEX_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]:
+    for name in ["XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]:
         path = f.root / name.lower()
         path.mkdir()
         f.env[name] = str(path)

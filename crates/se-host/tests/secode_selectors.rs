@@ -2,6 +2,8 @@
 #![cfg(feature = "secode")]
 #[path = "../../test-support/directory.rs"]
 mod cleanup_directory;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 #[path = "support/selector_services.rs"]
 mod services;
 #[path = "support/shutdown_linked_fixture.rs"]
@@ -36,7 +38,8 @@ fn page(limit: u32) -> api::PageRequest {
     }
 }
 fn cli(image: &Path, root: &Path, args: &[&str]) -> Check<String> {
-    let out = Command::new(image)
+    let mut command = Command::new(image);
+    command
         .args(args)
         .env_clear()
         .env("PATH", std::env::var_os("PATH").ok_or("PATH missing")?)
@@ -44,10 +47,9 @@ fn cli(image: &Path, root: &Path, args: &[&str]) -> Check<String> {
             ["SystemRoot", "WINDIR", "TEMP", "TMP"]
                 .into_iter()
                 .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
-        )
-        .env("HOME", root)
-        .env("USERPROFILE", root)
-        .output()?;
+        );
+    provider_home::isolate(&mut command, root);
+    let out = command.output()?;
     if !out.status.success() {
         return Err(format!(
             "CLI failed: {} {}",

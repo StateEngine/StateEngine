@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from provider_home import isolate, verify
+from provider_home import isolate, run_provider_command
 
 
 def state_home(path):
@@ -76,9 +76,8 @@ class Fixture:
             self.forbidden.append(marker)
 
     def cli(self, *arguments):
-        verify(self.environment, self.root)
-        result = subprocess.run([self.executable, '--home', str(self.home), '--json', *arguments],
-            cwd=self.repo, env=self.environment, text=True, capture_output=True, timeout=30)
+        result = run_provider_command(subprocess.run, [self.executable, '--home', str(self.home), '--json', *arguments],
+            cwd=self.repo, environment=self.environment, fixture=self.root, text=True, capture_output=True, timeout=30)
         self.serial += 1
         self.file(self.root / ('call-' + str(self.serial) + '.json'), json.dumps(dict(
             arguments=arguments, exit=result.returncode, stdout=result.stdout, stderr=result.stderr)))

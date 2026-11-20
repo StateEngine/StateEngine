@@ -3,6 +3,8 @@
 #![cfg(all(feature = "secode", target_os = "linux"))]
 #[path = "../../test-support/directory.rs"]
 mod cleanup_directory;
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 #[path = "support/shutdown_linked_fixture.rs"]
 mod support;
 use secode_stateengine_api as api;
@@ -37,7 +39,8 @@ fn child_case(root: &Path, image: &Path) -> Check {
     let home = root.join("state");
     let repo = root.join("repo");
     fs::create_dir(&repo)?;
-    let init = Command::new(image)
+    let mut command = Command::new(image);
+    command
         .args(["init", "--home"])
         .arg(&home)
         .arg("--repo")
@@ -54,10 +57,9 @@ fn child_case(root: &Path, image: &Path) -> Check {
             "--json",
         ])
         .env_clear()
-        .env("PATH", std::env::var_os("PATH").ok_or("PATH absent")?)
-        .env("HOME", root)
-        .env("USERPROFILE", root)
-        .output()?;
+        .env("PATH", std::env::var_os("PATH").ok_or("PATH absent")?);
+    provider_home::isolate(&mut command, root);
+    let init = command.output()?;
     check(
         init.status.success(),
         &format!(

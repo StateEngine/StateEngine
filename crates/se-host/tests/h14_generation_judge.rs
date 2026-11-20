@@ -1,5 +1,7 @@
 //! Public linked generation checks; native SE Code services remain a separate witness.
 #![cfg(all(feature = "secode", target_os = "linux"))]
+#[path = "../../test-support/provider_home.rs"]
+mod provider_home;
 #[path = "support/shutdown_linked_fixture.rs"]
 mod support;
 use secode_stateengine_api as api;
@@ -45,7 +47,8 @@ fn restart_replay_cannot_rebind_old_handles_or_change_its_original_identity() ->
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(root.join("owner"), std::fs::Permissions::from_mode(0o700))?;
     let home = root.join("state");
-    let init = Command::new(&image)
+    let mut command = Command::new(&image);
+    command
         .args(["--json", "--home"])
         .arg(&home)
         .args(["init", "--repo"])
@@ -61,10 +64,9 @@ fn restart_replay_cannot_rebind_old_handles_or_change_its_original_identity() ->
             "claude-sonnet-5-5",
         ])
         .env_clear()
-        .env("PATH", std::env::var_os("PATH").ok_or("PATH missing")?)
-        .env("HOME", root.join("owner"))
-        .env("USERPROFILE", root.join("owner"))
-        .output()?;
+        .env("PATH", std::env::var_os("PATH").ok_or("PATH missing")?);
+    provider_home::isolate(&mut command, &root);
+    let init = command.output()?;
     std::fs::write(root.join("init.stdout"), &init.stdout)?;
     std::fs::write(root.join("init.stderr"), &init.stderr)?;
     assert!(init.status.success(), "native init failed");

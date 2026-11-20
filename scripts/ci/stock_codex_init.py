@@ -26,7 +26,7 @@ from uuid import uuid4
 from stock_codex_responses import KEY as LOOPBACK_KEY, MODEL as LOOPBACK_MODEL, TASK, LoopbackModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "crates/se/tests/judges"))
-from provider_home import isolate, verify
+from provider_home import isolate, run_provider_command
 
 
 CODEX_VERSION = "0.169.0"
@@ -151,8 +151,7 @@ class Fixture:
                        for part in ("cache", "config", "data", "state")}}
 
     def run(self, binary, *words):
-        verify(self.env, self.root)
-        result = subprocess.run([str(binary), *words], cwd=self.repo, env=self.env,
+        result = run_provider_command(subprocess.run, [str(binary), *words], cwd=self.repo, environment=self.env, fixture=self.root,
                                 stdin=subprocess.DEVNULL, capture_output=True, timeout=45)
         if result.returncode:
             try:

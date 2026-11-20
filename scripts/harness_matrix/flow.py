@@ -8,7 +8,7 @@ import sys
 import time
 import uuid
 
-from .io import Commands, digest, prepare_provider_home, require, save
+from .io import Commands, digest, prepare_provider_home, provider_home_environment, require, save
 from .inputs import home_path
 
 PHASES = ('Launch', 'Work', 'Mail', 'Resume')
@@ -58,16 +58,13 @@ class Smoke:
                                           'PROGRAMFILES(X86)', 'PROCESSOR_ARCHITECTURE',
                                           'PROCESSOR_ARCHITEW6432', 'LANG', 'LC_ALL')
                        or key in settings.get('environment', [])}
-        environment.update(HOME=str(self.home), USERPROFILE=str(self.home), SE_HOME=str(self.state),
-                           CODEX_HOME=str(self.home / '.codex'),
-                           CLAUDE_CONFIG_DIR=str(self.home / '.claude'),
+        environment.update(provider_home_environment(self.home))
+        environment.update(SE_HOME=str(self.state),
                            PATH=str(binary.parent) + os.pathsep + inherited.get('PATH', ''),
                            XDG_CONFIG_HOME=str(self.home / '.config'),
                            XDG_STATE_HOME=str(self.home / '.local/state'),
                            XDG_DATA_HOME=str(self.home / '.local/share'),
                            XDG_CACHE_HOME=str(self.home / '.cache'),
-                           APPDATA=str(self.home / 'AppData/Roaming'),
-                           LOCALAPPDATA=str(self.home / 'AppData/Local'),
                            TMPDIR=str(self.home / 'tmp'), TMP=str(self.home / 'tmp'),
                            TEMP=str(self.home / 'tmp'), LANG='C.UTF-8', LC_ALL='C.UTF-8',
                            GIT_CONFIG_GLOBAL=str(self.home / '.gitconfig'), GIT_CONFIG_NOSYSTEM='1')
