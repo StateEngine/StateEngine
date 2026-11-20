@@ -68,10 +68,10 @@ fn forward_once<R: se_store::ReadStore>(
     } else {
         bound
     };
-    execute::restore_forward_image(
-        &cx.home,
-        &target,
-        cx.session.is_none(),
+    se_proc::native_ipc::restore_image_hint(
+        &files.0,
+        target.image_sha256,
+        cx.session.is_none().then_some(&target.epoch.owner),
         &bound.native_bound(),
     )
     .map_err(|error| {
@@ -174,10 +174,11 @@ impl StatusRequest {
     /// so the worker holds no shared state the local path needs.
     pub(super) fn run(self) -> Result<AnyOutput> {
         let bound = Deadline::from_options(&self.options)?;
-        execute::restore_forward_image(
+        se_proc::native_ipc::restore_image_hint_at(
             &self.home,
-            &self.endpoint,
-            matches!(&self.credential, ClientCredential::Machine(_)),
+            self.endpoint.image_sha256,
+            matches!(&self.credential, ClientCredential::Machine(_))
+                .then_some(&self.endpoint.epoch.owner),
             &bound.native_bound(),
         )
         .map_err(|error| {

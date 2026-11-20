@@ -59,14 +59,18 @@ pub fn options() -> ClientOptions {
         cancelled: Arc::new(AtomicBool::new(false)),
     }
 }
-fn forwarding_options(cx: &Bootstrap, endpoint: &se_host::EndpointRecord) -> Result<ClientOptions> {
+fn forwarding_options(
+    cx: &Bootstrap,
+    files: &Files,
+    endpoint: &se_host::EndpointRecord,
+) -> Result<ClientOptions> {
     let mut options = options();
     let started = std::time::Instant::now();
     let bound = se_host::client::lease::Deadline::from_options(&options)?;
-    restore_forward_image(
-        &cx.home,
-        endpoint,
-        cx.session.is_none(),
+    se_proc::native_ipc::restore_image_hint(
+        &files.0,
+        endpoint.image_sha256,
+        cx.session.is_none().then_some(&endpoint.epoch.owner),
         &bound.native_bound(),
     )
     .map_err(|error| scope::unreadable("protected executable cache", &error.to_string()))?;
@@ -74,23 +78,6 @@ fn forwarding_options(cx: &Bootstrap, endpoint: &se_host::EndpointRecord) -> Res
     Ok(options)
 }
 
-pub(super) fn restore_forward_image(
-    home: &std::path::Path,
-    endpoint: &se_host::EndpointRecord,
-    owner: bool,
-    bound: &se_proc::native_ipc::IpcIoBound,
-) -> se_proc::native_ipc::IpcNativeResult<se_proc::native_ipc::ImageCacheRead> {
-    if owner {
-        se_proc::native_ipc::restore_cli_image_cache(
-            home,
-            endpoint.image_sha256,
-            &endpoint.epoch.owner,
-            bound,
-        )
-    } else {
-        se_proc::native_ipc::restore_image_cache(home, endpoint.image_sha256, bound)
-    }
-}
 pub fn endpoint(files: &Files) -> Result<Read<se_host::EndpointRecord>> {
     let path = files.0.root().join("endpoint.json");
     match files.readback(&path).map_err(|e| store_error(&e))? {
@@ -386,7 +373,7 @@ fn dispatch_with_cold_recovery(
         return Ok(output);
     }
     let (files, (reader, mut phase)) =
-        match setup::inspect_phase(&cx.home, se_core::ops::receipt::timestamp(now_us()?)?)? {
+        match setup::inspect_short(&cx.home, se_core::ops::receipt::timestamp(now_us()?)?)? {
             setup::Setup::Absent(output) if matches!(op, AnyOp::ProjectStatus(_)) => {
                 return Ok((*output).into());
             }
@@ -632,7 +619,7 @@ fn dispatch_with_cold_recovery(
             "live runtime endpoint while the writer lease is busy",
             "Wait for the current runtime to publish its endpoint, then retry with the original --key; do not remove runtime.lock or bypass its holder.",
         )?;
-        let forwarding = forwarding_options(cx, &target)?;
+        let forwarding = forwarding_options(cx, &files, &target)?;
         return crate::ipc::forward(
             &target,
             credential(cx, &files)?,

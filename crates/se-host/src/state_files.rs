@@ -153,6 +153,12 @@ impl Files {
     pub fn open(path: &Path) -> StoreResult<Self> {
         Self::open_with_policy(path, FilePolicy::Direct)
     }
+    /// Open for a bounded CLI operation with a retained verified root parent.
+    pub fn open_short_cli(path: &Path) -> StoreResult<Self> {
+        NativeStateFiles::open_short_cli(path)
+            .map(Self::from_native)
+            .map_err(native_error)
+    }
     pub fn open_with_policy(path: &Path, policy: FilePolicy) -> StoreResult<Self> {
         NativeStateFiles::open(path)
             .map(|native| Self(native, policy))

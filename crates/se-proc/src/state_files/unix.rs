@@ -21,6 +21,7 @@ use std::{
 pub(super) struct Directory {
     file: File,
     identity: (u64, u64),
+    short_cli_parent: Option<(File, std::time::Instant)>,
 }
 fn name(value: &OsStr, path: &Path) -> Result<CString> {
     CString::new(value.as_bytes()).map_err(|_| unsafe_path("NUL in native path", path))
@@ -100,6 +101,46 @@ fn walk_with_private_root(
     private_root: bool,
     sticky_final: bool,
 ) -> Result<File> {
+    walk_with_parent(path, create, private_root, sticky_final, false).map(|(file, _)| file)
+}
+/// Create one missing directory component; true when this call created it.
+fn create_component(
+    parent: &File,
+    component: &CString,
+    traversed: &Path,
+    path: &Path,
+) -> Result<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (parent, component, path);
+        // Clear inheritance on an exclusively named staging directory,
+        // before publishing it. Never clear an incumbent opened later.
+        let mut custody = Vec::new();
+        effects::prepare_created_directory(traversed, &mut custody)?;
+        Ok(!custody.is_empty())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = traversed;
+        // SAFETY: single literal component relative to the held parent FD.
+        let rc = unsafe { libc::mkdirat(parent.as_raw_fd(), component.as_ptr(), 0o700) };
+        if rc != 0 && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
+            return Err(io_error(
+                "create private directory",
+                path,
+                io::Error::last_os_error(),
+            ));
+        }
+        Ok(rc == 0)
+    }
+}
+fn walk_with_parent(
+    path: &Path,
+    create: bool,
+    private_root: bool,
+    sticky_final: bool,
+    retain_parent: bool,
+) -> Result<(File, Option<File>)> {
     let root = CString::new("/").map_err(|_| unsafe_path("native root", path))?;
     // SAFETY: constant path, successful open supplies an independently owned FD.
     let mut parent = owned(
@@ -117,34 +158,19 @@ fn walk_with_private_root(
         effects::trusted_directory(&parent, path, parts.is_empty() && !sticky_final)?;
     }
     let mut private = false;
+    let mut root_parent = None;
     let mut traversed = PathBuf::from("/");
     for (index, value) in parts.iter().enumerate() {
+        if retain_parent && index + 1 == parts.len() {
+            root_parent = Some(
+                parent
+                    .try_clone()
+                    .map_err(|e| io_error("duplicate root parent", path, e))?,
+            );
+        }
         traversed.push(value);
         let component = name(value, path)?;
-        let mut created = false;
-        if create {
-            #[cfg(target_os = "macos")]
-            {
-                // Clear inheritance on an exclusively named staging directory,
-                // before publishing it. Never clear an incumbent opened later.
-                let mut custody = Vec::new();
-                effects::prepare_created_directory(&traversed, &mut custody)?;
-                created = !custody.is_empty();
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                // SAFETY: single literal component relative to the held parent FD.
-                let rc = unsafe { libc::mkdirat(parent.as_raw_fd(), component.as_ptr(), 0o700) };
-                created = rc == 0;
-                if !created && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
-                    return Err(io_error(
-                        "create private directory",
-                        path,
-                        io::Error::last_os_error(),
-                    ));
-                }
-            }
-        }
+        let created = create && create_component(&parent, &component, &traversed, path)?;
         private |= created || (private_root && index + 1 == parts.len());
         // SAFETY: initialized writable stat output and held parent/component.
         let mut link: libc::stat = unsafe { std::mem::zeroed() };
@@ -201,7 +227,7 @@ fn walk_with_private_root(
         }
         parent = next;
     }
-    Ok(parent)
+    Ok((parent, root_parent))
 }
 
 pub(super) fn pin_directory(path: &Path) -> Result<File> {
@@ -265,9 +291,50 @@ impl Directory {
         Ok(Self {
             file,
             identity: (meta.dev(), meta.ino()),
+            short_cli_parent: None,
+        })
+    }
+    pub fn open_short_cli(path: &Path) -> Result<Self> {
+        let (file, parent) = walk_with_parent(path, false, true, false, true)?;
+        let meta = metadata(&file, path, true)?;
+        Ok(Self {
+            file,
+            identity: (meta.dev(), meta.ino()),
+            short_cli_parent: parent.map(|parent| (parent, std::time::Instant::now())),
         })
     }
     pub fn check_name(&self, path: &Path) -> Result<()> {
+        if let Some((parent, checked)) = &self.short_cli_parent
+            && checked.elapsed() <= SHORT_CLI_ANCESTRY_AGE
+        {
+            let leaf = name(
+                path.file_name()
+                    .ok_or_else(|| unsafe_path("state root name missing", path))?,
+                path,
+            )?;
+            // SAFETY: one no-follow name relative to the retained verified parent.
+            let named = owned(
+                unsafe {
+                    libc::openat(
+                        parent.as_raw_fd(),
+                        leaf.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                },
+                "reopen state root",
+                path,
+            )?;
+            let meta = metadata(&named, path, true)?;
+            if (meta.dev(), meta.ino()) != self.identity {
+                return Err(failure(
+                    StateFileErrorCode::SourceChanged,
+                    "held state root was replaced",
+                    path,
+                ));
+            }
+            metadata(&self.file, path, true)?;
+            return Ok(());
+        }
         let observed = Self::open(path)?;
         if observed.identity != self.identity {
             return Err(failure(
