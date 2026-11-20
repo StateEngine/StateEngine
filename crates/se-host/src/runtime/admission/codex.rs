@@ -1,6 +1,8 @@
 //! Codex has no CLI hook. Its real MCP discovery request proves possession of
 //! both issued credentials; only the HTTP bearer ever authorizes an operation.
 use super::*;
+use super::{Pending, SESSION_CAPABILITY};
+use sha2::{Digest, Sha256 as Hasher};
 impl AdmissionContext {
     fn codex_discovery(&self, bearer: &se_types::Secret, pin: &se_types::Secret) -> Result<()> {
         let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;

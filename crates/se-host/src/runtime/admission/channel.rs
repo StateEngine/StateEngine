@@ -1,5 +1,6 @@
 //! Channel control is a native Owner capability, never a session or HTTP grant.
 use super::*;
+use sha2::{Digest, Sha256 as Hasher};
 impl AdmissionContext {
     pub(crate) fn channel_owner(
         &self,

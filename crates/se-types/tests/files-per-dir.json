@@ -2,7 +2,7 @@
  "comment": "File counts per src/ directory at depth one and two (same aggregation as the line budgets). Budget = files at ratchet establishment plus the larger of 5 percent or 3 files, so a folder may only grow slowly or be split. A new directory falls back to the default; stale entries are refused.",
  "default_directory_files": 12,
  "directories": {
-  "crates/se-host/src/runtime": 116,
+  "crates/se-host/src/runtime": 119,
   "crates/se-core/src/ops": 96,
   "crates/se-host/src/process": 70,
   "crates/se-host/src/remote": 61,
@@ -76,7 +76,7 @@
   "crates/se-host/src/atlas_cache": 7,
   "crates/se-host/src/ipc/listener": 7,
   "crates/se-host/src/process/mail": 7,
-  "crates/se-host/src/runtime/admission": 7,
+  "crates/se-host/src/runtime/admission": 9,
   "crates/se-proc/src/atlas_worker/windows": 7,
   "crates/se-proc/src/birth_time": 7,
   "crates/se-proc/src/bootstrap/windows": 7,

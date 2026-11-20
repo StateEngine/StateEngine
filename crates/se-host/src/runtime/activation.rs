@@ -39,7 +39,7 @@ impl AdmissionContext {
     /// Called only after the shared verifier checked purpose, expiry, current
     /// preparation and generation. Discovery may list tools under a fence, but
     /// its possession cannot activate an agent whose earlier stop is unproved.
-    pub(super) fn observe_prepared(
+    pub(in crate::runtime) fn observe_prepared(
         &self,
         phase: &ReadPhase,
         credential: &CredentialRecord,

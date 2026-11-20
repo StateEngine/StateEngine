@@ -5,6 +5,7 @@ use se_store::{
     Snapshot,
     mail::{MailSnapshot, MailThrough},
 };
+use sha2::{Digest, Sha256 as Hasher};
 use std::{num::NonZeroU32, time::Duration};
 
 impl AdmissionContext {
