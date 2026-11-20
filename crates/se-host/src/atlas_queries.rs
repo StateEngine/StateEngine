@@ -203,8 +203,12 @@ pub(crate) fn owner_read<R: Snapshot>(
             "one admitted registered project",
         ));
     };
+    let trace = std::env::var_os("SE_ATLAS_PHASE_TRACE").is_some();
+    let started = std::time::Instant::now();
     request_project(owner, read, project, request.options().root.as_ref())?;
+    let request_us = started.elapsed().as_micros();
     let summary = owner.summary(project, request.options().root.as_ref())?;
+    let summary_us = started.elapsed().as_micros() - request_us;
     if &summary.project != project
         || request
             .options()
@@ -230,7 +234,7 @@ pub(crate) fn owner_read<R: Snapshot>(
     {
         return Ok(unavailable(request, summary));
     }
-    with_prepared_owner_reader(
+    let result = with_prepared_owner_reader(
         owner,
         ticket,
         request.options().root.as_ref(),
@@ -238,7 +242,14 @@ pub(crate) fn owner_read<R: Snapshot>(
         admission,
         now_unix_ms,
         |reader, _| execute(reader, request),
-    )
+    );
+    if trace {
+        eprintln!(
+            "ATLAS_HOST_PHASE owner request={request_us} summary={summary_us} total={}",
+            started.elapsed().as_micros()
+        );
+    }
+    result
 }
 
 /// Read/continuity hooks use the same current authoritative registration as
