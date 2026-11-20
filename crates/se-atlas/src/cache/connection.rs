@@ -181,8 +181,8 @@ impl Drop for CacheConnection<'_> {
             self.files.release_cold_observations();
         }
         // Close in the arena if free within the last budget, else one try; `db` closes
-        // first. Missing it is safe: a held arena means another open connection, so
-        // this one is not the file's last and skips SQLite's close checkpoint.
+        // first. Missing it is safe: the host sets NO_CKPT_ON_CLOSE on these roles
+        // (native_sql::retain_wal), so this close never checkpoints the WAL.
         if self.role.opens_in_arena() {
             let reader = self.role == ConnectionRole::QueryReader;
             let free = Reservation::acquire(reader, self.until).ok();
