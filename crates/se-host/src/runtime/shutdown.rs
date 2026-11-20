@@ -353,15 +353,12 @@ impl HostServeExit {
             let spawner_expired = self.runtime.spawner_expired;
             let result = pool
                 .run_owned(&drain_deadline, move || {
-                    if spawner_expired {
-                        crate::client::closure::publish_spawner(
-                            &lease.files,
-                            lease.files.0.root(),
-                            &record,
-                        )
-                    } else {
-                        crate::client::closure::publish(&lease.files, lease.files.0.root(), &record)
-                    }
+                    crate::client::closure::publish(
+                        &lease.files,
+                        lease.files.0.root(),
+                        &record,
+                        spawner_expired,
+                    )
                 })
                 .await;
             if let Err(error) = result {

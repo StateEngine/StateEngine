@@ -89,24 +89,13 @@ pub fn read_spawner(files: &dyn StateFiles, root: &Path) -> Result<Option<Runtim
         .transpose()
 }
 #[cfg(feature = "listener")]
-pub(crate) fn publish(files: &dyn StateFiles, root: &Path, record: &RuntimeClosure) -> Result<()> {
-    publish_at(files, root, record, FILE)
-}
-#[cfg(feature = "listener")]
-pub(crate) fn publish_spawner(
+pub(crate) fn publish(
     files: &dyn StateFiles,
     root: &Path,
     record: &RuntimeClosure,
+    spawner_expired: bool,
 ) -> Result<()> {
-    publish_at(files, root, record, SPAWNER_FILE)
-}
-#[cfg(feature = "listener")]
-fn publish_at(
-    files: &dyn StateFiles,
-    root: &Path,
-    record: &RuntimeClosure,
-    filename: &str,
-) -> Result<()> {
+    let filename = if spawner_expired { SPAWNER_FILE } else { FILE };
     let bytes = serde_json::to_vec(record)
         .map_err(|e| scope::unreadable("runtime close receipt codec", &e.to_string()))?;
     if bytes.len() > MAX_BYTES {
