@@ -34,6 +34,8 @@ static class Program
         public List<long> Starts { get; } = new();
         public List<ThreadEvent> MainThreadEvents { get; } = new();
         public List<ProfileSample> Samples { get; } = new();
+        public List<FileOp> FileOps { get; } = new();
+        public List<SampleStack> Stacks { get; } = new();
         public List<long> Stops { get; } = new();
         public List<int> Threads { get; } = new();
         public List<(long Start, long End)> Cpu { get; } = new();
@@ -45,6 +47,8 @@ static class Program
     private sealed record Image(long At, string Name, long Bytes, ulong Base);
     private sealed record ThreadEvent(long At, string Event, string State);
     private sealed record ProfileSample(long At, int Pid, int Tid, ulong Ip);
+    private sealed record FileOp(long At, int Pid, int Tid, string Op, string Class);
+    private sealed record SampleStack(long At, int Pid, int Tid, ulong[] Frames);
     private sealed record MappedImage(long At, int Pid, string Name, long Bytes, ulong Base);
     private sealed record FileRead(long Start, long? End, string Class, long Bytes, int? Status);
     private sealed record RegistryOp(long At, string Operation, double? Milliseconds);
@@ -90,6 +94,8 @@ static class Program
             : null;
         var hostPids = windows.Where(w => w.Kind == "product").Select(w => w.HostPid).ToHashSet();
         var hostSamples = new List<ProfileSample>();
+        var hostFileOps = new List<FileOp>();
+        var hostStacks = new List<SampleStack>();
         var mappings = new List<MappedImage>();
         var reads = new Dictionary<string,(Window Window, int Index)>();
         var running = new Dictionary<(int Pid, int Tid), long>();
@@ -135,6 +141,31 @@ static class Program
             if (Find(e.ProcessID, at) is { } w) w.Samples.Add(sample);
             if (hostPids.Contains(e.ProcessID)) hostSamples.Add(sample);
         };
+        source.Kernel.StackWalkStack += e =>
+        {
+            long at = Micros(e.EventTimeStampQPC);
+            var window = Find(e.ProcessID, at);
+            if (window is null && !hostPids.Contains(e.ProcessID)) return;
+            var frames = Enumerable.Range(0, e.FrameCount).Select(e.InstructionPointer).ToArray();
+            var stack = new SampleStack(at, e.ProcessID, e.ThreadID, frames);
+            if (window is not null) window.Stacks.Add(stack);
+            if (hostPids.Contains(e.ProcessID)) hostStacks.Add(stack);
+        };
+        void RecordFile(int pid, int tid, long at, string operation, string? name)
+        {
+            var window = Find(pid, at);
+            if (window is null && !hostPids.Contains(pid)) return;
+            var item = new FileOp(at, pid, tid, operation, FileClass(name));
+            if (window is not null) window.FileOps.Add(item);
+            if (hostPids.Contains(pid)) hostFileOps.Add(item);
+        }
+        source.Kernel.FileIOCreate += e => RecordFile(e.ProcessID, e.ThreadID, Micros(e.TimeStampQPC), "open", e.FileName);
+        source.Kernel.FileIORead += e => RecordFile(e.ProcessID, e.ThreadID, Micros(e.TimeStampQPC), "read", e.FileName);
+        source.Kernel.FileIOWrite += e => RecordFile(e.ProcessID, e.ThreadID, Micros(e.TimeStampQPC), "write", e.FileName);
+        source.Kernel.FileIOQueryInfo += e => RecordFile(e.ProcessID, e.ThreadID, Micros(e.TimeStampQPC), "query", e.FileName);
+        source.Kernel.FileIOSetInfo += e => RecordFile(e.ProcessID, e.ThreadID, Micros(e.TimeStampQPC), "set", e.FileName);
+        source.Kernel.FileIOCleanup += e => RecordFile(e.ProcessID, e.ThreadID, Micros(e.TimeStampQPC), "cleanup", e.FileName);
+        source.Kernel.FileIOClose += e => RecordFile(e.ProcessID, e.ThreadID, Micros(e.TimeStampQPC), "close", e.FileName);
         source.Kernel.ImageLoad += e =>
         {
             long at = Micros(e.TimeStampQPC);
@@ -187,16 +218,21 @@ static class Program
         source.Process();
         var persist = windows.Select(w => new
         {
-            w.Kind, w.Pid, w.Clients, w.MainThread, w.HostPid, w.Spawn, w.Entry, w.Connect, w.Exit, w.Starts, w.Stops, w.Threads, w.MainThreadEvents, w.Samples,
+            w.Kind, w.Pid, w.Clients, w.MainThread, w.HostPid, w.Spawn, w.Entry, w.Connect, w.Exit, w.Starts, w.Stops, w.Threads, w.MainThreadEvents, w.Samples, w.FileOps, w.Stacks,
             Cpu = w.Cpu.Select(span => new { span.Start, span.End }), w.Images, w.Reads, w.Registry, w.Faults
         });
         File.WriteAllText(Path.Combine(output, "etw.json"),
-            JsonSerializer.Serialize(new { source.EventsLost, Windows = persist, HostSamples = hostSamples, Mappings = mappings }, Json) + "\n");
+            JsonSerializer.Serialize(new { source.EventsLost, Windows = persist, HostSamples = hostSamples, HostFileOps = hostFileOps, HostStacks = hostStacks, Mappings = mappings }, Json) + "\n");
         var calibration = windows.Single(w => w.Clients == 0);
         if (source.EventsLost != 0 || calibration.Starts.Count != 1 || calibration.Images.Count == 0
             || calibration.Registry.Count == 0 || calibration.Cpu.Count == 0
             || !calibration.Reads.Any(r => r.Class == "calibration" && r.Bytes == 65536 && r.Status == 0))
             throw new InvalidDataException("Native trace calibration or loss check failed.");
+        if (!windows.Any(w => w.Kind == "product" && w.FileOps.Any(op => op.Op == "open"))
+            || !hostFileOps.Any(op => op.Op == "open")
+            || !windows.Any(w => w.Kind == "product" && w.Stacks.Count > 0)
+            || hostStacks.Count == 0)
+            throw new InvalidDataException("File operation or sampled stack capture did not engage.");
         if (windows.Any(w => w.Starts.Count != 1 || w.Images.Count == 0 || w.Cpu.Count == 0
             || w.Connect < w.Entry || (w.Clients != 0 && w.Entry < w.Starts[0])))
             throw new InvalidDataException("A measured CLI lacks an exact process start, image load, or CPU interval.");
@@ -231,7 +267,8 @@ static class Program
                     | KernelTraceEventParser.Keywords.ContextSwitch | KernelTraceEventParser.Keywords.ImageLoad
                     | KernelTraceEventParser.Keywords.FileIO | KernelTraceEventParser.Keywords.FileIOInit
                     | KernelTraceEventParser.Keywords.Registry | KernelTraceEventParser.Keywords.MemoryHardFaults
-                    | KernelTraceEventParser.Keywords.Dispatcher | KernelTraceEventParser.Keywords.Profile);
+                    | KernelTraceEventParser.Keywords.Dispatcher | KernelTraceEventParser.Keywords.Profile,
+                    KernelTraceEventParser.Keywords.Profile);
                 long begin = Now();
                 using var known = Start("dotnet", Assembly.GetExecutingAssembly().Location, "calibrate", calibrationFile);
                 if (!known.WaitForExit(10_000) || known.ExitCode != 0) throw new InvalidOperationException("Calibration child failed.");
