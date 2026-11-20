@@ -14,6 +14,8 @@ pub const FRAME_BYTES: usize = 65536;
 pub const MEMORY_BYTES: u64 = 64_000_000;
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 mod cpu;
+#[cfg(windows)]
+pub use cpu::current_cpu_parts_and_thread;
 #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
 pub use cpu::current_cpu_time;
 // The release image maps about 51 MB before its parser/SQL allocations. Keep

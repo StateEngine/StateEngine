@@ -248,8 +248,22 @@ async function messages(project) {
   throw Error('Message population exceeded the page bound');
 }
 
+async function hostCpu(pid) {
+  if (process.platform !== 'win32') return null;
+  assert(Number.isSafeInteger(pid) && pid > 0);
+  const command = `$p = [System.Diagnostics.Process]::GetProcessById(${pid}); `
+    + `@{ born = $p.StartTime.ToFileTimeUtc().ToString(); user_ms = $p.UserProcessorTime.TotalMilliseconds; `
+    + `kernel_ms = $p.PrivilegedProcessorTime.TotalMilliseconds } | ConvertTo-Json -Compress`;
+  const result = await once('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command]);
+  assert.equal(result.code, 0, result.stderr); assert(!result.failure);
+  const value = JSON.parse(result.stdout);
+  assert(typeof value.born === 'string' && Number.isFinite(value.user_ms) && Number.isFinite(value.kernel_ms));
+  return value;
+}
+
 async function measure({ clients, recipients, project, owner, host, nonce }) {
   const meter = { inFlight: 0, peak: 0 };
+  const hostCpuBefore = await hostCpu(host.process.pid);
   const before = loadSnapshot();
   const start = performance.now();
   const batch = await Promise.all(Array.from({ length: clients }, async (_, client) => {
@@ -264,13 +278,21 @@ async function measure({ clients, recipients, project, owner, host, nonce }) {
   }));
   const wall_ms = performance.now() - start;
   const after = loadSnapshot();
+  const hostCpuAfter = await hostCpu(host.process.pid);
+  if (hostCpuBefore) {
+    assert.equal(hostCpuBefore.born, hostCpuAfter.born);
+    assert(hostCpuAfter.user_ms >= hostCpuBefore.user_ms && hostCpuAfter.kernel_ms >= hostCpuBefore.kernel_ms);
+  }
   const cpu = cpuUse(before.cpu_ms, after.cpu_ms);
   const ordered = batch.flat();
   const samples = ordered.map(({ result, ...sample }) => ({
     ...sample, ...summarize(result), receipt: null, verified: false, error: null,
   }));
   const cohort = { clients, samples_per_client: samplesPerCohort / clients, observed_peak: meter.peak, wall_ms,
-    load: { before, after, cpu }, samples, complete: false, median_ms: null, p95_ms: null, within_budget: null };
+    load: { before, after, cpu },
+    host_cpu: hostCpuBefore ? { user_ms: hostCpuAfter.user_ms - hostCpuBefore.user_ms,
+      kernel_ms: hostCpuAfter.kernel_ms - hostCpuBefore.kernel_ms, completions: samplesPerCohort } : null,
+    samples, complete: false, median_ms: null, p95_ms: null, within_budget: null };
   const filename = `cohort-${clients}.json`;
   save(filename, cohort);
   // A reply can reach the caller before the host's stderr marker is delivered.
@@ -380,7 +402,17 @@ function matchedPhases(sample, result, receipt, id) {
   }
   const cliCpu = Number(cpu);
   assert(Number.isSafeInteger(cliCpu) && cliCpu >= 0, 'Native process CPU counter unavailable');
-  return { cli_us: cli, host_us: host, cli_cpu_us: cliCpu, diagnostics: receipt.diagnostics };
+  const cpuParts = result.stderr.split(/\r?\n/).filter(line => line.startsWith('IPC_CPU '));
+  let nativeThreadId = null, userCpuUs = null, kernelCpuUs = null;
+  if (process.platform === 'win32') {
+    assert.equal(cpuParts.length, 1, 'Expected one native CPU marker');
+    const match = /^IPC_CPU (\d+) (\d+) (\d+)$/.exec(cpuParts[0]);
+    assert(match, 'Invalid native CPU marker');
+    [nativeThreadId, userCpuUs, kernelCpuUs] = match.slice(1).map(Number);
+    assert([nativeThreadId, userCpuUs, kernelCpuUs].every(Number.isSafeInteger) && nativeThreadId > 0);
+  }
+  return { cli_us: cli, host_us: host, cli_cpu_us: cliCpu, native_thread_id: nativeThreadId,
+    user_cpu_us: userCpuUs, kernel_cpu_us: kernelCpuUs, diagnostics: receipt.diagnostics };
 }
 
 function matchedConnection(sample, stderr, hostPid) {

@@ -65,6 +65,12 @@ impl Drop for Trace {
                 TIMES.get(),
                 cpu.map_or(-1, |value| value as i64)
             );
+            #[cfg(windows)]
+            if let Ok((user, kernel, thread)) =
+                se_proc::atlas_worker::current_cpu_parts_and_thread()
+            {
+                eprintln!("IPC_CPU {thread} {user} {kernel}");
+            }
         }
     }
 }

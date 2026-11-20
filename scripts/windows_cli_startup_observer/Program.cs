@@ -29,9 +29,11 @@ static class Program
         };
     }
 
-    private sealed record Window(string Kind, int Pid, int Clients, long Spawn, long Entry, long Connect, long Exit)
+    private sealed record Window(string Kind, int Pid, int Clients, int MainThread, int HostPid, long Spawn, long Entry, long Connect, long Exit)
     {
         public List<long> Starts { get; } = new();
+        public List<ThreadEvent> MainThreadEvents { get; } = new();
+        public List<ProfileSample> Samples { get; } = new();
         public List<long> Stops { get; } = new();
         public List<int> Threads { get; } = new();
         public List<(long Start, long End)> Cpu { get; } = new();
@@ -40,7 +42,10 @@ static class Program
         public List<RegistryOp> Registry { get; } = new();
         public List<Fault> Faults { get; } = new();
     }
-    private sealed record Image(long At, string Name, long Bytes);
+    private sealed record Image(long At, string Name, long Bytes, ulong Base);
+    private sealed record ThreadEvent(long At, string Event, string State);
+    private sealed record ProfileSample(long At, int Pid, int Tid, ulong Ip);
+    private sealed record MappedImage(long At, int Pid, string Name, long Bytes, ulong Base);
     private sealed record FileRead(long Start, long? End, string Class, long Bytes, int? Status);
     private sealed record RegistryOp(long At, string Operation, double? Milliseconds);
     private sealed record Fault(long At, string Class, double? Milliseconds);
@@ -67,7 +72,9 @@ static class Program
             {
                 if (!row.GetProperty("verified").GetBoolean()) throw new InvalidDataException("A write was not read back.");
                 var points = row.GetProperty("phases").GetProperty("cli_us");
-                windows.Add(new Window(kind, row.GetProperty("pid").GetInt32(), clients,
+                int thread = kind == "product" ? row.GetProperty("phases").GetProperty("native_thread_id").GetInt32() : 0;
+                int hostPid = kind == "product" ? row.GetProperty("connection").GetProperty("peers")[1][0].GetInt32() : 0;
+                windows.Add(new Window(kind, row.GetProperty("pid").GetInt32(), clients, thread, hostPid,
                     row.GetProperty("spawned_us").GetInt64(), points[0].GetInt64(), points[8].GetInt64(),
                     row.GetProperty("exited_us").GetInt64()));
             }
@@ -81,6 +88,9 @@ static class Program
         Window? Find(int pid, long time) => groups.TryGetValue(pid, out var group)
             ? group.SingleOrDefault(w => w.Spawn <= time && time <= w.Exit)
             : null;
+        var hostPids = windows.Where(w => w.Kind == "product").Select(w => w.HostPid).ToHashSet();
+        var hostSamples = new List<ProfileSample>();
+        var mappings = new List<MappedImage>();
         var reads = new Dictionary<string,(Window Window, int Index)>();
         var running = new Dictionary<(int Pid, int Tid), long>();
         using var source = new ETWTraceEventSource(trace);
@@ -102,16 +112,41 @@ static class Program
         source.Kernel.ThreadCSwitch += e =>
         {
             long at = Micros(e.TimeStampQPC);
+            if (Find(e.OldProcessID, at) is { } old && old.MainThread == e.OldThreadID)
+                old.MainThreadEvents.Add(new ThreadEvent(at, "out", e.OldThreadState.ToString()));
+            if (Find(e.NewProcessID, at) is { } next && next.MainThread == e.NewThreadID)
+                next.MainThreadEvents.Add(new ThreadEvent(at, "in", "Running"));
             if (running.Remove((e.OldProcessID, e.OldThreadID), out long from))
                 Find(e.OldProcessID, from)?.Cpu.Add((from, at));
             if (Find(e.NewProcessID, at) is { } w && at <= w.Exit)
                 running[(e.NewProcessID, e.NewThreadID)] = at;
         };
+        source.Kernel.DispatcherReadyThread += e =>
+        {
+            long at = Micros(e.TimeStampQPC);
+            if (Find(e.AwakenedProcessID, at) is { } w && w.MainThread == e.AwakenedThreadID)
+                w.MainThreadEvents.Add(new ThreadEvent(at, "ready", "Ready"));
+        };
+        source.Kernel.PerfInfoSample += e =>
+        {
+            if (e.NonProcess) return;
+            long at = Micros(e.TimeStampQPC);
+            var sample = new ProfileSample(at, e.ProcessID, e.ThreadID, e.InstructionPointer);
+            if (Find(e.ProcessID, at) is { } w) w.Samples.Add(sample);
+            if (hostPids.Contains(e.ProcessID)) hostSamples.Add(sample);
+        };
         source.Kernel.ImageLoad += e =>
         {
             long at = Micros(e.TimeStampQPC);
             if (Find(e.ProcessID, at) is { } w && at <= w.Exit)
-                w.Images.Add(new Image(at, Name(e.FileName), Convert.ToInt64(e.ImageSize)));
+                w.Images.Add(new Image(at, Name(e.FileName), Convert.ToInt64(e.ImageSize), e.ImageBase));
+            if (hostPids.Contains(e.ProcessID) || e.ProcessID == 0 || e.ProcessID == 4)
+                mappings.Add(new MappedImage(at, e.ProcessID, Name(e.FileName), Convert.ToInt64(e.ImageSize), e.ImageBase));
+        };
+        source.Kernel.ImageDCStart += e =>
+        {
+            if (hostPids.Contains(e.ProcessID) || e.ProcessID == 0 || e.ProcessID == 4)
+                mappings.Add(new MappedImage(Micros(e.TimeStampQPC), e.ProcessID, Name(e.FileName), Convert.ToInt64(e.ImageSize), e.ImageBase));
         };
         source.Kernel.FileIORead += e =>
         {
@@ -152,11 +187,11 @@ static class Program
         source.Process();
         var persist = windows.Select(w => new
         {
-            w.Kind, w.Pid, w.Clients, w.Spawn, w.Entry, w.Connect, w.Exit, w.Starts, w.Stops, w.Threads,
+            w.Kind, w.Pid, w.Clients, w.MainThread, w.HostPid, w.Spawn, w.Entry, w.Connect, w.Exit, w.Starts, w.Stops, w.Threads, w.MainThreadEvents, w.Samples,
             Cpu = w.Cpu.Select(span => new { span.Start, span.End }), w.Images, w.Reads, w.Registry, w.Faults
         });
         File.WriteAllText(Path.Combine(output, "etw.json"),
-            JsonSerializer.Serialize(new { source.EventsLost, Windows = persist }, Json) + "\n");
+            JsonSerializer.Serialize(new { source.EventsLost, Windows = persist, HostSamples = hostSamples, Mappings = mappings }, Json) + "\n");
         var calibration = windows.Single(w => w.Clients == 0);
         if (source.EventsLost != 0 || calibration.Starts.Count != 1 || calibration.Images.Count == 0
             || calibration.Registry.Count == 0 || calibration.Cpu.Count == 0
@@ -195,12 +230,13 @@ static class Program
                 session.EnableKernelProvider(KernelTraceEventParser.Keywords.Process | KernelTraceEventParser.Keywords.Thread
                     | KernelTraceEventParser.Keywords.ContextSwitch | KernelTraceEventParser.Keywords.ImageLoad
                     | KernelTraceEventParser.Keywords.FileIO | KernelTraceEventParser.Keywords.FileIOInit
-                    | KernelTraceEventParser.Keywords.Registry | KernelTraceEventParser.Keywords.MemoryHardFaults);
+                    | KernelTraceEventParser.Keywords.Registry | KernelTraceEventParser.Keywords.MemoryHardFaults
+                    | KernelTraceEventParser.Keywords.Dispatcher | KernelTraceEventParser.Keywords.Profile);
                 long begin = Now();
                 using var known = Start("dotnet", Assembly.GetExecutingAssembly().Location, "calibrate", calibrationFile);
                 if (!known.WaitForExit(10_000) || known.ExitCode != 0) throw new InvalidOperationException("Calibration child failed.");
                 long end = Now();
-                calibration = new Window("calibration", known.Id, 0, begin, end, end, end);
+                calibration = new Window("calibration", known.Id, 0, 0, 0, begin, end, end, end);
                 using var driverProcess = Start(node, driver, image, productOutput, "200", "trace");
                 if (!driverProcess.WaitForExit(480_000) || driverProcess.ExitCode != 0) throw new InvalidOperationException("Write driver failed.");
                 using var minimalProcess = Start(node, minimalDriver, minimalImage, minimalOutput, "200");

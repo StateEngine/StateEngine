@@ -24,6 +24,36 @@ pub fn current_cpu_time() -> io::Result<Duration> {
         .ok_or_else(|| io::Error::other("CPU time overflow"))
 }
 
+#[cfg(windows)]
+pub fn current_cpu_parts_and_thread() -> io::Result<(u64, u64, u32)> {
+    use windows_sys::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{GetCurrentProcess, GetCurrentThreadId, GetProcessTimes},
+    };
+    // SAFETY: each output is an initialized native record.
+    let (mut created, mut exited, mut kernel, mut user): (FILETIME, FILETIME, FILETIME, FILETIME) =
+        unsafe { std::mem::zeroed() };
+    // SAFETY: the current process handle and output pointers are valid.
+    if unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let micros =
+        |t: FILETIME| ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) / 10;
+    // SAFETY: retrieving the current thread ID requires no additional preconditions.
+    Ok((micros(user), micros(kernel), unsafe {
+        GetCurrentThreadId()
+    }))
+}
+
 #[cfg(target_os = "macos")]
 pub fn current_cpu_time() -> io::Result<Duration> {
     // SAFETY: correctly aligned output for the current process and requested version.
