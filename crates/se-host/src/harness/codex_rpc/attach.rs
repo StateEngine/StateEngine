@@ -126,7 +126,20 @@ impl CodexHarness {
     ) -> Result<ProviderSessionId> {
         let resolved = self.resolved(request)?;
         let plan = self.plan(request, &resolved, socket);
-        let (method, params) = self.thread(&plan)?;
+        let (method, mut params) = self.thread(&plan)?;
+        // The login's own registration for sessions outside StateEngine is
+        // switched off for this thread, which has the host's server instead.
+        let read = json!({"cwd": params["cwd"].clone()});
+        match binding.request_classified("config/read", read, cx).await {
+            Ok(effective) => {
+                if let Some((key, off)) = se_mcp::client::codex_login_server_off(&effective)? {
+                    params["config"][key] = off;
+                }
+            }
+            // Older Codex cannot report its configuration; nothing to switch off then.
+            Err(failure) if failure.code == Some(-32601) => {}
+            Err(failure) => return Err(failure.error),
+        }
         let response = binding.request(method, params, cx).await?;
         let conversation = input::verify_thread(&plan, &response)?;
         binding.state.lock().map_err(|_| poisoned())?.conversation = Some(conversation.clone());

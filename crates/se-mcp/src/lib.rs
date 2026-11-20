@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use std::{future::Future, sync::Arc};
 mod arguments;
 mod atlas;
+pub mod client;
 mod resume;
 pub mod wire;
 

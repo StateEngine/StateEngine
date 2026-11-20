@@ -176,27 +176,12 @@ pub fn thread(launch: &CodexLaunch<'_>) -> Result<(&'static str, Value)> {
             "this host's bound loopback port",
         ));
     }
-    let secret = |value: &se_types::Secret| {
-        std::str::from_utf8(value.expose())
-            .map_err(|_| {
-                SeError::invalid("Codex MCP credential", "the host-issued ASCII credential")
-            })
-            .map(str::to_owned)
-    };
-    // This object travels only through the private provider RPC. Neither secret
-    // enters argv, the environment, a replacement CODEX_HOME or a config file.
-    config["mcp_servers.stateengine"] = json!({
-        "url":format!("http://127.0.0.1:{}/mcp", launch.mcp_port),
-        "enabled":true, "required":true,
-        // Match Claude's host-only allowedTools grant. Recipient capabilities
-        // are still checked by this authenticated host; other servers retain
-        // their own approval policy and the saved sandbox stays unchanged.
-        "default_tools_approval_mode":"approve",
-        "http_headers": {
-            "Authorization":format!("Bearer {}", secret(&launch.request.mcp_bearer)?),
-            "X-StateEngine-Session-Proof":secret(&launch.request.launch_credential)?,
-        }
-    });
+    let (server, entry) = se_mcp::client::codex_agent_server(
+        launch.mcp_port,
+        &launch.request.mcp_bearer,
+        &launch.request.launch_credential,
+    )?;
+    config[server] = entry;
     let local_cwd = launch.request.cwd.to_local()?;
     let cwd = path(&local_cwd)?;
     let mut params = json!({
