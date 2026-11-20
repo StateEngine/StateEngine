@@ -35,19 +35,30 @@ pub fn private_dispatch(args: &[OsString]) -> se_types::Result<u8> {
 /// and share one trust domain, so no lookup or version exchange is needed.
 const ATLAS_WORKER_BINARY: &str = "se-atlas-worker";
 
-/// The cold worker runs only the private entry, so prefer the dedicated
-/// worker image installed beside the verified CLI; absent or uninstalled,
-/// the CLI itself keeps serving as the worker.
-pub fn worker_image(cli: &Path) -> PathBuf {
-    let name = if cfg!(windows) {
+/// The companion's fixed name on the current platform.
+pub fn worker_binary_name() -> &'static str {
+    if cfg!(windows) {
         "se-atlas-worker.exe"
     } else {
         ATLAS_WORKER_BINARY
-    };
-    let candidate = cli.parent().map(|directory| directory.join(name));
+    }
+}
+
+/// The cold worker runs only the private entry, so prefer the dedicated
+/// worker image installed beside the verified CLI; absent or uninstalled,
+/// the CLI itself keeps serving as the worker. A linked or non-regular
+/// companion is unusable, because the verified CLI must own every file the
+/// worker image can create.
+pub fn worker_image(cli: &Path) -> PathBuf {
+    let candidate = cli
+        .parent()
+        .map(|directory| directory.join(worker_binary_name()));
     match candidate {
-        Some(path) if path.is_file() => path,
-        _ => cli.to_path_buf(),
+        Some(path) => match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => path,
+            _ => cli.to_path_buf(),
+        },
+        None => cli.to_path_buf(),
     }
 }
 
@@ -161,6 +172,24 @@ mod worker_image_tests {
         let result = (chosen == cli).then_some(()).ok_or_else(|| {
             SeError::invalid(
                 "worker image fallback",
+                &format!("expected {cli:?}, chose {chosen:?}"),
+            )
+        });
+        base.finish(result)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_image_falls_back_when_the_companion_is_a_link() -> Result<()> {
+        let base = FixtureRoot::new("link")?;
+        let cli = base.place("se")?;
+        let target = base.place("target-image")?;
+        std::os::unix::fs::symlink(&target, base.0.join(worker_name()))
+            .map_err(|error| SeError::invalid("worker image test link", &error.to_string()))?;
+        let chosen = worker_image(&cli);
+        let result = (chosen == cli).then_some(()).ok_or_else(|| {
+            SeError::invalid(
+                "worker image link fallback",
                 &format!("expected {cli:?}, chose {chosen:?}"),
             )
         });

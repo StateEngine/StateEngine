@@ -490,6 +490,16 @@ def main():
             raise ValueError("Cargo did not report exactly one se-atlas-worker executable")
         shutil.copyfile(worker[0]["executable"], out / worker_name)
         worker_stripping = strip_binary(out / worker_name, args.target, sysroot, worker[0]["executable"])
+        worker_bytes = (out / worker_name).stat().st_size
+        # The stripped worker maps this much virtual address space before its
+        # parser/SQL allocations; the 96 MB cold ceiling
+        # (se_proc::atlas_worker::ADDRESS_SPACE_BYTES) must keep headroom for
+        # them, so the image stays far below it instead of regressing silently.
+        worker_image_max_bytes = 24 * 1024 * 1024
+        if worker_bytes > worker_image_max_bytes:
+            raise ValueError(
+                f"se-atlas-worker is {worker_bytes} bytes after strip; keep it under "
+                f"{worker_image_max_bytes} for the 96 MB cold address-space ceiling")
         units = build_units(artifacts, metadata)
         seed_published = None
         seed_publication = None

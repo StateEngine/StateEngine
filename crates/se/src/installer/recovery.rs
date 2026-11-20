@@ -77,6 +77,10 @@ pub(super) fn check(arguments: &[OsString]) -> Result<i32> {
     let assets = user.join(".local/share/stateengine/installation");
     let mut expected = BTreeMap::new();
     expected.insert(user.join(".local/bin/se"), hash(&archive.join("se"))?);
+    expected.insert(
+        user.join(".local/bin/se-atlas-worker"),
+        hash(&archive.join("se-atlas-worker"))?,
+    );
     for name in [
         "manifest.json",
         "build.json",
