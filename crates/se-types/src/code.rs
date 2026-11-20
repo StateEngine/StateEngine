@@ -7,18 +7,75 @@ use std::time::Duration;
 mod resources;
 pub use resources::{GrammarPages, MemoryBudget};
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
-)]
+/// Lenient decoder for this module's byte-array IDs: the native wire form
+/// stays the byte array, also accepting the presented compact hex string.
+mod id_encoding {
+    use std::{fmt, marker::PhantomData};
+
+    use serde::de::{Deserializer, Error, SeqAccess, Visitor};
+
+    struct Bytes<const N: usize>(PhantomData<[u8; N]>);
+
+    impl<'de, const N: usize> Visitor<'de> for Bytes<N> {
+        type Value = [u8; N];
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                formatter,
+                "a hex string of {N} bytes or a legacy byte array"
+            )
+        }
+
+        fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
+            crate::decode_hex(value)
+                .and_then(|bytes| bytes.try_into().ok())
+                .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Str(value), &self))
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut bytes = [0; N];
+            for slot in &mut bytes {
+                *slot = seq
+                    .next_element::<u8>()?
+                    .ok_or_else(|| A::Error::invalid_length(N, &self))?;
+            }
+            if seq.next_element::<u8>()?.is_some() {
+                return Err(A::Error::invalid_length(N, &self));
+            }
+            Ok(bytes)
+        }
+    }
+
+    pub(super) fn decode<'de, const N: usize, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<[u8; N], D::Error> {
+        deserializer.deserialize_any(Bytes::<N>(PhantomData))
+    }
+}
+
+macro_rules! wire_id {
+    ($name:ident, $len:literal, $pattern:literal) => {
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                id_encoding::decode(deserializer).map(Self)
+            }
+        }
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> std::borrow::Cow<'static, str> { stringify!($name).into() }
+            fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                schemars::json_schema!({"anyOf": [
+                    {"type": "string", "pattern": $pattern},
+                    {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255},
+                     "minItems": $len, "maxItems": $len}
+                ]})
+            }
+        }
+    };
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub struct AtlasJobId(pub [u8; 16]);
+wire_id!(AtlasJobId, 16, "^[0-9a-f]{32}$");
 #[derive(
     Clone,
     Copy,
@@ -46,42 +103,15 @@ pub struct ChangeId {
     pub generation: Generation,
     pub ordinal: u32,
 }
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub struct FileId(pub [u8; 16]);
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
-)]
+wire_id!(FileId, 16, "^[0-9a-f]{32}$");
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub struct SymbolId(pub [u8; 32]);
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Eq,
-    Hash,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
-)]
+wire_id!(SymbolId, 32, "^[0-9a-f]{64}$");
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize)]
 pub struct ContentHash(pub [u8; 32]);
+wire_id!(ContentHash, 32, "^[0-9a-f]{64}$");
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -520,10 +550,9 @@ pub enum ResumeCodeState {
     Updating,
     BudgetExceeded,
 }
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct ResumeOfferId(pub [u8; 16]);
+wire_id!(ResumeOfferId, 16, "^[0-9a-f]{32}$");
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]

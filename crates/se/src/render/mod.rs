@@ -64,7 +64,7 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
         ));
     }
     if json {
-        serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
+        serde_json::to_writer(&mut *out, &se_mcp::presented(value)).map_err(io::Error::other)?;
         writeln!(out)?;
     } else if !quiet
         || value.exit_code() != 0
