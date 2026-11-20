@@ -1,0 +1,67 @@
+name: windows-cli-delayload-revision-probe
+on:
+  push:
+    branches: [probe/windows-cli-delayload-revision-20261120]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  measure:
+    runs-on: windows-2025
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/rust
+      - name: Build candidate, baseline, minimal and observer
+        run: |
+          set -euo pipefail
+          obs=scripts/windows_cli_startup_observer
+          bin="$RUNNER_TEMP/bin"; mkdir -p "$bin" "$RUNNER_TEMP/out"
+          cargo build --release --locked -p se --bin se --target-dir "$RUNNER_TEMP/t-candidate"
+          cp "$RUNNER_TEMP/t-candidate/release/se.exe" "$bin/candidate.exe"
+          git worktree add --detach "$RUNNER_TEMP/baseline-src" HEAD
+          rm "$RUNNER_TEMP/baseline-src/crates/se/build.rs"
+          (cd "$RUNNER_TEMP/baseline-src" && cargo build --release --locked -p se --bin se --target-dir "$RUNNER_TEMP/t-baseline")
+          cp "$RUNNER_TEMP/t-baseline/release/se.exe" "$bin/baseline.exe"
+          rustc --edition 2024 -C opt-level=3 "$obs/minimal.rs" -o "$bin/minimal.exe"
+          dotnet restore "$obs/SyncTrace.csproj" --locked-mode
+          dotnet build "$obs/SyncTrace.csproj" -c Release --no-restore -o "$RUNNER_TEMP/observer"
+      - name: Executable layout
+        run: |
+          for x in candidate baseline minimal; do
+            node scripts/windows_cli_startup_observer/pe_info.mjs "$RUNNER_TEMP/bin/$x.exe" "$RUNNER_TEMP/out/pe-$x.json"
+          done
+      - name: Compare import bindings
+        run: python -I scripts/windows_cli_startup_observer/compare_imports.py "$RUNNER_TEMP/bin/baseline.exe" "$RUNNER_TEMP/bin/candidate.exe" | tee "$RUNNER_TEMP/out/compare-imports.txt"
+      - name: Drivers without tracing
+        if: ${{ always() }}
+        run: |
+          for x in baseline candidate; do
+            node scripts/windows_ipc_phase_measure.mjs "$RUNNER_TEMP/bin/$x.exe" "$RUNNER_TEMP/out/plain-$x" 200
+          done
+          node scripts/windows_cli_startup_observer/minimal.mjs "$RUNNER_TEMP/bin/minimal.exe" "$RUNNER_TEMP/out/plain-minimal" 200
+      - name: Traced startup and shutdown
+        if: ${{ always() }}
+        run: |
+          obs=scripts/windows_cli_startup_observer
+          for x in baseline candidate; do
+            mkdir -p "$RUNNER_TEMP/etw-temp-$x"
+            "$RUNNER_TEMP/observer/SyncTrace.exe" "$(command -v node)" scripts/windows_ipc_phase_measure.mjs "$RUNNER_TEMP/bin/$x.exe" "$obs/minimal.mjs" "$RUNNER_TEMP/bin/minimal.exe" "$RUNNER_TEMP/out/etw-$x" "$RUNNER_TEMP/etw-temp-$x"
+          done
+      - name: Analyze
+        if: ${{ always() }}
+        run: |
+          for x in baseline candidate; do
+            python -I scripts/windows_cli_startup_observer/analyze.py "$RUNNER_TEMP/out/etw-$x" > "$RUNNER_TEMP/out/analysis-$x.json" 2>&1 || true
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: windows-cli-delayload
+          path: ${{ runner.temp }}/out
+          retention-days: 7
